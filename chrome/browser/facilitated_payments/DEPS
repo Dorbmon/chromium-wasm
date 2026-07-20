@@ -1,0 +1,4 @@
+include_rules = [
+  "+components/device_reauth",
+  "+components/facilitated_payments",
+]

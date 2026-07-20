@@ -1,0 +1,127 @@
+// Copyright 2020 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.findinpage;
+
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.never;
+
+import android.view.View;
+import android.view.ViewStub;
+import android.widget.FrameLayout;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.Mockito;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.robolectric.annotation.Config;
+
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.ui.base.WindowAndroid;
+
+/** Test for {@link FindToolbarManagerTest}. */
+@RunWith(BaseRobolectricTestRunner.class)
+@Config(manifest = Config.NONE)
+public class FindToolbarManagerTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    private FindToolbarManager mFindToolbarManager;
+
+    @Mock private TabModelSelector mTabModelSelector;
+    @Mock private Tab mTab;
+    @Mock private ViewStub mViewStub;
+    @Mock private FindToolbar mFindToolbar;
+    @Mock private FrameLayout mSecondaryUiContainer;
+    @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
+
+    @Before
+    public void setUp() {
+        Mockito.doReturn(mTab).when(mTabModelSelector).getCurrentTab();
+        Mockito.doReturn(mFindToolbar).when(mViewStub).inflate();
+
+        mFindToolbarManager =
+                new FindToolbarManager(
+                        mViewStub,
+                        mTabModelSelector,
+                        Mockito.mock(WindowAndroid.class),
+                        null,
+                        null,
+                        mSecondaryUiContainer,
+                        mBrowserControlsStateProvider);
+    }
+
+    @Test
+    public void testObserverMethods() {
+        FindToolbarObserver observer1 = Mockito.mock(FindToolbarObserver.class);
+        FindToolbarObserver observer2 = Mockito.mock(FindToolbarObserver.class);
+
+        mFindToolbarManager.addObserver(observer1);
+        mFindToolbarManager.addObserver(observer2);
+        mFindToolbarManager.showToolbar();
+
+        ArgumentCaptor<FindToolbarObserver> captor =
+                ArgumentCaptor.forClass(FindToolbarObserver.class);
+        Mockito.verify(mFindToolbar).setObserver(captor.capture());
+
+        FindToolbarObserver aggObserver = captor.getValue();
+        aggObserver.onFindToolbarHidden();
+        Mockito.verify(observer1).onFindToolbarHidden();
+        Mockito.verify(observer2).onFindToolbarHidden();
+        aggObserver.onFindToolbarShown();
+        Mockito.verify(observer1).onFindToolbarShown();
+        Mockito.verify(observer2).onFindToolbarShown();
+
+        mFindToolbarManager.removeObserver(observer2);
+        aggObserver.onFindToolbarHidden();
+        Mockito.verify(observer1, Mockito.times(2)).onFindToolbarHidden();
+        Mockito.verify(observer2, Mockito.times(1)).onFindToolbarHidden();
+        aggObserver.onFindToolbarShown();
+        Mockito.verify(observer1, Mockito.times(2)).onFindToolbarShown();
+        Mockito.verify(observer2, Mockito.times(1)).onFindToolbarShown();
+    }
+
+    @Test
+    public void testIsShowing() {
+        Assert.assertFalse(mFindToolbarManager.isShowing());
+
+        mFindToolbarManager.showToolbar();
+        Mockito.doReturn(View.GONE).when(mFindToolbar).getVisibility();
+        Assert.assertFalse(mFindToolbarManager.isShowing());
+
+        Mockito.doReturn(View.VISIBLE).when(mFindToolbar).getVisibility();
+        Assert.assertTrue(mFindToolbarManager.isShowing());
+    }
+
+    @Test
+    public void testSetFindQuery() {
+        mFindToolbarManager.showToolbar();
+        mFindToolbarManager.setFindQuery("foo");
+        Mockito.verify(mFindToolbar).setFindQuery("foo");
+    }
+
+    @Test
+    public void testOnSideUiSpecsChanged() {
+        SideUiSpecs specs = new SideUiSpecs(10, 20);
+
+        // Before inflation.
+        mFindToolbarManager.onSideUiSpecsChanged(specs);
+        Mockito.verify(mFindToolbar, never()).onSideUiSpecsChanged(any());
+
+        mFindToolbarManager.showToolbar();
+        Mockito.verify(mFindToolbar).onSideUiSpecsChanged(specs);
+
+        SideUiSpecs newSpecs = new SideUiSpecs(30, 40);
+        mFindToolbarManager.onSideUiSpecsChanged(newSpecs);
+        Mockito.verify(mFindToolbar).onSideUiSpecsChanged(newSpecs);
+    }
+}

@@ -1,0 +1,90 @@
+// Copyright 2012 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
+
+#include <memory>
+
+#include "base/functional/bind.h"
+#include "base/no_destructor.h"
+#include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
+#include "chrome/browser/custom_handlers/chrome_protocol_handler_registry_delegate.h"
+#include "components/custom_handlers/protocol_handler_registry.h"
+#include "components/user_prefs/user_prefs.h"
+#include "content/public/browser/browser_context.h"
+
+// static
+ProtocolHandlerRegistryFactory* ProtocolHandlerRegistryFactory::GetInstance() {
+  static base::NoDestructor<ProtocolHandlerRegistryFactory> instance;
+  return instance.get();
+}
+
+// static
+std::unique_ptr<KeyedService> BuildProtocolHandlerRegistryService(
+    content::BrowserContext* context) {
+  // Each profile gets its own ProtocolHandlerRegistry instance
+  // (ProfileSelection::kOwnInstance). When using OTR contexts (incognito and
+  // guest) we are constructing the registry with a null PrefService so it
+  // doesn't inherit the originating profile's handlers via OverlayUserPrefStore
+  // read-through and do not persist registrations. Predefined handlers (e.g.
+  // mailto) are still installed by ProtocolHandlerRegistry::Create regardless
+  // of prefs.
+  PrefService* prefs = nullptr;
+  if (!context->IsOffTheRecord()) {
+    prefs = user_prefs::UserPrefs::Get(context);
+    CHECK(prefs);
+  }
+  return custom_handlers::ProtocolHandlerRegistry::Create(
+      prefs, std::make_unique<ChromeProtocolHandlerRegistryDelegate>());
+}
+
+// static
+BrowserContextKeyedServiceFactory::TestingFactory
+ProtocolHandlerRegistryFactory::GetDefaultFactory() {
+  return base::BindRepeating(&BuildProtocolHandlerRegistryService);
+}
+
+// static
+custom_handlers::ProtocolHandlerRegistry*
+ProtocolHandlerRegistryFactory::GetForBrowserContext(
+    content::BrowserContext* context) {
+  return static_cast<custom_handlers::ProtocolHandlerRegistry*>(
+      GetInstance()->GetServiceForBrowserContext(context, true));
+}
+
+ProtocolHandlerRegistryFactory::ProtocolHandlerRegistryFactory()
+    : ProfileKeyedServiceFactory(
+          "ProtocolHandlerRegistry",
+          // Each profile gets its own registry instance. OTR profiles are
+          // isolated from the originating profile's handlers; see
+          // BuildProtocolHandlerRegistryService above.
+          ProfileSelections::Builder()
+              .WithRegular(ProfileSelection::kOwnInstance)
+              .WithGuest(ProfileSelection::kOwnInstance)
+              .WithAshInternals(ProfileSelection::kOwnInstance)
+              .Build()) {}
+
+ProtocolHandlerRegistryFactory::~ProtocolHandlerRegistryFactory() = default;
+
+// Will be created when initializing profile_io_data, so we might
+// as well have the framework create this along with other
+// PKSs to preserve orderly civic conduct :)
+bool
+ProtocolHandlerRegistryFactory::ServiceIsCreatedWithBrowserContext() const {
+  return true;
+}
+
+// Do not create this service for tests. MANY tests will fail
+// due to the threading requirements of this service. ALSO,
+// not creating this increases test isolation (which is GOOD!)
+bool ProtocolHandlerRegistryFactory::ServiceIsNULLWhileTesting() const {
+  return true;
+}
+
+std::unique_ptr<KeyedService>
+ProtocolHandlerRegistryFactory::BuildServiceInstanceForBrowserContext(
+    content::BrowserContext* context) const {
+  return BuildProtocolHandlerRegistryService(context);
+}

@@ -1,0 +1,22 @@
+// Copyright 2025 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// https://webmachinelearning.github.io/webmcp/#navigator-extension
+
+// TODO(https://crbug.com/515330187): Remove the getter on `Navigator`.
+[
+  RuntimeEnabled=WebMCP,
+  ImplementedAs=ModelContextSupplement
+] partial interface Navigator {
+  [SecureContext, SameObject] readonly attribute ModelContext modelContext;
+  [Replaceable, RuntimeEnabled=WebMCPTesting] readonly attribute ModelContextTesting modelContextTesting;
+};
+
+[
+  RuntimeEnabled=WebMCP,
+  ImplementedAs=ModelContextSupplement
+] partial interface Document {
+  [SecureContext, SameObject] readonly attribute ModelContext modelContext;
+};
+

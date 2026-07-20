@@ -1,0 +1,194 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "base/containers/fixed_flat_set.h"
+#include "base/files/file_path.h"
+#include "base/strings/strcat.h"
+#include "base/values.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
+#include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
+#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
+#include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/experiences/isolated_web_app/isolated_web_app_api_allowlist.h"
+#include "chromeos/constants/chromeos_features.h"
+#include "components/webapps/common/web_app_id.h"
+#include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "url/origin.h"
+
+namespace ash {
+
+namespace {
+
+web_app::IsolatedWebAppUrlInfo InstallIsolatedWebAppAndReturnUrlInfo(
+    Profile* profile) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      web_app::IsolatedWebAppBuilder(
+          web_app::ManifestBuilder().SetName("Blink Extension Test IWA"))
+          .BuildBundle()
+          ->InstallChecked(profile);
+  return url_info;
+}
+
+}  // namespace
+
+// Verifies the behavior of Blink extensions for Isolated Web Apps in ChromeOS
+// when the `kCrosIsolatedWebAppSetShape` flag is enabled.
+class BlinkExtensionsWithFlagSetTest
+    : public web_app::IsolatedWebAppBrowserTestHarness {
+ public:
+  BlinkExtensionsWithFlagSetTest() {
+    feature_list_.InitAndEnableFeature(
+        chromeos::features::kCrosIsolatedWebAppSetShape);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(BlinkExtensionsWithFlagSetTest,
+                       IsolatedWebAppCanAccessExtensions) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      InstallIsolatedWebAppAndReturnUrlInfo(profile());
+  content::RenderFrameHost* frame = OpenApp(url_info.app_id());
+
+  EXPECT_EQ(true, content::EvalJs(frame, "'chromeos' in window"));
+  EXPECT_EQ(true,
+            content::EvalJs(frame, "'isolatedWebApp' in window.chromeos"));
+}
+
+IN_PROC_BROWSER_TEST_F(BlinkExtensionsWithFlagSetTest,
+                       IsolatedWebAppChildWindowCanAccessExtensions) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      InstallIsolatedWebAppAndReturnUrlInfo(profile());
+
+  content::RenderFrameHost* frame = OpenApp(url_info.app_id());
+
+  content::WebContentsAddedObserver child_observer;
+  ASSERT_TRUE(content::ExecJs(frame, "window.open('/')"));
+  content::WebContents* child_contents = child_observer.GetWebContents();
+  content::WaitForLoadStop(child_contents);
+  ASSERT_TRUE(child_contents);
+
+  ASSERT_EQ(true, content::EvalJs(child_contents, "'chromeos' in window"));
+  ASSERT_EQ(true, content::EvalJs(child_contents,
+                                  "'isolatedWebApp' in window.chromeos"));
+  ASSERT_EQ(true,
+            content::EvalJs(child_contents,
+                            "'setShape' in window.chromeos.isolatedWebApp"));
+}
+
+IN_PROC_BROWSER_TEST_F(BlinkExtensionsWithFlagSetTest,
+                       IsolatedWebAppCanCallSetShape) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      InstallIsolatedWebAppAndReturnUrlInfo(profile());
+  content::RenderFrameHost* frame = OpenApp(url_info.app_id());
+
+  // `setShape` returns a resolved `Promise<undefined>` on success.
+  auto result = content::EvalJs(frame, R"(
+      window.chromeos.isolatedWebApp.setShape([
+        new DOMRect(0, 0, 200, 200)
+      ])
+    )");
+  EXPECT_EQ(base::Value(), result);
+}
+
+IN_PROC_BROWSER_TEST_F(BlinkExtensionsWithFlagSetTest, SetShapeValidation) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      InstallIsolatedWebAppAndReturnUrlInfo(profile());
+  content::RenderFrameHost* frame = OpenApp(url_info.app_id());
+
+  constexpr auto invalid_inputs = base::MakeFixedFlatSet<std::string_view>({
+      // Negative dimension.
+      "[new DOMRect(0, 0, -1, 200)]",
+      "[new DOMRect(0, 0, 200, -1)]",
+      // Infinite location or dimension.
+      "[new DOMRect(Infinity, 0, 200, 200)]",
+      "[new DOMRect(0, Infinity, 200, 200)]",
+      "[new DOMRect(0, 0, Infinity, 200)]",
+      "[new DOMRect(0, 0, 200, Infinity)]",
+      // NaN location or dimension.
+      "[new DOMRect(NaN, 0, 200, 200)]",
+      "[new DOMRect(0, NaN, 200, 200)]",
+      "[new DOMRect(0, 0, NaN, 200)]",
+      "[new DOMRect(0, 0, 200, NaN)]",
+      // Too many rectangles.
+      "Array(10001).fill(new DOMRect(0, 0, 200, 200))",
+  });
+  for (const auto& input : invalid_inputs) {
+    std::string script = base::StrCat({
+        "window.chromeos.isolatedWebApp.setShape(",
+        input,
+        ").catch(error => error.name)",
+    });
+    EXPECT_EQ("TypeError", content::EvalJs(frame, script))
+        << "Failed on input: " << input;
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BlinkExtensionsWithFlagSetTest,
+                       RegularPageCannotAccessExtensions) {
+  std::unique_ptr<net::EmbeddedTestServer> server =
+      CreateAndStartServer(FILE_PATH_LITERAL("web_apps"));
+  auto page_url = server->GetOrigin().GetURL().Resolve("basic.html");
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), page_url));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  // `window.chromeos` is not defined because this is not an IWA.
+  EXPECT_EQ(false, content::EvalJs(web_contents, "'chromeos' in window"));
+}
+
+// Verifies that only IWAs in the allowlist can access the CrOS IWA API.
+using BlinkExtensionsAllowlistTest = web_app::IsolatedWebAppBrowserTestHarness;
+
+IN_PROC_BROWSER_TEST_F(BlinkExtensionsAllowlistTest, ExtensionsAreUndefined) {
+  web_app::IsolatedWebAppUrlInfo url_info =
+      InstallIsolatedWebAppAndReturnUrlInfo(profile());
+  content::RenderFrameHost* app_frame = OpenApp(url_info.app_id());
+
+  // By default, the IWA is not allowlisted and the flag is disabled.
+  EXPECT_EQ(false, content::EvalJs(app_frame, "'chromeos' in window"));
+}
+
+IN_PROC_BROWSER_TEST_F(BlinkExtensionsAllowlistTest,
+                       OnlyAllowlistedIwasCanAccessExtensions) {
+  web_app::IsolatedWebAppUrlInfo allowed_url_info =
+      InstallIsolatedWebAppAndReturnUrlInfo(profile());
+  web_app::IsolatedWebAppUrlInfo non_allowed_url_info =
+      InstallIsolatedWebAppAndReturnUrlInfo(profile());
+
+  // Configure the allowlist to allow only the first IWA.
+  auto allowlist_override = SetAllowlistedCrosIwaApiOriginsForTesting(
+      {allowed_url_info.origin().host()});
+
+  content::RenderFrameHost* allowed_frame = OpenApp(allowed_url_info.app_id());
+  content::RenderFrameHost* non_allowed_frame =
+      OpenApp(non_allowed_url_info.app_id());
+
+  EXPECT_EQ(true, content::EvalJs(allowed_frame, "'chromeos' in window"));
+  EXPECT_EQ(false, content::EvalJs(non_allowed_frame, "'chromeos' in window"));
+
+  // `setShape` returns a resolved `Promise<undefined>` on success.
+  auto result = content::EvalJs(allowed_frame, R"(
+      window.chromeos.isolatedWebApp.setShape([
+        new DOMRect(0, 0, 200, 200)
+      ])
+    )");
+  EXPECT_EQ(base::Value(), result);
+}
+
+}  // namespace ash

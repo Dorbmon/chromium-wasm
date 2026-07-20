@@ -1,0 +1,154 @@
+// Copyright 2015 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.findinpage;
+
+import android.view.ActionMode;
+import android.view.View;
+import android.view.ViewStub;
+import android.widget.FrameLayout;
+
+import org.chromium.base.ObserverList;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.back_press.BackPressManager;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
+import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
+import org.chromium.ui.base.WindowAndroid;
+
+/** Manages the interactions with the find toolbar. */
+@NullMarked
+public class FindToolbarManager implements SideUiObserver {
+    private @Nullable FindToolbar mFindToolbar;
+    private @Nullable SideUiSpecs mSideUiSpecs;
+    private final ViewStub mFindToolbarStub;
+    private final TabModelSelector mTabModelSelector;
+    private final WindowAndroid mWindowAndroid;
+    private final ActionMode.Callback mCallback;
+    private final ObserverList<FindToolbarObserver> mObservers;
+    private final BackPressManager mBackPressManager;
+    private final FrameLayout mSecondaryUiContainer;
+    private final BrowserControlsStateProvider mBrowserControlsStateProvider;
+
+    /**
+     * Creates an instance of a {@link FindToolbarManager}.
+     *
+     * @param findToolbarStub The {@link ViewStub} where for the find toolbar.
+     * @param tabModelSelector The {@link TabModelSelector} for the containing activity.
+     * @param windowAndroid The {@link WindowAndroid} for the containing activity.
+     * @param callback The ActionMode.Callback that will be used when selection occurs on the {@link
+     *     FindToolbar}.
+     * @param backPressManager The {@link BackPressManager} for intercepting back press.
+     * @param secondaryUiContainer The {@link FrameLayout} that will hold the {@link FindResultBar}.
+     * @param browserControlsStateProvider Provider for browser controls state.
+     */
+    public FindToolbarManager(
+            ViewStub findToolbarStub,
+            TabModelSelector tabModelSelector,
+            WindowAndroid windowAndroid,
+            ActionMode.Callback callback,
+            BackPressManager backPressManager,
+            FrameLayout secondaryUiContainer,
+            BrowserControlsStateProvider browserControlsStateProvider) {
+        mFindToolbarStub = findToolbarStub;
+        mTabModelSelector = tabModelSelector;
+        mWindowAndroid = windowAndroid;
+        mCallback = callback;
+        mBackPressManager = backPressManager;
+        mSecondaryUiContainer = secondaryUiContainer;
+        mBrowserControlsStateProvider = browserControlsStateProvider;
+        mObservers = new ObserverList<>();
+    }
+
+    @Override
+    public void onSideUiSpecsChanged(SideUiSpecs sideUiSpecs) {
+        mSideUiSpecs = sideUiSpecs;
+        if (mFindToolbar != null) {
+            mFindToolbar.onSideUiSpecsChanged(sideUiSpecs);
+        }
+    }
+
+    /**
+     * @return Whether the find toolbar is currently showing.
+     */
+    public boolean isShowing() {
+        return mFindToolbar != null && mFindToolbar.getVisibility() == View.VISIBLE;
+    }
+
+    /** Hides the toolbar and clears the selection on the screen. */
+    public void hideToolbar() {
+        hideToolbar(true);
+    }
+
+    /**
+     * Hides the toolbar.
+     * @param clearSelection Whether the selection on the page should be cleared.
+     */
+    public void hideToolbar(boolean clearSelection) {
+        if (mFindToolbar == null) return;
+
+        mFindToolbar.deactivate(clearSelection);
+    }
+
+    /**
+     * Shows the toolbar if it's not already visible otherwise activates.
+     *
+     * TODO(crrev.com/959841): Return a boolean for whether the toolbar was actually shown.
+     */
+    public void showToolbar() {
+        if (mFindToolbar == null) {
+            mFindToolbar = (FindToolbar) mFindToolbarStub.inflate();
+            mFindToolbar.setTabModelSelector(mTabModelSelector);
+            mFindToolbar.setWindowAndroid(mWindowAndroid);
+            mFindToolbar.setActionModeCallbackForTextEdit(mCallback);
+            mFindToolbar.setSecondaryUiContainer(mSecondaryUiContainer);
+            mFindToolbar.setBrowserControlsStateProvider(mBrowserControlsStateProvider);
+            mFindToolbar.setObserver(
+                    new FindToolbarObserver() {
+                        @Override
+                        public void onFindToolbarShown() {
+                            for (FindToolbarObserver observer : mObservers) {
+                                observer.onFindToolbarShown();
+                            }
+                        }
+
+                        @Override
+                        public void onFindToolbarHidden() {
+                            for (FindToolbarObserver observer : mObservers) {
+                                observer.onFindToolbarHidden();
+                            }
+                        }
+                    });
+        }
+        if (mBackPressManager != null) {
+            if (mBackPressManager.has(BackPressHandler.Type.FIND_TOOLBAR)) {
+                mBackPressManager.removeHandler(BackPressHandler.Type.FIND_TOOLBAR);
+            }
+            mBackPressManager.addHandler(mFindToolbar, BackPressHandler.Type.FIND_TOOLBAR);
+        }
+        if (mSideUiSpecs != null) {
+            mFindToolbar.onSideUiSpecsChanged(mSideUiSpecs);
+        }
+        mFindToolbar.activate();
+    }
+
+    /** Sets the find query text string. */
+    public void setFindQuery(String findText) {
+        assert mFindToolbar != null;
+        mFindToolbar.setFindQuery(findText);
+    }
+
+    /** Add an observer for find in page changes. */
+    public void addObserver(FindToolbarObserver observer) {
+        mObservers.addObserver(observer);
+    }
+
+    /** Remove an observer for find in page changes. */
+    public void removeObserver(FindToolbarObserver observer) {
+        mObservers.removeObserver(observer);
+    }
+}

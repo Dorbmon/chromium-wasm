@@ -1,0 +1,7 @@
+AXWebArea
+++AXGroup AXSubrole=AXLandmarkForm
+++++AXIncrementor
+++++AXStaticText AXValue=' + '
+++++AXIncrementor
+++++AXStaticText AXValue=' ='
+++++AXGroup AXSubrole=AXApplicationStatus

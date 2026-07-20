@@ -1,0 +1,39 @@
+Name: Sentencepiece
+Short Name: sentencepiece
+URL: https://github.com/google/sentencepiece
+Version: 0dfa26997af6d7dd0d22c0bbfaf6a806cd8e98c0
+Revision: 0dfa26997af6d7dd0d22c0bbfaf6a806cd8e98c0
+Update Mechanism: Manual
+Date: 2026-04-23
+License: BSD-3-Clause, Apache-2.0, MIT
+License File: LICENSE
+Security Critical: Yes
+Shipped: yes
+CPEPrefix: cpe:/a:google:sentencepiece
+
+Description:
+SentencePiece is an unsupervised text tokenizer and detokenizer mainly for
+Neural Network-based text generation systems where the vocabulary size is
+predetermined prior to the neural model training. SentencePiece implements
+subword units (e.g., byte-pair-encoding (BPE) [Sennrich et al.] and unigram
+language model [Kudo.]) with the extension of direct training from raw
+sentences. SentencePiece allows us to make a purely end-to-end system that does
+not depend on language-specific pre/postprocessing.
+
+Making new patches:
+1. git commit changes, be sure to write a helpful commit message
+2. Run `git format-patch -o third_party/sentencepiece/patches/ origin/main third_party/sentencepiece/src/`
+
+Patches:
+* 0001-Avoid-try-catch.patch - Removes the one usage of try/catch.
+* 0002-Fix-absl-includes.patch - Rewrites absl includes from third_party/absl to
+just absl.
+* 0003-Remove-absl-flags.patch - Removes some usage of absl flags which was not
+needed for chromium.
+* 0004-Remove-util-Status.patch - Swaps out the custom util::Status for
+absl::Status.
+* 0005-Update-absl-logging.patch - Prefixes logging statements with ABSL_ to
+avoid conflict with Chrome logging.
+
+In addition the unused data, python, third_party/absl, and
+third_party/protobuf-lite directories were removed.

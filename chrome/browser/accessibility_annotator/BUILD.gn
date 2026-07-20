@@ -1,0 +1,97 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+source_set("accessibility_annotator") {
+  sources = [
+    "accessibility_annotator_backend_factory.h",
+    "accessibility_query_service_factory.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//components/accessibility_annotator/core",
+    "//components/accessibility_annotator/core/annotation_reducer",
+    "//components/autofill/core/browser",
+    "//components/keyed_service/content",
+    "//content/public/browser",
+  ]
+}
+
+# This target is for all non-public files (all .c - including factories and
+# services - and non-public .h).
+source_set("impl") {
+  sources = [
+    "accessibility_annotator_backend_factory.cc",
+    "accessibility_query_service_delegate_impl.cc",
+    "accessibility_query_service_delegate_impl.h",
+    "accessibility_query_service_factory.cc",
+  ]
+  deps = [
+    ":accessibility_annotator",
+    "//chrome/browser:browser_process",
+    "//chrome/browser/account_settings",
+    "//chrome/browser/autofill",
+    "//chrome/browser/history",
+    "//chrome/browser/optimization_guide",
+    "//chrome/browser/page_content_annotations:extraction_service",
+    "//chrome/browser/page_content_annotations:page_embeddings",
+    "//chrome/browser/passage_embeddings",
+    "//chrome/browser/signin",
+    "//chrome/browser/subscription_eligibility",
+    "//chrome/browser/sync",
+    "//chrome/browser/ui",
+    "//components/accessibility_annotator/content/live_tab_context",
+    "//components/accessibility_annotator/core",
+    "//components/accessibility_annotator/core:features",
+    "//components/accessibility_annotator/core/annotation_reducer",
+    "//components/accessibility_annotator/core/annotation_reducer:one_p_resolver",
+    "//components/accessibility_annotator/core/data_models",
+    "//components/accessibility_annotator/core/storage",
+    "//components/autofill/core/browser",
+    "//components/keyed_service/core",
+    "//components/variations/service",
+    "//content/public/browser",
+    "//sql",
+  ]
+  if (!is_android) {
+    deps += [ "//chrome/browser/ui/tabs:tab_strip" ]
+  }
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "accessibility_annotator_backend_factory_unittest.cc" ]
+  deps = [
+    ":accessibility_annotator",
+    ":impl",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/test:test_support",
+    "//components/accessibility_annotator/core:features",
+    "//components/autofill/core/browser:test_support",
+    "//components/sync:test_support",
+    "//content/test:test_support",
+    "//testing/gmock",
+    "//testing/gtest",
+  ]
+}
+
+if (!is_android) {
+  source_set("browser_tests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+    sources = [ "accessibility_query_service_delegate_impl_browsertest.cc" ]
+    deps = [
+      ":accessibility_annotator",
+      ":impl",
+      "//base",
+      "//chrome/test:test_support",
+      "//components/page_content_annotations/content:test_support",
+      "//components/passage_embeddings/core:test_support",
+      "//content/test:test_support",
+      "//testing/gtest",
+    ]
+  }
+}

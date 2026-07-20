@@ -1,0 +1,192 @@
+// Copyright 2025 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "base/test/scoped_feature_list.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/test_support/glic_test_environment.h"
+#include "chrome/browser/glic/test_support/glic_test_util.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_command_controller.h"
+#include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/common/pref_names.h"
+#include "chrome/grit/generated_resources.h"
+#include "chrome/test/base/in_process_browser_test.h"
+#include "components/prefs/pref_service.h"
+#include "content/public/test/browser_test.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/models/menu_model.h"
+
+namespace {
+// Returns true if there exists a visible command with specified id and
+// (optionally) label in the given menu. False otherwise.
+bool ContainsCommand(const ui::MenuModel* menu,
+                     int command_id,
+                     std::optional<int> label_id) {
+  CHECK(menu);
+  for (size_t index = 0; index < menu->GetItemCount(); index++) {
+    if (menu->GetCommandIdAt(index) == command_id && menu->IsVisibleAt(index) &&
+        (!label_id.has_value() ||
+         menu->GetLabelAt(index) ==
+             l10n_util::GetStringUTF16(label_id.value()))) {
+      return true;
+    }
+  }
+  return false;
+}
+}  // namespace
+
+class SystemMenuModelBuilderGlicTest : public InProcessBrowserTest {
+ protected:
+  void SetUp() override {
+    scoped_feature_list_.InitWithFeatures(
+        {tabs::kHorizontalTabStripComboButton}, {});
+    InProcessBrowserTest::SetUp();
+  }
+
+ private:
+  glic::GlicTestEnvironment glic_test_env_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Check if the toggle tab search pinning option exists and has the right label
+// based on relevant prefs.
+IN_PROC_BROWSER_TEST_F(SystemMenuModelBuilderGlicTest, ToggleTabSearchPinning) {
+  PrefService* profile_prefs = browser()->profile()->GetPrefs();
+  ui::MenuModel* menu = BrowserView::GetBrowserViewForBrowser(browser())
+                            ->browser_widget()
+                            ->GetSystemMenuModel();
+
+  profile_prefs->SetBoolean(prefs::kTabSearchPinnedToTabstrip, false);
+  EXPECT_TRUE(ContainsCommand(menu, IDC_TAB_SEARCH_TOGGLE_PIN,
+                              IDS_TAB_STRIP_PIN_TAB_SEARCH));
+
+  profile_prefs->SetBoolean(prefs::kTabSearchPinnedToTabstrip, true);
+  EXPECT_TRUE(ContainsCommand(menu, IDC_TAB_SEARCH_TOGGLE_PIN,
+                              IDS_TAB_STRIP_UNPIN_TAB_SEARCH));
+}
+
+// Check if the toggle glic pinning option exists and has the right label based
+// on relevant prefs.
+IN_PROC_BROWSER_TEST_F(SystemMenuModelBuilderGlicTest, ToggleGlicPinning) {
+  PrefService* profile_prefs = browser()->profile()->GetPrefs();
+  ui::MenuModel* menu = BrowserView::GetBrowserViewForBrowser(browser())
+                            ->browser_widget()
+                            ->GetSystemMenuModel();
+
+  profile_prefs->SetInteger(
+      ::prefs::kGeminiSettings,
+      static_cast<int>(glic::prefs::SettingsPolicyState::kDisabled));
+  EXPECT_FALSE(ContainsCommand(menu, IDC_GLIC_TOGGLE_PIN, std::nullopt));
+
+  profile_prefs->SetInteger(
+      ::prefs::kGeminiSettings,
+      static_cast<int>(glic::prefs::SettingsPolicyState::kEnabled));
+  profile_prefs->SetBoolean(glic::prefs::kGlicPinnedToTabstrip, false);
+  EXPECT_TRUE(ContainsCommand(menu, IDC_GLIC_TOGGLE_PIN, IDS_GLIC_PIN));
+
+  profile_prefs->SetInteger(
+      ::prefs::kGeminiSettings,
+      static_cast<int>(glic::prefs::SettingsPolicyState::kEnabled));
+  profile_prefs->SetBoolean(glic::prefs::kGlicPinnedToTabstrip, true);
+  EXPECT_TRUE(ContainsCommand(menu, IDC_GLIC_TOGGLE_PIN, IDS_GLIC_UNPIN));
+}
+
+// Verify that executing the tab search toggle command actually changes the
+// pref.
+IN_PROC_BROWSER_TEST_F(SystemMenuModelBuilderGlicTest,
+                       ExecuteTabSearchToggleCommand) {
+  PrefService* profile_prefs = browser()->profile()->GetPrefs();
+
+  profile_prefs->SetBoolean(prefs::kTabSearchPinnedToTabstrip, false);
+  chrome::ExecuteCommand(browser(), IDC_TAB_SEARCH_TOGGLE_PIN);
+  EXPECT_TRUE(profile_prefs->GetBoolean(prefs::kTabSearchPinnedToTabstrip));
+  chrome::ExecuteCommand(browser(), IDC_TAB_SEARCH_TOGGLE_PIN);
+  EXPECT_FALSE(profile_prefs->GetBoolean(prefs::kTabSearchPinnedToTabstrip));
+}
+
+class SystemMenuModelBuilderTabSearchDisabledTest
+    : public InProcessBrowserTest {
+ protected:
+  void SetUp() override {
+    scoped_feature_list_.InitWithFeatures(
+        {}, {tabs::kHorizontalTabStripComboButton});
+    InProcessBrowserTest::SetUp();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SystemMenuModelBuilderTabSearchDisabledTest,
+                       TabSearchPinningHidden) {
+  ui::MenuModel* menu = BrowserView::GetBrowserViewForBrowser(browser())
+                            ->browser_widget()
+                            ->GetSystemMenuModel();
+
+  EXPECT_FALSE(ContainsCommand(menu, IDC_TAB_SEARCH_TOGGLE_PIN, std::nullopt));
+}
+
+class SystemMenuModelBuilderSimplificationTest : public InProcessBrowserTest {
+ protected:
+  void SetUp() override {
+    scoped_feature_list_.InitAndEnableFeature(features::kMenuSimplification);
+    InProcessBrowserTest::SetUp();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+#if BUILDFLAG(IS_WIN)
+IN_PROC_BROWSER_TEST_F(SystemMenuModelBuilderSimplificationTest,
+                       WindowsMenuOrder) {
+  ui::MenuModel* menu = BrowserView::GetBrowserViewForBrowser(browser())
+                            ->browser_widget()
+                            ->GetSystemMenuModel();
+
+  EXPECT_EQ(menu->GetCommandIdAt(0), IDC_RESTORE_WINDOW);
+  EXPECT_EQ(menu->GetCommandIdAt(1), IDC_MOVE_WINDOW);
+  EXPECT_EQ(menu->GetCommandIdAt(2), IDC_SIZE_WINDOW);
+  EXPECT_EQ(menu->GetCommandIdAt(3), IDC_MINIMIZE_WINDOW);
+  EXPECT_EQ(menu->GetCommandIdAt(4), IDC_MAXIMIZE_WINDOW);
+
+  size_t count = menu->GetItemCount();
+  EXPECT_EQ(menu->GetCommandIdAt(count - 1), IDC_CLOSE_WINDOW);
+}
+#endif
+
+#if BUILDFLAG(IS_LINUX)
+// On Linux the system menu is much more dynamic than that of Windows. In order
+// to accommodate all the variations that could run in the commit queue this
+// test would need to recreate the implementation of
+// SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow. Now that wouldn't be
+// a very good test so instead this one verifies what is known to be stable
+// (the top and botom of the menus).
+IN_PROC_BROWSER_TEST_F(SystemMenuModelBuilderSimplificationTest,
+                       LinuxMenuOrder) {
+  ui::MenuModel* menu = BrowserView::GetBrowserViewForBrowser(browser())
+                            ->browser_widget()
+                            ->GetSystemMenuModel();
+
+  size_t count = menu->GetItemCount();
+  ASSERT_GE(count, 11u);  // Expect at least 11 items total
+
+  // Check top items
+  EXPECT_EQ(menu->GetCommandIdAt(0), IDC_MINIMIZE_WINDOW);
+  EXPECT_EQ(menu->GetCommandIdAt(1), IDC_MAXIMIZE_WINDOW);
+  EXPECT_EQ(menu->GetCommandIdAt(2), IDC_RESTORE_WINDOW);
+  EXPECT_EQ(menu->GetTypeAt(3), ui::MenuModel::TYPE_SEPARATOR);
+  EXPECT_EQ(menu->GetCommandIdAt(4), IDC_NEW_TAB);
+  EXPECT_EQ(menu->GetCommandIdAt(5), IDC_RESTORE_TAB);
+
+  // Check bottom items (reverse order)
+  EXPECT_EQ(menu->GetCommandIdAt(count - 1), IDC_CLOSE_WINDOW);
+  EXPECT_EQ(menu->GetTypeAt(count - 2), ui::MenuModel::TYPE_SEPARATOR);
+}
+#endif

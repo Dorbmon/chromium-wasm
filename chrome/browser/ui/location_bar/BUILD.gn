@@ -1,0 +1,19 @@
+# Copyright 2025 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+assert(!is_android)
+
+source_set("location_bar") {
+  public = [ "location_bar.h" ]
+  sources = [ "location_bar.cc" ]
+
+  public_deps = [
+    "//base",
+    "//ui/base",
+    "//ui/base:types",
+    "//url",
+  ]
+
+  deps = [ "//chrome/browser/ui:layout_constants" ]
+}

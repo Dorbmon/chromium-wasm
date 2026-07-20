@@ -1,0 +1,57 @@
+<!doctype html>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="../navigation-methods/return-value/resources/helpers.js"></script>
+<body>
+<script>
+promise_test(async t => {
+  // Wait for after the load event because window.stop() hangs the test harness
+  // if called before the load event.
+  await new Promise(resolve => window.onload = () => t.step_timeout(resolve, 0));
+}, "Setup");
+
+promise_test(async t => {
+  navigation.onnavigate = e => {
+    e.intercept({ precommitHandler: async () => {} });
+  };
+
+  navigation.onnavigatesuccess = t.unreached_func("navigatesuccess must not fire");
+  let navigateerror_called = false;
+  navigation.onnavigateerror = t.step_func(() => {
+    navigateerror_called = true;
+    assert_equals(location.hash, "");
+  });
+
+  let promises = navigation.navigate("?ShouldNotCommit");
+  assert_equals(location.hash, "");
+
+  window.stop();
+  await assertBothRejectDOM(t, promises, "AbortError");
+
+  assert_equals(location.hash, "");
+  assert_true(navigateerror_called);
+}, " precommitHandler with window.stop() before navigation commit");
+
+promise_test(async t => {
+  navigation.onnavigate = e => {
+    e.intercept({ precommitHandler: async () => {} });
+  };
+
+  navigation.onnavigateerror = t.unreached_func("onnavigateerror must not fire");
+  let navigatesuccess_called = false;
+  navigation.onnavigatesuccess = t.step_func(() => {
+    navigatesuccess_called = true;
+    assert_equals(location.hash, "#ShouldCommit");
+  });
+
+  let promises = navigation.navigate("#ShouldCommit");
+  assert_equals(location.hash, "");
+
+  window.stop();
+  await assertBothFulfillEntryNotAvailable(t, promises);
+
+  assert_equals(location.hash, "#ShouldCommit");
+  assert_true(navigatesuccess_called);
+}, " precommitHandler with window.stop() before fragment navigation commit");
+</script>
+</body>

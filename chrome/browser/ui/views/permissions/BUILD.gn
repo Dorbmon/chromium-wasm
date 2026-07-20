@@ -1,0 +1,15 @@
+# Copyright 2025 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+source_set("permissions") {
+  public = [ "permission_prompt_style.h" ]
+}
+
+source_set("permission_prompt_observer") {
+  sources = [
+    "permission_prompt_observer.cc",
+    "permission_prompt_observer.h",
+  ]
+  deps = [ "//content/public/browser" ]
+}

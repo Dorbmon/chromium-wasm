@@ -1,0 +1,46 @@
+// Copyright 2015 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.components.autofill;
+
+import org.chromium.build.annotations.NullMarked;
+
+/** An interface to handle the touch interaction with an autofill popup or keyboard accessory. */
+@NullMarked
+public interface AutofillDelegate {
+    /** Informs the controller the AutofillPopup or AutofillKeyboardAccessory was hidden. */
+    void dismissed();
+
+    /**
+     * Handles the selection of an Autofill suggestion from an AutofillPopup or
+     * AutofillKeyboardAccessory.
+     *
+     * @param listIndex The index of the selected Autofill suggestion.
+     */
+    void suggestionSelected(int listIndex);
+
+    /**
+     * Handles the selection of an Autofill suggestion, with metadata about whether the suggestion
+     * triggers a loading state.
+     *
+     * @param listIndex The index of the selected Autofill suggestion.
+     * @param showLoadingOnAcceptance True if the suggestion shows a loading UI on acceptance.
+     */
+    default void suggestionSelected(int listIndex, boolean showLoadingOnAcceptance) {
+        suggestionSelected(listIndex);
+    }
+
+    /**
+     * Initiates the deletion process for an item. (A confirm dialog should be shown.)
+     *
+     * @param listIndex The index of the suggestion to delete.
+     */
+    void deleteSuggestion(int listIndex);
+
+    /**
+     * Informs the controller the AutofillPopup received a {@code
+     * TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED} accessibility event.
+     */
+    void accessibilityFocusCleared();
+}

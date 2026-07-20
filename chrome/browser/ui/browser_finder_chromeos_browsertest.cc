@@ -1,0 +1,105 @@
+// Copyright 2019 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "ash/wm/desks/desk.h"
+#include "ash/wm/desks/desks_controller.h"
+#include "ash/wm/desks/desks_test_util.h"
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "content/public/test/browser_test.h"
+
+namespace {
+
+class BrowserFinderWithDesksTest : public InProcessBrowserTest {
+ public:
+  BrowserFinderWithDesksTest() = default;
+
+  BrowserFinderWithDesksTest(const BrowserFinderWithDesksTest&) = delete;
+  BrowserFinderWithDesksTest& operator=(const BrowserFinderWithDesksTest&) =
+      delete;
+
+  ~BrowserFinderWithDesksTest() override = default;
+
+  // InProcessBrowserTest:
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    // Create three desks (two other than the default).
+    auto* desks_controller = ash::DesksController::Get();
+    desks_controller->NewDesk(ash::DesksCreationRemovalSource::kButton);
+    desks_controller->NewDesk(ash::DesksCreationRemovalSource::kButton);
+  }
+
+  void ActivateBrowser(BrowserWindowInterface* browser) {
+    browser->GetWindow()->Activate();
+  }
+
+  Browser* CreateTestBrowser() {
+    Browser* new_browser = CreateBrowser(browser()->profile());
+    new_browser->window()->Show();
+    ActivateBrowser(new_browser);
+    return new_browser;
+  }
+};
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BrowserFinderWithDesksTest, FindAnyBrowser) {
+  auto* desks_controller = ash::DesksController::Get();
+  ASSERT_EQ(3u, desks_controller->desks().size());
+  auto* desk_1 = desks_controller->desks()[0].get();
+  auto* desk_2 = desks_controller->desks()[1].get();
+  auto* desk_3 = desks_controller->desks()[2].get();
+
+  BrowserWindowInterface* const browser_1 = CreateTestBrowser();
+  CloseBrowserSynchronously(browser());
+  SetBrowser(browser_1);
+  auto* window_1 = browser_1->GetWindow()->GetNativeWindow();
+  EXPECT_EQ(
+      1u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
+  EXPECT_TRUE(desk_1->is_active());
+  EXPECT_TRUE(desks_controller->BelongsToActiveDesk(window_1));
+  EXPECT_EQ(browser_1, ui_test_utils::FindAnyBrowser(browser()->profile()));
+
+  // Switch to desk_2 and create a browser there.
+  ash::ActivateDesk(desk_2);
+  EXPECT_TRUE(desk_2->is_active());
+  Browser* browser_2 = CreateTestBrowser();
+  auto* window_2 = browser_2->window()->GetNativeWindow();
+  EXPECT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
+  EXPECT_FALSE(desks_controller->BelongsToActiveDesk(window_1));
+  EXPECT_TRUE(desks_controller->BelongsToActiveDesk(window_2));
+
+  // FindAnyBrowser should return the MRU browser, which is browser_2 in this
+  // case.
+  EXPECT_EQ(browser_2, ui_test_utils::FindAnyBrowser(browser()->profile()));
+
+  // Switch to desk_3, no browsers on this desk, however, FindAnyBrowser
+  // should still return browser_2.
+  ash::ActivateDesk(desk_3);
+  EXPECT_TRUE(desk_3->is_active());
+  EXPECT_FALSE(desks_controller->BelongsToActiveDesk(window_1));
+  EXPECT_FALSE(desks_controller->BelongsToActiveDesk(window_2));
+  EXPECT_EQ(browser_2, ui_test_utils::FindAnyBrowser(browser()->profile()));
+
+  // Switch to desk_1 by activating browser_1. When we switch back to desk_3,
+  // FindAnyBrowser() will return browser_1 as the MRU browser.
+  ash::DeskSwitchAnimationWaiter waiter;
+  ActivateBrowser(browser_1);
+  waiter.Wait();
+
+  EXPECT_TRUE(desk_1->is_active());
+  EXPECT_TRUE(desks_controller->BelongsToActiveDesk(window_1));
+  EXPECT_EQ(browser_1, ui_test_utils::FindAnyBrowser(browser()->profile()));
+
+  ash::ActivateDesk(desk_3);
+  EXPECT_TRUE(desk_3->is_active());
+  EXPECT_EQ(browser_1, ui_test_utils::FindAnyBrowser(browser()->profile()));
+}

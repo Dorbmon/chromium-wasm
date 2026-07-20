@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Copyright 2025 The Chromium Authors
+Use of this source code is governed by a BSD-style license that can be
+found in the LICENSE file.
+-->
+<merge
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <org.chromium.chrome.browser.omnibox.fusebox.FuseboxAttachmentRecyclerView
+        android:id="@+id/location_bar_attachments"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:orientation="horizontal"
+        android:requiresFadingEdge="horizontal"
+        android:fadingEdgeLength="8dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp"
+        android:focusable="false"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"/>
+
+    <org.chromium.ui.widget.ChromeImageView
+        android:id="@+id/location_bar_attachments_add"
+        android:layout_width="@dimen/fusebox_button_size"
+        android:layout_height="@dimen/fusebox_button_size"
+        android:visibility="gone"
+        android:padding="@dimen/fusebox_button_padding"
+        android:contentDescription="@string/accessibility_omnibox_open_context_popup"
+        android:src="@drawable/ic_add_round_20dp"
+        android:scaleType="centerInside"
+        android:clickable="true"
+        android:focusable="true"
+        android:clipToOutline="true"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/url_bar"
+        app:tint="@color/default_icon_color_tint_list"/>
+
+    <org.chromium.ui.widget.ButtonCompat
+        style="@style/TextButton"
+        android:id="@+id/fusebox_request_type"
+        android:layout_width="wrap_content"
+        android:layout_height="@dimen/min_touch_target_size"
+        android:visibility="gone"
+        android:contentDescription="@string/accessibility_omnibox_reset_mode"
+        android:drawableStart="@drawable/search_spark_black_24dp"
+        android:drawableEnd="@drawable/btn_close"
+        android:drawablePadding="8dp"
+        android:singleLine="true"
+        android:text="@string/ai_mode_entrypoint_label"
+        android:textAlignment="viewStart"
+        app:layout_constraintStart_toEndOf="@id/location_bar_attachments_add"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/url_bar"
+        app:buttonColor="@color/interactable_chip_bg_color"
+        app:verticalInset="6dp"
+        app:rippleCornerRadius="36dp"/>
+
+    <org.chromium.ui.widget.ChromeImageView
+        android:id="@+id/navigate_button"
+        android:layout_width="@dimen/min_touch_target_size"
+        android:layout_height="@dimen/min_touch_target_size"
+        android:layout_marginEnd="4dp"
+        android:visibility="gone"
+        android:src="@drawable/ic_arrow_forward_blue_24dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:scaleType="centerInside"
+        android:background="@drawable/oval_baseline_primary_50"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/margin_spacer"
+        app:layout_constraintTop_toBottomOf="@id/url_bar"/>
+
+    <org.chromium.ui.widget.ButtonCompat
+        style="@style/OutlinedButton"
+        android:id="@+id/fusebox_activation_chip"
+        android:layout_width="wrap_content"
+        android:layout_height="@dimen/min_touch_target_size"
+        android:visibility="gone"
+        android:contentDescription="@string/starter_pack_ai_mode_action_hint"
+        android:drawableStart="@drawable/search_spark_black_24dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="12dp"
+        android:drawablePadding="8dp"
+        android:singleLine="true"
+        android:text="@string/ai_mode_entrypoint_label"
+        android:textAlignment="viewStart"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:buttonBorderStyle="solid"
+        app:verticalInset="6dp"
+        app:rippleCornerRadius="36dp"/>
+
+</merge>

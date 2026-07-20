@@ -1,0 +1,58 @@
+// Copyright 2025 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Message format for the MojoLPM fuzzer for the DomStorage interface.
+
+syntax = "proto2";
+
+package content.fuzzing.dom_storage.proto;
+
+import "third_party/blink/public/mojom/dom_storage/storage_area.mojom.mojolpm.proto";
+
+enum OriginId {
+  ORIGIN_A = 0;       // https://example.com
+  ORIGIN_B = 1;       // https://other.com
+  ORIGIN_OPAQUE = 2;  // opaque origin
+}
+
+enum RendererProcessId {
+  RENDERER_A = 67;
+  RENDERER_B = 68;
+}
+
+// Bind a new StorageArea remote for local storage.
+message NewLocalStorageAreaAction {
+  required uint32 id = 1;
+  optional OriginId origin_id = 2;
+  optional RendererProcessId renderer_id = 3 [default = RENDERER_A];
+}
+
+// Bind a new StorageArea remote for session storage.
+message NewSessionStorageAreaAction {
+  required uint32 id = 1;
+  required OriginId origin_id = 2;
+  optional RendererProcessId renderer_id = 3 [default = RENDERER_A];
+}
+
+// Actions that can be performed by the fuzzer.
+message Action {
+  oneof action {
+    NewLocalStorageAreaAction new_local_storage_area = 1;
+    mojolpm.blink.mojom.StorageArea.RemoteAction storage_area_remote_action = 2;
+    NewSessionStorageAreaAction new_session_storage_area = 3;
+  }
+}
+
+// Sequence provides a level of indirection which allows Testcase to compactly
+// express repeated sequences of actions.
+message Sequence {
+  repeated uint32 action_indexes = 1 [packed = true];
+}
+
+// Testcase is the top-level message type interpreted by the fuzzer.
+message Testcase {
+  repeated Action actions = 1;
+  repeated Sequence sequences = 2;
+  repeated uint32 sequence_indexes = 3 [packed = true];
+}

@@ -1,0 +1,253 @@
+// Copyright 2023 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+import '../settings_page/settings_section.js';
+
+import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
+import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
+import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+
+import {loadTimeData} from '../i18n_setup.js';
+import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
+import {AiPageInteractions, MetricsBrowserProxyImpl} from '../metrics_browser_proxy.js';
+import {routes} from '../route.js';
+import {Router} from '../router.js';
+import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
+
+import {getTemplate} from './ai_page.html.js';
+import {FeatureOptInState, SettingsAiPageFeaturePrefName} from './constants.js';
+
+const SettingsAiPageElementBase = SettingsViewMixin(PrefsMixin(PolymerElement));
+export class SettingsAiPageElement extends SettingsAiPageElementBase {
+  static get is() {
+    return 'settings-ai-page';
+  }
+
+  static get template() {
+    return getTemplate();
+  }
+
+  static get properties() {
+    return {
+      showComposeControl_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showComposeControl'),
+      },
+
+      showHistorySearchControl_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showHistorySearchControl'),
+      },
+
+      showPasswordChangeControl_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showPasswordChangeControl'),
+      },
+
+      showAiSuggestionsControl_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showAiSuggestionsControl'),
+      },
+
+      showSkillsSettingPage_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showSkillsSettingPage'),
+      },
+
+      showIndigoControl_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showIndigoControl'),
+      },
+    };
+  }
+
+  declare private showComposeControl_: boolean;
+  declare private showHistorySearchControl_: boolean;
+  declare private showPasswordChangeControl_: boolean;
+  declare private showAiSuggestionsControl_: boolean;
+  declare private showSkillsSettingPage_: boolean;
+  declare private showIndigoControl_: boolean;
+
+  private shouldRecordMetrics_: boolean = true;
+  private metricsBrowserProxy_: MetricsBrowserProxy =
+      MetricsBrowserProxyImpl.getInstance();
+
+  override connectedCallback() {
+    super.connectedCallback();
+    this.maybeLogVisibilityMetrics_();
+  }
+
+  private maybeLogVisibilityMetrics_() {
+    // Only record metrics when the user first navigates to the main AI page.
+    if (!this.shouldRecordMetrics_ ||
+        Router.getInstance().getCurrentRoute() !== routes.AI) {
+      return;
+    }
+    this.shouldRecordMetrics_ = false;
+
+    this.metricsBrowserProxy_.recordBooleanHistogram(
+        'Settings.AiPage.ElementVisibility.HistorySearch',
+        this.showHistorySearchControl_);
+    this.metricsBrowserProxy_.recordBooleanHistogram(
+        'Settings.AiPage.ElementVisibility.Compose', this.showComposeControl_);
+    this.metricsBrowserProxy_.recordBooleanHistogram(
+        'Settings.AiPage.ElementVisibility.PasswordChange',
+        this.showPasswordChangeControl_);
+    this.metricsBrowserProxy_.recordBooleanHistogram(
+        'Settings.AiPage.ElementVisibility.AiSuggestions',
+        this.showAiSuggestionsControl_);
+    this.metricsBrowserProxy_.recordBooleanHistogram(
+        'Settings.AiPage.ElementVisibility.Indigo', this.showIndigoControl_);
+  }
+
+  private onHistorySearchRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.HISTORY_SEARCH_CLICK,
+        'Settings.AiPage.HistorySearchEntryPointClick');
+
+    const router = Router.getInstance();
+    router.navigateTo(router.getRoutes().HISTORY_SEARCH);
+  }
+
+  private onComposeRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.COMPOSE_CLICK,
+        'Settings.AiPage.ComposeEntryPointClick');
+
+    const router = Router.getInstance();
+    router.navigateTo(router.getRoutes().OFFER_WRITING_HELP);
+  }
+
+  private onPasswordChangeRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.PASSWORD_CHANGE_CLICK,
+        'Settings.AiPage.PasswordChangeEntryPointClick');
+
+    OpenWindowProxyImpl.getInstance().openUrl(
+        loadTimeData.getString('passwordChangeSettingsUrl'));
+  }
+
+  private onAiSuggestionsRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.AI_SUGGESTIONS_CLICK,
+        'Settings.AiPage.AiSuggestionsEntryPointClick');
+
+    const router = Router.getInstance();
+    router.navigateTo(router.getRoutes().AI_SUGGESTIONS);
+  }
+
+  private onSkillsRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.SKILLS_CLICK,
+        'Settings.AiPage.SkillsEntryPointClick');
+
+    const router = Router.getInstance();
+    router.navigateTo(router.getRoutes().SKILLS);
+  }
+
+  private onIndigoRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.INDIGO_CLICK,
+        'Settings.AiPage.IndigoEntryPointClick');
+
+    OpenWindowProxyImpl.getInstance().openUrl(
+        loadTimeData.getString('indigoSavedUrl'));
+  }
+
+
+  private recordInteractionMetrics_(
+      interaction: AiPageInteractions, action: string) {
+    this.metricsBrowserProxy_.recordAiPageInteractions(interaction);
+    this.metricsBrowserProxy_.recordAction(action);
+  }
+
+  private getHistorySearchSublabel_(): string {
+    const isAnswersEnabled =
+        loadTimeData.getBoolean('historyEmbeddingsAnswersFeatureEnabled');
+    if (this.getPref(SettingsAiPageFeaturePrefName.HISTORY_SEARCH).value ===
+        FeatureOptInState.ENABLED) {
+      return isAnswersEnabled ?
+          loadTimeData.getString('historySearchWithAnswersSublabelOn') :
+          loadTimeData.getString('historySearchSublabelOn');
+    }
+    return isAnswersEnabled ?
+        loadTimeData.getString('historySearchWithAnswersSublabelOff') :
+        loadTimeData.getString('historySearchSublabelOff');
+  }
+
+  // SettingsViewMixin implementation.
+  override getFocusConfig() {
+    const map = new Map();
+
+    if (routes.HISTORY_SEARCH) {
+      map.set(routes.HISTORY_SEARCH.path, '#historySearchRowV2');
+    }
+
+    if (routes.OFFER_WRITING_HELP) {
+      map.set(routes.OFFER_WRITING_HELP.path, '#composeRowV2');
+    }
+
+    if (routes.AI_SUGGESTIONS) {
+      map.set(routes.AI_SUGGESTIONS.path, '#aiSuggestionsRow');
+    }
+
+    if (routes.SKILLS) {
+      map.set(routes.SKILLS.path, '#skillsRow');
+    }
+
+    return map;
+  }
+
+  // SettingsViewMixin implementation.
+  override getAssociatedControlFor(childViewId: string): HTMLElement {
+    const ids = [
+      'compose',
+      'historySearch',
+      'aiSuggestions',
+      'skills',
+    ];
+    assert(ids.includes(childViewId));
+
+    let triggerId: string|null = null;
+    switch (childViewId) {
+      case 'compose':
+        assert(this.showComposeControl_);
+        triggerId = 'composeRowV2';
+        break;
+      case 'historySearch':
+        assert(this.showHistorySearchControl_);
+        triggerId = 'historySearchRowV2';
+        break;
+      case 'aiSuggestions':
+        assert(this.showAiSuggestionsControl_);
+        triggerId = 'aiSuggestionsRow';
+        break;
+      case 'skills':
+        assert(this.showSkillsSettingPage_);
+        triggerId = 'skillsRow';
+        break;
+      default:
+        assertNotReached();
+    }
+
+    assert(triggerId);
+
+    const control =
+        this.shadowRoot!.querySelector<HTMLElement>(`#${triggerId}`);
+    assert(
+        control,
+        `Failed to find associated control for child '${childViewId}'`);
+    return control;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'settings-ai-page': SettingsAiPageElement;
+  }
+}
+
+customElements.define(SettingsAiPageElement.is, SettingsAiPageElement);

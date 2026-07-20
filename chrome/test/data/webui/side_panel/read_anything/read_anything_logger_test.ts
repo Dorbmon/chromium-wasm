@@ -1,0 +1,650 @@
+// Copyright 2024 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+
+import {LinkStatus, MetricsBrowserProxyImpl, ReadAloudSettingsChange, ReadAnythingLogger, ReadAnythingSettingsChange, ReadAnythingVoiceType, SpeechControls, TimeFrom} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertEquals, assertGT, assertLE, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+
+import {createSpeechSynthesisVoice} from './common.js';
+import {FakeReadingMode} from './fake_reading_mode.js';
+import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+
+suite('Logger', () => {
+  const defaultSpeechStartTime = 0;
+
+  let logger: ReadAnythingLogger;
+  let metrics: TestMetricsBrowserProxy;
+
+  async function assertTimeMetricIsCalled(
+      from: TimeFrom, expectedMetric: string) {
+    metrics.reset();
+    logger.logTimeFrom(from, 100, 175);
+    assertEquals(expectedMetric, (await metrics.whenCalled('recordTime'))[0]);
+  }
+
+  setup(() => {
+    const readingMode = new FakeReadingMode();
+    chrome.readingMode = readingMode as unknown as typeof chrome.readingMode;
+    metrics = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(metrics);
+
+    logger = new ReadAnythingLogger();
+  });
+
+  test('speech controls', async () => {
+    logger.logSpeechControlClick(SpeechControls.NEXT);
+    assertEquals(
+        'Accessibility.ReadAnything.ReadAloudNextButtonSessionCount',
+        await metrics.whenCalled('incrementMetricCount'));
+    metrics.reset();
+
+    logger.logSpeechControlClick(SpeechControls.PLAY);
+    assertEquals(
+        'Accessibility.ReadAnything.ReadAloudPlaySessionCount',
+        await metrics.whenCalled('incrementMetricCount'));
+    metrics.reset();
+
+    logger.logSpeechControlClick(SpeechControls.PLAY_FROM_SELECTION);
+    assertEquals(
+        'Accessibility.ReadAnything.ReadAloudPlayFromSelectionSessionCount',
+        await metrics.whenCalled('incrementMetricCount'));
+  });
+
+  test('with speech logs speech played', () => {
+    logger.logNewPage(true);
+    logger.logNewPage(true);
+
+    assertEquals(0, metrics.getCallCount('recordNewPage'));
+    assertEquals(2, metrics.getCallCount('recordNewPageWithSpeech'));
+  });
+
+  test('without speech logs simple new page', () => {
+    logger.logNewPage(false);
+    logger.logNewPage(false);
+
+    assertEquals(2, metrics.getCallCount('recordNewPage'));
+    assertEquals(0, metrics.getCallCount('recordNewPageWithSpeech'));
+  });
+
+  test('highlight granularity change', () => {
+    logger.logHighlightGranularity(0);
+    logger.logHighlightGranularity(4);
+
+    assertEquals(2, metrics.getCallCount('recordHighlightGranularity'));
+  });
+
+  test('logVoiceLanguageChange', () => {
+    const voice1 = createSpeechSynthesisVoice({lang: 'en-US'});
+    const voice2 = createSpeechSynthesisVoice({lang: 'en-UK'});
+    const voice3 = createSpeechSynthesisVoice({lang: 'fr-FR'});
+
+    // Same language should not log
+    logger.logVoiceLanguageChange(voice1, voice1);
+    assertEquals(0, metrics.getCallCount('recordVoiceLanguageChange'));
+
+    // Different locale, same base language should log (e.g. en-US to en-UK)
+    logger.logVoiceLanguageChange(voice1, voice2);
+    assertEquals(1, metrics.getCallCount('recordVoiceLanguageChange'));
+    metrics.reset();
+
+    // Different language should log
+    logger.logVoiceLanguageChange(voice1, voice3);
+    assertEquals(1, metrics.getCallCount('recordVoiceLanguageChange'));
+    metrics.reset();
+
+    // Null voices should not log
+    logger.logVoiceLanguageChange(null, voice1);
+    logger.logVoiceLanguageChange(voice1, null);
+    logger.logVoiceLanguageChange(null, null);
+    assertEquals(0, metrics.getCallCount('recordVoiceLanguageChange'));
+  });
+
+  test('text settings', async () => {
+    logger.logTextSettingsChange(ReadAnythingSettingsChange.FONT_SIZE_CHANGE);
+    assertEquals(
+        ReadAnythingSettingsChange.FONT_SIZE_CHANGE,
+        await metrics.whenCalled('recordTextSettingsChange'));
+    assertEquals(0, metrics.getCallCount('recordSpeechSettingsChange'));
+    metrics.reset();
+
+    logger.logTextSettingsChange(
+        ReadAnythingSettingsChange.LINKS_ENABLED_CHANGE);
+    assertEquals(
+        ReadAnythingSettingsChange.LINKS_ENABLED_CHANGE,
+        await metrics.whenCalled('recordTextSettingsChange'));
+    assertEquals(0, metrics.getCallCount('recordSpeechSettingsChange'));
+  });
+
+  test('speech settings', async () => {
+    logger.logSpeechSettingsChange(ReadAloudSettingsChange.VOICE_NAME_CHANGE);
+    assertEquals(
+        ReadAloudSettingsChange.VOICE_NAME_CHANGE,
+        await metrics.whenCalled('recordSpeechSettingsChange'));
+    assertEquals(0, metrics.getCallCount('recordTextSettingsChange'));
+    metrics.reset();
+
+    logger.logSpeechSettingsChange(ReadAloudSettingsChange.HIGHLIGHT_CHANGE);
+    assertEquals(
+        ReadAloudSettingsChange.HIGHLIGHT_CHANGE,
+        await metrics.whenCalled('recordSpeechSettingsChange'));
+    assertEquals(0, metrics.getCallCount('recordTextSettingsChange'));
+  });
+
+  test('speech stop source', async () => {
+    const source = 123;
+    logger.logSpeechStopSource(source);
+    assertEquals(source, await metrics.whenCalled('recordSpeechStopSource'));
+  });
+
+  test('empty state', () => {
+    logger.logEmptyState();
+    assertEquals(1, metrics.getCallCount('recordEmptyState'));
+  });
+
+  test('when hidden does not log new page', () => {
+    logger.setHidden(true);
+    logger.logNewPage(false);
+    logger.logNewPage(true);
+
+    assertEquals(0, metrics.getCallCount('recordNewPage'));
+    assertEquals(0, metrics.getCallCount('recordNewPageWithSpeech'));
+
+    logger.setHidden(false);
+    logger.logNewPage(false);
+    logger.logNewPage(true);
+
+    assertEquals(1, metrics.getCallCount('recordNewPage'));
+    assertEquals(1, metrics.getCallCount('recordNewPageWithSpeech'));
+  });
+
+  test('when hidden does not log empty state', () => {
+    logger.setHidden(true);
+    logger.logEmptyState();
+
+    assertEquals(0, metrics.getCallCount('recordEmptyState'));
+
+    logger.setHidden(false);
+    logger.logEmptyState();
+
+    assertEquals(1, metrics.getCallCount('recordEmptyState'));
+  });
+
+  test('line focus session with flag enabled', () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    logger.logLineFocusSession();
+    assertEquals(1, metrics.getCallCount('recordLineFocusSession'));
+  });
+
+  test('line focus session with flag disabled', () => {
+    chrome.readingMode.isLineFocusEnabled = false;
+    logger.logLineFocusSession();
+    assertEquals(0, metrics.getCallCount('recordLineFocusSession'));
+  });
+
+  test('line focus toggled with flag enabled', () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    logger.logLineFocusToggled(true);
+    logger.logLineFocusToggled(false);
+    assertEquals(2, metrics.getCallCount('recordLineFocusToggled'));
+  });
+
+  test('line focus toggled with flag disabled', () => {
+    chrome.readingMode.isLineFocusEnabled = false;
+    logger.logLineFocusToggled(true);
+    logger.logLineFocusToggled(false);
+    assertEquals(0, metrics.getCallCount('recordLineFocusToggled'));
+  });
+
+  test('logVoiceSpeed', () => {
+    logger.logVoiceSpeed(1);
+    logger.logVoiceSpeed(2);
+    logger.logVoiceSpeed(5);
+    logger.logVoiceSpeed(1);
+    logger.logVoiceSpeed(0);
+
+    assertEquals(5, metrics.getCallCount('recordVoiceSpeed'));
+  });
+
+  test('logSpeechPlaySession with natural voice', async () => {
+    logger.logSpeechPlaySession(
+        defaultSpeechStartTime,
+        createSpeechSynthesisVoice({name: 'Grumpy (Natural)'}));
+
+    assertEquals(
+        ReadAnythingVoiceType.NATURAL,
+        await metrics.whenCalled('recordVoiceType'));
+  });
+
+  test('logSpeechPlaySession with espeak voice', async () => {
+    logger.logSpeechPlaySession(
+        defaultSpeechStartTime,
+        createSpeechSynthesisVoice({name: 'eSpeak Happy'}));
+
+    assertEquals(
+        ReadAnythingVoiceType.ESPEAK,
+        await metrics.whenCalled('recordVoiceType'));
+  });
+
+  // <if expr="is_chromeos">
+  test('logSpeechPlaySession with other voice on ChromeOS', async () => {
+    logger.logSpeechPlaySession(
+        defaultSpeechStartTime, createSpeechSynthesisVoice({name: 'Sleepy'}));
+
+    assertEquals(
+        ReadAnythingVoiceType.CHROMEOS,
+        await metrics.whenCalled('recordVoiceType'));
+  });
+  // </if>
+
+  // <if expr="not is_chromeos">
+  test('logSpeechPlaySession with other voice on Desktop', async () => {
+    logger.logSpeechPlaySession(
+        defaultSpeechStartTime, createSpeechSynthesisVoice({name: 'Dopey'}));
+
+    assertEquals(
+        ReadAnythingVoiceType.SYSTEM,
+        await metrics.whenCalled('recordVoiceType'));
+  });
+  // </if>
+
+  test('logSpeechPlaySession supported locale', async () => {
+    const lang = 'pt-BR';
+    logger.logSpeechPlaySession(
+        defaultSpeechStartTime, createSpeechSynthesisVoice({lang}));
+    assertEquals(lang, await metrics.whenCalled('recordLanguage'));
+  });
+
+  test('logSpeechPlaySession supported lang', async () => {
+    const lang = 'it';
+    logger.logSpeechPlaySession(
+        defaultSpeechStartTime, createSpeechSynthesisVoice({lang}));
+    assertEquals(lang, await metrics.whenCalled('recordLanguage'));
+  });
+
+  test(
+      'logSpeechPlaySession unsupported locale with supported base lang',
+      async () => {
+        const lang = 'id-id';
+        logger.logSpeechPlaySession(
+            defaultSpeechStartTime, createSpeechSynthesisVoice({lang}));
+        assertEquals('id', await metrics.whenCalled('recordLanguage'));
+      });
+
+  test(
+      'logSpeechPlaySession supported locale with same base lang', async () => {
+        const lang = 'fr-fr';
+        logger.logSpeechPlaySession(
+            defaultSpeechStartTime, createSpeechSynthesisVoice({lang}));
+        assertEquals('fr', await metrics.whenCalled('recordLanguage'));
+      });
+
+  test('logSpeechPlaySession records time since start', async () => {
+    const startTime = Date.now();
+    const expectedTime = 100;
+
+    await new Promise(resolve => setTimeout(resolve, expectedTime));
+    logger.logSpeechPlaySession(startTime, null);
+
+    // The playback length should be at least the amount of time we waited above
+    // and less than the starting time (i.e. we should be recording length of
+    // time, not timestamp).
+    const recordedTime =
+        await metrics.whenCalled('recordSpeechPlaybackLengthLegacy');
+    assertLE(expectedTime, recordedTime);
+    assertGT(startTime, recordedTime);
+  });
+
+  test(
+      'logSpeechPlaySession records time with page type and view mode',
+      async () => {
+        chrome.readingMode.isImmersiveEnabled = true;
+        const startTime = Date.now();
+
+        chrome.readingMode.isPdf = false;
+        chrome.readingMode.activePresentationState =
+            chrome.readingMode.inImmersiveOverlayPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        let args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.WebPageInFullPage',
+            args[0]);
+
+        metrics.reset();
+        chrome.readingMode.activePresentationState =
+            chrome.readingMode.inSidePanelPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.WebPageInSidePanel',
+            args[0]);
+
+        metrics.reset();
+        chrome.readingMode.isPdf = true;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.PDFInSidePanel',
+            args[0]);
+
+        metrics.reset();
+        chrome.readingMode.activePresentationState =
+            chrome.readingMode.inImmersiveOverlayPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.PDFInFullPage',
+            args[0]);
+      });
+
+  test('logSpeechPlaySession does not record with invalid page type', () => {
+    const startTime = Date.now();
+    chrome.readingMode.isPdf = false;
+    chrome.readingMode.activePresentationState = 10000;
+
+    logger.logSpeechPlaySession(startTime, null);
+
+    assertEquals(0, metrics.getCallCount('recordSpeechPlaybackLength'));
+  });
+
+  test('logTimeFrom uses correct uma name', () => {
+    assertTimeMetricIsCalled(
+        TimeFrom.APP,
+        'Accessibility.ReadAnything.TimeFromAppStartedToConstructor');
+    assertTimeMetricIsCalled(
+        TimeFrom.TOOLBAR,
+        'Accessibility.ReadAnything.TimeFromToolbarStartedToConstructor');
+  });
+
+  test('logTimeFrom logs time difference', async () => {
+    const startTime = 50;
+    const endTime = 125;
+    const expectedTime = endTime - startTime;
+
+    logger.logTimeFrom(TimeFrom.APP, startTime, endTime);
+
+    assertEquals(expectedTime, (await metrics.whenCalled('recordTime'))[1]);
+  });
+
+  test('logLinkStatusCount', async () => {
+    logger.logLinkStatusCount(LinkStatus.NO_HREF, 10);
+    logger.logLinkStatusCount(LinkStatus.NO_MATCH, 20);
+    logger.logLinkStatusCount(LinkStatus.TOO_MANY_MATCHES, 30);
+    logger.logLinkStatusCount(LinkStatus.SUCCESS, 40);
+
+    assertEquals(4, metrics.getCallCount('recordCount'));
+    assertEquals(
+        'Accessibility.ReadAnything.Readability.PageLinksNoHrefCount',
+        (await metrics.whenCalled('recordCount'))[0]);
+  });
+
+  suite('logDistilledPageStructure', () => {
+    let container: HTMLElement;
+
+    setup(() => {
+      container = document.createElement('div');
+      metrics.reset();
+    });
+
+    test('when hidden does not log', () => {
+      logger.setHidden(true);
+      const p = document.createElement('p');
+      p.textContent = 'Paragraph';
+      container.replaceChildren(p);
+      logger.logDistilledPageStructure(container);
+      assertEquals(0, metrics.getCallCount('recordCount'));
+      assertEquals(0, metrics.getCallCount('recordBoolean'));
+    });
+
+    test('logs structure count metrics', () => {
+      const titleHeader = document.createElement('h1');
+      titleHeader.textContent = 'Title';
+
+      const h2Elements = Array.from({length: 2}, (_, i) => {
+        const h2 = document.createElement('h2');
+        h2.textContent = `Header 2.${i + 1}`;
+        return h2;
+      });
+
+      const h4Elements = Array.from({length: 5}, (_, i) => {
+        const h4 = document.createElement('h4');
+        h4.textContent = `Header 4.${i + 1}`;
+        return h4;
+      });
+
+      const firstParagraph = document.createElement('p');
+      firstParagraph.textContent = 'P1';
+      const secondParagraph = document.createElement('p');
+      secondParagraph.textContent = 'P2';
+
+      container.replaceChildren(
+          titleHeader, ...h2Elements, ...h4Elements, firstParagraph,
+          secondParagraph);
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 1 + 2 + 5 = 8
+      // UniqueHeaderTags: h1, h2, h4 = 3
+      // NumberParagraphs: 2
+      // TopTwoHeadersCount (excluding h1): h2 (2) + h4 (5) = 7
+      // TopTwoHeadersHaveMinimumTwoItems: h2 has 2, h4 has 5 -> true
+
+      assertEquals(4, metrics.getCallCount('recordCount'));
+      assertEquals(1, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
+          countCalls[0][0]);
+      assertEquals(2, countCalls[0][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
+          countCalls[1][0]);
+      assertEquals(8, countCalls[1][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
+          countCalls[2][0]);
+      assertEquals(3, countCalls[2][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[3][0]);
+      assertEquals(7, countCalls[3][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(true, booleanCalls[0][1]);
+    });
+
+    test('single h1 excluded from top two calculation', () => {
+      // 1 h1, 2 h2s, 0 h3s, 5 h4s, 2 paragraphs
+      const h1 = document.createElement('h1');
+      h1.textContent = 'Title';
+      const h2s = Array.from({length: 2}, (_, i) => {
+        const h2 = document.createElement('h2');
+        h2.textContent = `Header 2.${i + 1}`;
+        return h2;
+      });
+      const h4s = Array.from({length: 5}, (_, i) => {
+        const h4 = document.createElement('h4');
+        h4.textContent = `Header 4.${i + 1}`;
+        return h4;
+      });
+      const p1 = document.createElement('p');
+      p1.textContent = 'P1';
+      const p2 = document.createElement('p');
+      p2.textContent = 'P2';
+
+      container.replaceChildren(h1, ...h2s, ...h4s, p1, p2);
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 1 + 2 + 5 = 8
+      // UniqueHeaderTags: h1, h2, h4 = 3
+      // NumberParagraphs: 2
+      // TopTwoHeadersCount (excluding h1): h2 (2) + h4 (5) = 7
+      // TopTwoHeadersHaveMinimumTwoItems: h2 has 2, h4 has 5 -> true
+
+      assertEquals(4, metrics.getCallCount('recordCount'));
+      assertEquals(1, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[3][0]);
+      assertEquals(7, countCalls[3][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(true, booleanCalls[0][1]);
+    });
+
+    test('multiple h1s included in top two calculation', () => {
+      // 5 h1s, 5 h2s, 20 h3s, 1 h4, 10 paragraphs
+      const h1s = Array.from({length: 5}, (_, i) => {
+        const h1 = document.createElement('h1');
+        h1.textContent = `H1.${i + 1}`;
+        return h1;
+      });
+      const h2s = Array.from({length: 5}, (_, i) => {
+        const h2 = document.createElement('h2');
+        h2.textContent = `H2.${i + 1}`;
+        return h2;
+      });
+      const h3s = Array.from({length: 20}, () => {
+        const h3 = document.createElement('h3');
+        h3.textContent = 'H3';
+        return h3;
+      });
+      const h4 = document.createElement('h4');
+      h4.textContent = 'H4';
+      const paragraphs = Array.from({length: 10}, () => {
+        const p = document.createElement('p');
+        p.textContent = 'P';
+        return p;
+      });
+
+      container.replaceChildren(...h1s, ...h2s, ...h3s, h4, ...paragraphs);
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 5 + 5 + 20 + 1 = 31
+      // UniqueHeaderTags: h1, h2, h3, h4 = 4
+      // NumberParagraphs: 10
+      // TopTwoHeadersCount (h1 and h2): 5 + 5 = 10
+      // TopTwoHeadersHaveMinimumTwoItems: h1 has 5, h2 has 5 -> true
+
+      assertEquals(4, metrics.getCallCount('recordCount'));
+      assertEquals(1, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[3][0]);
+      assertEquals(10, countCalls[3][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(true, booleanCalls[0][1]);
+    });
+
+    test('zero paragraphs and single header type', () => {
+      // 1 h1, 5 h2s, 0 paragraphs
+      const h1 = document.createElement('h1');
+      h1.textContent = 'Title';
+      const h2s = Array.from({length: 5}, () => {
+        const h2 = document.createElement('h2');
+        h2.textContent = 'H2';
+        return h2;
+      });
+
+      container.replaceChildren(h1, ...h2s);
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 6
+      // UniqueHeaderTags: 2
+      // NumberParagraphs: 0
+      // TopTwoHeadersCount (excluding h1): h2 (5), no second header -> 5
+      // TopTwoHeadersHaveMinimumTwoItems: no second header -> false
+
+      assertEquals(4, metrics.getCallCount('recordCount'));
+      assertEquals(1, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[3][0]);
+      assertEquals(5, countCalls[3][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(false, booleanCalls[0][1]);
+    });
+
+    test('logs pdf structure for pdfs', () => {
+      chrome.readingMode.isPdf = true;
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h1'));
+        container.appendChild(document.createElement('h2'));
+      }
+      container.appendChild(document.createElement('h3'));
+      for (let i = 0; i < 30; i++) {
+        container.appendChild(document.createElement('p'));
+      }
+
+      logger.logDistilledPageStructure(container);
+
+      assertNotEquals(0, metrics.getCallCount('recordCount'));
+      const countCalls = metrics.getArgs('recordCount');
+      const h1Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H1');
+      assertTrue(!!h1Metric);
+      assertEquals(5, h1Metric[1]);
+
+      const h2Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H2');
+      assertTrue(!!h2Metric);
+      assertEquals(5, h2Metric[1]);
+
+      const h3Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H3');
+      assertTrue(!!h3Metric);
+      assertEquals(1, h3Metric[1]);
+
+      const h4Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H4');
+      assertTrue(!!h4Metric);
+      assertEquals(0, h4Metric[1]);
+
+      const h5Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H5');
+      assertTrue(!!h5Metric);
+      assertEquals(0, h5Metric[1]);
+
+      const h6Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H6');
+      assertTrue(!!h6Metric);
+      assertEquals(0, h6Metric[1]);
+
+      const pMetric = countCalls.find(
+          args =>
+              args[0] === 'Accessibility.ReadAnything.Pdf.NumberParagraphs');
+      assertTrue(!!pMetric);
+      assertEquals(30, pMetric[1]);
+
+      const ratioMetric = countCalls.find(
+          args => args[0] ===
+              'Accessibility.ReadAnything.Pdf.HeadingToParagraphRatio');
+      assertTrue(!!ratioMetric);
+      assertNotEquals(0, ratioMetric[1]);
+    });
+  });
+});

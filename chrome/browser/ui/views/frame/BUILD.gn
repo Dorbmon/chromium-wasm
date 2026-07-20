@@ -1,0 +1,76 @@
+# Copyright 2025 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+assert(!is_android)
+
+source_set("shadow") {
+  public = [ "shadow_frame_view.h" ]
+
+  sources = [ "shadow_frame_view.cc" ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/ui/animation",
+    "//chrome/browser/ui/color:color_headers",
+    "//ui/compositor_extra",
+    "//ui/gfx:color_utils",
+    "//ui/views",
+  ]
+}
+
+source_set("immersive_mode_controller") {
+  sources = [ "immersive_mode_controller.h" ]
+
+  deps = [
+    "//base",
+    "//ui/base/unowned_user_data",
+  ]
+}
+
+static_library("test_support") {
+  testonly = true
+
+  sources = [
+    "mock_immersive_mode_controller.cc",
+    "mock_immersive_mode_controller.h",
+  ]
+  deps = [
+    ":immersive_mode_controller",
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//testing/gmock",
+  ]
+}
+
+source_set("toolbar_button_provider") {
+  public = [ "toolbar_button_provider.h" ]
+
+  sources = [ "toolbar_button_provider.cc" ]
+
+  public_deps = [
+    "//chrome/browser/ui/page_action:icon_type",
+    "//ui/actions:actions_headers",
+    "//ui/base/unowned_user_data",
+    "//ui/views",
+  ]
+
+  deps = [ "//chrome/browser/ui/browser_window" ]
+}
+
+source_set("frame") {
+  sources = [
+    "browser_root_view.h",
+    "tab_strip_region_view.cc",
+    "tab_strip_region_view.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/ui/tabs",
+    "//chrome/browser/ui/views",
+    "//components/tab_groups",
+    "//ui/base",
+    "//ui/views",
+  ]
+}

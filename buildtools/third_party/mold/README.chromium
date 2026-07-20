@@ -1,0 +1,16 @@
+Name: Mold Linker
+Short Name: mold
+Version: N/A
+Revision: b3816a58f2e16f12594a483b5451315f17488f20
+Update Mechanism: Manual
+License: MIT
+License File: LICENSE
+Security Critical: No
+Shipped: no
+URL: https://github.com/agrieve/mold
+
+Description:
+A Linux linker optimized for speed.
+
+Local Modifications:
+None

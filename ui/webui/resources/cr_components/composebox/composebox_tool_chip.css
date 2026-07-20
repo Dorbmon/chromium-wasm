@@ -1,0 +1,122 @@
+/* Copyright 2025 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. */
+
+/* #css_wrapper_metadata_start
+ * #type=style-lit
+ * #scheme=relative
+ * #css_wrapper_metadata_end */
+
+#toolEnabledButton {
+  align-items: center;
+  animation: var(--cr-composebox-tool-chip-animation, none);
+  background-color:
+    var(--color-composebox-tool-chip-background);
+  border: none;
+  color: var(--color-searchbox-results-foreground);
+  display: flex;
+  font-size: 13px;
+  gap: 2px;
+  height: var(--cr-composebox-tool-chip-height, 36px);
+  justify-content: center;
+  padding-bottom: 6px;
+  padding-inline: 8px 12px;
+  padding-top: 6px;
+}
+
+:host-context([energy-effect-enabled_]) #toolEnabledButton {
+  --cr-button-ripple-color: transparent;
+  gap: 4px;
+  padding: 8px;
+  padding-inline-start: 12px;
+}
+
+#toolEnabledButton.unremovable {
+  cursor: default;
+  opacity: 0.3;
+}
+
+#toolEnabledButton:focus {
+  outline-offset: -2px;
+}
+
+#toolEnabledButton .icon-container {
+  align-items: center;
+  display: flex;
+  height: 24px;
+  justify-content: center;
+  position: relative;
+  width: 24px;
+}
+
+#toolEnabledButton .tool-icon,
+#toolEnabledButton #leftCloseIcon {
+  height: 16px;
+  position: absolute;
+  transition: opacity 150ms;
+  width: 16px;
+}
+
+#toolEnabledButton #leftCloseIcon {
+  opacity: 0;
+}
+
+#toolEnabledButton:not(.unremovable):hover #leftCloseIcon,
+#toolEnabledButton:not(.unremovable):focus #leftCloseIcon {
+  opacity: 1;
+}
+
+#toolEnabledButton:not(.unremovable):hover .tool-icon,
+#toolEnabledButton:not(.unremovable):focus .tool-icon {
+  opacity: 0;
+}
+
+:host-context([energy-effect-enabled_]) #toolEnabledButton:not(.unremovable):hover .tool-icon,
+:host-context([energy-effect-enabled_]) #toolEnabledButton:not(.unremovable):focus .tool-icon {
+  opacity: 1;
+}
+
+#leftCloseIcon {
+  display: block;
+}
+
+#rightCloseIcon {
+  color: var(--cr-composebox-tool-chip-right-close-icon-color);
+  display: none;
+  height: 10px;
+  padding: 7px;
+  width: 10px;
+}
+
+:host-context([energy-effect-enabled_]) #leftCloseIcon {
+  display: none;
+}
+
+:host-context([energy-effect-enabled_]) #rightCloseIcon {
+  display: block;
+}
+
+#toolEnabledButton.unremovable #rightCloseIcon {
+  display: none;
+}
+
+:host-context([energy-effect-enabled_]) .tool-label {
+  font-size: 14px;
+  line-height: 18px;
+}
+
+:host-context([energy-effect-enabled_]) #toolEnabledButton .tool-icon,
+:host-context([energy-effect-enabled_]) #toolEnabledButton .icon-container {
+  height: 20px;
+  width: 20px;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-in {
+  from { transform: translateX(-20px); }
+  to { transform: translateX(0); }
+}

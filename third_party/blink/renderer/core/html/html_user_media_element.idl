@@ -1,0 +1,21 @@
+// Copyright 2025 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// https://github.com/WICG/PEPC/blob/main/usermedia_element.md
+[RuntimeEnabled=UserMediaElement, Exposed=Window]
+interface HTMLUserMediaElement : HTMLElement {
+  [HTMLConstructor] constructor();
+
+  // Legacy migration support: presence of this attribute indicates the legacy
+  // behavior. When the 'type' attribute is explicitly defined, the element
+  // falls back to legacy behavior, the same as the legacy <permission> element.
+  // TODO(crbug.com/493632110): Deprecate `type` attribute once the adoption of
+  // <usermedia> element is stable.
+  [CEReactions, Reflect] attribute DOMString type;
+  attribute EventHandler onstream;
+
+  static boolean isTypeSupported(DOMString type);
+};
+
+HTMLUserMediaElement includes InPagePermissionMixin;

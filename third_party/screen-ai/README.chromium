@@ -1,0 +1,22 @@
+Name: ScreenAI Library
+Short Name: screen-ai
+URL: https://source.corp.google.com/piper///depot/google3/chrome/accessibility/machine_intelligence/chrome_screen_ai
+Version: 148.04
+Update Mechanism: Manual
+License: Apache-with-LLVM-Exception, Unicode-DFS-2015, FFT2D, MIT, SGI-B-2.0, Apache-2.0, BSD-3-Clause, CC0-1.0, Zlib, CC-BY-4.0, PngSuite, NCSA, BSD-2-Clause, BSD-3-Clause-Attribution, BSD-4-Clause, BSD-4-Clause-UC, SunPro, BSL-1.0, CERN, base64-cpp, bcrypt-Solar-Designer, MPL-2.0, Minpack, BSD-3-Clause-Open-MPI, MIT-Khronos-old, BLAS, Unicode-3.0, ICU, NAIST-2003, Punycode, Unicode-TOU, BSD-Source-Code, IJG, Beerware, X11, WebM-Project-Patent, GPL-3.0-with-autoconf-exception, OpenGLUT, dtoa, Public-Domain-Gutenberg, libpng-2.0, Libpng, Caffe, libtiff, BSD-4.3RENO, CC-BY-3.0
+
+License File: THIRD_PARTY_LICENSES
+Shipped: yes
+Security Critical: no
+License Android Compatible: no
+
+Description:
+Provides ML models for Reading Mode and PDF OCR. Chrome downloads the binary of
+this library via Component Updater on Windows, Linux, and macOS, but Component
+Updater is not supported in browser tests. Only for browser tests on those
+platforms, the binary will be downloaded from CIPD and used in tests.
+
+Note that this binary is shipped to Chrome via Component Updater from
+(only Googler can access the following) go/chrome_screen_ai_source on Windows,
+Linux, and macOS, but metadata for credits is kept in this directory for license
+attribution.

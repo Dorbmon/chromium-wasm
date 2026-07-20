@@ -1,0 +1,564 @@
+// Copyright 2023 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
+#include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
+#include "chrome/common/webui_url_constants.h"
+#include "chrome/test/base/web_ui_mocha_browser_test.h"
+#include "components/contextual_tasks/public/features.h"
+#include "components/history_clusters/core/features.h"
+#include "components/omnibox/browser/aim_eligibility_service.h"
+#include "components/search/ntp_features.h"
+#include "content/public/test/browser_test.h"
+#include "content/public/test/file_system_chooser_test_helpers.h"
+#include "ui/shell_dialogs/select_file_dialog.h"
+
+class NewTabPageBrowserTest : public WebUIMochaBrowserTest {
+ protected:
+  NewTabPageBrowserTest() {
+    set_test_loader_host(chrome::kChromeUINewTabPageHost);
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{omnibox::kAimServerEligibilityEnabled,
+                               ntp_realbox::kNtpRealboxNext,
+                               contextual_tasks::kContextualTasksContext});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+class NewTabPageNextBrowserTest : public WebUIMochaBrowserTest {
+ protected:
+  NewTabPageNextBrowserTest() {
+    set_test_loader_host(chrome::kChromeUINewTabPageHost);
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{omnibox::kAimServerEligibilityEnabled,
+                              ntp_realbox::kNtpRealboxNext},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+using NewTabPageTest = NewTabPageBrowserTest;
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, MetricsUtils) {
+  RunTest("new_tab_page/metrics_utils_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, VoiceSearchOverlay) {
+  RunTest("new_tab_page/voice_search_overlay_test.js", "mocha.run()");
+}
+
+using NewTabPageNextTest = NewTabPageNextBrowserTest;
+
+IN_PROC_BROWSER_TEST_F(NewTabPageNextTest, Realbox) {
+  RunTest("new_tab_page/realbox_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, RealboxLens) {
+  RunTest("new_tab_page/searchbox_lens_button_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, RealboxSearchbox) {
+  RunTest("new_tab_page/searchbox_ntp_test.js",
+          "runMochaSuite('SearchboxTest');");
+}
+
+// TODO(crbug.com/40933410):  Re-enable once no longer fails.
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, DISABLED_LensForm) {
+  RunTest("new_tab_page/lens_form_test.js", "mocha.run()");
+}
+
+// TODO(crbug.com/40902230): Test is flaky across platforms.
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, DISABLED_LensUploadDialog) {
+  RunTest("new_tab_page/lens_upload_dialog_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, Logo) {
+  RunTest("new_tab_page/logo_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, DoodleShareDialog) {
+  RunTest("new_tab_page/doodle_share_dialog_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, BackgroundManager) {
+  RunTest("new_tab_page/background_manager_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, BackgroundImage) {
+  RunTest("new_tab_page/background_image_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, MiddleSlotPromo) {
+  RunTest("new_tab_page/middle_slot_promo_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ImageProcessor) {
+  RunTest("new_tab_page/image_processor_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, Transparency) {
+  RunTest("new_tab_page/transparency_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxBase) {
+  RunTest("new_tab_page/composebox/composebox_test.js",
+          "runMochaSuite('NewTabPageComposeboxTest')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxV2ForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_test.js",
+          "runMochaSuite('NewTabPageComposeboxTestV2 \\\\(useNtpComposeboxFork = "
+          "true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxV2ForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_test.js",
+          "runMochaSuite('NewTabPageComposeboxTestV2 \\\\(useNtpComposeboxFork = "
+          "false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxResizeObserver) {
+  RunTest("new_tab_page/composebox/composebox_test.js",
+          "runMochaSuite('NewTabPageComposeboxResizeObserverTest')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxSubmit) {
+  RunTest("new_tab_page/composebox/composebox_submit_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxAutocompleteDropdownForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteDropdownTest "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteDropdownForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteDropdownTest "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteKeyboardNavigationForkTrue) {
+  RunTest(
+      "new_tab_page/composebox/composebox_autocomplete_test.js",
+      "runMochaSuite('NewTabPageComposeboxAutocompleteKeyboardNavigationTest "
+      "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteKeyboardNavigationForkFalse) {
+  RunTest(
+      "new_tab_page/composebox/composebox_autocomplete_test.js",
+      "runMochaSuite('NewTabPageComposeboxAutocompleteKeyboardNavigationTest "
+      "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteMatchRemovalForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteMatchRemovalTest "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteMatchRemovalForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteMatchRemovalTest "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteSmartComposeForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteSmartComposeTest "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteSmartComposeForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteSmartComposeTest "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxAutocompleteQueryingForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteQueryingTest "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteQueryingForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteQueryingTest "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxAutocompleteContext) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteContextTest')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteVoiceSearchForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteVoiceSearchTest "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxAutocompleteVoiceSearchForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_autocomplete_test.js",
+          "runMochaSuite('NewTabPageComposeboxAutocompleteVoiceSearchTest "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxContextMenu) {
+  RunTest("new_tab_page/composebox/composebox_context_menu_test.js",
+          "runMochaSuite('NewTabPageComposeboxContextMenuTest')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxContextMenuV2ForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_context_menu_test.js",
+          "runMochaSuite('NewTabPageComposeboxContextMenuTestV2 "
+          "\\\\(useNtpComposeboxFork = "
+          "true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxContextMenuV2ForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_context_menu_test.js",
+          "runMochaSuite('NewTabPageComposeboxContextMenuTestV2 "
+          "\\\\(useNtpComposeboxFork = "
+          "false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadPasteTestV2ForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadPasteTestV2 "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadPasteTestV2ForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadPasteTestV2 "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadContextTest) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadContextTest')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadFileTestV2ForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadFileTestV2 "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadFileTestV2ForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadFileTestV2 "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadToolModeTestV2ForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadToolModeTestV2 "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest,
+                       ComposeboxUploadToolModeTestV2ForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadToolModeTestV2 "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadContextTestV2ForkTrue) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadContextTestV2 "
+          "\\\\(useNtpComposeboxFork = true\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxUploadContextTestV2ForkFalse) {
+  RunTest("new_tab_page/composebox/composebox_upload_test.js",
+          "runMochaSuite('NewTabPageComposeboxUploadContextTestV2 "
+          "\\\\(useNtpComposeboxFork = false\\\\)')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxDragAndDrop) {
+  RunTest("new_tab_page/composebox/composebox_drag_drop_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxFileCarousel) {
+  RunTest("new_tab_page/composebox/file_carousel_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ComposeboxFileThumbnail) {
+  RunTest("new_tab_page/composebox/file_thumbnail_test.js", "mocha.run()");
+}
+
+class NewTabPageFileInputsTest : public NewTabPageTest {
+ public:
+  void SetUpOnMainThread() override {
+    NewTabPageTest::SetUpOnMainThread();
+    ui::SelectFileDialog::SetFactory(
+        std::make_unique<content::FakeSelectFileDialogFactory>(
+            std::vector<base::FilePath>{}));
+  }
+
+  void TearDownOnMainThread() override {
+    ui::SelectFileDialog::SetFactory(nullptr);
+    NewTabPageTest::TearDownOnMainThread();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(NewTabPageFileInputsTest, ComposeboxFileInputs) {
+  RunTest("new_tab_page/composebox/composebox_file_inputs_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ThreadsRail) {
+  RunTest("new_tab_page/composebox/threads_rail_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ActionChips) {
+  RunTest("new_tab_page/action_chips/action_chips_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageTest, ErrorScrim) {
+  RunTest("new_tab_page/composebox/error_scrim_test.js", "mocha.run()");
+}
+
+using NewTabPageNtpPromoTest = NewTabPageBrowserTest;
+
+IN_PROC_BROWSER_TEST_F(NewTabPageNtpPromoTest, IndividualPromosTest) {
+  RunTest("new_tab_page/ntp_promo/individual_promos_test.js", "mocha.run()");
+}
+
+using NewTabPageModulesTest = NewTabPageBrowserTest;
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, ModuleWrapper) {
+  RunTest("new_tab_page/modules/module_wrapper_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, ModulesV2) {
+  RunTest("new_tab_page/modules/modules_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, ModuleHeaderV2) {
+  RunTest("new_tab_page/modules/module_header_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, ModuleDescriptor) {
+  RunTest("new_tab_page/modules/module_descriptor_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, ModuleRegistry) {
+  RunTest("new_tab_page/modules/module_registry_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, InfoDialog) {
+  RunTest("new_tab_page/modules/info_dialog_test.js", "mocha.run()");
+}
+
+#if !defined(OFFICIAL_BUILD)
+// The dummy module is not available in official builds.
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, DummyModule) {
+  RunTest("new_tab_page/modules/dummy/module_test.js", "mocha.run()");
+}
+#endif  // !defined(OFFICIAL_BUILD)
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, Calendar) {
+  RunTest("new_tab_page/modules/calendar/calendar_test.js",
+          "runMochaSuite('NewTabPageModulesCalendarTest general')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, CalendarMetrics) {
+  RunTest("new_tab_page/modules/calendar/calendar_test.js",
+          "runMochaSuite('NewTabPageModulesCalendarTest metrics')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, CalendarEvent) {
+  RunTest("new_tab_page/modules/calendar/calendar_event_test.js",
+          "runMochaSuite('NewTabPageModulesCalendarEventTest general')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, CalendarEventMetrics) {
+  RunTest("new_tab_page/modules/calendar/calendar_event_test.js",
+          "runMochaSuite('NewTabPageModulesCalendarEventTest metrics')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, GoogleCalendarModule) {
+  RunTest("new_tab_page/modules/calendar/google_calendar_module_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, OutlookCalendarModule) {
+  RunTest("new_tab_page/modules/calendar/outlook_calendar_module_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, DriveModuleV2) {
+  RunTest("new_tab_page/modules/file_suggestion/drive_module_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, FileSuggestion) {
+  RunTest("new_tab_page/modules/file_suggestion/file_suggestion_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, MicrosoftFilesModule) {
+  RunTest("new_tab_page/modules/file_suggestion/microsoft_files_module_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, MicrosoftAuthModule) {
+  RunTest("new_tab_page/modules/authentication/microsoft_auth_module_test.js",
+          "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesTest, TabGroupsModule) {
+  RunTest("new_tab_page/modules/tab_groups/module_test.js", "mocha.run()");
+}
+
+using NewTabPageAppTest = NewTabPageBrowserTest;
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, Misc) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest Misc')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, OgbThemingRemoveScrim) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest OgbThemingRemoveScrim')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, OgbScrim) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest OgbScrim')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, Theming) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest Theming')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, Promo) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest Promo')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, Clicks) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest Clicks')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, V2Modules) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest V2Modules')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, CounterfactualModules) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest CounterfactualModules')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, CustomizeChromeSidePanel) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest CustomizeChromeSidePanel')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, LensUploadDialog) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest LensUploadDialog')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, Composebox) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest Composebox')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, ComposeEntryPoint) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest ComposeEntryPoint')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, RealboxNext) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest RealboxNext')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, ActionChips) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest ActionChips')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, ThreadsRail) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest ThreadsRail')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, ReducedMotion) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppReducedMotionTest')");
+}
+
+// TODO(crbug.com/428156129): Re-enable test
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, DISABLED_WallpaperSearch) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest WallpaperSearch')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, MicrosoftAuth) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest MicrosoftAuth')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, NewTabFooter) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest NewTabFooter')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, AutoRemovalToast) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppTest AutoRemovalToast')");
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageAppTest, ContextMenuAnimation) {
+  RunTest("new_tab_page/app_test.js",
+          "runMochaSuite('NewTabPageAppContextMenuAnimationTest')");
+}
+
+class NewTabPageModulesMostRelevantTabResumptionModuleTest
+    : public NewTabPageBrowserTest {
+ protected:
+  NewTabPageModulesMostRelevantTabResumptionModuleTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{ntp_features::
+                                  kNtpMostRelevantTabResumptionModule},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesMostRelevantTabResumptionModuleTest,
+                       Core) {
+  RunTest("new_tab_page/modules/most_relevant_tab_resumption/module_test.js",
+          "runMochaSuite('NewTabPageModulesMostRelevantTabResumptionModuleTest "
+          "Core')");
+}

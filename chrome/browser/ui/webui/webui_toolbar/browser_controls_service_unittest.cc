@@ -1,0 +1,367 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/ui/webui/webui_toolbar/browser_controls_service.h"
+
+#include <memory>
+#include <utility>
+
+#include "base/memory/raw_ptr.h"
+#include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/time/time.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/command_updater.h"
+#include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
+#include "chrome/browser/ui/webui/metrics_reporter/mock_metrics_reporter.h"
+#include "chrome/browser/ui/webui/webui_toolbar/testing/toy_browser.h"
+#include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_test_utils.h"
+#include "chrome/test/base/testing_profile.h"
+#include "components/browser_apis/browser_controls/browser_controls_api.mojom.h"
+#include "content/public/test/browser_task_environment.h"
+#include "content/public/test/test_renderer_host.h"
+#include "content/public/test/web_contents_tester.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
+
+namespace browser_controls_api {
+
+namespace {
+
+using ::testing::_;
+using ::testing::Eq;
+using ::testing::Return;
+using testing::ToyBrowser;
+
+// Measurement marks.
+constexpr char kInputMouseReleaseStartMark[] =
+    "ReloadButton.Input.MouseRelease.Start";
+
+// Histogram names.
+constexpr char kInputToReloadMouseReleaseHistogram[] =
+    "InitialWebUI.ReloadButton.InputToReload.MouseRelease";
+constexpr char kInputToStopMouseReleaseHistogram[] =
+    "InitialWebUI.ReloadButton.InputToStop.MouseRelease";
+
+#if BUILDFLAG(IS_MAC)
+constexpr mojom::EventDispositionFlag control_or_meta_disposition =
+    browser_controls_api::mojom::EventDispositionFlag::kMetaKeyDown;
+#else
+constexpr mojom::EventDispositionFlag control_or_meta_disposition =
+    browser_controls_api::mojom::EventDispositionFlag::kControlKeyDown;
+#endif  // BUILDFLAG(IS_MAC)
+
+class MockBrowserControlsServiceDelegate
+    : public BrowserControlsService::BrowserControlsServiceDelegate {
+ public:
+  MockBrowserControlsServiceDelegate() = default;
+
+  MOCK_METHOD(void, PermitLaunchUrl, (), (override));
+};
+
+// This is really an integration test. We provide a faked environment so that we
+// can have an easily predictable sealed environment to exercise the
+// interactions between our service and dependencies. To validate our
+// integration with "real" browser services, we should utilize browser tests.
+class BrowserControlsServiceTest : public ::testing::Test {
+ public:
+  void SetUp() override {
+    service_ = std::make_unique<BrowserControlsService>(
+        mojo::PendingReceiver<mojom::BrowserControlsService>(),
+        toy_browser_.GetAdapter(), &metrics_reporter_, &delegate_);
+  }
+
+  void TearDown() override { service_.reset(); }
+
+ protected:
+  void ExpectMeasureAndClearMark(const std::string& start_mark,
+                                 base::TimeDelta duration) {
+    EXPECT_CALL(mock_metrics_reporter(),
+                Measure(Eq(start_mark), ::testing::A<base::TimeTicks>(), _))
+        .WillOnce(base::test::RunOnceCallback<2>(duration));
+    EXPECT_CALL(mock_metrics_reporter(), ClearMark(start_mark));
+  }
+
+  ::testing::NiceMock<MockMetricsReporter>& mock_metrics_reporter() {
+    return metrics_reporter_;
+  }
+
+  ToyBrowser& toy_browser() { return toy_browser_; }
+  BrowserControlsService& service() { return *service_; }
+  base::HistogramTester& histogram_tester() { return histogram_tester_; }
+  MockBrowserControlsServiceDelegate& delegate() { return delegate_; }
+
+ private:
+  content::BrowserTaskEnvironment task_environment_;
+  testing::ToyBrowser toy_browser_;
+  ::testing::NiceMock<MockMetricsReporter> metrics_reporter_;
+  std::unique_ptr<BrowserControlsService> service_;
+  base::HistogramTester histogram_tester_;
+  MockBrowserControlsServiceDelegate delegate_;
+};
+
+// Test suite for Reload-related tests.
+using BrowserControlsServiceReloadTest = BrowserControlsServiceTest;
+
+// Tests that calling Reload(false, {}) executes the IDC_RELOAD command and
+// records metrics.
+TEST_F(BrowserControlsServiceReloadTest, ReloadByMouseRelease) {
+  const base::TimeDelta duration = base::Milliseconds(10);
+  ExpectMeasureAndClearMark(kInputMouseReleaseStartMark, duration);
+
+  std::ignore =
+      service().ReloadFromClick(/*bypass_cache=*/false, /*click_flags=*/{});
+
+  EXPECT_EQ(IDC_RELOAD, toy_browser().received_commands().back().command_id);
+
+  histogram_tester().ExpectUniqueTimeSample(kInputToReloadMouseReleaseHistogram,
+                                            duration, 1);
+}
+
+// Tests that calling Reload(false, {middle_button}) executes the
+// IDC_RELOAD with new background tab.
+TEST_F(BrowserControlsServiceReloadTest, ReloadWithMiddleMouseButton) {
+  const base::TimeDelta duration = base::Milliseconds(10);
+  ExpectMeasureAndClearMark(kInputMouseReleaseStartMark, duration);
+
+  std::ignore = service().ReloadFromClick(
+      /*bypass_cache=*/false,
+      /*click_flags=*/{mojom::EventDispositionFlag::kMiddleMouseButton});
+
+  EXPECT_EQ(IDC_RELOAD, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+
+  histogram_tester().ExpectUniqueTimeSample(kInputToReloadMouseReleaseHistogram,
+                                            duration, 1);
+}
+
+TEST_F(BrowserControlsServiceReloadTest, ReloadBypassingCache) {
+  std::ignore =
+      service().ReloadFromClick(/*bypass_cache=*/true, /*click_flags=*/{});
+
+  EXPECT_EQ(1ul, toy_browser().received_commands().size());
+  EXPECT_EQ(IDC_RELOAD_BYPASSING_CACHE,
+            toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Test suite for StopLoad-related tests.
+using BrowserControlsServiceStopLoadTest = BrowserControlsServiceTest;
+
+// Tests that calling StopLoad() executes the IDC_STOP command and records
+// metrics.
+TEST_F(BrowserControlsServiceStopLoadTest, StopLoad) {
+  const base::TimeDelta duration = base::Milliseconds(20);
+  ExpectMeasureAndClearMark(kInputMouseReleaseStartMark, duration);
+
+  std::ignore = service().StopLoad();
+
+  EXPECT_EQ(IDC_STOP, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+            toy_browser().received_commands().back().disposition);
+
+  histogram_tester().ExpectUniqueTimeSample(kInputToStopMouseReleaseHistogram,
+                                            duration, 1);
+}
+
+// Tests that calling Back() with CURRENT_TAB executes the IDC_BACK command
+// with CURRENT_TAB.
+TEST_F(BrowserControlsServiceTest, Back_CurrentTab) {
+  std::ignore = service().Back({});
+  EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Back() with kMiddleMouseButton executes the IDC_BACK
+// command with NEW_BACKGROUND_TAB.
+TEST_F(BrowserControlsServiceTest, Back_MiddleClick) {
+  std::ignore = service().Back(
+      {browser_controls_api::mojom::EventDispositionFlag::kMiddleMouseButton});
+  EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Back() with the platform's background tab modifier
+// executes the IDC_BACK command with NEW_BACKGROUND_TAB. On macOS, Ctrl+Click
+// opens a context menu, so we test Meta+Click instead.
+TEST_F(BrowserControlsServiceTest, Back_MetaOrCtrlClick) {
+  std::ignore = service().Back({control_or_meta_disposition});
+  EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Back() with kShiftKeyDown executes the IDC_BACK command
+// with NEW_WINDOW.
+TEST_F(BrowserControlsServiceTest, Back_ShiftClick) {
+  std::ignore = service().Back(
+      {browser_controls_api::mojom::EventDispositionFlag::kShiftKeyDown});
+  EXPECT_EQ(IDC_BACK, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_WINDOW,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Forward() by default executes the IDC_FORWARD
+// command with CURRENT_TAB.
+TEST_F(BrowserControlsServiceTest, Forward_CurrentTab) {
+  std::ignore = service().Forward({});
+  EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Forward() with kMiddleMouseButton executes the IDC_FORWARD
+// command with NEW_BACKGROUND_TAB.
+TEST_F(BrowserControlsServiceTest, Forward_MiddleClick) {
+  std::ignore = service().Forward(
+      {browser_controls_api::mojom::EventDispositionFlag::kMiddleMouseButton});
+  EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Forward() with the platform's background tab modifier
+// executes the IDC_FORWARD command with NEW_BACKGROUND_TAB. On macOS,
+// Ctrl+Click opens a context menu, so we test Meta+Click instead.
+TEST_F(BrowserControlsServiceTest, Forward_MetaOrCtrlClick) {
+  std::ignore = service().Forward({control_or_meta_disposition});
+  EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Forward() with kShiftKeyDown executes the IDC_FORWARD
+// command with NEW_WINDOW.
+TEST_F(BrowserControlsServiceTest, Forward_ShiftClick) {
+  std::ignore = service().Forward(
+      {browser_controls_api::mojom::EventDispositionFlag::kShiftKeyDown});
+  EXPECT_EQ(IDC_FORWARD, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_WINDOW,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling BackButtonHovered()
+TEST_F(BrowserControlsServiceTest, BackButtonHovered) {
+  EXPECT_FALSE(toy_browser().is_back_button_hovered());
+  std::ignore = service().BackButtonHovered();
+  EXPECT_TRUE(toy_browser().is_back_button_hovered());
+}
+
+// Tests that calling NavigateHome() by default executes the IDC_HOME
+// command with CURRENT_TAB.
+TEST_F(BrowserControlsServiceTest, NavigateHome_CurrentTab) {
+  std::ignore = service().NavigateHome({});
+  EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::CURRENT_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling NavigateHome() with kMiddleMouseButton executes the
+// IDC_HOME command with NEW_BACKGROUND_TAB.
+TEST_F(BrowserControlsServiceTest, NavigateHome_MiddleClick) {
+  std::ignore = service().NavigateHome(
+      {browser_controls_api::mojom::EventDispositionFlag::kMiddleMouseButton});
+  EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling NavigateHome() with the platform's background tab modifier
+// executes the IDC_HOME command with NEW_BACKGROUND_TAB. On macOS,
+// Ctrl+Click opens a context menu, so we test Meta+Click instead.
+TEST_F(BrowserControlsServiceTest, NavigateHome_MetaOrCtrlClick) {
+  std::ignore = service().NavigateHome({control_or_meta_disposition});
+  EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_BACKGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling NavigateHome() with the platform's background tab modifier
+// and the Shift key executes the IDC_HOME command with NEW_FOREGROUND_TAB.
+TEST_F(BrowserControlsServiceTest, NavigateHome_MetaOrCtrlShiftClick) {
+  std::ignore = service().NavigateHome({
+      browser_controls_api::mojom::EventDispositionFlag::kShiftKeyDown,
+      control_or_meta_disposition,
+  });
+  EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling NavigateHome() with kShiftKeyDown executes the IDC_HOME
+// command with NEW_WINDOW.
+TEST_F(BrowserControlsServiceTest, NavigateHome_ShiftClick) {
+  std::ignore = service().NavigateHome(
+      {browser_controls_api::mojom::EventDispositionFlag::kShiftKeyDown});
+  EXPECT_EQ(IDC_HOME, toy_browser().received_commands().back().command_id);
+  EXPECT_EQ(WindowOpenDisposition::NEW_WINDOW,
+            toy_browser().received_commands().back().disposition);
+}
+
+// Tests that calling Navigate() executes the navigate command on the adapter.
+TEST_F(BrowserControlsServiceTest, Navigate) {
+  GURL test_url("https://www.example.test/");
+  std::ignore = service().Navigate(test_url);
+  EXPECT_EQ(1ul, toy_browser().received_urls().size());
+  EXPECT_EQ(test_url, toy_browser().received_urls().back());
+}
+
+TEST_F(BrowserControlsServiceTest, EventFlagsConversion) {
+  using browser_controls_api::mojom::EventDispositionFlag;
+  constexpr auto kTests = std::to_array<std::pair<EventDispositionFlag, int>>(
+      {{EventDispositionFlag::kMiddleMouseButton, ui::EF_MIDDLE_MOUSE_BUTTON},
+       {EventDispositionFlag::kAltKeyDown, ui::EF_ALT_DOWN},
+       {EventDispositionFlag::kMetaKeyDown, ui::EF_COMMAND_DOWN},
+       {EventDispositionFlag::kShiftKeyDown, ui::EF_SHIFT_DOWN},
+       {EventDispositionFlag::kControlKeyDown, ui::EF_CONTROL_DOWN},
+       {EventDispositionFlag::kAltGrKeyDown, ui::EF_ALTGR_DOWN}});
+
+  for (const auto& testcase : kTests) {
+    SCOPED_TRACE(testcase.first);
+    // Test individual flag.
+    {
+      auto result = BrowserControlsService::ToUiEventFlags({testcase.first});
+      ASSERT_TRUE(result.has_value());
+      EXPECT_EQ(*result, testcase.second);
+    }
+
+    // Also in combinations.
+    {
+      auto result = BrowserControlsService::ToUiEventFlags(
+          {testcase.first, EventDispositionFlag::kAltKeyDown});
+      ASSERT_TRUE(result.has_value());
+      EXPECT_EQ(*result, testcase.second | ui::EF_ALT_DOWN);
+    }
+
+    {
+      auto result = BrowserControlsService::ToUiEventFlags(
+          {testcase.first, EventDispositionFlag::kAltKeyDown,
+           EventDispositionFlag::kMiddleMouseButton});
+      ASSERT_TRUE(result.has_value());
+      EXPECT_EQ(*result,
+                testcase.second | ui::EF_ALT_DOWN | ui::EF_MIDDLE_MOUSE_BUTTON);
+    }
+
+    // Now throw in kUnspecified.
+    {
+      auto result = BrowserControlsService::ToUiEventFlags(
+          {testcase.first, EventDispositionFlag::kUnspecified});
+      ASSERT_FALSE(result.has_value());
+      EXPECT_EQ(mojo_base::mojom::Code::kInvalidArgument, result.error()->code);
+    }
+  }
+}
+
+}  // namespace
+
+}  // namespace browser_controls_api

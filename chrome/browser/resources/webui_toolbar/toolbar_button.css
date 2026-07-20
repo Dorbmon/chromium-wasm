@@ -1,0 +1,58 @@
+/* Copyright 2026 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. */
+
+/* #css_wrapper_metadata_start
+ * #type=style-lit
+ * #scheme=relative
+ * #css_wrapper_metadata_end */
+
+:host {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  position: relative;
+  height: var(--toolbar-button-height);
+  width: var(--toolbar-button-height);
+}
+
+cr-icon-button {
+  cursor: default;
+  margin: 0;
+  --cr-icon-button-size: var(--toolbar-button-height);
+  --cr-icon-button-icon-size: var(--toolbar-button-icon-size);
+  --cr-icon-button-fill-color: var(--color-toolbar-button-icon);
+}
+
+cr-icon-button[is-menu-open],
+:host(.anchor-highlight) cr-icon-button {
+  background-color: var(--cr-active-background-color);
+}
+
+/* The "Blue Bar" status indicator that appears when a split is active */
+.status-indicator {
+  background-color: var(--color-toolbar-action-item-engaged,
+      var(--google-blue-600));
+
+  height: var(--split-tabs-indicator-height);
+  width: var(--split-tabs-indicator-width);
+  border-radius: 1px;
+
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+
+  /* Calculated to align with icon bottom */
+  bottom: calc((var(--toolbar-button-height) -
+                var(--toolbar-button-icon-size)) / 2 -
+               var(--split-tabs-indicator-spacing) -
+               var(--split-tabs-indicator-height));
+
+  pointer-events: none; /* Allows clicks to pass through to the button */
+  z-index: 1; /* Renders above the button background */
+}
+
+cr-icon-button[is-activated] {
+  --cr-icon-button-fill-color: var(--color-toolbar-action-item-engaged,
+      var(--google-blue-600));
+}

@@ -1,0 +1,374 @@
+[
+    {
+        "duration": "6.0",
+        "name": "blink_perf.webgl/binding-bind-buffer.html"
+    },
+    {
+        "duration": "0.0",
+        "name": "blink_perf.webgl/binding-buffer-sub-data.html"
+    },
+    {
+        "duration": "3.0",
+        "name": "blink_perf.webgl/binding-draw-arrays.html"
+    },
+    {
+        "duration": "2.0",
+        "name": "blink_perf.webgl/binding-typed-array-uniforms.html"
+    },
+    {
+        "duration": "4.0",
+        "name": "blink_perf.webgpu/async-0-onSubmittedWorkDone-after-no-work.html"
+    },
+    {
+        "duration": "4.0",
+        "name": "blink_perf.webgpu/async-1-map-read-after-no-work.html"
+    },
+    {
+        "duration": "4.0",
+        "name": "blink_perf.webgpu/async-2-map-read-after-unrelated-submit.html"
+    },
+    {
+        "duration": "5.0",
+        "name": "blink_perf.webgpu/async-3-map-read-after-related-submit.html"
+    },
+    {
+        "duration": "4.0",
+        "name": "blink_perf.webgpu/async-map-write-after-related-submit.html"
+    },
+    {
+        "duration": "4.0",
+        "name": "blink_perf.webgpu/binding-draw.html"
+    },
+    {
+        "duration": "4.0",
+        "name": "blink_perf.webgpu/binding-setBindGroup.html"
+    },
+    {
+        "duration": "336.0",
+        "name": "rendering.desktop.notracing/motionmark_ramp_composite"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/gmail_2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/gmail_move_2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/gmail_pinch_2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_canvas_arcs"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_canvas_lines"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_design"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_images"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_leaves"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_multiply"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_paths"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/motionmark_fixed_2_seconds_suits"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/overlay_background_color_css_transitions_page"
+    },
+    {
+        "duration": "18.0",
+        "name": "rendering.desktop/twitter_2018"
+    },
+    {
+        "duration": "14.0",
+        "name": "rendering.desktop/twitter_pinch_2018"
+    },
+    {
+        "duration": "17.0",
+        "name": "rendering.desktop/video_to_hw_accelerated_canvas"
+    },
+    {
+        "duration": "16.0",
+        "name": "rendering.desktop/video_to_sub_texture"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/video_to_sub_texture_flip_and_premultiply"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/video_to_sub_texture_flip_y"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/video_to_sub_texture_premultiply"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/video_to_texture"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_color"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_length_3d"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_length_complex"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_length_simple"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_path"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_shadow"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_transform_complex"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animation_value_type_transform_simple"
+    },
+    {
+        "duration": "16.0",
+        "name": "rendering.desktop/web_animations_many_keyframes"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animations_set_current_time"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animations_simultaneous"
+    },
+    {
+        "duration": "16.0",
+        "name": "rendering.desktop/web_animations_staggered_chaining"
+    },
+    {
+        "duration": "15.0",
+        "name": "rendering.desktop/web_animations_staggered_infinite_iterations"
+    },
+    {
+        "duration": "16.0",
+        "name": "rendering.desktop/web_animations_staggered_triggering_page"
+    },
+    {
+        "duration": "16.0",
+        "name": "rendering.desktop/webgl_to_texture"
+    },
+    {
+        "duration": "10.0",
+        "name": "rendering.desktop/webp_decoding_rgb_and_gpu_rasterization"
+    },
+    {
+        "duration": "10.0",
+        "name": "rendering.desktop/webp_decoding_yuv_and_gpu_rasterization"
+    },
+    {
+        "duration": "13.0",
+        "name": "rendering.desktop/wikipedia_2018"
+    },
+    {
+        "duration": "13.0",
+        "name": "rendering.desktop/wordpress_2018"
+    },
+    {
+        "duration": "8.0",
+        "name": "rendering.desktop/yahoo_answers_2018"
+    },
+    {
+        "duration": "10.0",
+        "name": "rendering.desktop/yahoo_news_2018"
+    },
+    {
+        "duration": "11.0",
+        "name": "rendering.desktop/yahoo_news_pinch_2018"
+    },
+    {
+        "duration": "11.0",
+        "name": "rendering.desktop/yahoo_sports_2018"
+    },
+    {
+        "duration": "11.0",
+        "name": "rendering.desktop/yahoo_sports_pinch_2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/youtube_2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "rendering.desktop/youtube_pinch_2018"
+    },
+    {
+        "duration": "28.0",
+        "name": "system_health.common_desktop/browse:media:googleplaystore:2021"
+    },
+    {
+        "duration": "63.0",
+        "name": "system_health.common_desktop/browse:media:imgur"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/browse:media:youtube:2019"
+    },
+    {
+        "duration": "32.0",
+        "name": "system_health.common_desktop/browse:news:cnn:2021"
+    },
+    {
+        "duration": "41.0",
+        "name": "system_health.common_desktop/browse:news:flipboard:2020"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:news:hackernews:2020"
+    },
+    {
+        "duration": "44.0",
+        "name": "system_health.common_desktop/browse:search:google:2020"
+    },
+    {
+        "duration": "29.0",
+        "name": "system_health.common_desktop/browse:search:google_india:2021"
+    },
+    {
+        "duration": "58.0",
+        "name": "system_health.common_desktop/browse:social:facebook_infinite_scroll:2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/browse:social:tumblr_infinite_scroll:2018"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:tech:discourse_infinite_scroll:2018"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:tools:autocad:2021"
+    },
+    {
+        "duration": "30.0",
+        "name": "system_health.common_desktop/browse:tools:docs_scrolling"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:tools:gmail-compose:2020"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:tools:gmail-labelclick:2020"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:tools:gmail-openconversation:2020"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:tools:gmail-search:2020"
+    },
+    {
+        "duration": "63.0",
+        "name": "system_health.common_desktop/browse:tools:maps:2019"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse:tools:sheets:2019"
+    },
+    {
+        "duration": "3.0",
+        "name": "system_health.common_desktop/browse_accessibility:media:youtube"
+    },
+    {
+        "duration": "23.0",
+        "name": "system_health.common_desktop/browse_accessibility:tech:codesearch:2018"
+    },
+    {
+        "duration": "14.0",
+        "name": "system_health.common_desktop/load:chrome:blank"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/load:media:imgur:2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/load:tools:chat:2020"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/load:tools:docs:2019"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/load:tools:gmail:2019"
+    },
+    {
+        "duration": "15.0",
+        "name": "system_health.common_desktop/load_accessibility:media:wikipedia:2018"
+    },
+    {
+        "duration": "15.0",
+        "name": "system_health.common_desktop/load_accessibility:shopping:amazon:2018"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/long_running:tools:gmail-background"
+    },
+    {
+        "duration": "2.0",
+        "name": "system_health.common_desktop/long_running:tools:gmail-foreground"
+    },
+    {
+        "duration": "42.0",
+        "name": "system_health.common_desktop/play:media:google_play_music"
+    },
+    {
+        "duration": "5.0",
+        "name": "tracing_perftests/_gtest_"
+    },
+    {
+        "duration": "3.0",
+        "name": "load_library_perf_tests/_gtest_"
+    },
+    {
+        "duration": "200.0",
+        "name": "base_perftests/_gtest_"
+    },
+    {
+        "duration": "180.0",
+        "name": "tint_benchmark/_gtest_"
+    }
+]

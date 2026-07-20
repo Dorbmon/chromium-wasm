@@ -1,0 +1,244 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.ui.side_panel_container;
+
+import static org.chromium.chrome.browser.ui.side_panel.SidePanelUtils.log;
+
+import android.app.Activity;
+import android.graphics.Rect;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup.LayoutParams;
+import android.widget.FrameLayout;
+
+import androidx.annotation.Px;
+import androidx.annotation.VisibleForTesting;
+
+import org.chromium.base.Callback;
+import org.chromium.base.ThreadUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.ui.side_panel.SidePanelCoordinatorAndroid;
+import org.chromium.chrome.browser.ui.side_ui.SideUiContainer;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiContainerProperties;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiId;
+import org.chromium.ui.base.ViewUtils;
+
+/** Implementation of {@link SidePanelContainerCoordinator}. */
+@NullMarked
+final class SidePanelContainerCoordinatorImpl
+        implements SidePanelContainerCoordinator, SideUiContainer {
+    private static final String TAG = "SidePanelContainerCoordinatorImpl";
+
+    private static final @AnchorSide int SIDE_PANEL_DEFAULT_ANCHOR_SIDE = AnchorSide.RIGHT;
+
+    private final Activity mParentActivity;
+    private final FrameLayout mContainerView;
+    private final SideUiCoordinator mSideUiCoordinator;
+
+    // TODO(crbug.com/496407828): Use this to notify native side of events like "animation ended".
+    private @Nullable SidePanelCoordinatorAndroid mSidePanelCoordinatorAndroid;
+
+    private @Nullable SidePanelContent mCurrentContent;
+
+    /**
+     * Constructs a concrete implementation of the SidePanelContainerCoordinator interface.
+     *
+     * @param parentActivity Parent Activity that will own this instance.
+     * @param sideUiCoordinator Coordinator for the Side Panel UI anchoring view.
+     */
+    SidePanelContainerCoordinatorImpl(
+            Activity parentActivity, SideUiCoordinator sideUiCoordinator) {
+        log(TAG, "constructor", parentActivity, sideUiCoordinator);
+        mParentActivity = parentActivity;
+        mSideUiCoordinator = sideUiCoordinator;
+        mContainerView =
+                (FrameLayout)
+                        LayoutInflater.from(mParentActivity)
+                                .inflate(R.layout.side_panel_container, /* root= */ null);
+    }
+
+    @Override
+    public void init(SidePanelCoordinatorAndroid sidePanelCoordinatorAndroid) {
+        log(TAG, "init");
+        ThreadUtils.assertOnUiThread();
+        mSidePanelCoordinatorAndroid = sidePanelCoordinatorAndroid;
+        mSideUiCoordinator.registerSideUiContainer(this);
+    }
+
+    @Override
+    public void populateContent(
+            SidePanelContent content,
+            Callback<@Nullable Void> onAnimationFinishedCallback,
+            @Nullable Rect startingBounds,
+            boolean suppressAnimations) {
+        log(TAG, "populateContent", content, startingBounds, suppressAnimations);
+        ThreadUtils.assertOnUiThread();
+        mCurrentContent = content;
+
+        mContainerView.removeAllViews();
+        mContainerView.addView(content.mView);
+
+        // It's fine to always _request_ the max width. The final width will be determined in
+        // determineContainerWidth().
+        @Px int sidePanelMaxWidth = ViewUtils.dpToPx(mParentActivity, WIDE_SIDE_PANEL_WIDTH_DP);
+        mSideUiCoordinator.requestUpdateContainer(
+                new SideUiContainerProperties(
+                        SideUiId.SIDE_PANEL, SIDE_PANEL_DEFAULT_ANCHOR_SIDE, sidePanelMaxWidth),
+                suppressAnimations);
+        // TODO(crbug.com/496407828): Move this around so it actually runs after the animation is
+        //  finished.
+        onAnimationFinishedCallback.onResult(null);
+    }
+
+    @Override
+    public void removeContentAndClose(
+            Callback<@Nullable Void> onAnimationFinishedCallback, boolean suppressAnimations) {
+        log(TAG, "removeContentAndClose", suppressAnimations);
+        ThreadUtils.assertOnUiThread();
+        mSideUiCoordinator.requestUpdateContainer(
+                new SideUiContainerProperties(
+                        SideUiId.SIDE_PANEL, SIDE_PANEL_DEFAULT_ANCHOR_SIDE, /* width= */ 0),
+                suppressAnimations);
+        // TODO(crbug.com/496407828): Move this around so it actually runs after the animation is
+        //  finished.
+        onAnimationFinishedCallback.onResult(null);
+    }
+
+    @Override
+    public boolean isShowing(SidePanelContent sidePanelContent) {
+        log(TAG, "isShowing", sidePanelContent);
+        ThreadUtils.assertOnUiThread();
+        return sidePanelContent == mCurrentContent;
+    }
+
+    @Override
+    public void destroy() {
+        log(TAG, "destroy");
+        ThreadUtils.assertOnUiThread();
+        mSideUiCoordinator.unregisterSideUiContainer(this);
+    }
+
+    @Override
+    public View getView() {
+        log(TAG, "getView");
+        ThreadUtils.assertOnUiThread();
+        return mContainerView;
+    }
+
+    @Override
+    public @Nullable View getContentView() {
+        ThreadUtils.assertOnUiThread();
+        return mCurrentContent != null ? mCurrentContent.mView : null;
+    }
+
+    @Override
+    public @SideUiId int getSideUiId() {
+        return SideUiId.SIDE_PANEL;
+    }
+
+    @Override
+    @Px
+    public int determineContainerWidth(
+            @Px int requestedWidth, @Px int availableWidth, @Px int windowWidth) {
+        log(TAG, "determineContainerWidth", requestedWidth, availableWidth, windowWidth);
+        ThreadUtils.assertOnUiThread();
+
+        if (requestedWidth == 0) {
+            return 0;
+        }
+
+        int availableWidthDp = ViewUtils.pxToDp(mParentActivity, availableWidth);
+        int windowWidthDp = ViewUtils.pxToDp(mParentActivity, windowWidth);
+        int containerWidthDp = determineContainerWidthDp(availableWidthDp, windowWidthDp);
+        return ViewUtils.dpToPx(mParentActivity, containerWidthDp);
+    }
+
+    @Override
+    @Px
+    public int getCurrentWidth() {
+        ThreadUtils.assertOnUiThread();
+
+        int currentWidth = mContainerView.getWidth();
+        log(TAG, "getCurrentWidth", currentWidth);
+
+        return currentWidth;
+    }
+
+    @Override
+    public int getMinWidthDp() {
+        return MIN_SIDE_PANEL_WIDTH_DP;
+    }
+
+    @Override
+    @AnchorSide
+    public int getAnchorSide() {
+        log(TAG, "getAnchorSide");
+        ThreadUtils.assertOnUiThread();
+        return SIDE_PANEL_DEFAULT_ANCHOR_SIDE;
+    }
+
+    @Override
+    public void setWidth(@Px int width) {
+        log(TAG, "setWidth", width);
+        ThreadUtils.assertOnUiThread();
+
+        LayoutParams layoutParams = mContainerView.getLayoutParams();
+        assert layoutParams != null
+                : "setWidth() should be called after the container View is attached";
+        assert layoutParams.height == LayoutParams.MATCH_PARENT
+                : "the container View's height should match its parent";
+
+        if (layoutParams.width != width) {
+            layoutParams.width = width;
+            mContainerView.setLayoutParams(layoutParams);
+        }
+
+        // Remove the content if setting the width the 0 (i.e. hiding the panel).
+        if (width == 0) {
+            mContainerView.removeAllViews();
+            mCurrentContent = null;
+        }
+
+        // TODO(http://crbug.com/488047364): Notify the SidePanelContent View of the width change.
+    }
+
+    @Override
+    public void onContainerResized(@Px int containerWidth) {}
+
+    @Override
+    public void onWindowResized(boolean canShowSideUi) {
+        assert mSidePanelCoordinatorAndroid != null;
+        mSidePanelCoordinatorAndroid.onWindowResized(canShowSideUi);
+    }
+
+    /**
+     * Returns the final width (in dp) of the side panel given the available width in the window.
+     */
+    @VisibleForTesting
+    static int determineContainerWidthDp(int availableWidthDp, int windowWidthDp) {
+        // 1. Check if we can use the fixed, larger width.
+        if (windowWidthDp >= MIN_WINDOW_WIDTH_DP_FOR_WIDE_SIDE_PANEL) {
+            assert availableWidthDp >= WIDE_SIDE_PANEL_WIDTH_DP;
+            return WIDE_SIDE_PANEL_WIDTH_DP;
+        }
+
+        // 2. Check if we can use the fixed, smaller width.
+        if (availableWidthDp >= NARROW_SIDE_PANEL_WIDTH_DP) {
+            return NARROW_SIDE_PANEL_WIDTH_DP;
+        }
+
+        // 3. If we can't use the fixed, smaller width, but the available space is more than the
+        // minimum width, we'll fill the available space.
+        if (availableWidthDp >= MIN_SIDE_PANEL_WIDTH_DP) {
+            return availableWidthDp;
+        }
+
+        // 4. Return 0 if available space can't accommodate the minimum side panel width.
+        return 0;
+    }
+}

@@ -1,0 +1,332 @@
+// Copyright 2024 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/ai/ai_manager.h"
+
+#include <memory>
+
+#include "base/command_line.h"
+#include "base/memory/raw_ptr.h"
+#include "base/task/current_thread.h"
+#include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
+#include "chrome/browser/ai/ai_language_model.h"
+#include "chrome/browser/ai/ai_test_utils.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
+#include "components/keyed_service/core/keyed_service.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/test/fake_model_broker.h"
+#include "components/optimization_guide/core/model_execution/test/mock_on_device_capability.h"
+#include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/core/optimization_guide_switches.h"
+#include "components/optimization_guide/proto/features/classify_api.pb.h"
+#include "components/optimization_guide/proto/string_value.pb.h"
+#include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
+#include "components/policy/core/common/policy_pref_names.h"
+#include "components/prefs/pref_service.h"
+#include "content/public/browser/web_contents.h"
+#include "mojo/public/mojom/base/work_in_progress.mojom.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/mojom/ai/ai_classifier.mojom.h"
+#include "third_party/blink/public/mojom/ai/ai_common.mojom.h"
+#include "third_party/blink/public/mojom/ai/ai_language_model.mojom.h"
+#include "third_party/blink/public/mojom/ai/ai_manager.mojom.h"
+#include "third_party/blink/public/mojom/ai/ai_rewriter.mojom.h"
+#include "third_party/blink/public/mojom/ai/ai_summarizer.mojom.h"
+#include "third_party/blink/public/mojom/ai/ai_writer.mojom.h"
+
+using optimization_guide::MockSession;
+
+using testing::_;
+using testing::AtMost;
+using testing::NiceMock;
+
+namespace {
+
+std::vector<blink::mojom::AILanguageCodePtr> MakeLanguageCodeVector(
+    const std::vector<std::string>& languages) {
+  std::vector<blink::mojom::AILanguageCodePtr> result;
+  for (const auto& language : languages) {
+    result.push_back(blink::mojom::AILanguageCode::New(language));
+  }
+  return result;
+}
+
+class AIManagerTest : public AITestUtils::AITestBase {
+ public:
+  AIManagerTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        blink::features::kAIClassifierAPI);
+  }
+
+ protected:
+  optimization_guide::proto::OnDeviceModelExecutionFeatureConfig CreateConfig()
+      override {
+    optimization_guide::proto::OnDeviceModelExecutionFeatureConfig config;
+    config.set_can_skip_text_safety(true);
+    config.set_feature(optimization_guide::proto::ModelExecutionFeature::
+                           MODEL_EXECUTION_FEATURE_PROMPT_API);
+    return config;
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Tests that involve invalid on-device model file paths should not crash when
+// the associated RFH is destroyed.
+TEST_F(AIManagerTest, NoUAFWithInvalidOnDeviceModelPath) {
+  auto* command_line = base::CommandLine::ForCurrentProcess();
+  command_line->AppendSwitchASCII(
+      optimization_guide::switches::kOnDeviceModelExecutionOverride,
+      "invalid-on-device-model-file-path");
+
+  base::MockCallback<blink::mojom::AIManager::CanCreateLanguageModelCallback>
+      callback;
+  EXPECT_CALL(callback, Run(_)).Times(AtMost(1));
+  ai_manager_->CanCreateLanguageModel(/*options=*/{}, callback.Get());
+
+  // The callback may still be pending, delete the WebContents and destroy the
+  // associated RFH, which should not result in a UAF.
+  DeleteContents();
+
+  task_environment()->RunUntilIdle();
+}
+
+TEST_F(AIManagerTest, CanCreate) {
+  // Model is not downloaded until first session is created, so `CanCreate`
+  // returns `kDownloadable`.
+  // Android hasn't implement other APIs beside CanCreateSummarizer, so only
+  // test CanCreateSummarizer.
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateSummarizer(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(),
+              blink::mojom::ModelAvailabilityCheckResult::kDownloadable);
+  }
+#if !BUILDFLAG(IS_ANDROID)
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateLanguageModel(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(),
+              blink::mojom::ModelAvailabilityCheckResult::kDownloadable);
+  }
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateWriter(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(),
+              blink::mojom::ModelAvailabilityCheckResult::kDownloadable);
+  }
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateRewriter(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(),
+              blink::mojom::ModelAvailabilityCheckResult::kDownloadable);
+  }
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateClassifier(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(),
+              blink::mojom::ModelAvailabilityCheckResult::kDownloadable);
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+}
+
+TEST_F(AIManagerTest, CanCreateNotEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      optimization_guide::features::kOptimizationGuideModelExecution);
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateLanguageModel(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(), blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableFeatureNotEnabled);
+  }
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateWriter(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(), blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableFeatureNotEnabled);
+  }
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateSummarizer(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(), blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableFeatureNotEnabled);
+  }
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateRewriter(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(), blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableFeatureNotEnabled);
+  }
+  {
+    base::test::TestFuture<blink::mojom::ModelAvailabilityCheckResult> future;
+    ai_manager_->CanCreateClassifier(/*options=*/{}, future.GetCallback());
+    EXPECT_EQ(future.Get(), blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableFeatureNotEnabled);
+  }
+}
+
+TEST_F(AIManagerTest, CanCreateEnterprisePolicyDisabled) {
+  SetBuiltInAIAPIsEnterprisePolicy(false);
+  base::MockCallback<
+      base::OnceCallback<void(blink::mojom::ModelAvailabilityCheckResult)>>
+      callback;
+  EXPECT_CALL(callback, Run(blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableEnterprisePolicyDisabled))
+      .Times(6);
+
+  ai_manager_->CanCreateLanguageModel(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateWriter(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateSummarizer(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateRewriter(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateProofreader(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateClassifier(/*options=*/{}, callback.Get());
+  SetBuiltInAIAPIsEnterprisePolicy(true);
+}
+
+TEST_F(AIManagerTest, CanCreateLocalStateEnterprisePolicyDisabled) {
+  SetGenAILocalEnterprisePolicy(false);
+  base::MockCallback<
+      base::OnceCallback<void(blink::mojom::ModelAvailabilityCheckResult)>>
+      callback;
+  EXPECT_CALL(callback, Run(blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableEnterprisePolicyDisabled))
+      .Times(6);
+
+  ai_manager_->CanCreateLanguageModel(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateWriter(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateSummarizer(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateRewriter(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateProofreader(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateClassifier(/*options=*/{}, callback.Get());
+  SetGenAILocalEnterprisePolicy(true);
+}
+
+TEST_F(AIManagerTest, CanCreateLocalStateUserSettingsDisabled) {
+  SetOnDeviceAiUserSetting(false);
+  base::MockCallback<
+      base::OnceCallback<void(blink::mojom::ModelAvailabilityCheckResult)>>
+      callback;
+  EXPECT_CALL(callback, Run(blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableFeatureNotEnabled))
+      .Times(6);
+
+  ai_manager_->CanCreateLanguageModel(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateWriter(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateSummarizer(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateRewriter(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateProofreader(/*options=*/{}, callback.Get());
+  ai_manager_->CanCreateClassifier(/*options=*/{}, callback.Get());
+  SetOnDeviceAiUserSetting(true);
+}
+
+// Test CheckAndFixLanguages templates for LanguageModel.
+TEST_F(AIManagerTest, CheckAndFixLanguagesLanguageModel) {
+  base::flat_set<std::string> enabled = {"en", "es", "ja"};
+  auto make_expected = [](const base::flat_set<std::string>& languages) {
+    auto expected = blink::mojom::AILanguageModelExpected::New();
+    expected->languages.emplace();
+    for (const auto& language : languages) {
+      expected->languages->push_back(
+          blink::mojom::AILanguageCode::New(language));
+    }
+    return expected;
+  };
+
+  auto make_options = [&](const base::flat_set<std::string>& inputs,
+                          const base::flat_set<std::string>& outputs) {
+    auto options = blink::mojom::AILanguageModelCreateOptions::New();
+    options->expected_inputs.emplace();
+    options->expected_inputs->push_back(make_expected(inputs));
+    options->expected_outputs.emplace();
+    options->expected_outputs->push_back(make_expected(outputs));
+    return options;
+  };
+
+  auto options = blink::mojom::AILanguageModelCreateOptions::New();
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({"en", "es-MX"}, {});
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({}, {"en-UK", "es-SP", "ja-JP"});
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({"en", "fr"}, {});
+  EXPECT_FALSE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({"en"}, {"hi"});
+  EXPECT_FALSE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+}
+
+// Test CheckAndFixLanguages templates for Summarizer, Writer, and Rewriter.
+TEST_F(AIManagerTest, CheckAndFixLanguagesWritingAssistance) {
+  base::flat_set<std::string> enabled = {"en", "es", "ja"};
+  auto make_options = [](const std::vector<std::string>& input,
+                         const std::vector<std::string>& context,
+                         const std::string& output) {
+    auto options = blink::mojom::AISummarizerCreateOptions::New();
+    options->expected_input_languages = MakeLanguageCodeVector(input);
+    options->expected_context_languages = MakeLanguageCodeVector(context);
+    options->output_language = blink::mojom::AILanguageCode::New(output);
+    return options;
+  };
+
+  auto options = blink::mojom::AISummarizerCreateOptions::New();
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({}, {}, "");
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  EXPECT_TRUE(options->output_language->code.empty());
+  options = make_options({"en", "es-MX"}, {"ja"}, "en-US");
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({"en-UK", "en-US"}, {"en"}, "");
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  EXPECT_EQ(options->output_language->code, "en-UK");
+  options = make_options({"en", "fr"}, {}, "hi");
+  EXPECT_FALSE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+}
+
+// Test CheckAndFixLanguages templates for Proofreader.
+TEST_F(AIManagerTest, CheckAndFixLanguagesProofreader) {
+  base::flat_set<std::string> enabled = {"en", "es", "ja"};
+  auto make_options = [](const std::vector<std::string>& input,
+                         const std::string& correction_explanation) {
+    auto options = blink::mojom::AIProofreaderCreateOptions::New();
+    options->expected_input_languages = MakeLanguageCodeVector(input);
+    options->correction_explanation_language =
+        blink::mojom::AILanguageCode::New(correction_explanation);
+    return options;
+  };
+
+  auto options = blink::mojom::AIProofreaderCreateOptions::New();
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({}, "");
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  EXPECT_TRUE(options->correction_explanation_language->code.empty());
+  options = make_options({"en", "es-MX", "ja"}, "en-US");
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  options = make_options({"en-UK", "en-US", "en"}, "");
+  EXPECT_TRUE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+  EXPECT_EQ(options->correction_explanation_language->code, "en-UK");
+  options = make_options({"en", "fr"}, "hi");
+  EXPECT_FALSE(
+      ai_manager_->CheckAndFixLanguages(options, "API", enabled, enabled));
+}
+
+}  // namespace

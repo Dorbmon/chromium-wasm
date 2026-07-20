@@ -1,0 +1,184 @@
+// Copyright 2025 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_ROUTE_MATCHING_ROUTE_MAP_H_
+#define THIRD_PARTY_BLINK_RENDERER_CORE_ROUTE_MATCHING_ROUTE_MAP_H_
+
+#include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/route_matching/navigation_phase.h"
+#include "third_party/blink/renderer/core/route_matching/navigation_preposition.h"
+#include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/supplementable.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+
+namespace blink {
+
+class Document;
+class JSONValue;
+class Route;
+class URLPattern;
+
+// TODO(crbug.com/436805487): Document this when we know more.
+//
+// See;
+// https://github.com/WICG/declarative-partial-updates?tab=readme-ov-file#part-2-route-matching
+class CORE_EXPORT RouteMap final : public ScriptWrappable,
+                                   public Supplement<Document> {
+  DEFINE_WRAPPERTYPEINFO();
+
+ public:
+  static const char kSupplementName[];
+
+  struct ParseResult final {
+    // TODO(crbug.com/436805487): Error reporting needs to be specced.
+    enum Status {
+      kSuccess,
+      kSyntaxError,
+      kTypeError,
+    };
+
+    Status status;
+    String message;
+
+    // For `kSuccess` cases (which don't have messages).
+    explicit ParseResult(Status status) : status(status) {
+      CHECK_EQ(status, kSuccess);
+    }
+
+    // For error cases.
+    ParseResult(Status status, String message)
+        : status(status), message(message) {
+      CHECK(status != kSuccess);
+    }
+
+    bool IsSuccess() const { return status == kSuccess; }
+  };
+
+  using MatchCollection = HeapHashSet<WeakMember<Route>>;
+  enum HistoryTraverseType {
+    kNotTraversing,
+    kBack,
+    kForward,
+  };
+
+  explicit RouteMap(Document&);
+
+  // For testing only.
+  RouteMap();
+
+  void Trace(Visitor*) const final;
+
+  Route* get(const String& route_name);
+
+  // Supplement support. Document pointers may be null (in which case null will
+  // be returned).
+  static const RouteMap* Get(const Document*);
+  static RouteMap* Get(Document*);
+  static RouteMap& Ensure(Document&);
+
+  Document& GetDocument() const {
+    Document* document = GetSupplementable();
+    DCHECK(document);
+    return *document;
+  }
+
+  void SetHasHistoryRules() { has_history_rules_ = true; }
+  bool HasHistoryRules() const { return has_history_rules_; }
+  HistoryTraverseType GetHistoryTraverseType() const {
+    return history_traverse_type_;
+  }
+
+  ParseResult ParseAndApplyRoutes(const String& route_map_text);
+
+  void AddRouteFromRule(const String& dashed_ident, URLPattern*);
+  void AddAnonymousRoute(URLPattern*);
+
+  const Route* FindRoute(const String& route_name) const;
+  const Route* FindRoute(const URLPattern*) const;
+
+  // Re-match all routes. Schedule for re-evaluation of CSS rules if something
+  // changed.
+  void UpdateActiveRoutes();
+
+  void GetActiveRoutes(NavigationPreposition, MatchCollection*) const;
+
+  // Set the URLs that we're navigating between at the start of navigation. This
+  // is used to match @route "from" (and "to") rules.
+  void OnNavigationStart(const KURL& previous_url, const KURL& next_url);
+
+  void OnNavigationTraverse(HistoryTraverseType type);
+
+  // The current URL has changed. This is used to match @route "at" and "with"
+  // rules. What was "at" is now "with", and vice versa.
+  void OnNavigationCommitted();
+
+  // Clear the URL that we're navigating between when the navigation is
+  // complete.
+  void OnNavigationDone();
+
+  bool IsActiveNavigation() const {
+    return !previous_url_.IsNull() && !next_url_.IsNull();
+  }
+
+  void OnPreviewStart();
+  void OnPreviewFinished();
+
+  bool IsInPreview() const { return in_preview_; }
+
+  // Return the "from" URL of the current navigation, if any.
+  KURL GetFromURL() const { return previous_url_; }
+
+  // Return the "to" URL of the current navigation, if any.
+  KURL GetToURL() const { return next_url_; }
+
+  // Return the "with" URL of the current navigation, if any.
+  KURL GetWithURL() const;
+
+  // Return the "at" URL of the current navigation, if any.
+  KURL GetAtURL() const;
+
+  NavigationPhase GetPhase() const { return navigation_phase_; }
+
+  // Get the "active navigation URL", given the specified preposition.
+  //
+  // https://drafts.csswg.org/css-navigation-1/#active-navigation-url
+  KURL GetActiveNavigationURL(NavigationPreposition) const;
+
+ private:
+  ParseResult AddPatternToRoute(Route&, const JSONValue&);
+
+  // Update the match status of the route, given the current "at", "from",
+  // "with" and "to" URLs. `routes_needing_event`, if set, will be populated by
+  // the routes whose "at" match status changed, which may be used to fire
+  // "activate" or "deactivate" events if the match status changes.
+  bool UpdateMatchStatus(
+      Route&,
+      HeapVector<Member<Route>>* routes_needing_event = nullptr);
+
+  HeapHashMap<String, Member<Route>> routes_;
+  HeapHashMap<String, Member<Route>> anonymous_routes_;
+
+  // Only set while navigating from one URL to another one.
+  KURL previous_url_;
+  KURL next_url_;
+
+  HistoryTraverseType history_traverse_type_ = kNotTraversing;
+  NavigationPhase navigation_phase_ = NavigationPhase::kInactive;
+  bool has_history_rules_ = false;
+  bool in_preview_ = false;
+
+#if DCHECK_IS_ON()
+  bool is_updating_active_routes_ = false;
+#endif
+};
+
+}  // namespace blink
+
+#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_ROUTE_MATCHING_ROUTE_MAP_H_

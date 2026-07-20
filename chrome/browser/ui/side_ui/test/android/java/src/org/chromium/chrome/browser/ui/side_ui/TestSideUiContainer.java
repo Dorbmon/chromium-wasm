@@ -1,0 +1,109 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.ui.side_ui;
+
+import android.view.View;
+import android.view.ViewGroup.LayoutParams;
+
+import androidx.annotation.Px;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiContainerProperties;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiId;
+
+/** Minimum implementation of {@link SideUiContainer} to allow setting/getting width for tests. */
+@NullMarked
+public final class TestSideUiContainer implements SideUiContainer {
+    public static final @Px int TEST_SIDE_UI_WIDTH = 412;
+
+    public static final @AnchorSide int TEST_ANCHOR_SIDE = AnchorSide.RIGHT;
+
+    /** The last {@code requestedWidth} received by {@link #determineContainerWidth}. */
+    public @Nullable @Px Integer mLastRequestedWidth;
+
+    /** The last {@code availableWidth} received by {@link #determineContainerWidth}. */
+    public @Nullable @Px Integer mLastAvailableWidth;
+
+    /** The last {@code windowWidth} received by {@link #determineContainerWidth}. */
+    public @Nullable @Px Integer mLastWindowWidth;
+
+    /** Width to be returned by {@link #determineContainerWidth}, if not null. */
+    public @Nullable @Px Integer mDeterminedWidth;
+
+    /** Width to be returned by {@link #getMinWidthDp()}. */
+    public int mMinWidthDp;
+
+    private final SideUiCoordinator mSideUiCoordinator;
+    private final View mSideUiContainerView;
+    private final @AnchorSide int mAnchorSide;
+
+    public TestSideUiContainer(SideUiCoordinator sideUiCoordinator, View view) {
+        this(sideUiCoordinator, view, TEST_ANCHOR_SIDE);
+    }
+
+    public TestSideUiContainer(
+            SideUiCoordinator sideUiCoordinator, View view, @AnchorSide int anchorSide) {
+        mSideUiCoordinator = sideUiCoordinator;
+        mSideUiContainerView = view;
+        mAnchorSide = anchorSide;
+    }
+
+    @Override
+    public View getView() {
+        return mSideUiContainerView;
+    }
+
+    @Override
+    public @SideUiId int getSideUiId() {
+        return SideUiId.SIDE_PANEL;
+    }
+
+    @Override
+    public int determineContainerWidth(
+            @Px int requestedWidth, @Px int availableWidth, @Px int windowWidth) {
+        mLastRequestedWidth = requestedWidth;
+        mLastAvailableWidth = availableWidth;
+        mLastWindowWidth = windowWidth;
+
+        return mDeterminedWidth != null ? mDeterminedWidth : requestedWidth;
+    }
+
+    @Override
+    public int getCurrentWidth() {
+        return mSideUiContainerView.getWidth();
+    }
+
+    @Override
+    public int getMinWidthDp() {
+        return mMinWidthDp;
+    }
+
+    @Override
+    @AnchorSide
+    public int getAnchorSide() {
+        return mAnchorSide;
+    }
+
+    @Override
+    public void setWidth(int width) {
+        LayoutParams layoutParams = mSideUiContainerView.getLayoutParams();
+        layoutParams.width = width;
+        mSideUiContainerView.setLayoutParams(layoutParams);
+    }
+
+    @Override
+    public void onContainerResized(@Px int containerWidth) {}
+
+    @Override
+    public void onWindowResized(boolean canShowSideUi) {
+        @Px int requestedSideUiWidth = canShowSideUi ? TEST_SIDE_UI_WIDTH : 0;
+        mSideUiCoordinator.requestUpdateContainer(
+                new SideUiContainerProperties(
+                        SideUiId.SIDE_PANEL, TEST_ANCHOR_SIDE, requestedSideUiWidth),
+                /* suppressAnimations= */ true);
+    }
+}

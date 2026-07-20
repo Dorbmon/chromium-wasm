@@ -1,0 +1,23 @@
+// Copyright 2023 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef COMPONENTS_TRUSTED_VAULT_FEATURES_H_
+#define COMPONENTS_TRUSTED_VAULT_FEATURES_H_
+
+#include "base/feature_list.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
+
+namespace trusted_vault {
+
+
+// TODO(crug.com/425990763): Complete MD5 -> SHA256 migration.
+BASE_DECLARE_FEATURE(kEnableTrustedVaultSHA256);
+
+// Enables the security fix for E2EE rotation proof bypass in Trusted Vault.
+BASE_DECLARE_FEATURE(kE2eeRotationProofBypassFix);
+
+}  // namespace trusted_vault
+
+#endif  // COMPONENTS_TRUSTED_VAULT_FEATURES_H_
