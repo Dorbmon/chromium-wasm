@@ -1,0 +1,660 @@
+{
+  "schema_version": 1,
+  "milestone": "M1",
+  "phase": "M1.0",
+  "source_basis": {
+    "chromium_revision": "24b04c927b23c39cf9c5227cc8dc6f64a744c8e9",
+    "chromium_version": "150.0.7871.181",
+    "m0_commit": "831de29bfdf212c26f61ffbd828e5377732fb2bc",
+    "m0_tag": "wasm-m0-primary-toolchain",
+    "emscripten_version": "5.0.6",
+    "rust_archive": "rust-toolchain-4c4205163abcbd08948b3efab796c543ba1ea687-5-llvmorg-23-init-10931-g20b6ec66.tar.xz",
+    "rust_archive_sha256": "5b4f776f6f308ac5e3f1df35cff546107d7d4843b5414294e74986f2e4dd3196"
+  },
+  "baseline": {
+    "head_descends_from_m0": true,
+    "tracked_workspace_clean": true,
+    "gn_target_count": 29,
+    "gn_input_file_count": 63,
+    "base_target_visible": false,
+    "base_desc_result": "The input //base:base matches no targets, configs or files.",
+    "m0_regressions": {
+      "bootstrap_verify_only": "pass",
+      "gn_gen": "pass",
+      "hello_wasm_build": "pass",
+      "focused_unit_tests": "13_pass",
+      "node_smoke": "pass",
+      "browser_smoke_sandboxed": "pass",
+      "network_disabled_verify": "pass"
+    }
+  },
+  "excluded_state": {
+    "affects_reproducibility": false,
+    "tracked_control_files": [],
+    "control_files_consumed_by_tracked_build_or_test_code": [],
+    "control_paths": [
+      "AGENTS.md",
+      "CODEX_GOAL.md",
+      "LOCAL_ONLY_SETUP.md",
+      "LOCAL_GIT_EXCLUDE_SNIPPET.txt",
+      "FIRST_AGENT_PROMPT.md",
+      "SOURCE_BASIS.md",
+      "build/args.wasm.gn.example",
+      "docs/wasm/ROADMAP.md",
+      "docs/wasm/STATUS.md",
+      "docs/wasm/DECISIONS.md",
+      "docs/wasm/FEATURE_MATRIX.md",
+      "docs/wasm/PORTING_LEDGER.md",
+      "tools/wasm/README.md",
+      "CHROMIUM_WASM_AGENT_PLAN.md",
+      "CHROMIUM_WASM_CODEX_GOAL.md",
+      "CHROMIUM_WASM_CODEX_PLAN.md",
+      "chromium-wasm-agent-pack.zip",
+      "chromium-wasm-codex-goal-pack.zip",
+      ".codex-control/"
+    ],
+    "ignored_generated_state": [
+      {
+        "path": "build/config/gclient_args.gni",
+        "tracked_source": "tools/wasm/gclient_args.gni",
+        "recreated_by": "python3 tools/wasm/bootstrap.py"
+      },
+      {
+        "path": "out/wasm/args.gn",
+        "tracked_source": "tools/wasm/toolchain_manifest.json",
+        "recreated_by": "python3 tools/wasm/bootstrap.py"
+      },
+      {
+        "path": ".cipd/",
+        "tracked_source": "tools/wasm/toolchain.ensure",
+        "recreated_by": "python3 tools/wasm/bootstrap.py"
+      },
+      {
+        "path": "buildtools/linux64/",
+        "tracked_source": "tools/wasm/toolchain.ensure",
+        "recreated_by": "python3 tools/wasm/bootstrap.py"
+      },
+      {
+        "path": "third_party/ninja/",
+        "tracked_source": "tools/wasm/toolchain.ensure",
+        "recreated_by": "python3 tools/wasm/bootstrap.py"
+      },
+      {
+        "path": "third_party/emsdk/",
+        "tracked_source": "tools/wasm/toolchain_manifest.json",
+        "recreated_by": "python3 tools/wasm/bootstrap.py"
+      }
+    ]
+  },
+  "first_m1_1_slice": {
+    "blocking_target": "//tools/wasm:m1_base_smoke",
+    "internal_target": "//base:base_wasm_primitives",
+    "capabilities": [
+      "wall_time",
+      "monotonic_time",
+      "secure_entropy"
+    ],
+    "files": [
+      "BUILD.gn",
+      "base/BUILD.gn",
+      "base/rand_util.h",
+      "base/time/time.h",
+      "base/time/time_wasm.cc",
+      "base/rand_util_wasm.cc",
+      "tools/wasm/BUILD.gn",
+      "tools/wasm/m1_base_smoke.cc",
+      "tools/wasm/toolchain_manifest.json"
+    ],
+    "source_selection_policy": "Expose a narrowly gated Base source set only when enable_chromium_wasm_port and is_wasm are both true; do not classify Wasm as POSIX or Linux."
+  },
+  "blocker_groups": [
+    {
+      "id": "source_selection",
+      "root_cause": "The M0 graph intentionally exposes only the standalone hello target, while Base explicitly rejects Wasm and has no Wasm platform source block.",
+      "entries": [
+        {
+          "id": "BUILD-001",
+          "subsystem": "build",
+          "capability": "m1_target_reachability",
+          "current_source": "BUILD.gn:11-14",
+          "platform_assumption": "The primary Wasm graph ends at //wasm:hello_wasm.",
+          "wasm_plan": "Add each passing M1 smoke label to the opt-in Wasm root group without loading V8, Content, Ozone, or Chrome.",
+          "status": "graph_absent",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BUILD-002",
+          "subsystem": "base",
+          "capability": "focused_base_library",
+          "current_source": "base/BUILD.gn:99-100",
+          "platform_assumption": "Most Wasm toolchains must not build Chromium Base.",
+          "wasm_plan": "Narrow the assertion to permit the explicit Chromium port and add //base:base_wasm_primitives before attempting the full //base target.",
+          "status": "blocked_by_assert",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BUILD-003",
+          "subsystem": "base",
+          "capability": "platform_source_selection",
+          "current_source": "base/BUILD.gn:1034-1060,1691-1708,2424-2443",
+          "platform_assumption": "Platform implementations are selected only for POSIX, Linux, Apple, Android, Fuchsia, or Windows.",
+          "wasm_plan": "Add one explicit Wasm source list, reusing only Emscripten-backed pthread and virtual-filesystem implementations whose semantics are verified.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        }
+      ]
+    },
+    {
+      "id": "base_platform_abi",
+      "root_cause": "Core Base headers define native types only for existing desktop/mobile families even though IS_WASM is intentionally separate from IS_POSIX.",
+      "entries": [
+        {
+          "id": "BASE-ABI-001",
+          "subsystem": "base",
+          "capability": "platform_thread_types",
+          "current_source": "base/threading/platform_thread.h:32-151; base/threading/platform_thread_ref.h:18-54",
+          "platform_assumption": "Thread IDs and handles are Windows, Fuchsia, Apple, or POSIX types.",
+          "wasm_plan": "Define a Wasm thread ID and pthread-backed handle explicitly, then implement creation, join, yield, sleep, and diagnostic naming in platform_thread_wasm.cc.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-ABI-002",
+          "subsystem": "base",
+          "capability": "pthread_synchronization_types",
+          "current_source": "base/synchronization/lock_impl.h:20-145; base/synchronization/condition_variable.h:70-125",
+          "platform_assumption": "pthread_mutex_t and pthread_cond_t are exposed only for POSIX or Fuchsia.",
+          "wasm_plan": "Expose pthread types for Wasm in these ABI headers and deliberately select the generic pthread implementations.",
+          "status": "reusable_after_explicit_selection",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-ABI-003",
+          "subsystem": "base",
+          "capability": "file_descriptor_types",
+          "current_source": "base/files/platform_file.h:22-39; base/files/scoped_file.h:36-107",
+          "platform_assumption": "Integer virtual file descriptors are declared only for POSIX or Fuchsia.",
+          "wasm_plan": "Declare Emscripten VFS descriptors as a Wasm platform-file type without setting IS_POSIX.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-ABI-004",
+          "subsystem": "base",
+          "capability": "path_and_metadata_types",
+          "current_source": "base/files/file_path.h:121-172; base/files/file.h:126-397; base/files/file_enumerator.h:21-259",
+          "platform_assumption": "Narrow string paths and stat metadata are available only to POSIX/Fuchsia.",
+          "wasm_plan": "Add targeted Wasm branches using Emscripten's narrow paths and stat ABI; do not claim persistence.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-ABI-005",
+          "subsystem": "base",
+          "capability": "process_identity_types",
+          "current_source": "base/process/process_handle.h:29-49",
+          "platform_assumption": "A process handle is an OS HANDLE, zx handle, or pid_t.",
+          "wasm_plan": "Use a stable process-local integer identity and keep launch/enumeration explicitly unsupported.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        }
+      ]
+    },
+    {
+      "id": "base_primitives",
+      "root_cause": "The pinned Base implementation has no Wasm-specific providers for time, entropy, threads, paths, files, process data, or system data.",
+      "entries": [
+        {
+          "id": "BASE-TIME-001",
+          "subsystem": "base",
+          "capability": "wall_time",
+          "current_source": "base/time/time.cc:98-106; base/time/time_now_posix.cc:79-93",
+          "platform_assumption": "The current provider is selected from native platform clocks.",
+          "wasm_plan": "Implement TimeNowIgnoringOverride with Emscripten's wall-clock source in base/time/time_wasm.cc.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-TIME-002",
+          "subsystem": "base",
+          "capability": "monotonic_time",
+          "current_source": "base/time/time.cc:219-220; base/time/time_now_posix.cc:100-124",
+          "platform_assumption": "The current provider assumes native clock_gettime constants.",
+          "wasm_plan": "Implement TimeTicks with the pinned runtime monotonic clock, report high resolution accurately, and keep wall time out of elapsed calculations.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-TIME-003",
+          "subsystem": "base",
+          "capability": "thread_cpu_time",
+          "current_source": "base/time/time_now_posix.cc:132-141",
+          "platform_assumption": "CLOCK_THREAD_CPUTIME_ID is available.",
+          "wasm_plan": "Report ThreadTicks support only if the pinned runtime supplies it; otherwise return the API's explicit unsupported state.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-TIME-004",
+          "subsystem": "base",
+          "capability": "high_resolution_timer_behavior",
+          "current_source": "base/time/time.h:1178-1187; platform-specific TimeTicks::GetClock and IsHighResolution implementations",
+          "platform_assumption": "Each native clock provider declares its actual resolution and clock identity.",
+          "wasm_plan": "Add an Emscripten monotonic clock identity, report its real resolution, and verify bounded sleeps and delayed deadlines without borrowing the Linux clock label.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-RAND-001",
+          "subsystem": "base",
+          "capability": "secure_entropy",
+          "current_source": "base/rand_util.cc; base/rand_util_posix.cc",
+          "platform_assumption": "POSIX reads secure bytes from a native entropy source.",
+          "wasm_plan": "Use Emscripten getentropy, backed by Web Crypto or Node crypto, and fail explicitly if unavailable.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-RAND-002",
+          "subsystem": "base",
+          "capability": "nonallocating_random_generator",
+          "current_source": "base/rand_util.h; third_party/boringssl/src/include/openssl/rand.h",
+          "platform_assumption": "The public header unconditionally includes the BoringSSL system-entropy API, but the M1 checkout has not hydrated the BoringSSL gitlink.",
+          "wasm_plan": "Keep the API and use the nonallocating Wasm RandBytes provider behind a targeted build flag instead of requiring BoringSSL for the focused Base gate.",
+          "status": "compile_blocker",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-THREAD-001",
+          "subsystem": "base",
+          "capability": "platform_thread",
+          "current_source": "base/threading/platform_thread_posix.cc",
+          "platform_assumption": "The generic POSIX implementation also manages native scheduling priority and niceness.",
+          "wasm_plan": "Add platform_thread_wasm.cc around Emscripten pthread creation/join/yield/sleep and explicit best-effort names; do not reuse native priority code.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-THREAD-002",
+          "subsystem": "base",
+          "capability": "thread_id_and_name",
+          "current_source": "base/threading/platform_thread_ref.cc; base/threading/thread_id_name_manager.cc",
+          "platform_assumption": "Native thread IDs and enforced OS thread names are available.",
+          "wasm_plan": "Return stable per-pthread IDs and make names explicitly best-effort diagnostics when the host cannot enforce them.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-TLS-001",
+          "subsystem": "base",
+          "capability": "thread_local_storage",
+          "current_source": "base/threading/thread_local_storage_posix.cc",
+          "platform_assumption": "pthread keys and destructors are available.",
+          "wasm_plan": "Select the generic pthread TLS implementation explicitly for Wasm and verify isolation and destruction across workers.",
+          "status": "reusable_after_explicit_selection",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-SYNC-001",
+          "subsystem": "base",
+          "capability": "lock_and_condition_variable",
+          "current_source": "base/synchronization/lock_impl_posix.cc; base/synchronization/condition_variable_posix.cc",
+          "platform_assumption": "pthread mutex and condition-variable semantics are available.",
+          "wasm_plan": "Select the pthread implementations explicitly, with priority inheritance disabled and timeout behavior tested on workers.",
+          "status": "reusable_after_explicit_selection",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-SYNC-002",
+          "subsystem": "base",
+          "capability": "waitable_event",
+          "current_source": "base/synchronization/waitable_event_posix.cc",
+          "platform_assumption": "Lock and ConditionVariable provide the wait/wake substrate.",
+          "wasm_plan": "Select the generic implementation explicitly and verify manual reset, auto reset, timeout, and cross-worker wake.",
+          "status": "reusable_after_explicit_selection",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-PATH-001",
+          "subsystem": "base",
+          "capability": "path_service",
+          "current_source": "base/path_service.cc; base/base_paths_posix.cc",
+          "platform_assumption": "The POSIX provider consults native executable, home, XDG, and temporary directories.",
+          "wasm_plan": "Add base_paths_wasm.cc with explicit Emscripten VFS current, temporary, module, and profile-placeholder paths.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-FILE-001",
+          "subsystem": "base",
+          "capability": "file_io",
+          "current_source": "base/files/file_posix.cc; base/files/file_util_posix.cc",
+          "platform_assumption": "POSIX open/read/write/seek/truncate/fsync/rename/stat calls address a native filesystem.",
+          "wasm_plan": "Reuse only calls whose semantics are supplied by the Emscripten in-memory VFS, selected behind Wasm-specific source files or a documented source list.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-FILE-002",
+          "subsystem": "base",
+          "capability": "file_enumeration",
+          "current_source": "base/files/file_enumerator_posix.cc",
+          "platform_assumption": "Directory iteration and stat use the POSIX ABI.",
+          "wasm_plan": "Deliberately select the implementation after verifying nested directories, metadata, missing paths, and close semantics in MEMFS.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-PROCESS-001",
+          "subsystem": "base",
+          "capability": "process_identity",
+          "current_source": "base/process/process_handle_posix.cc; base/process/process.cc",
+          "platform_assumption": "Process identity and handles are kernel PIDs.",
+          "wasm_plan": "Add process_handle_wasm.cc with one stable local identity; no fake child or OS handle.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-PROCESS-002",
+          "subsystem": "base",
+          "capability": "process_launch",
+          "current_source": "base/process/launch_posix.cc",
+          "platform_assumption": "The platform can spawn an operating-system process.",
+          "wasm_plan": "Do not source-select launch code; expose a clear unsupported result at the feature boundary.",
+          "status": "deferred_explicit_unsupported",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        },
+        {
+          "id": "BASE-SYS-001",
+          "subsystem": "base",
+          "capability": "system_information",
+          "current_source": "base/system/sys_info.cc; base/system/sys_info_posix.cc",
+          "platform_assumption": "Page size, CPU count, memory, and OS data come from native syscalls and procfs.",
+          "wasm_plan": "Add sys_info_wasm.cc and report only runtime values that can be measured accurately.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_base_smoke"
+        }
+      ]
+    },
+    {
+      "id": "base_task_runtime",
+      "root_cause": "The generic task pump is present but unreachable until Base primitives compile and has not been behaviorally validated on an application pthread.",
+      "entries": [
+        {
+          "id": "TASK-001",
+          "subsystem": "base",
+          "capability": "default_message_pump",
+          "current_source": "base/message_loop/message_pump.cc:164-207; base/message_loop/message_pump_default.cc:48-162",
+          "platform_assumption": "MessagePumpDefault sleeps and wakes through WaitableEvent.",
+          "wasm_plan": "Retain MessagePumpDefault first; verify nested loops, delayed work, cross-thread wake, quit, idle wait count, and browser heartbeat before considering a Wasm-specific pump.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_task_smoke"
+        },
+        {
+          "id": "TASK-002",
+          "subsystem": "base",
+          "capability": "single_thread_task_executor",
+          "current_source": "base/task/single_thread_task_executor.cc:15-20",
+          "platform_assumption": "MessagePump::Create(DEFAULT) returns a usable pump for the current thread.",
+          "wasm_plan": "Run the executor on the PROXY_TO_PTHREAD application thread and machine-check immediate, delayed, nested, bidirectional, and clean-shutdown behavior.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_task_smoke"
+        }
+      ]
+    },
+    {
+      "id": "rust_toolchain",
+      "root_cause": "M0 records the Chromium Rust archive but does not install it, and the pinned package has no wasm32-unknown-emscripten standard library.",
+      "entries": [
+        {
+          "id": "RUST-TOOLCHAIN-001",
+          "subsystem": "rust",
+          "capability": "pinned_compiler_install",
+          "current_source": "DEPS:1045-1055; tools/wasm/bootstrap.py:446-452",
+          "platform_assumption": "The Rust archive pin exists in DEPS, but M0 needs no installed compiler.",
+          "wasm_plan": "Extend bootstrap with an exact archive download, SHA-256 verification, extraction, installed-version verification, and offline verify-only path.",
+          "status": "missing",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-TOOLCHAIN-002",
+          "subsystem": "rust",
+          "capability": "target_standard_library",
+          "current_source": "build/rust/std/BUILD.gn:164-231",
+          "platform_assumption": "The packaged sysroot contains only the supported native target stdlib.",
+          "wasm_plan": "Build a local wasm32-unknown-emscripten stdlib from the pinned rustc-src with panic=abort and reproducibly verify its provenance.",
+          "status": "missing",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-TOOLCHAIN-003",
+          "subsystem": "rust",
+          "capability": "atomics_and_threads",
+          "current_source": "build/toolchain/wasm/BUILD.gn:17-28",
+          "platform_assumption": "C and C++ receive -pthread, but Rust has no matching Wasm target features.",
+          "wasm_plan": "Compile Rust and its stdlib with matching atomics, bulk-memory, mutable-globals, and pthread-compatible link settings.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        }
+      ]
+    },
+    {
+      "id": "rust_gn_integration",
+      "root_cause": "Chromium GN explicitly disables Rust for Wasm and lacks the target triple, architecture, and known-target entries.",
+      "entries": [
+        {
+          "id": "RUST-GN-001",
+          "subsystem": "rust",
+          "capability": "toolchain_has_rust",
+          "current_source": "build/config/rust.gni:145-184",
+          "platform_assumption": "The Chromium Rust toolchain supports every platform except Wasm.",
+          "wasm_plan": "Enable toolchain_has_rust only after bootstrap verifies the Wasm stdlib.",
+          "status": "disabled",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-GN-002",
+          "subsystem": "rust",
+          "capability": "target_triple_mapping",
+          "current_source": "build/config/rust.gni:202-356; build/rust/known-target-triples.txt",
+          "platform_assumption": "No mapping exists for current_os=emscripten and current_cpu=wasm.",
+          "wasm_plan": "Map to wasm32-unknown-emscripten and add the exact triple to the allowlist.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-GN-003",
+          "subsystem": "rust",
+          "capability": "target_arch_mapping",
+          "current_source": "build/config/rust.gni:375-401",
+          "platform_assumption": "rust_target_arch has no current_cpu=wasm branch.",
+          "wasm_plan": "Set rust_target_arch to wasm32 for local stdlib construction.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-LINK-001",
+          "subsystem": "rust",
+          "capability": "archive_and_final_link",
+          "current_source": "build/toolchain/gcc_toolchain.gni:647-657,713-788",
+          "platform_assumption": "rustc emits rlibs or static archives and the C++ linker owns the final executable.",
+          "wasm_plan": "Reuse the Chromium wrapper, emit no cross-revision LLVM bitcode, and consume Rust output through the Emscripten em++ final link.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-PANIC-001",
+          "subsystem": "rust",
+          "capability": "panic_strategy",
+          "current_source": "build/config/compiler/BUILD.gn:958-1027",
+          "platform_assumption": "Target stdlib and consumers must agree on panic strategy.",
+          "wasm_plan": "Use panic=abort and add a separate expected-failure runner that rejects false success.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_rust_panic_negative"
+        },
+        {
+          "id": "RUST-ALLOC-001",
+          "subsystem": "rust",
+          "capability": "allocator_and_std",
+          "current_source": "build/rust/allocator/BUILD.gn; build/rust/allocator/lib.rs",
+          "platform_assumption": "Non-Chromium builds use Rust System allocation.",
+          "wasm_plan": "Validate Vec, String, heap allocation, and frees against Emscripten's allocator before any PartitionAlloc integration.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-PRELUDE-001",
+          "subsystem": "rust",
+          "capability": "chromium_prelude",
+          "current_source": "build/rust/chromium_prelude; build/config/gclient_args.gni",
+          "platform_assumption": "The generated M0 configuration disables the Chromium Rust prelude with the rest of Rust.",
+          "wasm_plan": "Enable and compile the pinned prelude only after the target stdlib works, then include its import test in the Wasm Rust graph.",
+          "status": "disabled",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-INTEROP-001",
+          "subsystem": "rust",
+          "capability": "bidirectional_cpp_interop",
+          "current_source": "build/rust/tests/test_rust_calling_cpp/BUILD.gn:10-20",
+          "platform_assumption": "Chromium CXX generates the supported bridge between C++ and Rust.",
+          "wasm_plan": "Model the smoke on the existing CXX target and prove both call directions in one Wasm module.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-THREAD-001",
+          "subsystem": "rust",
+          "capability": "std_thread_spawn_join",
+          "current_source": "pinned Rust std::thread for wasm32-unknown-emscripten",
+          "platform_assumption": "The target stdlib and final module are compiled with Emscripten pthread support.",
+          "wasm_plan": "Spawn and join a Rust worker, verify atomic handoff, and require the browser heartbeat to continue during the join.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        },
+        {
+          "id": "RUST-TEST-001",
+          "subsystem": "rust",
+          "capability": "unit_test_infrastructure",
+          "current_source": "build/rust/tests/BUILD.gn; build/rust/rust_unit_test.gni",
+          "platform_assumption": "Rust test executables use a native runner.",
+          "wasm_plan": "Use dedicated Node/browser M1 smoke runners first; enable generic Rust unit tests only after the Wasm executable path is supported.",
+          "status": "deferred",
+          "blocking_target": "//tools/wasm:m1_rust_smoke"
+        }
+      ]
+    },
+    {
+      "id": "shared_memory",
+      "root_cause": "Base shared memory assumes kernel-backed platform handles, while Wasm needs process-local capabilities with explicit rights and lifetimes.",
+      "entries": [
+        {
+          "id": "SHMEM-001",
+          "subsystem": "base",
+          "capability": "platform_shared_memory_handle",
+          "current_source": "base/memory/platform_shared_memory_handle.h:27-71",
+          "platform_assumption": "The final fallback is a POSIX FDPair even though its declaration is unavailable on Wasm.",
+          "wasm_plan": "Add an opaque region ID, generation, and rights capability type; never use a raw pointer or fake file descriptor.",
+          "status": "compile_blocker",
+          "blocking_target": "//tools/wasm:m1_shared_memory_smoke"
+        },
+        {
+          "id": "SHMEM-002",
+          "subsystem": "base",
+          "capability": "region_registry",
+          "current_source": "base/memory/platform_shared_memory_region.cc; platform-specific region files",
+          "platform_assumption": "A kernel object owns storage and duplicates native handles.",
+          "wasm_plan": "Implement an aligned process-local registry with unique generation-checked capabilities, GUID and mode validation, duplicate/close references, and stale-handle rejection.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_shared_memory_smoke"
+        },
+        {
+          "id": "SHMEM-003",
+          "subsystem": "base",
+          "capability": "mapping_lifetime",
+          "current_source": "base/memory/shared_memory_mapper.h; base/memory/shared_memory_mapping.h",
+          "platform_assumption": "Native mappings retain storage independently of the originating handle.",
+          "wasm_plan": "Track active mappings separately so storage survives handle close until the final unmap.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_shared_memory_smoke"
+        },
+        {
+          "id": "SHMEM-004",
+          "subsystem": "base",
+          "capability": "read_only_semantics",
+          "current_source": "base/memory/platform_shared_memory_region.h:49-222",
+          "platform_assumption": "The OS can enforce page permissions for mappings.",
+          "wasm_plan": "Enforce read-only capability transitions at Base and Mojo API boundaries and document that raw Wasm linear-memory pointers lack hardware page protection.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_shared_memory_smoke"
+        }
+      ]
+    },
+    {
+      "id": "mojo_in_process",
+      "root_cause": "Pinned Mojo uses ipcz, but its platform wrappers and shared-buffer serialization fall through to native handles even though local ipcz portals do not require serialization.",
+      "entries": [
+        {
+          "id": "MOJO-001",
+          "subsystem": "mojo",
+          "capability": "core_selection",
+          "current_source": "mojo/features.gni:13-18; mojo/core/BUILD.gn:103-150",
+          "platform_assumption": "Legacy Mojo core is ChromeOS-only; all other platforms use ipcz.",
+          "wasm_plan": "Port the ipcz path and initialize exactly one in-process node; do not enable legacy core.",
+          "status": "selected",
+          "blocking_target": "//tools/wasm:m1_mojo_smoke"
+        },
+        {
+          "id": "MOJO-002",
+          "subsystem": "mojo",
+          "capability": "platform_handle",
+          "current_source": "mojo/public/cpp/platform/platform_handle.h:176-225",
+          "platform_assumption": "Every supported platform has an fd, native HANDLE, zx handle, or Mach port.",
+          "wasm_plan": "Represent only the process-local shared-region capability needed by ipcz; native handle wrap/unwrap returns MOJO_RESULT_UNIMPLEMENTED.",
+          "status": "compile_blocker",
+          "blocking_target": "//tools/wasm:m1_mojo_smoke"
+        },
+        {
+          "id": "MOJO-003",
+          "subsystem": "mojo",
+          "capability": "platform_channel",
+          "current_source": "mojo/public/cpp/platform/platform_channel_endpoint.h:27-37; platform_channel.cc:146-163",
+          "platform_assumption": "A process channel can be built from a native endpoint.",
+          "wasm_plan": "Add explicit invalid or unsupported Wasm behavior; do not create socketpairs, pipes, or fake endpoints.",
+          "status": "compile_blocker",
+          "blocking_target": "//tools/wasm:m1_mojo_smoke"
+        },
+        {
+          "id": "MOJO-004",
+          "subsystem": "mojo",
+          "capability": "shared_buffer_handle_path",
+          "current_source": "mojo/core/ipcz_driver/shared_buffer.cc:58-86,179-238; mojo/core/core_ipcz.cc:698-717",
+          "platform_assumption": "The generic fallback serializes one or two POSIX file descriptors.",
+          "wasm_plan": "Add explicit Wasm capability branches and reject remote serialization; keep validation and ownership checks intact.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_mojo_smoke"
+        },
+        {
+          "id": "MOJO-005",
+          "subsystem": "mojo",
+          "capability": "local_message_pipe",
+          "current_source": "mojo/core/core_ipcz.cc:168-210; third_party/ipcz/src/ipcz/router.cc:99-108,390-418",
+          "platform_assumption": "Two local portals may move attached API objects directly without a transport.",
+          "wasm_plan": "Use one local pipe and attach a boxed shared buffer through the C system API without invitation, platform channel, transport, or second node.",
+          "status": "needs_validation",
+          "blocking_target": "//tools/wasm:m1_mojo_smoke"
+        },
+        {
+          "id": "MOJO-006",
+          "subsystem": "mojo",
+          "capability": "shared_buffer_transfer",
+          "current_source": "mojo/core/core_ipcz.cc; mojo/public/c/system",
+          "platform_assumption": "Core thunks own message, handle, mapping, and close lifetimes.",
+          "wasm_plan": "Create, map, write, attach, send, receive, extract, map, verify, and close a shared buffer through one in-process Mojo message pipe.",
+          "status": "unimplemented",
+          "blocking_target": "//tools/wasm:m1_mojo_smoke"
+        }
+      ]
+    }
+  ]
+}
