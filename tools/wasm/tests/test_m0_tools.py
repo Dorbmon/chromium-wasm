@@ -10,6 +10,7 @@ from io import BytesIO
 import importlib.util
 import os
 from pathlib import Path
+import queue
 import subprocess
 import sys
 import tempfile
@@ -156,6 +157,40 @@ class NodeRunnerTest(unittest.TestCase):
                 + run_node_smoke.STDOUT_SENTINEL,
             )
 
+    def test_base_case_uses_base_module_and_sentinels(self) -> None:
+        case_name, module = run_node_smoke.resolve_case_and_module(
+            "base", None
+        )
+        self.assertEqual(case_name, "base")
+        self.assertEqual(module, Path("out/wasm/m1_base_smoke.js"))
+        self.assertEqual(
+            run_node_smoke.resolve_case_and_module(
+                None, Path("custom/m1_base_smoke.js")
+            ),
+            ("base", Path("custom/m1_base_smoke.js")),
+        )
+        with self.assertRaises(M0Error):
+            run_node_smoke.resolve_case_and_module(
+                "base", Path("out/wasm/hello_wasm.js")
+            )
+
+        stdout = "\n".join(
+            (
+                "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
+                "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
+                "CHROMIUM_WASM_M1_BASE:RESULT clocks=ok",
+                "CHROMIUM_WASM_M1_BASE:PASS",
+                'CHROMIUM_WASM_M1_BASE:NODE_EXIT {"exitCode":0}',
+            )
+        )
+        run_node_smoke.validate_streams(stdout, "", "base")
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout + "\nCHROMIUM_WASM_M1_BASE:FAIL reason=test",
+                "",
+                "base",
+            )
+
 
 class ServerTest(unittest.TestCase):
     def test_security_headers_mime_and_focusable_canvas(self) -> None:
@@ -180,6 +215,50 @@ class ServerTest(unittest.TestCase):
         self.assertIn('canvas id="browser-canvas" tabindex="0"', host_page)
         self.assertIn("if (!response.ok)", host_page)
         self.assertIn("response.status", host_page)
+        self.assertIn('modulePath: "/out/wasm/hello_wasm.js"', host_page)
+        self.assertIn('modulePath: "/out/wasm/m1_base_smoke.js"', host_page)
+        self.assertIn("addEventListener(\"error\"", host_page)
+        self.assertIn("addEventListener(\"unhandledrejection\"", host_page)
+        self.assertIn("onAbort(reason)", host_page)
+
+    def test_server_exposes_only_selected_case_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            out_dir = Path(temporary_directory)
+            for name in (
+                "m1_base_smoke.js",
+                "m1_base_smoke.wasm",
+                "m1_base_smoke.wasm.map",
+                "hello_wasm.js",
+                "unrelated.js",
+            ):
+                (out_dir / name).write_bytes(b"test")
+            state = serve.ServerState(
+                token="token",
+                out_dir=out_dir,
+                result_queue=queue.Queue(maxsize=1),
+                smoke_case_name="base",
+                smoke_case=serve.smoke_case("base"),
+            )
+            self.assertEqual(
+                serve.artifact_for_request(
+                    state, "/out/wasm/m1_base_smoke.js"
+                ),
+                out_dir / "m1_base_smoke.js",
+            )
+            self.assertEqual(
+                serve.artifact_for_request(
+                    state, "/out/wasm/m1_base_smoke.wasm"
+                ),
+                out_dir / "m1_base_smoke.wasm",
+            )
+            self.assertIsNone(
+                serve.artifact_for_request(
+                    state, "/out/wasm/hello_wasm.js"
+                )
+            )
+            self.assertIsNone(
+                serve.artifact_for_request(state, "/out/wasm/unrelated.js")
+            )
 
 
 class BrowserRunnerTest(unittest.TestCase):
@@ -243,6 +322,34 @@ class BrowserRunnerTest(unittest.TestCase):
         result["heartbeat"] = {"delta": float("nan"), "elapsedMs": 250}
         with self.assertRaises(M0Error):
             run_browser_smoke.validate_result(result)
+
+    def test_base_result_requires_base_case_sentinels(self) -> None:
+        result = {
+            "protocol": 1,
+            "case": "base",
+            "status": "pass",
+            "exitCode": 0,
+            "crossOriginIsolated": True,
+            "sharedArrayBuffer": True,
+            "canvasFocused": True,
+            "failedChecks": [],
+            "error": None,
+            "heartbeat": {"delta": 4, "elapsedMs": 250},
+            "stdout": [
+                "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
+                "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
+                "CHROMIUM_WASM_M1_BASE:RESULT clocks=ok",
+                "CHROMIUM_WASM_M1_BASE:PASS",
+            ],
+            "stderr": [],
+        }
+        run_browser_smoke.validate_result(result, "base")
+        result["stdout"] = [
+            *result["stdout"],
+            "CHROMIUM_WASM_M1_BASE:FAIL reason=test",
+        ]
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(result, "base")
 
 
 if __name__ == "__main__":

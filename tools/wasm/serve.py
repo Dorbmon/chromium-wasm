@@ -42,14 +42,77 @@ CONTENT_TYPES = {
 }
 
 
+@dataclass(frozen=True)
+class SmokeCase:
+    module_name: str
+    sentinel_prefix: str
+    required_stdout: tuple[str, ...]
+    required_stderr: tuple[str, ...] = ()
+    require_separate_streams: bool = False
+
+
+SMOKE_CASES = {
+    "hello": SmokeCase(
+        module_name="hello_wasm.js",
+        sentinel_prefix="CHROMIUM_WASM_M0",
+        required_stdout=(
+            "CHROMIUM_WASM_M0:RUNTIME_START",
+            "CHROMIUM_WASM_M0:RUNTIME_END",
+            "CHROMIUM_WASM_M0:STDOUT",
+            "CHROMIUM_WASM_M0:PASS",
+        ),
+        required_stderr=("CHROMIUM_WASM_M0:STDERR capture=ok",),
+        require_separate_streams=True,
+    ),
+    "base": SmokeCase(
+        module_name="m1_base_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M1_BASE",
+        required_stdout=(
+            "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
+            "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
+            "CHROMIUM_WASM_M1_BASE:RESULT",
+            "CHROMIUM_WASM_M1_BASE:PASS",
+        ),
+    ),
+}
+
+
+def smoke_case(name: str) -> SmokeCase:
+    try:
+        return SMOKE_CASES[name]
+    except KeyError as exc:
+        raise M0Error(f"unsupported smoke case: {name}") from exc
+
+
+def artifact_names(case: SmokeCase) -> tuple[str, ...]:
+    module_path = Path(case.module_name)
+    wasm_name = module_path.with_suffix(".wasm").name
+    return case.module_name, wasm_name, f"{wasm_name}.map"
+
+
 @dataclass
 class ServerState:
     token: str
     out_dir: Path
     result_queue: queue.Queue[dict[str, Any]]
+    smoke_case_name: str
+    smoke_case: SmokeCase
     verbose: bool = False
     result_received: bool = False
     result_lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def artifact_for_request(
+    state: ServerState, request_path: str
+) -> Path | None:
+    allowed_artifacts = {
+        f"/out/wasm/{name}": state.out_dir / name
+        for name in artifact_names(state.smoke_case)
+    }
+    artifact = allowed_artifacts.get(request_path)
+    if artifact is None or not artifact.is_file():
+        return None
+    return artifact
 
 
 class M0RequestHandler(BaseHTTPRequestHandler):
@@ -77,23 +140,18 @@ class M0RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         request_path = urlsplit(self.path).path
-        if request_path in ("/", "/__smoke__/hello"):
+        if request_path in (
+            "/",
+            f"/__smoke__/{self.state.smoke_case_name}",
+        ):
             host_page = Path(__file__).with_name("host") / "hello.html"
             self._send_bytes(
                 host_page.read_bytes(), CONTENT_TYPES[host_page.suffix]
             )
             return
 
-        allowed_artifacts = {
-            f"/out/wasm/{name}": self.state.out_dir / name
-            for name in (
-                "hello_wasm.js",
-                "hello_wasm.wasm",
-                "hello_wasm.wasm.map",
-            )
-        }
-        artifact = allowed_artifacts.get(request_path)
-        if artifact is None or not artifact.is_file():
+        artifact = artifact_for_request(self.state, request_path)
+        if artifact is None:
             self.send_error(404)
             return
         self._send_bytes(
@@ -153,17 +211,22 @@ def create_server(
     token: str,
     result_queue: queue.Queue[dict[str, Any]],
     *,
+    smoke_case_name: str = "hello",
     verbose: bool = False,
 ) -> M0HTTPServer:
     resolved_out_dir = out_dir.resolve()
-    if not (resolved_out_dir / "hello_wasm.js").is_file():
-        raise M0Error("hello_wasm.js is missing from the output directory")
-    if not (resolved_out_dir / "hello_wasm.wasm").is_file():
-        raise M0Error("hello_wasm.wasm is missing from the output directory")
+    selected_case = smoke_case(smoke_case_name)
+    for artifact_name in artifact_names(selected_case)[:2]:
+        if not (resolved_out_dir / artifact_name).is_file():
+            raise M0Error(
+                f"{artifact_name} is missing from the output directory"
+            )
     state = ServerState(
         token=token,
         out_dir=resolved_out_dir,
         result_queue=result_queue,
+        smoke_case_name=smoke_case_name,
+        smoke_case=selected_case,
         verbose=verbose,
     )
     return M0HTTPServer((bind, port), state)
@@ -175,13 +238,16 @@ def smoke_url(
     manifest: dict[str, Any],
     port_commit: str,
     timeout_seconds: float = 20.0,
+    smoke_case_name: str = "hello",
 ) -> str:
+    selected_case = smoke_case(smoke_case_name)
     host, port = server.server_address[:2]
     query = urlencode(
         {
+            "case": smoke_case_name,
             "chromium": manifest["chromium"]["revision"],
             "emscripten": manifest["emscripten"]["source_revision"],
-            "module": "/out/wasm/hello_wasm.js",
+            "module": f"/out/wasm/{selected_case.module_name}",
             "port": port_commit,
             "token": token,
             "timeout_ms": max(
@@ -190,7 +256,7 @@ def smoke_url(
             "v8": manifest["git_dependencies"]["v8"]["revision"],
         }
     )
-    return f"http://{host}:{port}/__smoke__/hello?{query}"
+    return f"http://{host}:{port}/__smoke__/{smoke_case_name}?{query}"
 
 
 def main() -> int:
@@ -200,6 +266,9 @@ def main() -> int:
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--out-dir", type=Path, default=Path("out/wasm"))
+    parser.add_argument(
+        "--case", choices=tuple(SMOKE_CASES), default="hello"
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -216,6 +285,7 @@ def main() -> int:
             out_dir,
             token,
             results,
+            smoke_case_name=args.case,
             verbose=args.verbose,
         )
         port_commit = checked_output(["git", "rev-parse", "HEAD"])
@@ -223,11 +293,19 @@ def main() -> int:
             "serve.py",
             manifest,
             bind=args.bind,
+            case=args.case,
             port=server.server_address[1],
         )
+        selected_case = smoke_case(args.case)
+        url = smoke_url(
+            server,
+            token,
+            manifest,
+            port_commit,
+            smoke_case_name=args.case,
+        )
         print(
-            "CHROMIUM_WASM_M0:SERVE " +
-            smoke_url(server, token, manifest, port_commit),
+            f"{selected_case.sentinel_prefix}:SERVE {url}",
             flush=True,
         )
         server.serve_forever()

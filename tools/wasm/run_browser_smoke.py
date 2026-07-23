@@ -27,12 +27,17 @@ from m0_common import (
     M0Error,
     REPO_ROOT,
     checked_output,
-    fail,
     load_manifest,
     parse_timeout,
     print_context,
 )
-from serve import create_server, smoke_url
+from serve import SMOKE_CASES, create_server, smoke_case, smoke_url
+
+
+def fail_for_case(case_name: str, message: str) -> int:
+    prefix = smoke_case(case_name).sentinel_prefix
+    print(f"{prefix}:FAIL reason={message}", file=sys.stderr, flush=True)
+    return 1
 
 
 def browser_version(path: Path) -> tuple[tuple[int, ...], str] | None:
@@ -156,10 +161,13 @@ def browser_command(
     return command
 
 
-def validate_result(result: dict[str, Any]) -> None:
+def validate_result(
+    result: dict[str, Any], smoke_case_name: str = "hello"
+) -> None:
+    selected_case = smoke_case(smoke_case_name)
     expected = {
         "protocol": 1,
-        "case": "hello",
+        "case": smoke_case_name,
         "status": "pass",
         "exitCode": 0,
         "crossOriginIsolated": True,
@@ -198,30 +206,39 @@ def validate_result(result: dict[str, Any]) -> None:
         raise M0Error("browser did not return separate stdout/stderr arrays")
     stdout_text = "\n".join(str(line) for line in stdout)
     stderr_text = "\n".join(str(line) for line in stderr)
-    for sentinel in (
-        "CHROMIUM_WASM_M0:RUNTIME_START",
-        "CHROMIUM_WASM_M0:RUNTIME_END",
-        "CHROMIUM_WASM_M0:STDOUT",
-        "CHROMIUM_WASM_M0:PASS",
-    ):
+    for sentinel in selected_case.required_stdout:
         if sentinel not in stdout_text:
             raise M0Error(f"browser stdout is missing {sentinel}")
-    if "CHROMIUM_WASM_M0:STDERR capture=ok" not in stderr_text:
-        raise M0Error("browser stderr capture sentinel is missing")
-    if (
-        "CHROMIUM_WASM_M0:STDERR capture=ok" in stdout_text
+    for sentinel in selected_case.required_stderr:
+        if sentinel not in stderr_text:
+            raise M0Error(f"browser stderr is missing {sentinel}")
+    if selected_case.require_separate_streams and (
+        any(
+            sentinel in stdout_text
+            for sentinel in selected_case.required_stderr
+        )
         or "CHROMIUM_WASM_M0:STDOUT" in stderr_text
     ):
         raise M0Error("browser stdout and stderr were not captured separately")
-    if "CHROMIUM_WASM_M0:FAIL" in stdout_text + stderr_text:
+    failure_sentinel = f"{selected_case.sentinel_prefix}:FAIL"
+    if failure_sentinel in stdout_text + stderr_text:
         raise M0Error("browser runtime emitted a failure sentinel")
+    runtime_start = f"{selected_case.sentinel_prefix}:RUNTIME_START"
+    runtime_end = f"{selected_case.sentinel_prefix}:RUNTIME_END"
+    pass_sentinel = f"{selected_case.sentinel_prefix}:PASS"
+    if not (
+        stdout_text.index(runtime_start)
+        < stdout_text.index(runtime_end)
+        < stdout_text.index(pass_sentinel)
+    ):
+        raise M0Error("browser runtime sentinels are out of order")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the M0 pthread smoke in a real headless browser."
+        description="Run a Chromium Wasm smoke in a real headless browser."
     )
-    parser.add_argument("--case", choices=("hello",), required=True)
+    parser.add_argument("--case", choices=tuple(SMOKE_CASES), required=True)
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--out-dir", type=Path, default=Path("out/wasm"))
     parser.add_argument(
@@ -246,7 +263,12 @@ def main() -> int:
         token = secrets.token_urlsafe(24)
         result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         server = create_server(
-            "127.0.0.1", 0, out_dir, token, result_queue
+            "127.0.0.1",
+            0,
+            out_dir,
+            token,
+            result_queue,
+            smoke_case_name=args.case,
         )
         server_thread = threading.Thread(
             target=server.serve_forever,
@@ -262,6 +284,7 @@ def main() -> int:
             manifest,
             port_commit,
             timeout_seconds=max(1.0, args.timeout - 1.0),
+            smoke_case_name=args.case,
         )
         print_context(
             "run_browser_smoke.py",
@@ -313,16 +336,17 @@ def main() -> int:
             except queue.Empty:
                 continue
 
-        validate_result(result)
+        validate_result(result, args.case)
+        selected_case = smoke_case(args.case)
         print(
-            "CHROMIUM_WASM_M0:BROWSER_RESULT "
+            f"{selected_case.sentinel_prefix}:BROWSER_RESULT "
             + json.dumps(result, sort_keys=True, separators=(",", ":")),
             flush=True,
         )
-        print("CHROMIUM_WASM_M0_BROWSER:PASS", flush=True)
+        print(f"{selected_case.sentinel_prefix}_BROWSER:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
-        return fail(str(exc))
+        return fail_for_case(args.case, str(exc))
     finally:
         if browser is not None:
             stop_browser(browser)

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chromium Wasm M0 smoke</title>
+  <title>Chromium Wasm smoke</title>
   <style>
     :root {
       color-scheme: dark;
@@ -28,21 +28,52 @@
 </head>
 <body>
   <main id="smoke-root" data-state="running">
-    <h1>Chromium Wasm M0</h1>
+    <h1 id="smoke-heading">Chromium Wasm smoke</h1>
     <canvas id="browser-canvas" tabindex="0" width="640" height="360"></canvas>
     <pre id="smoke-status">RUNNING</pre>
     <dl id="versions"></dl>
   </main>
   <script type="module">
     const parameters = new URLSearchParams(location.search);
+    const smokeCases = Object.freeze({
+      hello: Object.freeze({
+        modulePath: "/out/wasm/hello_wasm.js",
+        sentinelPrefix: "CHROMIUM_WASM_M0",
+        requiredStdout: Object.freeze([
+          "CHROMIUM_WASM_M0:RUNTIME_START",
+          "CHROMIUM_WASM_M0:RUNTIME_END",
+          "CHROMIUM_WASM_M0:STDOUT",
+          "CHROMIUM_WASM_M0:PASS",
+        ]),
+        requiredStderr: Object.freeze([
+          "CHROMIUM_WASM_M0:STDERR capture=ok",
+        ]),
+        requireSeparateStreams: true,
+      }),
+      base: Object.freeze({
+        modulePath: "/out/wasm/m1_base_smoke.js",
+        sentinelPrefix: "CHROMIUM_WASM_M1_BASE",
+        requiredStdout: Object.freeze([
+          "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
+          "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
+          "CHROMIUM_WASM_M1_BASE:RESULT",
+          "CHROMIUM_WASM_M1_BASE:PASS",
+        ]),
+        requiredStderr: Object.freeze([]),
+        requireSeparateStreams: false,
+      }),
+    });
+    const requestedCase = parameters.get("case") || "hello";
+    const caseConfiguration = smokeCases[requestedCase];
     const resultToken = parameters.get("token");
-    const modulePath = parameters.get("module") || "/out/wasm/hello_wasm.js";
+    const requestedModulePath = parameters.get("module");
     const requestedTimeout = Number(parameters.get("timeout_ms"));
     const runtimeTimeoutMs = Number.isFinite(requestedTimeout)
       ? Math.max(1000, Math.min(120000, requestedTimeout))
       : 20000;
     const resultEndpoint = `/__smoke__/result/${encodeURIComponent(resultToken)}`;
     const root = document.querySelector("#smoke-root");
+    const heading = document.querySelector("#smoke-heading");
     const canvas = document.querySelector("#browser-canvas");
     const status = document.querySelector("#smoke-status");
     const versions = document.querySelector("#versions");
@@ -57,17 +88,20 @@
     let runtimeInitialized = false;
     let runtimeTimeout = null;
     let exitCode = null;
+    let canvasFocused = false;
     let resolveExit;
     let rejectExit;
 
     const diagnostic = {
       protocol: 1,
+      case: requestedCase,
       state: "running",
       stdout,
       stderr,
       heartbeat: {},
     };
     window.__chromiumWasmSmoke = diagnostic;
+    heading.textContent = `Chromium Wasm ${requestedCase} smoke`;
 
     for (const [name, value] of [
       ["Chromium", parameters.get("chromium")],
@@ -124,11 +158,13 @@
     function recordOutput(target, line) {
       const text = String(line);
       target.push(text);
-      if (text.includes("CHROMIUM_WASM_M0:RUNTIME_START")) {
+      if (text.includes(
+          `${caseConfiguration.sentinelPrefix}:RUNTIME_START`)) {
         runtimeStartTicks = heartbeatTicks;
         runtimeStartTime = performance.now();
       }
-      if (text.includes("CHROMIUM_WASM_M0:RUNTIME_END")) {
+      if (text.includes(
+          `${caseConfiguration.sentinelPrefix}:RUNTIME_END`)) {
         runtimeEndTicks = heartbeatTicks;
         runtimeEndTime = performance.now();
       }
@@ -137,11 +173,12 @@
     function failureResult(error) {
       return {
         protocol: 1,
-        case: "hello",
+        case: requestedCase,
         status: "fail",
         exitCode,
         crossOriginIsolated,
         sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+        canvasFocused,
         stdout,
         stderr,
         heartbeat: {
@@ -152,6 +189,7 @@
           elapsedMs: runtimeStartTime === null || runtimeEndTime === null
             ? null : runtimeEndTime - runtimeStartTime,
         },
+        failedChecks: [],
         error: String(error),
       };
     }
@@ -167,9 +205,18 @@
       if (!resultToken) {
         throw new Error("missing result token");
       }
+      if (!caseConfiguration) {
+        throw new Error(`unsupported smoke case: ${requestedCase}`);
+      }
+      if (requestedModulePath &&
+          requestedModulePath !== caseConfiguration.modulePath) {
+        throw new Error(
+          `module does not match ${requestedCase} smoke case`);
+      }
       canvas.focus();
-      const canvasFocused = document.activeElement === canvas;
-      const {default: createModule} = await import(modulePath);
+      canvasFocused = document.activeElement === canvas;
+      const {default: createModule} =
+        await import(caseConfiguration.modulePath);
       runtimeTimeout = setTimeout(() => {
         rejectExit(new Error("runtime timeout"));
       }, runtimeTimeoutMs);
@@ -198,19 +245,25 @@
       const heartbeatDelta = runtimeEndTicks - runtimeStartTicks;
       const runtimeElapsed = runtimeEndTime - runtimeStartTime;
       const combinedOutput = [...stdout, ...stderr].join("\n");
+      const runtimeStartSentinel =
+        `${caseConfiguration.sentinelPrefix}:RUNTIME_START`;
+      const runtimeEndSentinel =
+        `${caseConfiguration.sentinelPrefix}:RUNTIME_END`;
+      const passSentinel = `${caseConfiguration.sentinelPrefix}:PASS`;
+      const failureSentinel = `${caseConfiguration.sentinelPrefix}:FAIL`;
       const runtimeStartIndex = stdout.findIndex(
-        (line) => line.includes("CHROMIUM_WASM_M0:RUNTIME_START"));
+        (line) => line.includes(runtimeStartSentinel));
       const runtimeEndIndex = stdout.findIndex(
-        (line) => line.includes("CHROMIUM_WASM_M0:RUNTIME_END"));
+        (line) => line.includes(runtimeEndSentinel));
       const passIndex = stdout.findIndex(
-        (line) => line.includes("CHROMIUM_WASM_M0:PASS"));
+        (line) => line.includes(passSentinel));
       const checks = {
         canvasFocused,
         crossOriginIsolated,
         exitCode: exitCode === 0,
         heartbeat: Number.isFinite(heartbeatDelta) && heartbeatDelta >= 3,
-        noFailure: !combinedOutput.includes("CHROMIUM_WASM_M0:FAIL"),
-        pass: stdout.some((line) => line.includes("CHROMIUM_WASM_M0:PASS")),
+        noFailure: !combinedOutput.includes(failureSentinel),
+        pass: stdout.some((line) => line.includes(passSentinel)),
         runtimeInitialized,
         runtimeInterval:
           Number.isFinite(runtimeElapsed) && runtimeElapsed >= 200,
@@ -221,22 +274,27 @@
           runtimeStartIndex < runtimeEndIndex &&
           runtimeEndIndex < passIndex,
         sharedArrayBuffer: typeof SharedArrayBuffer === "function",
-        stderr: stderr.some(
-          (line) => line.includes("CHROMIUM_WASM_M0:STDERR capture=ok")),
+        stderr: caseConfiguration.requiredStderr.every(
+          (sentinel) => stderr.some((line) => line.includes(sentinel))),
         streamsSeparate:
-          !stdout.some(
-            (line) => line.includes("CHROMIUM_WASM_M0:STDERR capture=ok")) &&
-          !stderr.some(
-            (line) => line.includes("CHROMIUM_WASM_M0:STDOUT")),
-        stdout: stdout.some(
-          (line) => line.includes("CHROMIUM_WASM_M0:STDOUT")),
+          !caseConfiguration.requireSeparateStreams ||
+          (
+            !caseConfiguration.requiredStderr.some(
+              (sentinel) => stdout.some(
+                (line) => line.includes(sentinel))) &&
+            !stderr.some(
+              (line) => line.includes(
+                `${caseConfiguration.sentinelPrefix}:STDOUT`))
+          ),
+        stdout: caseConfiguration.requiredStdout.every(
+          (sentinel) => stdout.some((line) => line.includes(sentinel))),
       };
       const failedChecks = Object.entries(checks)
         .filter(([, passed]) => !passed)
         .map(([name]) => name);
       const result = {
         protocol: 1,
-        case: "hello",
+        case: requestedCase,
         status: failedChecks.length === 0 ? "pass" : "fail",
         exitCode,
         crossOriginIsolated,
