@@ -25,7 +25,13 @@ from m0_common import (
 )
 
 
-REQUIRED_SUBMODULES = ("v8", "angle", "depot_tools")
+REQUIRED_SUBMODULES = (
+    "v8",
+    "angle",
+    "depot_tools",
+    "perfetto",
+    "googletest",
+)
 
 
 def require_equal(label: str, actual: str, expected: str) -> None:
