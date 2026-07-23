@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm M0 smoke</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 14px/1.4 system-ui, sans-serif;
+    }
+    body {
+      margin: 2rem;
+      background: #15171a;
+      color: #f3f4f6;
+    }
+    canvas {
+      display: block;
+      width: 640px;
+      height: 360px;
+      border: 1px solid #596270;
+      background: #20242a;
+    }
+    pre {
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <main id="smoke-root" data-state="running">
+    <h1>Chromium Wasm M0</h1>
+    <canvas id="browser-canvas" tabindex="0" width="640" height="360"></canvas>
+    <pre id="smoke-status">RUNNING</pre>
+    <dl id="versions"></dl>
+  </main>
+  <script type="module">
+    const parameters = new URLSearchParams(location.search);
+    const resultToken = parameters.get("token");
+    const modulePath = parameters.get("module") || "/out/wasm/hello_wasm.js";
+    const requestedTimeout = Number(parameters.get("timeout_ms"));
+    const runtimeTimeoutMs = Number.isFinite(requestedTimeout)
+      ? Math.max(1000, Math.min(120000, requestedTimeout))
+      : 20000;
+    const resultEndpoint = `/__smoke__/result/${encodeURIComponent(resultToken)}`;
+    const root = document.querySelector("#smoke-root");
+    const canvas = document.querySelector("#browser-canvas");
+    const status = document.querySelector("#smoke-status");
+    const versions = document.querySelector("#versions");
+    const stdout = [];
+    const stderr = [];
+    let heartbeatTicks = 0;
+    let finished = false;
+    let runtimeStartTicks = null;
+    let runtimeEndTicks = null;
+    let runtimeStartTime = null;
+    let runtimeEndTime = null;
+    let runtimeInitialized = false;
+    let runtimeTimeout = null;
+    let exitCode = null;
+    let resolveExit;
+    let rejectExit;
+
+    const diagnostic = {
+      protocol: 1,
+      state: "running",
+      stdout,
+      stderr,
+      heartbeat: {},
+    };
+    window.__chromiumWasmSmoke = diagnostic;
+
+    for (const [name, value] of [
+      ["Chromium", parameters.get("chromium")],
+      ["V8", parameters.get("v8")],
+      ["Emscripten", parameters.get("emscripten")],
+      ["Port", parameters.get("port")],
+    ]) {
+      const term = document.createElement("dt");
+      const description = document.createElement("dd");
+      term.textContent = name;
+      description.textContent = value || "unknown";
+      versions.append(term, description);
+    }
+
+    const heartbeat = setInterval(() => {
+      heartbeatTicks += 1;
+    }, 10);
+    const exitPromise = new Promise((resolve, reject) => {
+      resolveExit = resolve;
+      rejectExit = reject;
+    });
+
+    async function postResult(result) {
+      try {
+        const response = await fetch(resultEndpoint, {
+          method: "POST",
+          cache: "no-store",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(result),
+        });
+        if (!response.ok) {
+          throw new Error(
+            `result endpoint returned HTTP ${response.status}`);
+        }
+      } catch (error) {
+        status.textContent += `\nRESULT POST FAILED: ${String(error)}`;
+      }
+    }
+
+    async function finish(result) {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearInterval(heartbeat);
+      clearTimeout(runtimeTimeout);
+      diagnostic.state = result.status;
+      diagnostic.heartbeat = result.heartbeat;
+      root.dataset.state = result.status;
+      status.textContent = JSON.stringify(result, null, 2);
+      await postResult(result);
+    }
+
+    function recordOutput(target, line) {
+      const text = String(line);
+      target.push(text);
+      if (text.includes("CHROMIUM_WASM_M0:RUNTIME_START")) {
+        runtimeStartTicks = heartbeatTicks;
+        runtimeStartTime = performance.now();
+      }
+      if (text.includes("CHROMIUM_WASM_M0:RUNTIME_END")) {
+        runtimeEndTicks = heartbeatTicks;
+        runtimeEndTime = performance.now();
+      }
+    }
+
+    function failureResult(error) {
+      return {
+        protocol: 1,
+        case: "hello",
+        status: "fail",
+        exitCode,
+        crossOriginIsolated,
+        sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+        stdout,
+        stderr,
+        heartbeat: {
+          startTicks: runtimeStartTicks,
+          endTicks: runtimeEndTicks,
+          delta: runtimeStartTicks === null || runtimeEndTicks === null
+            ? null : runtimeEndTicks - runtimeStartTicks,
+          elapsedMs: runtimeStartTime === null || runtimeEndTime === null
+            ? null : runtimeEndTime - runtimeStartTime,
+        },
+        error: String(error),
+      };
+    }
+
+    addEventListener("error", (event) => {
+      void finish(failureResult(event.error || event.message));
+    });
+    addEventListener("unhandledrejection", (event) => {
+      void finish(failureResult(event.reason));
+    });
+
+    try {
+      if (!resultToken) {
+        throw new Error("missing result token");
+      }
+      canvas.focus();
+      const canvasFocused = document.activeElement === canvas;
+      const {default: createModule} = await import(modulePath);
+      runtimeTimeout = setTimeout(() => {
+        rejectExit(new Error("runtime timeout"));
+      }, runtimeTimeoutMs);
+
+      await createModule({
+        canvas,
+        print(line) {
+          recordOutput(stdout, line);
+        },
+        printErr(line) {
+          recordOutput(stderr, line);
+        },
+        onRuntimeInitialized() {
+          runtimeInitialized = true;
+        },
+        onExit(code) {
+          exitCode = Number(code);
+          resolveExit(exitCode);
+        },
+        onAbort(reason) {
+          rejectExit(new Error(`abort: ${String(reason)}`));
+        },
+      });
+      await exitPromise;
+
+      const heartbeatDelta = runtimeEndTicks - runtimeStartTicks;
+      const runtimeElapsed = runtimeEndTime - runtimeStartTime;
+      const combinedOutput = [...stdout, ...stderr].join("\n");
+      const runtimeStartIndex = stdout.findIndex(
+        (line) => line.includes("CHROMIUM_WASM_M0:RUNTIME_START"));
+      const runtimeEndIndex = stdout.findIndex(
+        (line) => line.includes("CHROMIUM_WASM_M0:RUNTIME_END"));
+      const passIndex = stdout.findIndex(
+        (line) => line.includes("CHROMIUM_WASM_M0:PASS"));
+      const checks = {
+        canvasFocused,
+        crossOriginIsolated,
+        exitCode: exitCode === 0,
+        heartbeat: Number.isFinite(heartbeatDelta) && heartbeatDelta >= 3,
+        noFailure: !combinedOutput.includes("CHROMIUM_WASM_M0:FAIL"),
+        pass: stdout.some((line) => line.includes("CHROMIUM_WASM_M0:PASS")),
+        runtimeInitialized,
+        runtimeInterval:
+          Number.isFinite(runtimeElapsed) && runtimeElapsed >= 200,
+        runtimeMarkers:
+          runtimeStartTicks !== null && runtimeEndTicks !== null,
+        runtimeOrder:
+          runtimeStartIndex >= 0 &&
+          runtimeStartIndex < runtimeEndIndex &&
+          runtimeEndIndex < passIndex,
+        sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+        stderr: stderr.some(
+          (line) => line.includes("CHROMIUM_WASM_M0:STDERR capture=ok")),
+        streamsSeparate:
+          !stdout.some(
+            (line) => line.includes("CHROMIUM_WASM_M0:STDERR capture=ok")) &&
+          !stderr.some(
+            (line) => line.includes("CHROMIUM_WASM_M0:STDOUT")),
+        stdout: stdout.some(
+          (line) => line.includes("CHROMIUM_WASM_M0:STDOUT")),
+      };
+      const failedChecks = Object.entries(checks)
+        .filter(([, passed]) => !passed)
+        .map(([name]) => name);
+      const result = {
+        protocol: 1,
+        case: "hello",
+        status: failedChecks.length === 0 ? "pass" : "fail",
+        exitCode,
+        crossOriginIsolated,
+        sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+        canvasFocused,
+        stdout,
+        stderr,
+        heartbeat: {
+          startTicks: runtimeStartTicks,
+          endTicks: runtimeEndTicks,
+          delta: heartbeatDelta,
+          elapsedMs: runtimeElapsed,
+        },
+        failedChecks,
+        error: failedChecks.length === 0
+          ? null : `failed checks: ${failedChecks.join(", ")}`,
+      };
+      await finish(result);
+    } catch (error) {
+      await finish(failureResult(error));
+    }
+  </script>
+</body>
+</html>
