@@ -1,0 +1,8 @@
+$ParanoidMode CheckPresence
+$OverrideInstallMode copy
+
+@Subdir buildtools/linux64
+gn/gn/linux-amd64 2w75WgzO2nc2UMXt6PDqnK3LCqbHZ-11ME5WIr4hJQQC
+
+@Subdir third_party/ninja
+infra/3pp/tools/ninja/linux-amd64 Px8cwPaaG8_fZ_tsK8dBmx3YEruNDnmvqb-oo1U7UIIC

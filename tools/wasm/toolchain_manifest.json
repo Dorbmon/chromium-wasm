@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "chromium": {
+    "tag": "150.0.7871.181",
+    "revision": "24b04c927b23c39cf9c5227cc8dc6f64a744c8e9",
+    "remote": "https://chromium.googlesource.com/chromium/src.git"
+  },
+  "git_dependencies": {
+    "v8": {
+      "path": "v8",
+      "revision": "49df3678d1b6a1511167b15a6b7499d3ab37a638"
+    },
+    "skia": {
+      "path": "third_party/skia",
+      "revision": "587c5b0f5a7b0260826a0c19094c2d952195066e"
+    },
+    "dawn": {
+      "path": "third_party/dawn",
+      "revision": "d089fc91e7e4881362463faf8efe9ae435e34660"
+    },
+    "angle": {
+      "path": "third_party/angle",
+      "revision": "edae461ad2122a3a2be0b5d3d067472aa0e3329c"
+    },
+    "boringssl": {
+      "path": "third_party/boringssl/src",
+      "revision": "3a9254f16eda7a4c5d2260039ff23456a0a34de4"
+    },
+    "depot_tools": {
+      "path": "third_party/depot_tools",
+      "revision": "f4fadaf6a5ba1bced9d3d9021060667b563bf583"
+    }
+  },
+  "gn": {
+    "revision": "3357c4f51b1a9e676378c695dd9c7e9911c35ee6",
+    "cipd_instance": "2w75WgzO2nc2UMXt6PDqnK3LCqbHZ-11ME5WIr4hJQQC",
+    "version_output": "2407 (3357c4f51b1a)",
+    "sha256": "b57b07b452e2e68ee07fde47c22134d82dfe919b7e3eb77ea3c78f7eb0759812"
+  },
+  "ninja": {
+    "cipd_tag": "version:3@1.12.1.chromium.4",
+    "cipd_instance": "Px8cwPaaG8_fZ_tsK8dBmx3YEruNDnmvqb-oo1U7UIIC",
+    "version_output": "1.12.1",
+    "sha256": "09f0e5a8a2cf762b24b4d3ed464ffb2529e650d2efc36bab31da36aa93791efc"
+  },
+  "depot_tools_bootstrap": {
+    "cipd_client_revision": "4048470b2263eb1bfee6134ea4b3b4b7da2e14b4",
+    "cipd_client_instance": "mZe222Lar6jYhr1785F2gtqnNfe3w7VGD1WGguvRgr4C",
+    "cipd_client_version": "2.7.12",
+    "cipd_client_sha256": "ae31d392eceb258e2ff2633a278902cbfc8a3350e5754a61d88e4424bcde94ca",
+    "python_cipd_package": "infra/3pp/tools/cpython3/linux-amd64",
+    "python_cipd_template": "infra/3pp/tools/cpython3/${platform}",
+    "python_cipd_tag": "version:2@3.11.8.chromium.35",
+    "python_cipd_instance": "MAhxD2QY9y8xtuZjfhvpi1f4bdPBEksK0MnRB7rNocwC",
+    "python_bootstrap_version": "2@3.11.8.chromium.35",
+    "python_runtime_version": "3.11.8",
+    "python_sha256": "489869a34ee294e62be991cf30910f1d08678f82699816a2edb9b48cf96a6dfd"
+  },
+  "emscripten": {
+    "emsdk_revision": "948c31acd3f369a5da276e33ab2ed57108c165e5",
+    "emsdk_remote": "https://chromium.googlesource.com/external/github.com/emscripten-core/emsdk.git",
+    "emsdk_ref": "upstream/5.0.6",
+    "sdk_version": "5.0.6",
+    "release_bundle": "1724b50443d92e23ef2a56abf0dc501206839cef",
+    "source_revision": "6ea9c28c38cdd40c1032fa04400c9d16230ee180",
+    "llvm_revision": "bbeae6932d653b8a71a3a985af0ccf97e13e2e08",
+    "binaryen_revision": "54f9f7afa703ade4a34aa3291abbe237bb0cd8a4",
+    "binaryen_version": "129",
+    "node_version": "22.16.0",
+    "config_sha256": "37c9112b5e4491d5c6bd1895a5938fe05b38fb7e7f09138deeab1b3dc9ac452d",
+    "artifact_sha256": {
+      "emcc": "498eba9b6aacffca1c358ba340fc7b37015d7867cb211c7f2d45784ee9310f03",
+      "emcc.py": "f78a0a61f7990fbf447723a279ea3bbdc8b5dd32e8e6413c5327783df25fd9f1",
+      "clang": "02a6ac57b43714bf23cba8e63a13ef6c9378841048f28709555b814a39ff38d7",
+      "wasm-ld": "7c1e1170d31f339773a3f822c31ae5283cd54addc1d249497145f5634a435213",
+      "wasm-opt": "45174b2e9d4c8093b0058b9b371714cda8a64f6c29e384c3715ead0db92ef13e",
+      "node": "8142d37c6f2f372ef040419e7a111a6baf17df89f8078d02447d6c639ae20c1d"
+    }
+  },
+  "rust": {
+    "archive": "rust-toolchain-4c4205163abcbd08948b3efab796c543ba1ea687-5-llvmorg-23-init-10931-g20b6ec66.tar.xz",
+    "sha256": "5b4f776f6f308ac5e3f1df35cff546107d7d4843b5414294e74986f2e4dd3196"
+  },
+  "gn_args": [
+    "target_os = \"emscripten\"",
+    "target_cpu = \"wasm\"",
+    "enable_chromium_wasm_port = true",
+    "is_debug = false",
+    "symbol_level = 1",
+    "is_component_build = false",
+    "use_custom_libcxx = false",
+    "use_custom_libcxx_for_host = true",
+    "clang_base_path = \"//third_party/emsdk/upstream/bin\"",
+    "clang_use_chrome_plugins = false",
+    "clang_use_unsafe_buffers_plugin = false",
+    "use_debug_fission = false",
+    "use_remoteexec = false"
+  ]
+}

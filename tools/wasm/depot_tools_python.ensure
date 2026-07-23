@@ -1,0 +1,5 @@
+$ParanoidMode CheckPresence
+$OverrideInstallMode copy
+
+@Subdir python3
+infra/3pp/tools/cpython3/linux-amd64 MAhxD2QY9y8xtuZjfhvpi1f4bdPBEksK0MnRB7rNocwC
