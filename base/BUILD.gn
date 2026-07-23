@@ -47,12 +47,23 @@ if (is_wasm && enable_chromium_wasm_port) {
     flags = [ "USE_FUZZING_ENGINE=false" ]
   }
 
+  buildflag_header("feature_buildflags") {
+    header = "feature_buildflags.h"
+    flags = [ "ENABLE_BANNED_BASE_FEATURE_PREFIX=false" ]
+  }
+
   buildflag_header("tracing_buildflags") {
     header = "tracing_buildflags.h"
     flags = [
       "USE_PERFETTO_TRACE_PROCESSOR=false",
       "OPTIONAL_TRACE_EVENTS_ENABLED=false",
     ]
+  }
+
+  buildflag_header("synchronization_buildflags") {
+    header = "synchronization_buildflags.h"
+    header_dir = "base/synchronization"
+    flags = [ "ENABLE_MUTEX_PRIORITY_INHERITANCE=false" ]
   }
 
   config("base_wasm_public_config") {
@@ -64,13 +75,27 @@ if (is_wasm && enable_chromium_wasm_port) {
 
   # Keep the first Wasm Base graph deliberately narrow. Later M1 slices add
   # platform primitives here only after their focused runtime cases pass.
+  # The explicitly selected *_posix.cc files below are process-local pthread
+  # implementations whose required semantics are supplied by Emscripten; this
+  # does not classify Wasm as POSIX or enable descriptor/process APIs.
   source_set("base_wasm_primitives") {
     sources = [
       "check_op.cc",
       "check_wasm.cc",
+      "functional/callback_internal.cc",
       "location_wasm.cc",
       "logging_wasm.cc",
+      "memory/ref_counted.cc",
       "rand_util_wasm.cc",
+      "synchronization/condition_variable_wasm.cc",
+      "synchronization/lock.cc",
+      "synchronization/lock_impl_wasm.cc",
+      "synchronization/waitable_event_posix.cc",
+      "synchronization/waitable_event_wasm.cc",
+      "threading/platform_thread_ref.cc",
+      "threading/platform_thread_wasm.cc",
+      "threading/thread_local_storage.cc",
+      "threading/thread_local_storage_posix.cc",
       "time/time.cc",
       "time/time_override.cc",
       "time/time_wasm.cc",
@@ -80,9 +105,12 @@ if (is_wasm && enable_chromium_wasm_port) {
     public_configs = [ ":base_wasm_public_config" ]
     public_deps = [
       ":debugging_buildflags",
+      ":feature_buildflags",
       ":fuzzing_buildflags",
+      ":synchronization_buildflags",
       ":tracing_buildflags",
       "//base/allocator/partition_allocator:buildflags",
+      "//build:blink_buildflags",
     ]
     use_libcxx_modules = false
     configs -= [ "//build/config/compiler:runtime_library" ]

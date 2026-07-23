@@ -86,6 +86,9 @@ class LOCKABLE BASE_EXPORT Lock {
     // POSIX mitigates priority inversion by setting the priority of a thread
     // holding a Lock to the maximum priority of any other thread waiting on it.
     return internal::LockImpl::PriorityInheritanceAvailable();
+#elif BUILDFLAG(IS_WASM)
+    // Web Workers do not expose thread scheduling priority controls.
+    return false;
 #else
 #error Unsupported platform
 #endif

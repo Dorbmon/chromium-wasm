@@ -67,7 +67,7 @@
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <pthread.h>
 #endif
 
@@ -119,7 +119,7 @@ class BASE_EXPORT ConditionVariable {
 #if BUILDFLAG(IS_WIN)
   CHROME_CONDITION_VARIABLE cv_;
   const raw_ptr<CHROME_SRWLOCK> srwlock_;
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   pthread_cond_t condition_;
   raw_ptr<pthread_mutex_t> user_mutex_;
 #endif

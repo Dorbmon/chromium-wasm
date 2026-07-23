@@ -23,19 +23,24 @@
 #include "base/base_export.h"
 #include "base/memory/raw_ptr.h"
 #include "base/message_loop/message_pump_type.h"
-#include "base/process/process_handle.h"
 #include "base/task/thread_type.h"
 #include "base/threading/platform_thread_ref.h"
 #include "base/trace_event/base_tracing_forward.h"
 #include "build/build_config.h"
 
+#if !BUILDFLAG(IS_WASM)
+#include "base/process/process_handle.h"
+#endif
+
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_types.h"
 #elif BUILDFLAG(IS_FUCHSIA)
 #include <zircon/types.h>
-#elif BUILDFLAG(IS_POSIX)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WASM)
 #include <pthread.h>
+#if BUILDFLAG(IS_POSIX)
 #include <unistd.h>
+#endif
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
@@ -67,6 +72,8 @@ class BASE_EXPORT PlatformThreadId {
   using UnderlyingType = zx_koid_t;
 #elif BUILDFLAG(IS_APPLE)
   using UnderlyingType = uint64_t;
+#elif BUILDFLAG(IS_WASM)
+  using UnderlyingType = uintptr_t;
 #elif BUILDFLAG(IS_POSIX)
   using UnderlyingType = pid_t;
 #endif
@@ -138,7 +145,7 @@ class PlatformThreadHandle {
  public:
 #if BUILDFLAG(IS_WIN)
   typedef void* Handle;
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   typedef pthread_t Handle;
 #endif
 
@@ -147,7 +154,7 @@ class PlatformThreadHandle {
   explicit constexpr PlatformThreadHandle(Handle handle) : handle_(handle) {}
 
   bool is_equal(const PlatformThreadHandle& other) const {
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     return pthread_equal(handle_, other.handle_);
 #else
     return handle_ == other.handle_;

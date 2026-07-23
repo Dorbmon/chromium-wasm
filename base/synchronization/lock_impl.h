@@ -19,7 +19,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_types.h"
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <errno.h>
 #include <pthread.h>
 #include <string.h>
@@ -58,7 +58,7 @@ class BASE_EXPORT LockImpl {
 
 #if BUILDFLAG(IS_WIN)
   using NativeHandle = CHROME_SRWLOCK;
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   using NativeHandle = pthread_mutex_t;
 #endif
 
@@ -81,7 +81,7 @@ class BASE_EXPORT LockImpl {
   // unnecessary.
   NativeHandle* native_handle() { return &native_handle_; }
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   // Whether this lock will attempt to use priority inheritance.
   static bool PriorityInheritanceAvailable();
 #endif
@@ -141,6 +141,18 @@ void LockImpl::Unlock() {
 #if DCHECK_IS_ON()
   dcheck_unlock_result(rv);
 #endif
+}
+
+#elif BUILDFLAG(IS_WASM)
+
+bool LockImpl::Try() {
+  const int rv = pthread_mutex_trylock(&native_handle_);
+  CHECK(rv == 0 || rv == EBUSY);
+  return rv == 0;
+}
+
+void LockImpl::Unlock() {
+  CHECK(pthread_mutex_unlock(&native_handle_) == 0);
 }
 #endif
 

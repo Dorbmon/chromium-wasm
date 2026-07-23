@@ -74,6 +74,13 @@ _disable_partition_alloc_everywhere =
 
 use_allocator_shim_default = true  # Updated below:
 
+# PartitionAlloc's allocator shim has not yet been ported to Wasm. Keep malloc
+# with Emscripten and raw_ptr on its no-op backend until the allocator's 64 KiB
+# page semantics have a dedicated gate.
+if (is_wasm && enable_chromium_wasm_port) {
+  use_allocator_shim_default = false
+}
+
 # Sanitizers replace the allocator, don't use our own.
 if (is_asan || is_hwasan || is_lsan || is_tsan || is_msan) {
   use_allocator_shim_default = false
@@ -144,7 +151,8 @@ assert_cpp20_default = true
 
 # Cronet disables PartitionAlloc to reduce its binary size (crbug.com/674570).
 # TODO(crbug.com/384669394): Consider enabling it instead.
-use_partition_alloc_default = !is_cronet_build
+use_partition_alloc_default =
+    !is_cronet_build && !(is_wasm && enable_chromium_wasm_port)
 
 # On Chromecast devices, some system libraries bypass the allocator shim and
 # call free() directly on memory not managed by PartitionAlloc. This flag

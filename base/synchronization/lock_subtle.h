@@ -67,6 +67,11 @@ static inline void YieldProcessor() {
   // Manually encode the instruction to support older toolchains.
   // See also https://sourceware.org/pipermail/libc-alpha/2024-June/157737.html
   __asm__ __volatile__(".insn i 0x0f, 0, x0, x0, 0x010");
+#elif defined(ARCH_CPU_WASM_FAMILY)
+  // WebAssembly has no processor-yield hint. Keep the compiler from folding
+  // a caller's busy-wait loop while leaving scheduler yielding to blocking
+  // pthread primitives.
+  __asm__ __volatile__("" ::: "memory");
 #elif defined(ARCH_CPU_LOONGARCH_FAMILY)
   // LoongArch does not have a semantic instruction to actively relinquish
   // resources in the multi threads. In terms of backoff for spin locks,
