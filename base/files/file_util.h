@@ -31,7 +31,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_types.h"
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -72,7 +72,7 @@ class PreventExecuteMappingClasses {
 // 3) it removes "." and ".." directory components.
 BASE_EXPORT FilePath MakeAbsoluteFilePath(const FilePath& input);
 
-#if BUILDFLAG(IS_POSIX)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WASM)
 // Prepends the current working directory if `input` is not already absolute,
 // and removes "/./" and "/../" This is similar to MakeAbsoluteFilePath(), but
 // MakeAbsoluteFilePath() expands all symlinks in the path and this does not.
@@ -289,7 +289,7 @@ BASE_EXPORT bool ReadStreamToStringWithMaxSize(FILE* stream,
                                                size_t max_size,
                                                std::string* contents);
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 
 // Reads exactly as many bytes as `buffer` can hold from file descriptor `fd`
 // into `buffer`. This function is protected against EINTR and partial reads.
@@ -304,7 +304,7 @@ BASE_EXPORT bool ReadFromFD(int fd, span<char> buffer);
 BASE_EXPORT ScopedFD CreateAndOpenFdForTemporaryFileInDir(const FilePath& dir,
                                                           FilePath* path);
 
-#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#endif
 
 #if BUILDFLAG(IS_POSIX)
 
@@ -587,7 +587,7 @@ BASE_EXPORT bool WriteFile(const FilePath& filename, span<const uint8_t> data);
 // have to do manual conversions from a char span to a uint8_t span.
 BASE_EXPORT bool WriteFile(const FilePath& filename, std::string_view data);
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 // Appends |data| to |fd|. Does not close |fd| when done.  Returns true iff all
 // of |data| were written to |fd|.
 BASE_EXPORT bool WriteFileDescriptor(int fd, span<const uint8_t> data);
@@ -596,6 +596,7 @@ BASE_EXPORT bool WriteFileDescriptor(int fd, span<const uint8_t> data);
 // have to do manual conversions from a char span to a uint8_t span.
 BASE_EXPORT bool WriteFileDescriptor(int fd, std::string_view data);
 
+#if !BUILDFLAG(IS_WASM)
 // Allocates disk space for the file referred to by |fd| for the byte range
 // starting at |offset| and continuing for |size| bytes. The file size will be
 // changed if |offset|+|len| is greater than the file size. Zeros will fill the
@@ -603,6 +604,7 @@ BASE_EXPORT bool WriteFileDescriptor(int fd, std::string_view data);
 // After a successful call, subsequent writes into the specified range are
 // guaranteed not to fail because of lack of disk space.
 BASE_EXPORT bool AllocateFileRegion(File* file, int64_t offset, size_t size);
+#endif  // !BUILDFLAG(IS_WASM)
 #endif
 
 // Appends |data| to |filename|.  Returns true iff |data| were written to

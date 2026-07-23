@@ -21,7 +21,9 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
+#if !BUILDFLAG(IS_WASM)
 #include "base/trace_event/trace_event.h"
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/virtual_document_path.h"
@@ -281,9 +283,13 @@ std::atomic_bool g_fast_file_path_is_parent{false};
 void FilePath::InitializeFeatures() {
   // `std::memory_order_relaxed` because there are no dependencies with other
   // memory operations.
+#if BUILDFLAG(IS_WASM)
+  g_fast_file_path_is_parent.store(false, std::memory_order_relaxed);
+#else
   g_fast_file_path_is_parent.store(
       FeatureList::IsEnabled(features::kFastFilePathIsParent),
       std::memory_order_relaxed);
+#endif
 }
 
 FilePath::FilePath() = default;
@@ -620,7 +626,7 @@ FilePath FilePath::InsertBeforeExtensionUTF8(std::string_view suffix) const {
   DCHECK(IsStringUTF8(suffix));
 #if BUILDFLAG(IS_WIN)
   return InsertBeforeExtension(UTF8ToWide(suffix));
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return InsertBeforeExtension(suffix);
 #endif
 }
@@ -654,7 +660,7 @@ FilePath FilePath::AddExtensionUTF8(std::string_view extension) const {
   DCHECK(IsStringUTF8(extension));
 #if BUILDFLAG(IS_WIN)
   return AddExtension(UTF8ToWide(extension));
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return AddExtension(extension);
 #endif
 }
@@ -764,7 +770,7 @@ FilePath FilePath::AppendUTF8(std::string_view component) const {
   DCHECK(base::IsStringUTF8(component));
 #if BUILDFLAG(IS_WIN)
   return Append(UTF8ToWide(component));
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return Append(component);
 #endif
 }
@@ -875,7 +881,7 @@ FilePath FilePath::FromUTF16Unsafe(std::u16string_view utf16) {
   return FilePath(AsWStringView(utf16));
 }
 
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 
 // See file_path.h for a discussion of the encoding of paths on POSIX
 // platforms.  These encoding conversion functions are not quite correct.
@@ -892,7 +898,7 @@ std::string FilePath::MaybeAsASCII() const {
 }
 
 std::string FilePath::AsUTF8Unsafe() const {
-#if defined(SYSTEM_NATIVE_UTF8)
+#if defined(SYSTEM_NATIVE_UTF8) || BUILDFLAG(IS_WASM)
   return value();
 #else
   return WideToUTF8(SysNativeMBToWide(value()));
@@ -900,7 +906,7 @@ std::string FilePath::AsUTF8Unsafe() const {
 }
 
 std::u16string FilePath::AsUTF16Unsafe() const {
-#if defined(SYSTEM_NATIVE_UTF8)
+#if defined(SYSTEM_NATIVE_UTF8) || BUILDFLAG(IS_WASM)
   return UTF8ToUTF16(value());
 #else
   return WideToUTF16(SysNativeMBToWide(value()));
@@ -915,7 +921,7 @@ FilePath FilePath::FromASCII(std::string_view ascii) {
 
 // static
 FilePath FilePath::FromUTF8Unsafe(std::string_view utf8) {
-#if defined(SYSTEM_NATIVE_UTF8)
+#if defined(SYSTEM_NATIVE_UTF8) || BUILDFLAG(IS_WASM)
   return FilePath(utf8);
 #else
   return FilePath(SysWideToNativeMB(UTF8ToWide(utf8)));
@@ -924,7 +930,7 @@ FilePath FilePath::FromUTF8Unsafe(std::string_view utf8) {
 
 // static
 FilePath FilePath::FromUTF16Unsafe(std::u16string_view utf16) {
-#if defined(SYSTEM_NATIVE_UTF8)
+#if defined(SYSTEM_NATIVE_UTF8) || BUILDFLAG(IS_WASM)
   return FilePath(UTF16ToUTF8(utf16));
 #else
   return FilePath(SysWideToNativeMB(UTF16ToWide(utf16)));
@@ -936,7 +942,7 @@ FilePath FilePath::FromUTF16Unsafe(std::u16string_view utf16) {
 void FilePath::WriteToPickle(Pickle* pickle) const {
 #if BUILDFLAG(IS_WIN)
   pickle->WriteString16(AsStringPiece16(path_));
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   pickle->WriteString(path_);
 #else
 #error Unsupported platform
@@ -950,7 +956,7 @@ bool FilePath::ReadFromPickle(PickleIterator* iter) {
     return false;
   }
   path_ = UTF16ToWide(path);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   if (!iter->ReadString(&path_)) {
     return false;
   }
@@ -1569,7 +1575,7 @@ int FilePath::CompareIgnoreCase(StringViewType string1,
   return HFSFastUnicodeCompare(hfs1, hfs2);
 }
 
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 
 // Generic Posix system comparisons.
 int FilePath::CompareIgnoreCase(StringViewType string1,
@@ -1612,9 +1618,11 @@ FilePath FilePath::NormalizePathSeparators() const {
   return NormalizePathSeparatorsTo(kSeparators[0]);
 }
 
+#if !BUILDFLAG(IS_WASM)
 void FilePath::WriteIntoTrace(perfetto::TracedValue context) const {
   perfetto::WriteIntoTracedValue(std::move(context), value());
 }
+#endif
 
 FilePath FilePath::NormalizePathSeparatorsTo(
     CharType normalized_separator) const {

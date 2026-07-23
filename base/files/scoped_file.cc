@@ -7,7 +7,7 @@
 #include "base/check.h"
 #include "build/build_config.h"
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <errno.h>
 #include <unistd.h>
 
@@ -16,7 +16,7 @@
 
 namespace base::internal {
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 
 // static
 void ScopedFDCloseTraits::Free(int fd) {
@@ -45,6 +45,6 @@ void ScopedFDCloseTraits::Free(int fd) {
   PCHECK(0 == ret);
 }
 
-#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#endif
 
 }  // namespace base::internal

@@ -20,7 +20,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_types.h"
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -92,7 +92,7 @@ class BASE_EXPORT FileEnumerator {
     const WIN32_FIND_DATA& find_data() const {
       return *ChromeToWindowsType(&find_data_);
     }
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     const stat_wrapper_t& stat() const { return stat_; }
 #endif
 
@@ -105,7 +105,7 @@ class BASE_EXPORT FileEnumerator {
 #endif
 #if BUILDFLAG(IS_WIN)
     CHROME_WIN32_FIND_DATA find_data_ = {};
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     stat_wrapper_t stat_;
     FilePath filename_;
 #endif
@@ -125,7 +125,7 @@ class BASE_EXPORT FileEnumerator {
     // called.
     NAMES_ONLY = 1 << 3,
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     // Report symlinks in the enumeration. If not set, instead report their
     // targets. Recursive enumerations traverse symlinks to directories only if
     // SHOW_SYM_LINKS is not set.
@@ -248,7 +248,7 @@ class BASE_EXPORT FileEnumerator {
   CHROME_WIN32_FIND_DATA find_data_ = {};
   HANDLE find_handle_ = INVALID_HANDLE_VALUE;
 
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   // Marks the given inode as visited. Returns true if it is the first time that
   // it got marked as visited.
   bool MarkVisited(const stat_wrapper_t& st) {

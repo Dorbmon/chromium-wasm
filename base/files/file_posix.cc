@@ -23,14 +23,13 @@ static_assert(sizeof(base::stat_wrapper_t::st_size) >= 8);
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
-#include "base/feature_list.h"
 #include "base/files/file_tracing.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/posix/eintr_wrapper.h"
-#include "base/strings/utf_string_conversions.h"
+#if !BUILDFLAG(IS_WASM)
 #include "base/threading/scoped_blocking_call.h"
+#endif
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -46,6 +45,12 @@ static_assert(sizeof(base::stat_wrapper_t::st_size) >= 8);
 #endif
 
 namespace base {
+
+#if BUILDFLAG(IS_WASM)
+// This file is selected narrowly for Emscripten's MEMFS descriptor semantics.
+// Its scheduler blocking annotations join the source with the M1.2 task
+// runtime; all M1.1 calls execute on the Wasm application pthread.
+#endif
 
 // Make sure our Whence mappings match the system headers.
 static_assert(File::FROM_BEGIN == SEEK_SET && File::FROM_CURRENT == SEEK_CUR &&
@@ -95,7 +100,25 @@ int CallFtruncate(PlatformFile file, int64_t length) {
 #endif
 }
 
-int CallFutimes(PlatformFile file, const std::array<struct timeval, 2> times) {
+#if BUILDFLAG(IS_WASM)
+timespec TimeToTimespec(Time time) {
+  int64_t microseconds = (time - Time::UnixEpoch()).InMicroseconds();
+  timespec result = {
+      .tv_sec = static_cast<time_t>(
+          microseconds / Time::kMicrosecondsPerSecond),
+      .tv_nsec = static_cast<long>(
+          (microseconds % Time::kMicrosecondsPerSecond) *
+          Time::kNanosecondsPerMicrosecond),
+  };
+  if (result.tv_nsec < 0) {
+    --result.tv_sec;
+    result.tv_nsec += Time::kNanosecondsPerSecond;
+  }
+  return result;
+}
+#else
+int CallFutimes(PlatformFile file,
+                const std::array<struct timeval, 2> times) {
 #ifdef __USE_XOPEN2K8
   // futimens should be available, but futimes might not be
   // http://pubs.opengroup.org/onlinepubs/9699919799/
@@ -114,8 +137,9 @@ int CallFutimes(PlatformFile file, const std::array<struct timeval, 2> times) {
 #pragma clang diagnostic pop
 #endif
 }
+#endif  // BUILDFLAG(IS_WASM)
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 short FcntlFlockType(std::optional<File::LockMode> mode) {
   if (!mode.has_value()) {
     return F_UNLCK;
@@ -194,7 +218,8 @@ void File::Info::FromStat(const stat_wrapper_t& stat_info) {
   // creation time. However, other than on Mac & iOS where the actual file
   // creation time is included as st_birthtime, the rest of POSIX platforms have
   // no portable way to get the creation time.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
+    BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   time_t last_modified_sec = stat_info.st_mtim.tv_sec;
   int64_t last_modified_nsec = stat_info.st_mtim.tv_nsec;
   time_t last_accessed_sec = stat_info.st_atim.tv_sec;
@@ -262,7 +287,9 @@ void File::Close() {
   }
 
   SCOPED_FILE_TRACE("Close");
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
 #if BUILDFLAG(IS_ANDROID)
   if (java_parcel_file_descriptor_) {
     internal::ContentUriClose(java_parcel_file_descriptor_);
@@ -272,7 +299,9 @@ void File::Close() {
 }
 
 int64_t File::Seek(Whence whence, int64_t offset) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
 
   SCOPED_FILE_TRACE_WITH_SIZE("Seek", offset);
@@ -281,7 +310,9 @@ int64_t File::Seek(Whence whence, int64_t offset) {
 }
 
 int File::Read(int64_t offset, char* data, int size) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
   if (!IsReadWriteRangeValid(offset, size)) {
     return -1;
@@ -306,7 +337,9 @@ int File::Read(int64_t offset, char* data, int size) {
 }
 
 int File::ReadAtCurrentPos(char* data, int size) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
   if (size < 0) {
     return -1;
@@ -331,7 +364,9 @@ int File::ReadAtCurrentPos(char* data, int size) {
 
 std::optional<size_t> File::ReadNoBestEffort(int64_t offset,
                                              base::span<uint8_t> data) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
   if (!IsValueInRangeForNumericType<off_t>(offset)) {
     return std::nullopt;
@@ -349,7 +384,9 @@ std::optional<size_t> File::ReadNoBestEffort(int64_t offset,
 
 std::optional<size_t> File::ReadAtCurrentPosNoBestEffort(
     base::span<uint8_t> data) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
 
   SCOPED_FILE_TRACE_WITH_SIZE("ReadAtCurrentPosNoBestEffort",
@@ -363,7 +400,9 @@ std::optional<size_t> File::ReadAtCurrentPosNoBestEffort(
 }
 
 int File::Write(int64_t offset, const char* data, int size) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
 
   if (IsOpenAppend(file_.get())) {
     return WriteAtCurrentPos(data, size);
@@ -394,7 +433,9 @@ int File::Write(int64_t offset, const char* data, int size) {
 }
 
 int File::WriteAtCurrentPos(const char* data, int size) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
   if (size < 0) {
     return -1;
@@ -419,7 +460,9 @@ int File::WriteAtCurrentPos(const char* data, int size) {
 
 std::optional<size_t> File::WriteAtCurrentPosNoBestEffort(
     base::span<const uint8_t> data) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
 
   SCOPED_FILE_TRACE_WITH_SIZE("WriteAtCurrentPosNoBestEffort",
@@ -446,7 +489,9 @@ int64_t File::GetLength() const {
 }
 
 bool File::SetLength(int64_t length) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
 
   SCOPED_FILE_TRACE_WITH_SIZE("SetLength", length);
@@ -454,16 +499,24 @@ bool File::SetLength(int64_t length) {
 }
 
 bool File::SetTimes(Time last_access_time, Time last_modified_time) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
 
   SCOPED_FILE_TRACE("SetTimes");
 
+#if BUILDFLAG(IS_WASM)
+  const std::array<timespec, 2> times = {
+      TimeToTimespec(last_access_time), TimeToTimespec(last_modified_time)};
+  return !futimens(file_.get(), times.data());
+#else
   std::array<timeval, 2> times;
   times[0] = last_access_time.ToTimeVal();
   times[1] = last_modified_time.ToTimeVal();
 
   return !CallFutimes(file_.get(), times);
+#endif
 }
 
 bool File::GetInfo(Info* info) const {
@@ -498,7 +551,7 @@ bool File::GetInfo(Info* info) const {
   return success;
 }
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 File::Error File::Lock(File::LockMode mode) {
   SCOPED_FILE_TRACE("Lock");
   return CallFcntlFlock(file_.get(), mode);
@@ -560,8 +613,20 @@ File::Error File::OSErrorToFileError(int saved_errno) {
 
 // TODO(erikkay): does it make sense to support FLAG_EXCLUSIVE_* here?
 void File::DoInitialize(const FilePath& path, uint32_t flags) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(!IsValid());
+
+#if BUILDFLAG(IS_WASM)
+  // Emscripten does not provide serial devices. Reject the request rather than
+  // accepting terminal flags that the virtual filesystem cannot honor.
+  if (flags & FLAG_TERMINAL_DEVICE) {
+    errno = ENOTSUP;
+    error_details_ = FILE_ERROR_INVALID_OPERATION;
+    return;
+  }
+#endif
 
   int open_flags = 0;
   if (flags & FLAG_CREATE) {
@@ -665,11 +730,18 @@ void File::DoInitialize(const FilePath& path, uint32_t flags) {
 }
 
 bool File::Flush() {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   DCHECK(IsValid());
   SCOPED_FILE_TRACE("Flush");
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS) || \
+#if BUILDFLAG(IS_WASM)
+  // On MEMFS, fsync() makes any mount-level synchronization request supported
+  // by the runtime. A successful return only means the in-memory state is
+  // visible; it does not promise durability across a page reload.
+  return !HANDLE_EINTR(fsync(file_.get()));
+#elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS) || \
     BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_LINUX)
   return !HANDLE_EINTR(fdatasync(file_.get()));
 #elif BUILDFLAG(IS_APPLE)
@@ -713,7 +785,9 @@ File::Error File::GetLastFileError() {
 }
 
 int File::Stat(const FilePath& path, stat_wrapper_t* sb) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
 #if BUILDFLAG(IS_ANDROID)
   if (path.IsContentUri() || path.IsVirtualDocumentPath()) {
     std::optional<FilePath> content_uri = base::ResolveToContentUri(path);
@@ -748,11 +822,15 @@ int File::Stat(const FilePath& path, stat_wrapper_t* sb) {
   return stat(path.value().c_str(), sb);
 }
 int File::Fstat(int fd, stat_wrapper_t* sb) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   return fstat(fd, sb);
 }
 int File::Lstat(const FilePath& path, stat_wrapper_t* sb) {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
   return lstat(path.value().c_str(), sb);
 }
 

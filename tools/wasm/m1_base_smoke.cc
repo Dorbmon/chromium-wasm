@@ -7,12 +7,21 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <string>
+#include <vector>
 
+#include "base/base_paths.h"
 #include "base/containers/span.h"
+#include "base/files/file.h"
+#include "base/files/file_enumerator.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/path_service.h"
 #include "base/rand_util.h"
 #include "base/synchronization/condition_variable.h"
 #include "base/synchronization/lock.h"
@@ -75,6 +84,303 @@ bool WaitUntil(Predicate predicate, base::TimeDelta timeout = kPhaseTimeout) {
 
 bool HasNonZeroByte(base::span<const uint8_t> bytes) {
   return std::ranges::any_of(bytes, [](uint8_t byte) { return byte != 0; });
+}
+
+bool ReadAllBytes(const base::FilePath& path, std::vector<uint8_t>* contents) {
+  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
+  if (!file.IsValid()) {
+    return false;
+  }
+
+  const int64_t length = file.GetLength();
+  if (length < 0 || length > 4096) {
+    return false;
+  }
+  contents->assign(static_cast<size_t>(length), 0);
+  return file.ReadAtCurrentPosAndCheck(base::span(*contents));
+}
+
+void TestPathsAndFiles() {
+  BeginPhase("paths_files");
+
+  base::FilePath current_path;
+  base::FilePath temp_path;
+  base::FilePath home_path;
+  Require(base::PathService::Get(base::DIR_CURRENT, &current_path),
+          "path_current_unavailable");
+  Require(current_path.IsAbsolute() && base::DirectoryExists(current_path),
+          "path_current_invalid");
+  Require(base::PathService::Get(base::DIR_TEMP, &temp_path),
+          "path_temp_unavailable");
+  Require(temp_path == base::FilePath("/tmp") &&
+              base::DirectoryExists(temp_path),
+          "path_temp_invalid");
+  Require(base::PathService::Get(base::DIR_HOME, &home_path),
+          "path_home_unavailable");
+  Require(home_path == base::FilePath("/home/web_user") &&
+              base::DirectoryExists(home_path),
+          "path_home_invalid");
+
+  base::FilePath direct_temp_path;
+  Require(base::GetTempDir(&direct_temp_path) &&
+              direct_temp_path == temp_path,
+          "get_temp_dir_mismatch");
+  Require(base::GetHomeDir() == home_path, "get_home_dir_mismatch");
+
+  const base::FilePath untouched_path("unchanged-on-failure");
+  base::FilePath executable_path = untouched_path;
+  Require(!base::PathService::Get(base::FILE_EXE, &executable_path) &&
+              executable_path == untouched_path,
+          "path_executable_claimed_supported");
+  base::FilePath module_path = untouched_path;
+  Require(!base::PathService::Get(base::FILE_MODULE, &module_path) &&
+              module_path == untouched_path,
+          "path_module_claimed_supported");
+
+  base::FilePath workspace;
+  Require(base::CreateTemporaryDirInDir(temp_path, "m1-base-smoke",
+                                        &workspace),
+          "temp_workspace_create");
+  Require(workspace.IsAbsolute() && temp_path.IsParent(workspace) &&
+              workspace.DirName() == temp_path &&
+              base::DirectoryExists(workspace),
+          "temp_workspace_invalid");
+
+  const base::FilePath empty_path = workspace.Append("empty.bin");
+  Require(base::WriteFile(empty_path, base::span<const uint8_t>()),
+          "empty_file_create");
+  std::vector<uint8_t> observed;
+  Require(ReadAllBytes(empty_path, &observed) && observed.empty(),
+          "empty_file_round_trip");
+  base::File::Info empty_info;
+  Require(base::GetFileInfo(empty_path, &empty_info) &&
+              !empty_info.is_directory && empty_info.size == 0,
+          "empty_file_stat");
+
+  constexpr std::array<uint8_t, 8> kInitialData{
+      0x10, 0x20, 0x00, 0x40, 0x50, 0x60, 0x70, 0x80};
+  constexpr std::array<uint8_t, 3> kMiddlePatch{0xA0, 0x00, 0xB0};
+  constexpr std::array<uint8_t, 3> kAppendData{0xC0, 0x00, 0xD0};
+  constexpr size_t kSmallerLength = 7;
+  constexpr size_t kLargerLength = 13;
+
+  const base::FilePath binary_path = workspace.Append("binary.bin");
+  Require(base::WriteFile(binary_path, base::span(kInitialData)),
+          "binary_file_create");
+  Require(ReadAllBytes(binary_path, &observed) &&
+              observed ==
+                  std::vector<uint8_t>(kInitialData.begin(), kInitialData.end()),
+          "binary_file_initial_round_trip");
+
+  std::vector<uint8_t> expected(kInitialData.begin(), kInitialData.end());
+  {
+    base::File file(binary_path, base::File::FLAG_OPEN |
+                                     base::File::FLAG_READ |
+                                     base::File::FLAG_WRITE);
+    Require(file.IsValid(), "binary_file_open_read_write");
+    Require(file.Seek(base::File::FROM_END, 0) ==
+                static_cast<int64_t>(expected.size()),
+            "binary_file_seek_end");
+    Require(file.Seek(base::File::FROM_BEGIN, 3) == 3,
+            "binary_file_seek_middle");
+    Require(file.WriteAtCurrentPosAndCheck(base::span(kMiddlePatch)),
+            "binary_file_middle_write");
+    Require(file.Seek(base::File::FROM_CURRENT, 0) == 6,
+            "binary_file_seek_after_middle_write");
+    std::copy(kMiddlePatch.begin(), kMiddlePatch.end(), expected.begin() + 3);
+
+    std::array<uint8_t, kInitialData.size()> in_place_observed{};
+    Require(file.Seek(base::File::FROM_BEGIN, 0) == 0,
+            "binary_file_seek_begin");
+    Require(file.ReadAtCurrentPosAndCheck(base::span(in_place_observed)) &&
+                std::ranges::equal(in_place_observed, expected),
+            "binary_file_middle_round_trip");
+  }
+
+  {
+    base::File file(binary_path,
+                    base::File::FLAG_OPEN | base::File::FLAG_APPEND);
+    Require(file.IsValid(), "binary_file_open_append");
+    Require(file.Seek(base::File::FROM_BEGIN, 0) == 0,
+            "binary_file_append_seek");
+    Require(file.WriteAtCurrentPosAndCheck(base::span(kAppendData)),
+            "binary_file_append");
+    expected.insert(expected.end(), kAppendData.begin(), kAppendData.end());
+    Require(file.GetLength() == static_cast<int64_t>(expected.size()),
+            "binary_file_append_length");
+  }
+
+  {
+    base::File file(binary_path, base::File::FLAG_OPEN |
+                                     base::File::FLAG_READ |
+                                     base::File::FLAG_WRITE);
+    Require(file.IsValid(), "binary_file_open_truncate");
+    Require(file.SetLength(kSmallerLength) &&
+                file.GetLength() == static_cast<int64_t>(kSmallerLength),
+            "binary_file_truncate_smaller");
+    expected.resize(kSmallerLength);
+
+    std::array<uint8_t, kSmallerLength> smaller_observed{};
+    Require(file.ReadAndCheck(0, base::span(smaller_observed)) &&
+                std::ranges::equal(smaller_observed, expected),
+            "binary_file_truncate_smaller_content");
+
+    Require(file.SetLength(kLargerLength) &&
+                file.GetLength() == static_cast<int64_t>(kLargerLength),
+            "binary_file_truncate_larger");
+    expected.resize(kLargerLength, 0);
+    Require(file.Flush(), "binary_file_flush");
+  }
+
+  Require(ReadAllBytes(binary_path, &observed) && observed == expected,
+          "binary_file_flush_reopen_round_trip");
+  Require(std::ranges::all_of(
+              base::span(observed).subspan(kSmallerLength),
+              [](uint8_t byte) { return byte == 0; }),
+          "binary_file_growth_not_zero_filled");
+
+  const base::FilePath renamed_path = workspace.Append("renamed.bin");
+  base::File::Error replace_error = base::File::FILE_ERROR_FAILED;
+  Require(base::ReplaceFile(binary_path, renamed_path, &replace_error),
+          "binary_file_rename");
+  Require(!base::PathExists(binary_path) && base::PathExists(renamed_path),
+          "binary_file_rename_paths");
+  base::File::Info renamed_info;
+  Require(base::GetFileInfo(renamed_path, &renamed_info) &&
+              !renamed_info.is_directory &&
+              !renamed_info.is_symbolic_link &&
+              renamed_info.size == static_cast<int64_t>(kLargerLength),
+          "binary_file_renamed_stat");
+
+  const base::FilePath nested_path = workspace.Append("nested");
+  const base::FilePath deeper_path = nested_path.Append("deeper");
+  Require(base::CreateDirectoryAndGetError(deeper_path, nullptr) &&
+              base::DirectoryExists(nested_path) &&
+              base::DirectoryExists(deeper_path),
+          "nested_directories_create");
+  base::File::Info deeper_info;
+  Require(base::GetFileInfo(deeper_path, &deeper_info) &&
+              deeper_info.is_directory,
+          "nested_directory_stat");
+
+  constexpr std::array<uint8_t, 4> kChildData{0x51, 0x00, 0x52, 0x53};
+  constexpr std::array<uint8_t, 3> kLeafData{0x61, 0x62, 0x63};
+  const base::FilePath child_path = nested_path.Append("child.bin");
+  const base::FilePath leaf_path = deeper_path.Append("leaf.bin");
+  Require(base::WriteFile(child_path, base::span(kChildData)),
+          "nested_child_write");
+  Require(base::WriteFile(leaf_path, base::span(kLeafData)),
+          "nested_leaf_write");
+
+  const std::set<std::string> expected_entries{
+      "empty.bin",       "nested/",        "nested/child.bin",
+      "nested/deeper/",  "nested/deeper/leaf.bin",
+      "renamed.bin",
+  };
+  std::set<std::string> actual_entries;
+  base::FileEnumerator enumerator(
+      workspace, /*recursive=*/true,
+      base::FileEnumerator::FILES | base::FileEnumerator::DIRECTORIES,
+      base::FilePath::StringType(),
+      base::FileEnumerator::FolderSearchPolicy::MATCH_ONLY,
+      base::FileEnumerator::ErrorPolicy::STOP_ENUMERATION);
+  for (base::FilePath entry = enumerator.Next(); !entry.empty();
+       entry = enumerator.Next()) {
+    base::FilePath relative;
+    Require(workspace.AppendRelativePath(entry, &relative),
+            "recursive_enumeration_relative_path");
+    std::string key = relative.value();
+    if (enumerator.GetInfo().IsDirectory()) {
+      key.push_back('/');
+    }
+    Require(actual_entries.insert(std::move(key)).second,
+            "recursive_enumeration_duplicate");
+  }
+  Require(enumerator.GetError() == base::File::FILE_OK,
+          "recursive_enumeration_error");
+  Require(actual_entries == expected_entries,
+          "recursive_enumeration_set_mismatch");
+
+  const base::FilePath missing_path = workspace.Append("missing.bin");
+  Require(!base::PathExists(missing_path), "missing_file_exists");
+  base::File missing_file(missing_path,
+                          base::File::FLAG_OPEN | base::File::FLAG_READ);
+  Require(!missing_file.IsValid() &&
+              missing_file.error_details() ==
+                  base::File::FILE_ERROR_NOT_FOUND,
+          "missing_file_open_error");
+  base::File::Info missing_info;
+  Require(!base::GetFileInfo(missing_path, &missing_info),
+          "missing_file_stat_succeeded");
+  Require(base::DeleteFile(missing_path), "missing_file_delete_not_idempotent");
+
+  base::File duplicate_create(empty_path,
+                              base::File::FLAG_CREATE |
+                                  base::File::FLAG_WRITE);
+  Require(!duplicate_create.IsValid() &&
+              duplicate_create.error_details() ==
+                  base::File::FILE_ERROR_EXISTS,
+          "existing_file_create_error");
+
+  const base::FilePath missing_directory =
+      workspace.Append("missing-directory");
+  base::FileEnumerator missing_enumerator(
+      missing_directory, /*recursive=*/true, base::FileEnumerator::FILES,
+      base::FilePath::StringType(),
+      base::FileEnumerator::FolderSearchPolicy::MATCH_ONLY,
+      base::FileEnumerator::ErrorPolicy::STOP_ENUMERATION);
+  Require(missing_enumerator.Next().empty() &&
+              missing_enumerator.GetError() ==
+                  base::File::FILE_ERROR_NOT_FOUND,
+          "missing_directory_enumeration_error");
+
+  const base::FilePath parent_reference =
+      nested_path.Append(base::FilePath::kParentDirectory)
+          .Append("parent-denied.bin");
+  Require(parent_reference.ReferencesParent(),
+          "parent_reference_not_detected");
+  errno = 0;
+  base::File parent_denied(parent_reference,
+                           base::File::FLAG_CREATE_ALWAYS |
+                               base::File::FLAG_WRITE);
+  const int parent_error = errno;
+  Require(!parent_denied.IsValid() &&
+              parent_denied.error_details() ==
+                  base::File::FILE_ERROR_ACCESS_DENIED &&
+              parent_error == EACCES,
+          "parent_reference_not_denied");
+  Require(!base::PathExists(workspace.Append("parent-denied.bin")),
+          "parent_reference_created_file");
+
+  base::File lock_file(renamed_path, base::File::FLAG_OPEN |
+                                         base::File::FLAG_READ |
+                                         base::File::FLAG_WRITE);
+  Require(lock_file.IsValid(), "lock_file_open");
+  Require(lock_file.Lock(base::File::LockMode::kShared) ==
+                  base::File::FILE_ERROR_INVALID_OPERATION &&
+              lock_file.Lock(base::File::LockMode::kExclusive) ==
+                  base::File::FILE_ERROR_INVALID_OPERATION &&
+              lock_file.Unlock() ==
+                  base::File::FILE_ERROR_INVALID_OPERATION,
+          "file_lock_not_explicitly_unsupported");
+
+  const base::PlatformFile closed_descriptor = lock_file.GetPlatformFile();
+  Require(closed_descriptor != base::kInvalidPlatformFile,
+          "closed_descriptor_invalid_before_close");
+  lock_file.Close();
+  Require(!lock_file.IsValid(), "file_close_did_not_invalidate");
+  base::stat_wrapper_t closed_descriptor_info;
+  errno = 0;
+  const int closed_descriptor_result =
+      base::File::Fstat(closed_descriptor, &closed_descriptor_info);
+  const int closed_descriptor_error = errno;
+  Require(closed_descriptor_result == -1 &&
+              closed_descriptor_error == EBADF,
+          "closed_descriptor_not_ebadf");
+
+  Require(base::DeletePathRecursively(workspace),
+          "temp_workspace_cleanup_failed");
+  Require(!base::PathExists(workspace), "temp_workspace_still_exists");
 }
 
 struct TlsPayload {
@@ -766,6 +1072,7 @@ int main() {
   TestConditionVariable();
   TestWaitableEvent();
   TestBidirectionalHandshake();
+  TestPathsAndFiles();
 
   std::fprintf(stdout, "%s:RUNTIME_END\n", kPrefix);
   std::fprintf(
@@ -776,7 +1083,16 @@ int main() {
       "atomic_handoff=ok tls=ok tls_destructors=ok lock=ok lock_try=ok "
       "condition_signal=ok condition_broadcast=ok condition_timeout=ok "
       "event_manual=ok event_auto=ok event_reset=ok event_timeout=ok "
-      "event_wait_many=ok bidirectional=ok joins=ok browser_main_free=ok\n",
+      "event_wait_many=ok bidirectional=ok joins=ok path_current=ok "
+      "path_temp=ok path_home=ok path_executable=unsupported "
+      "path_module=unsupported temp_workspace=ok file_empty=ok "
+      "filesystem=memfs file_binary_nul=ok file_seek=ok "
+      "file_middle_overwrite=ok file_append=ok file_truncate=ok "
+      "file_zero_fill=ok file_flush=memfs_only file_reopen=ok "
+      "file_rename_stat=ok "
+      "directories=ok enumeration=ok file_errors=ok "
+      "parent_traversal=denied file_lock=invalid_operation "
+      "closed_fd=ebadf cleanup=ok browser_main_free=ok\n",
       kPrefix);
   std::fprintf(stdout, "%s:PASS\n", kPrefix);
   std::fflush(stdout);

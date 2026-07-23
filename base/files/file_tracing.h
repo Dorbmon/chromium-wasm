@@ -8,11 +8,19 @@
 #include <stdint.h>
 
 #include "base/base_export.h"
+#include "build/build_config.h"
+
+#define FILE_TRACING_PREFIX "File"
+
+#if BUILDFLAG(IS_WASM)
+// The M1 Base slice deliberately omits Perfetto. File tracing is restored when
+// the task runtime and tracing dependencies are selected later in the port.
+#define SCOPED_FILE_TRACE_WITH_SIZE(name, size) ((void)0)
+#define SCOPED_FILE_TRACE(name) ((void)0)
+#else
 #include "base/memory/raw_ptr.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/perfetto/include/perfetto/tracing/string_helpers.h"
-
-#define FILE_TRACING_PREFIX "File"
 
 #define SCOPED_FILE_TRACE_WITH_SIZE(name, size)          \
   TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("file"),         \
@@ -21,5 +29,6 @@
               this->path_.AsUTF8Unsafe(), "size", size);
 
 #define SCOPED_FILE_TRACE(name) SCOPED_FILE_TRACE_WITH_SIZE(name, 0)
+#endif
 
 #endif  // BASE_FILES_FILE_TRACING_H_

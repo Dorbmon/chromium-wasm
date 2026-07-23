@@ -123,7 +123,7 @@ class BASE_EXPORT File {
   struct BASE_EXPORT Info {
     Info();
     ~Info();
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     // Fills this struct with values from |stat_info|.
     void FromStat(const stat_wrapper_t& stat_info);
 #endif
@@ -371,7 +371,7 @@ class BASE_EXPORT File {
 
   // Precondition: last_error is not 0, also known as ERROR_SUCCESS.
   static Error OSErrorToFileError(DWORD last_error);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   // Precondition: saved_errno is not 0.
   static Error OSErrorToFileError(int saved_errno);
 #endif
@@ -385,7 +385,7 @@ class BASE_EXPORT File {
   // Converts an error value to a human-readable form. Used for logging.
   static std::string ErrorToString(Error error);
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   // Wrapper for stat().
   static int Stat(const FilePath& path, stat_wrapper_t* sb);
   // Wrapper for fstat().

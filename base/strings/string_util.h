@@ -638,7 +638,7 @@ BASE_EXPORT std::u16string ReplaceStringPlaceholders(
 
 #if BUILDFLAG(IS_WIN)
 #include "base/strings/string_util_win.h"
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include "base/strings/string_util_posix.h"
 #else
 #error Define string operations appropriately for your platform

@@ -13,10 +13,12 @@
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/timer/elapsed_timer.h"
+#if !BUILDFLAG(IS_WASM)
 #include "base/trace_event/trace_event.h"
+#endif
 #include "build/build_config.h"
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <errno.h>
 #endif
 
@@ -39,14 +41,14 @@ File::File(PlatformFile platform_file) : File(platform_file, false) {}
 
 File::File(ScopedPlatformFile platform_file, bool async)
     : file_(std::move(platform_file)), error_details_(FILE_OK), async_(async) {
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   DCHECK_GE(file_.get(), -1);
 #endif
 }
 
 File::File(PlatformFile platform_file, bool async)
     : file_(platform_file), error_details_(FILE_OK), async_(async) {
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   DCHECK_GE(platform_file, -1);
 #endif
 }
@@ -87,7 +89,7 @@ void File::Initialize(const FilePath& path, uint32_t flags) {
   if (path.ReferencesParent()) {
 #if BUILDFLAG(IS_WIN)
     ::SetLastError(ERROR_ACCESS_DENIED);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     errno = EACCES;
 #else
 #error Unsupported platform
@@ -95,9 +97,11 @@ void File::Initialize(const FilePath& path, uint32_t flags) {
     error_details_ = FILE_ERROR_ACCESS_DENIED;
     return;
   }
+#if !BUILDFLAG(IS_WASM)
   if (TRACE_EVENT_CATEGORY_ENABLED(TRACE_DISABLED_BY_DEFAULT("file"))) {
     path_ = path;
   }
+#endif
   SCOPED_FILE_TRACE("Initialize");
   DoInitialize(path, flags);
 }
@@ -206,6 +210,7 @@ std::string File::ErrorToString(Error error) {
   NOTREACHED();
 }
 
+#if !BUILDFLAG(IS_WASM)
 void File::WriteIntoTrace(perfetto::TracedValue context) const {
   auto dict = std::move(context).WriteDictionary();
   dict.Add("is_valid", IsValid());
@@ -213,5 +218,6 @@ void File::WriteIntoTrace(perfetto::TracedValue context) const {
   dict.Add("async", async_);
   dict.Add("error_details", ErrorToString(error_details_));
 }
+#endif
 
 }  // namespace base

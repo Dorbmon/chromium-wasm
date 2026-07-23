@@ -12,7 +12,9 @@
 
 #include "base/compiler_specific.h"
 #include "base/logging.h"
+#if !BUILDFLAG(IS_WASM)
 #include "base/threading/scoped_blocking_call.h"
+#endif
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -22,6 +24,11 @@
 
 namespace base {
 namespace {
+
+#if BUILDFLAG(IS_WASM)
+// MEMFS enumeration runs on the Wasm application pthread. Scheduler blocking
+// annotations join this source when the M1.2 task runtime is selected.
+#endif
 
 bool GetStat(const FilePath& path, bool show_links, stat_wrapper_t* st) {
   DCHECK(st);
@@ -170,7 +177,9 @@ FileEnumerator::FileEnumerator(const FilePath& root_path,
 FileEnumerator::~FileEnumerator() = default;
 
 FilePath FileEnumerator::Next() {
+#if !BUILDFLAG(IS_WASM)
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+#endif
 
   ++current_directory_entry_;
 

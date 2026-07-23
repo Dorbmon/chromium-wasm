@@ -4,6 +4,7 @@
 
 #include "base/path_service.h"
 
+#include <map>
 #include <utility>
 
 #include "base/check_op.h"
@@ -14,7 +15,9 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/synchronization/lock.h"
 #include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#endif
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -32,7 +35,11 @@ namespace base {
 // Custom behaviour providers.
 bool EnvOverridePathProvider(int key, FilePath* result);
 
+#if BUILDFLAG(IS_WASM)
+bool PathProviderWasm(int key, FilePath* result);
+#else
 bool PathProvider(int key, FilePath* result);
+#endif
 
 #if BUILDFLAG(IS_WIN)
 bool PathProviderWin(int key, FilePath* result);
@@ -52,7 +59,13 @@ bool PathProviderPosix(int key, FilePath* result);
 
 namespace {
 
+#if BUILDFLAG(IS_WASM)
+// Keep the M1 dependency graph small; PathService has only a handful of keys
+// here and does not need Abseil's hash-table implementation.
+using PathMap = std::map<int, FilePath>;
+#else
 using PathMap = absl::flat_hash_map<int, FilePath>;
+#endif
 
 // We keep a linked list of providers.  In a debug build we ensure that no two
 // providers claim overlapping keys.
@@ -71,7 +84,11 @@ struct Provider {
   bool is_static;
 };
 
+#if BUILDFLAG(IS_WASM)
+Provider base_provider = {PathProviderWasm, nullptr,
+#else
 Provider base_provider = {PathProvider, nullptr,
+#endif
 #ifndef NDEBUG
                           PATH_START, PATH_END,
 #endif
@@ -153,6 +170,8 @@ struct PathData {
     providers = &base_provider_android;
 #elif BUILDFLAG(IS_FUCHSIA)
     providers = &base_provider_fuchsia;
+#elif BUILDFLAG(IS_WASM)
+    providers = &base_provider;
 #elif BUILDFLAG(IS_POSIX)
     providers = &base_provider_posix;
 #endif

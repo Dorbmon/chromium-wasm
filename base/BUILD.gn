@@ -76,16 +76,27 @@ if (is_wasm && enable_chromium_wasm_port) {
   # Keep the first Wasm Base graph deliberately narrow. Later M1 slices add
   # platform primitives here only after their focused runtime cases pass.
   # The explicitly selected *_posix.cc files below are process-local pthread
-  # implementations whose required semantics are supplied by Emscripten; this
-  # does not classify Wasm as POSIX or enable descriptor/process APIs.
+  # or virtual-filesystem implementations whose required semantics are supplied
+  # by Emscripten; this does not classify Wasm as POSIX or enable native
+  # process APIs.
   source_set("base_wasm_primitives") {
     sources = [
+      "base_paths_wasm.cc",
       "check_op.cc",
       "check_wasm.cc",
+      "files/file.cc",
+      "files/file_enumerator.cc",
+      "files/file_enumerator_posix.cc",
+      "files/file_path.cc",
+      "files/file_posix.cc",
+      "files/file_util_wasm.cc",
+      "files/file_wasm.cc",
+      "files/scoped_file.cc",
       "functional/callback_internal.cc",
       "location_wasm.cc",
       "logging_wasm.cc",
       "memory/ref_counted.cc",
+      "path_service.cc",
       "rand_util_wasm.cc",
       "synchronization/condition_variable_wasm.cc",
       "synchronization/lock.cc",
