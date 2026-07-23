@@ -23,7 +23,9 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/boringssl/src/include/openssl/rand.h"
+#endif
 
 namespace memory_simulator {
 class MemoryHolder;
@@ -195,8 +197,12 @@ class NonAllocatingRandomBitGenerator {
   static constexpr result_type max() { return UINT64_MAX; }
   result_type operator()() const {
     uint64_t result;
+#if BUILDFLAG(IS_WASM)
+    RandBytes(byte_span_from_ref(result));
+#else
     RAND_get_system_entropy_for_custom_prng(reinterpret_cast<uint8_t*>(&result),
                                             sizeof(result));
+#endif
     return result;
   }
 

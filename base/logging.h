@@ -404,7 +404,7 @@ constexpr LogSeverity LOGGING_0 = LOGGING_ERROR;
   ::logging::Win32ErrorLogMessage(__FILE__, __LINE__, -(verbose_level), \
                                   ::logging::GetLastSystemErrorCode())  \
       .stream()
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #define VPLOG_STREAM(verbose_level)                                \
   ::logging::ErrnoLogMessage(__FILE__, __LINE__, -(verbose_level), \
                              ::logging::GetLastSystemErrorCode())  \
@@ -429,7 +429,7 @@ constexpr LogSeverity LOGGING_0 = LOGGING_ERROR;
   COMPACT_GOOGLE_LOG_EX_##severity(Win32ErrorLogMessage,                \
                                    ::logging::GetLastSystemErrorCode()) \
       .stream()
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #define PLOG_STREAM(severity)                                           \
   COMPACT_GOOGLE_LOG_EX_##severity(ErrnoLogMessage,                     \
                                    ::logging::GetLastSystemErrorCode()) \
@@ -589,7 +589,7 @@ class LogMessageVoidify {
 
 #if BUILDFLAG(IS_WIN)
 typedef unsigned long SystemErrorCode;
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 typedef int SystemErrorCode;
 #endif
 
@@ -625,7 +625,7 @@ class BASE_EXPORT Win32ErrorLogMessageFatal final
   [[noreturn]] ~Win32ErrorLogMessageFatal() override;
 };
 
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 // Appends a formatted system message of the errno type
 class BASE_EXPORT ErrnoLogMessage : public LogMessage {
  public:

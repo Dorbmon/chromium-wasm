@@ -17,11 +17,81 @@
 # a bit easier to see which files apply in which cases rather than having a
 # huge sequence of random-looking conditionals.
 
+import("//build/buildflag_header.gni")
+
+if (is_wasm && enable_chromium_wasm_port) {
+  buildflag_header("debugging_buildflags") {
+    header = "debugging_buildflags.h"
+    header_dir = "base/debug"
+    flags = [
+      "DCHECK_IS_CONFIGURABLE=false",
+      "ENABLE_PROFILING=false",
+      "CAN_UNWIND_WITH_FRAME_POINTERS=false",
+      "UNSAFE_DEVELOPER_BUILD=true",
+      "CAN_UNWIND_WITH_CFI_TABLE=false",
+      "EXCLUDE_UNWIND_TABLES=false",
+      "ENABLE_GDBINIT_WARNING=false",
+      "ENABLE_LLDBINIT_WARNING=false",
+      "EXPENSIVE_DCHECKS_ARE_ON=false",
+      "ENABLE_STACK_TRACE_LINE_NUMBERS=false",
+      "ENABLE_COMMANDLINE_SEQUENCE_CHECKS=false",
+      "ENABLE_ALLOCATION_STACK_TRACE_RECORDER=false",
+      "ENABLE_ALLOCATION_TRACE_RECORDER_FULL_REPORTING=false",
+      "PRINT_UNSYMBOLIZED_STACK_TRACES=false",
+      "ENABLE_CHECK_ELISION_WARNING=false",
+    ]
+  }
+
+  buildflag_header("fuzzing_buildflags") {
+    header = "fuzzing_buildflags.h"
+    flags = [ "USE_FUZZING_ENGINE=false" ]
+  }
+
+  buildflag_header("tracing_buildflags") {
+    header = "tracing_buildflags.h"
+    flags = [
+      "USE_PERFETTO_TRACE_PROCESSOR=false",
+      "OPTIONAL_TRACE_EVENTS_ENABLED=false",
+    ]
+  }
+
+  config("base_wasm_public_config") {
+    include_dirs = [
+      "allocator/partition_allocator/src",
+      "//third_party/abseil-cpp",
+    ]
+  }
+
+  # Keep the first Wasm Base graph deliberately narrow. Later M1 slices add
+  # platform primitives here only after their focused runtime cases pass.
+  source_set("base_wasm_primitives") {
+    sources = [
+      "check_op.cc",
+      "check_wasm.cc",
+      "location_wasm.cc",
+      "logging_wasm.cc",
+      "rand_util_wasm.cc",
+      "time/time.cc",
+      "time/time_override.cc",
+      "time/time_wasm.cc",
+    ]
+
+    defines = [ "BASE_IMPLEMENTATION" ]
+    public_configs = [ ":base_wasm_public_config" ]
+    public_deps = [
+      ":debugging_buildflags",
+      ":fuzzing_buildflags",
+      ":tracing_buildflags",
+      "//base/allocator/partition_allocator:buildflags",
+    ]
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+} else {
 import("//base/allocator/allocator.gni")
 import("//base/allocator/partition_allocator/partition_alloc.gni")
 import("//base/debug/debug.gni")
 import("//base/trace_event/tracing.gni")
-import("//build/buildflag_header.gni")
 import("//build/config/arm.gni")
 import("//build/config/c++/c++.gni")
 import("//build/config/cast.gni")
@@ -6430,4 +6500,5 @@ process_version("check_version_internal") {
       "NEXT_VERSION_MAJOR=\"9999\"",
     ]
   }
+}
 }

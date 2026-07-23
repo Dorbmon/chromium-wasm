@@ -10,7 +10,10 @@
 
 if (enable_chromium_wasm_port && target_os == "emscripten") {
   group("gn_all") {
-    deps = [ "//wasm:hello_wasm($default_toolchain)" ]
+    deps = [
+      "//tools/wasm:m1_base_smoke($default_toolchain)",
+      "//wasm:hello_wasm($default_toolchain)",
+    ]
   }
 } else {
 import("//build/config/c++/modules.gni")

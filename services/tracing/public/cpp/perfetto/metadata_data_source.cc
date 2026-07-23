@@ -53,6 +53,8 @@ std::string_view GetClockString(base::TimeTicks::Clock clock) {
       return "IOS_CF_ABSOLUTE_TIME_MINUS_KERN_BOOTTIME";
     case base::TimeTicks::Clock::MAC_MACH_ABSOLUTE_TIME:
       return "MAC_MACH_ABSOLUTE_TIME";
+    case base::TimeTicks::Clock::WASM_EMSCRIPTEN_GET_NOW:
+      return "WASM_EMSCRIPTEN_GET_NOW";
     case base::TimeTicks::Clock::WIN_QPC:
       return "WIN_QPC";
     case base::TimeTicks::Clock::WIN_ROLLOVER_PROTECTED_TIME_GET_TIME:
