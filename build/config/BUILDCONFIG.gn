@@ -123,6 +123,10 @@ if (current_os == "") {
 #   even if the value is overridden, which is wasteful. See first bullet.
 
 declare_args() {
+  # Enables the experimental Chromium WebAssembly port. This must be set
+  # explicitly before Emscripten may be selected as the primary target.
+  enable_chromium_wasm_port = false
+
   # Set to enable the official build level of optimization. This has nothing
   # to do with branding, but enables an additional level of optimization above
   # release (!is_debug). This might be better expressed as a tri-state
@@ -167,8 +171,8 @@ declare_args() {
   #
   # For more information see
   # https://chromium.googlesource.com/chromium/src/+/main/docs/component_build.md
-  is_component_build =
-      is_debug && current_os != "ios" && current_os != "watchos"
+  is_component_build = is_debug && current_os != "ios" &&
+                       current_os != "watchos" && current_os != "emscripten"
 }
 
 assert(!(is_debug && is_official_build), "Can't do official debug builds")
@@ -176,6 +180,8 @@ assert(!(current_os == "ios" && is_component_build),
        "Can't use component build on iOS")
 assert(!(current_os == "watchos" && is_component_build),
        "Can't use component build on watchOS")
+assert(!(current_os == "emscripten" && is_component_build),
+       "Chromium Wasm requires a static, monolithic build")
 
 declare_args() {
   # Unsafe buffers. Location of file used by plugins to track portions of
@@ -286,11 +292,11 @@ if (target_os == "android") {
 } else if (target_os == "zos") {
   _default_toolchain = "//build/toolchain/zos:$target_cpu"
 } else if (target_os == "emscripten") {
-  # Because it's too hard to remove all targets from //BUILD.gn that do not work
-  # with it.
-  assert(
-      false,
-      "emscripten is not a supported target_os. It is available only as secondary toolchain.")
+  assert(enable_chromium_wasm_port,
+         "target_os=\"emscripten\" requires enable_chromium_wasm_port=true")
+  assert(target_cpu == "wasm",
+         "target_os=\"emscripten\" requires target_cpu=\"wasm\"")
+  _default_toolchain = "//build/toolchain/wasm:wasm"
 } else {
   assert(false, "Unsupported target_os: $target_os")
 }
@@ -332,7 +338,7 @@ is_watchos = current_os == "watchos"
 is_win = current_os == "win" || current_os == "winuwp"
 
 is_apple = is_ios || is_mac || is_watchos
-is_posix = !is_win && !is_fuchsia
+is_posix = !is_win && !is_fuchsia && !is_wasm
 
 # =============================================================================
 # TARGET DEFAULTS

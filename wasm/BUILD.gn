@@ -1,0 +1,15 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+assert(enable_chromium_wasm_port)
+assert(is_wasm)
+
+executable("hello_wasm") {
+  sources = [ "hello_wasm.cc" ]
+
+  # Emscripten supplies the target C++ runtime and compiler builtins.
+  no_default_deps = true
+  use_libcxx_modules = false
+  configs -= [ "//build/config/compiler:runtime_library" ]
+}

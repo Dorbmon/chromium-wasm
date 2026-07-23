@@ -17,7 +17,8 @@
 //  Operating System:
 //    IS_AIX / IS_ANDROID / IS_ASMJS / IS_CHROMEOS / IS_FREEBSD / IS_FUCHSIA /
 //    IS_IOS / IS_IOS_MACCATALYST / IS_IOS_TVOS / IS_LINUX / IS_MAC /
-//    IS_NETBSD / IS_OPENBSD / IS_QNX / IS_SOLARIS / IS_WATCHOS / IS_WIN
+//    IS_NETBSD / IS_OPENBSD / IS_QNX / IS_SOLARIS / IS_WASM / IS_WATCHOS /
+//    IS_WIN
 //  Operating System family:
 //    IS_APPLE: IOS or MAC or IOS_MACCATALYST or IOS_TVOS or WATCHOS
 //    IS_BSD: FREEBSD or NETBSD or OPENBSD
@@ -36,19 +37,21 @@
 //    ARCH_CPU_ARM64 / ARCH_CPU_ARMEL / ARCH_CPU_LOONGARCH32 /
 //    ARCH_CPU_LOONGARCH64 / ARCH_CPU_MIPS / ARCH_CPU_MIPS64 /
 //    ARCH_CPU_MIPS64EL / ARCH_CPU_MIPSEL / ARCH_CPU_PPC64 / ARCH_CPU_S390 /
-//    ARCH_CPU_S390X / ARCH_CPU_X86 / ARCH_CPU_X86_64 / ARCH_CPU_RISCV64
+//    ARCH_CPU_S390X / ARCH_CPU_WASM32 / ARCH_CPU_X86 / ARCH_CPU_X86_64 /
+//    ARCH_CPU_RISCV64
 //  Processor family:
 //    ARCH_CPU_ARM_FAMILY: ARMEL or ARM64
 //    ARCH_CPU_LOONGARCH_FAMILY: LOONGARCH32 or LOONGARCH64
 //    ARCH_CPU_MIPS_FAMILY: MIPS64EL or MIPSEL or MIPS64 or MIPS
 //    ARCH_CPU_PPC64_FAMILY: PPC64
 //    ARCH_CPU_S390_FAMILY: S390 or S390X
+//    ARCH_CPU_WASM_FAMILY: WASM32
 //    ARCH_CPU_X86_FAMILY: X86 or X86_64
 //    ARCH_CPU_RISCV_FAMILY: Riscv64
 //  Processor features:
 //    ARCH_CPU_31_BITS / ARCH_CPU_32_BITS / ARCH_CPU_64_BITS
 //    ARCH_CPU_BIG_ENDIAN / ARCH_CPU_LITTLE_ENDIAN
-//    ARCH_CPU_PTRAUTH
+//    ARCH_CPU_NO_NATIVE_EXECUTABLE_MEMORY / ARCH_CPU_PTRAUTH
 
 // Mapping to some Rust conditionals:
 //
@@ -65,7 +68,9 @@
 // IWYU pragma: always_keep
 
 // A set of macros to use for platform detection.
-#if defined(ANDROID)
+#if defined(__wasm__)
+#define OS_WASM 1
+#elif defined(ANDROID)
 #define OS_ANDROID 1
 #elif defined(__APPLE__)
 // Only include TargetConditionals after testing ANDROID as some Android builds
@@ -116,7 +121,7 @@
 #define OS_QNX 1
 #elif defined(_AIX)
 #define OS_AIX 1
-#elif defined(__asmjs__) || defined(__wasm__)
+#elif defined(__asmjs__)
 #define OS_ASMJS 1
 #elif defined(__MVS__)
 #define OS_ZOS 1
@@ -255,6 +260,12 @@
 #define BUILDFLAG_INTERNAL_IS_SOLARIS() (0)
 #endif
 
+#if defined(OS_WASM)
+#define BUILDFLAG_INTERNAL_IS_WASM() (1)
+#else
+#define BUILDFLAG_INTERNAL_IS_WASM() (0)
+#endif
+
 #if defined(OS_WATCHOS)
 #define BUILDFLAG_INTERNAL_IS_WATCHOS() (1)
 #else
@@ -333,7 +344,13 @@
 #define ARCH_CPU_ARM64 1
 #define ARCH_CPU_64_BITS 1
 #define ARCH_CPU_LITTLE_ENDIAN 1
-#elif defined(__asmjs__) || defined(__wasm__)
+#elif defined(__wasm__)
+#define ARCH_CPU_WASM_FAMILY 1
+#define ARCH_CPU_WASM32 1
+#define ARCH_CPU_32_BITS 1
+#define ARCH_CPU_LITTLE_ENDIAN 1
+#define ARCH_CPU_NO_NATIVE_EXECUTABLE_MEMORY 1
+#elif defined(__asmjs__)
 #define ARCH_CPU_32_BITS 1
 #define ARCH_CPU_LITTLE_ENDIAN 1
 #elif defined(__MIPSEL__)
@@ -384,13 +401,15 @@
 #define WCHAR_T_IS_16_BIT
 #elif defined(OS_FUCHSIA)
 #define WCHAR_T_IS_32_BIT
-#elif defined(OS_POSIX) && defined(COMPILER_GCC) && defined(__WCHAR_MAX__) && \
+#elif (defined(OS_POSIX) || defined(OS_WASM)) && defined(COMPILER_GCC) && \
+    defined(__WCHAR_MAX__) && \
     (__WCHAR_MAX__ == 0x7fffffff || __WCHAR_MAX__ == 0xffffffff)
 #define WCHAR_T_IS_32_BIT
-#elif defined(OS_POSIX) && defined(COMPILER_GCC) && defined(__WCHAR_MAX__) && \
+#elif (defined(OS_POSIX) || defined(OS_WASM)) && defined(COMPILER_GCC) && \
+    defined(__WCHAR_MAX__) && \
     (__WCHAR_MAX__ == 0x7fff || __WCHAR_MAX__ == 0xffff)
-// On Posix, we'll detect short wchar_t, but projects aren't guaranteed to
-// compile in this mode (in particular, Chrome doesn't). This is intended for
+// On POSIX and Wasm, we'll detect short wchar_t, but projects aren't guaranteed
+// to compile in this mode (in particular, Chrome doesn't). This is intended for
 // other projects using base who manage their own dependencies and make sure
 // short wchar works for them.
 #define WCHAR_T_IS_16_BIT
