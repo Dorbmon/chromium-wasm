@@ -1,82 +1,110 @@
 # Chromium Wasm product porting ledger
 
-This is the versioned product ledger. It groups blockers by root cause and is
-not a compiler-error transcript. The complete machine-readable M1.0 inventory
-is [`tools/wasm/m1_inventory.json`](../../tools/wasm/m1_inventory.json).
+This is the versioned product ledger. It groups work by root cause rather than
+compiler-error order. The machine-readable
+[`tools/wasm/m1_inventory.json`](../../tools/wasm/m1_inventory.json) is the
+historical M1.0 pre-implementation snapshot; the statuses below are the final
+M1 assessment.
+
+Status meanings:
+
+- **Verified** — implemented and exercised by the M1 Node and browser gates.
+- **Verified boundary** — the supported subset works and unsupported behavior
+  fails explicitly.
+- **Explicit unsupported** — intentionally unavailable in the WebAssembly
+  architecture and tested not to report false success.
+- **Deferred** — not required by the focused M1 acceptance gate and still
+  requires implementation or inventory before its first consumer.
 
 ## Build and source selection
 
-| ID | Target | Root cause | Planned boundary | Status |
-|---|---|---|---|---|
-| BUILD-001 | M1 smoke graph | M0 reaches only `//wasm:hello_wasm` | Add only passing M1 smoke labels to the opt-in root group | Open |
-| BUILD-002 | focused Base subset | `base/BUILD.gn` explicitly rejects Wasm | Permit only the explicit Chromium Wasm port and expose a narrow M1 subset | Open |
-| BUILD-003 | platform sources | Base has no `is_wasm` source block | Add one deliberate Wasm source list; do not set Wasm to POSIX/Linux | Open |
+| ID | Target | Implemented boundary | Status |
+|---|---|---|---|
+| BUILD-001 | M1 smoke graph | The opt-in root `gn_all` contains the M0 executable and every M1 positive and negative executable | Verified |
+| BUILD-002 | focused Base subset | `base/BUILD.gn` permits only the explicit Chromium Wasm port and exposes narrow M1 source sets | Verified |
+| BUILD-003 | platform sources | Dedicated Wasm source selection; Wasm remains neither Linux nor broadly POSIX | Verified |
 
 ## Base platform ABI and primitives
 
-| ID | Capability | Root cause | Planned boundary | Status |
-|---|---|---|---|---|
-| BASE-ABI-001 | thread types | Headers define no Wasm ID/handle types | Wasm thread ID plus Emscripten pthread handle | Open |
-| BASE-ABI-002 | lock/CV types | pthread types are gated on POSIX/Fuchsia | Targeted Wasm header branches and explicit source selection | Open |
-| BASE-ABI-003 | VFS descriptor types | integer descriptors are gated on POSIX/Fuchsia | Treat Emscripten VFS descriptors as Wasm platform files | Open |
-| BASE-ABI-004 | path/stat types | narrow paths and stat are gated on POSIX/Fuchsia | Targeted Wasm branches backed by MEMFS | Open |
-| BASE-ABI-005 | process identity | only native OS handle types exist | One process-local identity; no fake child handles | Open |
-| BASE-TIME-001/2/4 | wall, monotonic, and high-resolution behavior | no Wasm provider | `base/time/time_wasm.cc` with accurate resolution | Open |
-| BASE-RAND-001 | secure entropy | POSIX provider assumes native entropy | Emscripten `getentropy`, with explicit failure | Open |
-| BASE-RAND-002 | nonallocating random API | public header unconditionally includes an unhydrated BoringSSL header | targeted Wasm implementation through `RandBytes` | Open |
-| BASE-THREAD-001 | thread operations | POSIX implementation includes native priority behavior | `base/threading/platform_thread_wasm.cc` | Open |
-| BASE-THREAD-002 | thread ID/name | native IDs and enforced names are assumed | stable pthread IDs and best-effort diagnostic names | Open |
-| BASE-TLS-001 | TLS | pthread source is not selected | Explicitly select and test pthread TLS | Open |
-| BASE-SYNC-001/2 | lock, CV, event | pthread sources are not selected | Explicitly select and test worker waits | Open |
-| BASE-PATH-001 | platform paths | POSIX source returns host/XDG paths | `base/base_paths_wasm.cc` with VFS paths | Open |
-| BASE-FILE-001/2 | file I/O and enumeration | VFS-compatible calls are hidden in POSIX sources | Deliberate MEMFS source selection and behavior tests | Open |
-| BASE-PROCESS-001/2 | identity and launch | Base assumes kernel processes | Local ID; launch explicitly unsupported | Open |
-| BASE-SYS-001 | system information | native syscalls/procfs | `base/system/sys_info_wasm.cc`, accurate values only | Open |
+| ID | Capability | Implemented boundary | Status |
+|---|---|---|---|
+| BASE-ABI-001 | thread types | Emscripten pthread handle plus stable Wasm thread ID | Verified |
+| BASE-ABI-002 | lock/CV types | Wasm pthread storage and explicitly selected implementations | Verified |
+| BASE-ABI-003 | VFS descriptor types | Emscripten MEMFS descriptors are confined to Wasm file implementations | Verified boundary |
+| BASE-ABI-004 | path/stat types | Narrow paths and MEMFS metadata without global POSIX classification | Verified |
+| BASE-ABI-005 | process identity | One stable module-local identity; no child-process handles | Verified boundary |
+| BASE-TIME-001/2/4 | wall, monotonic, and high-resolution behavior | `time_wasm.cc` uses the Emscripten wall and monotonic runtime clocks | Verified |
+| BASE-TIME-003 | per-thread CPU time | `ThreadTicks::IsSupported()` remains false | Explicit unsupported |
+| BASE-RAND-001/2 | secure entropy | `getentropy` backed by host cryptographic randomness, including application and worker threads | Verified |
+| BASE-THREAD-001 | thread operations | Create, join, yield, and sleep through Emscripten pthreads | Verified |
+| BASE-THREAD-002 | thread ID/name | Stable IDs; names are best-effort diagnostic metadata only | Verified boundary |
+| BASE-TLS-001 | TLS | Pthread TLS with cross-thread isolation and destructor coverage | Verified |
+| BASE-SYNC-001/2 | lock, CV, event | Lock, timed/broadcast CV, manual/auto-reset event, and wait-many behavior | Verified |
+| BASE-PATH-001 | platform paths | Current, temporary, and placeholder home paths exist in the VFS; executable/module paths reject | Verified boundary |
+| BASE-FILE-001/2 | file I/O and enumeration | MEMFS CRUD, binary I/O, seek, append, truncate, flush, rename, metadata, errors, directories, and enumeration | Verified |
+| BASE-PROCESS-001 | identity | Current-process handles and stable process-local ID | Verified |
+| BASE-PROCESS-002 | launch/control/output | Launch, non-current open/control, and output capture return invalid/false | Explicit unsupported |
+| BASE-SYS-001 | system information | Runtime processor count, 64 KiB page/granularity, wasm32 identity, current/max heap, and runtime-relative uptime | Verified boundary |
+| BASE-ENV-001 | `base::Environment` | No focused Wasm implementation or behavior test yet | Deferred |
+| BASE-CMD-001 | command-line handling | Generic parsing is linked where needed, but has no dedicated M1 behavior gate | Deferred |
+| BASE-STACK-001 | stack diagnostics | Raw Wasm frames appear in abort diagnostics; symbolized Base stack traces are not implemented | Deferred |
+| BASE-DYNLIB-001 | dynamic libraries/executable memory | No static registry or executable-memory semantics | Explicit unsupported |
 
 ## Base task runtime
 
-| ID | Capability | Root cause | Planned boundary | Status |
-|---|---|---|---|---|
-| TASK-001 | default message pump | Generic pump is unreachable and untested on Wasm | Retain it first; validate worker wait/wake, delays, nesting, quit, and heartbeat | Open |
-| TASK-002 | task executor | Depends on a valid default pump and Base subset | Run only on the application pthread | Open |
+| ID | Capability | Implemented boundary | Status |
+|---|---|---|---|
+| TASK-001 | default message pump | The pinned `MessagePumpDefault` blocks on Wasm `WaitableEvent`, wakes cross-thread, schedules delays, nests, and quits without polling | Verified |
+| TASK-002 | task executor | `SingleThreadTaskExecutor` and SequenceManager run on the application pthread while browser timers and animation frames advance | Verified |
+| TASK-003 | native UI/I/O pumps | Native window-system and descriptor-loop pump types reject instead of aliasing the generic pump | Explicit unsupported |
+
+The older roadmap proposed a class named `MessagePumpWasm`. The milestone
+assignment required evaluating the generic pump first, and its complete
+behavioral gate passed. M1 therefore retains the generic implementation instead
+of adding a naming-only platform class.
 
 ## Rust
 
-| ID | Capability | Root cause | Planned boundary | Status |
-|---|---|---|---|---|
-| RUST-TOOLCHAIN-001 | compiler install | M0 verifies the DEPS text pin only | Download, hash, extract, and verify the exact archive | Open |
-| RUST-TOOLCHAIN-002 | target stdlib | pinned package has no Emscripten stdlib | Build from pinned `rustc-src` through Chromium GN | Open |
-| RUST-TOOLCHAIN-003 | pthread codegen | Rust lacks C/C++ Wasm atomics flags | Synchronize target features and link settings | Open |
-| RUST-GN-001/2/3 | GN target mapping | Wasm is disabled; triple and arch are absent | Conditional enablement, Emscripten triple, wasm32 arch | Open |
-| RUST-LINK-001 | final link | archive compatibility is unverified | rlibs into the Emscripten `em++` final link; no LLVM bitcode | Open |
-| RUST-PANIC-001 | panic behavior | target policy is not set | `panic=abort` plus expected-failure runner | Open |
-| RUST-ALLOC-001 | allocation/std | System allocator path is unverified | Exercise `Vec`, `String`, allocation, and free | Open |
-| RUST-PRELUDE-001 | Chromium prelude | disabled with the M0 Rust configuration | Enable after the target stdlib and run its import test | Open |
-| RUST-INTEROP-001 | C++/Rust calls | existing CXX test is not in the Wasm graph | Reuse the pinned Chromium CXX mechanism | Open |
-| RUST-THREAD-001 | Rust pthread | target stdlib/thread feature contract is unverified | Spawn/join, atomic handoff, and browser heartbeat | Open |
-| RUST-TEST-001 | test runner | native Rust unit-test runner assumption | Dedicated Node/browser smoke first | Deferred |
+| ID | Capability | Implemented boundary | Status |
+|---|---|---|---|
+| RUST-TOOLCHAIN-001 | compiler install | Exact Chromium Rust archive is downloaded, hashed, extracted atomically, and identity-checked | Verified |
+| RUST-TOOLCHAIN-002 | target stdlib | 23 target rlibs are built from the archive's pinned `rustc-src` into the local GN output sysroot | Verified |
+| RUST-TOOLCHAIN-003 | pthread codegen | Rust and C++ share Wasm atomics, bulk-memory, mutable-globals, and pthread settings | Verified |
+| RUST-GN-001/2/3 | GN target mapping | Conditional Rust enablement, `wasm32-unknown-emscripten`, and wasm32 architecture mapping | Verified |
+| RUST-LINK-001 | final link | Rust rlibs enter the pinned Emscripten `em++` final link with cross-toolchain bitcode/ThinLTO disabled | Verified |
+| RUST-PANIC-001 | panic behavior | `panic=abort`; isolated runner requires the exact panic marker and abort/nonzero evidence | Verified |
+| RUST-ALLOC-001 | allocation/std | `Vec`, `String`, boxed allocation/drop, `Arc`, and `Mutex` execute in the final module | Verified |
+| RUST-PRELUDE-001 | Chromium prelude | `build_with_chromium=false` leaves the first-party prelude disabled in this focused graph | Deferred |
+| RUST-INTEROP-001 | C++/Rust calls | Chromium `rust_static_library` and pinned CXX bridge in both directions | Verified |
+| RUST-THREAD-001 | Rust pthread | `std::thread::spawn`, join, atomics, `Arc`, and `Mutex` pass with browser heartbeat | Verified |
+| RUST-TEST-001 | unit-test runner | Dedicated GN-built Node/browser smoke executables are used; native Rust test-runner integration is not ported | Deferred |
+| RUST-INVENTORY-001 | Content/Chrome crate closure | Content and Chrome graphs are prohibited before M2/M3 and were not loaded for M1 | Deferred |
+
+The Content/Chrome Rust crate inventory must be performed at the first
+standalone V8/Content graph preflight, before disabling any optional consumer.
 
 ## Shared memory and Mojo
 
-| ID | Capability | Root cause | Planned boundary | Status |
-|---|---|---|---|---|
-| SHMEM-001 | handle type | Wasm falls through to an unavailable POSIX `FDPair` | Opaque ID, generation, and rights capability | Open |
-| SHMEM-002 | storage/duplication | no kernel shared-memory object exists | Process-local aligned registry with validated references | Open |
-| SHMEM-003 | mapping lifetime | native mappings retain kernel storage | Separate mapping references retain registry entries | Open |
-| SHMEM-004 | read-only mode | linear memory lacks page protection | Enforce rights at API boundaries and document limitation | Open |
-| MOJO-001 | core selection | pinned checkout uses ipcz outside ChromeOS | Keep ipcz and one node; do not enable legacy core | Selected |
-| MOJO-002 | platform handle | native handle variants have Wasm `#error` paths | Narrow shared-region capability; native wrap is unsupported | Open |
-| MOJO-003 | platform channel | channel assumes a native endpoint | Explicit unsupported Wasm implementation | Open |
-| MOJO-004 | ipcz shared buffer | fallback serializes POSIX FDs | Explicit local capability branch; reject remote serialization | Open |
-| MOJO-005 | local message pipe | behavior has not run under Wasm | Use local ipcz portals without a transport | Open |
-| MOJO-006 | shared-buffer transfer | complete ownership path is untested | C API create/map/attach/send/read/map/close smoke | Open |
+| ID | Capability | Implemented boundary | Status |
+|---|---|---|---|
+| SHMEM-001 | handle type | Opaque region ID, generation, rights, size, and GUID metadata; no Unix descriptor | Verified |
+| SHMEM-002 | storage/duplication | Locked process-local aligned registry with move-only writable and duplicable read-only/unsafe capabilities | Verified |
+| SHMEM-003 | mapping lifetime | Independent mapping references, duplicate-address accounting, stale/range rejection, and mapping-after-handle lifetime | Verified |
+| SHMEM-004 | read-only mode | Rights are enforced at typed API/capability boundaries, without hardware page protection | Verified boundary |
+| MOJO-001 | core selection | Pinned ipcz core with exactly one in-process broker node | Verified |
+| MOJO-002 | platform handle | Process-local shared-region capability works; native C handle wrapping rejects | Verified boundary |
+| MOJO-003 | platform channel | Constructors/endpoints fail explicitly; no fake socketpair, pipe, or descriptor | Explicit unsupported |
+| MOJO-004 | ipcz shared buffer | Local capability transfer works; transport serialization rejects | Verified boundary |
+| MOJO-005 | local message pipe | Local ipcz portals transfer messages and attached API objects without a transport | Verified |
+| MOJO-006 | shared-buffer transfer | C API create/map/attach/send/read/extract/map/verify/modify/close lifecycle | Verified |
 
 ## Deferred milestone boundaries
 
-- PartitionAlloc and allocator shim integration are deferred while the focused
-  M1 subset uses the Emscripten allocator.
-- Process launch, process enumeration, dynamic-library loading, native
-  executable memory, platform channels, and remote Mojo nodes remain explicitly
-  unsupported.
-- OPFS, V8, Blink, Content, Ozone, networking, media, and Chrome UI are outside
-  M1.
+- PartitionAlloc and allocator-shim integration remain deferred while the
+  focused M1 graph uses the Emscripten allocator.
+- OPFS persistence is not part of MEMFS behavior and begins only at its
+  scheduled storage milestone.
+- Process spawning/enumeration, native sandboxing, platform channels, remote
+  Mojo nodes, dynamic libraries, and executable memory are unavailable.
+- V8, Blink, Content, Ozone, networking, media, DevTools, extensions, PDF, and
+  Chrome UI remain outside M1.
