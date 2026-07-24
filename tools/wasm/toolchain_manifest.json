@@ -116,8 +116,37 @@
     }
   },
   "rust": {
+    "path": "third_party/rust-toolchain",
+    "source_revision": "4c4205163abcbd08948b3efab796c543ba1ea687",
+    "subrevision": 5,
+    "clang_revision": "llvmorg-23-init-10931-g20b6ec66",
+    "clang_subrevision": 11,
+    "package_revision": "4c4205163abcbd08948b3efab796c543ba1ea687-5-llvmorg-23-init-10931-g20b6ec66",
     "archive": "rust-toolchain-4c4205163abcbd08948b3efab796c543ba1ea687-5-llvmorg-23-init-10931-g20b6ec66.tar.xz",
-    "sha256": "5b4f776f6f308ac5e3f1df35cff546107d7d4843b5414294e74986f2e4dd3196"
+    "url": "https://commondatastorage.googleapis.com/chromium-browser-clang/Linux_x64/rust-toolchain-4c4205163abcbd08948b3efab796c543ba1ea687-5-llvmorg-23-init-10931-g20b6ec66.tar.xz",
+    "size_bytes": 274476304,
+    "sha256": "5b4f776f6f308ac5e3f1df35cff546107d7d4843b5414294e74986f2e4dd3196",
+    "version_line": "rustc 1.96.0 4c4205163abcbd08948b3efab796c543ba1ea687 (4c4205163abcbd08948b3efab796c543ba1ea687-5-llvmorg-23-init-10931-g20b6ec66 chromium)",
+    "commit_hash": "4c4205163abcbd08948b3efab796c543ba1ea687",
+    "host_target": "x86_64-unknown-linux-gnu",
+    "rustc_vv": {
+      "version": "rustc 1.96.0-nightly (4c4205163 2026-04-09) (4c4205163abcbd08948b3efab796c543ba1ea687-5-llvmorg-23-init-10931-g20b6ec66 chromium)",
+      "binary": "rustc",
+      "commit-hash": "4c4205163abcbd08948b3efab796c543ba1ea687",
+      "commit-date": "2026-04-09",
+      "host": "x86_64-unknown-linux-gnu",
+      "release": "1.96.0-nightly",
+      "LLVM version": "23.0.0"
+    },
+    "required_targets": [
+      "wasm32-unknown-emscripten"
+    ],
+    "rustc_src_files": [
+      "lib/rustlib/src/rust/library/Cargo.toml",
+      "lib/rustlib/src/rust/library/core/src/lib.rs",
+      "lib/rustlib/src/rust/library/alloc/src/lib.rs",
+      "lib/rustlib/src/rust/library/std/src/lib.rs"
+    ]
   },
   "gn_args": [
     "target_os = \"emscripten\"",

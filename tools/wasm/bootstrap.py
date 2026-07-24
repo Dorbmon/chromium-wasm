@@ -6,12 +6,18 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import shutil
 import sys
+import tarfile
+import tempfile
+import urllib.error
+import urllib.request
 
 from m0_common import (
     M0Error,
@@ -596,13 +602,286 @@ def ensure_generated_configuration(
     )
 
 
-def verify_rust_pin(manifest: dict[str, object]) -> None:
+def verify_rust_deps_pin(manifest: dict[str, object]) -> None:
     rust = manifest["rust"]
     assert isinstance(rust, dict)
+    archive = str(rust["archive"])
+    object_name = f"Linux_x64/{archive}"
+    expected_url = (
+        "https://commondatastorage.googleapis.com/"
+        f"chromium-browser-clang/{object_name}"
+    )
+    require_equal("Chromium Rust archive URL", str(rust["url"]), expected_url)
+
     deps_text = (REPO_ROOT / "DEPS").read_text(encoding="utf-8")
-    for expected in (str(rust["archive"]), str(rust["sha256"])):
+    for expected in (
+        "'bucket': 'chromium-browser-clang'",
+        f"'object_name': '{object_name}'",
+        f"'sha256sum': '{rust['sha256']}'",
+        f"'size_bytes': {rust['size_bytes']},",
+    ):
         if expected not in deps_text:
             raise M0Error(f"Chromium DEPS is missing Rust pin {expected}")
+
+
+def read_python_constant(path: Path, name: str) -> object:
+    prefix = f"{name} = "
+    assignments = [
+        line.removeprefix(prefix)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith(prefix)
+    ]
+    if len(assignments) != 1:
+        raise M0Error(f"{path} must define exactly one {name}")
+    try:
+        return ast.literal_eval(assignments[0])
+    except (SyntaxError, ValueError) as exc:
+        raise M0Error(f"{path} has an invalid {name}") from exc
+
+
+def verify_rust_source_pins(
+    manifest: dict[str, object], rust: dict[str, object]
+) -> None:
+    rust_update = REPO_ROOT / "tools/rust/update_rust.py"
+    clang_update = REPO_ROOT / "tools/clang/scripts/update.py"
+    require_equal(
+        "Chromium Rust source revision",
+        str(read_python_constant(rust_update, "RUST_REVISION")),
+        str(rust["source_revision"]),
+    )
+    require_equal(
+        "Chromium Rust package subrevision",
+        str(read_python_constant(rust_update, "RUST_SUB_REVISION")),
+        str(rust["subrevision"]),
+    )
+    require_equal(
+        "Chromium Clang revision used by Rust",
+        str(read_python_constant(clang_update, "CLANG_REVISION")),
+        str(rust["clang_revision"]),
+    )
+    require_equal(
+        "Chromium Clang package subrevision",
+        str(read_python_constant(clang_update, "CLANG_SUB_REVISION")),
+        str(rust["clang_subrevision"]),
+    )
+    expected_package_revision = (
+        f"{rust['source_revision']}-{rust['subrevision']}-"
+        f"{rust['clang_revision']}"
+    )
+    require_equal(
+        "Chromium Rust package revision",
+        str(rust["package_revision"]),
+        expected_package_revision,
+    )
+    require_equal(
+        "Chromium Rust compiler commit",
+        str(rust["commit_hash"]),
+        str(rust["source_revision"]),
+    )
+    expected_stamp_suffix = f"({rust['package_revision']} chromium)"
+    if not str(rust["version_line"]).endswith(expected_stamp_suffix):
+        raise M0Error("Chromium Rust VERSION does not contain the package pin")
+    rustc_vv = rust["rustc_vv"]
+    assert isinstance(rustc_vv, dict)
+    if not str(rustc_vv["version"]).endswith(expected_stamp_suffix):
+        raise M0Error(
+            "Chromium rustc -Vv version does not contain the package pin"
+        )
+    host_clang = manifest["host_clang"]
+    assert isinstance(host_clang, dict)
+    require_equal(
+        "Chromium Rust host Clang package revision",
+        str(host_clang["revision"]),
+        f"{rust['clang_revision']}-{rust['clang_subrevision']}",
+    )
+
+
+def rust_toolchain_path(rust: dict[str, object]) -> Path:
+    configured_path = Path(str(rust["path"]))
+    if configured_path.is_absolute() or ".." in configured_path.parts:
+        raise M0Error("Chromium Rust toolchain path must stay in the checkout")
+    expected_path = Path("third_party/rust-toolchain")
+    if configured_path != expected_path:
+        raise M0Error(
+            "Chromium Rust toolchain path mismatch: "
+            f"expected {expected_path}, got {configured_path}"
+        )
+    return REPO_ROOT / configured_path
+
+
+def parse_rustc_verbose_version(output: str) -> dict[str, str]:
+    lines = output.splitlines()
+    if not lines or not lines[0].startswith("rustc "):
+        raise M0Error("pinned Chromium rustc returned an invalid -Vv header")
+    fields = {"version": lines[0]}
+    for line in lines[1:]:
+        name, separator, value = line.partition(": ")
+        if not separator or not name or not value:
+            raise M0Error("pinned Chromium rustc returned invalid -Vv output")
+        if name in fields:
+            raise M0Error(
+                f"pinned Chromium rustc repeated -Vv field {name}"
+            )
+        fields[name] = value
+    return fields
+
+
+def verify_rust_toolchain(
+    rust: dict[str, object], toolchain_root: Path
+) -> None:
+    if not toolchain_root.is_dir():
+        raise M0Error("pinned Chromium Rust toolchain is not installed")
+
+    version_path = toolchain_root / "VERSION"
+    rustc = toolchain_root / "bin/rustc"
+    if not version_path.is_file() or not rustc.is_file():
+        raise M0Error(
+            "pinned Chromium Rust toolchain is missing VERSION or bin/rustc"
+        )
+
+    require_equal(
+        "Chromium Rust VERSION",
+        version_path.read_text(encoding="utf-8").strip(),
+        str(rust["version_line"]),
+    )
+
+    verbose_version = parse_rustc_verbose_version(
+        checked_output([str(rustc), "-Vv"])
+    )
+    expected_verbose_version = rust["rustc_vv"]
+    assert isinstance(expected_verbose_version, dict)
+    for name, expected_value in expected_verbose_version.items():
+        require_equal(
+            f"Chromium rustc -Vv {name}",
+            verbose_version.get(str(name), ""),
+            str(expected_value),
+        )
+    require_equal(
+        "Chromium rustc commit",
+        verbose_version.get("commit-hash", ""),
+        str(rust["commit_hash"]),
+    )
+    require_equal(
+        "Chromium rustc host",
+        verbose_version.get("host", ""),
+        str(rust["host_target"]),
+    )
+
+    target_list = set(
+        checked_output([str(rustc), "--print", "target-list"]).splitlines()
+    )
+    required_targets = rust["required_targets"]
+    assert isinstance(required_targets, list)
+    for target in required_targets:
+        if str(target) not in target_list:
+            raise M0Error(
+                f"pinned Chromium rustc is missing target {target}"
+            )
+
+    reported_sysroot = Path(
+        checked_output([str(rustc), "--print", "sysroot"])
+    )
+    require_equal(
+        "Chromium rustc sysroot",
+        str(reported_sysroot.resolve()),
+        str(toolchain_root.resolve()),
+    )
+
+    rustc_src_files = rust["rustc_src_files"]
+    assert isinstance(rustc_src_files, list)
+    for relative_path in rustc_src_files:
+        source_path = toolchain_root / str(relative_path)
+        if not source_path.is_file() or source_path.stat().st_size == 0:
+            raise M0Error(
+                f"pinned Chromium Rust source is missing {relative_path}"
+            )
+
+
+def download_rust_archive(
+    rust: dict[str, object], archive_path: Path
+) -> None:
+    expected_size = int(rust["size_bytes"])
+    request = urllib.request.Request(
+        str(rust["url"]),
+        headers={"User-Agent": "chromium-wasm-bootstrap/1"},
+    )
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=120) as response,
+            archive_path.open("xb") as output_file,
+        ):
+            shutil.copyfileobj(response, output_file, 1024 * 1024)
+    except (OSError, urllib.error.URLError) as exc:
+        raise M0Error(
+            f"failed to download pinned Chromium Rust archive: {exc}"
+        ) from exc
+
+    require_equal(
+        "Chromium Rust archive size",
+        str(archive_path.stat().st_size),
+        str(expected_size),
+    )
+    require_equal(
+        "Chromium Rust archive hash",
+        sha256(archive_path),
+        str(rust["sha256"]),
+    )
+
+
+def install_rust_toolchain(
+    rust: dict[str, object], toolchain_root: Path
+) -> None:
+    if os.path.lexists(toolchain_root):
+        try:
+            verify_rust_toolchain(rust, toolchain_root)
+        except M0Error as exc:
+            raise M0Error(
+                "existing Chromium Rust toolchain is invalid; "
+                f"refusing to overwrite it: {exc}"
+            ) from exc
+        return
+
+    toolchain_root.parent.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(
+        tempfile.mkdtemp(
+            prefix=f".{toolchain_root.name}.install-",
+            dir=toolchain_root.parent,
+        )
+    )
+    archive_path = staging_root / str(rust["archive"])
+    candidate_root = staging_root / "toolchain"
+    candidate_root.mkdir()
+    try:
+        download_rust_archive(rust, archive_path)
+        try:
+            with tarfile.open(archive_path, mode="r:xz") as archive:
+                archive.extractall(candidate_root, filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            raise M0Error(
+                f"failed to extract pinned Chromium Rust archive: {exc}"
+            ) from exc
+        verify_rust_toolchain(rust, candidate_root)
+        if os.path.lexists(toolchain_root):
+            raise M0Error(
+                "Chromium Rust toolchain path appeared during installation"
+            )
+        os.replace(candidate_root, toolchain_root)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def ensure_rust_toolchain(
+    manifest: dict[str, object], *, install: bool
+) -> None:
+    rust = manifest["rust"]
+    assert isinstance(rust, dict)
+    verify_rust_deps_pin(manifest)
+    verify_rust_source_pins(manifest, rust)
+    toolchain_root = rust_toolchain_path(rust)
+    if install:
+        install_rust_toolchain(rust, toolchain_root)
+    else:
+        verify_rust_toolchain(rust, toolchain_root)
 
 
 def main() -> int:
@@ -639,7 +918,7 @@ def main() -> int:
             manifest, bootstrap_python, install=install
         )
         ensure_generated_configuration(manifest, install=install)
-        verify_rust_pin(manifest)
+        ensure_rust_toolchain(manifest, install=install)
         print("CHROMIUM_WASM_M0:BOOTSTRAP_PASS", flush=True)
         return 0
     except (M0Error, KeyError, TypeError, ValueError) as exc:
