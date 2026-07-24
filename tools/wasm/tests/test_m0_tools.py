@@ -28,6 +28,9 @@ import run_node_smoke
 import serve
 
 
+TASK_RESULT_LINE = " ".join(serve.TASK_RESULT_REQUIREMENTS)
+
+
 DRIVER_PATH = (
     TOOLS_DIR.parents[1] / "build/toolchain/wasm/emscripten_driver.py"
 )
@@ -191,6 +194,48 @@ class NodeRunnerTest(unittest.TestCase):
                 "base",
             )
 
+    def test_tasks_case_requires_complete_result_contract(self) -> None:
+        case_name, module = run_node_smoke.resolve_case_and_module(
+            "tasks", None
+        )
+        self.assertEqual(case_name, "tasks")
+        self.assertEqual(module, Path("out/wasm/m1_task_smoke.js"))
+        self.assertEqual(
+            run_node_smoke.resolve_case_and_module(
+                None, Path("custom/m1_task_smoke.js")
+            ),
+            ("tasks", Path("custom/m1_task_smoke.js")),
+        )
+        with self.assertRaises(M0Error):
+            run_node_smoke.resolve_case_and_module(
+                "tasks", Path("out/wasm/m1_base_smoke.js")
+            )
+
+        stdout = "\n".join(
+            (
+                "CHROMIUM_WASM_M1_TASK:RUNTIME_START",
+                "CHROMIUM_WASM_M1_TASK:RUNTIME_END",
+                TASK_RESULT_LINE,
+                "CHROMIUM_WASM_M1_TASK:PASS",
+                'CHROMIUM_WASM_M1_TASK:NODE_EXIT {"exitCode":0}',
+            )
+        )
+        run_node_smoke.validate_streams(stdout, "", "tasks")
+        for requirement in serve.TASK_RESULT_REQUIREMENTS:
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(requirement, "<missing>", 1), "", "tasks"
+                )
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout + "\nCHROMIUM_WASM_M1_TASK:FAIL reason=test",
+                "",
+                "tasks",
+            )
+
 
 class ServerTest(unittest.TestCase):
     def test_security_headers_mime_and_focusable_canvas(self) -> None:
@@ -217,6 +262,13 @@ class ServerTest(unittest.TestCase):
         self.assertIn("response.status", host_page)
         self.assertIn('modulePath: "/out/wasm/hello_wasm.js"', host_page)
         self.assertIn('modulePath: "/out/wasm/m1_base_smoke.js"', host_page)
+        self.assertIn('modulePath: "/out/wasm/m1_task_smoke.js"', host_page)
+        for requirement in serve.TASK_RESULT_REQUIREMENTS:
+            self.assertIn(requirement, host_page)
+        self.assertIn(
+            "requestAnimationFrame(animationFrameHeartbeat)", host_page
+        )
+        self.assertIn("animationFrameDelta", host_page)
         self.assertIn("addEventListener(\"error\"", host_page)
         self.assertIn("addEventListener(\"unhandledrejection\"", host_page)
         self.assertIn("onAbort(reason)", host_page)
@@ -306,7 +358,11 @@ class BrowserRunnerTest(unittest.TestCase):
             "canvasFocused": True,
             "failedChecks": [],
             "error": None,
-            "heartbeat": {"delta": 4, "elapsedMs": 250},
+            "heartbeat": {
+                "timerDelta": 4,
+                "animationFrameDelta": 4,
+                "elapsedMs": 250,
+            },
             "stdout": [
                 "CHROMIUM_WASM_M0:RUNTIME_START",
                 "CHROMIUM_WASM_M0:RUNTIME_END",
@@ -316,10 +372,25 @@ class BrowserRunnerTest(unittest.TestCase):
             "stderr": ["CHROMIUM_WASM_M0:STDERR capture=ok"],
         }
         run_browser_smoke.validate_result(result)
-        result["heartbeat"] = {"delta": 0, "elapsedMs": 250}
+        result["heartbeat"] = {
+            "timerDelta": 0,
+            "animationFrameDelta": 4,
+            "elapsedMs": 250,
+        }
         with self.assertRaises(M0Error):
             run_browser_smoke.validate_result(result)
-        result["heartbeat"] = {"delta": float("nan"), "elapsedMs": 250}
+        result["heartbeat"] = {
+            "timerDelta": 4,
+            "animationFrameDelta": 0,
+            "elapsedMs": 250,
+        }
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(result)
+        result["heartbeat"] = {
+            "timerDelta": 4,
+            "animationFrameDelta": float("nan"),
+            "elapsedMs": 250,
+        }
         with self.assertRaises(M0Error):
             run_browser_smoke.validate_result(result)
 
@@ -334,7 +405,11 @@ class BrowserRunnerTest(unittest.TestCase):
             "canvasFocused": True,
             "failedChecks": [],
             "error": None,
-            "heartbeat": {"delta": 4, "elapsedMs": 250},
+            "heartbeat": {
+                "timerDelta": 4,
+                "animationFrameDelta": 4,
+                "elapsedMs": 250,
+            },
             "stdout": [
                 "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
                 "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
@@ -350,6 +425,53 @@ class BrowserRunnerTest(unittest.TestCase):
         ]
         with self.assertRaises(M0Error):
             run_browser_smoke.validate_result(result, "base")
+
+    def test_tasks_result_requires_complete_result_contract(self) -> None:
+        result = {
+            "protocol": 1,
+            "case": "tasks",
+            "status": "pass",
+            "exitCode": 0,
+            "crossOriginIsolated": True,
+            "sharedArrayBuffer": True,
+            "canvasFocused": True,
+            "failedChecks": [],
+            "error": None,
+            "heartbeat": {
+                "timerDelta": 40,
+                "animationFrameDelta": 20,
+                "elapsedMs": 650,
+            },
+            "stdout": [
+                "CHROMIUM_WASM_M1_TASK:RUNTIME_START",
+                "CHROMIUM_WASM_M1_TASK:RUNTIME_END",
+                TASK_RESULT_LINE,
+                "CHROMIUM_WASM_M1_TASK:PASS",
+            ],
+            "stderr": [],
+        }
+        run_browser_smoke.validate_result(result, "tasks")
+        for requirement in serve.TASK_RESULT_REQUIREMENTS:
+            invalid_result = {
+                **result,
+                "stdout": [
+                    "CHROMIUM_WASM_M1_TASK:RUNTIME_START",
+                    "CHROMIUM_WASM_M1_TASK:RUNTIME_END",
+                    TASK_RESULT_LINE.replace(requirement, "<missing>", 1),
+                    "CHROMIUM_WASM_M1_TASK:PASS",
+                ],
+            }
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(invalid_result, "tasks")
+        result["stdout"] = [
+            *result["stdout"],
+            "CHROMIUM_WASM_M1_TASK:FAIL reason=test",
+        ]
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(result, "tasks")
 
 
 if __name__ == "__main__":

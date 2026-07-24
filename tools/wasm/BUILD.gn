@@ -13,3 +13,12 @@ executable("m1_base_smoke") {
   use_libcxx_modules = false
   configs -= [ "//build/config/compiler:runtime_library" ]
 }
+
+executable("m1_task_smoke") {
+  sources = [ "m1_task_smoke.cc" ]
+  deps = [ "//base:base_wasm_task_runtime" ]
+
+  no_default_deps = true
+  use_libcxx_modules = false
+  configs -= [ "//build/config/compiler:runtime_library" ]
+}

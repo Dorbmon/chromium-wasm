@@ -185,13 +185,20 @@ def validate_result(
     heartbeat = result.get("heartbeat")
     if not isinstance(heartbeat, dict):
         raise M0Error("browser result is missing heartbeat evidence")
-    delta = heartbeat.get("delta")
+    timer_delta = heartbeat.get("timerDelta")
     if (
-        not isinstance(delta, (int, float))
-        or not math.isfinite(delta)
-        or delta < 3
+        not isinstance(timer_delta, (int, float))
+        or not math.isfinite(timer_delta)
+        or timer_delta < 3
     ):
-        raise M0Error("browser main-thread heartbeat did not advance")
+        raise M0Error("browser main-thread timer heartbeat did not advance")
+    animation_frame_delta = heartbeat.get("animationFrameDelta")
+    if (
+        not isinstance(animation_frame_delta, (int, float))
+        or not math.isfinite(animation_frame_delta)
+        or animation_frame_delta < 3
+    ):
+        raise M0Error("browser animation frames did not advance")
     elapsed_ms = heartbeat.get("elapsedMs")
     if (
         not isinstance(elapsed_ms, (int, float))

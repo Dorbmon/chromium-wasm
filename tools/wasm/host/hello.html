@@ -62,6 +62,36 @@
         requiredStderr: Object.freeze([]),
         requireSeparateStreams: false,
       }),
+      tasks: Object.freeze({
+        modulePath: "/out/wasm/m1_task_smoke.js",
+        sentinelPrefix: "CHROMIUM_WASM_M1_TASK",
+        requiredStdout: Object.freeze([
+          "CHROMIUM_WASM_M1_TASK:RUNTIME_START",
+          "CHROMIUM_WASM_M1_TASK:RUNTIME_END",
+          "CHROMIUM_WASM_M1_TASK:RESULT",
+          "immediate=ok",
+          "delayed_not_early=ok",
+          "delayed_deadline_order=ok",
+          "worker_to_app_wake=ok",
+          "app_to_worker=ok",
+          "nested_quit_independent=ok",
+          "outer_continues=ok",
+          "sleeping_quit_wake=ok",
+          "idle_wait_bounded=ok",
+          "clean_shutdown=ok",
+          "task_count=18",
+          "delayed_wake_count=3",
+          "max_nesting=2",
+          "joinable_created=1",
+          "joinable_joined=1",
+          "wake_count_bounded_nonzero=ok",
+          "wait_count_bounded_nonzero=ok",
+          "browser_heartbeat=external",
+          "CHROMIUM_WASM_M1_TASK:PASS",
+        ]),
+        requiredStderr: Object.freeze([]),
+        requireSeparateStreams: false,
+      }),
     });
     const requestedCase = parameters.get("case") || "hello";
     const caseConfiguration = smokeCases[requestedCase];
@@ -79,10 +109,13 @@
     const versions = document.querySelector("#versions");
     const stdout = [];
     const stderr = [];
-    let heartbeatTicks = 0;
+    let timerTicks = 0;
+    let animationFrameTicks = 0;
     let finished = false;
-    let runtimeStartTicks = null;
-    let runtimeEndTicks = null;
+    let runtimeStartTimerTicks = null;
+    let runtimeEndTimerTicks = null;
+    let runtimeStartAnimationFrameTicks = null;
+    let runtimeEndAnimationFrameTicks = null;
     let runtimeStartTime = null;
     let runtimeEndTime = null;
     let runtimeInitialized = false;
@@ -116,9 +149,15 @@
       versions.append(term, description);
     }
 
-    const heartbeat = setInterval(() => {
-      heartbeatTicks += 1;
+    const timerHeartbeat = setInterval(() => {
+      timerTicks += 1;
     }, 10);
+    let animationFrameRequest = null;
+    function animationFrameHeartbeat() {
+      animationFrameTicks += 1;
+      animationFrameRequest = requestAnimationFrame(animationFrameHeartbeat);
+    }
+    animationFrameRequest = requestAnimationFrame(animationFrameHeartbeat);
     const exitPromise = new Promise((resolve, reject) => {
       resolveExit = resolve;
       rejectExit = reject;
@@ -146,7 +185,8 @@
         return;
       }
       finished = true;
-      clearInterval(heartbeat);
+      clearInterval(timerHeartbeat);
+      cancelAnimationFrame(animationFrameRequest);
       clearTimeout(runtimeTimeout);
       diagnostic.state = result.status;
       diagnostic.heartbeat = result.heartbeat;
@@ -160,12 +200,14 @@
       target.push(text);
       if (text.includes(
           `${caseConfiguration.sentinelPrefix}:RUNTIME_START`)) {
-        runtimeStartTicks = heartbeatTicks;
+        runtimeStartTimerTicks = timerTicks;
+        runtimeStartAnimationFrameTicks = animationFrameTicks;
         runtimeStartTime = performance.now();
       }
       if (text.includes(
           `${caseConfiguration.sentinelPrefix}:RUNTIME_END`)) {
-        runtimeEndTicks = heartbeatTicks;
+        runtimeEndTimerTicks = timerTicks;
+        runtimeEndAnimationFrameTicks = animationFrameTicks;
         runtimeEndTime = performance.now();
       }
     }
@@ -182,10 +224,19 @@
         stdout,
         stderr,
         heartbeat: {
-          startTicks: runtimeStartTicks,
-          endTicks: runtimeEndTicks,
-          delta: runtimeStartTicks === null || runtimeEndTicks === null
-            ? null : runtimeEndTicks - runtimeStartTicks,
+          timerStartTicks: runtimeStartTimerTicks,
+          timerEndTicks: runtimeEndTimerTicks,
+          timerDelta:
+            runtimeStartTimerTicks === null || runtimeEndTimerTicks === null
+              ? null : runtimeEndTimerTicks - runtimeStartTimerTicks,
+          animationFrameStartTicks: runtimeStartAnimationFrameTicks,
+          animationFrameEndTicks: runtimeEndAnimationFrameTicks,
+          animationFrameDelta:
+            runtimeStartAnimationFrameTicks === null ||
+                runtimeEndAnimationFrameTicks === null
+              ? null
+              : runtimeEndAnimationFrameTicks -
+                  runtimeStartAnimationFrameTicks,
           elapsedMs: runtimeStartTime === null || runtimeEndTime === null
             ? null : runtimeEndTime - runtimeStartTime,
         },
@@ -242,7 +293,9 @@
       });
       await exitPromise;
 
-      const heartbeatDelta = runtimeEndTicks - runtimeStartTicks;
+      const timerDelta = runtimeEndTimerTicks - runtimeStartTimerTicks;
+      const animationFrameDelta =
+        runtimeEndAnimationFrameTicks - runtimeStartAnimationFrameTicks;
       const runtimeElapsed = runtimeEndTime - runtimeStartTime;
       const combinedOutput = [...stdout, ...stderr].join("\n");
       const runtimeStartSentinel =
@@ -261,14 +314,19 @@
         canvasFocused,
         crossOriginIsolated,
         exitCode: exitCode === 0,
-        heartbeat: Number.isFinite(heartbeatDelta) && heartbeatDelta >= 3,
+        animationFrames:
+          Number.isFinite(animationFrameDelta) && animationFrameDelta >= 3,
+        heartbeat: Number.isFinite(timerDelta) && timerDelta >= 3,
         noFailure: !combinedOutput.includes(failureSentinel),
         pass: stdout.some((line) => line.includes(passSentinel)),
         runtimeInitialized,
         runtimeInterval:
           Number.isFinite(runtimeElapsed) && runtimeElapsed >= 200,
         runtimeMarkers:
-          runtimeStartTicks !== null && runtimeEndTicks !== null,
+          runtimeStartTimerTicks !== null &&
+          runtimeEndTimerTicks !== null &&
+          runtimeStartAnimationFrameTicks !== null &&
+          runtimeEndAnimationFrameTicks !== null,
         runtimeOrder:
           runtimeStartIndex >= 0 &&
           runtimeStartIndex < runtimeEndIndex &&
@@ -303,9 +361,12 @@
         stdout,
         stderr,
         heartbeat: {
-          startTicks: runtimeStartTicks,
-          endTicks: runtimeEndTicks,
-          delta: heartbeatDelta,
+          timerStartTicks: runtimeStartTimerTicks,
+          timerEndTicks: runtimeEndTimerTicks,
+          timerDelta,
+          animationFrameStartTicks: runtimeStartAnimationFrameTicks,
+          animationFrameEndTicks: runtimeEndAnimationFrameTicks,
+          animationFrameDelta,
           elapsedMs: runtimeElapsed,
         },
         failedChecks,

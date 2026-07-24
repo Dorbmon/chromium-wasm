@@ -51,6 +51,29 @@ class SmokeCase:
     require_separate_streams: bool = False
 
 
+TASK_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M1_TASK:RESULT",
+    "immediate=ok",
+    "delayed_not_early=ok",
+    "delayed_deadline_order=ok",
+    "worker_to_app_wake=ok",
+    "app_to_worker=ok",
+    "nested_quit_independent=ok",
+    "outer_continues=ok",
+    "sleeping_quit_wake=ok",
+    "idle_wait_bounded=ok",
+    "clean_shutdown=ok",
+    "task_count=18",
+    "delayed_wake_count=3",
+    "max_nesting=2",
+    "joinable_created=1",
+    "joinable_joined=1",
+    "wake_count_bounded_nonzero=ok",
+    "wait_count_bounded_nonzero=ok",
+    "browser_heartbeat=external",
+)
+
+
 SMOKE_CASES = {
     "hello": SmokeCase(
         module_name="hello_wasm.js",
@@ -72,6 +95,16 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
             "CHROMIUM_WASM_M1_BASE:RESULT",
             "CHROMIUM_WASM_M1_BASE:PASS",
+        ),
+    ),
+    "tasks": SmokeCase(
+        module_name="m1_task_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M1_TASK",
+        required_stdout=(
+            "CHROMIUM_WASM_M1_TASK:RUNTIME_START",
+            "CHROMIUM_WASM_M1_TASK:RUNTIME_END",
+            *TASK_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M1_TASK:PASS",
         ),
     ),
 }
