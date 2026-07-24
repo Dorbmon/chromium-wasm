@@ -5,6 +5,9 @@
 #ifndef BASE_MEMORY_PLATFORM_SHARED_MEMORY_HANDLE_H_
 #define BASE_MEMORY_PLATFORM_SHARED_MEMORY_HANDLE_H_
 
+#include <stdint.h>
+
+#include "base/base_export.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_APPLE)
@@ -23,6 +26,63 @@
 #endif
 
 namespace base::subtle {
+
+#if BUILDFLAG(IS_WASM)
+// Process-local shared memory capabilities. These values are opaque outside the
+// Wasm shared memory backend and must never be interpreted as file descriptors
+// or storage addresses.
+enum class PlatformSharedMemoryHandleRights : uint8_t {
+  kInvalid = 0,
+  kReadOnly,
+  kWritable,
+  kUnsafe,
+};
+
+struct BASE_EXPORT PlatformSharedMemoryHandle {
+  uint64_t region_id = 0;
+  uint64_t generation = 0;
+  PlatformSharedMemoryHandleRights rights =
+      PlatformSharedMemoryHandleRights::kInvalid;
+
+  bool is_valid() const {
+    return region_id != 0 && generation != 0 &&
+           rights != PlatformSharedMemoryHandleRights::kInvalid;
+  }
+
+  friend bool operator==(const PlatformSharedMemoryHandle&,
+                         const PlatformSharedMemoryHandle&) = default;
+};
+
+class PlatformSharedMemoryRegion;
+
+// Move-only owner of one process-local registry reference.
+class BASE_EXPORT ScopedPlatformSharedMemoryHandle {
+ public:
+  ScopedPlatformSharedMemoryHandle();
+  explicit ScopedPlatformSharedMemoryHandle(
+      PlatformSharedMemoryHandle handle);
+  ScopedPlatformSharedMemoryHandle(ScopedPlatformSharedMemoryHandle&&);
+  ScopedPlatformSharedMemoryHandle& operator=(
+      ScopedPlatformSharedMemoryHandle&&);
+  ScopedPlatformSharedMemoryHandle(const ScopedPlatformSharedMemoryHandle&) =
+      delete;
+  ScopedPlatformSharedMemoryHandle& operator=(
+      const ScopedPlatformSharedMemoryHandle&) = delete;
+  ~ScopedPlatformSharedMemoryHandle();
+
+  bool is_valid() const { return handle_.is_valid(); }
+  PlatformSharedMemoryHandle get() const { return handle_; }
+  [[nodiscard]] PlatformSharedMemoryHandle release();
+  void reset(PlatformSharedMemoryHandle handle = {});
+
+ private:
+  friend class PlatformSharedMemoryRegion;
+
+  void SetRightsForConversion(PlatformSharedMemoryHandleRights rights);
+
+  PlatformSharedMemoryHandle handle_;
+};
+#endif
 
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_ANDROID)
 // Helper structs to keep two descriptors on POSIX. It's needed to support
@@ -65,6 +125,8 @@ using ScopedPlatformSharedMemoryHandle = win::ScopedHandle;
 #elif BUILDFLAG(IS_ANDROID)
 using PlatformSharedMemoryHandle = int;
 using ScopedPlatformSharedMemoryHandle = ScopedFD;
+#elif BUILDFLAG(IS_WASM)
+// Defined above.
 #else
 using PlatformSharedMemoryHandle = FDPair;
 using ScopedPlatformSharedMemoryHandle = ScopedFDPair;
