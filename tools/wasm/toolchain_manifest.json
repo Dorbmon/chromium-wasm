@@ -26,13 +26,22 @@
       "path": "third_party/boringssl/src",
       "revision": "3a9254f16eda7a4c5d2260039ff23456a0a34de4"
     },
+    "compiler_rt": {
+      "path": "third_party/compiler-rt/src",
+      "revision": "03641f7a5b05e48e318d64369057db577cafc594"
+    },
     "depot_tools": {
       "path": "third_party/depot_tools",
       "revision": "f4fadaf6a5ba1bced9d3d9021060667b563bf583"
     },
     "perfetto": {
       "path": "third_party/perfetto",
-      "revision": "9ede949f025303868fa0c42418f122ac47312539"
+      "upstream_revision": "9ede949f025303868fa0c42418f122ac47312539",
+      "revision": "72722368828dde107df27d53410cab5ba232f8ee"
+    },
+    "protobuf_javascript": {
+      "path": "third_party/protobuf-javascript/src",
+      "revision": "e6d763860001ba1a76a63adcff5efb12b1c96024"
     },
     "googletest": {
       "path": "third_party/googletest/src",
@@ -50,6 +59,27 @@
     "cipd_instance": "Px8cwPaaG8_fZ_tsK8dBmx3YEruNDnmvqb-oo1U7UIIC",
     "version_output": "1.12.1",
     "sha256": "09f0e5a8a2cf762b24b4d3ed464ffb2529e650d2efc36bab31da36aa93791efc"
+  },
+  "host_clang": {
+    "path": "third_party/llvm-build/Release+Asserts",
+    "revision": "llvmorg-23-init-10931-g20b6ec66-11",
+    "llvm_revision": "20b6ec66967ac2a8f932863c1abf251e5b17a843",
+    "version_output": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843)",
+    "archive_sha256": "de584381536aa5ba2403033c4f8b70f3c39c2e5d7fa87c953b7fd8bfbba0ee2a",
+    "artifact_sha256": {
+      "clang": "0001eafa8314c3448b8be72836bb40f6512c4828de275983737d11a081ae6077",
+      "ld.lld": "1e469c81b29d741d7ff7a6ff776c2f7378ec43935c4bb4a96fc7f9b505a50528",
+      "llvm-ar": "e847bf9508c9385a7825f7bccb5cef21a45d8a1934bec31ba551a701ab2744d2"
+    }
+  },
+  "host_sysroot": {
+    "arch": "amd64",
+    "platform": "bullseye",
+    "path": "build/linux/debian_bullseye_amd64-sysroot",
+    "metadata_path": "build/linux/sysroot_scripts/sysroots.json",
+    "tarball": "debian_bullseye_amd64_sysroot.tar.xz",
+    "url": "https://commondatastorage.googleapis.com/chrome-linux-sysroot",
+    "sha256": "52d61d4446ffebfaa3dda2cd02da4ab4876ff237853f46d273e7f9b666652e1d"
   },
   "depot_tools_bootstrap": {
     "cipd_client_revision": "4048470b2263eb1bfee6134ea4b3b4b7da2e14b4",
@@ -97,8 +127,7 @@
     "symbol_level = 1",
     "is_component_build = false",
     "use_custom_libcxx = false",
-    "use_custom_libcxx_for_host = true",
-    "clang_base_path = \"//third_party/emsdk/upstream/bin\"",
+    "use_custom_libcxx_for_host = false",
     "clang_use_chrome_plugins = false",
     "clang_use_unsafe_buffers_plugin = false",
     "use_debug_fission = false",

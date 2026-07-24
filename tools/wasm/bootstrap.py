@@ -28,8 +28,10 @@ from m0_common import (
 REQUIRED_SUBMODULES = (
     "v8",
     "angle",
+    "compiler_rt",
     "depot_tools",
     "perfetto",
+    "protobuf_javascript",
     "googletest",
 )
 
@@ -81,10 +83,13 @@ def ensure_source_dependencies(
     assert isinstance(dependencies, dict)
     for name, raw_dependency in dependencies.items():
         assert isinstance(raw_dependency, dict)
+        upstream_revision = raw_dependency.get(
+            "upstream_revision", raw_dependency["revision"]
+        )
         require_equal(
-            f"{name} gitlink",
+            f"{name} upstream gitlink",
             gitlink_revision(base_revision, str(raw_dependency["path"])),
-            str(raw_dependency["revision"]),
+            str(upstream_revision),
         )
         require_equal(
             f"{name} HEAD gitlink",
@@ -277,6 +282,148 @@ def ensure_build_tools(
         str(ninja_pin["version_output"]),
     )
     require_equal("Ninja hash", sha256(ninja), str(ninja_pin["sha256"]))
+
+
+def ensure_host_clang(
+    manifest: dict[str, object],
+    bootstrap_python: Path,
+    *,
+    install: bool,
+) -> None:
+    clang_pin = manifest["host_clang"]
+    assert isinstance(clang_pin, dict)
+    clang_root = REPO_ROOT / str(clang_pin["path"])
+    update_script = REPO_ROOT / "tools/clang/scripts/update.py"
+
+    if install:
+        run(
+            [
+                str(bootstrap_python),
+                str(update_script),
+                "--output-dir",
+                str(clang_root),
+            ],
+            capture_output=False,
+        )
+
+    clang = clang_root / "bin/clang"
+    stamp = clang_root / "cr_build_revision"
+    if not clang.is_file() or not stamp.is_file():
+        raise M0Error("pinned Chromium host Clang is not installed")
+
+    require_equal(
+        "Chromium host Clang revision",
+        checked_output(
+            [
+                str(bootstrap_python),
+                str(update_script),
+                "--output-dir",
+                str(clang_root),
+                "--print-revision",
+            ]
+        ),
+        str(clang_pin["revision"]),
+    )
+    require_equal(
+        "Chromium host Clang stamp",
+        stamp.read_text(encoding="utf-8").strip().partition(",")[0],
+        str(clang_pin["revision"]),
+    )
+    deps_text = (REPO_ROOT / "DEPS").read_text(encoding="utf-8")
+    if str(clang_pin["archive_sha256"]) not in deps_text:
+        raise M0Error("Chromium DEPS is missing the host Clang archive pin")
+    clang_version = run([str(clang), "--version"]).stdout.splitlines()
+    if not clang_version:
+        raise M0Error("Chromium host Clang returned no version")
+    require_equal(
+        "Chromium host Clang version",
+        clang_version[0],
+        str(clang_pin["version_output"]),
+    )
+    if str(clang_pin["llvm_revision"]) not in "\n".join(clang_version):
+        raise M0Error("Chromium host LLVM revision mismatch")
+    artifact_hashes = clang_pin["artifact_sha256"]
+    assert isinstance(artifact_hashes, dict)
+    for name in ("clang", "ld.lld", "llvm-ar"):
+        artifact = clang_root / "bin" / name
+        if not artifact.is_file():
+            raise M0Error(f"Chromium host Clang is missing {name}")
+        require_equal(
+            f"Chromium host Clang artifact {name}",
+            sha256(artifact),
+            str(artifact_hashes[name]),
+        )
+
+
+def ensure_host_sysroot(
+    manifest: dict[str, object],
+    bootstrap_python: Path,
+    *,
+    install: bool,
+) -> None:
+    sysroot_pin = manifest["host_sysroot"]
+    assert isinstance(sysroot_pin, dict)
+    metadata_path = REPO_ROOT / str(sysroot_pin["metadata_path"])
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    sysroot_key = (
+        f"{sysroot_pin['platform']}_{sysroot_pin['arch']}"
+    )
+    source_pin = metadata.get(sysroot_key)
+    if not isinstance(source_pin, dict):
+        raise M0Error(f"Chromium sysroot pin is missing: {sysroot_key}")
+
+    require_equal(
+        "Chromium host sysroot path",
+        (Path("build/linux") / str(source_pin["SysrootDir"])).as_posix(),
+        str(sysroot_pin["path"]),
+    )
+    require_equal(
+        "Chromium host sysroot tarball",
+        str(source_pin["Tarball"]),
+        str(sysroot_pin["tarball"]),
+    )
+    require_equal(
+        "Chromium host sysroot URL",
+        str(source_pin["URL"]),
+        str(sysroot_pin["url"]),
+    )
+    require_equal(
+        "Chromium host sysroot hash",
+        str(source_pin["Sha256Sum"]),
+        str(sysroot_pin["sha256"]),
+    )
+
+    install_script = (
+        REPO_ROOT / "build/linux/sysroot_scripts/install-sysroot.py"
+    )
+    if install:
+        run(
+            [
+                str(bootstrap_python),
+                str(install_script),
+                f"--arch={sysroot_pin['arch']}",
+            ],
+            capture_output=False,
+        )
+
+    sysroot = REPO_ROOT / str(sysroot_pin["path"])
+    stamp = sysroot / ".stamp"
+    if not sysroot.is_dir() or not stamp.is_file():
+        raise M0Error("pinned Chromium host sysroot is not installed")
+    expected_stamp = f"{sysroot_pin['url']}/{sysroot_pin['sha256']}"
+    require_equal(
+        "Chromium host sysroot stamp",
+        stamp.read_text(encoding="utf-8"),
+        expected_stamp,
+    )
+    for relative_path in (
+        "usr/include/stdlib.h",
+        "usr/lib/x86_64-linux-gnu/crt1.o",
+    ):
+        if not (sysroot / relative_path).is_file():
+            raise M0Error(
+                f"Chromium host sysroot is missing {relative_path}"
+            )
 
 
 def ensure_emscripten(
@@ -482,6 +629,12 @@ def main() -> int:
             manifest, install=install
         )
         ensure_build_tools(manifest, cipd, install=install)
+        ensure_host_clang(
+            manifest, bootstrap_python, install=install
+        )
+        ensure_host_sysroot(
+            manifest, bootstrap_python, install=install
+        )
         ensure_emscripten(
             manifest, bootstrap_python, install=install
         )
