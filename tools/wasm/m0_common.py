@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from typing import Any, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = Path(__file__).with_name("toolchain_manifest.json")
+M0_BASE_TAG = "wasm-m0-primary-toolchain"
 MAX_COMMAND_DIAGNOSTIC_CHARS = 4096
 MAX_TIMEOUT_SECONDS = 120.0
 
@@ -63,9 +65,21 @@ def relative_to_repo(path: Path) -> str:
 
 def print_context(
     script: str, manifest: dict[str, Any], **extra: object
-) -> None:
+) -> dict[str, object]:
     context: dict[str, object] = {
         "script": script,
+        "port_commit": checked_output(["git", "rev-parse", "HEAD"]),
+        "m0_base": {
+            "tag": M0_BASE_TAG,
+            "commit": checked_output(
+                ["git", "rev-parse", f"{M0_BASE_TAG}^{{commit}}"]
+            ),
+        },
+        "toolchain_manifest": {
+            "path": relative_to_repo(MANIFEST_PATH),
+            "schema_version": manifest["schema_version"],
+            "sha256": hashlib.sha256(MANIFEST_PATH.read_bytes()).hexdigest(),
+        },
         "chromium": manifest["chromium"],
         "emscripten": manifest["emscripten"],
         "gn_args": manifest["gn_args"],
@@ -76,6 +90,7 @@ def print_context(
         + json.dumps(context, sort_keys=True, separators=(",", ":")),
         flush=True,
     )
+    return context
 
 
 def run(

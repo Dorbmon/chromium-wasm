@@ -26,7 +26,6 @@ from typing import Any, TextIO
 from m0_common import (
     M0Error,
     REPO_ROOT,
-    checked_output,
     load_manifest,
     parse_timeout,
     print_context,
@@ -44,6 +43,67 @@ def fail_for_case(case_name: str, message: str) -> int:
     prefix = smoke_case(case_name).sentinel_prefix
     print(f"{prefix}:FAIL reason={message}", file=sys.stderr, flush=True)
     return 1
+
+
+def write_failure_diagnostics(
+    diagnostics_dir: Path,
+    *,
+    case_name: str,
+    stage: str,
+    error: Exception,
+    context: dict[str, object] | None,
+    browser_path: Path | None,
+    browser_version_output: str | None,
+    browser: subprocess.Popen[str] | None,
+    browser_stderr: deque[str],
+    runtime_result: dict[str, Any] | None,
+    timeout_seconds: float,
+    out_dir: Path,
+    no_sandbox: bool,
+) -> Path:
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    diagnostic_path = (
+        diagnostics_dir / f"{case_name}-browser-failure.json"
+    )
+    diagnostic = {
+        "schema_version": 1,
+        "runner": "run_browser_smoke.py",
+        "case": case_name,
+        "status": "fail",
+        "stage": stage,
+        "failure": {
+            "type": type(error).__name__,
+            "message": str(error),
+        },
+        "context": context,
+        "options": {
+            "timeout_seconds": timeout_seconds,
+            "out_dir": str(out_dir),
+            "host_browser_sandbox": not no_sandbox,
+        },
+        "host_browser": {
+            "path": str(browser_path) if browser_path is not None else None,
+            "version": browser_version_output,
+            "return_code": browser.poll() if browser is not None else None,
+            "stderr_tail": list(browser_stderr),
+        },
+        "runtime_result": runtime_result,
+    }
+    temporary_path = diagnostic_path.with_suffix(
+        diagnostic_path.suffix + ".tmp"
+    )
+    temporary_path.write_text(
+        json.dumps(
+            diagnostic,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(diagnostic_path)
+    return diagnostic_path
 
 
 def browser_version(path: Path) -> tuple[tuple[int, ...], str] | None:
@@ -259,6 +319,11 @@ def main() -> int:
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--out-dir", type=Path, default=Path("out/wasm"))
     parser.add_argument(
+        "--diagnostics-dir",
+        type=Path,
+        help="failure artifact directory (default: OUT_DIR/diagnostics)",
+    )
+    parser.add_argument(
         "--no-sandbox",
         action="store_true",
         help="disable the host browser sandbox (isolated CI only)",
@@ -266,19 +331,50 @@ def main() -> int:
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
 
+    out_dir = args.out_dir
+    if not out_dir.is_absolute():
+        out_dir = REPO_ROOT / out_dir
+    diagnostics_dir = args.diagnostics_dir
+    if diagnostics_dir is None:
+        diagnostics_dir = out_dir / "diagnostics"
+    elif not diagnostics_dir.is_absolute():
+        diagnostics_dir = REPO_ROOT / diagnostics_dir
+
     server = None
     server_thread = None
     server_thread_started = False
     browser: subprocess.Popen[str] | None = None
+    browser_path: Path | None = None
+    version_output: str | None = None
+    browser_stderr: deque[str] = deque(maxlen=200)
+    stderr_thread: threading.Thread | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
+    result: dict[str, Any] | None = None
+    context: dict[str, object] | None = None
+    stage = "load_manifest"
     try:
         manifest = load_manifest()
+        stage = "print_context"
+        context = print_context(
+            "run_browser_smoke.py",
+            manifest,
+            case=args.case,
+            host_browser_sandbox=not args.no_sandbox,
+        )
+        stage = "find_browser"
         browser_path, version_output = find_browser(args.browser)
-        out_dir = args.out_dir
-        if not out_dir.is_absolute():
-            out_dir = REPO_ROOT / out_dir
+        print(
+            "CHROMIUM_WASM_M0:HOST_BROWSER "
+            + json.dumps(
+                {"browser_version": version_output},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
         token = secrets.token_urlsafe(24)
         result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+        stage = "create_server"
         server = create_server(
             "127.0.0.1",
             0,
@@ -294,7 +390,9 @@ def main() -> int:
         )
         server_thread.start()
         server_thread_started = True
-        port_commit = checked_output(["git", "rev-parse", "HEAD"])
+        port_commit = context["port_commit"]
+        if not isinstance(port_commit, str):
+            raise M0Error("runner context is missing port commit")
         url = smoke_url(
             server,
             token,
@@ -303,16 +401,9 @@ def main() -> int:
             timeout_seconds=max(1.0, args.timeout - 1.0),
             smoke_case_name=args.case,
         )
-        print_context(
-            "run_browser_smoke.py",
-            manifest,
-            browser_version=version_output,
-            case=args.case,
-            host_browser_sandbox=not args.no_sandbox,
-        )
 
-        browser_stderr: deque[str] = deque(maxlen=200)
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m0-")
+        stage = "launch_browser"
         browser = subprocess.Popen(
             browser_command(
                 browser_path,
@@ -335,8 +426,8 @@ def main() -> int:
         )
         stderr_thread.start()
 
+        stage = "wait_for_result"
         deadline = time.monotonic() + args.timeout
-        result: dict[str, Any] | None = None
         while result is None:
             if browser.poll() is not None:
                 tail = "\n".join(browser_stderr)
@@ -353,6 +444,7 @@ def main() -> int:
             except queue.Empty:
                 continue
 
+        stage = "validate_result"
         validate_result(result, args.case)
         selected_case = smoke_case(args.case)
         print(
@@ -363,6 +455,44 @@ def main() -> int:
         print(f"{selected_case.sentinel_prefix}_BROWSER:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
+        if browser is not None:
+            stop_browser(browser)
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=1)
+        try:
+            diagnostic_path = write_failure_diagnostics(
+                diagnostics_dir,
+                case_name=args.case,
+                stage=stage,
+                error=exc,
+                context=context,
+                browser_path=browser_path,
+                browser_version_output=version_output,
+                browser=browser,
+                browser_stderr=browser_stderr,
+                runtime_result=result,
+                timeout_seconds=args.timeout,
+                out_dir=out_dir,
+                no_sandbox=args.no_sandbox,
+            )
+            prefix = smoke_case(args.case).sentinel_prefix
+            print(
+                f"{prefix}:DIAGNOSTICS "
+                + json.dumps(
+                    {"path": str(diagnostic_path)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+        except (OSError, TypeError, ValueError) as diagnostic_exc:
+            prefix = smoke_case(args.case).sentinel_prefix
+            print(
+                f"{prefix}:DIAGNOSTICS_FAIL reason={diagnostic_exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         return fail_for_case(args.case, str(exc))
     finally:
         if browser is not None:

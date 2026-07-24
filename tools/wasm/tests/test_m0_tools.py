@@ -6,8 +6,12 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
+import hashlib
 from io import BytesIO
+from io import StringIO
 import importlib.util
+import json
 import os
 from pathlib import Path
 import queue
@@ -22,6 +26,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
 import bootstrap
+import m0_common
 from m0_common import M0Error, gn_args_text, load_manifest, parse_timeout, run
 import run_browser_smoke
 import run_node_smoke
@@ -79,6 +84,56 @@ class ManifestTest(unittest.TestCase):
 
 
 class CommonTest(unittest.TestCase):
+    def test_context_identifies_port_base_and_manifest(self) -> None:
+        manifest = load_manifest()
+        stdout = StringIO()
+        with (
+            mock.patch.object(
+                m0_common,
+                "checked_output",
+                side_effect=("port-commit", "m0-commit"),
+            ) as checked_output,
+            mock.patch("sys.stdout", stdout),
+        ):
+            context = m0_common.print_context(
+                "runner.py", manifest, case="mojo"
+            )
+
+        checked_output.assert_has_calls(
+            [
+                mock.call(["git", "rev-parse", "HEAD"]),
+                mock.call(
+                    [
+                        "git",
+                        "rev-parse",
+                        "wasm-m0-primary-toolchain^{commit}",
+                    ]
+                ),
+            ]
+        )
+        line = stdout.getvalue().strip()
+        self.assertTrue(line.startswith("CHROMIUM_WASM_M0:CONFIG "))
+        emitted = json.loads(line.split(" ", 1)[1])
+        self.assertEqual(emitted, context)
+        self.assertEqual(emitted["port_commit"], "port-commit")
+        self.assertEqual(
+            emitted["m0_base"],
+            {
+                "tag": "wasm-m0-primary-toolchain",
+                "commit": "m0-commit",
+            },
+        )
+        self.assertEqual(
+            emitted["toolchain_manifest"],
+            {
+                "path": "tools/wasm/toolchain_manifest.json",
+                "schema_version": 1,
+                "sha256": hashlib.sha256(
+                    m0_common.MANIFEST_PATH.read_bytes()
+                ).hexdigest(),
+            },
+        )
+
     def test_timeout_must_be_finite_positive_and_bounded(self) -> None:
         for value in ("0.01", "20", "120"):
             self.assertEqual(parse_timeout(value), float(value))
@@ -612,6 +667,110 @@ class ServerTest(unittest.TestCase):
 
 
 class BrowserRunnerTest(unittest.TestCase):
+    def test_failure_diagnostics_preserve_structured_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            diagnostics_dir = Path(temporary_directory)
+            browser = mock.Mock()
+            browser.poll.return_value = 17
+            diagnostic_path = (
+                run_browser_smoke.write_failure_diagnostics(
+                    diagnostics_dir,
+                    case_name="mojo",
+                    stage="validate_result",
+                    error=M0Error("result mismatch"),
+                    context={"port_commit": "port-commit"},
+                    browser_path=Path("/browser"),
+                    browser_version_output="Chromium 150.0",
+                    browser=browser,
+                    browser_stderr=deque(["first", "last"]),
+                    runtime_result={
+                        "stdout": ["runtime stdout"],
+                        "stderr": ["runtime stderr"],
+                    },
+                    timeout_seconds=30.0,
+                    out_dir=Path("/out/wasm"),
+                    no_sandbox=False,
+                )
+            )
+            diagnostic_text = diagnostic_path.read_text(encoding="utf-8")
+            diagnostic = json.loads(diagnostic_text)
+
+        self.assertEqual(
+            diagnostic_path.name, "mojo-browser-failure.json"
+        )
+        self.assertEqual(diagnostic["stage"], "validate_result")
+        self.assertEqual(diagnostic["failure"]["type"], "M0Error")
+        self.assertEqual(
+            diagnostic["host_browser"]["stderr_tail"],
+            ["first", "last"],
+        )
+        self.assertEqual(diagnostic["host_browser"]["return_code"], 17)
+        self.assertEqual(
+            diagnostic["runtime_result"]["stderr"], ["runtime stderr"]
+        )
+        self.assertNotIn("token", diagnostic_text.lower())
+        self.assertNotIn("url", diagnostic_text.lower())
+
+    def test_browser_discovery_failure_saves_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            diagnostics_dir = Path(temporary_directory) / "diagnostics"
+            stderr = StringIO()
+            context = {
+                "port_commit": "port-commit",
+                "m0_base": {
+                    "tag": "wasm-m0-primary-toolchain",
+                    "commit": "m0-commit",
+                },
+            }
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "run_browser_smoke.py",
+                        "--case",
+                        "hello",
+                        "--diagnostics-dir",
+                        str(diagnostics_dir),
+                    ],
+                ),
+                mock.patch.object(
+                    run_browser_smoke,
+                    "load_manifest",
+                    return_value=load_manifest(),
+                ),
+                mock.patch.object(
+                    run_browser_smoke,
+                    "print_context",
+                    return_value=context,
+                ),
+                mock.patch.object(
+                    run_browser_smoke,
+                    "find_browser",
+                    side_effect=M0Error("browser unavailable"),
+                ),
+                mock.patch.object(sys, "stderr", stderr),
+            ):
+                self.assertEqual(run_browser_smoke.main(), 1)
+
+            diagnostic_path = (
+                diagnostics_dir / "hello-browser-failure.json"
+            )
+            diagnostic = json.loads(
+                diagnostic_path.read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(diagnostic["stage"], "find_browser")
+        self.assertEqual(diagnostic["context"], context)
+        self.assertEqual(
+            diagnostic["failure"]["message"], "browser unavailable"
+        )
+        self.assertIn("CHROMIUM_WASM_M0:DIAGNOSTICS", stderr.getvalue())
+        self.assertIn(
+            "CHROMIUM_WASM_M0:FAIL reason=browser unavailable",
+            stderr.getvalue(),
+        )
+
     def test_no_sandbox_is_explicit(self) -> None:
         browser = Path("/browser")
         command = run_browser_smoke.browser_command(
