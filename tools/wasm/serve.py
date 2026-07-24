@@ -149,6 +149,53 @@ SHARED_MEMORY_RESULT_REQUIREMENTS = (
     "max_heap_bytes=2147483648",
 )
 
+MOJO_RESULT_VALUES = {
+    "single_node": "ok",
+    "message_pipe_create": "ok",
+    "empty_pipe_should_wait": "ok",
+    "shared_buffer_create": "ok",
+    "sender_map": "ok",
+    "deterministic_write": "ok",
+    "shared_buffer_attach": "ok",
+    "message_write": "ok",
+    "message_read": "ok",
+    "shared_buffer_extract": "ok",
+    "receiver_map": "ok",
+    "payload_verified": "ok",
+    "unsafe_duplicate": "ok",
+    "duplicate_map": "ok",
+    "receiver_modify": "ok",
+    "sender_observed_modify": "ok",
+    "duplicate_unmap_accounting": "ok",
+    "invalid_region_rejected": "ok",
+    "use_after_final_close_rejected": "ok",
+    "oversized_create_rejected": "ok",
+    "oversized_map_rejected": "ok",
+    "readonly_after_unsafe_rejected": "ok",
+    "readonly_mode_mismatch_rejected": "ok",
+    "corrupt_metadata_rejected": "ok",
+    "remote_transport_rejected": "ok",
+    "driver_failures_rejected": "ok",
+    "mapping_outlives_handles": "ok",
+    "all_handles_closed": "ok",
+    "clean_shutdown": "ok",
+    "memory_metrics": "ok",
+    "browser_heartbeat": "external",
+}
+MOJO_METRIC_NAMES = (
+    "initial_heap_bytes",
+    "peak_heap_bytes",
+    "max_heap_bytes",
+)
+MOJO_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M1_MOJO:RESULT",
+    "CHROMIUM_WASM_M1_MOJO:METRICS",
+    *(f"{key}={value}" for key, value in MOJO_RESULT_VALUES.items()),
+    "initial_heap_bytes=",
+    "peak_heap_bytes=",
+    "max_heap_bytes=2147483648",
+)
+
 
 SMOKE_CASES = {
     "hello": SmokeCase(
@@ -204,6 +251,17 @@ SMOKE_CASES = {
         ),
         minimum_runtime_ms=250,
     ),
+    "mojo": SmokeCase(
+        module_name="m1_mojo_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M1_MOJO",
+        required_stdout=(
+            "CHROMIUM_WASM_M1_MOJO:RUNTIME_START",
+            "CHROMIUM_WASM_M1_MOJO:RUNTIME_END",
+            *MOJO_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M1_MOJO:PASS",
+        ),
+        minimum_runtime_ms=250,
+    ),
 }
 
 
@@ -237,30 +295,43 @@ def _parse_contract_line(
 
 
 def validate_case_stdout(name: str, stdout: str) -> None:
-    if name != "shared_memory":
+    if name == "shared_memory":
+        display_name = "shared-memory"
+        sentinel_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY"
+        result_values = SHARED_MEMORY_RESULT_VALUES
+        metric_names = SHARED_MEMORY_METRIC_NAMES
+    elif name == "mojo":
+        display_name = "Mojo"
+        sentinel_prefix = "CHROMIUM_WASM_M1_MOJO"
+        result_values = MOJO_RESULT_VALUES
+        metric_names = MOJO_METRIC_NAMES
+    else:
         return
 
     lines = stdout.splitlines()
-    runtime_start = "CHROMIUM_WASM_M1_SHARED_MEMORY:RUNTIME_START"
-    runtime_end = "CHROMIUM_WASM_M1_SHARED_MEMORY:RUNTIME_END"
-    pass_sentinel = "CHROMIUM_WASM_M1_SHARED_MEMORY:PASS"
-    result_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY:RESULT"
+    runtime_start = f"{sentinel_prefix}:RUNTIME_START"
+    runtime_end = f"{sentinel_prefix}:RUNTIME_END"
+    pass_sentinel = f"{sentinel_prefix}:PASS"
+    result_prefix = f"{sentinel_prefix}:RESULT"
     result = _parse_contract_line(stdout, result_prefix)
-    if result != SHARED_MEMORY_RESULT_VALUES:
-        missing = sorted(SHARED_MEMORY_RESULT_VALUES.keys() - result.keys())
-        unexpected = sorted(result.keys() - SHARED_MEMORY_RESULT_VALUES.keys())
+    if result != result_values:
+        missing = sorted(result_values.keys() - result.keys())
+        unexpected = sorted(result.keys() - result_values.keys())
         mismatched = sorted(
             key
-            for key in result.keys() & SHARED_MEMORY_RESULT_VALUES.keys()
-            if result[key] != SHARED_MEMORY_RESULT_VALUES[key]
+            for key in result.keys() & result_values.keys()
+            if result[key] != result_values[key]
         )
         raise M0Error(
             f"{result_prefix} mismatch: missing={missing}, "
             f"unexpected={unexpected}, mismatched={mismatched}"
         )
 
-    metrics_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY:METRICS"
+    metrics_prefix = f"{sentinel_prefix}:METRICS"
     metrics = _parse_contract_line(stdout, metrics_prefix)
+    for marker in (runtime_start, runtime_end, pass_sentinel):
+        if lines.count(marker) != 1:
+            raise M0Error(f"expected exactly one {marker} line")
     try:
         runtime_start_index = lines.index(runtime_start)
         runtime_end_index = lines.index(runtime_end)
@@ -276,7 +347,7 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         )
         pass_index = lines.index(pass_sentinel)
     except (StopIteration, ValueError) as exc:
-        raise M0Error("shared-memory runtime markers are incomplete") from exc
+        raise M0Error(f"{display_name} runtime markers are incomplete") from exc
     if not (
         runtime_start_index
         < runtime_end_index
@@ -284,13 +355,13 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         < result_index
         < pass_index
     ):
-        raise M0Error("shared-memory runtime markers are out of order")
+        raise M0Error(f"{display_name} runtime markers are out of order")
 
-    if set(metrics) != set(SHARED_MEMORY_METRIC_NAMES):
+    if set(metrics) != set(metric_names):
         raise M0Error(f"{metrics_prefix} fields do not match the contract")
     if any(
         not metrics[name].isascii() or not metrics[name].isdecimal()
-        for name in SHARED_MEMORY_METRIC_NAMES
+        for name in metric_names
     ):
         raise M0Error(f"{metrics_prefix} values must be decimal integers")
 

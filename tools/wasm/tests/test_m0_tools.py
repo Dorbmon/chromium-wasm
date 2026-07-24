@@ -42,6 +42,18 @@ SHARED_MEMORY_METRICS_LINE = (
     "initial_heap_bytes=67108864 peak_heap_bytes=67108864 "
     "max_heap_bytes=2147483648"
 )
+MOJO_RESULT_LINE = (
+    "CHROMIUM_WASM_M1_MOJO:RESULT "
+    + " ".join(
+        f"{key}={value}"
+        for key, value in serve.MOJO_RESULT_VALUES.items()
+    )
+)
+MOJO_METRICS_LINE = (
+    "CHROMIUM_WASM_M1_MOJO:METRICS "
+    "initial_heap_bytes=67108864 peak_heap_bytes=67108864 "
+    "max_heap_bytes=2147483648"
+)
 
 
 DRIVER_PATH = (
@@ -404,6 +416,104 @@ class NodeRunnerTest(unittest.TestCase):
                 "shared_memory",
             )
 
+    def test_mojo_case_requires_complete_result_contract(self) -> None:
+        case_name, module = run_node_smoke.resolve_case_and_module(
+            "mojo", None
+        )
+        self.assertEqual(case_name, "mojo")
+        self.assertEqual(module, Path("out/wasm/m1_mojo_smoke.js"))
+        self.assertEqual(
+            run_node_smoke.resolve_case_and_module(
+                None, Path("custom/m1_mojo_smoke.js")
+            ),
+            ("mojo", Path("custom/m1_mojo_smoke.js")),
+        )
+        with self.assertRaises(M0Error):
+            run_node_smoke.resolve_case_and_module(
+                "mojo", Path("out/wasm/m1_shared_memory_smoke.js")
+            )
+
+        stdout = "\n".join(
+            (
+                "CHROMIUM_WASM_M1_MOJO:RUNTIME_START",
+                "CHROMIUM_WASM_M1_MOJO:RUNTIME_END",
+                MOJO_METRICS_LINE,
+                MOJO_RESULT_LINE,
+                "CHROMIUM_WASM_M1_MOJO:PASS",
+                'CHROMIUM_WASM_M1_MOJO:NODE_EXIT {"exitCode":0}',
+            )
+        )
+        run_node_smoke.validate_streams(stdout, "", "mojo")
+        for requirement in serve.MOJO_RESULT_REQUIREMENTS:
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(requirement, "<missing>", 1),
+                    "",
+                    "mojo",
+                )
+        for old, new in (
+            ("unsafe_duplicate=ok", "unsafe_duplicate=okay"),
+            ("initial_heap_bytes=67108864", "initial_heap_bytes=garbage"),
+            (
+                MOJO_RESULT_LINE,
+                f"{MOJO_RESULT_LINE} unexpected_field=ok",
+            ),
+            (
+                "single_node=ok",
+                "single_node=ok single_node=ok",
+            ),
+            (
+                "peak_heap_bytes=67108864",
+                "peak_heap_bytes=33554432",
+            ),
+        ):
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(old, new), "", "mojo"
+                )
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout.replace(
+                    f"{MOJO_METRICS_LINE}\n{MOJO_RESULT_LINE}",
+                    f"{MOJO_RESULT_LINE}\n{MOJO_METRICS_LINE}",
+                ),
+                "",
+                "mojo",
+            )
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout.replace(
+                    "CHROMIUM_WASM_M1_MOJO:PASS\n"
+                    'CHROMIUM_WASM_M1_MOJO:NODE_EXIT {"exitCode":0}',
+                    'CHROMIUM_WASM_M1_MOJO:NODE_EXIT {"exitCode":0}\n'
+                    "CHROMIUM_WASM_M1_MOJO:PASS",
+                ),
+                "",
+                "mojo",
+            )
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout.replace(
+                    "CHROMIUM_WASM_M1_MOJO:PASS",
+                    "CHROMIUM_WASM_M1_MOJO:PASS\n"
+                    "CHROMIUM_WASM_M1_MOJO:PASS",
+                ),
+                "",
+                "mojo",
+            )
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout + "\nCHROMIUM_WASM_M1_MOJO:FAIL reason=test",
+                "",
+                "mojo",
+            )
+
 
 class ServerTest(unittest.TestCase):
     def test_security_headers_mime_and_focusable_canvas(self) -> None:
@@ -436,6 +546,10 @@ class ServerTest(unittest.TestCase):
             'modulePath: "/out/wasm/m1_shared_memory_smoke.js"',
             host_page,
         )
+        self.assertIn(
+            'modulePath: "/out/wasm/m1_mojo_smoke.js"',
+            host_page,
+        )
         self.assertIn("minimumRuntimeMs: 250", host_page)
         self.assertIn(
             "runtimeElapsed >= (caseConfiguration.minimumRuntimeMs ?? 200)",
@@ -446,6 +560,8 @@ class ServerTest(unittest.TestCase):
         for requirement in serve.RUST_RESULT_REQUIREMENTS:
             self.assertIn(requirement, host_page)
         for requirement in serve.SHARED_MEMORY_RESULT_REQUIREMENTS:
+            self.assertIn(requirement, host_page)
+        for requirement in serve.MOJO_RESULT_REQUIREMENTS:
             self.assertIn(requirement, host_page)
         self.assertIn(
             "requestAnimationFrame(animationFrameHeartbeat)", host_page
@@ -767,6 +883,70 @@ class BrowserRunnerTest(unittest.TestCase):
         ]
         with self.assertRaises(M0Error):
             run_browser_smoke.validate_result(result, "shared_memory")
+
+    def test_mojo_result_requires_complete_contract(self) -> None:
+        result = {
+            "protocol": 1,
+            "case": "mojo",
+            "status": "pass",
+            "exitCode": 0,
+            "crossOriginIsolated": True,
+            "sharedArrayBuffer": True,
+            "canvasFocused": True,
+            "failedChecks": [],
+            "error": None,
+            "heartbeat": {
+                "timerDelta": 40,
+                "animationFrameDelta": 20,
+                "elapsedMs": 650,
+            },
+            "stdout": [
+                "CHROMIUM_WASM_M1_MOJO:RUNTIME_START",
+                "CHROMIUM_WASM_M1_MOJO:RUNTIME_END",
+                MOJO_METRICS_LINE,
+                MOJO_RESULT_LINE,
+                "CHROMIUM_WASM_M1_MOJO:PASS",
+            ],
+            "stderr": [],
+        }
+        run_browser_smoke.validate_result(result, "mojo")
+        short_result = {
+            **result,
+            "heartbeat": {
+                **result["heartbeat"],
+                "elapsedMs": 225,
+            },
+        }
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(short_result, "mojo")
+        for requirement in serve.MOJO_RESULT_REQUIREMENTS:
+            invalid_result = {
+                **result,
+                "stdout": [
+                    "CHROMIUM_WASM_M1_MOJO:RUNTIME_START",
+                    "CHROMIUM_WASM_M1_MOJO:RUNTIME_END",
+                    MOJO_METRICS_LINE.replace(
+                        requirement, "<missing>", 1
+                    ),
+                    MOJO_RESULT_LINE.replace(
+                        requirement, "<missing>", 1
+                    ),
+                    "CHROMIUM_WASM_M1_MOJO:PASS",
+                ],
+            }
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(
+                    invalid_result, "mojo"
+                )
+        result["stdout"] = [
+            *result["stdout"],
+            "CHROMIUM_WASM_M1_MOJO:FAIL reason=test",
+        ]
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(result, "mojo")
 
 
 if __name__ == "__main__":
