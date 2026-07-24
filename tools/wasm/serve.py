@@ -230,6 +230,32 @@ V8_BASE_RESULT_REQUIREMENTS = (
     *(f"{key}={value}" for key, value in V8_BASE_RESULT_VALUES.items()),
 )
 
+V8_SNAPSHOTLESS_RESULT_VALUES = {
+    "value": "100:42:42:0:1234567890123456800",
+    "arrays": "ok",
+    "closures": "ok",
+    "regexp": "interpreter",
+    "json": "ok",
+    "bigint": "ok",
+    "lookup_pair": "ok",
+    "fp_calls": "ok",
+    "startup_snapshot": "none",
+    "isolate": "snapshot_creator",
+    "i18n": "off",
+    "host": "wasm32",
+    "target": "arm",
+    "simulator": "arm",
+    "jitless": "on",
+    "version": "15.0.245.21",
+}
+V8_SNAPSHOTLESS_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M2_V8_JS:RESULT",
+    *(
+        f"{key}={value}"
+        for key, value in V8_SNAPSHOTLESS_RESULT_VALUES.items()
+    ),
+)
+
 SHARED_MEMORY_RESULT_VALUES = {
     "capability_handle": "ok",
     "writable_create": "ok",
@@ -383,6 +409,17 @@ SMOKE_CASES = {
         ),
         minimum_runtime_ms=200,
     ),
+    "v8_snapshotless": SmokeCase(
+        module_name="wasm_v8_snapshotless_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M2_V8_JS",
+        required_stdout=(
+            "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+            "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
+            *V8_SNAPSHOTLESS_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M2_V8_JS:PASS",
+        ),
+        minimum_runtime_ms=1000,
+    ),
     "shared_memory": SmokeCase(
         module_name="m1_shared_memory_smoke.js",
         sentinel_prefix="CHROMIUM_WASM_M1_SHARED_MEMORY",
@@ -504,6 +541,10 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         display_name = "V8 Base"
         sentinel_prefix = "CHROMIUM_WASM_M2_V8_BASE"
         result_values = V8_BASE_RESULT_VALUES
+    elif name == "v8_snapshotless":
+        display_name = "V8 snapshotless"
+        sentinel_prefix = "CHROMIUM_WASM_M2_V8_JS"
+        result_values = V8_SNAPSHOTLESS_RESULT_VALUES
     elif name == "shared_memory":
         display_name = "shared-memory"
         sentinel_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY"

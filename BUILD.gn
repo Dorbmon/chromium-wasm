@@ -30,7 +30,10 @@ if (enable_chromium_wasm_port && target_os == "emscripten") {
       "//wasm:hello_wasm($default_toolchain)",
     ]
     if (enable_chromium_wasm_v8) {
-      deps += [ "//v8:wasm_v8_base_smoke($default_toolchain)" ]
+      deps += [
+        "//v8:wasm_v8_base_smoke($default_toolchain)",
+        "//v8:wasm_v8_snapshotless_smoke($default_toolchain)",
+      ]
     }
   }
 } else {
