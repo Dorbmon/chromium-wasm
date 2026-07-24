@@ -33,8 +33,42 @@ import run_node_smoke
 import serve
 
 
-TASK_RESULT_LINE = " ".join(serve.TASK_RESULT_REQUIREMENTS)
-RUST_RESULT_LINE = " ".join(serve.RUST_RESULT_REQUIREMENTS)
+BASE_RESULT_LINE = (
+    "CHROMIUM_WASM_M1_BASE:RESULT "
+    + " ".join(
+        f"{key}={value}" for key, value in serve.BASE_RESULT_VALUES.items()
+    )
+)
+TASK_RESULT_NUMERIC_VALUES = {
+    "wake_count": "3",
+    "wait_count": "1",
+    "idle_wake_returns": "1",
+    "worker_to_app_latency_ms": "0",
+    "sleeping_quit_latency_ms": "0",
+    "idle_elapsed_ms": "250",
+    "idle_wake_latency_ms": "0",
+}
+TASK_RESULT_LINE = (
+    "CHROMIUM_WASM_M1_TASK:RESULT "
+    + " ".join(
+        (
+            *(
+                f"{key}={value}"
+                for key, value in serve.TASK_RESULT_VALUES.items()
+            ),
+            *(
+                f"{key}={value}"
+                for key, value in TASK_RESULT_NUMERIC_VALUES.items()
+            ),
+        )
+    )
+)
+RUST_RESULT_LINE = (
+    "CHROMIUM_WASM_M1_RUST:RESULT "
+    + " ".join(
+        f"{key}={value}" for key, value in serve.RUST_RESULT_VALUES.items()
+    )
+)
 SHARED_MEMORY_RESULT_LINE = (
     "CHROMIUM_WASM_M1_SHARED_MEMORY:RESULT "
     + " ".join(
@@ -278,12 +312,25 @@ class NodeRunnerTest(unittest.TestCase):
             (
                 "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
                 "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
-                "CHROMIUM_WASM_M1_BASE:RESULT clocks=ok",
+                BASE_RESULT_LINE,
                 "CHROMIUM_WASM_M1_BASE:PASS",
                 'CHROMIUM_WASM_M1_BASE:NODE_EXIT {"exitCode":0}',
             )
         )
         run_node_smoke.validate_streams(stdout, "", "base")
+        for old, new in (
+            ("process_launch=unsupported", "process_launch=ok"),
+            (BASE_RESULT_LINE, f"{BASE_RESULT_LINE} unexpected=ok"),
+            ("wall_time=ok", "wall_time=ok wall_time=ok"),
+            (BASE_RESULT_LINE, f"{BASE_RESULT_LINE}\n{BASE_RESULT_LINE}"),
+        ):
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(old, new, 1), "", "base"
+                )
         with self.assertRaises(M0Error):
             run_node_smoke.validate_streams(
                 stdout + "\nCHROMIUM_WASM_M1_BASE:FAIL reason=test",
@@ -326,6 +373,27 @@ class NodeRunnerTest(unittest.TestCase):
                 run_node_smoke.validate_streams(
                     stdout.replace(requirement, "<missing>", 1), "", "tasks"
                 )
+        for old, new in (
+            (" wake_count=3", " wake_count=2"),
+            (" wait_count=1", " wait_count=0"),
+            (" idle_wake_returns=1", " idle_wake_returns=2"),
+            (
+                " worker_to_app_latency_ms=0",
+                " worker_to_app_latency_ms=1000",
+            ),
+            (" idle_elapsed_ms=250", " idle_elapsed_ms=199"),
+            (" idle_wake_latency_ms=0", " idle_wake_latency_ms=-1"),
+            (TASK_RESULT_LINE, f"{TASK_RESULT_LINE} unexpected=ok"),
+            (" immediate=ok", " immediate=ok immediate=ok"),
+            (TASK_RESULT_LINE, f"{TASK_RESULT_LINE}\n{TASK_RESULT_LINE}"),
+        ):
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(old, new, 1), "", "tasks"
+                )
         with self.assertRaises(M0Error):
             run_node_smoke.validate_streams(
                 stdout + "\nCHROMIUM_WASM_M1_TASK:FAIL reason=test",
@@ -367,6 +435,19 @@ class NodeRunnerTest(unittest.TestCase):
             ):
                 run_node_smoke.validate_streams(
                     stdout.replace(requirement, "<missing>", 1), "", "rust"
+                )
+        for old, new in (
+            ("pointer_width=32", "pointer_width=64"),
+            (RUST_RESULT_LINE, f"{RUST_RESULT_LINE} unexpected=ok"),
+            ("cpp_to_rust=ok", "cpp_to_rust=ok cpp_to_rust=ok"),
+            (RUST_RESULT_LINE, f"{RUST_RESULT_LINE}\n{RUST_RESULT_LINE}"),
+        ):
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(old, new, 1), "", "rust"
                 )
         with self.assertRaises(M0Error):
             run_node_smoke.validate_streams(
@@ -870,12 +951,29 @@ class BrowserRunnerTest(unittest.TestCase):
             "stdout": [
                 "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
                 "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
-                "CHROMIUM_WASM_M1_BASE:RESULT clocks=ok",
+                BASE_RESULT_LINE,
                 "CHROMIUM_WASM_M1_BASE:PASS",
             ],
             "stderr": [],
         }
         run_browser_smoke.validate_result(result, "base")
+        for old, new in (
+            ("process_output=unsupported", "process_output=ok"),
+            (BASE_RESULT_LINE, f"{BASE_RESULT_LINE} unexpected=ok"),
+            ("wall_time=ok", "wall_time=ok wall_time=ok"),
+            (BASE_RESULT_LINE, f"{BASE_RESULT_LINE}\n{BASE_RESULT_LINE}"),
+        ):
+            invalid_result = {
+                **result,
+                "stdout": [
+                    line.replace(old, new, 1) for line in result["stdout"]
+                ],
+            }
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(invalid_result, "base")
         result["stdout"] = [
             *result["stdout"],
             "CHROMIUM_WASM_M1_BASE:FAIL reason=test",
@@ -923,6 +1021,31 @@ class BrowserRunnerTest(unittest.TestCase):
                 self.assertRaises(M0Error),
             ):
                 run_browser_smoke.validate_result(invalid_result, "tasks")
+        for old, new in (
+            (" wake_count=3", " wake_count=11"),
+            (" wait_count=1", " wait_count=9"),
+            (" idle_wake_returns=1", " idle_wake_returns=2"),
+            (
+                " sleeping_quit_latency_ms=0",
+                " sleeping_quit_latency_ms=1000",
+            ),
+            (" idle_elapsed_ms=250", " idle_elapsed_ms=2000"),
+            (" idle_wake_latency_ms=0", " idle_wake_latency_ms=invalid"),
+            (TASK_RESULT_LINE, f"{TASK_RESULT_LINE} unexpected=ok"),
+            (" immediate=ok", " immediate=ok immediate=ok"),
+            (TASK_RESULT_LINE, f"{TASK_RESULT_LINE}\n{TASK_RESULT_LINE}"),
+        ):
+            invalid_result = {
+                **result,
+                "stdout": [
+                    line.replace(old, new, 1) for line in result["stdout"]
+                ],
+            }
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(invalid_result, "tasks")
         result["stdout"] = [
             *result["stdout"],
             "CHROMIUM_WASM_M1_TASK:FAIL reason=test",
@@ -967,6 +1090,23 @@ class BrowserRunnerTest(unittest.TestCase):
             }
             with (
                 self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(invalid_result, "rust")
+        for old, new in (
+            ("pointer_width=32", "pointer_width=64"),
+            (RUST_RESULT_LINE, f"{RUST_RESULT_LINE} unexpected=ok"),
+            ("cpp_to_rust=ok", "cpp_to_rust=ok cpp_to_rust=ok"),
+            (RUST_RESULT_LINE, f"{RUST_RESULT_LINE}\n{RUST_RESULT_LINE}"),
+        ):
+            invalid_result = {
+                **result,
+                "stdout": [
+                    line.replace(old, new, 1) for line in result["stdout"]
+                ],
+            }
+            with (
+                self.subTest(replacement=new),
                 self.assertRaises(M0Error),
             ):
                 run_browser_smoke.validate_result(invalid_result, "rust")

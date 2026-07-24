@@ -52,6 +52,116 @@ class SmokeCase:
     minimum_runtime_ms: int = 200
 
 
+BASE_RESULT_VALUES = {
+    "wall_time": "ok",
+    "monotonic_time": "ok",
+    "bounded_sleep": "ok",
+    "secure_entropy": "ok",
+    "worker_entropy": "ok",
+    "platform_thread": "ok",
+    "thread_ids": "ok",
+    "thread_names": "diagnostic_ok",
+    "yield_sleep": "ok",
+    "atomic_handoff": "ok",
+    "tls": "ok",
+    "tls_destructors": "ok",
+    "lock": "ok",
+    "lock_try": "ok",
+    "condition_signal": "ok",
+    "condition_broadcast": "ok",
+    "condition_timeout": "ok",
+    "event_manual": "ok",
+    "event_auto": "ok",
+    "event_reset": "ok",
+    "event_timeout": "ok",
+    "event_wait_many": "ok",
+    "bidirectional": "ok",
+    "joins": "ok",
+    "path_current": "ok",
+    "path_temp": "ok",
+    "path_home": "ok",
+    "path_executable": "unsupported",
+    "path_module": "unsupported",
+    "temp_workspace": "ok",
+    "file_empty": "ok",
+    "filesystem": "memfs",
+    "file_binary_nul": "ok",
+    "file_seek": "ok",
+    "file_middle_overwrite": "ok",
+    "file_append": "ok",
+    "file_truncate": "ok",
+    "file_zero_fill": "ok",
+    "file_flush": "memfs_only",
+    "file_reopen": "ok",
+    "file_rename_stat": "ok",
+    "directories": "ok",
+    "enumeration": "ok",
+    "file_errors": "ok",
+    "parent_traversal": "denied",
+    "file_lock": "invalid_operation",
+    "closed_fd": "ebadf",
+    "cleanup": "ok",
+    "process_identity": "ok",
+    "process_handle": "ok",
+    "unique_proc_id": "ok",
+    "process_current": "ok",
+    "process_duplicate": "ok",
+    "process_release_close": "ok",
+    "process_open_noncurrent": "invalid",
+    "process_control": "unsupported",
+    "process_launch": "unsupported",
+    "process_output": "unsupported",
+    "sysinfo_processors": "ok",
+    "page_size": "65536",
+    "allocation_granularity": "65536",
+    "wasm_heap": "current_ok",
+    "virtual_memory": "wasm_max",
+    "physical_memory": "unavailable",
+    "disk_space": "unavailable",
+    "os_name": "emscripten",
+    "os_arch": "wasm32",
+    "cpu_arch": "wasm32",
+    "cpu_model": "unavailable",
+    "uptime": "runtime_clock",
+    "browser_main_free": "ok",
+}
+BASE_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M1_BASE:RESULT",
+    *(f"{key}={value}" for key, value in BASE_RESULT_VALUES.items()),
+)
+
+TASK_RESULT_VALUES = {
+    "immediate": "ok",
+    "delayed_not_early": "ok",
+    "delayed_deadline_order": "ok",
+    "worker_to_app_wake": "ok",
+    "app_to_worker": "ok",
+    "nested_quit_independent": "ok",
+    "outer_continues": "ok",
+    "sleeping_quit_wake": "ok",
+    "idle_wait_bounded": "ok",
+    "clean_shutdown": "ok",
+    "task_count": "18",
+    "delayed_wake_count": "3",
+    "wake_count_bounded_nonzero": "ok",
+    "wait_count_bounded_nonzero": "ok",
+    "max_nesting": "2",
+    "nested_begin_count": "1",
+    "nested_exit_count": "1",
+    "joinable_created": "1",
+    "joinable_joined": "1",
+    "wait_counter_source": "delegate_idle_cycles",
+    "browser_heartbeat": "external",
+}
+TASK_RESULT_NUMERIC_NAMES = (
+    "wake_count",
+    "wait_count",
+    "idle_wake_returns",
+    "worker_to_app_latency_ms",
+    "sleeping_quit_latency_ms",
+    "idle_elapsed_ms",
+    "idle_wake_latency_ms",
+)
 TASK_RESULT_REQUIREMENTS = (
     "CHROMIUM_WASM_M1_TASK:RESULT",
     "immediate=ok",
@@ -74,28 +184,31 @@ TASK_RESULT_REQUIREMENTS = (
     "browser_heartbeat=external",
 )
 
+RUST_RESULT_VALUES = {
+    "cpp_to_rust": "ok",
+    "rust_to_cpp": "ok",
+    "cxx_bridge": "ok",
+    "structured_abi": "ok",
+    "integer_widths": "ok",
+    "pointer_width": "32",
+    "vec": "ok",
+    "string": "ok",
+    "allocation": "ok",
+    "free": "ok",
+    "atomics": "ok",
+    "arc": "ok",
+    "mutex": "ok",
+    "thread_spawn": "ok",
+    "thread_join": "ok",
+    "callback_count": "1",
+    "drop_count": "1",
+    "same_module": "ok",
+    "clean_shutdown": "ok",
+    "browser_heartbeat": "external",
+}
 RUST_RESULT_REQUIREMENTS = (
     "CHROMIUM_WASM_M1_RUST:RESULT",
-    "cpp_to_rust=ok",
-    "rust_to_cpp=ok",
-    "cxx_bridge=ok",
-    "structured_abi=ok",
-    "integer_widths=ok",
-    "pointer_width=32",
-    "vec=ok",
-    "string=ok",
-    "allocation=ok",
-    "free=ok",
-    "atomics=ok",
-    "arc=ok",
-    "mutex=ok",
-    "thread_spawn=ok",
-    "thread_join=ok",
-    "callback_count=1",
-    "drop_count=1",
-    "same_module=ok",
-    "clean_shutdown=ok",
-    "browser_heartbeat=external",
+    *(f"{key}={value}" for key, value in RUST_RESULT_VALUES.items()),
 )
 
 SHARED_MEMORY_RESULT_VALUES = {
@@ -216,7 +329,7 @@ SMOKE_CASES = {
         required_stdout=(
             "CHROMIUM_WASM_M1_BASE:RUNTIME_START",
             "CHROMIUM_WASM_M1_BASE:RUNTIME_END",
-            "CHROMIUM_WASM_M1_BASE:RESULT",
+            *BASE_RESULT_REQUIREMENTS,
             "CHROMIUM_WASM_M1_BASE:PASS",
         ),
     ),
@@ -294,8 +407,70 @@ def _parse_contract_line(
     return fields
 
 
+def _validate_result_fields(
+    prefix: str,
+    result: dict[str, str],
+    fixed_values: dict[str, str],
+    numeric_names: tuple[str, ...] = (),
+) -> dict[str, int]:
+    expected_keys = set(fixed_values) | set(numeric_names)
+    missing = sorted(expected_keys - result.keys())
+    unexpected = sorted(result.keys() - expected_keys)
+    mismatched = sorted(
+        key
+        for key in result.keys() & fixed_values.keys()
+        if result[key] != fixed_values[key]
+    )
+    if missing or unexpected or mismatched:
+        raise M0Error(
+            f"{prefix} mismatch: missing={missing}, "
+            f"unexpected={unexpected}, mismatched={mismatched}"
+        )
+
+    numeric_values: dict[str, int] = {}
+    for name in numeric_names:
+        value = result[name]
+        if not value.isascii() or not value.isdecimal():
+            raise M0Error(f"{prefix} {name} must be a decimal integer")
+        numeric_values[name] = int(value)
+    return numeric_values
+
+
+def _validate_task_result(prefix: str, values: dict[str, int]) -> None:
+    if not 3 <= values["wake_count"] <= 10:
+        raise M0Error(f"{prefix} wake_count is out of range")
+    if not 1 <= values["wait_count"] <= 8:
+        raise M0Error(f"{prefix} wait_count is out of range")
+    if values["idle_wake_returns"] != values["wait_count"]:
+        raise M0Error(f"{prefix} idle wait/wake counts do not match")
+    for name in (
+        "worker_to_app_latency_ms",
+        "sleeping_quit_latency_ms",
+        "idle_wake_latency_ms",
+    ):
+        if values[name] >= 1000:
+            raise M0Error(f"{prefix} {name} is out of range")
+    if not 200 <= values["idle_elapsed_ms"] < 2000:
+        raise M0Error(f"{prefix} idle_elapsed_ms is out of range")
+
+
 def validate_case_stdout(name: str, stdout: str) -> None:
-    if name == "shared_memory":
+    numeric_names: tuple[str, ...] = ()
+    metric_names: tuple[str, ...] | None = None
+    if name == "base":
+        display_name = "Base"
+        sentinel_prefix = "CHROMIUM_WASM_M1_BASE"
+        result_values = BASE_RESULT_VALUES
+    elif name == "tasks":
+        display_name = "task"
+        sentinel_prefix = "CHROMIUM_WASM_M1_TASK"
+        result_values = TASK_RESULT_VALUES
+        numeric_names = TASK_RESULT_NUMERIC_NAMES
+    elif name == "rust":
+        display_name = "Rust"
+        sentinel_prefix = "CHROMIUM_WASM_M1_RUST"
+        result_values = RUST_RESULT_VALUES
+    elif name == "shared_memory":
         display_name = "shared-memory"
         sentinel_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY"
         result_values = SHARED_MEMORY_RESULT_VALUES
@@ -314,32 +489,18 @@ def validate_case_stdout(name: str, stdout: str) -> None:
     pass_sentinel = f"{sentinel_prefix}:PASS"
     result_prefix = f"{sentinel_prefix}:RESULT"
     result = _parse_contract_line(stdout, result_prefix)
-    if result != result_values:
-        missing = sorted(result_values.keys() - result.keys())
-        unexpected = sorted(result.keys() - result_values.keys())
-        mismatched = sorted(
-            key
-            for key in result.keys() & result_values.keys()
-            if result[key] != result_values[key]
-        )
-        raise M0Error(
-            f"{result_prefix} mismatch: missing={missing}, "
-            f"unexpected={unexpected}, mismatched={mismatched}"
-        )
+    numeric_values = _validate_result_fields(
+        result_prefix, result, result_values, numeric_names
+    )
+    if name == "tasks":
+        _validate_task_result(result_prefix, numeric_values)
 
-    metrics_prefix = f"{sentinel_prefix}:METRICS"
-    metrics = _parse_contract_line(stdout, metrics_prefix)
     for marker in (runtime_start, runtime_end, pass_sentinel):
         if lines.count(marker) != 1:
             raise M0Error(f"expected exactly one {marker} line")
     try:
         runtime_start_index = lines.index(runtime_start)
         runtime_end_index = lines.index(runtime_end)
-        metrics_index = next(
-            index
-            for index, line in enumerate(lines)
-            if line.startswith(f"{metrics_prefix} ")
-        )
         result_index = next(
             index
             for index, line in enumerate(lines)
@@ -347,6 +508,24 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         )
         pass_index = lines.index(pass_sentinel)
     except (StopIteration, ValueError) as exc:
+        raise M0Error(f"{display_name} runtime markers are incomplete") from exc
+
+    if metric_names is None:
+        if not (
+            runtime_start_index < runtime_end_index < result_index < pass_index
+        ):
+            raise M0Error(f"{display_name} runtime markers are out of order")
+        return
+
+    metrics_prefix = f"{sentinel_prefix}:METRICS"
+    metrics = _parse_contract_line(stdout, metrics_prefix)
+    try:
+        metrics_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(f"{metrics_prefix} ")
+        )
+    except StopIteration as exc:
         raise M0Error(f"{display_name} runtime markers are incomplete") from exc
     if not (
         runtime_start_index
