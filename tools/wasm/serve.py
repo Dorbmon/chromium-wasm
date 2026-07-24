@@ -49,6 +49,7 @@ class SmokeCase:
     required_stdout: tuple[str, ...]
     required_stderr: tuple[str, ...] = ()
     require_separate_streams: bool = False
+    minimum_runtime_ms: int = 200
 
 
 TASK_RESULT_REQUIREMENTS = (
@@ -97,6 +98,57 @@ RUST_RESULT_REQUIREMENTS = (
     "browser_heartbeat=external",
 )
 
+SHARED_MEMORY_RESULT_VALUES = {
+    "capability_handle": "ok",
+    "writable_create": "ok",
+    "writable_map": "ok",
+    "byte_round_trip": "ok",
+    "handle_move": "ok",
+    "serialization_round_trip": "ok",
+    "mapping_outlives_handle": "ok",
+    "writable_to_read_only": "ok",
+    "read_only_create": "ok",
+    "read_only_duplicate": "ok",
+    "read_only_write_rejected": "ok",
+    "mode_mismatch_rejected": "ok",
+    "writable_duplicate_rejected": "ok",
+    "invalid_capability_rejected": "ok",
+    "stale_capability_rejected": "ok",
+    "corrupt_metadata_rejected": "ok",
+    "corrupt_rights_rejected": "ok",
+    "unsafe_create": "ok",
+    "unsafe_duplicate": "ok",
+    "partial_map": "ok",
+    "invalid_range_rejected": "ok",
+    "zero_size_rejected": "ok",
+    "minimum_alignment": "32",
+    "vm_alignment": "65536",
+    "guid_identity": "ok",
+    "region_lifetime": "ok",
+    "concurrent_threads": "ok",
+    "concurrent_overlap": "ok",
+    "worker_threads_created": "1",
+    "worker_threads_joined": "1",
+    "worker_creation_failures": "0",
+    "max_concurrent_test_threads": "2",
+    "clean_shutdown": "ok",
+    "memory_metrics": "ok",
+    "browser_heartbeat": "external",
+}
+SHARED_MEMORY_METRIC_NAMES = (
+    "initial_heap_bytes",
+    "peak_heap_bytes",
+    "max_heap_bytes",
+)
+SHARED_MEMORY_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M1_SHARED_MEMORY:RESULT",
+    "CHROMIUM_WASM_M1_SHARED_MEMORY:METRICS",
+    *(f"{key}={value}" for key, value in SHARED_MEMORY_RESULT_VALUES.items()),
+    "initial_heap_bytes=",
+    "peak_heap_bytes=",
+    "max_heap_bytes=2147483648",
+)
+
 
 SMOKE_CASES = {
     "hello": SmokeCase(
@@ -141,6 +193,17 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M1_RUST:PASS",
         ),
     ),
+    "shared_memory": SmokeCase(
+        module_name="m1_shared_memory_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M1_SHARED_MEMORY",
+        required_stdout=(
+            "CHROMIUM_WASM_M1_SHARED_MEMORY:RUNTIME_START",
+            "CHROMIUM_WASM_M1_SHARED_MEMORY:RUNTIME_END",
+            *SHARED_MEMORY_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M1_SHARED_MEMORY:PASS",
+        ),
+        minimum_runtime_ms=250,
+    ),
 }
 
 
@@ -149,6 +212,95 @@ def smoke_case(name: str) -> SmokeCase:
         return SMOKE_CASES[name]
     except KeyError as exc:
         raise M0Error(f"unsupported smoke case: {name}") from exc
+
+
+def _parse_contract_line(
+    stdout: str, prefix: str
+) -> dict[str, str]:
+    matches = [
+        line
+        for line in stdout.splitlines()
+        if line.startswith(f"{prefix} ")
+    ]
+    if len(matches) != 1:
+        raise M0Error(f"expected exactly one {prefix} line")
+
+    fields: dict[str, str] = {}
+    for field in matches[0][len(prefix) + 1 :].split():
+        key, separator, value = field.partition("=")
+        if not separator or not key or not value:
+            raise M0Error(f"malformed {prefix} field: {field}")
+        if key in fields:
+            raise M0Error(f"duplicate {prefix} field: {key}")
+        fields[key] = value
+    return fields
+
+
+def validate_case_stdout(name: str, stdout: str) -> None:
+    if name != "shared_memory":
+        return
+
+    lines = stdout.splitlines()
+    runtime_start = "CHROMIUM_WASM_M1_SHARED_MEMORY:RUNTIME_START"
+    runtime_end = "CHROMIUM_WASM_M1_SHARED_MEMORY:RUNTIME_END"
+    pass_sentinel = "CHROMIUM_WASM_M1_SHARED_MEMORY:PASS"
+    result_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY:RESULT"
+    result = _parse_contract_line(stdout, result_prefix)
+    if result != SHARED_MEMORY_RESULT_VALUES:
+        missing = sorted(SHARED_MEMORY_RESULT_VALUES.keys() - result.keys())
+        unexpected = sorted(result.keys() - SHARED_MEMORY_RESULT_VALUES.keys())
+        mismatched = sorted(
+            key
+            for key in result.keys() & SHARED_MEMORY_RESULT_VALUES.keys()
+            if result[key] != SHARED_MEMORY_RESULT_VALUES[key]
+        )
+        raise M0Error(
+            f"{result_prefix} mismatch: missing={missing}, "
+            f"unexpected={unexpected}, mismatched={mismatched}"
+        )
+
+    metrics_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY:METRICS"
+    metrics = _parse_contract_line(stdout, metrics_prefix)
+    try:
+        runtime_start_index = lines.index(runtime_start)
+        runtime_end_index = lines.index(runtime_end)
+        metrics_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(f"{metrics_prefix} ")
+        )
+        result_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(f"{result_prefix} ")
+        )
+        pass_index = lines.index(pass_sentinel)
+    except (StopIteration, ValueError) as exc:
+        raise M0Error("shared-memory runtime markers are incomplete") from exc
+    if not (
+        runtime_start_index
+        < runtime_end_index
+        < metrics_index
+        < result_index
+        < pass_index
+    ):
+        raise M0Error("shared-memory runtime markers are out of order")
+
+    if set(metrics) != set(SHARED_MEMORY_METRIC_NAMES):
+        raise M0Error(f"{metrics_prefix} fields do not match the contract")
+    if any(
+        not metrics[name].isascii() or not metrics[name].isdecimal()
+        for name in SHARED_MEMORY_METRIC_NAMES
+    ):
+        raise M0Error(f"{metrics_prefix} values must be decimal integers")
+
+    initial = int(metrics["initial_heap_bytes"])
+    peak = int(metrics["peak_heap_bytes"])
+    maximum = int(metrics["max_heap_bytes"])
+    if initial <= 0 or peak < initial or peak > maximum:
+        raise M0Error(f"{metrics_prefix} values are out of range")
+    if maximum != 2147483648:
+        raise M0Error(f"{metrics_prefix} maximum memory changed")
 
 
 def artifact_names(case: SmokeCase) -> tuple[str, ...]:

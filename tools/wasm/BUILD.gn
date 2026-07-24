@@ -25,6 +25,15 @@ executable("m1_task_smoke") {
   configs -= [ "//build/config/compiler:runtime_library" ]
 }
 
+executable("m1_shared_memory_smoke") {
+  sources = [ "m1_shared_memory_smoke.cc" ]
+  deps = [ "//base:base_wasm_primitives" ]
+
+  no_default_deps = true
+  use_libcxx_modules = false
+  configs -= [ "//build/config/compiler:runtime_library" ]
+}
+
 static_library("m1_rust_callback") {
   sources = [
     "m1_rust_callback.cc",

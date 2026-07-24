@@ -31,7 +31,13 @@ from m0_common import (
     parse_timeout,
     print_context,
 )
-from serve import SMOKE_CASES, create_server, smoke_case, smoke_url
+from serve import (
+    SMOKE_CASES,
+    create_server,
+    smoke_case,
+    smoke_url,
+    validate_case_stdout,
+)
 
 
 def fail_for_case(case_name: str, message: str) -> int:
@@ -203,9 +209,12 @@ def validate_result(
     if (
         not isinstance(elapsed_ms, (int, float))
         or not math.isfinite(elapsed_ms)
-        or elapsed_ms < 200
+        or elapsed_ms < selected_case.minimum_runtime_ms
     ):
-        raise M0Error("browser runtime interval was shorter than 200 ms")
+        raise M0Error(
+            "browser runtime interval was shorter than "
+            f"{selected_case.minimum_runtime_ms} ms"
+        )
 
     stdout = result.get("stdout")
     stderr = result.get("stderr")
@@ -239,6 +248,7 @@ def validate_result(
         < stdout_text.index(pass_sentinel)
     ):
         raise M0Error("browser runtime sentinels are out of order")
+    validate_case_stdout(smoke_case_name, stdout_text)
 
 
 def main() -> int:

@@ -21,7 +21,7 @@ from m0_common import (
     print_context,
     relative_to_repo,
 )
-from serve import SMOKE_CASES, smoke_case
+from serve import SMOKE_CASES, smoke_case, validate_case_stdout
 
 
 PASS_SENTINEL = "CHROMIUM_WASM_M0:PASS"
@@ -125,11 +125,14 @@ def validate_streams(
         < stdout.index(pass_sentinel)
     ):
         raise M0Error("runtime sentinels are out of order")
+    validate_case_stdout(smoke_case_name, stdout)
     exit_sentinel = (
         f'{selected_case.sentinel_prefix}:NODE_EXIT {{"exitCode":0}}'
     )
     if exit_sentinel not in stdout:
         raise M0Error("Node runner did not observe a zero runtime exit")
+    if stdout.index(pass_sentinel) >= stdout.index(exit_sentinel):
+        raise M0Error("Node exit marker preceded the runtime pass marker")
 
 
 def resolve_case_and_module(
