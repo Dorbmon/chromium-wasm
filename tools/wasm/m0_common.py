@@ -52,8 +52,10 @@ def load_manifest() -> dict[str, Any]:
     return manifest
 
 
-def gn_args_text(manifest: dict[str, Any]) -> str:
-    return "\n".join(manifest["gn_args"]) + "\n"
+def gn_args_text(
+    manifest: dict[str, Any], key: str = "gn_args"
+) -> str:
+    return "\n".join(manifest[key]) + "\n"
 
 
 def relative_to_repo(path: Path) -> str:

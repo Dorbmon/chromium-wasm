@@ -27,6 +27,7 @@ from m0_common import (
     gn_args_text,
     load_manifest,
     print_context,
+    relative_to_repo,
     run,
 )
 
@@ -576,15 +577,27 @@ def ensure_generated_configuration(
     generated_gclient_args = REPO_ROOT / "build/config/gclient_args.gni"
     gclient_template = Path(__file__).with_name("gclient_args.gni")
     expected_gclient_args = gclient_template.read_text(encoding="utf-8")
-    out_args = REPO_ROOT / "out/wasm/args.gn"
-    expected_out_args = gn_args_text(manifest)
+    out_profiles = (
+        (
+            "generated Wasm GN args",
+            REPO_ROOT / "out/wasm/args.gn",
+            gn_args_text(manifest),
+        ),
+        (
+            "generated M2 V8 GN args",
+            REPO_ROOT / "out/wasm-v8-m2/args.gn",
+            gn_args_text(manifest, "m2_v8_gn_args"),
+        ),
+    )
 
     if install and not generated_gclient_args.exists():
         generated_gclient_args.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(gclient_template, generated_gclient_args)
-    if install and not out_args.exists():
-        out_args.parent.mkdir(parents=True, exist_ok=True)
-        out_args.write_text(expected_out_args, encoding="utf-8")
+    if install:
+        for _, out_args, expected_out_args in out_profiles:
+            if not out_args.exists():
+                out_args.parent.mkdir(parents=True, exist_ok=True)
+                out_args.write_text(expected_out_args, encoding="utf-8")
 
     if not generated_gclient_args.exists():
         raise M0Error("build/config/gclient_args.gni has not been generated")
@@ -593,13 +606,16 @@ def ensure_generated_configuration(
         generated_gclient_args.read_text(encoding="utf-8"),
         expected_gclient_args,
     )
-    if not out_args.exists():
-        raise M0Error("out/wasm/args.gn has not been generated")
-    require_equal(
-        "generated Wasm GN args",
-        out_args.read_text(encoding="utf-8"),
-        expected_out_args,
-    )
+    for description, out_args, expected_out_args in out_profiles:
+        if not out_args.exists():
+            raise M0Error(
+                f"{relative_to_repo(out_args)} has not been generated"
+            )
+        require_equal(
+            description,
+            out_args.read_text(encoding="utf-8"),
+            expected_out_args,
+        )
 
 
 def verify_rust_deps_pin(manifest: dict[str, object]) -> None:

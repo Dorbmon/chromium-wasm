@@ -354,11 +354,13 @@ def main() -> int:
     stage = "load_manifest"
     try:
         manifest = load_manifest()
+        selected_case = smoke_case(args.case)
         stage = "print_context"
         context = print_context(
             "run_browser_smoke.py",
             manifest,
             case=args.case,
+            gn_args=manifest[selected_case.gn_args_key],
             host_browser_sandbox=not args.no_sandbox,
         )
         stage = "find_browser"

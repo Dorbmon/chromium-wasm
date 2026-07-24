@@ -194,6 +194,7 @@ def main() -> int:
             "run_node_smoke.py",
             manifest,
             case=smoke_case_name,
+            gn_args=manifest[selected_case.gn_args_key],
             module=relative_to_repo(module),
             node_version=manifest["emscripten"]["node_version"],  # type: ignore[index]
         )

@@ -50,6 +50,7 @@ class SmokeCase:
     required_stderr: tuple[str, ...] = ()
     require_separate_streams: bool = False
     minimum_runtime_ms: int = 200
+    gn_args_key: str = "gn_args"
 
 
 BASE_RESULT_VALUES = {
@@ -408,6 +409,7 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M2_V8_BASE:PASS",
         ),
         minimum_runtime_ms=200,
+        gn_args_key="m2_v8_gn_args",
     ),
     "v8_snapshotless": SmokeCase(
         module_name="wasm_v8_snapshotless_smoke.js",
@@ -419,6 +421,7 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M2_V8_JS:PASS",
         ),
         minimum_runtime_ms=1000,
+        gn_args_key="m2_v8_gn_args",
     ),
     "shared_memory": SmokeCase(
         module_name="m1_shared_memory_smoke.js",
@@ -818,6 +821,7 @@ def main() -> int:
 
     try:
         manifest = load_manifest()
+        selected_case = smoke_case(args.case)
         token = secrets.token_urlsafe(24)
         results: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         out_dir = args.out_dir
@@ -838,9 +842,9 @@ def main() -> int:
             manifest,
             bind=args.bind,
             case=args.case,
+            gn_args=manifest[selected_case.gn_args_key],
             port=server.server_address[1],
         )
-        selected_case = smoke_case(args.case)
         url = smoke_url(
             server,
             token,

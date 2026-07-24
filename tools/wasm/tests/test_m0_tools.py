@@ -130,6 +130,24 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("is_component_build = false\n", arguments)
         self.assertIn("use_custom_libcxx = false\n", arguments)
 
+    def test_manifest_has_reproducible_m2_v8_args(self) -> None:
+        manifest = load_manifest()
+        arguments = gn_args_text(manifest, "m2_v8_gn_args")
+        for expected in (
+            "enable_chromium_wasm_v8 = true\n",
+            'v8_target_cpu = "arm"\n',
+            "v8_target_is_simulator = true\n",
+            "v8_jitless = true\n",
+            "v8_enable_webassembly = false\n",
+            "v8_enable_sparkplug = false\n",
+            "v8_enable_maglev = false\n",
+            "v8_enable_turbofan = false\n",
+            "v8_use_external_startup_data = false\n",
+            "v8_enable_i18n_support = false\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, arguments)
+
 
 class CommonTest(unittest.TestCase):
     def test_context_identifies_port_base_and_manifest(self) -> None:
@@ -271,6 +289,34 @@ class BootstrapTest(unittest.TestCase):
             emscripten_driver.split_tool_and_args(["-c", "input.cc"]),
             ("em++", ["-c", "input.cc"]),
         )
+
+    def test_generated_configuration_includes_m2_v8_profile(self) -> None:
+        manifest = load_manifest()
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(
+                bootstrap, "REPO_ROOT", Path(temporary_directory)
+            ),
+        ):
+            bootstrap.ensure_generated_configuration(
+                manifest, install=True
+            )
+            generated_root = Path(temporary_directory)
+            self.assertEqual(
+                (generated_root / "out/wasm/args.gn").read_text(
+                    encoding="utf-8"
+                ),
+                gn_args_text(manifest),
+            )
+            self.assertEqual(
+                (generated_root / "out/wasm-v8-m2/args.gn").read_text(
+                    encoding="utf-8"
+                ),
+                gn_args_text(manifest, "m2_v8_gn_args"),
+            )
+            bootstrap.ensure_generated_configuration(
+                manifest, install=False
+            )
 
 
 class NodeRunnerTest(unittest.TestCase):
@@ -476,6 +522,10 @@ class NodeRunnerTest(unittest.TestCase):
         )
         self.assertEqual(case_name, "v8_base")
         self.assertEqual(
+            serve.smoke_case(case_name).gn_args_key,
+            "m2_v8_gn_args",
+        )
+        self.assertEqual(
             module, Path("out/wasm/wasm_v8_base_smoke.js")
         )
         self.assertEqual(
@@ -537,6 +587,10 @@ class NodeRunnerTest(unittest.TestCase):
             "v8_snapshotless", None
         )
         self.assertEqual(case_name, "v8_snapshotless")
+        self.assertEqual(
+            serve.smoke_case(case_name).gn_args_key,
+            "m2_v8_gn_args",
+        )
         self.assertEqual(
             module, Path("out/wasm/wasm_v8_snapshotless_smoke.js")
         )
