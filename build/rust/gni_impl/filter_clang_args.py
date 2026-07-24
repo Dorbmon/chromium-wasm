@@ -27,6 +27,10 @@ def filter_clang_args(clangargs):
           i += 2
       elif args[i] == '-ftime-trace':
         pass
+      # This is an Emscripten driver option. The pinned libclang used by
+      # bindgen does not recognize it, even when parsing an Emscripten target.
+      elif args[i] == '-Wno-version-check':
+        pass
       else:
         yield args[i]
       i += 1
