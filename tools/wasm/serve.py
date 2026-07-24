@@ -73,6 +73,30 @@ TASK_RESULT_REQUIREMENTS = (
     "browser_heartbeat=external",
 )
 
+RUST_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M1_RUST:RESULT",
+    "cpp_to_rust=ok",
+    "rust_to_cpp=ok",
+    "cxx_bridge=ok",
+    "structured_abi=ok",
+    "integer_widths=ok",
+    "pointer_width=32",
+    "vec=ok",
+    "string=ok",
+    "allocation=ok",
+    "free=ok",
+    "atomics=ok",
+    "arc=ok",
+    "mutex=ok",
+    "thread_spawn=ok",
+    "thread_join=ok",
+    "callback_count=1",
+    "drop_count=1",
+    "same_module=ok",
+    "clean_shutdown=ok",
+    "browser_heartbeat=external",
+)
+
 
 SMOKE_CASES = {
     "hello": SmokeCase(
@@ -105,6 +129,16 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M1_TASK:RUNTIME_END",
             *TASK_RESULT_REQUIREMENTS,
             "CHROMIUM_WASM_M1_TASK:PASS",
+        ),
+    ),
+    "rust": SmokeCase(
+        module_name="m1_rust_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M1_RUST",
+        required_stdout=(
+            "CHROMIUM_WASM_M1_RUST:RUNTIME_START",
+            "CHROMIUM_WASM_M1_RUST:RUNTIME_END",
+            *RUST_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M1_RUST:PASS",
         ),
     ),
 }

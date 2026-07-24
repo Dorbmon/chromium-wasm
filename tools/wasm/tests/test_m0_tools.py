@@ -29,6 +29,7 @@ import serve
 
 
 TASK_RESULT_LINE = " ".join(serve.TASK_RESULT_REQUIREMENTS)
+RUST_RESULT_LINE = " ".join(serve.RUST_RESULT_REQUIREMENTS)
 
 
 DRIVER_PATH = (
@@ -253,6 +254,48 @@ class NodeRunnerTest(unittest.TestCase):
                 "tasks",
             )
 
+    def test_rust_case_requires_complete_result_contract(self) -> None:
+        case_name, module = run_node_smoke.resolve_case_and_module(
+            "rust", None
+        )
+        self.assertEqual(case_name, "rust")
+        self.assertEqual(module, Path("out/wasm/m1_rust_smoke.js"))
+        self.assertEqual(
+            run_node_smoke.resolve_case_and_module(
+                None, Path("custom/m1_rust_smoke.js")
+            ),
+            ("rust", Path("custom/m1_rust_smoke.js")),
+        )
+        with self.assertRaises(M0Error):
+            run_node_smoke.resolve_case_and_module(
+                "rust", Path("out/wasm/m1_task_smoke.js")
+            )
+
+        stdout = "\n".join(
+            (
+                "CHROMIUM_WASM_M1_RUST:RUNTIME_START",
+                "CHROMIUM_WASM_M1_RUST:RUNTIME_END",
+                RUST_RESULT_LINE,
+                "CHROMIUM_WASM_M1_RUST:PASS",
+                'CHROMIUM_WASM_M1_RUST:NODE_EXIT {"exitCode":0}',
+            )
+        )
+        run_node_smoke.validate_streams(stdout, "", "rust")
+        for requirement in serve.RUST_RESULT_REQUIREMENTS:
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(requirement, "<missing>", 1), "", "rust"
+                )
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout + "\nCHROMIUM_WASM_M1_RUST:FAIL reason=test",
+                "",
+                "rust",
+            )
+
 
 class ServerTest(unittest.TestCase):
     def test_security_headers_mime_and_focusable_canvas(self) -> None:
@@ -280,7 +323,10 @@ class ServerTest(unittest.TestCase):
         self.assertIn('modulePath: "/out/wasm/hello_wasm.js"', host_page)
         self.assertIn('modulePath: "/out/wasm/m1_base_smoke.js"', host_page)
         self.assertIn('modulePath: "/out/wasm/m1_task_smoke.js"', host_page)
+        self.assertIn('modulePath: "/out/wasm/m1_rust_smoke.js"', host_page)
         for requirement in serve.TASK_RESULT_REQUIREMENTS:
+            self.assertIn(requirement, host_page)
+        for requirement in serve.RUST_RESULT_REQUIREMENTS:
             self.assertIn(requirement, host_page)
         self.assertIn(
             "requestAnimationFrame(animationFrameHeartbeat)", host_page
@@ -489,6 +535,53 @@ class BrowserRunnerTest(unittest.TestCase):
         ]
         with self.assertRaises(M0Error):
             run_browser_smoke.validate_result(result, "tasks")
+
+    def test_rust_result_requires_complete_result_contract(self) -> None:
+        result = {
+            "protocol": 1,
+            "case": "rust",
+            "status": "pass",
+            "exitCode": 0,
+            "crossOriginIsolated": True,
+            "sharedArrayBuffer": True,
+            "canvasFocused": True,
+            "failedChecks": [],
+            "error": None,
+            "heartbeat": {
+                "timerDelta": 40,
+                "animationFrameDelta": 20,
+                "elapsedMs": 650,
+            },
+            "stdout": [
+                "CHROMIUM_WASM_M1_RUST:RUNTIME_START",
+                "CHROMIUM_WASM_M1_RUST:RUNTIME_END",
+                RUST_RESULT_LINE,
+                "CHROMIUM_WASM_M1_RUST:PASS",
+            ],
+            "stderr": [],
+        }
+        run_browser_smoke.validate_result(result, "rust")
+        for requirement in serve.RUST_RESULT_REQUIREMENTS:
+            invalid_result = {
+                **result,
+                "stdout": [
+                    "CHROMIUM_WASM_M1_RUST:RUNTIME_START",
+                    "CHROMIUM_WASM_M1_RUST:RUNTIME_END",
+                    RUST_RESULT_LINE.replace(requirement, "<missing>", 1),
+                    "CHROMIUM_WASM_M1_RUST:PASS",
+                ],
+            }
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(invalid_result, "rust")
+        result["stdout"] = [
+            *result["stdout"],
+            "CHROMIUM_WASM_M1_RUST:FAIL reason=test",
+        ]
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(result, "rust")
 
 
 if __name__ == "__main__":

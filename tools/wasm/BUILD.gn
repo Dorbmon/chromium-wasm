@@ -2,6 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/rust/rust_static_library.gni")
+
 assert(enable_chromium_wasm_port)
 assert(is_wasm)
 
@@ -17,6 +19,31 @@ executable("m1_base_smoke") {
 executable("m1_task_smoke") {
   sources = [ "m1_task_smoke.cc" ]
   deps = [ "//base:base_wasm_task_runtime" ]
+
+  no_default_deps = true
+  use_libcxx_modules = false
+  configs -= [ "//build/config/compiler:runtime_library" ]
+}
+
+static_library("m1_rust_callback") {
+  sources = [
+    "m1_rust_callback.cc",
+    "m1_rust_callback.h",
+  ]
+}
+
+rust_static_library("m1_rust_bridge") {
+  sources = [ "m1_rust_smoke.rs" ]
+  crate_root = "m1_rust_smoke.rs"
+  crate_name = "chromium_wasm_m1_rust"
+  cxx_bindings = [ "m1_rust_smoke.rs" ]
+  allow_unsafe = true
+  deps = [ ":m1_rust_callback" ]
+}
+
+executable("m1_rust_smoke") {
+  sources = [ "m1_rust_smoke.cc" ]
+  deps = [ ":m1_rust_bridge" ]
 
   no_default_deps = true
   use_libcxx_modules = false
