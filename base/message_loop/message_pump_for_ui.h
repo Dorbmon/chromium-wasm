@@ -10,7 +10,9 @@
 
 #include "build/build_config.h"
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WASM)
+#include "base/message_loop/message_pump.h"
+#elif BUILDFLAG(IS_WIN)
 #include "base/message_loop/message_pump_win.h"
 #elif BUILDFLAG(IS_ANDROID)
 #include "base/message_loop/message_pump_android.h"
@@ -28,7 +30,11 @@
 
 namespace base {
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WASM)
+// Wasm UI pumps must be supplied through the registered factory. Without one,
+// MessagePump::Create(UI) rejects the request explicitly.
+using MessagePumpForUI = MessagePump;
+#elif BUILDFLAG(IS_WIN)
 // Windows defines it as-is.
 using MessagePumpForUI = MessagePumpForUI;
 #elif BUILDFLAG(IS_ANDROID)

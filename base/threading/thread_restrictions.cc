@@ -267,7 +267,9 @@ ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::
   // Since this object is used to indicate that sync primitives will be used to
   // wait for an event ignore the current operation for hang watching purposes
   // since the wait time duration is unknown.
+#if !BUILDFLAG(IS_WASM)
   base::HangWatcher::InvalidateActiveExpectations();
+#endif
 }
 
 ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::

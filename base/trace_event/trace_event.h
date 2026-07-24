@@ -9,6 +9,14 @@
 // trace_event_common.h collect and store trace events. Anything not
 // implementation-specific should go in trace_event_common.h instead of here.
 
+#include "build/build_config.h"
+
+#if BUILDFLAG(IS_WASM)
+
+#include "base/trace_event/trace_event_wasm.h"
+
+#else
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -182,5 +190,7 @@ class TrackRegistration {
 
 }  // namespace trace_event
 }  // namespace base
+
+#endif  // BUILDFLAG(IS_WASM)
 
 #endif  // BASE_TRACE_EVENT_TRACE_EVENT_H_

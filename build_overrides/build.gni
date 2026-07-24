@@ -17,6 +17,14 @@ enable_java_templates = true
 # V8 is embedded within a target.
 build_with_v8_embedder = build_with_chromium
 
+if (enable_chromium_wasm_port) {
+  # The M0 bootstrap intentionally uses an embedder-style Chromium checkout,
+  # but Perfetto targets still need to resolve paths and generators from their
+  # nested repository rather than from a standalone //gn tree.
+  perfetto_build_with_embedder = true
+  perfetto_libperfetto_includes_json = false
+}
+
 # Enables assertions on safety checks in libc++.
 #
 # This should be set to true whenever building with Chrome's custom libc++ in

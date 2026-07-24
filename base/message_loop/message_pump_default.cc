@@ -4,17 +4,20 @@
 
 #include "base/message_loop/message_pump_default.h"
 
-#include <optional>
-
 #include "base/auto_reset.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/rand_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include <optional>
+
+#include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
-#include "build/build_config.h"
+#endif
 
 #if BUILDFLAG(IS_APPLE)
 #include <mach/thread_policy.h>
@@ -27,6 +30,7 @@
 
 namespace base {
 
+#if !BUILDFLAG(IS_WASM)
 namespace {
 enum class BusyLoopPredictionAccuracy {
   // Heuristic predicted busy loop, but no task arrived within the max busy
@@ -44,6 +48,7 @@ enum class BusyLoopPredictionAccuracy {
   kMaxValue = kTrueNegative,
 };
 }  // namespace
+#endif
 
 MessagePumpDefault::MessagePumpDefault()
     : keep_running_(true),
@@ -77,6 +82,11 @@ void MessagePumpDefault::Run(Delegate* delegate) {
       break;
     }
 
+#if BUILDFLAG(IS_WASM)
+    // Busy-looping would waste an Emscripten worker and is unnecessary because
+    // WaitableEvent maps to a worker-compatible futex wait.
+    event_.TimedWait(next_work_info.remaining_delay());
+#else
     base::TimeTicks before;
     bool may_busy_loop = max_busy_loop_time_.is_positive();
     if (may_busy_loop) {
@@ -112,6 +122,7 @@ void MessagePumpDefault::Run(Delegate* delegate) {
             heuristic_result);
       }
     }
+#endif
     // Since event_ is auto-reset, we don't need to do anything special here
     // other than service each delegate method.
   }
@@ -136,6 +147,7 @@ void MessagePumpDefault::ScheduleDelayedWork(
   // this way (bit.ly/merge-message-pump-do-work).
 }
 
+#if !BUILDFLAG(IS_WASM)
 void MessagePumpDefault::RecordWaitTime(base::TimeDelta wait_time) {
   last_wait_time_ = wait_time;
   constexpr float kAlpha = .9;
@@ -212,5 +224,6 @@ bool MessagePumpDefault::BusyWaitOnEvent(base::TimeTicks before,
 
   return signaled;
 }
+#endif
 
 }  // namespace base

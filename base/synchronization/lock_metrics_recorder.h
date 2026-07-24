@@ -17,6 +17,7 @@
 #include "base/rand_util.h"
 #include "base/time/time.h"
 #include "base/time/time_override.h"
+#include "build/build_config.h"
 
 namespace base {
 
@@ -54,8 +55,13 @@ class BASE_EXPORT LockMetricsRecorder {
   }
 
   inline bool ShouldRecordLockAcquisitionTime() const {
+#if BUILDFLAG(IS_WASM)
+    // Lock-contention UMA is a compile-time-disabled diagnostic in M1 Wasm.
+    return false;
+#else
     return IsCurrentThreadTarget() && !iterating_in_progress_ &&
            metrics_sub_sampler_.ShouldSample(kSamplingRatio);
+#endif
   }
 
   // The type of lock the sample is associated with.
@@ -126,11 +132,15 @@ class BASE_EXPORT LockMetricsRecorder {
   };
 
  private:
+#if !BUILDFLAG(IS_WASM)
   constexpr static double kSamplingRatio = 0.001;
+#endif
   std::array<RingBuffer<TimeDelta, kMaxSamples>,
              static_cast<size_t>(LockType::kMax) + 1>
       buffer_;
+#if !BUILDFLAG(IS_WASM)
   MetricsSubSampler metrics_sub_sampler_;
+#endif
   bool iterating_in_progress_ = false;
   // Thread local variables on Android are extremely slow. So on the hot-path,
   // use atomics to record the target thread-ref and read it back from multiple

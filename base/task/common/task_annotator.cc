@@ -21,7 +21,12 @@
 #include "base/memory/safety_checks.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
 #include "base/trace_event/heap_profiler.h"
+#endif
+
 #include "base/trace_event/interned_args_helper.h"
 #include "base/trace_event/trace_event.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
@@ -173,8 +178,10 @@ void TaskAnnotator::WillQueueTask(perfetto::StaticString trace_event_name,
 }
 
 void TaskAnnotator::RunTaskImpl(PendingTask& pending_task) {
+#if !BUILDFLAG(IS_WASM)
   TRACE_HEAP_PROFILER_API_SCOPED_TASK_EXECUTION(
       pending_task.posted_from.file_name());
+#endif
 
   // Before running the task, store the IPC context and the task backtrace with
   // the chain of PostTasks that resulted in this call and deliberately alias it

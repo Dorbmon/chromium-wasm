@@ -7,18 +7,23 @@
 #include "base/auto_reset.h"
 #include "base/check.h"
 #include "base/containers/ring_buffer.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/no_destructor.h"
-#include "base/strings/strcat.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/platform_thread_ref.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
+#include "base/strings/strcat.h"
+#endif
 
 namespace base {
 
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 // The histogram bounds (1us to 1s) are chosen to select for meaningful lock
 // contention. A lower bound of 1us (the approximate maximum overhead of a
 // no-op syscall) helps filter out noise from uncontended lock acquisitions
@@ -41,6 +46,7 @@ void ReportPartitionAllocLockHistogram(const TimeDelta& sample) {
   UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(*pa_lock_hist_name, sample,
                                           Microseconds(1), Seconds(1), 100);
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 }  // namespace
 
@@ -66,6 +72,11 @@ void LockMetricsRecorder::ForEachSample(LockType type,
 }
 
 void LockMetricsRecorder::ReportLockAcquisitionTimes() {
+#if BUILDFLAG(IS_WASM)
+  // Lock-contention UMA is not part of the M1 Wasm task runtime. Its scheduler
+  // call sites are compiled out rather than pretending samples were reported.
+  return;
+#else
   // Only report samples from target thread.
   if (!IsCurrentThreadTarget()) {
     return;
@@ -74,6 +85,7 @@ void LockMetricsRecorder::ReportLockAcquisitionTimes() {
   ForEachSample(LockType::kBaseLock, ReportBaseLockHistogram);
   ForEachSample(LockType::kPartitionAllocLock,
                 ReportPartitionAllocLockHistogram);
+#endif
 }
 
 // static

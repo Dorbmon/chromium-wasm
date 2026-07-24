@@ -5,16 +5,19 @@
 #include "base/message_loop/message_pump.h"
 
 #include "base/check.h"
-#include "base/message_loop/io_watcher.h"
 #include "base/message_loop/message_pump_default.h"
-#include "base/message_loop/message_pump_for_io.h"
-#include "base/message_loop/message_pump_for_ui.h"
 #include "base/notreached.h"
-#include "base/task/current_thread.h"
 #include "base/task/task_features.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "base/message_loop/io_watcher.h"
+#include "base/message_loop/message_pump_for_io.h"
+#include "base/message_loop/message_pump_for_ui.h"
+#include "base/task/current_thread.h"
+#endif
 
 #if BUILDFLAG(IS_APPLE)
 #include "base/message_loop/message_pump_apple.h"
@@ -42,6 +45,7 @@ std::atomic<uint64_t> g_align_wake_ups_and_leeway =
 
 MessagePump::MessagePumpFactory* message_pump_for_ui_factory_ = nullptr;
 
+#if !BUILDFLAG(IS_WASM)
 #if BUILDFLAG(IS_POSIX)
 class MessagePumpForIOFdWatchImpl : public IOWatcher::FdWatch,
                                     public MessagePumpForIO::FdWatcher {
@@ -137,6 +141,7 @@ class IOWatcherForCurrentIOThread : public IOWatcher {
  private:
   CurrentIOThread thread_;
 };
+#endif  // !BUILDFLAG(IS_WASM)
 
 }  // namespace
 
@@ -167,7 +172,10 @@ std::unique_ptr<MessagePump> MessagePump::Create(MessagePumpType type) {
       if (message_pump_for_ui_factory_) {
         return message_pump_for_ui_factory_();
       }
-#if BUILDFLAG(IS_APPLE)
+#if BUILDFLAG(IS_WASM)
+      // The generic pump does not provide native UI event integration.
+      NOTREACHED();
+#elif BUILDFLAG(IS_APPLE)
       return message_pump_apple::Create();
 #elif BUILDFLAG(IS_AIX)
       // Currently AIX doesn't have a UI MessagePump.
@@ -183,7 +191,12 @@ std::unique_ptr<MessagePump> MessagePump::Create(MessagePumpType type) {
 #endif
 
     case MessagePumpType::IO:
+#if BUILDFLAG(IS_WASM)
+      // Asynchronous I/O requires a Wasm-specific transport integration.
+      NOTREACHED();
+#else
       return std::make_unique<MessagePumpForIO>();
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
     case MessagePumpType::JAVA:
@@ -279,6 +292,9 @@ TimeTicks MessagePump::AdjustDelayedRunTime(TimeTicks earliest_time,
 }
 
 IOWatcher* MessagePump::GetIOWatcher() {
+#if BUILDFLAG(IS_WASM)
+  return nullptr;
+#else
   // By default only "IO thread" message pumps support async IO.
   //
   // TODO(crbug.com/379190028): This is done for convenience given the
@@ -288,6 +304,7 @@ IOWatcher* MessagePump::GetIOWatcher() {
     io_watcher_ = std::make_unique<IOWatcherForCurrentIOThread>();
   }
   return io_watcher_.get();
+#endif
 }
 
 bool MessagePump::IsAsyncIOSupported() {

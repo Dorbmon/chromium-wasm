@@ -19,14 +19,16 @@
 #include "base/metrics/histogram.h"
 #include "base/strings/strcat.h"
 #include "base/synchronization/lock.h"
-#include "base/synchronization/lock_metrics_recorder.h"
 #include "base/task/sequence_manager/tasks.h"
 #include "base/task/task_features.h"
-#include "base/threading/hang_watcher.h"
 #include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "base/synchronization/lock_metrics_recorder.h"
+#endif
 
 #if BUILDFLAG(IS_IOS)
 #include "base/message_loop/message_pump_apple.h"
@@ -84,9 +86,14 @@ ThreadControllerWithMessagePumpImpl::ThreadControllerWithMessagePumpImpl(
       work_deduplicator_(associated_thread_),
       can_run_tasks_by_batches_(settings.can_run_tasks_by_batches),
       is_main_thread_(settings.is_main_thread) {
+#if !BUILDFLAG(IS_WASM)
   if (settings.should_report_lock_metrics) {
     LockMetricsRecorder::Get()->SetTargetCurrentThread();
   }
+#else
+  // Lock-contention UMA is intentionally outside the M1 Wasm task-runtime
+  // feature set; scheduler operation does not depend on collecting it.
+#endif
 }
 
 ThreadControllerWithMessagePumpImpl::ThreadControllerWithMessagePumpImpl(
@@ -281,7 +288,9 @@ void ThreadControllerWithMessagePumpImpl::OnBeginWorkItem() {
 
 void ThreadControllerWithMessagePumpImpl::OnBeginWorkItemImpl(
     LazyNow& lazy_now) {
+#if !BUILDFLAG(IS_WASM)
   hang_watch_scope_.emplace();
+#endif
   work_id_provider_->IncrementWorkId();
   run_level_tracker_.OnWorkStarted(lazy_now);
   main_thread_only().task_source->OnBeginWork();
@@ -297,7 +306,9 @@ void ThreadControllerWithMessagePumpImpl::OnEndWorkItemImpl(
     int run_level_depth) {
   // Work completed, begin a new hang watch until the next task (watching the
   // pump's overhead).
+#if !BUILDFLAG(IS_WASM)
   hang_watch_scope_.emplace();
+#endif
   work_id_provider_->IncrementWorkId();
   run_level_tracker_.OnWorkEnded(lazy_now, run_level_depth);
 }
@@ -312,7 +323,9 @@ void ThreadControllerWithMessagePumpImpl::BeforeWait() {
   // MessagePump impl is instrumented, it's possible to get a BeforeWait()
   // outside of a DoWork cycle (e.g. message_pump_win.cc :
   // MessagePumpForUI::HandleWorkMessage).
+#if !BUILDFLAG(IS_WASM)
   hang_watch_scope_.reset();
+#endif
 
   work_id_provider_->IncrementWorkId();
   LazyNow lazy_now(time_source_);
@@ -566,7 +579,9 @@ void ThreadControllerWithMessagePumpImpl::DoIdleWork() {
   }
 #endif  // BUILDFLAG(IS_WIN)
 
+#if !BUILDFLAG(IS_WASM)
   LockMetricsRecorder::Get()->ReportLockAcquisitionTimes();
+#endif
 
   if (main_thread_only().task_source->OnIdle()) {
     work_id_provider_->IncrementWorkId();
@@ -580,7 +595,9 @@ void ThreadControllerWithMessagePumpImpl::DoIdleWork() {
   // This is mostly redundant with the identical call in BeforeWait (upcoming)
   // but some uninstrumented MessagePump impls don't call BeforeWait so it must
   // also be done here.
+#if !BUILDFLAG(IS_WASM)
   hang_watch_scope_.reset();
+#endif
 
   // All return paths below are truly idle.
   on_idle.emplace(time_source_, run_level_tracker_);
@@ -629,7 +646,9 @@ void ThreadControllerWithMessagePumpImpl::Run(bool application_tasks_allowed,
   // true here. We can't use InTopLevelDoWork() in Quit() as this call may be
   // outside top-level DoWork but still in Run().
   main_thread_only().quit_pending = false;
+#if !BUILDFLAG(IS_WASM)
   hang_watch_scope_.emplace();
+#endif
   if (application_tasks_allowed && !main_thread_only().task_execution_allowed) {
     // Allow nested task execution as explicitly requested.
     DCHECK(RunLoop::IsNestedOnCurrentThread());
@@ -645,11 +664,13 @@ void ThreadControllerWithMessagePumpImpl::Run(bool application_tasks_allowed,
 
   // If this was a nested loop, hang watch the remainder of the task which
   // caused it. Otherwise, stop watching as we're no longer running.
+#if !BUILDFLAG(IS_WASM)
   if (RunLoop::IsNestedOnCurrentThread()) {
     hang_watch_scope_.emplace();
   } else {
     hang_watch_scope_.reset();
   }
+#endif
   work_id_provider_->IncrementWorkId();
 
   // Work outside of a `RunLoop` may have mutual exclusion or ordering

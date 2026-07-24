@@ -4,16 +4,22 @@
 
 #include "base/task/sequence_manager/thread_controller_power_monitor.h"
 
+#include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
 #include "base/feature_list.h"
 #include "base/power_monitor/power_monitor.h"
-#include "base/trace_event/trace_event.h"
+#endif
 
 namespace base::sequence_manager::internal {
 
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 // Activate the power management events that affect task scheduling.
 BASE_FEATURE(kUsePowerMonitorWithThreadController, FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // TODO(crbug.com/40127966): Remove this when the experiment becomes the
 // default.
@@ -24,10 +30,18 @@ bool g_use_thread_controller_power_monitor_ = false;
 ThreadControllerPowerMonitor::ThreadControllerPowerMonitor() = default;
 
 ThreadControllerPowerMonitor::~ThreadControllerPowerMonitor() {
+#if !BUILDFLAG(IS_WASM)
   PowerMonitor::GetInstance()->RemovePowerSuspendObserver(this);
+#endif
 }
 
 void ThreadControllerPowerMonitor::BindToCurrentThread() {
+#if BUILDFLAG(IS_WASM)
+  // Browser power notifications do not have a host bridge in M1. Leave the
+  // observer explicitly unregistered so delayed tasks are never suppressed
+  // based on a power state that Wasm cannot observe.
+  return;
+#else
   // Occasionally registration happens twice (i.e. when the
   // ThreadController::SetDefaultTaskRunner() re-initializes the
   // ThreadController).
@@ -39,6 +53,7 @@ void ThreadControllerPowerMonitor::BindToCurrentThread() {
   // Register the observer to deliver notifications on the current thread.
   power_monitor->AddPowerSuspendObserver(this);
   is_observer_registered_ = true;
+#endif
 }
 
 bool ThreadControllerPowerMonitor::IsProcessInPowerSuspendState() {
@@ -48,8 +63,10 @@ bool ThreadControllerPowerMonitor::IsProcessInPowerSuspendState() {
 // static
 void ThreadControllerPowerMonitor::InitializeFeatures() {
   DCHECK(!g_use_thread_controller_power_monitor_);
+#if !BUILDFLAG(IS_WASM)
   g_use_thread_controller_power_monitor_ =
       FeatureList::IsEnabled(kUsePowerMonitorWithThreadController);
+#endif
 }
 
 // static

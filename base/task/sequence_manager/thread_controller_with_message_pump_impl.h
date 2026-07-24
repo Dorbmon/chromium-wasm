@@ -22,10 +22,13 @@
 #include "base/task/sequence_manager/thread_controller_power_monitor.h"
 #include "base/task/sequence_manager/work_deduplicator.h"
 #include "base/thread_annotations.h"
-#include "base/threading/hang_watcher.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/sequence_local_storage_map.h"
 #include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "base/threading/hang_watcher.h"
+#endif
 
 namespace base {
 namespace sequence_manager {
@@ -203,7 +206,9 @@ class BASE_EXPORT ThreadControllerWithMessagePumpImpl
   // the overhead between each work item (no-op if HangWatcher is not enabled
   // on this thread). Cleared when going to sleep and at the end of a Run()
   // (i.e. when Quit()). Nested runs override their parent.
+#if !BUILDFLAG(IS_WASM)
   std::optional<WatchHangsInScope> hang_watch_scope_;
+#endif
 
   // Can only be set once (just before calling
   // work_deduplicator_.BindToCurrentThread()). After that only read access is

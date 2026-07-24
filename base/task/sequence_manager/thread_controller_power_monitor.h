@@ -7,6 +7,7 @@
 
 #include "base/base_export.h"
 #include "base/power_monitor/power_observer.h"
+#include "build/build_config.h"
 
 namespace base {
 namespace sequence_manager {
@@ -46,7 +47,9 @@ class BASE_EXPORT ThreadControllerPowerMonitor : public PowerSuspendObserver {
   bool is_power_suspended_ = false;
 
   // Whether PowerMonitor observer is registered.
+#if !BUILDFLAG(IS_WASM)
   bool is_observer_registered_ = false;
+#endif
 };
 
 }  // namespace internal

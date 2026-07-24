@@ -302,9 +302,11 @@ class BASE_EXPORT MessagePump {
   base::TimeDelta max_busy_loop_time_;
 
  private:
+#if !BUILDFLAG(IS_WASM)
   // TODO(crbug.com/379190028): Individual MessagePump subclasses should own and
   // initialize their own IOWatcher.
   std::unique_ptr<IOWatcher> io_watcher_;
+#endif
 };
 
 }  // namespace base

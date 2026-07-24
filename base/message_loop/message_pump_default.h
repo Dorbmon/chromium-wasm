@@ -29,10 +29,12 @@ class BASE_EXPORT MessagePumpDefault : public MessagePump {
   void ScheduleDelayedWork(
       const Delegate::NextWorkInfo& next_work_info) override;
 
-  // Visible for testing.
+#if !BUILDFLAG(IS_WASM)
+  // Visible for testing on platforms which support the optional busy loop.
   void RecordWaitTime(base::TimeDelta wait_time);
   bool ShouldBusyLoop() const;
   bool BusyWaitOnEvent(base::TimeTicks before, base::TimeDelta next_work_delay);
+#endif
 
  private:
   // This flag is set to false when Run should return.
@@ -41,8 +43,10 @@ class BASE_EXPORT MessagePumpDefault : public MessagePump {
   // Used to sleep until there is more work to do.
   WaitableEvent event_;
 
+#if !BUILDFLAG(IS_WASM)
   base::TimeDelta last_wait_time_;
   base::TimeDelta wait_time_exponential_moving_average_;
+#endif
 };
 
 }  // namespace base

@@ -8,16 +8,20 @@
 #include <string_view>
 
 #include "base/check.h"
+#include "base/notreached.h"
+#include "base/time/tick_clock.h"
+#include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_base.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
-#include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
-#include "base/time/tick_clock.h"
-#include "base/time/time.h"
-#include "base/trace_event/trace_event.h"
+#endif
 
 namespace base::sequence_manager::internal {
 
@@ -51,6 +55,7 @@ void PerformFortuitousMemoryBarrierIfNecessary() {
   }
 }
 
+#if !BUILDFLAG(IS_WASM)
 // ThreadController interval metrics are mostly of interest for intervals that
 // are not trivially short. Under a certain threshold it's unlikely that
 // intervention from developers would move metrics. Log with suffix for
@@ -64,6 +69,7 @@ std::string MakeSuffix(std::string_view time_suffix,
                        std::string_view thread_name) {
   return base::StrCat({".", time_suffix, ".", thread_name});
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 }  // namespace
 
@@ -96,6 +102,7 @@ void ThreadController::InitializeFeatures() {
   g_fortuitous_memory_barrier_on_sleep.store(false, std::memory_order_relaxed);
 }
 
+#if !BUILDFLAG(IS_WASM)
 std::string_view ThreadController::RunLevelTracker::RunLevel::GetThreadName() {
   std::string_view thread_name = "Other";
   if (!time_keeper_->thread_name().empty()) {
@@ -119,10 +126,19 @@ std::string ThreadController::RunLevelTracker::RunLevel::GetSuffixForHistogram(
   }
   return MakeSuffix(time_suffix, GetThreadName());
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 void ThreadController::EnableMessagePumpTimeKeeperMetrics(
     const char* thread_name,
     bool wall_time_based_metrics_enabled_for_testing) {
+#if BUILDFLAG(IS_WASM)
+  // UMA and Perfetto phase recording are outside the M1 Wasm task-runtime
+  // gate. The scheduler remains active; only this optional recorder is
+  // unavailable.
+  (void)thread_name;
+  (void)wall_time_based_metrics_enabled_for_testing;
+  return;
+#else
   // MessagePump runs too fast, a low-res clock would result in noisy metrics.
   if (!base::TimeTicks::IsHighResolution()) {
     return;
@@ -130,18 +146,28 @@ void ThreadController::EnableMessagePumpTimeKeeperMetrics(
 
   run_level_tracker_.EnableTimeKeeperMetrics(
       thread_name, wall_time_based_metrics_enabled_for_testing);
+#endif
 }
 
 void ThreadController::RunLevelTracker::EnableTimeKeeperMetrics(
     const char* thread_name,
     bool wall_time_based_metrics_enabled_for_testing) {
+#if BUILDFLAG(IS_WASM)
+  (void)thread_name;
+  (void)wall_time_based_metrics_enabled_for_testing;
+#else
   time_keeper_.EnableRecording(thread_name,
                                wall_time_based_metrics_enabled_for_testing);
+#endif
 }
 
 void ThreadController::RunLevelTracker::TimeKeeper::EnableRecording(
     const char* thread_name,
     bool wall_time_based_metrics_enabled_for_testing) {
+#if BUILDFLAG(IS_WASM)
+  (void)thread_name;
+  (void)wall_time_based_metrics_enabled_for_testing;
+#else
   DCHECK(!histogram_);
   thread_name_ = thread_name;
   wall_time_based_metrics_enabled_for_testing_ =
@@ -154,6 +180,7 @@ void ThreadController::RunLevelTracker::TimeKeeper::EnableRecording(
 
   perfetto_track_.emplace("MessagePumpPhases", 0,
                           perfetto::ThreadTrack::Current());
+#endif
 }
 
 void ThreadController::RunLevelTracker::OnRunLoopStarted(State initial_state,
@@ -316,25 +343,41 @@ ThreadController::RunLevelTracker::RunLevel::RunLevel(RunLevel&& other) =
 void ThreadController::RunLevelTracker::RunLevel::LogPercentageMetric(
     const char* name,
     int percentage) {
+#if BUILDFLAG(IS_WASM)
+  (void)name;
+  (void)percentage;
+#else
   UmaHistogramPercentage(base::StrCat({name, ".", GetThreadName()}),
                          percentage);
+#endif
 }
 
 void ThreadController::RunLevelTracker::RunLevel::LogPercentageMetric(
     const char* name,
     int percentage,
     base::TimeDelta interval_duration) {
+#if BUILDFLAG(IS_WASM)
+  (void)name;
+  (void)percentage;
+  (void)interval_duration;
+#else
   UmaHistogramPercentage(base::StrCat({name, GetSuffixForCatchAllHistogram()}),
                          percentage);
   UmaHistogramPercentage(
       base::StrCat({name, GetSuffixForHistogram(interval_duration)}),
       percentage);
+#endif
 }
 
 void ThreadController::RunLevelTracker::RunLevel::LogIntervalMetric(
     const char* name,
     base::TimeDelta value,
     base::TimeDelta interval_duration) {
+#if BUILDFLAG(IS_WASM)
+  (void)name;
+  (void)value;
+  (void)interval_duration;
+#else
   // Log towards "Any" time suffix first.
   UmaHistogramTimes(base::StrCat({name, GetSuffixForCatchAllHistogram()}),
                     value);
@@ -347,10 +390,14 @@ void ThreadController::RunLevelTracker::RunLevel::LogIntervalMetric(
         base::StrCat({name, GetSuffixForHistogram(interval_duration)}), value,
         kNonTrivialActiveIntervalLength, kMediumActiveIntervalLength, 100);
   }
+#endif
 }
 
 void ThreadController::RunLevelTracker::RunLevel::LogOnActiveMetrics(
     LazyNow& lazy_now) {
+#if BUILDFLAG(IS_WASM)
+  (void)lazy_now;
+#else
   CHECK(last_active_start_.is_null());
   CHECK(last_active_threadtick_start_.is_null());
 
@@ -374,10 +421,14 @@ void ThreadController::RunLevelTracker::RunLevel::LogOnActiveMetrics(
     last_active_start_ = lazy_now.Now();
     last_active_threadtick_start_ = ThreadTicks::Now();
   }
+#endif
 }
 
 void ThreadController::RunLevelTracker::RunLevel::LogOnIdleMetrics(
     LazyNow& lazy_now) {
+#if BUILDFLAG(IS_WASM)
+  (void)lazy_now;
+#else
   if (!last_active_start_.is_null()) {
     const base::TimeDelta elapsed_ticks = lazy_now.Now() - last_active_start_;
     base::TimeDelta elapsed_thread_ticks =
@@ -449,6 +500,7 @@ void ThreadController::RunLevelTracker::RunLevel::LogOnIdleMetrics(
     last_active_threadtick_start_ = base::ThreadTicks();
     last_active_end_ = lazy_now.Now();
   }
+#endif
 }
 
 void ThreadController::RunLevelTracker::RunLevel::UpdateState(
@@ -579,18 +631,24 @@ void ThreadController::RunLevelTracker::TimeKeeper::RecordEndOfPhase(
   const TimeTicks phase_end = lazy_now.Now();
   RecordTimeInPhase(phase, last_phase_end_, phase_end);
 
+#if !BUILDFLAG(IS_WASM)
   const char* event_name = PhaseToEventName(phase);
   TRACE_EVENT_BEGIN(TRACE_DISABLED_BY_DEFAULT("base"),
                     perfetto::StaticString(event_name), *perfetto_track_,
                     last_phase_end_);
   TRACE_EVENT_END(TRACE_DISABLED_BY_DEFAULT("base"), *perfetto_track_,
                   phase_end);
+#endif
 
   last_phase_end_ = phase_end;
 }
 
 void ThreadController::RunLevelTracker::TimeKeeper::MaybeEmitIncomingWakeupFlow(
     perfetto::EventContext& ctx) {
+#if BUILDFLAG(IS_WASM)
+  // Tracing categories are compile-time disabled for the M1 Wasm runtime.
+  (void)ctx;
+#else
   static const uint8_t* flow_enabled =
       TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED("wakeup.flow");
   if (!*flow_enabled) {
@@ -599,6 +657,7 @@ void ThreadController::RunLevelTracker::TimeKeeper::MaybeEmitIncomingWakeupFlow(
 
   perfetto::TerminatingFlow::ProcessScoped(
       reinterpret_cast<uint64_t>(&(outer_.get())))(ctx);
+#endif
 }
 
 bool ThreadController::RunLevelTracker::TimeKeeper::ShouldRecordNow(
@@ -629,6 +688,13 @@ void ThreadController::RunLevelTracker::TimeKeeper::RecordTimeInPhase(
     Phase phase,
     TimeTicks phase_begin,
     TimeTicks phase_end) {
+#if BUILDFLAG(IS_WASM)
+  // No recorder can be enabled on Wasm, so phase accumulation has no consumer.
+  (void)phase;
+  (void)phase_begin;
+  (void)phase_end;
+  return;
+#else
   DCHECK(ShouldRecordNow(phase == kNested ? ShouldRecordReqs::kOnEndNested
                                           : ShouldRecordReqs::kRegular));
 
@@ -658,6 +724,7 @@ void ThreadController::RunLevelTracker::TimeKeeper::RecordTimeInPhase(
   if (outer_->trace_observer_for_testing_) {
     outer_->trace_observer_for_testing_->OnPhaseRecorded(phase);
   }
+#endif
 }
 
 // static
