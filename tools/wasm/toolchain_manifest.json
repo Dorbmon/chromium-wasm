@@ -9,7 +9,7 @@
     "v8": {
       "path": "v8",
       "upstream_revision": "49df3678d1b6a1511167b15a6b7499d3ab37a638",
-      "revision": "300b1bf8e7087180795a05019d05147873ca8dc6"
+      "revision": "eb2202612d86a6385ab28fd5bfd269d0f3ab004c"
     },
     "skia": {
       "path": "third_party/skia",
