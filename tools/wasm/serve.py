@@ -211,6 +211,25 @@ RUST_RESULT_REQUIREMENTS = (
     *(f"{key}={value}" for key, value in RUST_RESULT_VALUES.items()),
 )
 
+V8_BASE_RESULT_VALUES = {
+    "host": "wasm32",
+    "target": "arm",
+    "simulator_config": "arm",
+    "jitless_config": "on",
+    "threads": "ok",
+    "tls": "ok",
+    "time": "ok",
+    "entropy": "ok",
+    "stack_bounds": "ok",
+    "stack_trace": "unsupported_reported",
+    "page_allocator": "logical_ok",
+    "file_mapping": "buffered_ok",
+}
+V8_BASE_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M2_V8_BASE:RESULT",
+    *(f"{key}={value}" for key, value in V8_BASE_RESULT_VALUES.items()),
+)
+
 SHARED_MEMORY_RESULT_VALUES = {
     "capability_handle": "ok",
     "writable_create": "ok",
@@ -353,6 +372,17 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M1_RUST:PASS",
         ),
     ),
+    "v8_base": SmokeCase(
+        module_name="wasm_v8_base_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M2_V8_BASE",
+        required_stdout=(
+            "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_START",
+            "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_END",
+            *V8_BASE_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M2_V8_BASE:PASS",
+        ),
+        minimum_runtime_ms=200,
+    ),
     "shared_memory": SmokeCase(
         module_name="m1_shared_memory_smoke.js",
         sentinel_prefix="CHROMIUM_WASM_M1_SHARED_MEMORY",
@@ -470,6 +500,10 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         display_name = "Rust"
         sentinel_prefix = "CHROMIUM_WASM_M1_RUST"
         result_values = RUST_RESULT_VALUES
+    elif name == "v8_base":
+        display_name = "V8 Base"
+        sentinel_prefix = "CHROMIUM_WASM_M2_V8_BASE"
+        result_values = V8_BASE_RESULT_VALUES
     elif name == "shared_memory":
         display_name = "shared-memory"
         sentinel_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY"

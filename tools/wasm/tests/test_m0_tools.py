@@ -69,6 +69,13 @@ RUST_RESULT_LINE = (
         f"{key}={value}" for key, value in serve.RUST_RESULT_VALUES.items()
     )
 )
+V8_BASE_RESULT_LINE = (
+    "CHROMIUM_WASM_M2_V8_BASE:RESULT "
+    + " ".join(
+        f"{key}={value}"
+        for key, value in serve.V8_BASE_RESULT_VALUES.items()
+    )
+)
 SHARED_MEMORY_RESULT_LINE = (
     "CHROMIUM_WASM_M1_SHARED_MEMORY:RESULT "
     + " ".join(
@@ -456,6 +463,68 @@ class NodeRunnerTest(unittest.TestCase):
                 "rust",
             )
 
+    def test_v8_base_case_requires_complete_result_contract(self) -> None:
+        case_name, module = run_node_smoke.resolve_case_and_module(
+            "v8_base", None
+        )
+        self.assertEqual(case_name, "v8_base")
+        self.assertEqual(
+            module, Path("out/wasm/wasm_v8_base_smoke.js")
+        )
+        self.assertEqual(
+            run_node_smoke.resolve_case_and_module(
+                None, Path("custom/wasm_v8_base_smoke.js")
+            ),
+            ("v8_base", Path("custom/wasm_v8_base_smoke.js")),
+        )
+        with self.assertRaises(M0Error):
+            run_node_smoke.resolve_case_and_module(
+                "v8_base", Path("out/wasm/m1_base_smoke.js")
+            )
+
+        stdout = "\n".join(
+            (
+                "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_START",
+                "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_END",
+                V8_BASE_RESULT_LINE,
+                "CHROMIUM_WASM_M2_V8_BASE:PASS",
+                'CHROMIUM_WASM_M2_V8_BASE:NODE_EXIT {"exitCode":0}',
+            )
+        )
+        run_node_smoke.validate_streams(stdout, "", "v8_base")
+        for requirement in serve.V8_BASE_RESULT_REQUIREMENTS:
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(requirement, "<missing>", 1),
+                    "",
+                    "v8_base",
+                )
+        for old, new in (
+            ("target=arm", "target=wasm"),
+            (V8_BASE_RESULT_LINE, f"{V8_BASE_RESULT_LINE} unexpected=ok"),
+            ("threads=ok", "threads=ok threads=ok"),
+            (
+                V8_BASE_RESULT_LINE,
+                f"{V8_BASE_RESULT_LINE}\n{V8_BASE_RESULT_LINE}",
+            ),
+        ):
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(old, new, 1), "", "v8_base"
+                )
+        with self.assertRaises(M0Error):
+            run_node_smoke.validate_streams(
+                stdout + "\nCHROMIUM_WASM_M2_V8_BASE:FAIL reason=test",
+                "",
+                "v8_base",
+            )
+
     def test_shared_memory_case_requires_complete_result_contract(self) -> None:
         case_name, module = run_node_smoke.resolve_case_and_module(
             "shared_memory", None
@@ -679,6 +748,10 @@ class ServerTest(unittest.TestCase):
         self.assertIn('modulePath: "/out/wasm/m1_task_smoke.js"', host_page)
         self.assertIn('modulePath: "/out/wasm/m1_rust_smoke.js"', host_page)
         self.assertIn(
+            'modulePath: "/out/wasm/wasm_v8_base_smoke.js"',
+            host_page,
+        )
+        self.assertIn(
             'modulePath: "/out/wasm/m1_shared_memory_smoke.js"',
             host_page,
         )
@@ -694,6 +767,8 @@ class ServerTest(unittest.TestCase):
         for requirement in serve.TASK_RESULT_REQUIREMENTS:
             self.assertIn(requirement, host_page)
         for requirement in serve.RUST_RESULT_REQUIREMENTS:
+            self.assertIn(requirement, host_page)
+        for requirement in serve.V8_BASE_RESULT_REQUIREMENTS:
             self.assertIn(requirement, host_page)
         for requirement in serve.SHARED_MEMORY_RESULT_REQUIREMENTS:
             self.assertIn(requirement, host_page)
@@ -744,6 +819,40 @@ class ServerTest(unittest.TestCase):
             )
             self.assertIsNone(
                 serve.artifact_for_request(state, "/out/wasm/unrelated.js")
+            )
+
+    def test_server_allowlists_v8_base_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            out_dir = Path(temporary_directory)
+            for name in (
+                "wasm_v8_base_smoke.js",
+                "wasm_v8_base_smoke.wasm",
+                "wasm_v8_base_smoke.wasm.map",
+                "m1_base_smoke.js",
+            ):
+                (out_dir / name).write_bytes(b"test")
+            state = serve.ServerState(
+                token="token",
+                out_dir=out_dir,
+                result_queue=queue.Queue(maxsize=1),
+                smoke_case_name="v8_base",
+                smoke_case=serve.smoke_case("v8_base"),
+            )
+            for name in (
+                "wasm_v8_base_smoke.js",
+                "wasm_v8_base_smoke.wasm",
+                "wasm_v8_base_smoke.wasm.map",
+            ):
+                self.assertEqual(
+                    serve.artifact_for_request(
+                        state, f"/out/wasm/{name}"
+                    ),
+                    out_dir / name,
+                )
+            self.assertIsNone(
+                serve.artifact_for_request(
+                    state, "/out/wasm/m1_base_smoke.js"
+                )
             )
 
 
@@ -980,6 +1089,91 @@ class BrowserRunnerTest(unittest.TestCase):
         ]
         with self.assertRaises(M0Error):
             run_browser_smoke.validate_result(result, "base")
+
+    def test_v8_base_result_requires_complete_result_contract(self) -> None:
+        result = {
+            "protocol": 1,
+            "case": "v8_base",
+            "status": "pass",
+            "exitCode": 0,
+            "crossOriginIsolated": True,
+            "sharedArrayBuffer": True,
+            "canvasFocused": True,
+            "failedChecks": [],
+            "error": None,
+            "heartbeat": {
+                "timerDelta": 20,
+                "animationFrameDelta": 12,
+                "elapsedMs": 250,
+            },
+            "stdout": [
+                "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_START",
+                "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_END",
+                V8_BASE_RESULT_LINE,
+                "CHROMIUM_WASM_M2_V8_BASE:PASS",
+            ],
+            "stderr": [],
+        }
+        run_browser_smoke.validate_result(result, "v8_base")
+        short_result = {
+            **result,
+            "heartbeat": {
+                **result["heartbeat"],
+                "elapsedMs": 199,
+            },
+        }
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(short_result, "v8_base")
+        for requirement in serve.V8_BASE_RESULT_REQUIREMENTS:
+            invalid_result = {
+                **result,
+                "stdout": [
+                    "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_START",
+                    "CHROMIUM_WASM_M2_V8_BASE:RUNTIME_END",
+                    V8_BASE_RESULT_LINE.replace(
+                        requirement, "<missing>", 1
+                    ),
+                    "CHROMIUM_WASM_M2_V8_BASE:PASS",
+                ],
+            }
+            with (
+                self.subTest(requirement=requirement),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(
+                    invalid_result, "v8_base"
+                )
+        for old, new in (
+            ("simulator_config=arm", "simulator_config=unsupported"),
+            (V8_BASE_RESULT_LINE, f"{V8_BASE_RESULT_LINE} unexpected=ok"),
+            (
+                "jitless_config=on",
+                "jitless_config=on jitless_config=on",
+            ),
+            (
+                V8_BASE_RESULT_LINE,
+                f"{V8_BASE_RESULT_LINE}\n{V8_BASE_RESULT_LINE}",
+            ),
+        ):
+            invalid_result = {
+                **result,
+                "stdout": [
+                    line.replace(old, new, 1) for line in result["stdout"]
+                ],
+            }
+            with (
+                self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(
+                    invalid_result, "v8_base"
+                )
+        result["stdout"] = [
+            *result["stdout"],
+            "CHROMIUM_WASM_M2_V8_BASE:FAIL reason=test",
+        ]
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(result, "v8_base")
 
     def test_tasks_result_requires_complete_result_contract(self) -> None:
         result = {

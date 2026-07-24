@@ -8,6 +8,16 @@
 # you add a new build file, there must be some path of dependencies from this
 # file to your new one or GN won't know about it.
 
+declare_args() {
+  # Enables the V8 ARM-simulator bootstrap targets for the experimental
+  # Chromium WebAssembly port. This requires the matching M2 V8 build args.
+  enable_chromium_wasm_v8 = false
+}
+
+assert(!enable_chromium_wasm_v8 ||
+           (enable_chromium_wasm_port && target_os == "emscripten"),
+       "enable_chromium_wasm_v8 requires the Emscripten Wasm port")
+
 if (enable_chromium_wasm_port && target_os == "emscripten") {
   group("gn_all") {
     deps = [
@@ -19,6 +29,9 @@ if (enable_chromium_wasm_port && target_os == "emscripten") {
       "//tools/wasm:m1_task_smoke($default_toolchain)",
       "//wasm:hello_wasm($default_toolchain)",
     ]
+    if (enable_chromium_wasm_v8) {
+      deps += [ "//v8:wasm_v8_base_smoke($default_toolchain)" ]
+    }
   }
 } else {
 import("//build/config/c++/modules.gni")
