@@ -242,7 +242,7 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
     "fp_calls": "ok",
     "classes": "ok",
     "exceptions": "js_and_native",
-    "stacks": "js_and_native_frames",
+    "stacks": "js_callers",
     "promises": "explicit_checkpoint",
     "async": "ok",
     "proxy": "ok",
@@ -252,6 +252,17 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
     "gc_reclamation": "verified_after_isolate_disposal",
     "modules": "graph_tla",
     "timers": "delayed_foreground",
+    "test262": "ok",
+    "test262_revision": "7e115f46ac64340827d505fa928ad436cb7ba5a6",
+    "test262_license_notice": "embedded",
+    "test262_license_sha256": (
+        "4dd9244dfe8197c75348c4b24ab53d29"
+        "d3b1cfad143ac76b5a3d8942aa354ce0"
+    ),
+    "test262_pack_sha256": (
+        "c290b8630ed71553ac1ceda6493fa4b5"
+        "1614593163d84c3b7baa27779e09d53b"
+    ),
     "startup_snapshot": "runtime_generated",
     "external_startup_data": "off",
     "snapshot_anchor": "retained_during_cycles",
@@ -275,6 +286,25 @@ V8_SNAPSHOTLESS_RESULT_NUMERIC_NAMES = (
     "timer_delay_ms",
     "timer_elapsed_us",
     "timer_cycles",
+    "test262_license_bytes",
+    "test262_license_fnv1a",
+    "test262_embedded_source_bytes",
+    "test262_cases",
+    "test262_executions",
+    "test262_passed",
+    "test262_failed",
+    "test262_scripts",
+    "test262_modules",
+    "test262_strict",
+    "test262_sloppy",
+    "test262_async",
+    "test262_negative_parse",
+    "test262_negative_runtime",
+    "test262_negative_resolution",
+    "test262_detach_calls",
+    "test262_resolver_calls",
+    "test262_module_compile_attempts",
+    "test262_runtime_ms",
     "snapshot_bytes",
     "snapshot_create_ms",
     "isolate_runs_ms",
@@ -331,6 +361,78 @@ V8_SNAPSHOTLESS_STAGE_NAMES = (
     "microtask_checkpoint_end",
     "module_graph_end",
     "ordinary_isolate_dispose_end",
+)
+V8_SNAPSHOTLESS_TEST262_CASES = (
+    (
+        "test/built-ins/Object/fromEntries/evaluation-order.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/expressions/function/scope-name-var-close.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/statements/class/subclass/binding.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/statements/const/syntax/"
+        "block-scope-syntax-const-declarations-without-initialiser.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/statements/const/"
+        "global-use-before-initialization-in-prior-statement.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Promise/prototype/then/prfm-fulfilled.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/statements/async-function/"
+        "evaluation-body-that-returns-after-await.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Proxy/ownKeys/"
+        "not-extensible-missing-keys-throws.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/BigInt/asIntN/arithmetic.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/TypedArray/prototype/map/values-are-not-cached.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/ArrayBuffer/prototype/byteLength/detached-buffer.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/module-code/instn-iee-bndng-const.js",
+        ("module",),
+    ),
+    (
+        "test/language/module-code/instn-resolve-order-depth.js",
+        ("module",),
+    ),
+    (
+        "test/language/module-code/eval-rqstd-once.js",
+        ("module",),
+    ),
+)
+V8_SNAPSHOTLESS_TEST262_CASE_LINES = tuple(
+    f"CHROMIUM_WASM_M2_V8_JS:TEST262_CASE path={path} "
+    f"mode={mode} status=ok"
+    for path, modes in V8_SNAPSHOTLESS_TEST262_CASES
+    for mode in modes
+)
+V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE = (
+    "CHROMIUM_WASM_M2_V8_JS:TEST262_SUMMARY "
+    "cases=14 executions=25 passed=25 failed=0 status=ok"
 )
 
 SHARED_MEMORY_RESULT_VALUES = {
@@ -622,6 +724,49 @@ def _validate_v8_snapshotless_result(
         raise M0Error(f"{prefix} timer delay is inconsistent")
     if values["timer_elapsed_us"] < values["timer_delay_ms"] * 1000:
         raise M0Error(f"{prefix} delayed timer fired early")
+    expected_test262_values = {
+        "test262_license_bytes": 2213,
+        "test262_license_fnv1a": 1790394517849644,
+        "test262_embedded_source_bytes": 40217,
+        "test262_cases": 14,
+        "test262_executions": 25,
+        "test262_passed": 25,
+        "test262_failed": 0,
+        "test262_scripts": 22,
+        "test262_modules": 3,
+        "test262_strict": 14,
+        "test262_sloppy": 11,
+        "test262_async": 4,
+        "test262_negative_parse": 2,
+        "test262_negative_runtime": 2,
+        "test262_negative_resolution": 1,
+        "test262_detach_calls": 2,
+        "test262_resolver_calls": 5,
+        "test262_module_compile_attempts": 7,
+    }
+    for name, expected in expected_test262_values.items():
+        if values[name] != expected:
+            raise M0Error(f"{prefix} {name} is inconsistent")
+    if (
+        values["test262_scripts"] + values["test262_modules"]
+        != values["test262_executions"]
+    ):
+        raise M0Error(f"{prefix} Test262 execution kinds are inconsistent")
+    if (
+        values["test262_strict"] + values["test262_sloppy"]
+        != values["test262_executions"]
+    ):
+        raise M0Error(f"{prefix} Test262 strictness counts are inconsistent")
+    if values["test262_resolver_calls"] < values["test262_modules"]:
+        raise M0Error(f"{prefix} Test262 resolver coverage is inconsistent")
+    if values["test262_runtime_ms"] <= 0:
+        raise M0Error(f"{prefix} Test262 runtime must be positive")
+    if not (
+        values["test262_runtime_ms"]
+        <= values["isolate_runs_ms"]
+        <= values["runtime_ms"]
+    ):
+        raise M0Error(f"{prefix} Test262 runtime timing is inconsistent")
     for name in (
         "snapshot_bytes",
         "snapshot_create_ms",
@@ -720,6 +865,43 @@ def _validate_v8_snapshotless_stages(
         raise M0Error(f"{prefix} stages escaped the runtime interval")
 
 
+def _validate_v8_snapshotless_test262_cases(
+    prefix: str,
+    lines: list[str],
+    runtime_start_index: int,
+    runtime_end_index: int,
+) -> None:
+    case_prefix = f"{prefix}:TEST262_CASE"
+    indexed_cases = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if line.startswith(case_prefix)
+    ]
+    actual = [line for _, line in indexed_cases]
+    if actual != list(V8_SNAPSHOTLESS_TEST262_CASE_LINES):
+        raise M0Error(f"{prefix} Test262 case sequence is inconsistent")
+    if any(
+        not runtime_start_index < index < runtime_end_index
+        for index, _ in indexed_cases
+    ):
+        raise M0Error(f"{prefix} Test262 cases escaped the runtime interval")
+    summary_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith(f"{prefix}:TEST262_SUMMARY")
+    ]
+    if len(summary_indices) != 1:
+        raise M0Error(f"{prefix} Test262 summary count is inconsistent")
+    summary_index = summary_indices[0]
+    if lines[summary_index] != V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE:
+        raise M0Error(f"{prefix} Test262 summary is inconsistent")
+    if not (
+        runtime_start_index < summary_index < runtime_end_index
+        and indexed_cases[-1][0] < summary_index
+    ):
+        raise M0Error(f"{prefix} Test262 summary ordering is inconsistent")
+
+
 def validate_case_stdout(name: str, stdout: str) -> None:
     numeric_names: tuple[str, ...] = ()
     metric_names: tuple[str, ...] | None = None
@@ -789,6 +971,12 @@ def validate_case_stdout(name: str, stdout: str) -> None:
 
     if name == "v8_snapshotless":
         _validate_v8_snapshotless_stages(
+            sentinel_prefix,
+            lines,
+            runtime_start_index,
+            runtime_end_index,
+        )
+        _validate_v8_snapshotless_test262_cases(
             sentinel_prefix,
             lines,
             runtime_start_index,

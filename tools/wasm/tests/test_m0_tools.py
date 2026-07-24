@@ -85,6 +85,25 @@ V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES = {
     "timer_delay_ms": "25",
     "timer_elapsed_us": "25581",
     "timer_cycles": "1",
+    "test262_license_bytes": "2213",
+    "test262_license_fnv1a": "1790394517849644",
+    "test262_embedded_source_bytes": "40217",
+    "test262_cases": "14",
+    "test262_executions": "25",
+    "test262_passed": "25",
+    "test262_failed": "0",
+    "test262_scripts": "22",
+    "test262_modules": "3",
+    "test262_strict": "14",
+    "test262_sloppy": "11",
+    "test262_async": "4",
+    "test262_negative_parse": "2",
+    "test262_negative_runtime": "2",
+    "test262_negative_resolution": "1",
+    "test262_detach_calls": "2",
+    "test262_resolver_calls": "5",
+    "test262_module_compile_attempts": "7",
+    "test262_runtime_ms": "68",
     "snapshot_bytes": "288812",
     "snapshot_create_ms": "1965",
     "isolate_runs_ms": "71",
@@ -121,6 +140,12 @@ V8_SNAPSHOTLESS_RESULT_LINE = (
 V8_SNAPSHOTLESS_STAGE_LINES = tuple(
     f"CHROMIUM_WASM_M2_V8_JS:STAGE name={name}"
     for name in serve.V8_SNAPSHOTLESS_STAGE_NAMES
+)
+V8_SNAPSHOTLESS_TEST262_CASE_LINES = (
+    serve.V8_SNAPSHOTLESS_TEST262_CASE_LINES
+)
+V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE = (
+    serve.V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE
 )
 SHARED_MEMORY_RESULT_LINE = (
     "CHROMIUM_WASM_M1_SHARED_MEMORY:RESULT "
@@ -652,6 +677,8 @@ class NodeRunnerTest(unittest.TestCase):
             (
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
                 *V8_SNAPSHOTLESS_STAGE_LINES,
+                *V8_SNAPSHOTLESS_TEST262_CASE_LINES,
+                V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE,
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
                 V8_SNAPSHOTLESS_RESULT_LINE,
                 "CHROMIUM_WASM_M2_V8_JS:PASS",
@@ -693,6 +720,16 @@ class NodeRunnerTest(unittest.TestCase):
             ("timer_delay_ms=25", "timer_delay_ms=24"),
             ("timer_elapsed_us=25581", "timer_elapsed_us=24999"),
             ("timer_cycles=1", "timer_cycles=2"),
+            ("test262_executions=25", "test262_executions=24"),
+            (
+                "test262_license_fnv1a=1790394517849644",
+                "test262_license_fnv1a=1790394517849645",
+            ),
+            (
+                "test262_module_compile_attempts=7",
+                "test262_module_compile_attempts=6",
+            ),
+            ("test262_runtime_ms=68", "test262_runtime_ms=72"),
             ("runtime_ms=2043", "runtime_ms=1"),
             (
                 "v8_heap_used_max_sampled_bytes=120368",
@@ -749,6 +786,51 @@ class NodeRunnerTest(unittest.TestCase):
         ):
             with (
                 self.subTest(invalid_stage_output=invalid_stdout),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    invalid_stdout, "", "v8_snapshotless"
+                )
+        first_case = V8_SNAPSHOTLESS_TEST262_CASE_LINES[0]
+        second_case = V8_SNAPSHOTLESS_TEST262_CASE_LINES[1]
+        for invalid_stdout in (
+            stdout.replace(first_case, "", 1),
+            stdout.replace(first_case, f"{first_case}\n{first_case}", 1),
+            stdout.replace(first_case, f"{first_case} unexpected", 1),
+            stdout.replace(
+                f"{first_case}\n{second_case}",
+                f"{second_case}\n{first_case}",
+                1,
+            ),
+            stdout.replace(
+                f"{first_case}\n{second_case}", second_case, 1
+            ).replace(
+                "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+                f"{first_case}\nCHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+                1,
+            ),
+            stdout.replace(V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE, "", 1),
+            stdout.replace(
+                V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE,
+                f"{V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE}\n"
+                f"{V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE}",
+                1,
+            ),
+            stdout.replace(
+                "executions=25 passed=25",
+                "executions=24 passed=24",
+                1,
+            ),
+            stdout.replace(
+                f"{V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE}\n"
+                "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
+                "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END\n"
+                f"{V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE}",
+                1,
+            ),
+        ):
+            with (
+                self.subTest(invalid_test262_output=invalid_stdout),
                 self.assertRaises(M0Error),
             ):
                 run_node_smoke.validate_streams(
@@ -1470,6 +1552,8 @@ class BrowserRunnerTest(unittest.TestCase):
             "stdout": [
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
                 *V8_SNAPSHOTLESS_STAGE_LINES,
+                *V8_SNAPSHOTLESS_TEST262_CASE_LINES,
+                V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE,
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
                 V8_SNAPSHOTLESS_RESULT_LINE,
                 "CHROMIUM_WASM_M2_V8_JS:PASS",
@@ -1494,6 +1578,8 @@ class BrowserRunnerTest(unittest.TestCase):
                 "stdout": [
                     "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
                     *V8_SNAPSHOTLESS_STAGE_LINES,
+                    *V8_SNAPSHOTLESS_TEST262_CASE_LINES,
+                    V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE,
                     "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
                     V8_SNAPSHOTLESS_RESULT_LINE.replace(
                         requirement, "<missing>", 1
@@ -1508,6 +1594,34 @@ class BrowserRunnerTest(unittest.TestCase):
                 run_browser_smoke.validate_result(
                     invalid_result, "v8_snapshotless"
                 )
+        invalid_result = {
+            **result,
+            "stdout": [
+                line
+                for line in result["stdout"]
+                if line != V8_SNAPSHOTLESS_TEST262_CASE_LINES[0]
+            ],
+        }
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(
+                invalid_result, "v8_snapshotless"
+            )
+        invalid_result = {
+            **result,
+            "stdout": [
+                line.replace(
+                    V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE,
+                    "CHROMIUM_WASM_M2_V8_JS:TEST262_SUMMARY "
+                    "cases=14 executions=24 passed=24 failed=0 status=ok",
+                    1,
+                )
+                for line in result["stdout"]
+            ],
+        }
+        with self.assertRaises(M0Error):
+            run_browser_smoke.validate_result(
+                invalid_result, "v8_snapshotless"
+            )
         for name, value in V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES.items():
             invalid_result = {
                 **result,
@@ -1535,6 +1649,16 @@ class BrowserRunnerTest(unittest.TestCase):
             ("timer_delay_ms=25", "timer_delay_ms=24"),
             ("timer_elapsed_us=25581", "timer_elapsed_us=24999"),
             ("timer_cycles=1", "timer_cycles=2"),
+            ("test262_executions=25", "test262_executions=24"),
+            (
+                "test262_license_fnv1a=1790394517849644",
+                "test262_license_fnv1a=1790394517849645",
+            ),
+            (
+                "test262_module_compile_attempts=7",
+                "test262_module_compile_attempts=6",
+            ),
+            ("test262_runtime_ms=68", "test262_runtime_ms=72"),
             (
                 "v8_heap_total_max_sampled_bytes=786432",
                 "v8_heap_total_max_sampled_bytes=999999999",
