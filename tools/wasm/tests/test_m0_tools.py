@@ -76,11 +76,38 @@ V8_BASE_RESULT_LINE = (
         for key, value in serve.V8_BASE_RESULT_VALUES.items()
     )
 )
+V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES = {
+    "snapshot_bytes": "288804",
+    "snapshot_create_ms": "1981",
+    "isolate_runs_ms": "25",
+    "runtime_ms": "2015",
+    "v8_heap_total_max_sampled_bytes": "786432",
+    "v8_heap_used_max_sampled_bytes": "98800",
+    "v8_heap_physical_max_sampled_bytes": "786432",
+    "v8_malloced_max_sampled_bytes": "32812",
+    "v8_peak_malloced_bytes": "49204",
+    "v8_external_max_sampled_bytes": "0",
+    "v8_heap_limit_bytes": "834666496",
+    "v8_total_allocated_max_per_isolate_bytes": "1303116",
+    "v8_shared_read_only_used_bytes": "0",
+    "array_buffer_peak_bytes": "0",
+    "wasm_linear_initial_bytes": "67108864",
+    "wasm_linear_after_cycle_1_bytes": "598999040",
+    "wasm_linear_after_cycle_2_bytes": "598999040",
+    "wasm_linear_after_cycle_3_bytes": "598999040",
+    "wasm_linear_peak_bytes": "598999040",
+    "wasm_linear_limit_bytes": "2147483648",
+}
 V8_SNAPSHOTLESS_RESULT_LINE = (
     "CHROMIUM_WASM_M2_V8_JS:RESULT "
     + " ".join(
         f"{key}={value}"
         for key, value in serve.V8_SNAPSHOTLESS_RESULT_VALUES.items()
+    )
+    + " "
+    + " ".join(
+        f"{key}={value}"
+        for key, value in V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES.items()
     )
 )
 SHARED_MEMORY_RESULT_LINE = (
@@ -631,8 +658,29 @@ class NodeRunnerTest(unittest.TestCase):
                     "",
                     "v8_snapshotless",
                 )
+        for name, value in V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES.items():
+            with (
+                self.subTest(numeric_name=name),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    stdout.replace(
+                        f"{name}={value}", f"{name}=not-a-number", 1
+                    ),
+                    "",
+                    "v8_snapshotless",
+                )
         for old, new in (
             ("target=arm", "target=wasm"),
+            ("runtime_ms=2015", "runtime_ms=1"),
+            (
+                "v8_heap_used_max_sampled_bytes=98800",
+                "v8_heap_used_max_sampled_bytes=999999",
+            ),
+            (
+                "wasm_linear_peak_bytes=598999040",
+                "wasm_linear_peak_bytes=1",
+            ),
             (
                 V8_SNAPSHOTLESS_RESULT_LINE,
                 f"{V8_SNAPSHOTLESS_RESULT_LINE} unexpected=ok",
@@ -1405,8 +1453,33 @@ class BrowserRunnerTest(unittest.TestCase):
                 run_browser_smoke.validate_result(
                     invalid_result, "v8_snapshotless"
                 )
+        for name, value in V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES.items():
+            invalid_result = {
+                **result,
+                "stdout": [
+                    line.replace(
+                        f"{name}={value}", f"{name}=not-a-number", 1
+                    )
+                    for line in result["stdout"]
+                ],
+            }
+            with (
+                self.subTest(numeric_name=name),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(
+                    invalid_result, "v8_snapshotless"
+                )
         for old, new in (
             ("simulator=arm", "simulator=unsupported"),
+            (
+                "v8_heap_total_max_sampled_bytes=786432",
+                "v8_heap_total_max_sampled_bytes=999999999",
+            ),
+            (
+                "v8_malloced_max_sampled_bytes=32812",
+                "v8_malloced_max_sampled_bytes=999999",
+            ),
             (
                 V8_SNAPSHOTLESS_RESULT_LINE,
                 f"{V8_SNAPSHOTLESS_RESULT_LINE} unexpected=ok",

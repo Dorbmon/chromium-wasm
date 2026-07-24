@@ -240,8 +240,13 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
     "bigint": "ok",
     "lookup_pair": "ok",
     "fp_calls": "ok",
-    "startup_snapshot": "none",
-    "isolate": "snapshot_creator",
+    "startup_snapshot": "runtime_generated",
+    "external_startup_data": "off",
+    "snapshot_anchor": "retained_during_cycles",
+    "isolate": "ordinary",
+    "lifecycle_cycles": "3",
+    "metrics_scope": "ordinary_isolates",
+    "heap_sampling": "end_of_each_cycle",
     "i18n": "off",
     "host": "wasm32",
     "target": "arm",
@@ -249,6 +254,28 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
     "jitless": "on",
     "version": "15.0.245.21",
 }
+V8_SNAPSHOTLESS_RESULT_NUMERIC_NAMES = (
+    "snapshot_bytes",
+    "snapshot_create_ms",
+    "isolate_runs_ms",
+    "runtime_ms",
+    "v8_heap_total_max_sampled_bytes",
+    "v8_heap_used_max_sampled_bytes",
+    "v8_heap_physical_max_sampled_bytes",
+    "v8_malloced_max_sampled_bytes",
+    "v8_peak_malloced_bytes",
+    "v8_external_max_sampled_bytes",
+    "v8_heap_limit_bytes",
+    "v8_total_allocated_max_per_isolate_bytes",
+    "v8_shared_read_only_used_bytes",
+    "array_buffer_peak_bytes",
+    "wasm_linear_initial_bytes",
+    "wasm_linear_after_cycle_1_bytes",
+    "wasm_linear_after_cycle_2_bytes",
+    "wasm_linear_after_cycle_3_bytes",
+    "wasm_linear_peak_bytes",
+    "wasm_linear_limit_bytes",
+)
 V8_SNAPSHOTLESS_RESULT_REQUIREMENTS = (
     "CHROMIUM_WASM_M2_V8_JS:RESULT",
     *(
@@ -524,6 +551,72 @@ def _validate_task_result(prefix: str, values: dict[str, int]) -> None:
         raise M0Error(f"{prefix} idle_elapsed_ms is out of range")
 
 
+def _validate_v8_snapshotless_result(
+    prefix: str, values: dict[str, int]
+) -> None:
+    for name in (
+        "snapshot_bytes",
+        "snapshot_create_ms",
+        "isolate_runs_ms",
+        "runtime_ms",
+        "v8_heap_total_max_sampled_bytes",
+        "v8_heap_used_max_sampled_bytes",
+        "v8_heap_physical_max_sampled_bytes",
+        "v8_heap_limit_bytes",
+        "v8_total_allocated_max_per_isolate_bytes",
+        "wasm_linear_initial_bytes",
+        "wasm_linear_after_cycle_1_bytes",
+        "wasm_linear_after_cycle_2_bytes",
+        "wasm_linear_after_cycle_3_bytes",
+        "wasm_linear_peak_bytes",
+        "wasm_linear_limit_bytes",
+    ):
+        if values[name] <= 0:
+            raise M0Error(f"{prefix} {name} must be positive")
+    if (
+        values["snapshot_create_ms"] + values["isolate_runs_ms"]
+        > values["runtime_ms"]
+    ):
+        raise M0Error(f"{prefix} runtime timings are inconsistent")
+    if (
+        values["v8_heap_used_max_sampled_bytes"]
+        > values["v8_heap_total_max_sampled_bytes"]
+    ):
+        raise M0Error(f"{prefix} V8 used heap exceeds total heap")
+    if (
+        values["v8_heap_physical_max_sampled_bytes"]
+        > values["v8_heap_total_max_sampled_bytes"]
+    ):
+        raise M0Error(f"{prefix} V8 physical heap exceeds total heap")
+    if (
+        values["v8_heap_total_max_sampled_bytes"]
+        > values["v8_heap_limit_bytes"]
+    ):
+        raise M0Error(f"{prefix} V8 total heap exceeds its limit")
+    if (
+        values["v8_malloced_max_sampled_bytes"]
+        > values["v8_peak_malloced_bytes"]
+    ):
+        raise M0Error(f"{prefix} V8 malloc accounting is inconsistent")
+    linear_samples = (
+        values["wasm_linear_initial_bytes"],
+        values["wasm_linear_after_cycle_1_bytes"],
+        values["wasm_linear_after_cycle_2_bytes"],
+        values["wasm_linear_after_cycle_3_bytes"],
+        values["wasm_linear_peak_bytes"],
+        values["wasm_linear_limit_bytes"],
+    )
+    if tuple(sorted(linear_samples)) != linear_samples:
+        raise M0Error(f"{prefix} Wasm linear-memory bounds are inconsistent")
+    if (
+        values["wasm_linear_after_cycle_2_bytes"]
+        != values["wasm_linear_after_cycle_3_bytes"]
+    ):
+        raise M0Error(
+            f"{prefix} Wasm linear memory did not stabilize after warmup"
+        )
+
+
 def validate_case_stdout(name: str, stdout: str) -> None:
     numeric_names: tuple[str, ...] = ()
     metric_names: tuple[str, ...] | None = None
@@ -548,6 +641,7 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         display_name = "V8 snapshotless"
         sentinel_prefix = "CHROMIUM_WASM_M2_V8_JS"
         result_values = V8_SNAPSHOTLESS_RESULT_VALUES
+        numeric_names = V8_SNAPSHOTLESS_RESULT_NUMERIC_NAMES
     elif name == "shared_memory":
         display_name = "shared-memory"
         sentinel_prefix = "CHROMIUM_WASM_M1_SHARED_MEMORY"
@@ -572,6 +666,8 @@ def validate_case_stdout(name: str, stdout: str) -> None:
     )
     if name == "tasks":
         _validate_task_result(result_prefix, numeric_values)
+    elif name == "v8_snapshotless":
+        _validate_v8_snapshotless_result(result_prefix, numeric_values)
 
     for marker in (runtime_start, runtime_end, pass_sentinel):
         if lines.count(marker) != 1:
