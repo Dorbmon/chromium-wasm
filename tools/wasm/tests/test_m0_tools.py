@@ -77,20 +77,28 @@ V8_BASE_RESULT_LINE = (
     )
 )
 V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES = {
-    "snapshot_bytes": "288804",
-    "snapshot_create_ms": "1981",
-    "isolate_runs_ms": "25",
-    "runtime_ms": "2015",
+    "native_callback_calls": "6",
+    "feature_cycles": "3",
+    "gc_cycles": "3",
+    "module_cycles": "3",
+    "module_resolve_calls": "3",
+    "timer_delay_ms": "25",
+    "timer_elapsed_us": "25581",
+    "timer_cycles": "1",
+    "snapshot_bytes": "288812",
+    "snapshot_create_ms": "1965",
+    "isolate_runs_ms": "71",
+    "runtime_ms": "2043",
     "v8_heap_total_max_sampled_bytes": "786432",
-    "v8_heap_used_max_sampled_bytes": "98800",
+    "v8_heap_used_max_sampled_bytes": "120368",
     "v8_heap_physical_max_sampled_bytes": "786432",
     "v8_malloced_max_sampled_bytes": "32812",
-    "v8_peak_malloced_bytes": "49204",
-    "v8_external_max_sampled_bytes": "0",
+    "v8_peak_malloced_bytes": "98576",
+    "v8_external_max_sampled_bytes": "2097189",
     "v8_heap_limit_bytes": "834666496",
-    "v8_total_allocated_max_per_isolate_bytes": "1303116",
-    "v8_shared_read_only_used_bytes": "0",
-    "array_buffer_peak_bytes": "0",
+    "v8_total_allocated_max_per_isolate_bytes": "4334152",
+    "v8_shared_read_only_used_bytes": "1764660",
+    "array_buffer_peak_bytes": "2097168",
     "wasm_linear_initial_bytes": "67108864",
     "wasm_linear_after_cycle_1_bytes": "598999040",
     "wasm_linear_after_cycle_2_bytes": "598999040",
@@ -109,6 +117,10 @@ V8_SNAPSHOTLESS_RESULT_LINE = (
         f"{key}={value}"
         for key, value in V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES.items()
     )
+)
+V8_SNAPSHOTLESS_STAGE_LINES = tuple(
+    f"CHROMIUM_WASM_M2_V8_JS:STAGE name={name}"
+    for name in serve.V8_SNAPSHOTLESS_STAGE_NAMES
 )
 SHARED_MEMORY_RESULT_LINE = (
     "CHROMIUM_WASM_M1_SHARED_MEMORY:RESULT "
@@ -639,6 +651,7 @@ class NodeRunnerTest(unittest.TestCase):
         stdout = "\n".join(
             (
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+                *V8_SNAPSHOTLESS_STAGE_LINES,
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
                 V8_SNAPSHOTLESS_RESULT_LINE,
                 "CHROMIUM_WASM_M2_V8_JS:PASS",
@@ -672,14 +685,30 @@ class NodeRunnerTest(unittest.TestCase):
                 )
         for old, new in (
             ("target=arm", "target=wasm"),
-            ("runtime_ms=2015", "runtime_ms=1"),
+            ("feature_cycles=3", "feature_cycles=2"),
+            ("native_callback_calls=6", "native_callback_calls=5"),
+            ("gc_cycles=3", "gc_cycles=2"),
+            ("module_cycles=3", "module_cycles=2"),
+            ("module_resolve_calls=3", "module_resolve_calls=2"),
+            ("timer_delay_ms=25", "timer_delay_ms=24"),
+            ("timer_elapsed_us=25581", "timer_elapsed_us=24999"),
+            ("timer_cycles=1", "timer_cycles=2"),
+            ("runtime_ms=2043", "runtime_ms=1"),
             (
-                "v8_heap_used_max_sampled_bytes=98800",
+                "v8_heap_used_max_sampled_bytes=120368",
                 "v8_heap_used_max_sampled_bytes=999999",
             ),
             (
                 "wasm_linear_peak_bytes=598999040",
                 "wasm_linear_peak_bytes=1",
+            ),
+            (
+                "array_buffer_peak_bytes=2097168",
+                "array_buffer_peak_bytes=1",
+            ),
+            (
+                "v8_external_max_sampled_bytes=2097189",
+                "v8_external_max_sampled_bytes=1",
             ),
             (
                 V8_SNAPSHOTLESS_RESULT_LINE,
@@ -700,6 +729,30 @@ class NodeRunnerTest(unittest.TestCase):
                     stdout.replace(old, new, 1),
                     "",
                     "v8_snapshotless",
+                )
+        first_stage = V8_SNAPSHOTLESS_STAGE_LINES[0]
+        second_stage = V8_SNAPSHOTLESS_STAGE_LINES[1]
+        for invalid_stdout in (
+            stdout.replace(first_stage, "", 1),
+            stdout.replace(first_stage, f"{first_stage}\n{first_stage}", 1),
+            stdout.replace(first_stage, f"{first_stage} unexpected", 1),
+            stdout.replace(
+                f"{first_stage}\n{second_stage}",
+                f"{second_stage}\n{first_stage}",
+                1,
+            ),
+            stdout.replace(
+                f"CHROMIUM_WASM_M2_V8_JS:RUNTIME_START\n{first_stage}",
+                f"{first_stage}\nCHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+                1,
+            ),
+        ):
+            with (
+                self.subTest(invalid_stage_output=invalid_stdout),
+                self.assertRaises(M0Error),
+            ):
+                run_node_smoke.validate_streams(
+                    invalid_stdout, "", "v8_snapshotless"
                 )
         with self.assertRaises(M0Error):
             run_node_smoke.validate_streams(
@@ -1416,6 +1469,7 @@ class BrowserRunnerTest(unittest.TestCase):
             },
             "stdout": [
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+                *V8_SNAPSHOTLESS_STAGE_LINES,
                 "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
                 V8_SNAPSHOTLESS_RESULT_LINE,
                 "CHROMIUM_WASM_M2_V8_JS:PASS",
@@ -1439,6 +1493,7 @@ class BrowserRunnerTest(unittest.TestCase):
                 **result,
                 "stdout": [
                     "CHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+                    *V8_SNAPSHOTLESS_STAGE_LINES,
                     "CHROMIUM_WASM_M2_V8_JS:RUNTIME_END",
                     V8_SNAPSHOTLESS_RESULT_LINE.replace(
                         requirement, "<missing>", 1
@@ -1472,6 +1527,14 @@ class BrowserRunnerTest(unittest.TestCase):
                 )
         for old, new in (
             ("simulator=arm", "simulator=unsupported"),
+            ("feature_cycles=3", "feature_cycles=2"),
+            ("native_callback_calls=6", "native_callback_calls=5"),
+            ("gc_cycles=3", "gc_cycles=2"),
+            ("module_cycles=3", "module_cycles=2"),
+            ("module_resolve_calls=3", "module_resolve_calls=2"),
+            ("timer_delay_ms=25", "timer_delay_ms=24"),
+            ("timer_elapsed_us=25581", "timer_elapsed_us=24999"),
+            ("timer_cycles=1", "timer_cycles=2"),
             (
                 "v8_heap_total_max_sampled_bytes=786432",
                 "v8_heap_total_max_sampled_bytes=999999999",
@@ -1479,6 +1542,14 @@ class BrowserRunnerTest(unittest.TestCase):
             (
                 "v8_malloced_max_sampled_bytes=32812",
                 "v8_malloced_max_sampled_bytes=999999",
+            ),
+            (
+                "array_buffer_peak_bytes=2097168",
+                "array_buffer_peak_bytes=1",
+            ),
+            (
+                "v8_external_max_sampled_bytes=2097189",
+                "v8_external_max_sampled_bytes=1",
             ),
             (
                 V8_SNAPSHOTLESS_RESULT_LINE,
@@ -1499,6 +1570,39 @@ class BrowserRunnerTest(unittest.TestCase):
             }
             with (
                 self.subTest(replacement=new),
+                self.assertRaises(M0Error),
+            ):
+                run_browser_smoke.validate_result(
+                    invalid_result, "v8_snapshotless"
+                )
+        valid_stdout = "\n".join(result["stdout"])
+        first_stage = V8_SNAPSHOTLESS_STAGE_LINES[0]
+        second_stage = V8_SNAPSHOTLESS_STAGE_LINES[1]
+        for invalid_stdout in (
+            valid_stdout.replace(first_stage, "", 1),
+            valid_stdout.replace(
+                first_stage, f"{first_stage}\n{first_stage}", 1
+            ),
+            valid_stdout.replace(
+                first_stage, f"{first_stage} unexpected", 1
+            ),
+            valid_stdout.replace(
+                f"{first_stage}\n{second_stage}",
+                f"{second_stage}\n{first_stage}",
+                1,
+            ),
+            valid_stdout.replace(
+                f"CHROMIUM_WASM_M2_V8_JS:RUNTIME_START\n{first_stage}",
+                f"{first_stage}\nCHROMIUM_WASM_M2_V8_JS:RUNTIME_START",
+                1,
+            ),
+        ):
+            invalid_result = {
+                **result,
+                "stdout": invalid_stdout.splitlines(),
+            }
+            with (
+                self.subTest(invalid_stage_output=invalid_stdout),
                 self.assertRaises(M0Error),
             ):
                 run_browser_smoke.validate_result(

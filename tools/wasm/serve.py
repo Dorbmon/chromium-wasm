@@ -240,13 +240,25 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
     "bigint": "ok",
     "lookup_pair": "ok",
     "fp_calls": "ok",
+    "classes": "ok",
+    "exceptions": "js_and_native",
+    "stacks": "js_and_native_frames",
+    "promises": "explicit_checkpoint",
+    "async": "ok",
+    "proxy": "ok",
+    "typed_arrays": "ok",
+    "native_callback": "ok",
+    "gc_stress": "ok",
+    "gc_reclamation": "verified_after_isolate_disposal",
+    "modules": "graph_tla",
+    "timers": "delayed_foreground",
     "startup_snapshot": "runtime_generated",
     "external_startup_data": "off",
     "snapshot_anchor": "retained_during_cycles",
     "isolate": "ordinary",
     "lifecycle_cycles": "3",
     "metrics_scope": "ordinary_isolates",
-    "heap_sampling": "end_of_each_cycle",
+    "heap_sampling": "feature_gc_and_cycle",
     "i18n": "off",
     "host": "wasm32",
     "target": "arm",
@@ -255,6 +267,14 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
     "version": "15.0.245.21",
 }
 V8_SNAPSHOTLESS_RESULT_NUMERIC_NAMES = (
+    "native_callback_calls",
+    "feature_cycles",
+    "gc_cycles",
+    "module_cycles",
+    "module_resolve_calls",
+    "timer_delay_ms",
+    "timer_elapsed_us",
+    "timer_cycles",
     "snapshot_bytes",
     "snapshot_create_ms",
     "isolate_runs_ms",
@@ -282,6 +302,35 @@ V8_SNAPSHOTLESS_RESULT_REQUIREMENTS = (
         f"{key}={value}"
         for key, value in V8_SNAPSHOTLESS_RESULT_VALUES.items()
     ),
+)
+V8_SNAPSHOTLESS_STAGE_NAMES = (
+    "platform_create_begin",
+    "platform_create_end",
+    "platform_initialize_end",
+    "v8_initialize_end",
+    "snapshot_creator_begin",
+    "snapshot_create_begin",
+    "snapshot_create_end",
+    "ordinary_isolate_begin",
+    "script_compile_end",
+    "script_run_end",
+    "microtask_checkpoint_end",
+    "module_graph_end",
+    "gc_stress_end",
+    "delayed_task_end",
+    "ordinary_isolate_dispose_end",
+    "ordinary_isolate_begin",
+    "script_compile_end",
+    "script_run_end",
+    "microtask_checkpoint_end",
+    "module_graph_end",
+    "ordinary_isolate_dispose_end",
+    "ordinary_isolate_begin",
+    "script_compile_end",
+    "script_run_end",
+    "microtask_checkpoint_end",
+    "module_graph_end",
+    "ordinary_isolate_dispose_end",
 )
 
 SHARED_MEMORY_RESULT_VALUES = {
@@ -554,6 +603,25 @@ def _validate_task_result(prefix: str, values: dict[str, int]) -> None:
 def _validate_v8_snapshotless_result(
     prefix: str, values: dict[str, int]
 ) -> None:
+    expected_cycles = int(
+        V8_SNAPSHOTLESS_RESULT_VALUES["lifecycle_cycles"]
+    )
+    if values["feature_cycles"] != expected_cycles:
+        raise M0Error(f"{prefix} feature cycle count is inconsistent")
+    if values["native_callback_calls"] != 2 * values["feature_cycles"]:
+        raise M0Error(f"{prefix} native callback count is inconsistent")
+    if values["gc_cycles"] != 3:
+        raise M0Error(f"{prefix} GC cycle count is inconsistent")
+    if values["module_cycles"] != values["feature_cycles"]:
+        raise M0Error(f"{prefix} module cycle count is inconsistent")
+    if values["module_resolve_calls"] != values["module_cycles"]:
+        raise M0Error(f"{prefix} module resolver count is inconsistent")
+    if values["timer_cycles"] != 1:
+        raise M0Error(f"{prefix} timer cycle count is inconsistent")
+    if values["timer_delay_ms"] != 25:
+        raise M0Error(f"{prefix} timer delay is inconsistent")
+    if values["timer_elapsed_us"] < values["timer_delay_ms"] * 1000:
+        raise M0Error(f"{prefix} delayed timer fired early")
     for name in (
         "snapshot_bytes",
         "snapshot_create_ms",
@@ -598,6 +666,15 @@ def _validate_v8_snapshotless_result(
         > values["v8_peak_malloced_bytes"]
     ):
         raise M0Error(f"{prefix} V8 malloc accounting is inconsistent")
+    if values["array_buffer_peak_bytes"] < 32 * 65536:
+        raise M0Error(f"{prefix} ArrayBuffer stress allocation is missing")
+    if (
+        values["v8_external_max_sampled_bytes"]
+        < values["array_buffer_peak_bytes"]
+    ):
+        raise M0Error(
+            f"{prefix} V8 external-memory accounting is inconsistent"
+        )
     linear_samples = (
         values["wasm_linear_initial_bytes"],
         values["wasm_linear_after_cycle_1_bytes"],
@@ -615,6 +692,32 @@ def _validate_v8_snapshotless_result(
         raise M0Error(
             f"{prefix} Wasm linear memory did not stabilize after warmup"
         )
+
+
+def _validate_v8_snapshotless_stages(
+    prefix: str,
+    lines: list[str],
+    runtime_start_index: int,
+    runtime_end_index: int,
+) -> None:
+    stage_prefix = f"{prefix}:STAGE"
+    expected = [
+        f"{stage_prefix} name={name}"
+        for name in V8_SNAPSHOTLESS_STAGE_NAMES
+    ]
+    indexed_stages = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if line.startswith(stage_prefix)
+    ]
+    actual = [line for _, line in indexed_stages]
+    if actual != expected:
+        raise M0Error(f"{prefix} stage sequence is inconsistent")
+    if any(
+        not runtime_start_index < index < runtime_end_index
+        for index, _ in indexed_stages
+    ):
+        raise M0Error(f"{prefix} stages escaped the runtime interval")
 
 
 def validate_case_stdout(name: str, stdout: str) -> None:
@@ -683,6 +786,14 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         pass_index = lines.index(pass_sentinel)
     except (StopIteration, ValueError) as exc:
         raise M0Error(f"{display_name} runtime markers are incomplete") from exc
+
+    if name == "v8_snapshotless":
+        _validate_v8_snapshotless_stages(
+            sentinel_prefix,
+            lines,
+            runtime_start_index,
+            runtime_end_index,
+        )
 
     if metric_names is None:
         if not (
