@@ -46,6 +46,13 @@ typedef pid_t ProcessHandle;
 typedef pid_t ProcessId;
 const ProcessHandle kNullProcessHandle = 0;
 const ProcessId kNullProcessId = 0;
+#elif BUILDFLAG(IS_WASM)
+// A Wasm module is one process. Handles and IDs are process-local tokens, not
+// host browser or worker process identifiers.
+typedef int32_t ProcessHandle;
+typedef int32_t ProcessId;
+const ProcessHandle kNullProcessHandle = 0;
+const ProcessId kNullProcessId = 0;
 #endif  // BUILDFLAG(IS_WIN)
 
 // To print ProcessIds portably use CrPRIdPid (based on PRIuS and friends from

@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <emscripten/heap.h>
+#include <emscripten/html5.h>
 #include <emscripten/threading.h>
+#include <emscripten/version.h>
 
 #include <algorithm>
 #include <array>
@@ -11,21 +14,29 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "base/base_paths.h"
+#include "base/byte_size.h"
+#include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/memory/page_size.h"
 #include "base/path_service.h"
+#include "base/process/launch.h"
+#include "base/process/process.h"
+#include "base/process/process_handle.h"
 #include "base/rand_util.h"
 #include "base/synchronization/condition_variable.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/system/sys_info.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_local_storage.h"
 #include "base/time/time.h"
@@ -381,6 +392,189 @@ void TestPathsAndFiles() {
   Require(base::DeletePathRecursively(workspace),
           "temp_workspace_cleanup_failed");
   Require(!base::PathExists(workspace), "temp_workspace_still_exists");
+}
+
+void TestProcessIdentity() {
+  BeginPhase("process_identity");
+
+  const base::ProcessId process_id = base::GetCurrentProcId();
+  const base::ProcessHandle process_handle = base::GetCurrentProcessHandle();
+  Require(process_id != base::kNullProcessId &&
+              base::GetCurrentProcId() == process_id,
+          "current_process_id");
+  Require(process_handle != base::kNullProcessHandle &&
+              base::GetCurrentProcessHandle() == process_handle,
+          "current_process_handle");
+  Require(base::GetProcId(process_handle) == process_id,
+          "current_process_handle_id");
+  Require(base::GetParentProcessId(process_handle) == base::kNullProcessId,
+          "current_process_parent");
+
+  const base::UniqueProcId first_unique_id = base::GetUniqueIdForProcess();
+  const base::UniqueProcId second_unique_id = base::GetUniqueIdForProcess();
+  Require(first_unique_id == second_unique_id &&
+              first_unique_id.GetUnsafeValue() == process_id,
+          "unique_process_id");
+
+  base::Process current = base::Process::Current();
+  Require(current.IsValid() && current.is_current() &&
+              current.Handle() == process_handle && current.Pid() == process_id,
+          "process_current");
+
+  base::Process duplicate = current.Duplicate();
+  Require(duplicate.IsValid() && duplicate.is_current() &&
+              duplicate.Handle() == process_handle &&
+              duplicate.Pid() == process_id,
+          "process_duplicate");
+  const base::ProcessHandle released_handle = duplicate.Release();
+  Require(released_handle == process_handle && !duplicate.IsValid() &&
+              duplicate.Handle() == base::kNullProcessHandle &&
+              duplicate.Pid() == base::kNullProcessId,
+          "process_release");
+
+  base::Process released(released_handle);
+  Require(released.IsValid() && released.is_current() &&
+              released.Pid() == process_id,
+          "process_released_handle");
+  released.Close();
+  Require(!released.IsValid() && !released.is_current() &&
+              released.Handle() == base::kNullProcessHandle &&
+              released.Pid() == base::kNullProcessId,
+          "process_close");
+  Require(current.IsValid(), "process_duplicate_close_affected_current");
+
+  base::Process reopened = base::Process::Open(process_id);
+  Require(reopened.IsValid() && reopened.is_current() &&
+              reopened.Pid() == process_id,
+          "process_open_current");
+  reopened.Close();
+
+  const base::ProcessId non_current_id =
+      process_id == std::numeric_limits<base::ProcessId>::max()
+          ? process_id - 1
+          : process_id + 1;
+  Require(non_current_id != process_id &&
+              non_current_id != base::kNullProcessId,
+          "non_current_process_id_selection");
+  Require(base::GetProcId(non_current_id) == base::kNullProcessId &&
+              base::GetParentProcessId(non_current_id) ==
+                  static_cast<base::ProcessId>(-1),
+          "non_current_process_identity");
+  base::Process non_current = base::Process::Open(non_current_id);
+  Require(!non_current.IsValid() && !non_current.is_current() &&
+              non_current.Pid() == base::kNullProcessId,
+          "process_open_non_current");
+  Require(!base::Process::OpenWithExtraPrivileges(non_current_id).IsValid(),
+          "process_open_non_current_extra_privileges");
+  Require(current.CreationTime().is_null(), "process_creation_time_available");
+  Require(!base::Process::CanSetPriority() &&
+              current.GetPriority() ==
+                  base::Process::Priority::kUserBlocking &&
+              !current.SetPriority(base::Process::Priority::kBestEffort) &&
+              current.GetOSPriority() == -1,
+          "process_priority_supported");
+  int process_exit_code = 123;
+  Require(!current.Terminate(0, false) &&
+              !current.WaitForExit(&process_exit_code) &&
+              !current.WaitForExitWithTimeout(base::Milliseconds(1),
+                                              &process_exit_code) &&
+              process_exit_code == 123,
+          "process_control_supported");
+
+  const base::CommandLine unsupported_command(base::CommandLine::NO_PROGRAM);
+  base::Process launched =
+      base::LaunchProcess(unsupported_command, base::LaunchOptions());
+  Require(!launched.IsValid() && !launched.is_current() &&
+              launched.Pid() == base::kNullProcessId,
+          "process_launch_not_explicitly_unsupported");
+  std::string process_output = "unexpected";
+  Require(!base::GetAppOutput(unsupported_command, &process_output) &&
+              process_output.empty(),
+          "process_stdout_capture_supported");
+  process_output = "unexpected";
+  Require(!base::GetAppOutputAndError(unsupported_command, &process_output) &&
+              process_output.empty(),
+          "process_output_capture_supported");
+  process_output = "unexpected";
+  process_exit_code = 123;
+  Require(!base::GetAppOutputWithExitCode(
+              unsupported_command, &process_output, &process_exit_code) &&
+              process_output.empty() && process_exit_code == -1,
+          "process_exit_capture_supported");
+
+  current.Close();
+  Require(!current.IsValid(), "process_current_close");
+  Require(base::GetCurrentProcId() == process_id &&
+              base::GetCurrentProcessHandle() == process_handle,
+          "process_identity_changed_after_close");
+}
+
+void TestSysInfo() {
+  BeginPhase("sys_info");
+
+  constexpr size_t kWasmPageSize = 65536;
+  const int processor_count = base::SysInfo::NumberOfProcessors();
+  Require(processor_count >= 1 &&
+              base::SysInfo::NumberOfProcessors() == processor_count,
+          "sys_info_processor_count");
+  Require(base::GetPageSize() == kWasmPageSize,
+          "sys_info_page_size");
+  Require(base::SysInfo::VMAllocationGranularity() == kWasmPageSize,
+          "sys_info_allocation_granularity");
+
+  const size_t heap_size = emscripten_get_heap_size();
+  const size_t heap_max = emscripten_get_heap_max();
+  Require(heap_size >= kWasmPageSize &&
+              heap_size % kWasmPageSize == 0 &&
+              heap_max >= heap_size && heap_max % kWasmPageSize == 0,
+          "sys_info_wasm_heap");
+  Require(base::SysInfo::AmountOfVirtualMemory().InBytes() == heap_max &&
+              base::SysInfo::AmountOfVirtualMemory().is_positive(),
+          "sys_info_virtual_memory");
+  Require(base::SysInfo::AmountOfTotalPhysicalMemory().is_zero() &&
+              base::SysInfo::AmountOfAvailablePhysicalMemory().is_zero(),
+          "sys_info_physical_memory_claimed_available");
+
+  const base::FilePath memfs_path("/tmp");
+  Require(!base::SysInfo::AmountOfFreeDiskSpace(memfs_path).has_value() &&
+              !base::SysInfo::AmountOfTotalDiskSpace(memfs_path).has_value() &&
+              !base::SysInfo::AmountOfDiskSpace(memfs_path).has_value(),
+          "sys_info_disk_space_claimed_available");
+
+  Require(base::SysInfo::OperatingSystemName() == "Emscripten",
+          "sys_info_os_name");
+  Require(base::SysInfo::OperatingSystemArchitecture() == "wasm32",
+          "sys_info_os_architecture");
+  Require(base::SysInfo::ProcessCPUArchitecture() == "wasm32",
+          "sys_info_process_architecture");
+  Require(base::SysInfo::CPUModelName().empty(),
+          "sys_info_cpu_model_claimed_available");
+  Require(!base::SysInfo::OperatingSystemVersion().empty(),
+          "sys_info_os_version");
+  int32_t major_version = -1;
+  int32_t minor_version = -1;
+  int32_t bugfix_version = -1;
+  base::SysInfo::OperatingSystemVersionNumbers(
+      &major_version, &minor_version, &bugfix_version);
+  Require(major_version == __EMSCRIPTEN_MAJOR__ &&
+              minor_version == __EMSCRIPTEN_MINOR__ &&
+              bugfix_version == __EMSCRIPTEN_TINY__,
+          "sys_info_os_version_numbers");
+
+  const double performance_before = emscripten_performance_now();
+  const base::TimeDelta uptime = base::SysInfo::Uptime();
+  const double performance_after = emscripten_performance_now();
+  const double uptime_milliseconds = uptime.InMillisecondsF();
+  Require(uptime.is_positive() &&
+              uptime_milliseconds + 1.0 >= performance_before &&
+              uptime_milliseconds <= performance_after + 1.0 &&
+              uptime < base::Days(3650),
+          "sys_info_uptime_value");
+  base::PlatformThread::Sleep(base::Milliseconds(10));
+  const base::TimeDelta later_uptime = base::SysInfo::Uptime();
+  Require(later_uptime > uptime &&
+              later_uptime - uptime < base::Seconds(2),
+          "sys_info_uptime_progress");
 }
 
 struct TlsPayload {
@@ -1073,6 +1267,8 @@ int main() {
   TestWaitableEvent();
   TestBidirectionalHandshake();
   TestPathsAndFiles();
+  TestProcessIdentity();
+  TestSysInfo();
 
   std::fprintf(stdout, "%s:RUNTIME_END\n", kPrefix);
   std::fprintf(
@@ -1092,7 +1288,17 @@ int main() {
       "file_rename_stat=ok "
       "directories=ok enumeration=ok file_errors=ok "
       "parent_traversal=denied file_lock=invalid_operation "
-      "closed_fd=ebadf cleanup=ok browser_main_free=ok\n",
+      "closed_fd=ebadf cleanup=ok process_identity=ok "
+      "process_handle=ok unique_proc_id=ok process_current=ok "
+      "process_duplicate=ok process_release_close=ok "
+      "process_open_noncurrent=invalid process_control=unsupported "
+      "process_launch=unsupported process_output=unsupported "
+      "sysinfo_processors=ok page_size=65536 "
+      "allocation_granularity=65536 wasm_heap=current_ok "
+      "virtual_memory=wasm_max physical_memory=unavailable "
+      "disk_space=unavailable os_name=emscripten os_arch=wasm32 "
+      "cpu_arch=wasm32 cpu_model=unavailable uptime=runtime_clock "
+      "browser_main_free=ok\n",
       kPrefix);
   std::fprintf(stdout, "%s:PASS\n", kPrefix);
   std::fflush(stdout);
