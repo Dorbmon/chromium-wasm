@@ -12,6 +12,7 @@ const CALLBACK_INPUT: u64 = 0x0123_4567_89ab_cdef;
 const CALLBACK_MASK: u64 = 0xa5a5_5a5a_dead_beef;
 const CALLBACK_WORKER_VALUE: u32 = 0x1357_9bdf;
 const EXPECTED_MUTEX_VALUE: u32 = 32;
+const EXPECTED_PANIC_MARKER: &str = "chromium_wasm_m1_expected_panic";
 
 static DROP_PROBE_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -67,6 +68,9 @@ mod ffi {
 
         #[cxx_name = "DropProbeCount"]
         fn drop_probe_count() -> u32;
+
+        #[cxx_name = "TriggerExpectedPanic"]
+        fn trigger_expected_panic();
     }
 
     unsafe extern "C++" {
@@ -220,4 +224,9 @@ pub fn make_drop_probe(marker: u64) -> Box<DropProbe> {
 
 pub fn drop_probe_count() -> u32 {
     DROP_PROBE_COUNT.load(Ordering::SeqCst)
+}
+
+#[inline(never)]
+pub fn trigger_expected_panic() {
+    panic!("{EXPECTED_PANIC_MARKER}");
 }

@@ -49,3 +49,12 @@ executable("m1_rust_smoke") {
   use_libcxx_modules = false
   configs -= [ "//build/config/compiler:runtime_library" ]
 }
+
+executable("m1_rust_panic_negative") {
+  sources = [ "m1_rust_panic_negative.cc" ]
+  deps = [ ":m1_rust_bridge" ]
+
+  no_default_deps = true
+  use_libcxx_modules = false
+  configs -= [ "//build/config/compiler:runtime_library" ]
+}
