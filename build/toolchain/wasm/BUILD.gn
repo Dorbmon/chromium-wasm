@@ -15,7 +15,7 @@ gcc_toolchain("wasm") {
   _llvm_bin = rebase_path("//third_party/emsdk/upstream/bin", root_build_dir)
 
   cc = "$_driver emcc"
-  cxx = "$_driver em++"
+  cxx = _driver
   ar = "$_llvm_bin/llvm-ar"
   nm = "$_llvm_bin/llvm-nm"
   ld = cxx
@@ -45,6 +45,7 @@ gcc_toolchain("wasm") {
     # We do not support clang profiling in the WASM toolchains.
     use_clang_profiling = false
     use_clang_coverage = false
+    toolchain_supports_rust_thin_lto = false
 
     # WASM builds cannot currently use the custom libc++ because
     # there are custom entry points and defines in the one that is

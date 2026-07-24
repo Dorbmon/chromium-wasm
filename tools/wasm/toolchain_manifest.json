@@ -152,6 +152,7 @@
     "target_os = \"emscripten\"",
     "target_cpu = \"wasm\"",
     "enable_chromium_wasm_port = true",
+    "enable_rust = true",
     "is_debug = false",
     "symbol_level = 1",
     "is_component_build = false",

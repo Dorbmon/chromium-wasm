@@ -991,6 +991,12 @@ config("compiler") {
   if (rust_abi_target != "") {
     rustflags += [ "--target=$rust_abi_target" ]
   }
+  if (is_wasm) {
+    # Rust's Emscripten target defaults to single-threaded code generation.
+    # Enabling Wasm atomics makes rustc use the shared-memory ABI and selects
+    # the pthread-backed synchronization paths in the locally-built stdlib.
+    rustflags += [ "-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals" ]
+  }
   if (!use_thin_lto || !toolchain_supports_rust_thin_lto) {
     # Don't include bitcode if it won't be used.
     rustflags += [ "-Cembed-bitcode=no" ]

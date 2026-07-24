@@ -31,7 +31,7 @@ declare_args() {
   #   (which may be used outside of Chromium build)
   # * `enable_rust` should *not* be consulted in other Chromium directories
   #   (including `//base`, `//net`, etc.)
-  enable_rust = build_with_chromium
+  enable_rust = build_with_chromium || enable_chromium_wasm_port
 
   # The chromium prelude crate provides the `chromium::import!` macro which
   # is needed to depend on first-party rust libraries. Third-party libraries
@@ -143,7 +143,7 @@ use_chromium_rust_toolchain = rust_sysroot_absolute == ""
 rustc_nightly_capability = use_chromium_rust_toolchain || build_with_chromium
 
 # Platform support for the Rust toolchain.
-chromium_toolchain_supports_platform = !is_wasm
+chromium_toolchain_supports_platform = !is_wasm || enable_chromium_wasm_port
 custom_toolchain_supports_platform = true
 
 # Not all target triples (GN toolchains) are supported by the Rust compiler.
@@ -211,7 +211,10 @@ if (enable_rust) {
 # (see '*_toolchain_supports_platform above') to enable experimentation with
 # other toolchains.
 rust_abi_target = ""
-if (is_linux || is_chromeos) {
+if (is_wasm) {
+  assert(current_cpu == "wasm")
+  rust_abi_target = "wasm32-unknown-emscripten"
+} else if (is_linux || is_chromeos) {
   if (current_cpu == "arm64") {
     rust_abi_target = "aarch64-unknown-linux-gnu"
   } else if (current_cpu == "x86") {
@@ -396,6 +399,8 @@ if (current_cpu == "x86") {
   rust_target_arch = "riscv64"
 } else if (current_cpu == "loong64") {
   rust_target_arch = "loongarch64"
+} else if (current_cpu == "wasm") {
+  rust_target_arch = "wasm32"
 }
 
 assert(!toolchain_has_rust || rust_target_arch != "")

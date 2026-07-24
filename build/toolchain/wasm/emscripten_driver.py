@@ -15,6 +15,19 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EMSDK_ROOT = REPO_ROOT / "third_party/emsdk"
 SUPPORTED_TOOLS = frozenset(("emcc", "em++"))
+DEFAULT_TOOL = "em++"
+
+
+def split_tool_and_args(arguments: list[str]) -> tuple[str, list[str]]:
+    """Return the requested compiler and its arguments.
+
+    GN invokes the driver with an explicit `emcc` selector for C sources. C++
+    and Rust linker invocations use the selectorless form so rustc receives a
+    linker path containing no embedded command-line arguments.
+    """
+    if arguments and arguments[0] in SUPPORTED_TOOLS:
+        return arguments[0], arguments[1:]
+    return DEFAULT_TOOL, arguments
 
 
 def pinned_environment() -> dict[str, str]:
@@ -70,14 +83,8 @@ def pinned_environment() -> dict[str, str]:
 
 
 def main() -> int:
-    if len(sys.argv) < 2 or sys.argv[1] not in SUPPORTED_TOOLS:
-        supported = ", ".join(sorted(SUPPORTED_TOOLS))
-        print(
-            f"usage: {Path(sys.argv[0]).name} {{{supported}}} [args ...]",
-            file=sys.stderr,
-        )
-        return 2
-    tool = EMSDK_ROOT / "upstream/emscripten" / sys.argv[1]
+    tool_name, arguments = split_tool_and_args(sys.argv[1:])
+    tool = EMSDK_ROOT / "upstream/emscripten" / tool_name
     if not tool.is_file():
         print("pinned Emscripten SDK is not installed", file=sys.stderr)
         return 1
@@ -88,7 +95,7 @@ def main() -> int:
         return 1
     os.execve(
         tool,
-        [str(tool), *sys.argv[2:]],
+        [str(tool), *arguments],
         environment,
     )
 

@@ -48,6 +48,7 @@ class ManifestTest(unittest.TestCase):
         arguments = gn_args_text(manifest)
         self.assertIn('target_os = "emscripten"\n', arguments)
         self.assertIn("enable_chromium_wasm_port = true\n", arguments)
+        self.assertIn("enable_rust = true\n", arguments)
         self.assertIn("is_component_build = false\n", arguments)
         self.assertIn("use_custom_libcxx = false\n", arguments)
 
@@ -125,6 +126,22 @@ class BootstrapTest(unittest.TestCase):
         self.assertEqual(
             environment["EM_CACHE"],
             str(emscripten_driver.REPO_ROOT / "out/wasm-emscripten-cache"),
+        )
+
+    def test_compiler_driver_selects_c_or_defaults_to_cxx(self) -> None:
+        self.assertEqual(
+            emscripten_driver.split_tool_and_args(["emcc", "-c", "input.c"]),
+            ("emcc", ["-c", "input.c"]),
+        )
+        self.assertEqual(
+            emscripten_driver.split_tool_and_args(
+                ["em++", "-c", "input.cc"]
+            ),
+            ("em++", ["-c", "input.cc"]),
+        )
+        self.assertEqual(
+            emscripten_driver.split_tool_and_args(["-c", "input.cc"]),
+            ("em++", ["-c", "input.cc"]),
         )
 
 

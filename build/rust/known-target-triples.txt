@@ -33,6 +33,7 @@ riscv64-linux-android
 riscv64gc-unknown-linux-gnu
 thumbv7neon-linux-androideabi
 thumbv7neon-unknown-linux-gnueabihf
+wasm32-unknown-emscripten
 x86_64-apple-darwin
 x86_64-apple-ios
 x86_64-apple-ios-macabi
