@@ -39,6 +39,11 @@ void ExtractPlatformHandlesFromSharedMemoryRegionHandle(
 #elif BUILDFLAG(IS_ANDROID)
   // This is a file descriptor. Same code as above, but separated for clarity.
   *extracted_handle = PlatformHandle(std::move(handle));
+#elif BUILDFLAG(IS_WASM)
+  // There is no native handle representation. Let `handle` release its
+  // process-local capability and leave both outputs invalid.
+  *extracted_handle = PlatformHandle();
+  *extracted_readonly_handle = PlatformHandle();
 #else
   *extracted_handle = PlatformHandle(std::move(handle.fd));
   *extracted_readonly_handle = PlatformHandle(std::move(handle.readonly_fd));
@@ -61,6 +66,8 @@ CreateSharedMemoryRegionHandleFromPlatformHandles(
 #elif BUILDFLAG(IS_ANDROID)
   DCHECK(!readonly_handle.is_valid());
   return handle.TakeFD();
+#elif BUILDFLAG(IS_WASM)
+  return {};
 #else
   return base::subtle::ScopedFDPair(handle.TakeFD(), readonly_handle.TakeFD());
 #endif
@@ -73,6 +80,9 @@ MojoResult UnwrapAndClonePlatformProcessHandle(
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
 
+#if BUILDFLAG(IS_WASM)
+  return MOJO_RESULT_UNIMPLEMENTED;
+#else
 #if BUILDFLAG(IS_WIN)
   base::ProcessHandle in_handle = reinterpret_cast<base::ProcessHandle>(
       static_cast<uintptr_t>(process_handle->value));
@@ -105,6 +115,7 @@ MojoResult UnwrapAndClonePlatformProcessHandle(
   process = base::Process(in_handle);
 #endif
   return MOJO_RESULT_OK;
+#endif
 }
 
 }  // namespace core

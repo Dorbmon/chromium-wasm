@@ -12,6 +12,7 @@ if (enable_chromium_wasm_port && target_os == "emscripten") {
   group("gn_all") {
     deps = [
       "//tools/wasm:m1_base_smoke($default_toolchain)",
+      "//mojo/core/embedder:embedder($default_toolchain)",
       "//tools/wasm:m1_shared_memory_smoke($default_toolchain)",
       "//wasm:hello_wasm($default_toolchain)",
     ]

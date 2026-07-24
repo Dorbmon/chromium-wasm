@@ -23,6 +23,7 @@ namespace mojo::core::ipcz_driver {
 
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 // Enumeration of supported region access modes.
 enum class BufferMode : uint32_t {
   kReadOnly,
@@ -85,6 +86,7 @@ CreateRegionHandleFromPlatformHandles(
   return base::subtle::ScopedFDPair(std::move(fd), std::move(readonly_fd));
 #endif
 }
+#endif
 
 }  // namespace
 
@@ -125,6 +127,9 @@ scoped_refptr<SharedBuffer> SharedBuffer::CreateForMojoWrapper(
     uint32_t size,
     const MojoSharedBufferGuid& mojo_guid,
     MojoPlatformSharedMemoryRegionAccessMode access) {
+#if BUILDFLAG(IS_WASM)
+  return nullptr;
+#else
   if (mojo_platform_handles.empty() || mojo_platform_handles.size() > 2) {
     return nullptr;
   }
@@ -166,6 +171,7 @@ scoped_refptr<SharedBuffer> SharedBuffer::CreateForMojoWrapper(
   }
 
   return base::MakeRefCounted<SharedBuffer>(std::move(region));
+#endif
 }
 
 void SharedBuffer::Close() {
@@ -179,6 +185,9 @@ bool SharedBuffer::IsSerializable() const {
 bool SharedBuffer::GetSerializedDimensions(Transport& transmitter,
                                            size_t& num_bytes,
                                            size_t& num_handles) {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   num_bytes = sizeof(BufferHeader);
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_FUCHSIA) || \
     BUILDFLAG(IS_ANDROID)
@@ -192,11 +201,15 @@ bool SharedBuffer::GetSerializedDimensions(Transport& transmitter,
   }
 #endif
   return true;
+#endif
 }
 
 bool SharedBuffer::Serialize(Transport& transmitter,
                              base::span<uint8_t> data,
                              base::span<PlatformHandle> handles) {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   if (!region_.IsValid()) {
     return false;
   }
@@ -238,12 +251,16 @@ bool SharedBuffer::Serialize(Transport& transmitter,
 #endif
 
   return true;
+#endif
 }
 
 // static
 scoped_refptr<SharedBuffer> SharedBuffer::Deserialize(
     base::span<const uint8_t> data,
     base::span<PlatformHandle> handles) {
+#if BUILDFLAG(IS_WASM)
+  return nullptr;
+#else
   if (data.size() < sizeof(BufferHeader) || handles.empty()) {
     return nullptr;
   }
@@ -292,6 +309,7 @@ scoped_refptr<SharedBuffer> SharedBuffer::Deserialize(
   }
 
   return base::MakeRefCounted<SharedBuffer>(std::move(*maybe_region));
+#endif
 }
 
 }  // namespace mojo::core::ipcz_driver

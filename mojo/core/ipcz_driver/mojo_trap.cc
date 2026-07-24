@@ -27,7 +27,19 @@ namespace {
 // A feature which enables a tentative fix for https://crbug.com/1468933, which
 // is caused by overly aggressive trap event suppression. Gated by a feature so
 // we can evaluate performance impact.
+#if !BUILDFLAG(IS_WASM)
 BASE_FEATURE(kFixDataPipeTrapBug, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
+
+bool FixDataPipeTrapBugIsEnabled() {
+#if BUILDFLAG(IS_WASM)
+  // M1 does not initialize FeatureList. Preserve the pinned feature's enabled
+  // default until full Chrome feature initialization is brought up.
+  return true;
+#else
+  return base::FeatureList::IsEnabled(kFixDataPipeTrapBug);
+#endif
+}
 
 // Translates Mojo signal conditions to equivalent IpczTrapConditions for any
 // portal used as a message pipe endpoint.
@@ -430,7 +442,7 @@ void MojoTrap::HandleEvent(const IpczTrapEvent& event) {
   if (trigger->data_pipe) {
     if (!PopulateEventForDataPipe(*trigger->data_pipe, trigger->signals,
                                   mojo_event) &&
-        !base::FeatureList::IsEnabled(kFixDataPipeTrapBug)) {
+        !FixDataPipeTrapBugIsEnabled()) {
       // Default behavior was at some point to return early here any time
       // PopulateEventForDataPipe returned false, effectively suppressing what
       // was deemed to be a spurious event. This rested on the incorrect

@@ -8,32 +8,44 @@ component("embedder") {
   public = [
     "configuration.h",
     "embedder.h",
-    "scoped_ipc_support.h",
   ]
-
-  sources = [
-    "embedder.cc",
-    "scoped_ipc_support.cc",
-  ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   defines = [ "IS_MOJO_CORE_EMBEDDER_IMPL" ]
 
-  public_deps = [
-    "//base",
-    "//mojo:buildflags",
-    "//mojo/core:embedder_internal",
-    "//mojo/public/cpp/platform",
-    "//third_party/ipcz/src:ipcz_chromium",
-  ]
-
-  deps = [
-    ":features",
-    "//mojo/public/c/system",
-  ]
+  if (is_wasm && enable_chromium_wasm_port) {
+    sources = [ "embedder_wasm.cc" ]
+    public_deps = [
+      "//base:base_wasm_primitives",
+      "//base:base_wasm_task_runtime",
+      "//mojo:buildflags",
+      "//mojo/core:embedder_internal",
+      "//mojo/public/c/system",
+      "//third_party/ipcz/src:ipcz_chromium",
+    ]
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  } else {
+    public += [ "scoped_ipc_support.h" ]
+    sources = [
+      "embedder.cc",
+      "scoped_ipc_support.cc",
+    ]
+    configs += [ "//build/config/compiler:wexit_time_destructors" ]
+    public_deps = [
+      "//base",
+      "//mojo:buildflags",
+      "//mojo/core:embedder_internal",
+      "//mojo/public/cpp/platform",
+      "//third_party/ipcz/src:ipcz_chromium",
+    ]
+    deps = [
+      ":features",
+      "//mojo/public/c/system",
+    ]
+  }
 }
 
+if (!(is_wasm && enable_chromium_wasm_port)) {
 component("features") {
   output_name = "mojo_core_embedder_features"
 
@@ -48,4 +60,5 @@ component("features") {
     "//base",
     "//mojo:buildflags",
   ]
+}
 }

@@ -28,9 +28,15 @@ namespace {
 constexpr int kGrowthFactor = 2;
 
 bool FixGeometricBufferGrowthIsEnabled() {
+#if BUILDFLAG(IS_WASM)
+  // M1 does not initialize FeatureList. Preserve the pinned feature's disabled
+  // default until full Chrome feature initialization is brought up.
+  return false;
+#else
   static const bool kIsEnabled =
       base::FeatureList::IsEnabled(kMojoFixGeometricBufferGrowth);
   return kIsEnabled;
+#endif
 }
 
 // Data pipe attachments come in two parts within a message's handle list: the

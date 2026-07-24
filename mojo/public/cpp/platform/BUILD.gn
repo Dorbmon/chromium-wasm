@@ -8,17 +8,25 @@ component("platform") {
   public = [
     "platform_channel.h",
     "platform_channel_endpoint.h",
-    "platform_channel_server_endpoint.h",
     "platform_handle.h",
     "platform_handle_internal.h",
   ]
 
-  sources = [
-    "platform_channel.cc",
-    "platform_channel_endpoint.cc",
-    "platform_channel_server_endpoint.cc",
-    "platform_handle.cc",
-  ]
+  if (is_wasm && enable_chromium_wasm_port) {
+    sources = [
+      "platform_channel_endpoint_wasm.cc",
+      "platform_channel_wasm.cc",
+      "platform_handle_wasm.cc",
+    ]
+  } else {
+    public += [ "platform_channel_server_endpoint.h" ]
+    sources = [
+      "platform_channel.cc",
+      "platform_channel_endpoint.cc",
+      "platform_channel_server_endpoint.cc",
+      "platform_handle.cc",
+    ]
+  }
 
   public_deps = [
     "//base",
@@ -26,7 +34,12 @@ component("platform") {
     "//mojo/public/c/system:headers",
   ]
 
-  deps = [ "//mojo/core/embedder:features" ]
+  if (is_wasm && enable_chromium_wasm_port) {
+    public_deps -= [ "//base" ]
+    public_deps += [ "//base:base_wasm_primitives" ]
+  } else {
+    deps = [ "//mojo/core/embedder:features" ]
+  }
 
   if (is_win || is_mac || (is_posix && !is_ios)) {
     public += [ "platform_channel_server.h" ]
@@ -64,7 +77,7 @@ component("platform") {
       "//third_party/fuchsia-sdk/sdk/pkg/fdio",
       "//third_party/fuchsia-sdk/sdk/pkg/zx",
     ]
-  } else {
+  } else if (!(is_wasm && enable_chromium_wasm_port)) {
     sources += [ "named_platform_channel.cc" ]
     public += [ "named_platform_channel.h" ]
   }
@@ -72,4 +85,9 @@ component("platform") {
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   defines = [ "IS_MOJO_CPP_PLATFORM_IMPL" ]
+
+  if (is_wasm && enable_chromium_wasm_port) {
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
 }

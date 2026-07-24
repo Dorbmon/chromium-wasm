@@ -4,16 +4,21 @@
 
 import("//build/buildflag_header.gni")
 import("//build_overrides/ipcz.gni")
+if (!(is_wasm && enable_chromium_wasm_port)) {
 import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/test.gni")
+}
 
 enable_multiprocess_tests = is_linux
 
+if (!(is_wasm && enable_chromium_wasm_port)) {
 buildflag_header("test_buildflags") {
   header = "test_buildflags.h"
   flags = [ "ENABLE_IPCZ_MULTIPROCESS_TESTS=$enable_multiprocess_tests" ]
 }
+}
 
+if (!(is_wasm && enable_chromium_wasm_port)) {
 shared_library("ipcz_shared") {
   output_name = "ipcz"
   sources = [
@@ -32,6 +37,7 @@ shared_library("ipcz_shared") {
   public_configs = [ ":ipcz_include_dir" ]
   configs += [ ":ipcz_include_src_dir" ]
 }
+}
 
 source_set("ipcz_header") {
   visibility = [ ":*" ]
@@ -49,6 +55,16 @@ source_set("ipcz_header") {
 # same variant as the dependent source_set. Apart from this the targets are
 # roughly equivalent to a plain source_set.
 template("ipcz_source_set") {
+  _is_wasm_port = is_wasm && enable_chromium_wasm_port
+  _is_testonly = defined(invoker.testonly) && invoker.testonly
+
+  if (_is_wasm_port && _is_testonly) {
+    # The Wasm bring-up graph excludes ipcz tests and reference drivers.
+    not_needed(invoker, "*")
+    not_needed("*")
+  }
+
+  if (!_is_wasm_port) {
   source_set("${target_name}_standalone") {
     forward_variables_from(invoker,
                            [
@@ -86,9 +102,10 @@ template("ipcz_source_set") {
 
     defines = [ "IPCZ_STANDALONE" ]
   }
+  }
 
   # We can only emit the Chromium variant if we're in the Chromium build.
-  if (!build_ipcz_standalone) {
+  if (!build_ipcz_standalone && (!_is_wasm_port || !_is_testonly)) {
     source_set("${target_name}_chromium") {
       forward_variables_from(invoker,
                              [
@@ -108,7 +125,11 @@ template("ipcz_source_set") {
       if (!defined(public_deps)) {
         public_deps = []
       }
-      public_deps += [ "//base" ]
+      if (_is_wasm_port) {
+        public_deps += [ "//base:base_wasm_primitives" ]
+      } else {
+        public_deps += [ "//base" ]
+      }
       if (defined(invoker.ipcz_public_deps)) {
         foreach(dep, invoker.ipcz_public_deps) {
           public_deps += [ "${dep}_chromium" ]
@@ -130,6 +151,11 @@ template("ipcz_source_set") {
       if (target_name == "ipcz" && is_chromeos) {
         configs -= [ "//build/config/compiler:default_optimization" ]
         configs += [ "//build/config/compiler:optimize_speed" ]
+      }
+
+      if (_is_wasm_port) {
+        use_libcxx_modules = false
+        configs -= [ "//build/config/compiler:runtime_library" ]
       }
     }
   }
@@ -439,6 +465,7 @@ ipcz_source_set("ipcz_tests_sources") {
 # by linking ":ipcz_test_sources_chromium" directly into that target. The
 # standalone ipcz_tests executable is still defined in Chromium builds though so
 # that it gets compile coverage from Chromium infrastructure.
+if (!(is_wasm && enable_chromium_wasm_port)) {
 test("ipcz_tests") {
   sources = [ "test/run_all_tests.cc" ]
   deps = [
@@ -448,6 +475,7 @@ test("ipcz_tests") {
     "//testing/gtest",
   ]
   configs += [ ":ipcz_include_src_dir" ]
+}
 }
 
 ipcz_source_set("fuzzer_sources") {
@@ -472,6 +500,7 @@ ipcz_source_set("fuzzer_sources") {
   ]
 }
 
+if (!(is_wasm && enable_chromium_wasm_port)) {
 fuzzer_test("ipcz_fuzzer") {
   sources = [ "fuzzer/ipcz_fuzzer.cc" ]
   deps = [ ":fuzzer_sources_standalone" ]
@@ -481,4 +510,5 @@ fuzzer_test("ipcz_fuzzer") {
 group("all") {
   testonly = true
   deps = [ ":ipcz_tests" ]
+}
 }

@@ -14,8 +14,11 @@
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "mojo/core/embedder/configuration.h"
-#include "mojo/public/cpp/platform/platform_channel_endpoint.h"
 #include "third_party/ipcz/include/ipcz/ipcz.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "mojo/public/cpp/platform/platform_channel_endpoint.h"
+#endif
 
 namespace mojo::core {
 
@@ -82,11 +85,13 @@ struct TransportEndpointTypes {
   bool local_is_broker;
   bool remote_is_broker;
 };
+#if !BUILDFLAG(IS_WASM)
 COMPONENT_EXPORT(MOJO_CORE_EMBEDDER)
 IpczDriverHandle CreateIpczTransportFromEndpoint(
     mojo::PlatformChannelEndpoint endpoint,
     const TransportEndpointTypes& endpoint_types,
     base::Process remote_process = base::Process());
+#endif
 
 }  // namespace mojo::core
 

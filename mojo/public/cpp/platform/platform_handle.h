@@ -175,6 +175,9 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   }
 #elif BUILDFLAG(IS_POSIX)
   bool is_valid() const { return is_valid_fd(); }
+#elif BUILDFLAG(IS_WASM)
+  // Native platform handles do not exist in the single-process Wasm port.
+  bool is_valid() const { return false; }
 #else
 #error "Unsupported platform."
 #endif
@@ -202,6 +205,8 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
     return is_valid_fd();
 #elif BUILDFLAG(IS_WIN)
     return is_valid_handle();
+#elif BUILDFLAG(IS_WASM)
+    return false;
 #else
 #error "Unsupported platform"
 #endif
@@ -211,6 +216,8 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
     return TakeFD();
 #elif BUILDFLAG(IS_WIN)
     return TakeHandle();
+#elif BUILDFLAG(IS_WASM)
+    return {};
 #else
 #error "Unsupported platform"
 #endif
@@ -220,6 +227,8 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
     return ReleaseFD();
 #elif BUILDFLAG(IS_WIN)
     return ReleaseHandle();
+#elif BUILDFLAG(IS_WASM)
+    return base::kInvalidPlatformFile;
 #else
 #error "Unsupported platform"
 #endif

@@ -6,6 +6,7 @@
 #define MOJO_PUBLIC_CPP_PLATFORM_PLATFORM_CHANNEL_ENDPOINT_H_
 
 #include <string_view>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/component_export.h"
@@ -32,6 +33,9 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformChannelEndpoint {
   using HandlePassingInfo = base::MachPortsForRendezvous;
 #elif BUILDFLAG(IS_POSIX)
   using HandlePassingInfo = base::FileHandleMappingVector;
+#elif BUILDFLAG(IS_WASM)
+  // Kept only to preserve method signatures. No element can be populated.
+  using HandlePassingInfo = std::vector<int>;
 #else
 #error "Unsupported platform."
 #endif

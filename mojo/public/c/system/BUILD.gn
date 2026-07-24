@@ -13,7 +13,13 @@ component("system") {
 
   public_deps = [ ":headers" ]
 
-  deps = [ "//base" ]
+  if (is_wasm && enable_chromium_wasm_port) {
+    deps = [ "//base:base_wasm_primitives" ]
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  } else {
+    deps = [ "//base" ]
+  }
 }
 
 source_set("headers") {

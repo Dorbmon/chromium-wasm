@@ -13,6 +13,7 @@
 #include "base/containers/span.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/rand_util.h"
+#include "build/build_config.h"
 #include "mojo/core/ipcz_driver/object.h"
 #include "mojo/core/ipcz_driver/shared_buffer.h"
 #include "mojo/core/ipcz_driver/shared_buffer_mapping.h"
@@ -103,6 +104,9 @@ CreateTransports(IpczDriverHandle existing_transport_from_here_to_a,
                  const void* options,
                  IpczDriverHandle* new_transport_from_a_to_b,
                  IpczDriverHandle* new_transport_from_b_to_a) {
+#if BUILDFLAG(IS_WASM)
+  return IPCZ_RESULT_UNIMPLEMENTED;
+#else
   // For two existing transports from the calling node (one to a node A and
   // another to a node B), this creates a new transport that will be used to
   // connect A and B directly to each other.
@@ -166,6 +170,7 @@ CreateTransports(IpczDriverHandle existing_transport_from_here_to_a,
   *new_transport_from_b_to_a =
       ObjectBase::ReleaseAsHandle(std::move(transport_from_b_to_a));
   return IPCZ_RESULT_OK;
+#endif
 }
 
 IpczResult IPCZ_API
@@ -174,6 +179,9 @@ ActivateTransport(IpczDriverHandle transport_handle,
                   IpczTransportActivityHandler activity_handler,
                   uint32_t flags,
                   const void* options) {
+#if BUILDFLAG(IS_WASM)
+  return IPCZ_RESULT_UNIMPLEMENTED;
+#else
   Transport* transport = Transport::FromHandle(transport_handle);
   if (!transport) {
     return IPCZ_RESULT_INVALID_ARGUMENT;
@@ -181,11 +189,15 @@ ActivateTransport(IpczDriverHandle transport_handle,
 
   transport->Activate(listener, activity_handler);
   return IPCZ_RESULT_OK;
+#endif
 }
 
 IpczResult IPCZ_API DeactivateTransport(IpczDriverHandle transport_handle,
                                         uint32_t flags,
                                         const void* options) {
+#if BUILDFLAG(IS_WASM)
+  return IPCZ_RESULT_UNIMPLEMENTED;
+#else
   Transport* transport = Transport::FromHandle(transport_handle);
   if (!transport) {
     return IPCZ_RESULT_INVALID_ARGUMENT;
@@ -193,6 +205,7 @@ IpczResult IPCZ_API DeactivateTransport(IpczDriverHandle transport_handle,
 
   transport->Deactivate();
   return IPCZ_RESULT_OK;
+#endif
 }
 
 IpczResult IPCZ_API Transmit(IpczDriverHandle transport_handle,
@@ -202,6 +215,9 @@ IpczResult IPCZ_API Transmit(IpczDriverHandle transport_handle,
                              size_t num_handles,
                              uint32_t flags,
                              const void* options) {
+#if BUILDFLAG(IS_WASM)
+  return IPCZ_RESULT_UNIMPLEMENTED;
+#else
   Transport* transport = Transport::FromHandle(transport_handle);
   if (!transport) {
     return IPCZ_RESULT_INVALID_ARGUMENT;
@@ -211,6 +227,7 @@ IpczResult IPCZ_API Transmit(IpczDriverHandle transport_handle,
       UNSAFE_TODO(base::span(static_cast<const uint8_t*>(data), num_bytes)),
       UNSAFE_TODO(base::span(handles, num_handles)));
   return IPCZ_RESULT_OK;
+#endif
 }
 
 IpczResult IPCZ_API
@@ -233,7 +250,17 @@ IpczResult IPCZ_API AllocateSharedMemory(size_t num_bytes,
                                          uint32_t flags,
                                          const void* options,
                                          IpczDriverHandle* driver_memory) {
+#if BUILDFLAG(IS_WASM)
+  if (!driver_memory || num_bytes == 0) {
+    return IPCZ_RESULT_INVALID_ARGUMENT;
+  }
+#endif
   auto region = base::UnsafeSharedMemoryRegion::Create(num_bytes);
+#if BUILDFLAG(IS_WASM)
+  if (!region.IsValid()) {
+    return IPCZ_RESULT_RESOURCE_EXHAUSTED;
+  }
+#endif
   *driver_memory = SharedBuffer::ReleaseAsHandle(
       SharedBuffer::MakeForRegion(std::move(region)));
   return IPCZ_RESULT_OK;
@@ -278,9 +305,15 @@ IpczResult IPCZ_API MapSharedMemory(IpczDriverHandle driver_memory,
                                     volatile void** address,
                                     IpczDriverHandle* driver_mapping) {
   SharedBuffer* buffer = SharedBuffer::FromHandle(driver_memory);
+#if BUILDFLAG(IS_WASM)
+  if (!buffer || !address || !driver_mapping) {
+    return IPCZ_RESULT_INVALID_ARGUMENT;
+  }
+#else
   if (!buffer || !driver_mapping) {
     return IPCZ_RESULT_INVALID_ARGUMENT;
   }
+#endif
 
   scoped_refptr<SharedBufferMapping> mapping =
       SharedBufferMapping::Create(buffer->region());

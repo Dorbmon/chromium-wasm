@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <string>
 #include <tuple>
@@ -27,6 +28,7 @@
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
 #include "mojo/core/ipcz_api.h"
+#include "mojo/core/configuration.h"
 #include "mojo/core/ipcz_driver/data_pipe.h"
 #include "mojo/core/ipcz_driver/invitation.h"
 #include "mojo/core/ipcz_driver/mojo_message.h"
@@ -48,24 +50,53 @@ class MappingTable {
   MappingTable() = default;
   ~MappingTable() = default;
 
-  void Add(scoped_refptr<ipcz_driver::SharedBufferMapping> mapping) {
+  bool Add(scoped_refptr<ipcz_driver::SharedBufferMapping> mapping) {
     base::AutoLock lock(lock_);
+#if BUILDFLAG(IS_WASM)
+    if (mapping_count_ >= internal::g_configuration.max_mapping_table_size) {
+      return false;
+    }
+    void* address = mapping->memory();
+    mappings_[address].push_back(std::move(mapping));
+    ++mapping_count_;
+#else
     void* address = mapping->memory();
     mappings_.emplace(address, std::move(mapping));
+#endif
+    return true;
   }
 
   MojoResult Remove(void* address) {
     base::AutoLock lock(lock_);
+#if BUILDFLAG(IS_WASM)
+    auto it = mappings_.find(address);
+    if (it == mappings_.end()) {
+      return MOJO_RESULT_INVALID_ARGUMENT;
+    }
+    DCHECK(!it->second.empty());
+    it->second.pop_back();
+    --mapping_count_;
+    if (it->second.empty()) {
+      mappings_.erase(it);
+    }
+#else
     if (!mappings_.erase(address)) {
       return MOJO_RESULT_INVALID_ARGUMENT;
     }
+#endif
     return MOJO_RESULT_OK;
   }
 
  private:
   base::Lock lock_;
+#if BUILDFLAG(IS_WASM)
+  size_t mapping_count_ GUARDED_BY(lock_) = 0;
+  std::map<void*, std::vector<scoped_refptr<ipcz_driver::SharedBufferMapping>>>
+      mappings_ GUARDED_BY(lock_);
+#else
   std::map<void*, scoped_refptr<ipcz_driver::SharedBufferMapping>> mappings_
       GUARDED_BY(lock_);
+#endif
 };
 
 MappingTable& GetMappingTable() {
@@ -495,6 +526,21 @@ MojoResult MojoCreateSharedBufferIpcz(
     uint64_t num_bytes,
     const MojoCreateSharedBufferOptions* options,
     MojoHandle* shared_buffer_handle) {
+#if BUILDFLAG(IS_WASM)
+  if (!shared_buffer_handle ||
+      (options && options->struct_size < sizeof(*options))) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (options &&
+      options->flags != MOJO_CREATE_SHARED_BUFFER_FLAG_NONE) {
+    return MOJO_RESULT_UNIMPLEMENTED;
+  }
+  if (num_bytes == 0 ||
+      num_bytes > std::numeric_limits<size_t>::max() ||
+      num_bytes > internal::g_configuration.max_shared_memory_num_bytes) {
+    return MOJO_RESULT_RESOURCE_EXHAUSTED;
+  }
+#endif
   auto region = base::WritableSharedMemoryRegion::Create(num_bytes);
   if (!region.IsValid()) {
     return MOJO_RESULT_RESOURCE_EXHAUSTED;
@@ -510,6 +556,17 @@ MojoResult MojoDuplicateBufferHandleIpcz(
     MojoHandle buffer_handle,
     const MojoDuplicateBufferHandleOptions* options,
     MojoHandle* new_buffer_handle) {
+#if BUILDFLAG(IS_WASM)
+  if (!new_buffer_handle ||
+      (options && options->struct_size < sizeof(*options))) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (options &&
+      (options->flags &
+       ~MOJO_DUPLICATE_BUFFER_HANDLE_FLAG_READ_ONLY) != 0) {
+    return MOJO_RESULT_UNIMPLEMENTED;
+  }
+#endif
   auto* buffer = ipcz_driver::SharedBuffer::FromBox(buffer_handle);
   if (!buffer || !new_buffer_handle ||
       (options && options->struct_size < sizeof(*options))) {
@@ -534,9 +591,25 @@ MojoResult MojoMapBufferIpcz(MojoHandle buffer_handle,
                              const MojoMapBufferOptions* options,
                              void** address) {
   auto* buffer = ipcz_driver::SharedBuffer::FromBox(buffer_handle);
+#if BUILDFLAG(IS_WASM)
+  if (!buffer || !address ||
+      (options && options->struct_size < sizeof(*options))) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (options && options->flags != MOJO_MAP_BUFFER_FLAG_NONE) {
+    return MOJO_RESULT_UNIMPLEMENTED;
+  }
+  const uint64_t region_size = buffer->region().GetSize();
+  if (num_bytes == 0 ||
+      num_bytes > std::numeric_limits<size_t>::max() ||
+      offset > region_size || num_bytes > region_size - offset) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+#else
   if (!buffer) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
+#endif
 
   auto mapping = ipcz_driver::SharedBufferMapping::Create(
       buffer->region(), static_cast<size_t>(offset),
@@ -544,8 +617,11 @@ MojoResult MojoMapBufferIpcz(MojoHandle buffer_handle,
   if (!mapping) {
     return MOJO_RESULT_RESOURCE_EXHAUSTED;
   }
-  *address = mapping->memory();
-  GetMappingTable().Add(std::move(mapping));
+  void* mapped_address = mapping->memory();
+  if (!GetMappingTable().Add(std::move(mapping))) {
+    return MOJO_RESULT_RESOURCE_EXHAUSTED;
+  }
+  *address = mapped_address;
   return MOJO_RESULT_OK;
 }
 
@@ -556,6 +632,14 @@ MojoResult MojoUnmapBufferIpcz(void* address) {
 MojoResult MojoGetBufferInfoIpcz(MojoHandle buffer_handle,
                                  const MojoGetBufferInfoOptions* options,
                                  MojoSharedBufferInfo* info) {
+#if BUILDFLAG(IS_WASM)
+  if (!info || (options && options->struct_size < sizeof(*options))) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (options && options->flags != MOJO_GET_BUFFER_INFO_FLAG_NONE) {
+    return MOJO_RESULT_UNIMPLEMENTED;
+  }
+#endif
   auto* buffer = ipcz_driver::SharedBuffer::FromBox(buffer_handle);
   if (!buffer || !info || info->struct_size < sizeof(*info)) {
     return MOJO_RESULT_INVALID_ARGUMENT;
@@ -613,6 +697,9 @@ MojoResult MojoWrapPlatformHandleIpcz(
     const MojoPlatformHandle* platform_handle,
     const MojoWrapPlatformHandleOptions* options,
     MojoHandle* mojo_handle) {
+#if BUILDFLAG(IS_WASM)
+  return MOJO_RESULT_UNIMPLEMENTED;
+#else
   if (!platform_handle || !mojo_handle ||
       platform_handle->struct_size < sizeof(*platform_handle)) {
     return MOJO_RESULT_INVALID_ARGUMENT;
@@ -621,12 +708,16 @@ MojoResult MojoWrapPlatformHandleIpcz(
   *mojo_handle =
       ipcz_driver::WrappedPlatformHandle::MakeBoxed(std::move(handle));
   return MOJO_RESULT_OK;
+#endif
 }
 
 MojoResult MojoUnwrapPlatformHandleIpcz(
     MojoHandle mojo_handle,
     const MojoUnwrapPlatformHandleOptions* options,
     MojoPlatformHandle* platform_handle) {
+#if BUILDFLAG(IS_WASM)
+  return MOJO_RESULT_UNIMPLEMENTED;
+#else
   if (!mojo_handle || !platform_handle ||
       platform_handle->struct_size < sizeof(*platform_handle)) {
     return MOJO_RESULT_INVALID_ARGUMENT;
@@ -638,6 +729,7 @@ MojoResult MojoUnwrapPlatformHandleIpcz(
   PlatformHandle::ToMojoPlatformHandle(std::move(wrapper->handle()),
                                        platform_handle);
   return MOJO_RESULT_OK;
+#endif
 }
 
 MojoResult MojoWrapPlatformSharedMemoryRegionIpcz(
@@ -648,6 +740,9 @@ MojoResult MojoWrapPlatformSharedMemoryRegionIpcz(
     MojoPlatformSharedMemoryRegionAccessMode access_mode,
     const MojoWrapPlatformSharedMemoryRegionOptions* options,
     MojoHandle* mojo_handle) {
+#if BUILDFLAG(IS_WASM)
+  return MOJO_RESULT_UNIMPLEMENTED;
+#else
   if (!platform_handles || !num_bytes || !guid || !mojo_handle) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
@@ -663,6 +758,7 @@ MojoResult MojoWrapPlatformSharedMemoryRegionIpcz(
 
   *mojo_handle = ipcz_driver::SharedBuffer::Box(std::move(buffer));
   return MOJO_RESULT_OK;
+#endif
 }
 
 MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
@@ -673,6 +769,9 @@ MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
     uint64_t* num_bytes,
     MojoSharedBufferGuid* mojo_guid,
     MojoPlatformSharedMemoryRegionAccessMode* access_mode) {
+#if BUILDFLAG(IS_WASM)
+  return MOJO_RESULT_UNIMPLEMENTED;
+#else
   if (!mojo_handle || !platform_handles || !num_platform_handles ||
       !mojo_guid) {
     return MOJO_RESULT_INVALID_ARGUMENT;
@@ -741,6 +840,7 @@ MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
 
   std::ignore = ipcz_driver::SharedBuffer::Unbox(mojo_handle);
   return MOJO_RESULT_OK;
+#endif
 }
 
 MojoResult MojoCreateInvitationIpcz(const MojoCreateInvitationOptions* options,
@@ -800,6 +900,9 @@ MojoResult MojoSendInvitationIpcz(
     MojoProcessErrorHandler error_handler,
     uintptr_t error_handler_context,
     const MojoSendInvitationOptions* options) {
+#if BUILDFLAG(IS_WASM)
+  return MOJO_RESULT_UNIMPLEMENTED;
+#else
   auto* invitation = ipcz_driver::Invitation::FromBox(invitation_handle);
   if (!invitation) {
     return MOJO_RESULT_INVALID_ARGUMENT;
@@ -813,6 +916,7 @@ MojoResult MojoSendInvitationIpcz(
     GetIpczAPI().Close(invitation_handle, IPCZ_NO_FLAGS, nullptr);
   }
   return result;
+#endif
 }
 
 MojoResult MojoAcceptInvitationIpcz(
@@ -823,9 +927,13 @@ MojoResult MojoAcceptInvitationIpcz(
       (options && options->struct_size < sizeof(*options))) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
+#if BUILDFLAG(IS_WASM)
+  return MOJO_RESULT_UNIMPLEMENTED;
+#else
   *invitation_handle =
       ipcz_driver::Invitation::Accept(transport_endpoint, options);
   return MOJO_RESULT_OK;
+#endif
 }
 
 MojoResult MojoSetQuotaIpcz(MojoHandle handle,
