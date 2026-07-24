@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -22,6 +23,10 @@ import urllib.request
 from m0_common import (
     M0Error,
     REPO_ROOT,
+    TEST262_CHECKOUT_PATH,
+    TEST262_DEPS_PATH,
+    TEST262_LICENSE_PATH,
+    TEST262_REMOTE,
     checked_output,
     fail,
     gn_args_text,
@@ -29,6 +34,7 @@ from m0_common import (
     print_context,
     relative_to_repo,
     run,
+    validate_test262_manifest,
 )
 
 
@@ -139,6 +145,255 @@ def ensure_source_dependencies(
             cwd=dependency_path,
         )
         require_equal(f"{name} worktree", status, "")
+
+
+def test262_checkout_path(test262: dict[str, object]) -> Path:
+    configured_path = Path(str(test262["path"]))
+    if configured_path != TEST262_CHECKOUT_PATH:
+        raise M0Error(
+            "Test262 checkout path mismatch: "
+            f"expected {TEST262_CHECKOUT_PATH}, got {configured_path}"
+        )
+    return REPO_ROOT / configured_path
+
+
+def run_test262_git(
+    checkout_root: Path, *arguments: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    return run(
+        ["git", *arguments],
+        cwd=checkout_root,
+        check=check,
+        env={"GIT_OPTIONAL_LOCKS": "0"},
+    )
+
+
+def test262_git_output(checkout_root: Path, *arguments: str) -> str:
+    return run_test262_git(checkout_root, *arguments).stdout.strip()
+
+
+def verify_test262_v8_deps_pin(manifest: dict[str, object]) -> None:
+    test262 = validate_test262_manifest(manifest)
+    dependencies = manifest["git_dependencies"]
+    assert isinstance(dependencies, dict)
+    v8 = dependencies["v8"]
+    assert isinstance(v8, dict)
+    v8_root = REPO_ROOT / str(v8["path"])
+    deps_text = checked_output(
+        ["git", "show", f"{v8['revision']}:DEPS"],
+        cwd=v8_root,
+    )
+
+    chromium_url = "https://chromium.googlesource.com"
+    chromium_url_declaration = f"  'chromium_url': '{chromium_url}',"
+    dependency_key = f"  '{TEST262_DEPS_PATH}':"
+    remote_suffix = TEST262_REMOTE.removeprefix(chromium_url)
+    expected_entry = (
+        f"{dependency_key}\n"
+        "    Var('chromium_url') + "
+        f"'{remote_suffix}' + '@' + '{test262['revision']}',"
+    )
+    if deps_text.count("'chromium_url':") != 1:
+        raise M0Error(
+            "V8 DEPS must define chromium_url exactly once"
+        )
+    if chromium_url_declaration not in deps_text:
+        raise M0Error("V8 DEPS chromium_url mismatch")
+    if deps_text.count(dependency_key) != 1:
+        raise M0Error(
+            "V8 DEPS must define the Test262 dependency exactly once"
+        )
+    if expected_entry not in deps_text:
+        raise M0Error("V8 DEPS Test262 pin mismatch")
+
+
+def verify_test262_checkout(
+    test262: dict[str, object], checkout_root: Path
+) -> None:
+    if checkout_root.is_symlink():
+        raise M0Error("pinned Test262 checkout must not be a symlink")
+    git_directory = checkout_root / ".git"
+    if (
+        not checkout_root.is_dir()
+        or not git_directory.is_dir()
+        or git_directory.is_symlink()
+    ):
+        raise M0Error("pinned Test262 checkout is not installed")
+
+    sparse_checkout = run_test262_git(
+        checkout_root,
+        "config",
+        "--bool",
+        "--get",
+        "core.sparseCheckout",
+        check=False,
+    )
+    if sparse_checkout.returncode not in (0, 1):
+        raise M0Error("cannot inspect Test262 sparse-checkout configuration")
+    if sparse_checkout.stdout.strip() == "true":
+        raise M0Error("pinned Test262 checkout must not be sparse")
+
+    index_records = run_test262_git(
+        checkout_root, "ls-files", "-v", "-z"
+    ).stdout.split("\0")
+    if any(
+        record and not record.startswith("H ")
+        for record in index_records
+    ):
+        raise M0Error(
+            "pinned Test262 checkout has hidden index flags"
+        )
+
+    require_equal(
+        "Test262 worktree root",
+        str(
+            Path(
+                test262_git_output(
+                    checkout_root, "rev-parse", "--show-toplevel"
+                )
+            ).resolve()
+        ),
+        str(checkout_root.resolve()),
+    )
+    require_equal(
+        "Test262 checkout",
+        test262_git_output(
+            checkout_root, "rev-parse", "HEAD^{commit}"
+        ),
+        str(test262["revision"]),
+    )
+    require_equal(
+        "Test262 HEAD",
+        test262_git_output(
+            checkout_root, "rev-parse", "--abbrev-ref", "HEAD"
+        ),
+        "HEAD",
+    )
+    require_equal(
+        "Test262 origin",
+        test262_git_output(
+            checkout_root, "remote", "get-url", "--all", "origin"
+        ),
+        str(test262["remote"]),
+    )
+    require_equal(
+        "Test262 worktree",
+        test262_git_output(
+            checkout_root,
+            "status",
+            "--short",
+            "--untracked-files=all",
+        ),
+        "",
+    )
+
+    license_path = checkout_root / TEST262_LICENSE_PATH
+    if not license_path.is_file() or license_path.is_symlink():
+        raise M0Error("pinned Test262 LICENSE is missing")
+    require_equal(
+        "Test262 LICENSE size",
+        str(license_path.stat().st_size),
+        str(test262["license_size_bytes"]),
+    )
+    require_equal(
+        "Test262 LICENSE hash",
+        sha256(license_path),
+        str(test262["license_sha256"]),
+    )
+
+
+def install_test262_checkout(
+    test262: dict[str, object], checkout_root: Path
+) -> None:
+    if os.path.lexists(checkout_root):
+        try:
+            verify_test262_checkout(test262, checkout_root)
+        except M0Error as exc:
+            raise M0Error(
+                "existing Test262 checkout is invalid; "
+                f"refusing to overwrite it: {exc}"
+            ) from exc
+        return
+
+    try:
+        checkout_root.parent.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise M0Error(
+            "Test262 checkout parent must stay in the checkout"
+        ) from exc
+    checkout_root.parent.mkdir(parents=True, exist_ok=True)
+
+    staging_root = Path(
+        tempfile.mkdtemp(
+            prefix=f".{checkout_root.name}.install-",
+            dir=checkout_root.parent,
+        )
+    )
+    candidate_root = staging_root / "checkout"
+    try:
+        run(["git", "init", "--quiet", str(candidate_root)])
+        run(
+            [
+                "git",
+                "remote",
+                "add",
+                "origin",
+                str(test262["remote"]),
+            ],
+            cwd=candidate_root,
+        )
+        run(
+            [
+                "git",
+                "fetch",
+                "--depth=1",
+                "--no-tags",
+                "origin",
+                str(test262["revision"]),
+            ],
+            cwd=candidate_root,
+            capture_output=False,
+        )
+        require_equal(
+            "Test262 fetched revision",
+            checked_output(
+                ["git", "rev-parse", "FETCH_HEAD^{commit}"],
+                cwd=candidate_root,
+            ),
+            str(test262["revision"]),
+        )
+        run(
+            [
+                "git",
+                "-c",
+                "advice.detachedHead=false",
+                "checkout",
+                "--quiet",
+                "--detach",
+                "FETCH_HEAD",
+            ],
+            cwd=candidate_root,
+        )
+        verify_test262_checkout(test262, candidate_root)
+        if os.path.lexists(checkout_root):
+            raise M0Error(
+                "Test262 checkout path appeared during installation"
+            )
+        os.replace(candidate_root, checkout_root)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def ensure_test262(
+    manifest: dict[str, object], *, install: bool
+) -> None:
+    test262 = validate_test262_manifest(manifest)
+    verify_test262_v8_deps_pin(manifest)
+    checkout_root = test262_checkout_path(test262)
+    if install:
+        install_test262_checkout(test262, checkout_root)
+    else:
+        verify_test262_checkout(test262, checkout_root)
 
 
 def ensure_depot_tools_bootstrap(
@@ -920,6 +1175,7 @@ def main() -> int:
         )
         install = not args.verify_only
         ensure_source_dependencies(manifest, install=install)
+        ensure_test262(manifest, install=install)
         cipd, bootstrap_python = ensure_depot_tools_bootstrap(
             manifest, install=install
         )

@@ -149,6 +149,15 @@
       "lib/rustlib/src/rust/library/std/src/lib.rs"
     ]
   },
+  "test262": {
+    "path": "v8/test/test262/data",
+    "deps_path": "test/test262/data",
+    "remote": "https://chromium.googlesource.com/external/github.com/tc39/test262.git",
+    "revision": "7e115f46ac64340827d505fa928ad436cb7ba5a6",
+    "license_path": "LICENSE",
+    "license_size_bytes": 2213,
+    "license_sha256": "4dd9244dfe8197c75348c4b24ab53d29d3b1cfad143ac76b5a3d8942aa354ce0"
+  },
   "gn_args": [
     "target_os = \"emscripten\"",
     "target_cpu = \"wasm\"",

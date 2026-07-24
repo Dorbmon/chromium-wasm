@@ -22,10 +22,92 @@ MANIFEST_PATH = Path(__file__).with_name("toolchain_manifest.json")
 M0_BASE_TAG = "wasm-m0-primary-toolchain"
 MAX_COMMAND_DIAGNOSTIC_CHARS = 4096
 MAX_TIMEOUT_SECONDS = 120.0
+TEST262_CHECKOUT_PATH = Path("v8/test/test262/data")
+TEST262_DEPS_PATH = "test/test262/data"
+TEST262_LICENSE_PATH = Path("LICENSE")
+TEST262_REMOTE = (
+    "https://chromium.googlesource.com/"
+    "external/github.com/tc39/test262.git"
+)
 
 
 class M0Error(RuntimeError):
     pass
+
+
+def _is_lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def validate_test262_manifest(
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    test262 = manifest.get("test262")
+    if not isinstance(test262, dict):
+        raise M0Error("toolchain manifest test262 must be an object")
+    expected_fields = {
+        "path",
+        "deps_path",
+        "remote",
+        "revision",
+        "license_path",
+        "license_size_bytes",
+        "license_sha256",
+    }
+    if set(test262) != expected_fields:
+        raise M0Error("toolchain manifest test262 fields mismatch")
+
+    configured_path = test262.get("path")
+    if not isinstance(configured_path, str):
+        raise M0Error("Test262 checkout path must be a string")
+    path = Path(configured_path)
+    if path.is_absolute() or ".." in path.parts:
+        raise M0Error("Test262 checkout path must stay in the checkout")
+    if configured_path != TEST262_CHECKOUT_PATH.as_posix():
+        raise M0Error(
+            "Test262 checkout path mismatch: "
+            f"expected {TEST262_CHECKOUT_PATH}, got {configured_path}"
+        )
+
+    deps_path = test262.get("deps_path")
+    if deps_path != TEST262_DEPS_PATH:
+        raise M0Error(
+            "Test262 V8 DEPS path mismatch: "
+            f"expected {TEST262_DEPS_PATH}, got {deps_path}"
+        )
+    remote = test262.get("remote")
+    if remote != TEST262_REMOTE:
+        raise M0Error(
+            "Test262 remote mismatch: "
+            f"expected {TEST262_REMOTE}, got {remote}"
+        )
+    if not _is_lower_hex(test262.get("revision"), 40):
+        raise M0Error(
+            "Test262 revision must be a lowercase 40-character Git hash"
+        )
+
+    license_path = test262.get("license_path")
+    if license_path != TEST262_LICENSE_PATH.as_posix():
+        raise M0Error(
+            "Test262 license path mismatch: "
+            f"expected {TEST262_LICENSE_PATH}, got {license_path}"
+        )
+    license_size = test262.get("license_size_bytes")
+    if (
+        isinstance(license_size, bool)
+        or not isinstance(license_size, int)
+        or license_size <= 0
+    ):
+        raise M0Error("Test262 license size must be a positive integer")
+    if not _is_lower_hex(test262.get("license_sha256"), 64):
+        raise M0Error(
+            "Test262 license hash must be a lowercase SHA-256"
+        )
+    return test262
 
 
 def parse_timeout(value: str) -> float:
@@ -49,6 +131,7 @@ def load_manifest() -> dict[str, Any]:
         manifest = json.load(manifest_file)
     if manifest.get("schema_version") != 1:
         raise M0Error("unsupported toolchain manifest schema")
+    validate_test262_manifest(manifest)
     return manifest
 
 
@@ -84,6 +167,7 @@ def print_context(
         },
         "chromium": manifest["chromium"],
         "emscripten": manifest["emscripten"],
+        "test262": manifest["test262"],
         "gn_args": manifest["gn_args"],
     }
     context.update(extra)
