@@ -8,7 +8,8 @@
   "git_dependencies": {
     "v8": {
       "path": "v8",
-      "revision": "49df3678d1b6a1511167b15a6b7499d3ab37a638"
+      "upstream_revision": "49df3678d1b6a1511167b15a6b7499d3ab37a638",
+      "revision": "5551320c3880b25ccfab7a7a05dd823e2c53776e"
     },
     "skia": {
       "path": "third_party/skia",
