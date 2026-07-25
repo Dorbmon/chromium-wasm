@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "build/build_config.h"
 #include "gpu/config/gpu_info.h"
 #include "gpu/config/gpu_test_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -289,9 +290,14 @@ TEST_F(GPUTestConfigTest, LoadCurrentConfig) {
   GPUInfo gpu_info;
   gpu_info.gpu.vendor_id = 0x10de;
   gpu_info.gpu.device_id = 0x0640;
+#if BUILDFLAG(IS_WASM)
+  EXPECT_FALSE(config.LoadCurrentConfig(&gpu_info));
+  EXPECT_EQ(GPUTestConfig::kOsUnknown, config.os());
+  EXPECT_FALSE(config.IsValid());
+#else
   EXPECT_TRUE(config.LoadCurrentConfig(&gpu_info));
   EXPECT_TRUE(config.IsValid());
+#endif
 }
 
 }  // namespace gpu
-
