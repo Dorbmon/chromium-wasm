@@ -62,6 +62,7 @@ M3_ADDITIONAL_SUBMODULES = (
     "ced",
     "crc32c",
     "dragonbox",
+    "dom_distiller_js",
     "emoji_segmenter",
     "expat",
     "fast_float",

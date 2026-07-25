@@ -69,6 +69,10 @@
       "path": "third_party/dragonbox/src",
       "revision": "beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44"
     },
+    "dom_distiller_js": {
+      "path": "third_party/dom_distiller_js/dist",
+      "revision": "199de96b345ada7c6e7e6ba3d2fa7a6911b8767d"
+    },
     "emoji_segmenter": {
       "path": "third_party/emoji-segmenter/src",
       "revision": "955936be8b391e00835257059607d7c5b72ce744"
