@@ -49,7 +49,12 @@ class HostGraphManifestTest(unittest.TestCase):
         for name, revision in expected.items():
             with self.subTest(name=name):
                 dependency = dependencies[name]
-                self.assertEqual(dependency["revision"], revision)
+                self.assertEqual(
+                    dependency.get(
+                        "upstream_revision", dependency["revision"]
+                    ),
+                    revision,
+                )
                 self.assertEqual(
                     bootstrap.gitlink_revision(
                         chromium_revision, dependency["path"]

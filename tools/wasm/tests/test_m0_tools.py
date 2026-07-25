@@ -314,7 +314,7 @@ class BootstrapTest(unittest.TestCase):
         angle = manifest["git_dependencies"]["angle"]
         self.assertEqual(
             bootstrap.gitlink_revision(chromium_revision, angle["path"]),
-            angle["revision"],
+            angle.get("upstream_revision", angle["revision"]),
         )
 
     def test_bootstrap_contains_no_checkout_absolute_path(self) -> None:

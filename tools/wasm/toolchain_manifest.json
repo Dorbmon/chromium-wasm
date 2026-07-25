@@ -19,12 +19,13 @@
     },
     "dawn": {
       "path": "third_party/dawn",
-      "revision": "d089fc91e7e4881362463faf8efe9ae435e34660"
+      "upstream_revision": "d089fc91e7e4881362463faf8efe9ae435e34660",
+      "revision": "ad17c01003145f10c0f1fe5991b2edad1f75b267"
     },
     "angle": {
       "path": "third_party/angle",
       "upstream_revision": "edae461ad2122a3a2be0b5d3d067472aa0e3329c",
-      "revision": "a64b2d15ea73d97a73eee5c9090c6e37f59e0685"
+      "revision": "15c949a0f1bdd4ab46ac7da0eef20fc6f0d97b0a"
     },
     "boringssl": {
       "path": "third_party/boringssl/src",
@@ -36,7 +37,13 @@
     },
     "webrtc": {
       "path": "third_party/webrtc",
-      "revision": "1f975dfd761af6e5d76d28333191973b258d82a8"
+      "upstream_revision": "1f975dfd761af6e5d76d28333191973b258d82a8",
+      "revision": "3bb7f3f2b401b151cd0a82eaac874294f15abec5"
+    },
+    "libsrtp": {
+      "path": "third_party/libsrtp",
+      "upstream_revision": "cd5d177bf1fde755ddb4c7f0d9ff7693f8b49e5e",
+      "revision": "ba1a5827393ed1cbe0ad553bdc5ed9535421fac8"
     },
     "ffmpeg": {
       "path": "third_party/ffmpeg",
