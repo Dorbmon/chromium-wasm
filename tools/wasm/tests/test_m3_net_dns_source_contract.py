@@ -17,6 +17,26 @@ def source(path: str) -> str:
 
 
 class M3NetDnsSourceContractTest(unittest.TestCase):
+    def test_wasm_disables_mdns_without_a_udp_transport(self) -> None:
+        features = source("net/features.gni")
+        implementation = source("net/dns/public/util.cc")
+        wasm_branch = implementation.split(
+            "#elif BUILDFLAG(IS_WASM)\n", maxsplit=1
+        )[1].split("#else", maxsplit=1)[0]
+
+        self.assertIn(
+            'assert(!is_wasm || !enable_mdns,\n'
+            '       "mDNS requires a multicast UDP transport")',
+            features,
+        )
+        self.assertIn(
+            "mDNS is disabled until Wasm has a multicast UDP transport",
+            wasm_branch,
+        )
+        self.assertIn("NOTREACHED();", wasm_branch)
+        self.assertNotIn("return GetMdnsGroupEndPoint", wasm_branch)
+        self.assertNotIn("IPv4AllZeros", wasm_branch)
+
     def test_wasm_loopback_probe_reports_uncertainty(self) -> None:
         implementation = source("net/dns/loopback_only.cc")
         header = source("net/dns/loopback_only.h")

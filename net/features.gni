@@ -86,6 +86,8 @@ assert(!chrome_root_store_optional || !chrome_root_store_only,
            "may be true")
 assert(!is_wasm || !use_kerberos,
        "HTTP Negotiate requires a host GSSAPI or SSPI provider")
+assert(!is_wasm || !enable_mdns,
+       "mDNS requires a multicast UDP transport")
 assert(!is_wasm || chrome_root_store_only,
        "Wasm requires the builtin certificate verifier and Chrome Root Store")
 

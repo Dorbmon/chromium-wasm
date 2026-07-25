@@ -71,6 +71,9 @@ IPEndPoint GetMdnsReceiveEndPoint(AddressFamily address_family) {
   // joined by any socket on the system. Sockets intending to receive messages
   // for a specific multicast group should bind to that group address.
   return GetMdnsGroupEndPoint(address_family);
+#elif BUILDFLAG(IS_WASM)
+  // mDNS is disabled until Wasm has a multicast UDP transport.
+  NOTREACHED();
 #else
 #error Platform not supported.
 #endif
