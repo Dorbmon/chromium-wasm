@@ -22,6 +22,7 @@
 namespace mojo {
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 // True if the underlying handle is only readable. Where possible this excludes
 // deletion, writing, truncation, append and other operations that might modify
 // the underlying file. False if we can tell that the file could be modified.
@@ -61,12 +62,16 @@ bool IsPhysicalFile(base::File& file) {
   return S_ISREG(st.st_mode);
 #endif
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 }  // namespace
 
 mojo::PlatformHandle StructTraits<mojo_base::mojom::ReadOnlyFileDataView,
                                   base::File>::fd(base::File& file) {
   CHECK(file.IsValid());
+#if BUILDFLAG(IS_WASM)
+  CHECK(false) << "Mojo platform file transport is unsupported on Wasm";
+#else
   // For now we require real files as on some platforms it is too difficult to
   // be sure that more general handles cannot be written or made writable. This
   // could be relaxed if an interface needs readonly pipes. This check may block
@@ -76,13 +81,18 @@ mojo::PlatformHandle StructTraits<mojo_base::mojom::ReadOnlyFileDataView,
 
   return mojo::PlatformHandle(
       base::ScopedPlatformFile(file.TakePlatformFile()));
+#endif
 }
 
 bool StructTraits<mojo_base::mojom::ReadOnlyFileDataView, base::File>::Read(
     mojo_base::mojom::ReadOnlyFileDataView data,
     base::File* file) {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   *file = base::File(data.TakeFd().TakePlatformFile(), data.async());
   return true;
+#endif
 }
 
 }  // namespace mojo
