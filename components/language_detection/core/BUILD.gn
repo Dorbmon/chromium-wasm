@@ -14,9 +14,13 @@ component("core") {
     "constants.h",
     "features.cc",
     "features.h",
-    "language_detection_model.cc",
     "language_detection_model.h",
   ]
+  if (is_wasm) {
+    sources += [ "language_detection_model_wasm.cc" ]
+  } else {
+    sources += [ "language_detection_model.cc" ]
+  }
   if (use_blink) {
     sources += [
       "language_detection_provider.cc",
@@ -24,13 +28,17 @@ component("core") {
     ]
   }
   deps = [
-    ":internals",
     "//base",
     "//components/optimization_guide/core:features",
-    "//third_party/tflite",
-    "//third_party/tflite_support",
-    "//third_party/tflite_support:tflite_support_proto",
   ]
+  if (!is_wasm) {
+    deps += [
+      ":internals",
+      "//third_party/tflite",
+      "//third_party/tflite_support",
+      "//third_party/tflite_support:tflite_support_proto",
+    ]
+  }
   defines = [ "IS_LANGUAGE_DETECTION_IMPL" ]
 }
 

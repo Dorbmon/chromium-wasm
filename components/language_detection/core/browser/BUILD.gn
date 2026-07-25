@@ -19,6 +19,22 @@ static_library("language_detection_model_service") {
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//mojo/public/cpp/bindings",
   ]
+
+  if (is_wasm) {
+    # Keep the file-provider API used by Content, but omit Chrome's
+    # Optimization Guide-backed service. The Content driver reports the model
+    # as explicitly unavailable on Wasm.
+    sources -= [
+      "language_detection_model_service.cc",
+      "language_detection_model_service.h",
+    ]
+    deps -= [
+      "//components/keyed_service/core",
+      "//components/optimization_guide/core",
+      "//components/optimization_guide/proto:optimization_guide_proto",
+      "//mojo/public/cpp/bindings",
+    ]
+  }
 }
 
 source_set("unit_tests") {

@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "build/build_config.h"
 #include "components/language_detection/core/browser/language_detection_model_provider.h"
 
 namespace language_detection {
@@ -23,6 +24,12 @@ void ContentLanguageDetectionDriver::AddReceiver(
 
 void ContentLanguageDetectionDriver::GetLanguageDetectionModel(
     GetLanguageDetectionModelCallback callback) {
+#if BUILDFLAG(IS_WASM)
+  // No model runtime is present in the M3 port. Complete the request
+  // immediately instead of leaving it pending for a model that cannot arrive.
+  std::move(callback).Run(base::File());
+  return;
+#else
   if (!language_detection_model_provider_) {
     std::move(callback).Run(base::File());
     return;
@@ -30,10 +37,15 @@ void ContentLanguageDetectionDriver::GetLanguageDetectionModel(
 
   language_detection_model_provider_->GetLanguageDetectionModelFile(
       std::move(callback));
+#endif
 }
 
 void ContentLanguageDetectionDriver::GetLanguageDetectionModelStatus(
     GetLanguageDetectionModelStatusCallback callback) {
+#if BUILDFLAG(IS_WASM)
+  std::move(callback).Run(mojom::LanguageDetectionModelStatus::kNotAvailable);
+  return;
+#else
   if (!language_detection_model_provider_) {
     // TODO (crbug.com/383022111): Pass the model availability based on the
     // real-time status of the model (if the model is unloaded).
@@ -45,6 +57,7 @@ void ContentLanguageDetectionDriver::GetLanguageDetectionModelStatus(
     return;
   }
   std::move(callback).Run(mojom::LanguageDetectionModelStatus::kAfterDownload);
+#endif
 }
 
 }  // namespace language_detection

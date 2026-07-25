@@ -12,6 +12,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
+#include "build/build_config.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
@@ -300,16 +301,19 @@ class AX_EXPORT AXLanguageDetectionManager {
   // by default and most AXTrees never call DetectLanguagesForNode).
   // Must be called on the same sequence as the rest of the manager (AXTree's
   // sequence).
+#if !BUILDFLAG(IS_WASM)
   chrome_lang_id::NNetLanguageIdentifier& GetLanguageIdentifier();
 
   // Lazy accessor for `short_text_language_identifier_`. Same rationale and
   // sequence requirements as GetLanguageIdentifier().
   chrome_lang_id::NNetLanguageIdentifier& GetShortTextLanguageIdentifier();
+#endif
 
   // This language identifier is constructed lazily (via GetLanguageIdentifier)
   // with a default minimum byte length of
   // chrome_lang_id::NNetLanguageIdentifier::kMinNumBytesToConsider and is
   // used for detecting page-level languages.
+#if !BUILDFLAG(IS_WASM)
   std::unique_ptr<chrome_lang_id::NNetLanguageIdentifier> language_identifier_;
 
   // This language identifier is constructed lazily (via
@@ -318,6 +322,7 @@ class AX_EXPORT AXLanguageDetectionManager {
   // of shorter text (e.g. one character).
   std::unique_ptr<chrome_lang_id::NNetLanguageIdentifier>
       short_text_language_identifier_;
+#endif
 
   // The observer to support dynamic content language detection.
   std::unique_ptr<AXLanguageDetectionObserver> language_detection_observer_;

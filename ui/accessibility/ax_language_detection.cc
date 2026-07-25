@@ -13,7 +13,9 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/cld_3/src/src/nnet_language_identifier.h"
+#endif
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/accessibility_switches.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -32,14 +34,18 @@ const int kMaxDetectedLanguagesPerPage = 3;
 // starting point.
 const int kMaxDetectedLanguagesPerSpan = 3;
 
+#if !BUILDFLAG(IS_WASM)
 const int kShortTextIdentifierMinByteLength = 1;
 // TODO(crbug.com/41463459): Determine appropriate value for
 // |kShortTextIdentifierMaxByteLength|.
 const int kShortTextIdentifierMaxByteLength = 1000;
+#endif
 }  // namespace
 
+#if !BUILDFLAG(IS_WASM)
 using Result = chrome_lang_id::NNetLanguageIdentifier::Result;
 using SpanInfo = chrome_lang_id::NNetLanguageIdentifier::SpanInfo;
+#endif
 
 AXLanguageInfo::AXLanguageInfo() = default;
 AXLanguageInfo::~AXLanguageInfo() = default;
@@ -210,6 +216,7 @@ AXLanguageDetectionManager::AXLanguageDetectionManager(AXTree* tree)
 
 AXLanguageDetectionManager::~AXLanguageDetectionManager() = default;
 
+#if !BUILDFLAG(IS_WASM)
 chrome_lang_id::NNetLanguageIdentifier&
 AXLanguageDetectionManager::GetLanguageIdentifier() {
   if (!language_identifier_) {
@@ -229,17 +236,25 @@ AXLanguageDetectionManager::GetShortTextLanguageIdentifier() {
   }
   return *short_text_language_identifier_;
 }
+#endif
 
 bool AXLanguageDetectionManager::IsStaticLanguageDetectionEnabled() {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   // Static language detection can be enabled by either:
   //  1) The general language detection feature flag which gates both static and
   //     dynamic language detection (feature flag for experiment), or
   //  2) The Static specific flag (user controlled switch).
   return features::IsAccessibilityLanguageDetectionEnabled() ||
          ::switches::IsExperimentalAccessibilityLanguageDetectionEnabled();
+#endif
 }
 
 bool AXLanguageDetectionManager::IsDynamicLanguageDetectionEnabled() {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   // Dynamic language detection can be enabled by either:
   //  1) The general language detection feature flag which gates both static and
   //     dynamic language detection (feature flag for experiment), or
@@ -247,6 +262,7 @@ bool AXLanguageDetectionManager::IsDynamicLanguageDetectionEnabled() {
   return features::IsAccessibilityLanguageDetectionEnabled() ||
          ::switches::
              IsExperimentalAccessibilityLanguageDetectionDynamicEnabled();
+#endif
 }
 
 void AXLanguageDetectionManager::RegisterLanguageDetectionObserver() {
@@ -297,6 +313,10 @@ void AXLanguageDetectionManager::DetectLanguagesForSubtree(
 // Will not descend into children.
 // Will not check feature flag.
 void AXLanguageDetectionManager::DetectLanguagesForNode(AXNode* node) {
+#if BUILDFLAG(IS_WASM)
+  (void)node;
+  return;
+#else
   // Count this detection attempt.
   lang_info_stats_.RecordDetectionAttempt();
 
@@ -344,6 +364,7 @@ void AXLanguageDetectionManager::DetectLanguagesForNode(AXNode* node) {
     // Update statistics to take these results into account.
     lang_info_stats_.Add(lang_info->detected_languages);
   }
+#endif
 }
 
 // Label languages for each node. This relies on DetectLanguages having already
@@ -450,6 +471,9 @@ AXLanguageDetectionManager::GetLanguageAnnotationForStringAttribute(
         1 /* probability */});
     return language_annotation;
   }
+#if BUILDFLAG(IS_WASM)
+  return language_annotation;
+#else
   // Calculate top 3 languages.
   // TODO(akihiroota): What's a reasonable number of languages to have
   // cld_3 find? Should vary.
@@ -480,6 +504,7 @@ AXLanguageDetectionManager::GetLanguageAnnotationForStringAttribute(
     }
   }
   return language_annotation;
+#endif
 }
 
 AXLanguageDetectionObserver::AXLanguageDetectionObserver(AXTree* tree) {

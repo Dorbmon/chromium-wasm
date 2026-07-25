@@ -5,6 +5,7 @@
 #include "components/language_detection/core/language_detection_model.h"
 
 #include <algorithm>
+#include <map>
 #include <vector>
 
 #include "base/containers/span.h"

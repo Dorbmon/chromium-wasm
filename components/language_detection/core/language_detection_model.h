@@ -5,7 +5,14 @@
 #ifndef COMPONENTS_LANGUAGE_DETECTION_CORE_LANGUAGE_DETECTION_MODEL_H_
 #define COMPONENTS_LANGUAGE_DETECTION_CORE_LANGUAGE_DETECTION_MODEL_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/component_export.h"
@@ -13,11 +20,13 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
-#include "third_party/tflite_support/src/tensorflow_lite_support/cc/task/core/category.h"
+#include "build/build_config.h"
 
+#if !BUILDFLAG(IS_WASM)
 namespace tflite::task::text::nlclassifier {
 class NLClassifier;
 }  // namespace tflite::task::text::nlclassifier
+#endif
 
 namespace language_detection {
 
@@ -135,6 +144,7 @@ class COMPONENT_EXPORT(LANGUAGE_DETECTION) LanguageDetectionModel {
   static constexpr size_t kScanWindowSize = 128;
 
  private:
+#if !BUILDFLAG(IS_WASM)
   // An owned NLClassifier.
   using OwnedNLClassifier =
       std::unique_ptr<tflite::task::text::nlclassifier::NLClassifier>;
@@ -146,23 +156,30 @@ class COMPONENT_EXPORT(LANGUAGE_DETECTION) LanguageDetectionModel {
       base::File model_file,
       int num_threads);
 
+  // Updates the model if the not unset.
+  void SetModel(std::optional<ModelAndSize> model_and_size);
+#endif
+
   void NotifyModelLoaded();
+
+#if BUILDFLAG(IS_WASM)
+  void CompleteUnsupportedModelLoad(base::OnceClosure callback);
+#endif
 
   // Execute the model on the provided |sampled_str| and return the top
   // language and the models score/confidence in that prediction.
   Prediction DetectTopLanguage(std::u16string_view sampled_str) const;
 
-  // Updates the model if the not unset.
-  void SetModel(std::optional<ModelAndSize> model_and_size);
-
   SEQUENCE_CHECKER(sequence_checker_);
 
+#if !BUILDFLAG(IS_WASM)
   // The tflite classifier that can determine the language of text.
   OwnedNLClassifier lang_detection_model_;
 
   // The number of threads to use for model inference. -1 tells TFLite to use
   // its internal default logic.
   const int num_threads_ = -1;
+#endif
 
   static constexpr int kMaxPendingCallbacksCount = 100;
   // Pending callbacks for waiting the model to be available.

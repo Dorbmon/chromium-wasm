@@ -18,11 +18,15 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "components/language/core/common/language_util.h"
 #include "components/language_detection/core/constants.h"
 #include "components/translate/core/common/translate_metrics.h"
 #include "components/translate/core/language_detection/chinese_script_classifier.h"
+
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/cld_3/src/src/nnet_language_identifier.h"
+#endif
 
 namespace {
 
@@ -100,6 +104,14 @@ bool CanModelComplementSubCode(std::string_view page_language,
                           base::CompareCase::INSENSITIVE_ASCII);
 }
 
+bool IsUnknownPrediction(std::string_view language) {
+#if BUILDFLAG(IS_WASM)
+  return language == language_detection::kUnknownLanguageCode;
+#else
+  return language == chrome_lang_id::NNetLanguageIdentifier::kUnknown;
+#endif
+}
+
 }  // namespace
 
 namespace translate {
@@ -116,7 +128,7 @@ std::string FilterDetectedLanguage(const std::string& utf8_text,
   if (detected_language == "bg-Latn" || detected_language == "el-Latn" ||
       detected_language == "ja-Latn" || detected_language == "ru-Latn" ||
       detected_language == "zh-Latn" ||
-      detected_language == chrome_lang_id::NNetLanguageIdentifier::kUnknown) {
+      IsUnknownPrediction(detected_language)) {
     return language_detection::kUnknownLanguageCode;
   }
 
@@ -146,6 +158,14 @@ std::string FilterDetectedLanguage(const std::string& utf8_text,
 std::string DetermineTextLanguage(const std::string& utf8_text,
                                   bool* is_model_reliable,
                                   float& model_reliability_score) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(utf8_text);
+  if (is_model_reliable) {
+    *is_model_reliable = false;
+  }
+  model_reliability_score = 0.0f;
+  return language_detection::kUnknownLanguageCode;
+#else
   // Make a prediction.
   chrome_lang_id::NNetLanguageIdentifier lang_id;
   const chrome_lang_id::NNetLanguageIdentifier::Result lang_id_result =
@@ -170,6 +190,7 @@ std::string DetermineTextLanguage(const std::string& utf8_text,
   model_reliability_score = model_probability;
   return FilterDetectedLanguage(utf8_text, detected_language,
                                 is_detection_reliable);
+#endif
 }
 
 std::string DeterminePageLanguage(std::string_view code,

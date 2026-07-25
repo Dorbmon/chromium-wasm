@@ -24,6 +24,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
 #include "components/language_detection/content/renderer/language_detection_agent.h"
 #include "components/language_detection/core/constants.h"
 #include "components/language_detection/core/language_detection_provider.h"
@@ -70,8 +71,10 @@ const int kTranslateStatusCheckDelayMs = 400;
 // Language name passed to the Translate element for it to detect the language.
 const char kAutoDetectionLanguage[] = "auto";
 
+#if !BUILDFLAG(IS_WASM)
 // The current CLD model version.
 constexpr char kCLDModelVersion[] = "CLD3";
+#endif
 
 // Returns the language detection model that is shared across the RenderFrames
 // in the renderer.
@@ -223,12 +226,21 @@ void TranslateAgent::PageCaptured(
         translate_language_detection_model_->GetModelVersion();
     details.has_run_lang_detection = true;
   } else {
+#if BUILDFLAG(IS_WASM)
+    // The M3 port does not ship either language-detection model. Preserve
+    // author-provided page language without reporting a model run.
+    language = translate::DeterminePageLanguageNoModel(
+        content_language, html_lang,
+        translate::LanguageVerificationType::kModelNotAvailable);
+    details.has_run_lang_detection = false;
+#else
     // Use CLD3 and page contents to assist with language detection.
     language = DeterminePageLanguage(
         content_language, html_lang, contents->as_string(),
         &model_detected_language, &is_model_reliable, model_reliability_score);
     detection_model_version = kCLDModelVersion;
     details.has_run_lang_detection = true;
+#endif
   }
 
   details.time = base::Time::Now();
