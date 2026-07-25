@@ -4,11 +4,15 @@
 
 #include "services/network/public/cpp/transferable_socket.h"
 
+#include "base/check_op.h"
+
 #if BUILDFLAG(IS_WIN)
 #include <winsock2.h>
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include "base/files/scoped_file.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
+#elif BUILDFLAG(IS_WASM)
+// Wasm has no host-native socket handle to include.
 #else
 #error "unsupported platform"
 #endif
@@ -50,6 +54,11 @@ TransferableSocket::TransferableSocket(net::SocketDescriptor socket,
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 TransferableSocket::TransferableSocket(net::SocketDescriptor socket)
     : socket_(base::ScopedFD(socket)) {}
+#elif BUILDFLAG(IS_WASM)
+TransferableSocket::TransferableSocket(net::SocketDescriptor socket) {
+  CHECK_EQ(socket, net::kInvalidSocket)
+      << "Native socket transfer is unsupported on WebAssembly";
+}
 #else
 #error "Unsupported Platform"
 #endif  // BUILDFLAG(IS_WIN)
@@ -62,6 +71,8 @@ TransferableSocket::TransferableSocket(TransferableSocket&& other) = default;
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 TransferableSocket::TransferableSocket(mojo::PlatformHandle socket)
     : socket_(std::move(socket)) {}
+#elif BUILDFLAG(IS_WASM)
+// Wasm has no native-handle constructor.
 #elif !BUILDFLAG(IS_WIN)
 #error "Unsupported Platform"
 #endif
@@ -85,6 +96,8 @@ net::SocketDescriptor TransferableSocket::TakeSocket() {
   return s;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   return socket_.ReleaseFD();
+#elif BUILDFLAG(IS_WASM)
+  return net::kInvalidSocket;
 #else
 #error "Unsupported platform"
 #endif  // BUILDFLAG(IS_WIN)

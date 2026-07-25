@@ -45,6 +45,10 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE) TransferableSocket {
                      base::ProcessId destination_process_id);
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   explicit TransferableSocket(net::SocketDescriptor socket);
+#elif BUILDFLAG(IS_WASM)
+  // M3 has no native socket transport. Only net::kInvalidSocket is accepted
+  // so callers can preserve explicit failure results across Mojo.
+  explicit TransferableSocket(net::SocketDescriptor socket);
 #else
 #error "Unsupported Platform"
 #endif
@@ -67,6 +71,8 @@ class COMPONENT_EXPORT(NETWORK_CPP_BASE) TransferableSocket {
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   explicit TransferableSocket(mojo::PlatformHandle socket);
   mojo::PlatformHandle socket_;
+#elif BUILDFLAG(IS_WASM)
+  // There is deliberately no native handle storage on Wasm.
 #else
 #error "Unsupported platform"
 #endif  // BUILDFLAG(IS_WIN)

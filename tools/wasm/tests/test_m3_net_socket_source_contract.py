@@ -54,6 +54,70 @@ class M3NetSocketSourceContractTest(unittest.TestCase):
         self.assertIn("return kInvalidSocket;", wasm_implementation_branch)
         self.assertNotIn("::socket(", wasm_implementation_branch)
 
+    def test_transferable_socket_only_roundtrips_the_invalid_sentinel(
+        self,
+    ) -> None:
+        header = source(
+            "services/network/public/cpp/transferable_socket.h"
+        )
+        implementation = source(
+            "services/network/public/cpp/transferable_socket.cc"
+        )
+        traits = source(
+            "services/network/public/cpp/"
+            "transferable_socket_mojom_traits.cc"
+        )
+        unit_test = source(
+            "services/network/public/cpp/transferable_socket_unittest.cc"
+        )
+
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            "  // M3 has no native socket transport.",
+            header,
+        )
+        self.assertIn(
+            "CHECK_EQ(socket, net::kInvalidSocket)\n"
+            '      << "Native socket transfer is unsupported on '
+            'WebAssembly";',
+            implementation,
+        )
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            "  return net::kInvalidSocket;",
+            implementation,
+        )
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            "// Wasm has no native-handle constructor.\n"
+            "#elif !BUILDFLAG(IS_WIN)",
+            implementation,
+        )
+        self.assertIn(
+            "// M3 can serialize only the empty handle representing "
+            "kInvalidSocket.\n"
+            "  return mojo::PlatformHandle();",
+            traits,
+        )
+        self.assertIn(
+            "if (socket.type() != mojo::PlatformHandle::Type::kNone)\n"
+            "    return false;",
+            traits,
+        )
+        self.assertIn(
+            "#if !BUILDFLAG(IS_WASM)\n"
+            "TEST_F(TransferableSocketTest, MojoTraits)",
+            unit_test,
+        )
+        self.assertIn(
+            "TEST_F(TransferableSocketTest, InvalidSocketMojoTraits)",
+            unit_test,
+        )
+        self.assertIn(
+            "TEST_F(TransferableSocketTest, EmptyMojoTraits)",
+            unit_test,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ namespace {
 
 using TransferableSocketTest = testing::Test;
 
+#if !BUILDFLAG(IS_WASM)
 TEST_F(TransferableSocketTest, MojoTraits) {
 #if BUILDFLAG(IS_WIN)
   net::EnsureWinsockInit();
@@ -45,6 +46,7 @@ TEST_F(TransferableSocketTest, MojoTraits) {
   net::SocketDescriptor s = roundtripped.TakeSocket();
   ASSERT_NE(s, net::kInvalidSocket);
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 TEST_F(TransferableSocketTest, InvalidSocketMojoTraits) {
   auto socket_desc = net::kInvalidSocket;
