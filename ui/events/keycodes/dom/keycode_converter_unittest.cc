@@ -144,6 +144,19 @@ TEST(UsbKeycodeMap, Basic) {
   }
 }
 
+#if BUILDFLAG(IS_WASM)
+TEST(UsbKeycodeMap, WasmUsesDomCodeValueAsNativeSurrogate) {
+  const ui::DomCode dom_code =
+      ui::KeycodeConverter::CodeStringToDomCode("KeyA");
+  ASSERT_EQ(ui::DomCode::US_A, dom_code);
+  EXPECT_EQ(static_cast<int>(dom_code),
+            ui::KeycodeConverter::DomCodeToNativeKeycode(dom_code));
+  EXPECT_EQ(
+      dom_code,
+      ui::KeycodeConverter::NativeKeycodeToDomCode(static_cast<int>(dom_code)));
+}
+#endif
+
 TEST(UsbKeycodeMap, NonExistent) {
   // Verify that UsbKeycodeToNativeKeycode works for a non-existent USB keycode.
   EXPECT_EQ(

@@ -40,6 +40,12 @@ namespace {
 #elif BUILDFLAG(IS_FUCHSIA)
 #define DOM_CODE(usb, evdev, xkb, win, mac, code, id) \
   { usb, usb, code }
+#elif BUILDFLAG(IS_WASM)
+// Wasm has no OS scan-code ABI. Use the platform-neutral USB/DomCode value as
+// Chromium's internal native-code surrogate; host DOM code strings map through
+// CodeStringToDomCode().
+#define DOM_CODE(usb, evdev, xkb, win, mac, code, id) \
+  { usb, usb, code }
 #else
 #error Unsupported platform
 #endif
