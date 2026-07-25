@@ -101,8 +101,10 @@ bool GpuFenceHandle::is_null() const {
   return !smart_fence_.get()->scoped_fence_.is_valid();
 #elif BUILDFLAG(IS_WIN)
   return !smart_fence_.get()->scoped_fence_.is_valid();
-#else
+#elif BUILDFLAG(IS_WASM)
   return true;
+#else
+#error "Unsupported platform."
 #endif
 }
 

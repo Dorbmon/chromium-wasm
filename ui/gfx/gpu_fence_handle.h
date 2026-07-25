@@ -21,6 +21,10 @@
 #include "base/win/scoped_handle.h"
 #endif
 
+#if BUILDFLAG(IS_WASM)
+#include "ui/gfx/gpu_fence_handle_wasm.h"
+#endif
+
 namespace gfx {
 
 // TODO(crbug.com/40728014): Make this a class instead of struct.
@@ -31,6 +35,8 @@ struct COMPONENT_EXPORT(GFX) GpuFenceHandle {
   using ScopedPlatformFence = zx::event;
 #elif BUILDFLAG(IS_WIN)
   using ScopedPlatformFence = base::win::ScopedHandle;
+#elif BUILDFLAG(IS_WASM)
+  using ScopedPlatformFence = ScopedWasmGpuFence;
 #endif
 
   GpuFenceHandle(const GpuFenceHandle&) = delete;

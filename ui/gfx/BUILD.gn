@@ -599,6 +599,10 @@ source_set("memory_buffer_sources") {
     "surface_origin.h",
   ]
 
+  if (is_wasm) {
+    sources += [ "gpu_fence_handle_wasm.h" ]
+  }
+
   if (use_blink) {
     sources += [
       "ca_layer_params.cc",
