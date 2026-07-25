@@ -39,7 +39,7 @@ from m0_common import (
 )
 
 
-REQUIRED_SUBMODULES = (
+M0_REQUIRED_SUBMODULES = (
     "v8",
     "skia",
     "dawn",
@@ -55,6 +55,55 @@ REQUIRED_SUBMODULES = (
     "protobuf_javascript",
     "googletest",
 )
+
+M3_ADDITIONAL_SUBMODULES = (
+    "catapult",
+    "ced",
+    "crc32c",
+    "dragonbox",
+    "emoji_segmenter",
+    "expat",
+    "fast_float",
+    "flac",
+    "flatbuffers",
+    "fp16",
+    "freetype",
+    "harfbuzz",
+    "highway",
+    "leveldb",
+    "libaddressinput",
+    "libcxx",
+    "libcxxabi",
+    "libgav1",
+    "libjpeg_turbo",
+    "libphonenumber",
+    "libsrtp",
+    "libwebm",
+    "libwebp",
+    "lss",
+    "llvm_libc",
+    "material_color_utilities",
+    "ots",
+    "quiche",
+    "re2",
+    "search_engines_data",
+    "snappy",
+    "sqlite",
+    "vulkan_headers",
+    "wuffs",
+    "zstd",
+)
+
+M3_REQUIRED_SUBMODULES = (
+    *M0_REQUIRED_SUBMODULES,
+    *M3_ADDITIONAL_SUBMODULES,
+)
+
+M3_REQUIRED_NESTED_SUBMODULES = ("dawn_webgpu_headers",)
+
+# Retain the complete current set as the public contract used by source-pin
+# tests. Callers selecting a historical milestone should pass its exact set.
+REQUIRED_SUBMODULES = M3_REQUIRED_SUBMODULES
 
 
 def require_equal(label: str, actual: str, expected: str) -> None:
@@ -78,9 +127,29 @@ def gitlink_revision(base_revision: str, path: str) -> str:
     return fields[2]
 
 
+def nested_gitlink_revision(
+    repository: Path, base_revision: str, path: str
+) -> str:
+    entry = checked_output(
+        ["git", "ls-tree", base_revision, "--", path], cwd=repository
+    )
+    fields = entry.split()
+    if len(fields) < 3 or fields[1] != "commit":
+        raise M0Error(
+            f"{path} is not a gitlink at nested revision {base_revision}"
+        )
+    return fields[2]
+
+
 def ensure_source_dependencies(
-    manifest: dict[str, object], *, install: bool
+    manifest: dict[str, object],
+    *,
+    install: bool,
+    required_submodules: tuple[str, ...] | None = None,
 ) -> None:
+    if required_submodules is None:
+        required_submodules = REQUIRED_SUBMODULES
+
     chromium = manifest["chromium"]
     assert isinstance(chromium, dict)
     base_revision = str(chromium["revision"])
@@ -138,10 +207,21 @@ def ensure_source_dependencies(
             str(raw_dependency["revision"]),
         )
 
-    if install:
+    def dependency_path(name: str) -> Path:
+        dependency = dependencies[name]
+        assert isinstance(dependency, dict)
+        return REPO_ROOT / str(dependency["path"])
+
+    missing_dependencies = [
+        name
+        for name in required_submodules
+        if not (dependency_path(name) / ".git").exists()
+    ]
+
+    if install and missing_dependencies:
         paths = [
-            str(dependencies[name]["path"])  # type: ignore[index]
-            for name in REQUIRED_SUBMODULES
+            relative_to_repo(dependency_path(name))
+            for name in missing_dependencies
         ]
         run(
             [
@@ -157,12 +237,21 @@ def ensure_source_dependencies(
             capture_output=False,
         )
 
-    for name in REQUIRED_SUBMODULES:
+        missing_dependencies = [
+            name
+            for name in required_submodules
+            if not (dependency_path(name) / ".git").exists()
+        ]
+    if missing_dependencies:
+        raise M0Error(
+            "required dependencies are not initialized: "
+            + ", ".join(missing_dependencies)
+        )
+
+    for name in required_submodules:
         dependency = dependencies[name]
         assert isinstance(dependency, dict)
         dependency_path = REPO_ROOT / str(dependency["path"])
-        if not (dependency_path / ".git").exists():
-            raise M0Error(f"required dependency is not initialized: {name}")
         require_equal(
             f"{name} checkout",
             checked_output(["git", "rev-parse", "HEAD"], cwd=dependency_path),
@@ -173,6 +262,75 @@ def ensure_source_dependencies(
             cwd=dependency_path,
         )
         require_equal(f"{name} worktree", status, "")
+
+
+def ensure_nested_source_dependencies(
+    manifest: dict[str, object],
+    *,
+    install: bool,
+    required_submodules: tuple[str, ...] = M3_REQUIRED_NESTED_SUBMODULES,
+) -> None:
+    dependencies = manifest["git_dependencies"]
+    nested_dependencies = manifest["nested_git_dependencies"]
+    assert isinstance(dependencies, dict)
+    assert isinstance(nested_dependencies, dict)
+
+    for name in required_submodules:
+        nested = nested_dependencies[name]
+        assert isinstance(nested, dict)
+        parent_name = str(nested["parent"])
+        parent = dependencies[parent_name]
+        assert isinstance(parent, dict)
+        parent_root = REPO_ROOT / str(parent["path"])
+        relative_path = Path(str(nested["path"]))
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise M0Error(
+                f"nested dependency path must stay in {parent_name}: "
+                f"{relative_path}"
+            )
+        nested_root = parent_root / relative_path
+        require_equal(
+            f"{name} parent gitlink",
+            nested_gitlink_revision(
+                parent_root,
+                str(parent["revision"]),
+                relative_path.as_posix(),
+            ),
+            str(nested["revision"]),
+        )
+
+        if install and not (nested_root / ".git").exists():
+            run(
+                [
+                    "git",
+                    "submodule",
+                    "update",
+                    "--init",
+                    "--depth=1",
+                    "--jobs=3",
+                    "--",
+                    relative_path.as_posix(),
+                ],
+                cwd=parent_root,
+                capture_output=False,
+            )
+        if not (nested_root / ".git").exists():
+            raise M0Error(
+                f"required nested dependency is not initialized: {name}"
+            )
+        require_equal(
+            f"{name} checkout",
+            checked_output(["git", "rev-parse", "HEAD"], cwd=nested_root),
+            str(nested["revision"]),
+        )
+        require_equal(
+            f"{name} worktree",
+            checked_output(
+                ["git", "status", "--short", "--untracked-files=no"],
+                cwd=nested_root,
+            ),
+            "",
+        )
 
 
 def test262_checkout_path(test262: dict[str, object]) -> Path:
@@ -1243,7 +1401,16 @@ def ensure_rust_toolchain(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Install or verify the exact M0 source and toolchain pins."
+        description=(
+            "Install or verify exact Chromium Wasm milestone source and "
+            "toolchain pins."
+        )
+    )
+    parser.add_argument(
+        "--profile",
+        choices=("m0", "m3"),
+        default="m0",
+        help="select the exact milestone source dependency closure",
     )
     parser.add_argument(
         "--verify-only",
@@ -1257,10 +1424,24 @@ def main() -> int:
         print_context(
             "bootstrap.py",
             manifest,
-            mode="verify-only" if args.verify_only else "install",
+            mode=(
+                f"{'verify-only' if args.verify_only else 'install'}:"
+                f"{args.profile}"
+            ),
         )
         install = not args.verify_only
-        ensure_source_dependencies(manifest, install=install)
+        required_submodules = (
+            M0_REQUIRED_SUBMODULES
+            if args.profile == "m0"
+            else M3_REQUIRED_SUBMODULES
+        )
+        ensure_source_dependencies(
+            manifest,
+            install=install,
+            required_submodules=required_submodules,
+        )
+        if args.profile == "m3":
+            ensure_nested_source_dependencies(manifest, install=install)
         ensure_test262(manifest, install=install)
         cipd, bootstrap_python = ensure_depot_tools_bootstrap(
             manifest, install=install
@@ -1277,7 +1458,10 @@ def main() -> int:
         )
         ensure_generated_configuration(manifest, install=install)
         ensure_rust_toolchain(manifest, install=install)
-        print("CHROMIUM_WASM_M0:BOOTSTRAP_PASS", flush=True)
+        print(
+            f"CHROMIUM_WASM_{args.profile.upper()}:BOOTSTRAP_PASS",
+            flush=True,
+        )
         return 0
     except (M0Error, KeyError, TypeError, ValueError) as exc:
         return fail(str(exc))

@@ -53,6 +53,142 @@
       "path": "third_party/libyuv",
       "revision": "8aeb3a9ca36341a640528e59b34b5d641080dca8"
     },
+    "catapult": {
+      "path": "third_party/catapult",
+      "revision": "2852bb7e91e4995502ffb72b7ed21412ee157914"
+    },
+    "ced": {
+      "path": "third_party/ced/src",
+      "revision": "ba412eaaacd3186085babcd901679a48863c7dd5"
+    },
+    "crc32c": {
+      "path": "third_party/crc32c/src",
+      "revision": "d3d60ac6e0f16780bcfcc825385e1d338801a558"
+    },
+    "dragonbox": {
+      "path": "third_party/dragonbox/src",
+      "revision": "beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44"
+    },
+    "emoji_segmenter": {
+      "path": "third_party/emoji-segmenter/src",
+      "revision": "955936be8b391e00835257059607d7c5b72ce744"
+    },
+    "expat": {
+      "path": "third_party/expat/src",
+      "revision": "9bdfbc77e3355405ceefbe59420abed953a5657e"
+    },
+    "fast_float": {
+      "path": "third_party/fast_float/src",
+      "revision": "cfd12ebcf1f82c4fd44a950b1815dd0549bc8d89"
+    },
+    "flac": {
+      "path": "third_party/flac",
+      "revision": "e7108e2ed031547c3759217819a032065c820d73"
+    },
+    "flatbuffers": {
+      "path": "third_party/flatbuffers/src",
+      "revision": "a86afae9399bbe631d1ea0783f8816e780e236cc"
+    },
+    "fp16": {
+      "path": "third_party/fp16/src",
+      "revision": "3d2de1816307bac63c16a297e8c4dc501b4076df"
+    },
+    "freetype": {
+      "path": "third_party/freetype/src",
+      "revision": "b08a2eb0dd37f4a6c886fa5b0ecf5b3e1d27aac7"
+    },
+    "harfbuzz": {
+      "path": "third_party/harfbuzz/src",
+      "revision": "d639197ed529b05c27f38ebaab365a621d5edad5"
+    },
+    "highway": {
+      "path": "third_party/highway/src",
+      "revision": "2607d3b5b0113992fe84d3848859eae13b3b52c1"
+    },
+    "leveldb": {
+      "path": "third_party/leveldatabase/src",
+      "revision": "7ee830d02b623e8ffe0b95d59a74db1e58da04c5"
+    },
+    "libaddressinput": {
+      "path": "third_party/libaddressinput/src",
+      "revision": "81eb9628382b07d371d8ea0b11badf7de3857fd5"
+    },
+    "libcxx": {
+      "path": "third_party/libc++/src",
+      "revision": "5abc7f839700f0f17338434e1c1c6a8c87c00c11"
+    },
+    "libcxxabi": {
+      "path": "third_party/libc++abi/src",
+      "revision": "8f11bb1d4438d0239d0dfc1bd9456a9f31629dda"
+    },
+    "libgav1": {
+      "path": "third_party/libgav1/src",
+      "revision": "66ac17620652635392f6ab24065c77b035e281c9"
+    },
+    "libjpeg_turbo": {
+      "path": "third_party/libjpeg_turbo",
+      "revision": "640f254ad0fa03f6b1f29f89b7dd9366f2f6e533"
+    },
+    "libphonenumber": {
+      "path": "third_party/libphonenumber/src",
+      "revision": "c25558e39e2bcc9f26f7a2a1ef804324169eaf8f"
+    },
+    "libwebm": {
+      "path": "third_party/libwebm/source",
+      "revision": "6184f4484a826724b5293837134ab9492261b941"
+    },
+    "libwebp": {
+      "path": "third_party/libwebp/src",
+      "revision": "c00d83f6642e7838a12bb03bca94237f03cc2e00"
+    },
+    "lss": {
+      "path": "third_party/lss",
+      "revision": "29164a80da4d41134950d76d55199ea33fbb9613"
+    },
+    "llvm_libc": {
+      "path": "third_party/llvm-libc/src",
+      "revision": "6e5ec6f78d8b9f2e8a50fcc5692d1fc8b2964bde"
+    },
+    "material_color_utilities": {
+      "path": "third_party/material_color_utilities/src",
+      "revision": "13434b50dcb64a482cc91191f8cf6151d90f5465"
+    },
+    "ots": {
+      "path": "third_party/ots/src",
+      "revision": "46bea9879127d0ff1c6601b078e2ce98e83fcd33"
+    },
+    "quiche": {
+      "path": "net/third_party/quiche/src",
+      "revision": "997d654308b6a1a17435e472ef5190aecb12e3eb"
+    },
+    "re2": {
+      "path": "third_party/re2/src",
+      "revision": "972a15cedd008d846f1a39b2e88ce48d7f166cbd"
+    },
+    "search_engines_data": {
+      "path": "third_party/search_engines_data/resources",
+      "revision": "1aab872af8d44dcf59362d7ba8255922f74fafde"
+    },
+    "snappy": {
+      "path": "third_party/snappy/src",
+      "revision": "32ded457c0b1fe78ceb8397632c416568d6714a0"
+    },
+    "sqlite": {
+      "path": "third_party/sqlite/src",
+      "revision": "fc121d7d03cd6cbf499ec06a5112b263471b1181"
+    },
+    "vulkan_headers": {
+      "path": "third_party/vulkan-headers/src",
+      "revision": "015e25c3c91b70eb1a754d36fb14c4ba6ad9b0b9"
+    },
+    "wuffs": {
+      "path": "third_party/wuffs/src",
+      "revision": "50869df0ea703b4f41b238bfe26aec6ec9c86889"
+    },
+    "zstd": {
+      "path": "third_party/zstd/src",
+      "revision": "5233c58e6ca0b1c4c6b353ad79649191ed195bdc"
+    },
     "compiler_rt": {
       "path": "third_party/compiler-rt/src",
       "revision": "03641f7a5b05e48e318d64369057db577cafc594"
@@ -73,6 +209,13 @@
     "googletest": {
       "path": "third_party/googletest/src",
       "revision": "4fe3307fb2d9f86d19777c7eb0e4809e9694dde7"
+    }
+  },
+  "nested_git_dependencies": {
+    "dawn_webgpu_headers": {
+      "parent": "dawn",
+      "path": "third_party/webgpu-headers/src",
+      "revision": "dc16b3e531cf4f31be54236d1a3e988ba5f295a2"
     }
   },
   "gn": {

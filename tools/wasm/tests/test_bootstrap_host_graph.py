@@ -44,6 +44,11 @@ class HostGraphManifestTest(unittest.TestCase):
             "webrtc": "1f975dfd761af6e5d76d28333191973b258d82a8",
             "ffmpeg": "ad41607c61898cf7150e0fb20fe4bbabd44922a3",
             "libyuv": "8aeb3a9ca36341a640528e59b34b5d641080dca8",
+            "libjpeg_turbo": (
+                "640f254ad0fa03f6b1f29f89b7dd9366f2f6e533"
+            ),
+            "quiche": "997d654308b6a1a17435e472ef5190aecb12e3eb",
+            "re2": "972a15cedd008d846f1a39b2e88ce48d7f166cbd",
         }
         self.assertTrue(expected.keys() <= set(bootstrap.REQUIRED_SUBMODULES))
         for name, revision in expected.items():
@@ -61,6 +66,97 @@ class HostGraphManifestTest(unittest.TestCase):
                     ),
                     revision,
                 )
+
+    def test_m3_source_profile_covers_selected_content_gitlinks(self) -> None:
+        manifest = load_manifest()
+        chromium_revision = manifest["chromium"]["revision"]
+        dependencies = manifest["git_dependencies"]
+        expected_names = (
+            "catapult",
+            "ced",
+            "crc32c",
+            "dragonbox",
+            "emoji_segmenter",
+            "expat",
+            "fast_float",
+            "flac",
+            "flatbuffers",
+            "fp16",
+            "freetype",
+            "harfbuzz",
+            "highway",
+            "leveldb",
+            "libaddressinput",
+            "libcxx",
+            "libcxxabi",
+            "libgav1",
+            "libjpeg_turbo",
+            "libphonenumber",
+            "libsrtp",
+            "libwebm",
+            "libwebp",
+            "lss",
+            "llvm_libc",
+            "material_color_utilities",
+            "ots",
+            "quiche",
+            "re2",
+            "search_engines_data",
+            "snappy",
+            "sqlite",
+            "vulkan_headers",
+            "wuffs",
+            "zstd",
+        )
+        self.assertEqual(
+            bootstrap.M3_ADDITIONAL_SUBMODULES, expected_names
+        )
+        self.assertEqual(
+            bootstrap.M3_REQUIRED_SUBMODULES,
+            (
+                *bootstrap.M0_REQUIRED_SUBMODULES,
+                *expected_names,
+            ),
+        )
+        self.assertEqual(
+            set(bootstrap.M0_REQUIRED_SUBMODULES)
+            & set(bootstrap.M3_ADDITIONAL_SUBMODULES),
+            set(),
+        )
+        for name in expected_names:
+            with self.subTest(name=name):
+                dependency = dependencies[name]
+                self.assertEqual(
+                    bootstrap.gitlink_revision(
+                        chromium_revision, dependency["path"]
+                    ),
+                    dependency.get(
+                        "upstream_revision", dependency["revision"]
+                    ),
+                )
+
+    def test_m3_nested_dawn_dependency_matches_its_gitlink(self) -> None:
+        manifest = load_manifest()
+        dependencies = manifest["git_dependencies"]
+        nested = manifest["nested_git_dependencies"][
+            "dawn_webgpu_headers"
+        ]
+        dawn = dependencies[nested["parent"]]
+        self.assertEqual(
+            bootstrap.M3_REQUIRED_NESTED_SUBMODULES,
+            ("dawn_webgpu_headers",),
+        )
+        self.assertEqual(
+            bootstrap.nested_gitlink_revision(
+                bootstrap.REPO_ROOT / dawn["path"],
+                dawn["revision"],
+                nested["path"],
+            ),
+            nested["revision"],
+        )
+        bootstrap.ensure_nested_source_dependencies(
+            manifest, install=False
+        )
 
     def test_host_proto_dependencies_match_upstream_gitlinks(self) -> None:
         manifest = load_manifest()
