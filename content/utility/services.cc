@@ -12,15 +12,12 @@
 #include "base/task/single_thread_task_runner.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/services/storage/public/mojom/storage_service.mojom.h"
 #include "components/services/storage/storage_service_impl.h"
 #include "content/child/child_process.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/utility/content_utility_client.h"
 #include "content/public/utility/utility_thread.h"
-#include "content/services/auction_worklet/auction_worklet_service_impl.h"
-#include "content/services/auction_worklet/public/mojom/auction_worklet_service.mojom.h"
 #include "device/vr/buildflags/buildflags.h"
 #include "media/base/media_switches.h"
 #include "media/gpu/buildflags.h"
@@ -29,15 +26,21 @@
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/bindings/service_factory.h"
 #include "services/accessibility/buildflags.h"
-#include "services/audio/service_factory.h"
 #include "services/data_decoder/data_decoder_service.h"
 #include "services/network/network_service.h"
-#include "services/on_device_model/on_device_model_service.h"
-#include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
 #include "services/tracing/public/mojom/tracing_service.mojom.h"
 #include "services/tracing/tracing_service.h"
-#include "services/video_capture/public/mojom/video_capture_service.mojom.h"
-#include "services/video_capture/video_capture_service_impl.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "components/optimization_guide/core/optimization_guide_features.h"  // nogncheck
+#include "content/services/auction_worklet/auction_worklet_service_impl.h"  // nogncheck
+#include "content/services/auction_worklet/public/mojom/auction_worklet_service.mojom.h"  // nogncheck
+#include "services/audio/service_factory.h"  // nogncheck
+#include "services/on_device_model/on_device_model_service.h"  // nogncheck
+#include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"  // nogncheck
+#include "services/video_capture/public/mojom/video_capture_service.mojom.h"  // nogncheck
+#include "services/video_capture/video_capture_service_impl.h"  // nogncheck
+#endif
 
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/mach_logging.h"
@@ -109,9 +112,9 @@ extern sandbox::TargetServices* g_utility_target_services;
 #endif  // BUILDFLAG(ENABLE_ACCESSIBILITY_SERVICE)
 
 #if BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)
-#include "media/capture/capture_switches.h"
-#include "services/viz/public/cpp/gpu/gpu.h"
-#include "services/viz/public/mojom/gpu.mojom.h"
+#include "media/capture/capture_switches.h"          // nogncheck
+#include "services/viz/public/cpp/gpu/gpu.h"         // nogncheck
+#include "services/viz/public/mojom/gpu.mojom.h"     // nogncheck
 #endif  // BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)
 
 namespace content {
@@ -163,6 +166,7 @@ class ContentCdmServiceClient final : public media::CdmService::Client {
 };
 #endif  // BUILDFLAG(ENABLE_LIBRARY_CDMS)
 
+#if !BUILDFLAG(IS_WASM)
 class UtilityThreadVideoCaptureServiceImpl final
     : public video_capture::VideoCaptureServiceImpl {
  public:
@@ -179,6 +183,7 @@ class UtilityThreadVideoCaptureServiceImpl final
       base::win::ScopedCOMInitializer::kMTA};
 #endif  // BUILDFLAG(IS_WIN)
 };
+#endif  // !BUILDFLAG(IS_WASM)
 
 auto RunNetworkService(
     mojo::PendingReceiver<network::mojom::NetworkService> receiver) {
@@ -193,6 +198,7 @@ auto RunNetworkService(
       /*delay_initialization_until_set_client=*/true);
 }
 
+#if !BUILDFLAG(IS_WASM)
 auto RunAuctionWorkletService(
     mojo::PendingReceiver<auction_worklet::mojom::AuctionWorkletService>
         receiver) {
@@ -251,6 +257,7 @@ auto RunAudio(mojo::PendingReceiver<audio::mojom::AudioService> receiver) {
 
   return audio::CreateStandaloneService(std::move(receiver));
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 #if BUILDFLAG(IS_WIN) || (BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
                           (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)))
@@ -311,6 +318,7 @@ auto RunTracing(
   return std::make_unique<tracing::TracingService>(std::move(receiver));
 }
 
+#if !BUILDFLAG(IS_WASM)
 auto RunVideoCapture(
     mojo::PendingReceiver<video_capture::mojom::VideoCaptureService> receiver) {
 #if BUILDFLAG(IS_CHROMEOS)
@@ -339,6 +347,7 @@ auto RunOnDeviceModel(
         receiver) {
   return on_device_model::OnDeviceModelService::Create(std::move(receiver));
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 #if BUILDFLAG(ENABLE_VR) && !BUILDFLAG(IS_ANDROID)
 auto RunXrDeviceService(
@@ -392,21 +401,27 @@ void RegisterIOThreadServices(mojo::ServiceFactory& services) {
 }
 
 void RegisterMainThreadServices(mojo::ServiceFactory& services) {
+#if !BUILDFLAG(IS_WASM)
   services.Add(RunAuctionWorkletService);
   services.Add(RunAudio);
+#endif
 
   services.Add(RunDataDecoder);
   services.Add(RunStorageService);
   services.Add(RunTracing);
+#if !BUILDFLAG(IS_WASM)
   services.Add(RunVideoCapture);
+#endif
 
 #if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
   services.Add(RunOOPVideoDecoderFactoryProcessService);
 #endif
 
+#if !BUILDFLAG(IS_WASM)
   if (optimization_guide::features::CanLaunchOnDeviceModelService()) {
     services.Add(RunOnDeviceModel);
   }
+#endif
 
 #if BUILDFLAG(IS_WIN) || (BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
                           (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)))

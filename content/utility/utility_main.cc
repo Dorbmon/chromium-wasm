@@ -29,14 +29,17 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/common/main_function_params.h"
 #include "content/public/utility/content_utility_client.h"
-#include "content/utility/on_device_model/on_device_model_sandbox_init.h"
 #include "content/utility/utility_thread_impl.h"
 #include "printing/buildflags/buildflags.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 #include "sandbox/policy/sandbox.h"
 #include "sandbox/policy/sandbox_type.h"
-#include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
 #include "services/tracing/public/cpp/trace_startup.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "content/utility/on_device_model/on_device_model_sandbox_init.h"
+#include "services/on_device_model/public/mojom/on_device_model_service.mojom.h"
+#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include "base/file_descriptor_store.h"
@@ -272,9 +275,11 @@ int UtilityMain(MainFunctionParams parameters) {
     }
   }
 
+#if !BUILDFLAG(IS_WASM)
   if (utility_sub_type == on_device_model::mojom::OnDeviceModelService::Name_) {
     CHECK(on_device_model::PreSandboxInit());
   }
+#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
@@ -485,9 +490,11 @@ int UtilityMain(MainFunctionParams parameters) {
 
   run_loop.Run();
 
+#if !BUILDFLAG(IS_WASM)
   if (utility_sub_type == on_device_model::mojom::OnDeviceModelService::Name_) {
     CHECK(on_device_model::Shutdown());
   }
+#endif
 
 #if defined(LEAK_SANITIZER)
   // Invoke LeakSanitizer before shutting down the utility thread, to avoid

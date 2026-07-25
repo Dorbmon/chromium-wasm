@@ -40,7 +40,6 @@ source_set("utility") {
     "//base",
     "//build:branding_buildflags",
     "//components/on_device_translation/buildflags",
-    "//components/optimization_guide/core:features",
     "//components/services/storage",
     "//components/services/storage/public/mojom",
     "//content:export",
@@ -48,8 +47,6 @@ source_set("utility") {
     "//content/public/child:child_sources",
     "//content/public/common:common_sources",
     "//content/public/common:content_descriptor_keys",
-    "//content/services/auction_worklet",
-    "//content/utility/on_device_model:on_device_model_sandbox_init",
     "//device/vr/buildflags",
     "//media:media_buildflags",
     "//mojo/public/cpp/bindings",
@@ -57,25 +54,33 @@ source_set("utility") {
     "//printing/buildflags",
     "//sandbox",
     "//services/accessibility:buildflags",
-    "//services/audio",
     "//services/data_decoder:lib",
     "//services/data_decoder/public/cpp",
     "//services/network:network_service",
-    "//services/on_device_model:on_device_model_service",
-    "//services/on_device_model/public/cpp",
-    "//services/on_device_model/public/mojom",
     "//services/screen_ai/buildflags",
     "//services/service_manager/public/cpp",
     "//services/service_manager/public/mojom",
-    "//services/shape_detection:lib",
-    "//services/shape_detection/public/mojom",
     "//services/tracing:lib",
     "//services/tracing/public/mojom",
-    "//services/video_capture:lib",
-    "//services/video_capture/public/mojom:constants",
     "//third_party/blink/public:blink_headers",
     "//url",
   ]
+
+  if (!is_wasm) {
+    deps += [
+      "//components/optimization_guide/core:features",
+      "//content/services/auction_worklet",
+      "//content/utility/on_device_model:on_device_model_sandbox_init",
+      "//services/audio",
+      "//services/on_device_model:on_device_model_service",
+      "//services/on_device_model/public/cpp",
+      "//services/on_device_model/public/mojom",
+      "//services/shape_detection:lib",
+      "//services/shape_detection/public/mojom",
+      "//services/video_capture:lib",
+      "//services/video_capture/public/mojom:constants",
+    ]
+  }
 
   # When library CDMs are supported, we support running the CDM in the utility
   # process using mojo MediaService. On Windows, we use MediaFoundationService.
