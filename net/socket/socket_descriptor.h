@@ -17,6 +17,9 @@ namespace net {
 #if BUILDFLAG(IS_WIN)
 typedef UINT_PTR SocketDescriptor;
 const SocketDescriptor kInvalidSocket = (SocketDescriptor)(~0);
+#elif BUILDFLAG(IS_WASM)
+typedef int SocketDescriptor;
+const SocketDescriptor kInvalidSocket = -1;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 typedef int SocketDescriptor;
 const SocketDescriptor kInvalidSocket = -1;

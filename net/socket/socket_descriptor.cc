@@ -10,6 +10,8 @@
 #include <ws2tcpip.h>
 
 #include "net/base/winsock_init.h"
+#elif BUILDFLAG(IS_WASM)
+#include <errno.h>
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -35,6 +37,11 @@ SocketDescriptor CreatePlatformSocket(int family, int type, int protocol) {
     }
   }
   return result;
+#elif BUILDFLAG(IS_WASM)
+  // M3 has no native socket provider. WISP-backed stream sockets are an
+  // explicit later transport boundary.
+  errno = ENOSYS;
+  return kInvalidSocket;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   SocketDescriptor result = ::socket(family, type, protocol);
   return result;
