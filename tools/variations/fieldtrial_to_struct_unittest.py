@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import os
+import tempfile
 import unittest
 
 import fieldtrial_to_struct
@@ -388,6 +389,29 @@ class FieldTrialToStruct(unittest.TestCase):
         expected_cc = expected.read()
         self.assertEqual(expected_cc, test_cc)
     os.unlink(cc_filename)
+
+  def test_FieldTrialToStructMainWithEmptyConfig(self):
+    schema = self.FullRelativePath(
+              '/../../components/variations/field_trial_config/'
+              'field_trial_testing_config_schema.json')
+    unittest_data_dir = self.FullRelativePath('/unittest_data/')
+    with tempfile.TemporaryDirectory() as output_dir:
+      fieldtrial_to_struct.main([
+        '--schema=' + schema,
+        '--destbase=' + output_dir,
+        '--output=empty_output',
+        '--empty',
+        unittest_data_dir + 'test_config.json'
+      ])
+      with open(os.path.join(output_dir, 'empty_output.h'), 'r') as header:
+        header_text = header.read()
+      with open(os.path.join(output_dir, 'empty_output.cc'), 'r') as cc:
+        cc_text = cc.read()
+
+    self.assertIn('struct FieldTrialTestingConfig', header_text)
+    self.assertIn('const FieldTrialTestingConfig kFieldTrialConfig', cc_text)
+    self.assertNotIn('Study::PLATFORM_', cc_text)
+    self.assertNotIn('array_kFieldTrialConfig_studies', cc_text)
 
 if __name__ == '__main__':
   unittest.main()

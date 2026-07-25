@@ -175,6 +175,8 @@ def main(arguments):
       help='C++ namespace for generated files. e.g search_providers.')
   parser.add_option('-p', '--platform', action='append', choices=_platforms,
       help='target platform for the field trial, mandatory.')
+  parser.add_option('--empty', action='store_true',
+      help='generate the schema with no field trial testing studies.')
   parser.add_option('-s', '--schema', help='path to the schema file, '
       'mandatory.')
   parser.add_option('-o', '--output', help='output filename, '
@@ -190,8 +192,8 @@ def main(arguments):
   if not opts.schema:
     parser.error('You must specify a --schema.')
 
-  if not opts.platform:
-    parser.error('You must specify at least 1 --platform.')
+  if bool(opts.platform) == bool(opts.empty):
+    parser.error('Specify either at least 1 --platform or --empty.')
 
   description_filename = os.path.normpath(args[0])
   shortroot = opts.output
@@ -206,7 +208,8 @@ def main(arguments):
     basepath = ''
 
   schema = _Load(opts.schema)
-  description = _LoadFieldTrialConfig(description_filename, opts.platform)
+  description = _LoadFieldTrialConfig(
+      description_filename, opts.platform if opts.platform else [])
   json_to_struct.GenerateStruct(
       basepath, output_root, opts.namespace, schema, description,
       os.path.split(description_filename)[1], os.path.split(opts.schema)[1],

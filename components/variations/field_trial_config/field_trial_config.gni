@@ -1,0 +1,26 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/chrome_build.gni")
+
+declare_args() {
+  # Set to true to disable activation and generated data for field trial tests
+  # specified in testing/variations/fieldtrial_testing_config.json.
+  # Note: For Chrome-branded Android builds, activation is always disabled to
+  # avoid the binary size impact (~40 KiB), but the generated data remains
+  # available when this argument is false.
+  disable_fieldtrial_testing_config = false
+
+  # Set to true to force activation of field trial tests specified in
+  # testing/variations/fieldtrial_testing_config.json.
+  force_enable_fieldtrial_testing_config = false
+}
+
+assert(!(disable_fieldtrial_testing_config &&
+             force_enable_fieldtrial_testing_config),
+       "Cannot enable and disable field trial testing at the same time.")
+
+fieldtrial_testing_enabled =
+    force_enable_fieldtrial_testing_config ||
+    (!disable_fieldtrial_testing_config && !(is_android && is_chrome_branded))
