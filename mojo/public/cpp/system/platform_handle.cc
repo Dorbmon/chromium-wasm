@@ -40,6 +40,11 @@ base::ScopedPlatformFile PlatformFileFromPlatformHandleValue(uint64_t value) {
 
 ScopedSharedBufferHandle WrapPlatformSharedMemoryRegion(
     base::subtle::PlatformSharedMemoryRegion region) {
+#if BUILDFLAG(IS_WASM)
+  // Wasm shared-memory handles are process-local capabilities, not native
+  // platform handles. The C wrapping API cannot represent them.
+  return ScopedSharedBufferHandle();
+#else
   if (!region.IsValid()) {
     return ScopedSharedBufferHandle();
   }
@@ -100,10 +105,16 @@ ScopedSharedBufferHandle WrapPlatformSharedMemoryRegion(
     return ScopedSharedBufferHandle();
   }
   return ScopedSharedBufferHandle(SharedBufferHandle(mojo_handle));
+#endif
 }
 
 base::subtle::PlatformSharedMemoryRegion UnwrapPlatformSharedMemoryRegion(
     ScopedSharedBufferHandle mojo_handle) {
+#if BUILDFLAG(IS_WASM)
+  // See WrapPlatformSharedMemoryRegion(). Process-local Wasm capabilities
+  // cannot be reconstructed from the native platform-handle C API.
+  return base::subtle::PlatformSharedMemoryRegion();
+#else
   if (!mojo_handle.is_valid()) {
     return base::subtle::PlatformSharedMemoryRegion();
   }
@@ -205,6 +216,7 @@ base::subtle::PlatformSharedMemoryRegion UnwrapPlatformSharedMemoryRegion(
     return base::subtle::PlatformSharedMemoryRegion();
   }
   return *std::move(maybe_region);
+#endif
 }
 
 ScopedHandle WrapPlatformHandle(PlatformHandle handle) {
