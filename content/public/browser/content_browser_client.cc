@@ -27,7 +27,9 @@
 #include "components/language_detection/content/browser/content_language_detection_driver.h"
 #include "components/language_detection/content/common/language_detection.mojom.h"
 #include "components/language_detection/core/browser/language_detection_model_provider.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/browser/ai/echo_ai_manager_impl.h"
+#endif
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/webauth/default_authenticator_request_client_delegate.h"
 #include "content/public/browser/anchor_element_preconnect_delegate.h"
@@ -1909,7 +1911,12 @@ void ContentBrowserClient::BindAIManager(
     base::SupportsUserData* context_user_data,
     RenderFrameHost* rfh,
     mojo::PendingReceiver<blink::mojom::AIManager> receiver) {
+#if BUILDFLAG(IS_WASM)
+  NOTIMPLEMENTED_LOG_ONCE();
+  receiver.reset();
+#else
   EchoAIManagerImpl::Create(std::move(receiver));
+#endif
 }
 
 void ContentBrowserClient::BindTranslationManager(
