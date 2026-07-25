@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import datetime
 import hashlib
 import json
 import os
@@ -40,7 +41,14 @@ from m0_common import (
 
 REQUIRED_SUBMODULES = (
     "v8",
+    "skia",
+    "dawn",
     "angle",
+    "boringssl",
+    "icu",
+    "webrtc",
+    "ffmpeg",
+    "libyuv",
     "compiler_rt",
     "depot_tools",
     "perfetto",
@@ -91,6 +99,26 @@ def ensure_source_dependencies(
         version_parts[key] for key in ("MAJOR", "MINOR", "BUILD", "PATCH")
     )
     require_equal("Chromium version", source_version, str(chromium["tag"]))
+    if "commit_timestamp" in chromium:
+        require_equal(
+            "Chromium commit timestamp",
+            checked_output(
+                ["git", "show", "-s", "--format=%ct", base_revision]
+            ),
+            str(chromium["commit_timestamp"]),
+        )
+    if "commit_position" in chromium:
+        commit_message = checked_output(
+            ["git", "show", "-s", "--format=%B", base_revision]
+        )
+        expected_position = (
+            f"Cr-Commit-Position: {chromium['commit_position']}"
+        )
+        if expected_position not in commit_message.splitlines():
+            raise M0Error(
+                "Chromium commit position mismatch: expected "
+                f"{chromium['commit_position']}"
+            )
 
     dependencies = manifest["git_dependencies"]
     assert isinstance(dependencies, dict)
@@ -832,6 +860,21 @@ def ensure_generated_configuration(
     generated_gclient_args = REPO_ROOT / "build/config/gclient_args.gni"
     gclient_template = Path(__file__).with_name("gclient_args.gni")
     expected_gclient_args = gclient_template.read_text(encoding="utf-8")
+    chromium = manifest["chromium"]
+    assert isinstance(chromium, dict)
+    commit_timestamp = int(chromium["commit_timestamp"])
+    commit_position = str(chromium["commit_position"])
+    lastchange_revision = f"{chromium['revision']}-{commit_position}"
+    lastchange_year = datetime.datetime.fromtimestamp(
+        commit_timestamp, datetime.timezone.utc
+    ).year
+    generated_lastchange = REPO_ROOT / "build/util/LASTCHANGE"
+    expected_lastchange = (
+        f"LASTCHANGE={lastchange_revision}\n"
+        f"LASTCHANGE_YEAR={lastchange_year}\n"
+    )
+    generated_lastchange_time = REPO_ROOT / "build/util/LASTCHANGE.committime"
+    expected_lastchange_time = str(commit_timestamp)
     out_profiles = (
         (
             "generated Wasm GN args",
@@ -843,16 +886,45 @@ def ensure_generated_configuration(
             REPO_ROOT / "out/wasm-v8-m2/args.gn",
             gn_args_text(manifest, "m2_v8_gn_args"),
         ),
+        (
+            "generated M3 Content GN args",
+            REPO_ROOT / "out/wasm-content-m3/args.gn",
+            gn_args_text(manifest, "m3_content_gn_args"),
+        ),
     )
 
-    if install and not generated_gclient_args.exists():
-        generated_gclient_args.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(gclient_template, generated_gclient_args)
     if install:
+        generated_gclient_args.parent.mkdir(parents=True, exist_ok=True)
+        if (
+            not generated_gclient_args.exists()
+            or generated_gclient_args.read_text(encoding="utf-8")
+            != expected_gclient_args
+        ):
+            shutil.copyfile(gclient_template, generated_gclient_args)
         for _, out_args, expected_out_args in out_profiles:
-            if not out_args.exists():
-                out_args.parent.mkdir(parents=True, exist_ok=True)
+            out_args.parent.mkdir(parents=True, exist_ok=True)
+            if (
+                not out_args.exists()
+                or out_args.read_text(encoding="utf-8") != expected_out_args
+            ):
                 out_args.write_text(expected_out_args, encoding="utf-8")
+        generated_lastchange.parent.mkdir(parents=True, exist_ok=True)
+        if (
+            not generated_lastchange.exists()
+            or generated_lastchange.read_text(encoding="utf-8")
+            != expected_lastchange
+        ):
+            generated_lastchange.write_text(
+                expected_lastchange, encoding="utf-8"
+            )
+        if (
+            not generated_lastchange_time.exists()
+            or generated_lastchange_time.read_text(encoding="utf-8")
+            != expected_lastchange_time
+        ):
+            generated_lastchange_time.write_text(
+                expected_lastchange_time, encoding="utf-8"
+            )
 
     if not generated_gclient_args.exists():
         raise M0Error("build/config/gclient_args.gni has not been generated")
@@ -871,6 +943,20 @@ def ensure_generated_configuration(
             out_args.read_text(encoding="utf-8"),
             expected_out_args,
         )
+    if not generated_lastchange.exists():
+        raise M0Error("build/util/LASTCHANGE has not been generated")
+    require_equal(
+        "generated Chromium LASTCHANGE",
+        generated_lastchange.read_text(encoding="utf-8"),
+        expected_lastchange,
+    )
+    if not generated_lastchange_time.exists():
+        raise M0Error("build/util/LASTCHANGE.committime has not been generated")
+    require_equal(
+        "generated Chromium LASTCHANGE timestamp",
+        generated_lastchange_time.read_text(encoding="utf-8"),
+        expected_lastchange_time,
+    )
 
 
 def verify_rust_deps_pin(manifest: dict[str, object]) -> None:

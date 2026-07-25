@@ -22,6 +22,41 @@ from m0_common import load_manifest
 
 
 class HostGraphManifestTest(unittest.TestCase):
+    def test_chromium_lastchange_metadata_matches_pinned_revision(self) -> None:
+        manifest = load_manifest()
+        chromium = manifest["chromium"]
+        self.assertEqual(chromium["commit_timestamp"], 1784580336)
+        self.assertEqual(
+            chromium["commit_position"], "refs/branch-heads/7871@{#3786}"
+        )
+
+    def test_m3_runtime_dependencies_match_upstream_gitlinks(self) -> None:
+        manifest = load_manifest()
+        chromium_revision = manifest["chromium"]["revision"]
+        dependencies = manifest["git_dependencies"]
+        expected = {
+            "skia": "587c5b0f5a7b0260826a0c19094c2d952195066e",
+            "dawn": "d089fc91e7e4881362463faf8efe9ae435e34660",
+            "boringssl": (
+                "3a9254f16eda7a4c5d2260039ff23456a0a34de4"
+            ),
+            "icu": "3859e64eed5d34544b27fbcab0ac1685ce83df3c",
+            "webrtc": "1f975dfd761af6e5d76d28333191973b258d82a8",
+            "ffmpeg": "ad41607c61898cf7150e0fb20fe4bbabd44922a3",
+            "libyuv": "8aeb3a9ca36341a640528e59b34b5d641080dca8",
+        }
+        self.assertTrue(expected.keys() <= set(bootstrap.REQUIRED_SUBMODULES))
+        for name, revision in expected.items():
+            with self.subTest(name=name):
+                dependency = dependencies[name]
+                self.assertEqual(dependency["revision"], revision)
+                self.assertEqual(
+                    bootstrap.gitlink_revision(
+                        chromium_revision, dependency["path"]
+                    ),
+                    revision,
+                )
+
     def test_host_proto_dependencies_match_upstream_gitlinks(self) -> None:
         manifest = load_manifest()
         chromium_revision = manifest["chromium"]["revision"]

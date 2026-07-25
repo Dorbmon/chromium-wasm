@@ -212,6 +212,22 @@ class ManifestTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, arguments)
 
+    def test_manifest_has_reproducible_m3_content_args(self) -> None:
+        manifest = load_manifest()
+        arguments = gn_args_text(manifest, "m3_content_gn_args")
+        for expected in (
+            "enable_chromium_wasm_v8 = true\n",
+            "enable_chromium_wasm_content = true\n",
+            "use_aura = true\n",
+            "use_ozone = true\n",
+            "toolkit_views = false\n",
+            'v8_target_cpu = "arm"\n',
+            "v8_jitless = true\n",
+            "v8_use_external_startup_data = false\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, arguments)
+
 
 class CommonTest(unittest.TestCase):
     def test_context_identifies_port_base_and_manifest(self) -> None:
@@ -354,7 +370,7 @@ class BootstrapTest(unittest.TestCase):
             ("em++", ["-c", "input.cc"]),
         )
 
-    def test_generated_configuration_includes_m2_v8_profile(self) -> None:
+    def test_generated_configuration_includes_milestone_profiles(self) -> None:
         manifest = load_manifest()
         with (
             tempfile.TemporaryDirectory() as temporary_directory,
@@ -377,6 +393,27 @@ class BootstrapTest(unittest.TestCase):
                     encoding="utf-8"
                 ),
                 gn_args_text(manifest, "m2_v8_gn_args"),
+            )
+            self.assertEqual(
+                (generated_root / "out/wasm-content-m3/args.gn").read_text(
+                    encoding="utf-8"
+                ),
+                gn_args_text(manifest, "m3_content_gn_args"),
+            )
+            self.assertEqual(
+                (generated_root / "build/util/LASTCHANGE").read_text(
+                    encoding="utf-8"
+                ),
+                "LASTCHANGE="
+                "24b04c927b23c39cf9c5227cc8dc6f64a744c8e9-"
+                "refs/branch-heads/7871@{#3786}\n"
+                "LASTCHANGE_YEAR=2026\n",
+            )
+            self.assertEqual(
+                (
+                    generated_root / "build/util/LASTCHANGE.committime"
+                ).read_text(encoding="utf-8"),
+                "1784580336",
             )
             bootstrap.ensure_generated_configuration(
                 manifest, install=False
