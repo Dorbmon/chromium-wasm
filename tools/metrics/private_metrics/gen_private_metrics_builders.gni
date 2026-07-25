@@ -70,7 +70,12 @@ template("private_metrics_builders") {
     deps = [
       ":generate_${target_name}",
       "//base",
-      "//components/metrics/private_metrics",
     ]
+
+    if (is_wasm && invoker.type == "dwa") {
+      deps += [ "//components/metrics/dwa:dwa_entry_builder_base" ]
+    } else {
+      deps += [ "//components/metrics/private_metrics" ]
+    }
   }
 }

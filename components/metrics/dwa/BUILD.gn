@@ -3,6 +3,22 @@
 # found in the LICENSE file.
 import("//tools/metrics/private_metrics/gen_private_metrics_builders.gni")
 
+if (is_wasm) {
+  source_set("dwa_entry_builder_base") {
+    sources = [
+      "dwa_entry_builder_base.cc",
+      "dwa_entry_builder_base.h",
+    ]
+    deps = [
+      "//base",
+      "//components/metrics/dwa/mojom",
+      "//components/metrics/private_metrics:dwa_recorder",
+      "//net/base:registry_controlled_domains",
+      "//url",
+    ]
+  }
+}
+
 private_metrics_builders("dwa_builders") {
   type = "dwa"
 }

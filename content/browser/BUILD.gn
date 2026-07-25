@@ -144,7 +144,6 @@ source_set("browser") {
     "//components/metrics:single_sample_metrics",
     "//components/metrics/dwa:dwa_builders",
     "//components/metrics/mapping",
-    "//components/metrics/private_metrics",
     "//components/network_session_configurator/browser",
     "//components/offline_pages/buildflags",
     "//components/offline_pages/core/request_header",
@@ -369,6 +368,14 @@ source_set("browser") {
     "//v8",
     "//v8:v8_version",
   ]
+
+  if (is_wasm) {
+    # Content records DWA events during M3, but encrypted private-metrics
+    # uploads require federated-compute/Oak services outside this milestone.
+    deps += [ "//components/metrics/private_metrics:dwa_recorder" ]
+  } else {
+    deps += [ "//components/metrics/private_metrics" ]
+  }
 
   public_deps = [
     "//base",
