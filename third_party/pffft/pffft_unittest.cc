@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest-death-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/pffft/src/fftpack.h"
@@ -34,6 +35,14 @@ void PffftValidate(int fft_size, bool complex_fft) {
   float* out = static_cast<float*>(pffft_aligned_malloc(num_bytes));
   float* tmp = static_cast<float*>(pffft_aligned_malloc(num_bytes));
   float* tmp2 = static_cast<float*>(pffft_aligned_malloc(num_bytes));
+#if BUILDFLAG(IS_WASM)
+  // A null work buffer makes PFFFT allocate input-sized scratch on the stack.
+  // The largest cases exceed Emscripten's default 64 KiB pthread stack.
+  float* work = static_cast<float*>(pffft_aligned_malloc(num_bytes));
+  ASSERT_TRUE(work);
+#else
+  float* work = nullptr;
+#endif
 
   for (int pass = 0; pass < 2; ++pass) {
     SCOPED_TRACE(pass);
@@ -74,10 +83,10 @@ void PffftValidate(int fft_size, bool complex_fft) {
     // Pass 0: non canonical ordering of transform coefficients.
     if (pass == 0) {
       // Test forward transform, with different input / output.
-      pffft_transform(pffft_status, in, tmp, nullptr, PFFFT_FORWARD);
+      pffft_transform(pffft_status, in, tmp, work, PFFFT_FORWARD);
       memcpy(tmp2, tmp, num_bytes);
       memcpy(tmp, in, num_bytes);
-      pffft_transform(pffft_status, tmp, tmp, nullptr, PFFFT_FORWARD);
+      pffft_transform(pffft_status, tmp, tmp, work, PFFFT_FORWARD);
       for (k = 0; k < num_floats; ++k) {
         SCOPED_TRACE(k);
         EXPECT_EQ(tmp2[k], tmp[k]);
@@ -93,10 +102,10 @@ void PffftValidate(int fft_size, bool complex_fft) {
       pffft_zreorder(pffft_status, tmp, out, PFFFT_FORWARD);
     } else {
       // Pass 1: canonical ordering of transform coefficients.
-      pffft_transform_ordered(pffft_status, in, tmp, nullptr, PFFFT_FORWARD);
+      pffft_transform_ordered(pffft_status, in, tmp, work, PFFFT_FORWARD);
       memcpy(tmp2, tmp, num_bytes);
       memcpy(tmp, in, num_bytes);
-      pffft_transform_ordered(pffft_status, tmp, tmp, nullptr, PFFFT_FORWARD);
+      pffft_transform_ordered(pffft_status, tmp, tmp, work, PFFFT_FORWARD);
       for (k = 0; k < num_floats; ++k) {
         SCOPED_TRACE(k);
         EXPECT_EQ(tmp2[k], tmp[k]);
@@ -111,18 +120,16 @@ void PffftValidate(int fft_size, bool complex_fft) {
       }
 
       if (pass == 0) {
-        pffft_transform(pffft_status, tmp, out, nullptr, PFFFT_BACKWARD);
+        pffft_transform(pffft_status, tmp, out, work, PFFFT_BACKWARD);
       } else {
-        pffft_transform_ordered(pffft_status, tmp, out, nullptr,
-                                PFFFT_BACKWARD);
+        pffft_transform_ordered(pffft_status, tmp, out, work, PFFFT_BACKWARD);
       }
       memcpy(tmp2, out, num_bytes);
       memcpy(out, tmp, num_bytes);
       if (pass == 0) {
-        pffft_transform(pffft_status, out, out, nullptr, PFFFT_BACKWARD);
+        pffft_transform(pffft_status, out, out, work, PFFFT_BACKWARD);
       } else {
-        pffft_transform_ordered(pffft_status, out, out, nullptr,
-                                PFFFT_BACKWARD);
+        pffft_transform_ordered(pffft_status, out, out, work, PFFFT_BACKWARD);
       }
       for (k = 0; k < num_floats; ++k) {
         assert(tmp2[k] == out[k]);
@@ -171,9 +178,16 @@ void PffftValidate(int fft_size, bool complex_fft) {
   pffft_aligned_free(out);
   pffft_aligned_free(tmp);
   pffft_aligned_free(tmp2);
+  pffft_aligned_free(work);
 }
 
 }  // namespace
+
+#if BUILDFLAG(IS_WASM)
+TEST(PffftTest, UsesScalarFallbackOnWasm) {
+  EXPECT_EQ(1, pffft_simd_size());
+}
+#endif
 
 TEST(PffftTest, ValidateReal) {
   for (int fft_size : kFftSizes) {
