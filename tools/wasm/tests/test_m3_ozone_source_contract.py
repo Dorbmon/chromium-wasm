@@ -126,6 +126,27 @@ class M3OzoneSourceContractTest(unittest.TestCase):
             exchange_factory,
         )
 
+    def test_clipboard_stays_process_local_until_host_integration(self) -> None:
+        build = source("ui/base/clipboard/BUILD.gn")
+        factory = source(
+            "ui/base/clipboard/clipboard_factory_ozone.cc"
+        )
+
+        wasm_sources = build.split(
+            'sources += [ "clipboard_factory_ozone.cc" ]', 1
+        )[1].split("deps +=", 1)[0]
+        self.assertIn("if (!is_wasm)", wasm_sources)
+        self.assertIn('"clipboard_ozone.cc"', wasm_sources)
+        self.assertIn("BUILDFLAG(IS_WASM)", factory)
+        self.assertIn(
+            "return new ClipboardNonBacked;",
+            factory,
+        )
+        self.assertIn(
+            "Host clipboard integration is outside the M3 gate",
+            factory,
+        )
+
     def test_window_input_and_host_decorations_are_explicitly_unsupported(
         self,
     ) -> None:

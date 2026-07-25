@@ -193,11 +193,13 @@ component("clipboard") {
 
   if (use_aura) {
     if (use_ozone) {
-      sources += [
-        "clipboard_factory_ozone.cc",
-        "clipboard_ozone.cc",
-        "clipboard_ozone.h",
-      ]
+      sources += [ "clipboard_factory_ozone.cc" ]
+      if (!is_wasm) {
+        sources += [
+          "clipboard_ozone.cc",
+          "clipboard_ozone.h",
+        ]
+      }
       deps += [
         "//ui/base",
         "//ui/ozone",
