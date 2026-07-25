@@ -772,6 +772,17 @@ source_set("unit_tests") {
     "//v8",
   ]
 
+  if (is_wasm) {
+    sources -= [
+      "mediarecorder/audio_track_mojo_encoder_unittest.cc",
+      "mediarecorder/audio_track_recorder_unittest.cc",
+      "mediarecorder/media_recorder_handler_unittest.cc",
+      "mediarecorder/media_recorder_unittest.cc",
+      "mediarecorder/video_track_recorder_unittest.cc",
+    ]
+    deps -= [ "//third_party/opus" ]
+  }
+
   # This uses target_os rather than current_os (which is what is_android is set
   # from) for the case of generating the v8 context snapshot for android. When
   # generating the snapshot for android, blink is compiled with

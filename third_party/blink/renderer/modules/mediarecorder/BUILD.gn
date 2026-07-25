@@ -10,12 +10,6 @@ blink_modules_sources("mediarecorder") {
   sources = [
     "audio_track_encoder.cc",
     "audio_track_encoder.h",
-    "audio_track_mojo_encoder.cc",
-    "audio_track_mojo_encoder.h",
-    "audio_track_opus_encoder.cc",
-    "audio_track_opus_encoder.h",
-    "audio_track_pcm_encoder.cc",
-    "audio_track_pcm_encoder.h",
     "audio_track_recorder.cc",
     "audio_track_recorder.h",
     "blob_event.cc",
@@ -40,8 +34,20 @@ blink_modules_sources("mediarecorder") {
     "//media/mojo/clients",
     "//media/mojo/mojom",
     "//third_party/blink/renderer/modules/mediastream",
-    "//third_party/libvpx",
     "//third_party/libyuv",
-    "//third_party/opus",
   ]
+  if (!is_wasm) {
+    sources += [
+      "audio_track_mojo_encoder.cc",
+      "audio_track_mojo_encoder.h",
+      "audio_track_opus_encoder.cc",
+      "audio_track_opus_encoder.h",
+      "audio_track_pcm_encoder.cc",
+      "audio_track_pcm_encoder.h",
+    ]
+    deps += [ "//third_party/opus" ]
+  }
+  if (media_use_libvpx) {
+    deps += [ "//third_party/libvpx" ]
+  }
 }

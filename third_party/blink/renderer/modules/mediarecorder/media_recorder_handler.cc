@@ -21,6 +21,7 @@
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_codecs.h"
 #include "media/base/audio_parameters.h"
@@ -219,6 +220,9 @@ bool MediaRecorderHandler::CanSupportMimeType(const String& type,
                                               const String& web_codecs,
                                               CanSupportMimeTypeCaller caller) {
   DCHECK(main_thread_task_runner_->RunsTasksInCurrentSequence());
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   // An empty |type| means MediaRecorderHandler can choose its preferred codecs.
   if (type.empty())
     return true;
@@ -251,6 +255,7 @@ bool MediaRecorderHandler::CanSupportMimeType(const String& type,
     }
   }
   return true;
+#endif
 }
 
 const char* MediaRecorderHandler::StringFromCanSupportMimeTypeCaller(
@@ -269,6 +274,9 @@ const char* MediaRecorderHandler::StringFromCanSupportMimeTypeCaller(
 
 bool MediaRecorderHandler::CanSupportMimeTypeForCodec(const String& type,
                                                       std::string_view codec) {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   const bool video = CanSupportVideoType(type);
 
   // Both |video| and |audio| support empty |codecs|; |type| == "video" supports
@@ -451,6 +459,7 @@ bool MediaRecorderHandler::CanSupportMimeTypeForCodec(const String& type,
     return false;
   }
   return true;
+#endif
 }
 
 bool MediaRecorderHandler::Initialize(

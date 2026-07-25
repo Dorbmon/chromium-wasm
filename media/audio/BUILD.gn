@@ -78,8 +78,6 @@ source_set("audio") {
     "audio_manager.h",
     "audio_manager_base.cc",
     "audio_manager_base.h",
-    "audio_opus_encoder.cc",
-    "audio_opus_encoder.h",
     "audio_output_device.cc",
     "audio_output_device.h",
     "audio_output_device_thread_callback.cc",
@@ -139,7 +137,6 @@ source_set("audio") {
     "//build:chromecast_buildflags",
     "//media/base",
     "//third_party/flac",
-    "//third_party/opus",
     "//url",
   ]
   libs = []
@@ -148,6 +145,14 @@ source_set("audio") {
     ":platform_config",
     "//media:subcomponent_config",
   ]
+
+  if (!is_wasm) {
+    sources += [
+      "audio_opus_encoder.cc",
+      "audio_opus_encoder.h",
+    ]
+    deps += [ "//third_party/opus" ]
+  }
 
   if (is_apple) {
     sources += [
@@ -441,7 +446,6 @@ source_set("unit_tests") {
     "audio_debug_recording_manager_unittest.cc",
     "audio_device_description_unittest.cc",
     "audio_device_stats_reporter_unittest.cc",
-    "audio_encoders_unittest.cc",
     "audio_input_device_unittest.cc",
     "audio_input_stream_data_interceptor_unittest.cc",
     "audio_input_unittest.cc",
@@ -466,9 +470,12 @@ source_set("unit_tests") {
     "//media:test_support",
     "//testing/gmock",
     "//testing/gtest",
-    "//third_party/opus",
     "//url",
   ]
+  if (!is_wasm) {
+    sources += [ "audio_encoders_unittest.cc" ]
+    deps += [ "//third_party/opus" ]
+  }
 
   configs += [
     ":platform_config",

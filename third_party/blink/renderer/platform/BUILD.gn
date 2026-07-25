@@ -1677,6 +1677,17 @@ component("platform") {
 
   sources -= blink_platform_avx_files
 
+  if (is_wasm) {
+    sources -= [
+      "peerconnection/audio_codec_factory.cc",
+      "peerconnection/video_codec_factory.cc",
+    ]
+    sources += [
+      "peerconnection/audio_codec_factory_wasm.cc",
+      "peerconnection/video_codec_factory_wasm.cc",
+    ]
+  }
+
   # Add in the generated files.
   sources += get_target_outputs(":character_data") +
              get_target_outputs(":color_data") +

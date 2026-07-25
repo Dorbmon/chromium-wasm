@@ -13,16 +13,22 @@
 #include "base/trace_event/common/trace_event_common.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
 #include "media/audio/audio_opus_encoder.h"
+#endif
 #include "media/base/audio_parameters.h"
 #include "media/base/limits.h"
 #include "media/base/mime_util.h"
+#if !BUILDFLAG(IS_WASM)
 #include "media/base/offloading_audio_encoder.h"
 #include "media/mojo/clients/mojo_audio_encoder.h"
 #include "media/mojo/mojom/interface_factory.mojom.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+#endif
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/blink/public/platform/platform.h"
+#endif
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_aac_encoder_config.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_data_init.h"
@@ -74,6 +80,7 @@ bool VerifyParameterValues(const T& value,
   return false;
 }
 
+#if !BUILDFLAG(IS_WASM)
 bool VerifyDurationValues(int64_t microseconds,
                           String error_message_base_base,
                           String* js_error_message) {
@@ -90,6 +97,7 @@ bool VerifyDurationValues(int64_t microseconds,
   *js_error_message = error_builder.ToString();
   return false;
 }
+#endif
 
 AudioEncoderTraits::ParsedConfig* ParseAacConfigStatic(
     const AacEncoderConfig* aac_config,
@@ -279,6 +287,11 @@ AudioEncoderTraits::ParsedConfig* ParseConfigStatic(
 
 bool VerifyCodecSupportStatic(AudioEncoderTraits::ParsedConfig* config,
                               String* js_error_message) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(config);
+  *js_error_message = "Audio encoding is unsupported on Wasm.";
+  return false;
+#else
   if (config->options.channels < 1 ||
       config->options.channels > media::limits::kMaxChannels) {
     *js_error_message = String::Format(
@@ -356,6 +369,7 @@ bool VerifyCodecSupportStatic(AudioEncoderTraits::ParsedConfig* config,
       *js_error_message = "Unsupported codec type.";
       return false;
   }
+#endif
 }
 
 AacEncoderConfig* CopyAacConfig(const AacEncoderConfig& config) {
@@ -399,6 +413,7 @@ AudioEncoderConfig* CopyConfig(const AudioEncoderConfig& config) {
   return result;
 }
 
+#if !BUILDFLAG(IS_WASM)
 std::unique_ptr<media::AudioEncoder> CreateSoftwareAudioEncoder(
     media::AudioCodec codec) {
   if (codec != media::AudioCodec::kOpus)
@@ -424,6 +439,7 @@ std::unique_ptr<media::AudioEncoder> CreatePlatformAudioEncoder(
       encoder_remote.InitWithNewPipeAndPassReceiver());
   return std::make_unique<media::MojoAudioEncoder>(std::move(encoder_remote));
 }
+#endif
 
 }  // namespace
 
@@ -452,12 +468,17 @@ AudioEncoder::~AudioEncoder() = default;
 
 std::unique_ptr<media::AudioEncoder> AudioEncoder::CreateMediaAudioEncoder(
     const ParsedConfig& config) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(config);
+  return nullptr;
+#else
   if (auto result = CreatePlatformAudioEncoder(config.options.codec)) {
     is_platform_encoder_ = true;
     return result;
   }
   is_platform_encoder_ = false;
   return CreateSoftwareAudioEncoder(config.options.codec);
+#endif
 }
 
 void AudioEncoder::ProcessConfigure(Request* request) {

@@ -30,11 +30,13 @@ component("webrtc") {
     "//third_party/webrtc_overrides:webrtc_component",
   ]
 
-  if (!is_fuchsia) {
+  if (!is_fuchsia && !is_wasm) {
     deps += [ "//components/optimization_guide/core/inference:op_resolver" ]
   }
 
-  public_deps = [ "//third_party/tflite" ]
+  if (!is_wasm) {
+    public_deps = [ "//third_party/tflite" ]
+  }
 }
 
 source_set("unit_tests") {

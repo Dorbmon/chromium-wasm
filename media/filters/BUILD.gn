@@ -64,8 +64,6 @@ source_set("filters") {
     "memory_data_source.h",
     "offloading_video_decoder.cc",
     "offloading_video_decoder.h",
-    "opus_audio_decoder.cc",
-    "opus_audio_decoder.h",
     "pipeline_controller.cc",
     "pipeline_controller.h",
     "source_buffer_parse_warnings.h",
@@ -98,11 +96,18 @@ source_set("filters") {
     "//media/video",
     "//net",
     "//third_party/libyuv",
-    "//third_party/opus",
     "//ui/gfx/geometry",
   ]
 
   libs = []
+
+  if (!is_wasm) {
+    sources += [
+      "opus_audio_decoder.cc",
+      "opus_audio_decoder.h",
+    ]
+    deps += [ "//third_party/opus" ]
+  }
 
   if (proprietary_codecs) {
     sources += [

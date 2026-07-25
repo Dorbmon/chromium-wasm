@@ -258,8 +258,10 @@ test("media_unittests") {
     deps += [ "//media/remoting:media_remoting_tests" ]
   }
 
-  # The test needs OPUS_FIXED_POINT conditional define.
-  configs += [ "//third_party/opus:opus_config" ]
+  if (!is_wasm) {
+    # The test needs OPUS_FIXED_POINT conditional define.
+    configs += [ "//third_party/opus:opus_config" ]
+  }
 
   if (is_ios) {
     deps += [ ":unit_tests_bundle_data" ]
@@ -330,15 +332,17 @@ if (proprietary_codecs) {
   }
 }
 
-fuzzer_test("media_vpx_video_decoder_fuzzer") {
-  sources = [ "filters/vpx_video_decoder_fuzzertest.cc" ]
-  deps = [
-    ":media",
-    "//base",
-    "//base/test:test_support",
-  ]
-  libfuzzer_options = [ "max_len = 400000" ]
-  seed_corpus = "//media/test/data"
+if (media_use_libvpx) {
+  fuzzer_test("media_vpx_video_decoder_fuzzer") {
+    sources = [ "filters/vpx_video_decoder_fuzzertest.cc" ]
+    deps = [
+      ":media",
+      "//base",
+      "//base/test:test_support",
+    ]
+    libfuzzer_options = [ "max_len = 400000" ]
+    seed_corpus = "//media/test/data"
+  }
 }
 
 fuzzer_test("media_webm_muxer_fuzzer") {

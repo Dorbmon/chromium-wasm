@@ -28,7 +28,9 @@
 #include "media/filters/dav1d_video_decoder.h"
 #endif
 
+#if !BUILDFLAG(IS_WASM)
 #include "media/filters/opus_audio_decoder.h"
+#endif
 
 #if BUILDFLAG(ENABLE_FFMPEG)
 #include "media/filters/ffmpeg_audio_decoder.h"
@@ -90,9 +92,11 @@ void DefaultDecoderFactory::CreateAudioDecoders(
   }
 #endif
 
+#if !BUILDFLAG(IS_WASM)
   if (base::FeatureList::IsEnabled(kDirectOpusAudioDecoding)) {
     audio_decoders->push_back(std::make_unique<OpusAudioDecoder>(task_runner));
   }
+#endif
 
 #if BUILDFLAG(ENABLE_FFMPEG)
   audio_decoders->push_back(

@@ -36,7 +36,9 @@
 #include "media/video/gpu_video_accelerator_factories.h"
 #include "media/video/video_encode_accelerator_adapter.h"
 #include "media/video/video_encoder_info.h"
+#if BUILDFLAG(ENABLE_LIBVPX)
 #include "media/video/vpx_video_encoder.h"
+#endif
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/modules/mediarecorder/media_recorder_encoder_wrapper.h"
@@ -100,6 +102,7 @@ libyuv::RotationMode MediaVideoRotationToRotationMode(
 
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 constexpr MediaTrackContainerType kVp8Types[] = {
     MediaTrackContainerType::kVideoMatroska,
     MediaTrackContainerType::kVideoWebM};
@@ -142,8 +145,12 @@ constexpr struct {
      base::span{kH265Types}},
 #endif
 };
+#endif
 
 void NotifyEncoderSupportKnown(base::OnceClosure callback) {
+#if BUILDFLAG(IS_WASM)
+  std::move(callback).Run();
+#else
   if (!Platform::Current()) {
     DLOG(ERROR) << "Couldn't access the render thread";
     std::move(callback).Run();
@@ -159,9 +166,11 @@ void NotifyEncoderSupportKnown(base::OnceClosure callback) {
   }
 
   gpu_factories->NotifyEncoderSupportKnown(std::move(callback));
+#endif
 }
 
 // Obtains video encode accelerator's supported profiles.
+#if !BUILDFLAG(IS_WASM)
 media::VideoEncodeAccelerator::SupportedProfiles GetVEASupportedProfiles() {
   if (!Platform::Current()) {
     DLOG(ERROR) << "Couldn't access the render thread";
@@ -177,6 +186,7 @@ media::VideoEncodeAccelerator::SupportedProfiles GetVEASupportedProfiles() {
   return gpu_factories->GetVideoEncodeAcceleratorSupportedProfiles().value_or(
       media::VideoEncodeAccelerator::SupportedProfiles());
 }
+#endif
 
 void UmaHistogramForCodecImpl(bool uses_acceleration, media::VideoCodec codec) {
   // These values are persisted to logs. Entries should not be renumbered and
@@ -251,6 +261,9 @@ void UmaHistogramForCodecImpl(bool uses_acceleration, media::VideoCodec codec) {
 // Returns the default codec profile for |codec_id|.
 std::optional<media::VideoCodecProfile> GetMediaVideoCodecProfileForSwEncoder(
     media::VideoCodec codec) {
+#if BUILDFLAG(IS_WASM)
+  return std::nullopt;
+#else
   switch (codec) {
     case media::VideoCodec::kH264:
       return media::IsOpenH264SoftwareEncoderEnabled()
@@ -267,6 +280,7 @@ std::optional<media::VideoCodecProfile> GetMediaVideoCodecProfileForSwEncoder(
     default:
       return std::nullopt;
   }
+#endif
 }
 
 bool IsSoftwareEncoderAvailable(media::VideoCodec codec) {
@@ -700,6 +714,9 @@ VideoTrackRecorderImpl::Encoder::ConvertToI420ForSoftwareEncoder(
 // static
 media::VideoCodec VideoTrackRecorderImpl::GetPreferredCodec(
     MediaTrackContainerType type) {
+#if BUILDFLAG(IS_WASM)
+  return media::VideoCodec::kUnknown;
+#else
   for (const auto& supported_profile : GetVEASupportedProfiles()) {
     const media::VideoCodecProfile codec_profile = supported_profile.profile;
     for (auto& entry : kPreferredCodecAndVEAProfiles) {
@@ -727,6 +744,7 @@ media::VideoCodec VideoTrackRecorderImpl::GetPreferredCodec(
   }
 
   return media::VideoCodec::kVP8;
+#endif
 }
 
 // static
@@ -735,6 +753,9 @@ bool VideoTrackRecorderImpl::CanUseAcceleratedEncoder(
     size_t width,
     size_t height,
     double framerate) {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   if (IsSoftwareEncoderAvailable(codec_profile.codec)) {
     if (width < kVEAEncoderMinResolutionWidth) {
       return false;
@@ -789,6 +810,7 @@ bool VideoTrackRecorderImpl::CanUseAcceleratedEncoder(
     }
   }
   return false;
+#endif
 }
 
 VideoTrackRecorderImpl::VideoTrackRecorderImpl(

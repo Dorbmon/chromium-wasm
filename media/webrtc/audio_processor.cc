@@ -36,7 +36,6 @@
 #include "media/webrtc/constants.h"
 #include "media/webrtc/helpers.h"
 #include "media/webrtc/webrtc_features.h"
-#include "third_party/tflite/src/tensorflow/lite/model_builder.h"
 #include "third_party/webrtc/modules/audio_processing/include/audio_processing.h"
 #include "third_party/webrtc_overrides/task_queue_factory.h"
 

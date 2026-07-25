@@ -99,8 +99,10 @@
 #include "third_party/webrtc/api/rtc_event_log/rtc_event_log_factory.h"
 #include "third_party/webrtc/api/transport/goog_cc_factory.h"
 #include "third_party/webrtc/api/video_track_source_proxy_factory.h"
-#include "third_party/webrtc/media/engine/fake_video_codec_factory.h"
-#include "third_party/webrtc/modules/video_coding/codecs/h264/include/h264.h"
+#if !BUILDFLAG(IS_WASM)
+#include "third_party/webrtc/media/engine/fake_video_codec_factory.h"  // nogncheck
+#include "third_party/webrtc/modules/video_coding/codecs/h264/include/h264.h"  // nogncheck
+#endif
 #include "third_party/webrtc/rtc_base/ref_counted_object.h"
 #include "third_party/webrtc/rtc_base/ssl_adapter.h"
 #include "third_party/webrtc_overrides/environment.h"
@@ -753,10 +755,12 @@ void PeerConnectionDependencyFactory::CreatePeerConnectionFactory() {
       StaticDeps().InitializeWorkerThread();
   StaticDeps().InitializeSignalingThread();
 
+#if !BUILDFLAG(IS_WASM)
   if (!::features::IsOpenH264SoftwareEncoderEnabledForWebRTC()) {
     // Feature is to be disabled.
     webrtc::DisableRtcUseH264();
   }
+#endif
 
   EnsureWebRtcAudioDeviceImpl();
 
@@ -925,12 +929,14 @@ void PeerConnectionDependencyFactory::InitializeSignalingThread(
     }
   }
 
-  if (blink::Platform::Current()->UsesFakeCodecForPeerConnection()) {
+#if !BUILDFLAG(IS_WASM)
+  if (Platform::Current()->UsesFakeCodecForPeerConnection()) {
     webrtc_encoder_factory =
         std::make_unique<webrtc::FakeVideoEncoderFactory>();
     webrtc_decoder_factory =
         std::make_unique<webrtc::FakeVideoDecoderFactory>();
   }
+#endif
 
   webrtc::PeerConnectionFactoryDependencies pcf_deps;
   pcf_deps.worker_thread = GetWorkerThread();

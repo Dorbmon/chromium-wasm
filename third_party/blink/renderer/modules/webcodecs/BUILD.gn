@@ -104,8 +104,10 @@ blink_modules_sources("webcodecs") {
     "//media/mojo/clients",
     "//media/mojo/mojom",
     "//third_party/libyuv",
-    "//third_party/opus",
   ]
+  if (!is_wasm) {
+    deps += [ "//third_party/opus" ]
+  }
   if (enable_libaom) {
     deps += [ "//third_party/libaom" ]
   }
@@ -148,6 +150,9 @@ source_set("unit_tests") {
     "video_frame_monitor_test.cc",
     "video_frame_test.cc",
   ]
+  if (is_wasm) {
+    sources -= [ "audio_encoder_test.cc" ]
+  }
 
   configs += [
     "//third_party/blink/renderer:config",

@@ -13,9 +13,12 @@
 #include "build/build_config.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/audio_processing.h"
-#include "third_party/tflite/src/tensorflow/lite/model_builder.h"
 #include "third_party/webrtc/api/task_queue/task_queue_base.h"
 #include "third_party/webrtc/modules/audio_processing/include/audio_processing.h"
+
+namespace tflite {
+class FlatBufferModel;
+}
 
 namespace media {
 

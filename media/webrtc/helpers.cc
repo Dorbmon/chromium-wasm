@@ -18,11 +18,13 @@
 #include "third_party/webrtc/api/audio/audio_processing.h"
 #include "third_party/webrtc/api/audio/builtin_audio_processing_builder.h"
 #include "third_party/webrtc/api/audio/echo_canceller3_config.h"
-#include "third_party/webrtc/api/audio/neural_residual_echo_estimator_creator.h"
+#if !BUILDFLAG(IS_WASM)
+#include "third_party/webrtc/api/audio/neural_residual_echo_estimator_creator.h"  // nogncheck
+#endif
 #include "third_party/webrtc/modules/audio_processing/aec_dump/aec_dump_factory.h"
 #include "third_party/webrtc_overrides/environment.h"
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 #include "components/optimization_guide/core/tflite_op_resolver.h"  // nogncheck
 #endif
 
@@ -76,8 +78,8 @@ void ConfigAutomaticGainControl(const AudioProcessingSettings& settings,
       false;
   return;
 #elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS) || BUILDFLAG(IS_CASTOS) || \
-    BUILDFLAG(IS_CAST_ANDROID)
-  // Configure AGC for mobile.
+    BUILDFLAG(IS_CAST_ANDROID) || BUILDFLAG(IS_WASM)
+  // Configure AGC without native input-volume adjustment.
   apm_config.gain_controller1.enabled = false;
   apm_config.gain_controller2.enabled = true;
   apm_config.gain_controller2.fixed_digital.gain_db = 6.0f;
@@ -151,7 +153,7 @@ CreateWebRtcAudioProcessingModule(
   // Fuchsia does not use the optimization guide.
   // Avoid linking the op resolver to keep Fuchsia binary size down.
   // TODO(crbug.com/450466837): Investigate if this build guard can be avoided.
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
   if (residual_echo_estimator_model) {
     optimization_guide::TFLiteOpResolver op_resolver;
     echo_estimator = webrtc::CreateNeuralResidualEchoEstimator(
@@ -160,7 +162,11 @@ CreateWebRtcAudioProcessingModule(
       LOG(ERROR) << "Failed to initialize neural residual echo estimator.";
     }
   }
-#endif  // !BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_WASM)
+  if (residual_echo_estimator_model) {
+    LOG(ERROR) << "Neural residual echo estimation is unsupported on Wasm.";
+  }
+#endif  // !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 
 #if BUILDFLAG(SYSTEM_LOOPBACK_AS_AEC_REFERENCE)
   if (settings.use_loopback_aec_reference) {

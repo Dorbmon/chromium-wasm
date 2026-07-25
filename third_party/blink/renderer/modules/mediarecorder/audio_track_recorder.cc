@@ -11,11 +11,14 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_parameters.h"
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/blink/renderer/modules/mediarecorder/audio_track_mojo_encoder.h"
 #include "third_party/blink/renderer/modules/mediarecorder/audio_track_opus_encoder.h"
 #include "third_party/blink/renderer/modules/mediarecorder/audio_track_pcm_encoder.h"
+#endif
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
@@ -48,7 +51,11 @@ const int kMaxChunkedBufferDurationMs = 60;
 
 media::AudioCodec AudioTrackRecorder::GetPreferredCodec(
     MediaTrackContainerType type) {
+#if BUILDFLAG(IS_WASM)
+  return media::AudioCodec::kUnknown;
+#else
   return media::AudioCodec::kOpus;
+#endif
 }
 
 AudioTrackRecorder::AudioTrackRecorder(
@@ -101,6 +108,11 @@ SequenceBound<AudioTrackEncoder> AudioTrackRecorder::CreateAudioEncoder(
     AudioTrackEncoder::OnEncodedAudioErrorCB on_encoded_audio_error_cb,
     uint32_t bits_per_second,
     BitrateMode bitrate_mode) {
+#if BUILDFLAG(IS_WASM)
+  std::move(on_encoded_audio_error_cb)
+      .Run(media::EncoderStatus::Codes::kEncoderUnsupportedConfig);
+  return {};
+#else
   switch (codec) {
     case media::AudioCodec::kPCM:
       return SequenceBound<AudioTrackPcmEncoder>(
@@ -123,6 +135,7 @@ SequenceBound<AudioTrackEncoder> AudioTrackRecorder::CreateAudioEncoder(
     default:
       NOTREACHED() << "Unexpected codec value in CreateAudioEncoder.";
   }
+#endif
 }
 
 void AudioTrackRecorder::OnSetFormat(const media::AudioParameters& params) {
