@@ -179,6 +179,10 @@ UChar32 GetNextCodePoint(const FilePath::StringType* const file_name,
   // UTF-8.
   U8_NEXT(file_name->data(), cursor, static_cast<int>(file_name->length()),
           code_point);
+#elif BUILDFLAG(IS_WASM)
+  // Wasm FilePath values use UTF-8 encoding.
+  U8_NEXT(file_name->data(), cursor, static_cast<int>(file_name->length()),
+          code_point);
 #else
 #error Unsupported platform
 #endif
@@ -307,6 +311,10 @@ bool LocaleAwareCompareFilenames(const FilePath& a, const FilePath& b) {
   return CompareString16WithCollator(
              *collator, WideToUTF16(SysNativeMBToWide(a.value())),
              WideToUTF16(SysNativeMBToWide(b.value()))) == UCOL_LESS;
+#elif BUILDFLAG(IS_WASM)
+  // Wasm FilePath values use UTF-8 encoding.
+  return CompareString16WithCollator(*collator, a.AsUTF16Unsafe(),
+                                     b.AsUTF16Unsafe()) == UCOL_LESS;
 #endif
 }
 
