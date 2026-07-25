@@ -362,7 +362,9 @@ source_set("unit_tests") {
     "//third_party/re2",
   ]
 
-  data_deps = [ "//components/test/data/update_client/puffin_patch_test:puffin_patch_test_files" ]
+  if (!is_wasm) {
+    data_deps = [ "//components/test/data/update_client/puffin_patch_test:puffin_patch_test_files" ]
+  }
 }
 
 fuzzer_test("update_client_protocol_serializer_fuzzer") {
