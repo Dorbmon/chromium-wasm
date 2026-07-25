@@ -38,7 +38,7 @@
     "webrtc": {
       "path": "third_party/webrtc",
       "upstream_revision": "1f975dfd761af6e5d76d28333191973b258d82a8",
-      "revision": "3bb7f3f2b401b151cd0a82eaac874294f15abec5"
+      "revision": "6e4868761b6a5b2a1869edae93d087621cac07d5"
     },
     "libsrtp": {
       "path": "third_party/libsrtp",
