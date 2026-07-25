@@ -17,6 +17,34 @@ def source(path: str) -> str:
 
 
 class M3NetSourceContractTest(unittest.TestCase):
+    def test_wasm_uses_builtin_certificate_verification(self) -> None:
+        features = source("net/features.gni")
+
+        self.assertIn(
+            "is_win || is_mac || is_linux || is_chromeos || is_wasm",
+            features,
+        )
+        self.assertIn(
+            'assert(!is_wasm || chrome_root_store_only,\n'
+            '       "Wasm requires the builtin certificate verifier and '
+            'Chrome Root Store")',
+            features,
+        )
+
+    def test_wasm_disables_host_negotiate_authentication(self) -> None:
+        features = source("net/features.gni")
+
+        self.assertIn(
+            "!is_ios && !is_fuchsia && !is_castos && !is_cast_android && "
+            "!is_wasm",
+            features,
+        )
+        self.assertIn(
+            'assert(!is_wasm || !use_kerberos,\n'
+            '       "HTTP Negotiate requires a host GSSAPI or SSPI provider")',
+            features,
+        )
+
     def test_wasm_file_stream_uses_memfs_on_its_task_runner(self) -> None:
         build = source("net/BUILD.gn")
         context = source("net/base/file_stream_context.cc")

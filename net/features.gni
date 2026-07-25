@@ -16,11 +16,12 @@ declare_args() {
   # used; or, Cronet is being built.
   enable_websockets = use_blink && !is_cronet_build
 
-  # Enable Kerberos authentication. It is disabled by default on iOS, Fuchsia
-  # and Chromecast, at least for now. This feature needs configuration
-  # (krb5.conf and so on).
+  # Enable Kerberos authentication. It is disabled by default on iOS, Fuchsia,
+  # Chromecast, and Wasm, at least for now. This feature needs configuration
+  # (krb5.conf and so on) and a host authentication provider.
   # TODO(fuchsia): Enable kerberos on Fuchsia when it's implemented there.
-  use_kerberos = !is_ios && !is_fuchsia && !is_castos && !is_cast_android
+  use_kerberos =
+      !is_ios && !is_fuchsia && !is_castos && !is_cast_android && !is_wasm
 
   # Do not disable brotli filter by default.
   disable_brotli_filter = false
@@ -54,7 +55,9 @@ declare_args() {
 
   # Platforms for which certificate verification can only be performed using
   # the builtin cert verifier with the Chrome Root Store.
-  chrome_root_store_only = is_win || is_mac || is_linux || is_chromeos
+  # Wasm has no system certificate verifier or trust store.
+  chrome_root_store_only =
+      is_win || is_mac || is_linux || is_chromeos || is_wasm
 
   # DBSC is only supported on Windows, Linux and Mac for now.
   enable_device_bound_sessions = is_win || is_linux || is_mac
@@ -81,6 +84,10 @@ declare_args() {
 assert(!chrome_root_store_optional || !chrome_root_store_only,
        "at most one of chrome_root_store_optional and chrome_root_store_only " +
            "may be true")
+assert(!is_wasm || !use_kerberos,
+       "HTTP Negotiate requires a host GSSAPI or SSPI provider")
+assert(!is_wasm || chrome_root_store_only,
+       "Wasm requires the builtin certificate verifier and Chrome Root Store")
 
 # Needs to be in a separate declare_args since it refers to args set in the
 # previous declare_args block.
