@@ -23,7 +23,7 @@
 #include <windows.h>
 // Must be after <windows.h>
 #include <memoryapi.h>
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <sys/mman.h>
 #endif
 
@@ -40,7 +40,7 @@ void* AllocateLocalMemory(size_t size) {
   if (address) {
     return address;
   }
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   // MAP_ANON is deprecated on Linux but MAP_ANONYMOUS is not universal on Mac.
   // MAP_SHARED is not available on Linux <2.4 but required on Mac.
   address = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_SHARED,

@@ -21,7 +21,11 @@
 #include "base/threading/thread_local_storage.h"
 #include "base/trace_event/heap_profiler_allocation_context_tracker.h"  // no-presubmit-check
 #include "build/build_config.h"
-#include "partition_alloc/shim/allocator_shim.h"
+#include "partition_alloc/buildflags.h"
+
+#if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
+#include "partition_alloc/shim/allocator_shim.h"  // nogncheck
+#endif
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC)
 #include "partition_alloc/partition_alloc.h"  // nogncheck

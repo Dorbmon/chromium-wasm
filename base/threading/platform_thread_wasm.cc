@@ -18,6 +18,11 @@
 #include <emscripten/threading.h>
 
 #include "base/check.h"
+#if defined(BASE_WASM_FULL_COMPONENT)
+#include "base/memory/singleton.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_id_name_manager.h"
+#endif
 #include "base/time/time.h"
 
 namespace base {
@@ -25,21 +30,43 @@ namespace {
 
 struct ThreadParams {
   PlatformThread::Delegate* delegate;
+  bool joinable;
   ThreadType thread_type;
 };
 
+#if !defined(BASE_WASM_FULL_COMPONENT)
 thread_local std::string g_thread_name;
 
 internal::ThreadTypeManager* GetThreadTypeManager() {
   constinit thread_local internal::ThreadTypeManager thread_type_manager;
   return &thread_type_manager;
 }
+#endif
 
 void* ThreadFunc(void* params) {
   std::unique_ptr<ThreadParams> thread_params(
       static_cast<ThreadParams*>(params));
+  PlatformThread::Delegate* delegate = thread_params->delegate;
+#if defined(BASE_WASM_FULL_COMPONENT)
+  if (!thread_params->joinable) {
+    base::DisallowSingleton();
+  }
+#endif
   PlatformThread::SetCurrentThreadType(thread_params->thread_type);
-  thread_params->delegate->ThreadMain();
+
+#if defined(BASE_WASM_FULL_COMPONENT)
+  ThreadIdNameManager::GetInstance()->RegisterThread(
+      PlatformThread::CurrentHandle().platform_handle(),
+      PlatformThread::CurrentId());
+#endif
+
+  delegate->ThreadMain();
+
+#if defined(BASE_WASM_FULL_COMPONENT)
+  ThreadIdNameManager::GetInstance()->RemoveName(
+      PlatformThread::CurrentHandle().platform_handle(),
+      PlatformThread::CurrentId());
+#endif
   return nullptr;
 }
 
@@ -72,8 +99,8 @@ bool CreateThread(size_t stack_size,
     return false;
   }
 
-  auto params =
-      std::make_unique<ThreadParams>(ThreadParams{delegate, thread_type});
+  auto params = std::make_unique<ThreadParams>(
+      ThreadParams{delegate, joinable, thread_type});
   pthread_t handle = 0;
   rv = pthread_create(&handle, &attributes, ThreadFunc, params.get());
   CHECK(pthread_attr_destroy(&attributes) == 0);
@@ -139,7 +166,11 @@ void PlatformThreadBase::SetName(const std::string& name) {
 
 // static
 const char* PlatformThreadBase::GetName() {
+#if defined(BASE_WASM_FULL_COMPONENT)
+  return ThreadIdNameManager::GetInstance()->GetName(CurrentId());
+#else
   return g_thread_name.c_str();
+#endif
 }
 
 // static
@@ -169,6 +200,10 @@ bool PlatformThreadBase::CreateNonJoinableWithType(
 
 // static
 void PlatformThreadBase::Join(PlatformThreadHandle thread_handle) {
+#if defined(BASE_WASM_FULL_COMPONENT)
+  base::internal::ScopedBlockingCallWithBaseSyncPrimitives scoped_blocking_call(
+      FROM_HERE, base::BlockingType::MAY_BLOCK);
+#endif
   CHECK(!thread_handle.is_null());
   CHECK(pthread_join(thread_handle.platform_handle(), nullptr) == 0);
 }
@@ -186,6 +221,12 @@ bool PlatformThreadBase::CanChangeThreadType(ThreadType from, ThreadType to) {
 }
 
 // static
+TimeDelta PlatformThreadBase::GetRealtimePeriod(Delegate*) {
+  return TimeDelta();
+}
+
+#if !defined(BASE_WASM_FULL_COMPONENT)
+// static
 void PlatformThreadBase::SetCurrentThreadType(ThreadType thread_type) {
   GetThreadTypeManager()->SetDefault(thread_type);
 }
@@ -196,14 +237,10 @@ ThreadType PlatformThreadBase::GetCurrentThreadType() {
 }
 
 // static
-TimeDelta PlatformThreadBase::GetRealtimePeriod(Delegate*) {
-  return TimeDelta();
-}
-
-// static
 std::optional<TimeDelta> PlatformThreadBase::GetThreadLeewayOverride() {
   return std::nullopt;
 }
+#endif
 
 // static
 size_t PlatformThreadBase::GetDefaultThreadStackSize() {
@@ -218,6 +255,7 @@ ThreadType PlatformThreadBase::GetCurrentEffectiveThreadTypeForTest() {
   return ThreadType::kDefault;
 }
 
+#if !defined(BASE_WASM_FULL_COMPONENT)
 // static
 bool PlatformThreadBase::CurrentThreadHasLeases() {
   return GetThreadTypeManager()->HasLeases();
@@ -242,9 +280,11 @@ PlatformThreadBase::RaiseThreadTypeLease::RaiseThreadTypeLease(
 PlatformThreadBase::RaiseThreadTypeLease::~RaiseThreadTypeLease() {
   manager_->DropRaiseLease(leased_thread_type_);
 }
+#endif
 
 namespace internal {
 
+#if !defined(BASE_WASM_FULL_COMPONENT)
 void ThreadTypeManager::SetDefault(ThreadType type) {
   CHECK(type <= ThreadType::kMaxValue);
   default_thread_type_ = type;
@@ -317,6 +357,7 @@ void ThreadTypeManager::SetCurrentThreadTypeImpl(
 bool ThreadTypeManager::HasLeases() const {
   return raise_leases_.GetHighestLease().has_value();
 }
+#endif
 
 void SetCurrentThreadTypeImpl(ThreadType, MessagePumpType) {
   // The ThreadTypeManager retains the requested type as Chromium metadata.

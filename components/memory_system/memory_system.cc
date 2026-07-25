@@ -25,12 +25,13 @@
 #include "base/ios/ios_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "partition_alloc/shim/allocator_interception_apple.h"
-#include "partition_alloc/shim/allocator_shim.h"
+#include "partition_alloc/shim/allocator_shim.h"  // nogncheck
 #endif
 
 // HeapProfilerController's dependencies are not compiled on iOS unless
-// AllocatorShim is enabled.
-#if !BUILDFLAG(IS_IOS) || PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
+// AllocatorShim is enabled. Wasm also uses the system allocator during M3.
+#if (!BUILDFLAG(IS_IOS) || PA_BUILDFLAG(USE_ALLOCATOR_SHIM)) && \
+    !BUILDFLAG(IS_WASM)
 #define HEAP_PROFILING_SUPPORTED 1
 #else
 #define HEAP_PROFILING_SUPPORTED 0

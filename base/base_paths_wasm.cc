@@ -23,6 +23,9 @@ bool PathProviderWasm(int key, FilePath* result) {
     case DIR_HOME:
       candidate = FilePath("/home/web_user");
       break;
+    case DIR_ASSETS:
+      candidate = FilePath("/assets");
+      break;
 
     // The JavaScript and WebAssembly module artifacts are host resources, not
     // files in MEMFS. Returning a synthesized path would make resource and
@@ -31,7 +34,6 @@ bool PathProviderWasm(int key, FilePath* result) {
     case FILE_MODULE:
     case DIR_EXE:
     case DIR_MODULE:
-    case DIR_ASSETS:
     case DIR_USER_DESKTOP:
     case DIR_SRC_TEST_DATA_ROOT:
     case DIR_OUT_TEST_DATA_ROOT:

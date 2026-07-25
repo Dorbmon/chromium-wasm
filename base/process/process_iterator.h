@@ -41,7 +41,7 @@ struct ProcessEntry : public PROCESSENTRY32 {
   ProcessId parent_pid() const { return th32ParentProcessID; }
   const FilePath::CharType* exe_file() const { return szExeFile; }
 };
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 struct BASE_EXPORT ProcessEntry {
   ProcessEntry();
   ProcessEntry(const ProcessEntry& other);

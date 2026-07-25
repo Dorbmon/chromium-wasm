@@ -31,6 +31,32 @@ int SysInfo::NumberOfProcessors() {
   return std::max(1, emscripten_num_logical_cores());
 }
 
+#if defined(BASE_WASM_FULL_COMPONENT)
+// static
+int SysInfo::NumberOfEfficientProcessorsImpl() {
+  return 0;
+}
+
+// static
+ByteSize SysInfo::AmountOfTotalPhysicalMemoryImpl() {
+  // Browsers do not expose host physical RAM. Use the configured linear-memory
+  // ceiling as the in-process capacity from which Chromium derives budgets.
+  return ByteSize(CHROMIUM_WASM_MAXIMUM_MEMORY_BYTES);
+}
+
+// static
+ByteSize SysInfo::AmountOfAvailablePhysicalMemoryImpl() {
+  // This is remaining linear-memory capacity, not host available RAM.
+  const uint64_t committed = emscripten_get_heap_size();
+  constexpr uint64_t maximum = CHROMIUM_WASM_MAXIMUM_MEMORY_BYTES;
+  return ByteSize(committed < maximum ? maximum - committed : 0);
+}
+
+// static
+SysInfo::HardwareInfo SysInfo::GetHardwareInfoSync() {
+  return HardwareInfo();
+}
+#else
 // static
 ByteSize SysInfo::AmountOfTotalPhysicalMemory() {
   // Browsers do not expose host physical RAM to a Wasm module.
@@ -42,6 +68,7 @@ ByteSize SysInfo::AmountOfAvailablePhysicalMemory() {
   // Browsers do not expose host available RAM to a Wasm module.
   return ByteSize();
 }
+#endif
 
 // static
 ByteSize SysInfo::AmountOfVirtualMemory() {
@@ -70,12 +97,14 @@ std::optional<SysInfo::DiskSpaceInfo> SysInfo::AmountOfDiskSpace(
   return std::nullopt;
 }
 
+#if !defined(BASE_WASM_FULL_COMPONENT)
 // static
 TimeDelta SysInfo::Uptime() {
   // performance.now() is monotonic and relative to this runtime's time origin;
   // it is not host operating-system uptime.
   return Milliseconds(emscripten_performance_now());
 }
+#endif
 
 // static
 std::string SysInfo::OperatingSystemName() {
@@ -103,10 +132,12 @@ std::string SysInfo::OperatingSystemArchitecture() {
   return "wasm32";
 }
 
+#if !defined(BASE_WASM_FULL_COMPONENT)
 // static
 std::string SysInfo::ProcessCPUArchitecture() {
   return "wasm32";
 }
+#endif
 
 // static
 std::string SysInfo::CPUModelName() {

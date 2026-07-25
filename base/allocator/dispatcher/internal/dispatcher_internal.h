@@ -20,7 +20,7 @@
 #endif
 
 #if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
-#include "partition_alloc/shim/allocator_shim.h"
+#include "partition_alloc/shim/allocator_shim.h"  // nogncheck
 #endif
 
 #include <tuple>

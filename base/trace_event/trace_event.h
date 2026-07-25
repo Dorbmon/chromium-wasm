@@ -9,9 +9,10 @@
 // trace_event_common.h collect and store trace events. Anything not
 // implementation-specific should go in trace_event_common.h instead of here.
 
+#include "base/tracing_buildflags.h"
 #include "build/build_config.h"
 
-#if BUILDFLAG(IS_WASM)
+#if BUILDFLAG(IS_WASM) && !BUILDFLAG(CHROMIUM_WASM_CONTENT)
 
 #include "base/trace_event/trace_event_wasm.h"
 

@@ -55,8 +55,13 @@ namespace {
 
 // Use a machine-sized pointer as atomic type. It will use the Atomic32 or
 // Atomic64 routines, depending on the architecture.
-typedef intptr_t AtomicType;
-typedef uintptr_t UAtomicType;
+#if BUILDFLAG(IS_WASM)
+using AtomicType = subtle::Atomic32;
+using UAtomicType = uint32_t;
+#else
+using AtomicType = intptr_t;
+using UAtomicType = uintptr_t;
+#endif
 
 // Template specialization for timestamp serialization/deserialization. This
 // is used to serialize timestamps using Unix time on systems where AtomicType

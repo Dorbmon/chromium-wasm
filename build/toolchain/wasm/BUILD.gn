@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/wasm.gni")
 import("//build/toolchain/gcc_toolchain.gni")
 
 # The primary Chromium Wasm port is deliberately opt-in. Until later porting
@@ -22,10 +23,11 @@ gcc_toolchain("wasm") {
 
   extra_cppflags = "-pthread"
   extra_ldflags =
-      "-pthread -Wno-pthreads-mem-growth " +
-      "-sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=2 " +
+      "-pthread -Wno-pthreads-mem-growth " + "-sPROXY_TO_PTHREAD=1 " +
+      "-sPTHREAD_POOL_SIZE=$chromium_wasm_pthread_pool_size " +
       "-sALLOW_BLOCKING_ON_MAIN_THREAD=0 " +
-      "-sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=2147483648 " +
+      "-sINITIAL_MEMORY=$chromium_wasm_initial_memory_bytes " +
+      "-sMAXIMUM_MEMORY=$chromium_wasm_maximum_memory_bytes " +
       "-sWASM_BIGINT=1 -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXIT_RUNTIME=1"
   if (is_debug) {
     extra_ldflags += " -gsource-map"

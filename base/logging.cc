@@ -85,20 +85,21 @@ typedef HANDLE FileHandle;
 #include <os/log.h>
 #endif  // BUILDFLAG(IS_APPLE)
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include <errno.h>
 #include <paths.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "base/posix/safe_strerror.h"
 
 #define MAX_PATH PATH_MAX
 typedef FILE* FileHandle;
-#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 
 #if BUILDFLAG(IS_ANDROID)
 #include <android/log.h>
@@ -260,7 +261,7 @@ uint64_t TickCount() {
       static_cast<zx_time_t>(base::Time::kNanosecondsPerMicrosecond));
 #elif BUILDFLAG(IS_APPLE)
   return mach_absolute_time();
-#elif BUILDFLAG(IS_POSIX)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WASM)
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
 
@@ -274,7 +275,7 @@ uint64_t TickCount() {
 void DeleteFilePath(const PathString& log_name) {
 #if BUILDFLAG(IS_WIN)
   DeleteFile(log_name.c_str());
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   unlink(log_name.c_str());
 #else
 #error Unsupported platform
@@ -294,7 +295,7 @@ PathString GetDefaultLogFile() {
   }
   log_name += FILE_PATH_LITERAL("debug.log");
   return log_name;
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   // On other platforms we just use the current directory.
   return PathString("debug.log");
 #endif
@@ -302,7 +303,7 @@ PathString GetDefaultLogFile() {
 
 // We don't need locks on Windows for atomically appending to files. The OS
 // provides this functionality.
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 
 // Provides a lock to synchronize appending to the log file across
 // threads. This can be required to support NFS file systems even on OSes that
@@ -320,7 +321,7 @@ base::Lock& GetLoggingLock() {
   return *lock;
 }
 
-#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 
 // Called by logging functions to ensure that |g_log_file| is initialized
 // and can be used for writing. Returns false if the file could not be
@@ -377,7 +378,7 @@ bool InitializeLogFileHandle() {
       return false;
     }
   }
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   g_log_file = fopen(g_log_file_name->c_str(), "a");
   if (g_log_file == nullptr) {
     return false;
@@ -392,7 +393,7 @@ bool InitializeLogFileHandle() {
 void CloseFile(FileHandle log) {
 #if BUILDFLAG(IS_WIN)
   CloseHandle(log);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   fclose(log);
 #else
 #error Unsupported platform
@@ -516,7 +517,7 @@ bool BaseInitLoggingImpl(const LoggingSettings& settings) {
     return true;
   }
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   base::AutoLock guard(GetLoggingLock());
 #endif
 
@@ -900,7 +901,7 @@ void LogMessage::Flush() {
   }
 
   if ((g_logging_destination & LOG_TO_FILE) != 0) {
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     // If the client app did not call InitLogging() and the lock has not
     // been created it will be done now on calling GetLoggingLock(). We do this
     // on demand, but if two threads try to do this at the same time, there will
@@ -914,7 +915,7 @@ void LogMessage::Flush() {
       WriteFile(g_log_file, static_cast<const void*>(str_newline.c_str()),
                 static_cast<DWORD>(str_newline.length()), &num_written,
                 nullptr);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
       std::ignore = UNSAFE_TODO(
           fwrite(str_newline.data(), str_newline.size(), 1, g_log_file));
       fflush(g_log_file);
@@ -978,7 +979,7 @@ void LogMessage::Init(const char* file, int line) {
               << local_time.wHour << std::setw(2) << local_time.wMinute
               << std::setw(2) << local_time.wSecond << '.' << std::setw(3)
               << local_time.wMilliseconds << ':';
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
       timeval tv;
       gettimeofday(&tv, nullptr);
       time_t t = tv.tv_sec;
@@ -1063,7 +1064,7 @@ typedef DWORD SystemErrorCode;
 SystemErrorCode GetLastSystemErrorCode() {
 #if BUILDFLAG(IS_WIN)
   return ::GetLastError();
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return errno;
 #endif
 }
@@ -1085,7 +1086,7 @@ BASE_EXPORT std::string SystemErrorCodeToString(SystemErrorCode error_code) {
   }
   return base::StringPrintf("Error (0x%lX) while retrieving error. (0x%lX)",
                             GetLastError(), error_code);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return base::safe_strerror(error_code) +
          base::StringPrintf(" (%d)", error_code);
 #endif  // BUILDFLAG(IS_WIN)
@@ -1119,7 +1120,7 @@ Win32ErrorLogMessageFatal::~Win32ErrorLogMessageFatal() {
   base::ImmediateCrash();
 }
 
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 ErrnoLogMessage::ErrnoLogMessage(const char* file,
                                  int line,
                                  LogSeverity severity,
@@ -1150,7 +1151,7 @@ ErrnoLogMessageFatal::~ErrnoLogMessageFatal() {
 #endif  // BUILDFLAG(IS_WIN)
 
 void CloseLogFile() {
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   base::AutoLock guard(GetLoggingLock());
 #endif
   CloseLogFileUnlocked();

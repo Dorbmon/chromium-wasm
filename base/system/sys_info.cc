@@ -273,6 +273,8 @@ std::string SysInfo::ProcessCPUArchitecture() {
   return "ARM_64";
 #elif defined(ARCH_CPU_RISCV64)
   return "RISCV_64";
+#elif defined(ARCH_CPU_WASM32)
+  return "wasm32";
 #else
   return std::string();
 #endif

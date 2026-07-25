@@ -22,6 +22,7 @@
 
 #include "base/files/scoped_file.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/numerics/safe_math.h"
 #include "base/posix/eintr_wrapper.h"
 #include "build/build_config.h"
 
@@ -215,29 +216,6 @@ bool CopyDirectoryImpl(const FilePath& from_path,
 }
 
 }  // namespace
-
-bool CopyFileContents(File& input, File& output) {
-  std::vector<uint8_t> buffer(32 * 1024);
-  for (;;) {
-    std::optional<size_t> bytes_read = input.ReadAtCurrentPos(buffer);
-    if (!bytes_read.has_value()) {
-      return false;
-    }
-    if (*bytes_read == 0) {
-      return true;
-    }
-
-    span<const uint8_t> remaining = span(buffer).first(*bytes_read);
-    while (!remaining.empty()) {
-      std::optional<size_t> bytes_written =
-          output.WriteAtCurrentPos(remaining);
-      if (!bytes_written.has_value() || *bytes_written == 0) {
-        return false;
-      }
-      remaining = remaining.subspan(*bytes_written);
-    }
-  }
-}
 
 FilePath MakeAbsoluteFilePath(const FilePath& input) {
   char resolved_path[PATH_MAX];
@@ -470,10 +448,6 @@ bool CreateDirectoryAndGetError(const FilePath& full_path, File::Error* error) {
   return true;
 }
 
-bool CreateDirectory(const FilePath& full_path) {
-  return CreateDirectoryAndGetError(full_path, nullptr);
-}
-
 bool NormalizeFilePath(const FilePath& path, FilePath* normalized_path) {
   FilePath absolute = MakeAbsoluteFilePath(path);
   if (absolute.empty()) {
@@ -542,66 +516,11 @@ std::optional<uint64_t> ReadFile(const FilePath& filename, span<char> buffer) {
   return checked_cast<uint64_t>(bytes_read);
 }
 
-std::optional<uint64_t> ReadFile(const FilePath& filename,
-                                 span<uint8_t> buffer) {
-  return ReadFile(filename, as_writable_chars(buffer));
-}
-
-int ReadFile(const FilePath& filename, char* data, int max_size) {
-  if (max_size < 0) {
-    return -1;
-  }
-  std::optional<uint64_t> result =
-      ReadFile(filename, span(data, checked_cast<size_t>(max_size)));
-  return result.has_value() ? checked_cast<int>(*result) : -1;
-}
-
-bool ReadFileToStringWithMaxSize(const FilePath& filename,
-                                 std::string* contents,
-                                 size_t max_size) {
-  if (contents) {
-    contents->clear();
-  }
-  if (filename.ReferencesParent()) {
-    return false;
-  }
-
-  ScopedFD fd(HANDLE_EINTR(open(filename.value().c_str(), O_RDONLY)));
-  if (!fd.is_valid()) {
-    return false;
-  }
-  stat_wrapper_t info;
-  if (File::Fstat(fd.get(), &info) != 0 || info.st_size < 0 ||
-      !IsValueInRangeForNumericType<size_t>(info.st_size)) {
-    return false;
-  }
-
-  const size_t file_size = checked_cast<size_t>(info.st_size);
-  const size_t bytes_to_read = std::min(file_size, max_size);
-  std::string value(bytes_to_read, '\0');
-  if (bytes_to_read != 0 && !ReadFromFD(fd.get(), span(value))) {
-    return false;
-  }
-  if (contents) {
-    *contents = std::move(value);
-  }
-  return file_size <= max_size;
-}
-
-bool ReadFileToString(const FilePath& filename, std::string* contents) {
-  return ReadFileToStringWithMaxSize(filename, contents,
-                                     std::numeric_limits<size_t>::max());
-}
-
 bool WriteFile(const FilePath& filename, span<const uint8_t> data) {
   ScopedFD fd(
       HANDLE_EINTR(open(filename.value().c_str(), O_CREAT | O_TRUNC | O_WRONLY,
                         0666)));
   return fd.is_valid() && WriteFileDescriptor(fd.get(), data);
-}
-
-bool WriteFile(const FilePath& filename, std::string_view data) {
-  return WriteFile(filename, as_byte_span(data));
 }
 
 bool WriteFileDescriptor(int fd, span<const uint8_t> data) {
@@ -620,6 +539,25 @@ bool WriteFileDescriptor(int fd, std::string_view data) {
   return WriteFileDescriptor(fd, as_byte_span(data));
 }
 
+bool AllocateFileRegion(File* file, int64_t offset, size_t size) {
+  DCHECK(file);
+
+  const int64_t original_file_length = file->GetLength();
+  if (offset < 0 || original_file_length < 0 ||
+      !IsValueInRangeForNumericType<int64_t>(size)) {
+    return false;
+  }
+
+  CheckedNumeric<int64_t> requested_length = offset;
+  requested_length += size;
+  if (!requested_length.IsValid()) {
+    return false;
+  }
+
+  const int64_t new_file_length = requested_length.ValueOrDie();
+  return file->SetLength(std::max(original_file_length, new_file_length));
+}
+
 bool AppendToFile(const FilePath& filename, span<const uint8_t> data) {
   ScopedFD fd(
       HANDLE_EINTR(open(filename.value().c_str(), O_APPEND | O_WRONLY)));
@@ -628,14 +566,6 @@ bool AppendToFile(const FilePath& filename, span<const uint8_t> data) {
 
 bool AppendToFile(const FilePath& filename, std::string_view data) {
   return AppendToFile(filename, as_byte_span(data));
-}
-
-std::optional<int64_t> GetFileSize(const FilePath& file_path) {
-  File::Info info;
-  if (!GetFileInfo(file_path, &info)) {
-    return std::nullopt;
-  }
-  return info.size;
 }
 
 bool GetCurrentDirectory(FilePath* path) {

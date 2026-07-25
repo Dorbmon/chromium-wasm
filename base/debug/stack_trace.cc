@@ -306,10 +306,9 @@ bool StackTrace::WillSymbolizeToStreamForTesting() {
   // Official Mac OS X builds contain enough information to unwind the stack,
   // but not enough to symbolize the output.
   return false;
-#elif BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_ANDROID)
-  // Under Fuchsia and Android, StackTrace emits executable build-Ids and
-  // address offsets which are symbolized on the test host system, rather than
-  // being symbolized in-process.
+#elif BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WASM)
+  // These platforms emit raw addresses or host-symbolized metadata rather than
+  // symbolizing stack frames in-process.
   return false;
 #elif BUILDFLAG(PRINT_UNSYMBOLIZED_STACK_TRACES)
   // Typically set in sanitizer configurations (ASan, TSan, MSan), which emit

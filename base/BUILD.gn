@@ -18,8 +18,9 @@
 # huge sequence of random-looking conditionals.
 
 import("//build/buildflag_header.gni")
+import("//build/config/wasm.gni")
 
-if (is_wasm && enable_chromium_wasm_port) {
+if (is_wasm && enable_chromium_wasm_port && !enable_chromium_wasm_content) {
   buildflag_header("debugging_buildflags") {
     header = "debugging_buildflags.h"
     header_dir = "base/debug"
@@ -55,6 +56,7 @@ if (is_wasm && enable_chromium_wasm_port) {
   buildflag_header("tracing_buildflags") {
     header = "tracing_buildflags.h"
     flags = [
+      "CHROMIUM_WASM_CONTENT=false",
       "USE_PERFETTO_TRACE_PROCESSOR=false",
       "OPTIONAL_TRACE_EVENTS_ENABLED=false",
     ]
@@ -96,6 +98,7 @@ if (is_wasm && enable_chromium_wasm_port) {
       "files/file_enumerator_posix.cc",
       "files/file_path.cc",
       "files/file_posix.cc",
+      "files/file_util.cc",
       "files/file_util_wasm.cc",
       "files/file_wasm.cc",
       "files/scoped_file.cc",
@@ -127,6 +130,8 @@ if (is_wasm && enable_chromium_wasm_port) {
       "memory/writable_shared_memory_region.cc",
       "memory/writable_shared_memory_region.h",
       "path_service.cc",
+      "posix/safe_strerror.cc",
+      "posix/safe_strerror.h",
       "process/launch.cc",
       "process/launch_wasm.cc",
       "process/process.cc",
@@ -336,7 +341,8 @@ assert(!enable_mutex_priority_inheritance ||
 
 # Prevent //base having to support a toolchain that uses a different
 # llvm/libc++ version.
-assert(!is_wasm, "base must not be built in most wasm toolchains")
+assert(!is_wasm || enable_chromium_wasm_content,
+       "full base requires the M3 Content Shell profile on Wasm")
 
 # This is here instead of in //build because //build is DEPS'd in by a few
 # subprojects that still support MSVC.
@@ -1298,6 +1304,53 @@ component("base") {
     ]
   }
 
+  if (is_wasm) {
+    sources += [
+      "base_paths_wasm.cc",
+      "debug/debugger_wasm.cc",
+      "debug/stack_trace_wasm.cc",
+      "files/drive_info_wasm.cc",
+      "files/file_enumerator_posix.cc",
+      "files/file_path_watcher_stub.cc",
+      "files/file_posix.cc",
+      "files/file_util_wasm.cc",
+      "files/file_wasm.cc",
+      "files/memory_mapped_file_posix.cc",
+      "memory/page_size_wasm.cc",
+      "memory/platform_shared_memory_mapper_wasm.cc",
+      "memory/platform_shared_memory_region_wasm.cc",
+      "memory/process_local_shared_memory_wasm.cc",
+      "memory/process_local_shared_memory_wasm.h",
+      "native_library_wasm.cc",
+      "posix/safe_strerror.cc",
+      "posix/safe_strerror.h",
+      "power_monitor/power_monitor_device_source_wasm.cc",
+      "process/kill_wasm.cc",
+      "process/launch_wasm.cc",
+      "process/memory_wasm.cc",
+      "process/process_handle_wasm.cc",
+      "process/process_iterator_wasm.cc",
+      "process/process_metrics_wasm.cc",
+      "process/process_wasm.cc",
+      "profiler/module_cache_wasm.cc",
+      "profiler/stack_sampler_wasm.cc",
+      "rand_util_wasm.cc",
+      "strings/sys_string_conversions_wasm.cc",
+      "sync_socket_wasm.cc",
+      "synchronization/condition_variable_wasm.cc",
+      "synchronization/lock_impl_wasm.cc",
+      "synchronization/waitable_event_posix.cc",
+      "synchronization/waitable_event_watcher_posix.cc",
+      "system/sys_info_wasm.cc",
+      "threading/platform_thread_metrics_wasm.cc",
+      "threading/platform_thread_wasm.cc",
+      "threading/thread_local_storage_posix.cc",
+      "time/time_exploded_posix.cc",
+      "time/time_wasm.cc",
+      "timer/hi_res_timer_manager_posix.cc",
+    ]
+  }
+
   if (is_linux || is_chromeos) {
     sources += [
       "debug/proc_maps_linux.cc",
@@ -1336,6 +1389,12 @@ component("base") {
 
   all_dependent_configs = []
   defines = [ "BASE_IMPLEMENTATION" ]
+  if (is_wasm) {
+    defines += [
+      "BASE_WASM_FULL_COMPONENT=1",
+      "CHROMIUM_WASM_MAXIMUM_MEMORY_BYTES=$chromium_wasm_maximum_memory_bytes",
+    ]
+  }
   data = []
   data_deps = []
   libs = []
@@ -1992,7 +2051,6 @@ component("base") {
     sources += [
       "memory/discardable_shared_memory.cc",
       "memory/discardable_shared_memory.h",
-      "memory/shared_memory_switch.cc",
       "memory/shared_memory_switch.h",
       "metrics/histogram_shared_memory.cc",
       "metrics/histogram_shared_memory.h",
@@ -2005,6 +2063,12 @@ component("base") {
       "process/process_iterator.cc",
       "process/process_iterator.h",
     ]
+
+    if (is_wasm) {
+      sources += [ "memory/shared_memory_switch_wasm.cc" ]
+    } else {
+      sources += [ "memory/shared_memory_switch.cc" ]
+    }
 
     if (is_posix) {
       sources += [ "process/kill_posix.cc" ]
@@ -3215,6 +3279,7 @@ buildflag_header("tracing_buildflags") {
   header = "tracing_buildflags.h"
 
   flags = [
+    "CHROMIUM_WASM_CONTENT=$enable_chromium_wasm_content",
     "USE_PERFETTO_TRACE_PROCESSOR=$use_perfetto_trace_processor",
     "OPTIONAL_TRACE_EVENTS_ENABLED=$optional_trace_events_enabled",
   ]

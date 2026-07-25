@@ -596,7 +596,6 @@ BASE_EXPORT bool WriteFileDescriptor(int fd, span<const uint8_t> data);
 // have to do manual conversions from a char span to a uint8_t span.
 BASE_EXPORT bool WriteFileDescriptor(int fd, std::string_view data);
 
-#if !BUILDFLAG(IS_WASM)
 // Allocates disk space for the file referred to by |fd| for the byte range
 // starting at |offset| and continuing for |size| bytes. The file size will be
 // changed if |offset|+|len| is greater than the file size. Zeros will fill the
@@ -604,7 +603,6 @@ BASE_EXPORT bool WriteFileDescriptor(int fd, std::string_view data);
 // After a successful call, subsequent writes into the specified range are
 // guaranteed not to fail because of lack of disk space.
 BASE_EXPORT bool AllocateFileRegion(File* file, int64_t offset, size_t size);
-#endif  // !BUILDFLAG(IS_WASM)
 #endif
 
 // Appends |data| to |filename|.  Returns true iff |data| were written to

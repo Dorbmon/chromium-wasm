@@ -48,6 +48,7 @@ enum class SharedMemoryError {
   kDeserializeFailed,
   kCreateTrialsFailed,
   kUnexpectedSize,
+  kUnsupportedPlatform,
 };
 
 // Platform-specific options to share a shared memory region with a child

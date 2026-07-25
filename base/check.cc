@@ -222,7 +222,7 @@ class DCheckWin32ErrorLogMessage : public Win32ErrorLogMessage {
  private:
   const base::Location location_;
 };
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 class DCheckErrnoLogMessage : public ErrnoLogMessage {
  public:
   DCheckErrnoLogMessage(const base::Location& location, SystemErrorCode err)
@@ -314,7 +314,7 @@ CheckError CheckError::DPCheck(const char* condition,
   SystemErrorCode err_code = logging::GetLastSystemErrorCode();
 #if BUILDFLAG(IS_WIN)
   auto* const log_message = new DCheckWin32ErrorLogMessage(location, err_code);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   auto* const log_message = new DCheckErrnoLogMessage(location, err_code);
 #endif
   log_message->stream() << "DCHECK failed: " << condition
@@ -398,7 +398,7 @@ CheckNoreturnError CheckNoreturnError::PCheck(const char* condition,
 #if BUILDFLAG(IS_WIN)
   auto* const log_message = new Win32ErrorLogMessage(
       location.file_name(), location.line_number(), LOGGING_FATAL, err_code);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   auto* const log_message = new ErrnoLogMessage(
       location.file_name(), location.line_number(), LOGGING_FATAL, err_code);
 #endif

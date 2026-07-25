@@ -13,6 +13,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_math.h"
 #include "base/task/sequenced_task_runner.h"
+#include "build/build_config.h"
 #include "components/services/storage/public/cpp/big_io_buffer.h"
 #include "content/browser/file_system_access/file_system_access_manager_impl.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -20,7 +21,9 @@
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
-#include "partition_alloc/partition_alloc_constants.h"
+#if !BUILDFLAG(IS_WASM)
+#include "partition_alloc/partition_alloc_constants.h"  // nogncheck
+#endif
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_operation_runner.h"
 #include "storage/browser/file_system/file_system_url.h"
@@ -30,6 +33,10 @@
 namespace content {
 
 namespace {
+
+#if BUILDFLAG(IS_WASM)
+constexpr int kWasmMaxReadBytes = 64 * 1024 * 1024;
+#endif
 
 void ReadOnIOThread(scoped_refptr<storage::FileSystemContext> context,
                     storage::FileSystemURL url,
@@ -105,9 +112,13 @@ void FileSystemAccessFileDelegateHostImpl::Read(int64_t offset,
 
   // FileStreamReader::Read takes an int. Do not allocate more memory than
   // Chrome will be allowed to contiguously allocate at once.
+#if BUILDFLAG(IS_WASM)
+  int max_bytes_to_read = std::min(bytes_to_read, kWasmMaxReadBytes);
+#else
   int max_bytes_to_read =
       std::min(bytes_to_read,
                base::saturated_cast<int>(partition_alloc::MaxDirectMapped()));
+#endif
 
   auto buffer = base::MakeRefCounted<storage::BigIOBuffer>(max_bytes_to_read);
 

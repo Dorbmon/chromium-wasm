@@ -127,6 +127,11 @@ declare_args() {
   # explicitly before Emscripten may be selected as the primary target.
   enable_chromium_wasm_port = false
 
+  # Enables the M3 single-process Content Shell graph. This is declared at the
+  # build root because generated gclient metadata must distinguish the narrow
+  # M0-M2 graph from a full Chromium M3 graph.
+  enable_chromium_wasm_content = false
+
   # Set to enable the official build level of optimization. This has nothing
   # to do with branding, but enables an additional level of optimization above
   # release (!is_debug). This might be better expressed as a tri-state

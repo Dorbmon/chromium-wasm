@@ -235,7 +235,7 @@ bool ContentsEqual(const FilePath& filename1, const FilePath& filename2) {
                       std::ios::in | std::ios::binary);
   std::ifstream file2(filename2.value().c_str(),
                       std::ios::in | std::ios::binary);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   std::ifstream file1(filename1.value(), std::ios::in | std::ios::binary);
   std::ifstream file2(filename2.value(), std::ios::in | std::ios::binary);
 #endif  // BUILDFLAG(IS_WIN)
@@ -271,7 +271,7 @@ bool TextContentsEqual(const FilePath& filename1, const FilePath& filename2) {
 #if BUILDFLAG(IS_WIN)
   std::ifstream file1(filename1.value().c_str(), std::ios::in);
   std::ifstream file2(filename2.value().c_str(), std::ios::in);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   std::ifstream file1(filename1.value(), std::ios::in);
   std::ifstream file2(filename2.value(), std::ios::in);
 #endif  // BUILDFLAG(IS_WIN)

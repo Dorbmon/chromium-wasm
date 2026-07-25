@@ -9,10 +9,13 @@
 #include "base/dcheck_is_on.h"
 #include "base/no_destructor.h"
 #include "partition_alloc/buildflags.h"
-#include "partition_alloc/shim/allocator_shim.h"
 
 #if DCHECK_IS_ON()
 #include <atomic>
+#endif
+
+#if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
+#include "partition_alloc/shim/allocator_shim.h"  // nogncheck
 #endif
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC)

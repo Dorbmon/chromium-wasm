@@ -5,7 +5,11 @@
 #include "content/renderer/memory_reclaimer_pressure_listener.h"
 
 #include "base/memory_coordinator/utils.h"
-#include "partition_alloc/memory_reclaimer.h"
+#include "partition_alloc/buildflags.h"
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC)
+#include "partition_alloc/memory_reclaimer.h"  // nogncheck
+#endif
 
 namespace content {
 
@@ -23,9 +27,11 @@ MemoryReclaimerPressureListener::~MemoryReclaimerPressureListener() = default;
 void MemoryReclaimerPressureListener::OnUpdateMemoryLimit() {}
 
 void MemoryReclaimerPressureListener::OnReleaseMemory() {
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC)
   if (memory_limit() <= base::kModerateMemoryPressureThreshold) {
     ::partition_alloc::MemoryReclaimer::Instance()->ReclaimAll();
   }
+#endif
 }
 
 }  // namespace content

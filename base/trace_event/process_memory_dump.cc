@@ -63,9 +63,11 @@ std::string GetSharedGlobalAllocatorDumpName(
   return "global/" + guid.ToString();
 }
 
+#if !BUILDFLAG(IS_WASM)
 size_t GetSystemPageCount(size_t mapped_size, size_t page_size) {
   return (mapped_size + page_size - 1) / page_size;
 }
+#endif
 
 UnguessableToken GetTokenForCurrentProcess() {
   static UnguessableToken instance = UnguessableToken::Create();
@@ -94,6 +96,10 @@ size_t ProcessMemoryDump::GetSystemPageSize() {
 std::optional<size_t> ProcessMemoryDump::CountResidentBytes(
     void* start_address,
     size_t mapped_size) {
+#if BUILDFLAG(IS_WASM)
+  // WebAssembly exposes linear-memory size, but no host page-residency query.
+  return std::nullopt;
+#else
   const size_t page_size = GetSystemPageSize();
   const uintptr_t start_pointer = reinterpret_cast<uintptr_t>(start_address);
   DCHECK_EQ(0u, start_pointer % page_size);
@@ -182,6 +188,7 @@ std::optional<size_t> ProcessMemoryDump::CountResidentBytes(
     return std::nullopt;
   }
   return total_resident_pages;
+#endif
 }
 
 // static

@@ -8,7 +8,7 @@
 
 namespace base {
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 ProcessEntry::ProcessEntry() : pid_(0), ppid_(0), gid_(0) {}
 ProcessEntry::ProcessEntry(const ProcessEntry& other) = default;
 ProcessEntry::~ProcessEntry() = default;

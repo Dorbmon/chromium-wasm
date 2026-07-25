@@ -117,6 +117,8 @@ class BASE_EXPORT PlatformThreadMetrics {
   explicit PlatformThreadMetrics(win::ScopedHandle&& handle);
 
   win::ScopedHandle handle_;
+#elif BUILDFLAG(IS_WASM)
+  PlatformThreadMetrics() = default;
 #endif
 
   // Previous measurements used to compute the CPU usage between calls to
