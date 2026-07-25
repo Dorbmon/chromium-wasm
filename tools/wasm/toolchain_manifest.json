@@ -220,15 +220,50 @@
   },
   "gn": {
     "revision": "3357c4f51b1a9e676378c695dd9c7e9911c35ee6",
+    "cipd_package": "gn/gn/linux-amd64",
     "cipd_instance": "2w75WgzO2nc2UMXt6PDqnK3LCqbHZ-11ME5WIr4hJQQC",
     "version_output": "2407 (3357c4f51b1a)",
     "sha256": "b57b07b452e2e68ee07fde47c22134d82dfe919b7e3eb77ea3c78f7eb0759812"
   },
   "ninja": {
+    "cipd_package": "infra/3pp/tools/ninja/linux-amd64",
     "cipd_tag": "version:3@1.12.1.chromium.4",
     "cipd_instance": "Px8cwPaaG8_fZ_tsK8dBmx3YEruNDnmvqb-oo1U7UIIC",
     "version_output": "1.12.1",
     "sha256": "09f0e5a8a2cf762b24b4d3ed464ffb2529e650d2efc36bab31da36aa93791efc"
+  },
+  "gperf": {
+    "path": "third_party/gperf/cipd/bin/gperf",
+    "cipd_package": "infra/3pp/tools/gperf/linux-amd64",
+    "cipd_tag": "version:3@3.2",
+    "cipd_instance": "otrRUeHQr9zlxtT4sJfSJqspytBWr9IkPrhZ8bFolnYC",
+    "version_output": "GNU gperf 3.2",
+    "sha256": "9d523d970ae482b7e698b882a7a6f721b13fe782bf89fa82b8c075ab0f4d0aa8"
+  },
+  "chromium_node_runtime": {
+    "path": "third_party/node/linux/node-linux-x64",
+    "archive_path": "third_party/node/linux/node-linux-x64.tar.gz",
+    "archive_root": "node-linux-x64",
+    "bucket": "chromium-nodejs",
+    "object_name": "744e6926ffdd4a4fb2080ae2b9ce4575490261e7",
+    "sha256": "bdea62a6857735d62165ec97242d79a693564c72d551890c4d009d2355abf14c",
+    "size_bytes": 53566970,
+    "generation": 1767604834866657,
+    "output_file": "node-linux-x64.tar.gz",
+    "executable_path": "bin/node",
+    "executable_sha256": "16143bdaa79716e871d3d9b2f50ce680bca293eba7f0c3fc1d004ed2258fc839",
+    "version_output": "v24.12.0"
+  },
+  "webui_node_modules": {
+    "path": "third_party/node/node_modules",
+    "archive_path": "third_party/node/node_modules.tar.gz",
+    "sha1_path": "third_party/node/node_modules.tar.gz.sha1",
+    "bucket": "chromium-nodejs",
+    "object_name": "38df23cf794887ca7c81d57bf30f66c38c144e28",
+    "sha256": "6781ef493aa77be4ca4824dc1d5f5157a2fbc56dacafe20914da4469f7a01b87",
+    "size_bytes": 11334617,
+    "generation": 1776882143803737,
+    "output_file": "node_modules.tar.gz"
   },
   "host_clang": {
     "path": "third_party/llvm-build/Release+Asserts",

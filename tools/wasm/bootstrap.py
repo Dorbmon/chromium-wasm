@@ -11,9 +11,10 @@ import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -113,6 +114,14 @@ def require_equal(label: str, actual: str, expected: str) -> None:
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
+    with path.open("rb") as input_file:
+        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha1(path: Path) -> str:
+    digest = hashlib.sha1()
     with path.open("rb") as input_file:
         for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -694,9 +703,35 @@ def ensure_depot_tools_bootstrap(
     return cipd_client, python_executable
 
 
+def verify_toolchain_ensure_pins(manifest: dict[str, object]) -> None:
+    ensure_lines = (
+        Path(__file__).with_name("toolchain.ensure")
+    ).read_text(encoding="utf-8").splitlines()
+    for name in ("gn", "ninja", "gperf"):
+        tool = manifest[name]
+        assert isinstance(tool, dict)
+        expected = f"{tool['cipd_package']} {tool['cipd_instance']}"
+        if ensure_lines.count(expected) != 1:
+            raise M0Error(
+                f"toolchain.ensure must contain exactly one {name} pin: "
+                f"{expected}"
+            )
+
+    gperf = manifest["gperf"]
+    assert isinstance(gperf, dict)
+    deps_text = (REPO_ROOT / "DEPS").read_text(encoding="utf-8")
+    for expected in (
+        f"'package': '{gperf['cipd_package'].replace('linux-amd64', '${{platform}}')}'",
+        f"'version': '{gperf['cipd_tag']}'",
+    ):
+        if deps_text.count(expected) != 1:
+            raise M0Error(f"Chromium DEPS is missing gperf pin {expected}")
+
+
 def ensure_build_tools(
     manifest: dict[str, object], cipd: Path, *, install: bool
 ) -> None:
+    verify_toolchain_ensure_pins(manifest)
     if install:
         run(
             [
@@ -730,6 +765,535 @@ def ensure_build_tools(
         str(ninja_pin["version_output"]),
     )
     require_equal("Ninja hash", sha256(ninja), str(ninja_pin["sha256"]))
+
+    gperf_pin = manifest["gperf"]
+    assert isinstance(gperf_pin, dict)
+    gperf = REPO_ROOT / str(gperf_pin["path"])
+    if not gperf.is_file():
+        raise M0Error("pinned gperf is not installed")
+    version_lines = checked_output([str(gperf), "--version"]).splitlines()
+    if not version_lines:
+        raise M0Error("pinned gperf returned no version")
+    require_equal(
+        "gperf version", version_lines[0], str(gperf_pin["version_output"])
+    )
+    require_equal("gperf hash", sha256(gperf), str(gperf_pin["sha256"]))
+
+
+def webui_node_modules_paths(
+    node_modules: dict[str, object],
+) -> tuple[Path, Path]:
+    configured_path = Path(str(node_modules["path"]))
+    configured_archive = Path(str(node_modules["archive_path"]))
+    expected_path = Path("third_party/node/node_modules")
+    expected_archive = Path("third_party/node/node_modules.tar.gz")
+    if configured_path != expected_path:
+        raise M0Error(
+            "WebUI node_modules path mismatch: "
+            f"expected {expected_path}, got {configured_path}"
+        )
+    if configured_archive != expected_archive:
+        raise M0Error(
+            "WebUI node_modules archive path mismatch: "
+            f"expected {expected_archive}, got {configured_archive}"
+        )
+    return REPO_ROOT / configured_path, REPO_ROOT / configured_archive
+
+
+def chromium_node_runtime_paths(
+    node_runtime: dict[str, object],
+) -> tuple[Path, Path]:
+    configured_path = Path(str(node_runtime["path"]))
+    configured_archive = Path(str(node_runtime["archive_path"]))
+    configured_archive_root = str(node_runtime["archive_root"])
+    expected_path = Path("third_party/node/linux/node-linux-x64")
+    expected_archive = Path(
+        "third_party/node/linux/node-linux-x64.tar.gz"
+    )
+    if configured_path != expected_path:
+        raise M0Error(
+            "Chromium Node runtime path mismatch: "
+            f"expected {expected_path}, got {configured_path}"
+        )
+    if configured_archive != expected_archive:
+        raise M0Error(
+            "Chromium Node runtime archive path mismatch: "
+            f"expected {expected_archive}, got {configured_archive}"
+        )
+    if configured_archive_root != "node-linux-x64":
+        raise M0Error(
+            "Chromium Node runtime archive root mismatch: "
+            "expected node-linux-x64, got "
+            f"{configured_archive_root}"
+        )
+    return REPO_ROOT / configured_path, REPO_ROOT / configured_archive
+
+
+def verify_gcs_archive_deps_pin(
+    artifact: dict[str, object], *, deps_path: str, label: str
+) -> None:
+    deps_text = (REPO_ROOT / "DEPS").read_text(encoding="utf-8")
+    marker = f"'{deps_path}': {{"
+    deps_lines = deps_text.splitlines()
+    marker_lines = [
+        index
+        for index, line in enumerate(deps_lines)
+        if line.strip() == marker
+    ]
+    if len(marker_lines) != 1:
+        raise M0Error(
+            f"Chromium DEPS must contain exactly one {label} entry: "
+            f"{deps_path}"
+        )
+    start = marker_lines[0]
+    entry_indent = len(deps_lines[start]) - len(deps_lines[start].lstrip())
+    end = len(deps_lines)
+    for index in range(start + 1, len(deps_lines)):
+        line = deps_lines[index]
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if (
+            indent == entry_indent
+            and stripped.startswith("'src/")
+            and stripped.endswith((": {", ":"))
+        ):
+            end = index
+            break
+    entry_text = "\n".join(deps_lines[start:end])
+    for expected in (
+        f"'bucket': '{artifact['bucket']}'",
+        f"'object_name': '{artifact['object_name']}'",
+        f"'sha256sum': '{artifact['sha256']}'",
+        f"'size_bytes': {artifact['size_bytes']},",
+        f"'generation': {artifact['generation']},",
+        f"'output_file': '{artifact['output_file']}'",
+    ):
+        if entry_text.count(expected) != 1:
+            raise M0Error(
+                f"Chromium DEPS is missing {label} pin {expected}"
+            )
+
+
+def verify_webui_node_modules_deps_pin(
+    node_modules: dict[str, object],
+) -> None:
+    verify_gcs_archive_deps_pin(
+        node_modules,
+        deps_path="src/third_party/node/node_modules",
+        label="WebUI node_modules",
+    )
+    sha1_path = REPO_ROOT / str(node_modules["sha1_path"])
+    if sha1_path.is_symlink() or not sha1_path.is_file():
+        raise M0Error("WebUI node_modules SHA-1 pin is missing")
+    require_equal(
+        "WebUI node_modules SHA-1 pin",
+        sha1_path.read_text(encoding="utf-8").strip(),
+        str(node_modules["object_name"]),
+    )
+
+
+def verify_chromium_node_runtime_deps_pin(
+    node_runtime: dict[str, object],
+) -> None:
+    verify_gcs_archive_deps_pin(
+        node_runtime,
+        deps_path="src/third_party/node/linux",
+        label="Chromium Node runtime",
+    )
+
+
+def _archive_member_path(name: str, *, label: str) -> str:
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts:
+        raise M0Error(f"unsafe {label} archive path: {name}")
+    return "/".join(part for part in path.parts if part not in ("", "."))
+
+
+def _validate_archive_symlink(
+    name: str,
+    linkname: str,
+    *,
+    label: str,
+    archive_prefix: str = "",
+) -> None:
+    target = PurePosixPath(linkname)
+    if target.is_absolute():
+        raise M0Error(
+            f"unsafe {label} archive symlink target: {name} -> {linkname}"
+        )
+    resolved_parts = list(PurePosixPath(name).parent.parts)
+    for part in target.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not resolved_parts:
+                raise M0Error(
+                    f"unsafe {label} archive symlink target: "
+                    f"{name} -> {linkname}"
+                )
+            resolved_parts.pop()
+        else:
+            resolved_parts.append(part)
+    if archive_prefix:
+        prefix_parts = list(PurePosixPath(archive_prefix).parts)
+        if resolved_parts[: len(prefix_parts)] != prefix_parts:
+            raise M0Error(
+                f"unsafe {label} archive symlink target: "
+                f"{name} -> {linkname}"
+            )
+
+
+def _hash_stream(input_file: object) -> str:
+    digest = hashlib.sha256()
+    read = getattr(input_file, "read")
+    for chunk in iter(lambda: read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _archive_tree(
+    archive_path: Path, *, label: str, archive_prefix: str = ""
+) -> dict[str, tuple[str, int, int, str]]:
+    entries: dict[str, tuple[str, int, int, str]] = {}
+    normalized_prefix = (
+        _archive_member_path(archive_prefix, label=label)
+        if archive_prefix
+        else ""
+    )
+    prefix_with_separator = (
+        f"{normalized_prefix}/" if normalized_prefix else ""
+    )
+    try:
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            for member in archive:
+                name = _archive_member_path(member.name, label=label)
+                if not name:
+                    continue
+                if normalized_prefix:
+                    if name == normalized_prefix:
+                        if not member.isdir():
+                            raise M0Error(
+                                f"{label} archive root is not a directory: "
+                                f"{name}"
+                            )
+                        continue
+                    if not name.startswith(prefix_with_separator):
+                        raise M0Error(
+                            f"{label} archive path is outside "
+                            f"{normalized_prefix}: {name}"
+                        )
+                    name = name[len(prefix_with_separator) :]
+                if name in entries:
+                    raise M0Error(
+                        f"duplicate {label} archive path: {name}"
+                    )
+                mode = member.mode & 0o777
+                if member.isdir():
+                    entries[name] = ("directory", 0, 0, "")
+                elif member.isfile():
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        raise M0Error(
+                            f"failed to read {label} archive member: {name}"
+                        )
+                    entries[name] = (
+                        "file",
+                        mode,
+                        member.size,
+                        _hash_stream(extracted),
+                    )
+                elif member.issym():
+                    _validate_archive_symlink(
+                        member.name,
+                        member.linkname,
+                        label=label,
+                        archive_prefix=normalized_prefix,
+                    )
+                    entries[name] = (
+                        "symlink",
+                        0,
+                        0,
+                        member.linkname,
+                    )
+                else:
+                    raise M0Error(
+                        f"unsupported {label} archive member: {name}"
+                    )
+    except (OSError, KeyError, tarfile.TarError) as exc:
+        raise M0Error(
+            f"failed to inspect pinned {label} archive: {exc}"
+        ) from exc
+    if not entries:
+        raise M0Error(f"pinned {label} archive has no content")
+    return entries
+
+
+def _installed_tree(
+    installed_root: Path, *, label: str
+) -> dict[str, tuple[str, int, int, str]]:
+    entries: dict[str, tuple[str, int, int, str]] = {}
+    try:
+        for path in installed_root.rglob("*"):
+            name = path.relative_to(installed_root).as_posix()
+            metadata = path.lstat()
+            mode = stat.S_IMODE(metadata.st_mode)
+            if path.is_symlink():
+                entries[name] = ("symlink", 0, 0, os.readlink(path))
+            elif path.is_dir():
+                entries[name] = ("directory", 0, 0, "")
+            elif path.is_file():
+                entries[name] = (
+                    "file",
+                    mode,
+                    metadata.st_size,
+                    sha256(path),
+                )
+            else:
+                raise M0Error(
+                    f"unsupported installed {label} path: {name}"
+                )
+    except OSError as exc:
+        raise M0Error(
+            f"failed to inspect installed {label}: {exc}"
+        ) from exc
+    return entries
+
+
+def verify_gcs_archive(
+    artifact: dict[str, object], archive_path: Path, *, label: str
+) -> None:
+    if archive_path.is_symlink() or not archive_path.is_file():
+        raise M0Error(f"pinned {label} archive is not installed")
+    require_equal(
+        f"{label} archive size",
+        str(archive_path.stat().st_size),
+        str(artifact["size_bytes"]),
+    )
+    require_equal(
+        f"{label} archive SHA-256",
+        sha256(archive_path),
+        str(artifact["sha256"]),
+    )
+    require_equal(
+        f"{label} archive SHA-1",
+        sha1(archive_path),
+        str(artifact["object_name"]),
+    )
+
+
+def verify_archive_tree(
+    archive_path: Path,
+    installed_root: Path,
+    *,
+    label: str,
+    archive_prefix: str = "",
+) -> None:
+    if installed_root.is_symlink() or not installed_root.is_dir():
+        raise M0Error(f"pinned {label} tree is not installed")
+    expected = _archive_tree(
+        archive_path, label=label, archive_prefix=archive_prefix
+    )
+    actual = _installed_tree(installed_root, label=label)
+    missing = sorted(expected.keys() - actual.keys())
+    if missing:
+        raise M0Error(f"installed {label} is missing {missing[0]}")
+    unexpected = sorted(actual.keys() - expected.keys())
+    if unexpected:
+        raise M0Error(f"installed {label} has unexpected {unexpected[0]}")
+    for name in sorted(expected):
+        if actual[name] != expected[name]:
+            raise M0Error(f"installed {label} entry mismatch: {name}")
+
+
+def download_gcs_archive(
+    artifact: dict[str, object], archive_path: Path, *, label: str
+) -> None:
+    url = (
+        "https://storage.googleapis.com/"
+        f"{artifact['bucket']}/{artifact['object_name']}"
+    )
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "chromium-wasm-bootstrap/1"}
+    )
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=120) as response,
+            archive_path.open("xb") as output_file,
+        ):
+            copied = 0
+            expected_size = int(artifact["size_bytes"])
+            while chunk := response.read(1024 * 1024):
+                copied += len(chunk)
+                if copied > expected_size:
+                    raise M0Error(
+                        f"pinned {label} archive exceeds "
+                        f"{expected_size} bytes"
+                    )
+                output_file.write(chunk)
+    except (OSError, urllib.error.URLError) as exc:
+        raise M0Error(
+            f"failed to download pinned {label} archive: {exc}"
+        ) from exc
+    verify_gcs_archive(artifact, archive_path, label=label)
+
+
+def install_gcs_archive_tree(
+    artifact: dict[str, object],
+    installed_root: Path,
+    archive_path: Path,
+    *,
+    label: str,
+    archive_prefix: str = "",
+    staging_prefix: str,
+) -> None:
+    installed_root.parent.mkdir(parents=True, exist_ok=True)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    if not os.path.lexists(archive_path):
+        archive_staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{staging_prefix}.archive-",
+                dir=archive_path.parent,
+            )
+        )
+        candidate_archive = archive_staging / archive_path.name
+        try:
+            download_gcs_archive(
+                artifact, candidate_archive, label=label
+            )
+            if os.path.lexists(archive_path):
+                raise M0Error(
+                    f"{label} archive path appeared during installation"
+                )
+            os.replace(candidate_archive, archive_path)
+        finally:
+            shutil.rmtree(archive_staging, ignore_errors=True)
+    verify_gcs_archive(artifact, archive_path, label=label)
+
+    if os.path.lexists(installed_root):
+        verify_archive_tree(
+            archive_path,
+            installed_root,
+            label=label,
+            archive_prefix=archive_prefix,
+        )
+        return
+
+    staging_root = Path(
+        tempfile.mkdtemp(
+            prefix=f".{staging_prefix}.install-",
+            dir=installed_root.parent,
+        )
+    )
+    extract_root = staging_root / "contents"
+    extract_root.mkdir()
+    try:
+        _archive_tree(
+            archive_path, label=label, archive_prefix=archive_prefix
+        )
+        try:
+            with tarfile.open(archive_path, mode="r:gz") as archive:
+                archive.extractall(extract_root, filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            raise M0Error(
+                f"failed to extract pinned {label} archive: {exc}"
+            ) from exc
+        candidate_root = (
+            extract_root / archive_prefix if archive_prefix else extract_root
+        )
+        verify_archive_tree(
+            archive_path,
+            candidate_root,
+            label=label,
+            archive_prefix=archive_prefix,
+        )
+        if os.path.lexists(installed_root):
+            raise M0Error(
+                f"{label} path appeared during installation"
+            )
+        os.replace(candidate_root, installed_root)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def ensure_webui_node_modules(
+    manifest: dict[str, object], *, install: bool
+) -> None:
+    node_modules = manifest["webui_node_modules"]
+    assert isinstance(node_modules, dict)
+    verify_webui_node_modules_deps_pin(node_modules)
+    node_modules_root, archive_path = webui_node_modules_paths(node_modules)
+    if install:
+        install_gcs_archive_tree(
+            node_modules,
+            node_modules_root,
+            archive_path,
+            label="WebUI node_modules",
+            staging_prefix="node_modules",
+        )
+    else:
+        verify_gcs_archive(
+            node_modules, archive_path, label="WebUI node_modules"
+        )
+        verify_archive_tree(
+            archive_path,
+            node_modules_root,
+            label="WebUI node_modules",
+        )
+
+
+def verify_chromium_node_runtime(
+    node_runtime: dict[str, object],
+    runtime_root: Path,
+    archive_path: Path,
+) -> None:
+    label = "Chromium Node runtime"
+    verify_gcs_archive(node_runtime, archive_path, label=label)
+    verify_archive_tree(
+        archive_path,
+        runtime_root,
+        label=label,
+        archive_prefix=str(node_runtime["archive_root"]),
+    )
+    executable_path = Path(str(node_runtime["executable_path"]))
+    if executable_path != Path("bin/node"):
+        raise M0Error(
+            "Chromium Node executable path mismatch: "
+            f"expected bin/node, got {executable_path}"
+        )
+    executable = runtime_root / executable_path
+    if executable.is_symlink() or not executable.is_file():
+        raise M0Error("pinned Chromium Node executable is not installed")
+    require_equal(
+        "Chromium Node executable hash",
+        sha256(executable),
+        str(node_runtime["executable_sha256"]),
+    )
+    require_equal(
+        "Chromium Node version",
+        checked_output([str(executable), "--version"]),
+        str(node_runtime["version_output"]),
+    )
+
+
+def ensure_chromium_node_runtime(
+    manifest: dict[str, object], *, install: bool
+) -> None:
+    node_runtime = manifest["chromium_node_runtime"]
+    assert isinstance(node_runtime, dict)
+    verify_chromium_node_runtime_deps_pin(node_runtime)
+    runtime_root, archive_path = chromium_node_runtime_paths(node_runtime)
+    if install:
+        install_gcs_archive_tree(
+            node_runtime,
+            runtime_root,
+            archive_path,
+            label="Chromium Node runtime",
+            archive_prefix=str(node_runtime["archive_root"]),
+            staging_prefix="node_runtime",
+        )
+    verify_chromium_node_runtime(
+        node_runtime, runtime_root, archive_path
+    )
 
 
 def ensure_host_clang(
@@ -1447,6 +2011,9 @@ def main() -> int:
             manifest, install=install
         )
         ensure_build_tools(manifest, cipd, install=install)
+        if args.profile == "m3":
+            ensure_chromium_node_runtime(manifest, install=install)
+            ensure_webui_node_modules(manifest, install=install)
         ensure_host_clang(
             manifest, bootstrap_python, install=install
         )

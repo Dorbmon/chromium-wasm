@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+import hashlib
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -158,6 +161,36 @@ class HostGraphManifestTest(unittest.TestCase):
             manifest, install=False
         )
 
+    def test_m3_generator_inputs_match_chromium_pins(self) -> None:
+        manifest = load_manifest()
+        gperf = manifest["gperf"]
+        self.assertEqual(gperf["cipd_tag"], "version:3@3.2")
+        self.assertEqual(
+            gperf["cipd_instance"],
+            "otrRUeHQr9zlxtT4sJfSJqspytBWr9IkPrhZ8bFolnYC",
+        )
+        bootstrap.verify_toolchain_ensure_pins(manifest)
+        bootstrap.ensure_build_tools(
+            manifest, Path("unused-in-verify-only"), install=False
+        )
+
+        node_modules = manifest["webui_node_modules"]
+        self.assertEqual(
+            node_modules["object_name"],
+            "38df23cf794887ca7c81d57bf30f66c38c144e28",
+        )
+        bootstrap.ensure_webui_node_modules(manifest, install=False)
+
+        node_runtime = manifest["chromium_node_runtime"]
+        self.assertEqual(
+            node_runtime["object_name"],
+            "744e6926ffdd4a4fb2080ae2b9ce4575490261e7",
+        )
+        self.assertEqual(node_runtime["version_output"], "v24.12.0")
+        bootstrap.ensure_chromium_node_runtime(
+            manifest, install=False
+        )
+
     def test_host_proto_dependencies_match_upstream_gitlinks(self) -> None:
         manifest = load_manifest()
         chromium_revision = manifest["chromium"]["revision"]
@@ -276,6 +309,323 @@ class HostGraphManifestTest(unittest.TestCase):
                     mock.call("HEAD", "third_party/perfetto"),
                 ],
             )
+
+
+class WebuiNodeModulesBootstrapTest(unittest.TestCase):
+    def test_clean_install_is_atomic_and_verifies_extracted_tree(self) -> None:
+        archive_buffer = BytesIO()
+        with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+            for name in ("./typescript", "./typescript/bin"):
+                directory = tarfile.TarInfo(name)
+                directory.type = tarfile.DIRTYPE
+                directory.mode = 0o755
+                archive.addfile(directory)
+            contents = b"#!/usr/bin/env node\n"
+            executable = tarfile.TarInfo("./typescript/bin/tsc")
+            executable.mode = 0o755
+            executable.size = len(contents)
+            archive.addfile(executable, BytesIO(contents))
+        archive_contents = archive_buffer.getvalue()
+        object_name = hashlib.sha1(archive_contents).hexdigest()
+        archive_sha256 = hashlib.sha256(archive_contents).hexdigest()
+        node_modules = {
+            "path": "third_party/node/node_modules",
+            "archive_path": "third_party/node/node_modules.tar.gz",
+            "sha1_path": "third_party/node/node_modules.tar.gz.sha1",
+            "bucket": "chromium-nodejs",
+            "object_name": object_name,
+            "sha256": archive_sha256,
+            "size_bytes": len(archive_contents),
+            "generation": 42,
+            "output_file": "node_modules.tar.gz",
+        }
+        manifest = {"webui_node_modules": node_modules}
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            node_root = repo_root / "third_party/node"
+            node_root.mkdir(parents=True)
+            (node_root / "node_modules.tar.gz.sha1").write_text(
+                object_name + "\n", encoding="utf-8"
+            )
+            (repo_root / "DEPS").write_text(
+                "\n".join(
+                    (
+                        "'src/third_party/node/node_modules': {",
+                        "'bucket': 'chromium-nodejs'",
+                        f"'object_name': '{object_name}'",
+                        f"'sha256sum': '{archive_sha256}'",
+                        f"'size_bytes': {len(archive_contents)},",
+                        "'generation': 42,",
+                        "'output_file': 'node_modules.tar.gz'",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(bootstrap, "REPO_ROOT", repo_root),
+                mock.patch.object(
+                    bootstrap.urllib.request,
+                    "urlopen",
+                    return_value=BytesIO(archive_contents),
+                ) as urlopen,
+            ):
+                bootstrap.ensure_webui_node_modules(
+                    manifest, install=True
+                )
+                bootstrap.ensure_webui_node_modules(
+                    manifest, install=False
+                )
+                self.assertEqual(urlopen.call_count, 1)
+                executable_path = (
+                    node_root / "node_modules/typescript/bin/tsc"
+                )
+                self.assertEqual(executable_path.read_bytes(), contents)
+                executable_path.write_bytes(b"corrupt")
+                with self.assertRaisesRegex(
+                    bootstrap.M0Error, "entry mismatch"
+                ):
+                    bootstrap.ensure_webui_node_modules(
+                        manifest, install=False
+                    )
+
+            request = urlopen.call_args.args[0]
+            self.assertEqual(
+                request.full_url,
+                "https://storage.googleapis.com/"
+                f"chromium-nodejs/{object_name}",
+            )
+            self.assertEqual(urlopen.call_args.kwargs["timeout"], 120)
+            self.assertEqual(
+                list(node_root.glob(".node_modules.*-*")), []
+            )
+
+
+class ChromiumNodeRuntimeBootstrapTest(unittest.TestCase):
+    @staticmethod
+    def _archive() -> tuple[bytes, bytes]:
+        archive_buffer = BytesIO()
+        executable_contents = (
+            b"#!/bin/sh\n"
+            b"printf 'v24.12.0\\n'\n"
+        )
+        with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+            for name in ("node-linux-x64", "node-linux-x64/bin"):
+                directory = tarfile.TarInfo(name)
+                directory.type = tarfile.DIRTYPE
+                directory.mode = 0o755
+                archive.addfile(directory)
+            executable = tarfile.TarInfo(
+                "node-linux-x64/bin/node"
+            )
+            executable.mode = 0o755
+            executable.size = len(executable_contents)
+            archive.addfile(executable, BytesIO(executable_contents))
+        return archive_buffer.getvalue(), executable_contents
+
+    @staticmethod
+    def _manifest(
+        archive_contents: bytes, executable_contents: bytes
+    ) -> dict[str, object]:
+        node_runtime = {
+            "path": "third_party/node/linux/node-linux-x64",
+            "archive_path": (
+                "third_party/node/linux/node-linux-x64.tar.gz"
+            ),
+            "archive_root": "node-linux-x64",
+            "bucket": "chromium-nodejs",
+            "object_name": hashlib.sha1(archive_contents).hexdigest(),
+            "sha256": hashlib.sha256(archive_contents).hexdigest(),
+            "size_bytes": len(archive_contents),
+            "generation": 42,
+            "output_file": "node-linux-x64.tar.gz",
+            "executable_path": "bin/node",
+            "executable_sha256": hashlib.sha256(
+                executable_contents
+            ).hexdigest(),
+            "version_output": "v24.12.0",
+        }
+        return {"chromium_node_runtime": node_runtime}
+
+    @staticmethod
+    def _write_deps(repo_root: Path, node_runtime: object) -> None:
+        assert isinstance(node_runtime, dict)
+        (repo_root / "DEPS").write_text(
+            "\n".join(
+                (
+                    "'src/third_party/node/linux': {",
+                    "'bucket': 'chromium-nodejs'",
+                    f"'object_name': '{node_runtime['object_name']}'",
+                    f"'sha256sum': '{node_runtime['sha256']}'",
+                    f"'size_bytes': {node_runtime['size_bytes']},",
+                    "'generation': 42,",
+                    "'output_file': 'node-linux-x64.tar.gz'",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    def test_clean_install_is_atomic_and_verifies_runtime(self) -> None:
+        archive_contents, executable_contents = self._archive()
+        manifest = self._manifest(
+            archive_contents, executable_contents
+        )
+        node_runtime = manifest["chromium_node_runtime"]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            linux_root = repo_root / "third_party/node/linux"
+            linux_root.mkdir(parents=True)
+            self._write_deps(repo_root, node_runtime)
+            with (
+                mock.patch.object(bootstrap, "REPO_ROOT", repo_root),
+                mock.patch.object(
+                    bootstrap.urllib.request,
+                    "urlopen",
+                    return_value=BytesIO(archive_contents),
+                ) as urlopen,
+            ):
+                bootstrap.ensure_chromium_node_runtime(
+                    manifest, install=True
+                )
+                bootstrap.ensure_chromium_node_runtime(
+                    manifest, install=False
+                )
+                self.assertEqual(urlopen.call_count, 1)
+                executable = (
+                    linux_root / "node-linux-x64/bin/node"
+                )
+                self.assertEqual(
+                    executable.read_bytes(), executable_contents
+                )
+                executable.write_bytes(b"corrupt")
+                with self.assertRaisesRegex(
+                    bootstrap.M0Error, "entry mismatch"
+                ):
+                    bootstrap.ensure_chromium_node_runtime(
+                        manifest, install=False
+                    )
+
+            request = urlopen.call_args.args[0]
+            self.assertEqual(
+                request.full_url,
+                "https://storage.googleapis.com/chromium-nodejs/"
+                f"{node_runtime['object_name']}",
+            )
+            self.assertEqual(urlopen.call_args.kwargs["timeout"], 120)
+            self.assertEqual(
+                list(linux_root.glob(".node_runtime.*-*")), []
+            )
+
+    def test_archive_validation_rejects_escaping_paths_and_links(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            cases = (
+                (
+                    "path",
+                    "node-linux-x64/../../escape",
+                    tarfile.REGTYPE,
+                    "",
+                    "unsafe Chromium Node runtime archive path",
+                ),
+                (
+                    "link",
+                    "node-linux-x64/bin/node",
+                    tarfile.SYMTYPE,
+                    "../../escape",
+                    "unsafe Chromium Node runtime archive symlink target",
+                ),
+            )
+            for case_name, name, member_type, linkname, error in cases:
+                with self.subTest(case=case_name):
+                    archive_path = temporary_root / f"{case_name}.tar.gz"
+                    with tarfile.open(archive_path, mode="w:gz") as archive:
+                        member = tarfile.TarInfo(name)
+                        member.type = member_type
+                        member.linkname = linkname
+                        archive.addfile(member)
+                    with self.assertRaisesRegex(
+                        bootstrap.M0Error, error
+                    ):
+                        bootstrap._archive_tree(
+                            archive_path,
+                            label="Chromium Node runtime",
+                            archive_prefix="node-linux-x64",
+                        )
+
+    def test_download_stops_at_pinned_archive_size(self) -> None:
+        archive_contents, executable_contents = self._archive()
+        manifest = self._manifest(
+            archive_contents, executable_contents
+        )
+        node_runtime = manifest["chromium_node_runtime"]
+        assert isinstance(node_runtime, dict)
+        node_runtime["size_bytes"] = len(archive_contents) - 1
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            archive_path = Path(temporary_directory) / "node.tar.gz"
+            with mock.patch.object(
+                bootstrap.urllib.request,
+                "urlopen",
+                return_value=BytesIO(archive_contents),
+            ):
+                with self.assertRaisesRegex(
+                    bootstrap.M0Error, "exceeds"
+                ):
+                    bootstrap.download_gcs_archive(
+                        node_runtime,
+                        archive_path,
+                        label="Chromium Node runtime",
+                    )
+            self.assertLessEqual(
+                archive_path.stat().st_size,
+                int(node_runtime["size_bytes"]),
+            )
+
+    def test_deps_pin_fields_must_share_the_requested_entry(self) -> None:
+        archive_contents, executable_contents = self._archive()
+        manifest = self._manifest(
+            archive_contents, executable_contents
+        )
+        node_runtime = manifest["chromium_node_runtime"]
+        assert isinstance(node_runtime, dict)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            (repo_root / "DEPS").write_text(
+                "\n".join(
+                    (
+                        "'src/third_party/node/linux': {",
+                        "  'bucket': 'wrong-bucket',",
+                        "}",
+                        "'src/unrelated': {",
+                        f"  'bucket': '{node_runtime['bucket']}',",
+                        "  'objects': [{",
+                        "    'object_name': "
+                        f"'{node_runtime['object_name']}',",
+                        "    'sha256sum': "
+                        f"'{node_runtime['sha256']}',",
+                        "    'size_bytes': "
+                        f"{node_runtime['size_bytes']},",
+                        "    'generation': 42,",
+                        "    'output_file': 'node-linux-x64.tar.gz',",
+                        "  }],",
+                        "}",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(bootstrap, "REPO_ROOT", repo_root),
+                self.assertRaisesRegex(
+                    bootstrap.M0Error,
+                    "missing Chromium Node runtime pin",
+                ),
+            ):
+                bootstrap.verify_chromium_node_runtime_deps_pin(
+                    node_runtime
+                )
 
 
 class HostToolchainBootstrapTest(unittest.TestCase):
