@@ -141,7 +141,6 @@ source_set("permissions") {
     "//components/guest_view/buildflags",
     "//components/keyed_service/content",
     "//components/omnibox/common",
-    "//components/passage_embeddings/core",
     "//components/pref_registry",
     "//components/prefs",
     "//components/safety_check",
@@ -168,6 +167,14 @@ source_set("permissions") {
     "//ui/strings:ui_strings_grit",
     "//url",
   ]
+  if (is_wasm) {
+    # Permissions only records the public embedding result enum during the M3
+    # gate. The model controller and Optimization Guide filter stack are not
+    # instantiated in Content Shell.
+    deps += [ "//components/passage_embeddings/core:passage_embeddings_types" ]
+  } else {
+    deps += [ "//components/passage_embeddings/core" ]
+  }
   if (enable_vr) {
     deps += [ "//device/vr/public/cpp" ]
   }
