@@ -27,9 +27,7 @@ class M3NetSourceContractTest(unittest.TestCase):
             'if (is_wasm) {\n'
             "    sources += [\n"
             '      "base/file_stream_context_wasm.cc",\n'
-            '      "base/net_errors_posix.cc",\n'
-            "    ]\n"
-            "  }",
+            '      "base/net_errors_posix.cc",\n',
             build,
         )
         self.assertIn(

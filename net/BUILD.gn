@@ -1532,6 +1532,8 @@ component("net") {
     sources += [
       "base/file_stream_context_wasm.cc",
       "base/net_errors_posix.cc",
+      "socket/udp_socket_wasm.cc",
+      "socket/udp_socket_wasm.h",
     ]
   }
 
