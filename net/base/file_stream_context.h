@@ -19,10 +19,10 @@
 // platform-dependent parts (because of that it has a lot of #if-#else
 // branching). Implementations of all platform-independent methods are
 // located in file_stream_context.cc, and all platform-dependent methods are
-// in file_stream_context_{win,posix}.cc. This separation provides better
+// in file_stream_context_{win,posix,wasm}.cc. This separation provides better
 // readability of Context's code. And we tried to make as much Context code
-// platform-independent as possible. So file_stream_context_{win,posix}.cc are
-// much smaller than file_stream_context.cc now.
+// platform-independent as possible. So the platform files are much smaller
+// than file_stream_context.cc now.
 
 #ifndef NET_BASE_FILE_STREAM_CONTEXT_H_
 #define NET_BASE_FILE_STREAM_CONTEXT_H_
@@ -55,14 +55,14 @@ class IOBuffer;
 // Implementation for a FileStream. See file_stream.h for documentation.
 #if BUILDFLAG(IS_WIN)
 class FileStream::Context : public base::MessagePumpForIO::IOHandler {
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 class FileStream::Context {
 #endif
 
  public:
   ////////////////////////////////////////////////////////////////////////////
   // Platform-dependent methods implemented in
-  // file_stream_context_{win,posix}.cc.
+  // file_stream_context_{win,posix,wasm}.cc.
   ////////////////////////////////////////////////////////////////////////////
 
   explicit Context(scoped_refptr<base::TaskRunner> task_runner);
@@ -71,7 +71,7 @@ class FileStream::Context {
   Context& operator=(const Context&) = delete;
 #if BUILDFLAG(IS_WIN)
   ~Context() override;
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   ~Context();
 #endif
 
@@ -161,7 +161,7 @@ class FileStream::Context {
 
   ////////////////////////////////////////////////////////////////////////////
   // Platform-dependent methods implemented in
-  // file_stream_context_{win,posix}.cc.
+  // file_stream_context_{win,posix,wasm}.cc.
   ////////////////////////////////////////////////////////////////////////////
 
   // Adjusts the position from where the data is read.
@@ -216,14 +216,13 @@ class FileStream::Context {
   // the ReadFile API.
   void ReadAsyncResult(BOOL read_file_ret, DWORD bytes_read, DWORD os_error);
 
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
-  // ReadFileImpl() is a simple wrapper around read() that handles EINTR
-  // signals and calls RecordAndMapError() to map errno to net error codes.
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
+  // ReadFileImpl() reads from the current position and maps platform errors to
+  // net error codes.
   IOResult ReadFileImpl(scoped_refptr<IOBuffer> buf, int buf_len);
 
-  // WriteFileImpl() is a simple wrapper around write() that handles EINTR
-  // signals and calls MapSystemError() to map errno to net error codes.
-  // It tries to write to completion.
+  // WriteFileImpl() writes at the current position and maps platform errors to
+  // net error codes.
   IOResult WriteFileImpl(scoped_refptr<IOBuffer> buf, int buf_len);
 #endif  // BUILDFLAG(IS_WIN)
 

@@ -157,7 +157,7 @@ bool FileStream::Context::IsOpen() const {
 
 FileStream::Context::OpenResult FileStream::Context::OpenFileImpl(
     const base::FilePath& path, int open_flags) {
-#if BUILDFLAG(IS_POSIX)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WASM)
   // Always use blocking IO.
   open_flags &= ~base::File::FLAG_ASYNC;
 #endif

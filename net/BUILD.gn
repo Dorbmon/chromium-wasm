@@ -1528,6 +1528,13 @@ component("net") {
     ]
   }
 
+  if (is_wasm) {
+    sources += [
+      "base/file_stream_context_wasm.cc",
+      "base/net_errors_posix.cc",
+    ]
+  }
+
   if (is_posix || is_fuchsia) {
     sources += [
       "base/file_stream_context_posix.cc",

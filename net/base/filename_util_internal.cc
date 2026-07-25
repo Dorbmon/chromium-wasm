@@ -89,7 +89,7 @@ void SanitizeGeneratedFileName(base::FilePath::StringType* filename,
     filename->resize((pos == std::string::npos) ? 0 : (pos + 1));
 #if BUILDFLAG(IS_WIN)
     base::TrimWhitespace(*filename, base::TRIM_TRAILING, filename);
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     base::TrimWhitespaceASCII(*filename, base::TRIM_TRAILING, filename);
 #else
 #error Unsupported platform
@@ -213,6 +213,11 @@ bool FilePathToString16(const base::FilePath& path, std::u16string* converted) {
   std::string component8 = path.AsUTF8Unsafe();
   return !component8.empty() &&
          base::UTF8ToUTF16(component8.c_str(), component8.size(), converted);
+#elif BUILDFLAG(IS_WASM)
+  // Emscripten virtual filesystem paths use UTF-8.
+  const std::string& component8 = path.value();
+  return !component8.empty() &&
+         base::UTF8ToUTF16(component8.c_str(), component8.size(), converted);
 #endif
 }
 
@@ -271,6 +276,10 @@ std::u16string GetSuggestedFilenameImpl(
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   result_str = filename;
   default_name_str = default_name;
+#elif BUILDFLAG(IS_WASM)
+  // Emscripten virtual filesystem paths use UTF-8.
+  result_str = filename;
+  default_name_str = default_name;
 #else
 #error Unsupported platform
 #endif
@@ -323,6 +332,8 @@ base::FilePath GenerateFileNameImpl(
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   base::FilePath generated_name(
       base::SysWideToNativeMB(base::UTF16ToWide(file_name)));
+#elif BUILDFLAG(IS_WASM)
+  base::FilePath generated_name(base::UTF16ToUTF8(file_name));
 #endif
 
   DCHECK(!generated_name.empty());
