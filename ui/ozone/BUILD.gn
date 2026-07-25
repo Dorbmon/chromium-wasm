@@ -40,6 +40,11 @@ if (ozone_platform_headless) {
   ozone_platform_test_deps += [ "platform/headless:headless_unittests" ]
 }
 
+if (ozone_platform_wasm) {
+  ozone_platforms += [ "wasm" ]
+  ozone_platform_deps += [ "platform/wasm" ]
+}
+
 if (ozone_platform_drm) {
   ozone_platforms += [ "drm" ]
   ozone_platform_deps += [ "platform/drm:gbm" ]

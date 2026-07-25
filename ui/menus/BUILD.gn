@@ -4,7 +4,7 @@
 
 import("//testing/test.gni")
 assert(is_win || is_mac || is_linux || is_chromeos || is_android ||
-       is_fuchsia || is_ios)
+       is_fuchsia || is_ios || is_wasm)
 
 component("menus") {
   sources = [

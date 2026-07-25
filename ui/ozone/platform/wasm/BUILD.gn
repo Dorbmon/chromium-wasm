@@ -1,0 +1,51 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+visibility = [ "//ui/ozone/*" ]
+
+config("wasm_host_bridge") {
+  ldflags =
+      [ "--js-library=" + rebase_path("wasm_host_bridge.js", root_build_dir) ]
+}
+
+source_set("wasm") {
+  sources = [
+    "ozone_platform_wasm.cc",
+    "ozone_platform_wasm.h",
+    "wasm_screen.cc",
+    "wasm_screen.h",
+    "wasm_surface_factory.cc",
+    "wasm_surface_factory.h",
+    "wasm_surface_ozone_canvas.cc",
+    "wasm_surface_ozone_canvas.h",
+    "wasm_window.cc",
+    "wasm_window.h",
+    "wasm_window_manager.cc",
+    "wasm_window_manager.h",
+  ]
+
+  inputs = [ "wasm_host_bridge.js" ]
+
+  defines = [ "OZONE_IMPLEMENTATION" ]
+
+  all_dependent_configs = [ ":wasm_host_bridge" ]
+
+  deps = [
+    "//base",
+    "//components/viz/common/resources:shared_image_format",
+    "//skia",
+    "//ui/base",
+    "//ui/base/cursor",
+    "//ui/base/ime",
+    "//ui/display",
+    "//ui/events",
+    "//ui/events/ozone/layout",
+    "//ui/events/platform",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/ozone:ozone_base",
+    "//ui/ozone/common",
+    "//ui/platform_window",
+  ]
+}
