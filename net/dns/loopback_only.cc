@@ -93,6 +93,11 @@ bool HaveOnlyLoopbackAddressesSlow() {
   return false;
 #elif BUILDFLAG(IS_ANDROID)
   return android::HaveOnlyLoopbackAddresses();
+#elif BUILDFLAG(IS_WASM)
+  // M3 has no native network-interface provider. Conservatively report that
+  // the probe could not prove the host is loopback-only.
+  NOTIMPLEMENTED_LOG_ONCE();
+  return false;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   return HaveOnlyLoopbackAddressesUsingGetifaddrs();
 #endif  // defined(various platforms)
