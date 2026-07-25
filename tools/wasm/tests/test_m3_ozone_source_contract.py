@@ -60,6 +60,72 @@ class M3OzoneSourceContractTest(unittest.TestCase):
         self.assertIn("canvas_active_->exchange(true", factory)
         self.assertIn("one live compositor surface", factory)
 
+    def test_wasm_ui_fallbacks_are_explicit_and_non_native(self) -> None:
+        text_elider = source("ui/gfx/text_elider.cc")
+        vector_icon = source("ui/gfx/paint_vector_icon.cc")
+        pixmap = source("ui/gfx/native_pixmap_handle.cc")
+        pixmap_traits = source(
+            "ui/gfx/mojom/native_handle_types_mojom_traits.cc"
+        )
+        platform_handle_wasm = source(
+            "mojo/public/cpp/platform/platform_handle_wasm.cc"
+        )
+        ui_base_build = source("ui/base/BUILD.gn")
+        exchange_factory = source(
+            "ui/base/dragdrop/os_exchange_data_provider_factory.cc"
+        )
+
+        filename_setup = text_elider.split(
+            "std::u16string ElideFilename", 1
+        )[1].split("const float full_width", 1)[0]
+        self.assertIn("BUILDFLAG(IS_WASM)", filename_setup)
+        self.assertIn("SysNativeMBToWide", filename_setup)
+
+        self.assertEqual(
+            vector_icon.count("value_or(SkPoint{0, 0})"),
+            3,
+        )
+        self.assertNotIn("value_or({0, 0})", vector_icon)
+
+        self.assertIn(
+            "Native pixmap handle cloning is unsupported on Wasm",
+            pixmap,
+        )
+        self.assertIn(
+            "Mojo native pixmap transport is unsupported on Wasm",
+            pixmap_traits,
+        )
+        self.assertIn(
+            "Native pixmap plane deserialization is unsupported by",
+            pixmap_traits,
+        )
+        self.assertIn("CHECK(handle.planes.empty())", pixmap)
+        self.assertIn("CHECK(false)", pixmap_traits)
+        self.assertIn("return false;", pixmap_traits)
+        self.assertEqual(
+            platform_handle_wasm.count(
+                "Native platform handles are unsupported in WebAssembly"
+            ),
+            3,
+        )
+        self.assertIn(
+            "handle->type != MOJO_PLATFORM_HANDLE_TYPE_INVALID",
+            platform_handle_wasm,
+        )
+
+        self.assertIn(
+            "is_fuchsia || is_wasm",
+            ui_base_build,
+        )
+        self.assertIn(
+            "WebAssembly has no host drag-and-drop integration",
+            exchange_factory,
+        )
+        self.assertIn(
+            "return std::make_unique<OSExchangeDataProviderNonBacked>();",
+            exchange_factory,
+        )
+
     def test_window_input_and_host_decorations_are_explicitly_unsupported(
         self,
     ) -> None:

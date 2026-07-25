@@ -187,7 +187,8 @@ std::u16string ElideFilename(const base::FilePath& filename,
   std::u16string extension = WideToUTF16(filename.Extension());
   std::u16string rootname =
       WideToUTF16(filename.BaseName().RemoveExtension().value());
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || \
+    BUILDFLAG(IS_WASM)
   std::u16string filename_utf16 =
       WideToUTF16(base::SysNativeMBToWide(filename.value()));
   std::u16string extension =

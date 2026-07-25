@@ -73,6 +73,11 @@ NativePixmapHandle& NativePixmapHandle::operator=(NativePixmapHandle&& other) =
     default;
 
 NativePixmapHandle CloneHandleForIPC(const NativePixmapHandle& handle) {
+#if BUILDFLAG(IS_WASM)
+  CHECK(handle.planes.empty())
+      << "Native pixmap handle cloning is unsupported on Wasm";
+  return NativePixmapHandle();
+#else
   NativePixmapHandle clone;
   for (auto& plane : handle.planes) {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -133,6 +138,7 @@ NativePixmapHandle CloneHandleForIPC(const NativePixmapHandle& handle) {
 #endif
 
   return clone;
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 bool CanFitImageForSizeAndFormat(const gfx::NativePixmapHandle& handle,

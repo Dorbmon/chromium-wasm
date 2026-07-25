@@ -4,6 +4,7 @@
 
 #include "ui/gfx/mojom/native_handle_types_mojom_traits.h"
 
+#include "base/logging.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/base/shared_memory_mojom_traits.h"
@@ -88,6 +89,10 @@ mojo::PlatformHandle StructTraits<
   return mojo::PlatformHandle(std::move(plane.fd));
 #elif BUILDFLAG(IS_FUCHSIA)
   return mojo::PlatformHandle(std::move(plane.vmo));
+#elif BUILDFLAG(IS_WASM)
+  CHECK(false) << "Mojo native pixmap transport is unsupported on Wasm";
+#else
+#error Unsupported OS
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 }
 
@@ -95,6 +100,11 @@ bool StructTraits<
     gfx::mojom::NativePixmapPlaneDataView,
     gfx::NativePixmapPlane>::Read(gfx::mojom::NativePixmapPlaneDataView data,
                                   gfx::NativePixmapPlane* out) {
+#if BUILDFLAG(IS_WASM)
+  LOG(ERROR) << "Native pixmap plane deserialization is unsupported by "
+                "ozone_wasm software mode";
+  return false;
+#else
   out->stride = data.stride();
   out->offset = data.offset();
   out->size = data.size();
@@ -108,9 +118,12 @@ bool StructTraits<
   if (!handle.is_handle())
     return false;
   out->vmo = zx::vmo(handle.TakeHandle());
+#else
+#error Unsupported OS
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
   return true;
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 #if BUILDFLAG(IS_FUCHSIA)

@@ -7,7 +7,8 @@
 #include "base/notreached.h"
 #include "build/build_config.h"
 
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
+    BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include "ui/base/dragdrop/os_exchange_data_provider_factory_ozone.h"
 #include "ui/base/dragdrop/os_exchange_data_provider_non_backed.h"
 #elif BUILDFLAG(IS_APPLE)
@@ -38,6 +39,10 @@ OSExchangeDataProviderFactory::CreateProvider() {
 #elif BUILDFLAG(IS_FUCHSIA)
   // Fuchsia uses OSExchangeDataProviderNonBacked since a platform-specific
   // implementation is not planned. See crbug.com/42050646 for context.
+  return std::make_unique<OSExchangeDataProviderNonBacked>();
+#elif BUILDFLAG(IS_WASM)
+  // WebAssembly has no host drag-and-drop integration at the M3 gate. Keep
+  // exchange data process-local until the host input bridge supplies it.
   return std::make_unique<OSExchangeDataProviderNonBacked>();
 #else
 #error "Unknown operating system"

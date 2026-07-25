@@ -576,7 +576,7 @@ component("base") {
     public_deps += [ "//ui/base/glib" ]
   }
 
-  if (is_chromeos || (use_aura && is_linux) || is_fuchsia) {
+  if (is_chromeos || (use_aura && is_linux) || is_fuchsia || is_wasm) {
     sources += [
       "dragdrop/os_exchange_data_provider_non_backed.cc",
       "dragdrop/os_exchange_data_provider_non_backed.h",

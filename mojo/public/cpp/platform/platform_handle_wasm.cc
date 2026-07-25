@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/logging.h"
 #include "build/build_config.h"
 
 #if !BUILDFLAG(IS_WASM)
@@ -31,7 +32,8 @@ PlatformHandle& PlatformHandle::operator=(PlatformHandle&& other) {
 void PlatformHandle::ToMojoPlatformHandle(PlatformHandle handle,
                                           MojoPlatformHandle* out_handle) {
   DCHECK(out_handle);
-  DCHECK(!handle.is_valid());
+  CHECK_EQ(handle.type_, Type::kNone)
+      << "Native platform handles are unsupported in WebAssembly";
   out_handle->struct_size = sizeof(*out_handle);
   out_handle->type = MOJO_PLATFORM_HANDLE_TYPE_INVALID;
   out_handle->value = 0;
@@ -40,6 +42,10 @@ void PlatformHandle::ToMojoPlatformHandle(PlatformHandle handle,
 PlatformHandle PlatformHandle::FromMojoPlatformHandle(
     const MojoPlatformHandle* handle) {
   DCHECK(handle);
+  if (handle->struct_size >= sizeof(*handle) &&
+      handle->type != MOJO_PLATFORM_HANDLE_TYPE_INVALID) {
+    LOG(ERROR) << "Native platform handles are unsupported in WebAssembly";
+  }
   return PlatformHandle();
 }
 
@@ -52,7 +58,8 @@ void PlatformHandle::release() {
 }
 
 PlatformHandle PlatformHandle::Clone() const {
-  DCHECK(!is_valid());
+  CHECK_EQ(type_, Type::kNone)
+      << "Native platform handles are unsupported in WebAssembly";
   return PlatformHandle();
 }
 
