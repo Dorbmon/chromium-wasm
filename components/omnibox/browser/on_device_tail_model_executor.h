@@ -5,21 +5,31 @@
 #ifndef COMPONENTS_OMNIBOX_BROWSER_ON_DEVICE_TAIL_MODEL_EXECUTOR_H_
 #define COMPONENTS_OMNIBOX_BROWSER_ON_DEVICE_TAIL_MODEL_EXECUTOR_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <memory>
 #include <queue>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "base/containers/lru_cache.h"
+#include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
+#include "base/containers/lru_cache.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/memory/raw_ptr.h"
-#include "base/time/time.h"
 #include "components/omnibox/browser/on_device_tail_tokenizer.h"
+#endif
 #include "components/optimization_guide/proto/on_device_tail_suggest_model_metadata.pb.h"
-#include "third_party/tflite/src/tensorflow/lite/interpreter.h"
-#include "third_party/tflite/src/tensorflow/lite/signature_runner.h"
+#if !BUILDFLAG(IS_WASM)
+#include "third_party/tflite/src/tensorflow/lite/interpreter.h"  // nogncheck
+#include "third_party/tflite/src/tensorflow/lite/signature_runner.h"  // nogncheck
+#endif
 
 // The on device tail model executor implements a beam search algorithm
 // (https://en.wikipedia.org/wiki/Beam_search) to generate complete suggestions
@@ -62,7 +72,13 @@ class OnDeviceTailModelExecutor {
             const ModelMetadata& metadata);
 
   // Returns whether the executor is initialized.
-  bool IsReady() const { return interpreter_ != nullptr; }
+  bool IsReady() const {
+#if BUILDFLAG(IS_WASM)
+    return false;
+#else
+    return interpreter_ != nullptr;
+#endif
+  }
 
   // Resets the model executor.
   void Reset();
@@ -79,6 +95,10 @@ class OnDeviceTailModelExecutor {
   }
 
  private:
+  // The time when the executor is last called.
+  base::TimeTicks executor_last_called_time_;
+
+#if !BUILDFLAG(IS_WASM)
   friend class OnDeviceTailModelExecutorPublic;
 
   struct RnnCellStates {
@@ -246,9 +266,6 @@ class OnDeviceTailModelExecutor {
   size_t max_num_steps_;
   float log_probability_threshold_;
 
-  // The time when the executor is last called.
-  base::TimeTicks executor_last_called_time_;
-
   // Files and metadata needed to initialize the model executor;
   base::FilePath model_filepath_;
   base::FilePath vocab_filepath_;
@@ -260,6 +277,7 @@ class OnDeviceTailModelExecutor {
   // substrings which are encoded by BASE64 used to filter bad suggestions.
   std::set<uint32_t> badword_hashes_;
   std::set<std::string> bad_substrings_;
+#endif
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_ON_DEVICE_TAIL_MODEL_EXECUTOR_H_

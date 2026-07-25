@@ -998,6 +998,15 @@ static_library("browser") {
     ]
   }
 
+  if (is_wasm) {
+    sources -= [
+      "ml_model/field_classification_model_executor.cc",
+      "ml_model/field_classification_model_executor.h",
+      "ml_model/field_classification_model_handler.cc",
+    ]
+    sources += [ "ml_model/field_classification_model_handler_wasm.cc" ]
+  }
+
   configs += [
     "//build/config:precompiled_headers",
     "//build/config/compiler:wexit_time_destructors",
@@ -1025,15 +1034,19 @@ static_library("browser") {
     "//third_party/abseil-cpp:absl",
     "//third_party/libaddressinput",
     "//third_party/libaddressinput:strings_grit",
-    "//third_party/tflite",
-    "//third_party/tflite:tflite_public_headers",
-    "//third_party/tflite_support",
-    "//third_party/tflite_support:tflite_support_proto",
     "//ui/base",
     "//ui/gfx/geometry",
     "//ui/gfx/range",
     "//url",
   ]
+  if (!is_wasm) {
+    public_deps += [
+      "//third_party/tflite",
+      "//third_party/tflite:tflite_public_headers",
+      "//third_party/tflite_support",
+      "//third_party/tflite_support:tflite_support_proto",
+    ]
+  }
 
   deps = [
     ":autofill_address_rewriter_resources",

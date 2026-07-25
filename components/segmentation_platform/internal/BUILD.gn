@@ -227,21 +227,27 @@ static_library("internal") {
 }
 
 static_library("optimization_guide_segmentation_handler") {
-  sources = [
-    "execution/optimization_guide/optimization_guide_segmentation_model_handler.cc",
-    "execution/optimization_guide/optimization_guide_segmentation_model_handler.h",
-    "execution/optimization_guide/optimization_guide_segmentation_model_provider.cc",
-    "execution/optimization_guide/optimization_guide_segmentation_model_provider.h",
-    "execution/optimization_guide/segmentation_model_executor.cc",
-    "execution/optimization_guide/segmentation_model_executor.h",
-  ]
+  sources = [ "execution/optimization_guide/optimization_guide_segmentation_model_provider.h" ]
   deps = [
-    ":internal",
     "//base",
-    "//components/optimization_guide/core",
-    "//components/segmentation_platform/internal/proto",
     "//components/segmentation_platform/public",
   ]
+  if (is_wasm) {
+    sources += [ "execution/optimization_guide/optimization_guide_segmentation_model_provider_wasm.cc" ]
+  } else {
+    sources += [
+      "execution/optimization_guide/optimization_guide_segmentation_model_handler.cc",
+      "execution/optimization_guide/optimization_guide_segmentation_model_handler.h",
+      "execution/optimization_guide/optimization_guide_segmentation_model_provider.cc",
+      "execution/optimization_guide/segmentation_model_executor.cc",
+      "execution/optimization_guide/segmentation_model_executor.h",
+    ]
+    deps += [
+      ":internal",
+      "//components/optimization_guide/core",
+      "//components/segmentation_platform/internal/proto",
+    ]
+  }
 }
 
 source_set("unit_tests") {

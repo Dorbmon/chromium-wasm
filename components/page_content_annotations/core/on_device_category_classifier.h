@@ -15,6 +15,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
+#include "build/build_config.h"
 #include "components/page_content_annotations/core/page_content_annotation_type.h"
 #include "components/passage_embeddings/core/passage_embeddings_types.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
@@ -67,6 +68,7 @@ class OnDeviceCategoryClassifier
       passage_embeddings::EmbedderMetadata metadata) override;
 
  private:
+#if !BUILDFLAG(IS_WASM)
   void OnCategoryClassifiersCompleted(
       const GURL& url,
       ukm::SourceId source_id,
@@ -83,14 +85,17 @@ class OnDeviceCategoryClassifier
 
   // The current version of the embedder model.
   std::optional<int64_t> embedder_version_;
+#endif
 
   base::ObserverList<Observer> observers_;
 
+#if !BUILDFLAG(IS_WASM)
   base::ScopedObservation<passage_embeddings::EmbedderMetadataProvider,
                           passage_embeddings::EmbedderMetadataObserver>
       embedder_metadata_observation_{this};
 
   base::WeakPtrFactory<OnDeviceCategoryClassifier> weak_ptr_factory_{this};
+#endif
 };
 
 }  // namespace page_content_annotations

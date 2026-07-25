@@ -29,6 +29,14 @@ source_set("browsing_topics") {
     "util.cc",
     "util.h",
   ]
+  if (is_wasm) {
+    # M3 has no local model inference runtime. Keep the Annotator interface used
+    # by the service, but omit the BERT-backed implementation.
+    sources -= [
+      "annotator_impl.cc",
+      "annotator_impl.h",
+    ]
+  }
 
   deps = [
     "//base",

@@ -7,13 +7,16 @@
 
 #include <optional>
 
+#include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
 #include "base/memory/raw_ptr.h"
-#include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/page_content_annotations/core/page_content_annotation_job.h"
-#include "components/page_content_annotations/core/page_content_annotations_common.h"
-#include "components/page_content_annotations/core/page_content_annotator.h"
 #include "components/page_content_annotations/core/page_visibility_model_handler.h"
 #include "net/base/priority_queue.h"
+#endif
+#include "components/optimization_guide/core/delivery/model_info.h"
+#include "components/page_content_annotations/core/page_content_annotations_common.h"
+#include "components/page_content_annotations/core/page_content_annotator.h"
 
 namespace optimization_guide {
 class OptimizationGuideModelProvider;
@@ -49,6 +52,7 @@ class PageContentAnnotationsModelManager : public PageContentAnnotator {
       base::OnceCallback<void(bool)> callback) override;
 
  private:
+#if !BUILDFLAG(IS_WASM)
   friend class PageContentAnnotationsModelManagerTest;
 
   // The supported priorities of jobs in |job_queue_|. Higher values correspond
@@ -106,6 +110,7 @@ class PageContentAnnotationsModelManager : public PageContentAnnotator {
 
   base::WeakPtrFactory<PageContentAnnotationsModelManager> weak_ptr_factory_{
       this};
+#endif
 };
 
 }  // namespace page_content_annotations

@@ -11,8 +11,11 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/trace_event/common/trace_event_common.h"
+#include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
 #include "components/omnibox/browser/autocomplete_scoring_model_executor.h"
 #include "components/omnibox/browser/autocomplete_scoring_model_handler.h"
+#endif
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #include "components/optimization_guide/proto/autocomplete_scoring_model_metadata.pb.h"
@@ -20,6 +23,7 @@
 
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 const char kAutocompleteScoringModelMetadataTypeUrl[] =
     "type.googleapis.com/"
     "google.internal.chrome.optimizationguide.v1."
@@ -34,12 +38,19 @@ void LogMLScoreCacheHit(bool cache_hit) {
   base::UmaHistogramBoolean(
       "Omnibox.URLScoringModelExecuted.MLScoreCache.CacheHit", cache_hit);
 }
+#endif
 
 }  // namespace
 
 AutocompleteScoringModelService::AutocompleteScoringModelService(
     optimization_guide::OptimizationGuideModelProvider* model_provider)
-    : score_cache_(OmniboxFieldTrial::GetMLConfig().max_ml_score_cache_size) {
+#if !BUILDFLAG(IS_WASM)
+    : score_cache_(OmniboxFieldTrial::GetMLConfig().max_ml_score_cache_size)
+#endif
+{
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(model_provider);
+#else
   // `model_provider` may be null for tests.
   if (OmniboxFieldTrial::IsUrlScoringModelEnabled() && model_provider) {
     optimization_guide::proto::Any any_metadata;
@@ -58,23 +69,37 @@ AutocompleteScoringModelService::AutocompleteScoringModelService(
         /*model_loading_task_runner=*/
         base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()}));
   }
+#endif
 }
 
 AutocompleteScoringModelService::~AutocompleteScoringModelService() = default;
 
 void AutocompleteScoringModelService::AddOnModelUpdatedCallback(
     base::OnceClosure callback) {
+#if BUILDFLAG(IS_WASM)
+  // No model can become available in M3. Do not report a synthetic update.
+  static_cast<void>(callback);
+#else
   url_scoring_model_handler_->AddOnModelUpdatedCallback(std::move(callback));
+#endif
 }
 
 int AutocompleteScoringModelService::GetModelVersion() const {
+#if BUILDFLAG(IS_WASM)
+  return -1;
+#else
   auto info = url_scoring_model_handler_->GetModelInfo();
   return info.has_value() ? info->GetVersion() : -1;
+#endif
 }
 
 std::vector<AutocompleteScoringModelService::Result>
 AutocompleteScoringModelService::BatchScoreAutocompleteUrlMatchesSync(
     const std::vector<const ScoringSignals*>& batch_scoring_signals) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(batch_scoring_signals);
+  return {};
+#else
   TRACE_EVENT0(
       "omnibox",
       "AutocompleteScoringModelService::BatchScoreAutocompleteUrlMatchesSync");
@@ -136,9 +161,14 @@ AutocompleteScoringModelService::BatchScoreAutocompleteUrlMatchesSync(
   }
 
   return batch_results;
+#endif
 }
 
 bool AutocompleteScoringModelService::UrlScoringModelAvailable() {
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   return url_scoring_model_handler_ &&
          url_scoring_model_handler_->ModelAvailable();
+#endif
 }

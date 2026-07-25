@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "base/functional/callback.h"
-#include "components/optimization_guide/core/inference/bert_model_handler.h"
+#include "components/optimization_guide/core/delivery/model_info.h"
 
 namespace browsing_topics {
 

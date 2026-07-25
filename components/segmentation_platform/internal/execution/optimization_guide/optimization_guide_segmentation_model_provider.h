@@ -9,10 +9,16 @@
 #include <vector>
 
 #include "base/task/sequenced_task_runner.h"
-#include "components/optimization_guide/core/inference/model_handler.h"
+#include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
+#include "base/memory/raw_ptr.h"
+#endif
 #include "components/segmentation_platform/public/model_provider.h"
 #include "components/segmentation_platform/public/proto/segmentation_platform.pb.h"
 
+namespace optimization_guide {
+class OptimizationGuideModelProvider;
+}  // namespace optimization_guide
 
 namespace segmentation_platform {
 
@@ -42,15 +48,19 @@ class OptimizationGuideSegmentationModelProvider : public ModelProvider {
                              ExecutionCallback callback) override;
   bool ModelAvailable() override;
 
+#if !BUILDFLAG(IS_WASM)
   OptimizationGuideSegmentationModelHandler& model_handler_for_testing() {
     return *model_handler_;
   }
+#endif
 
  private:
+#if !BUILDFLAG(IS_WASM)
   raw_ptr<optimization_guide::OptimizationGuideModelProvider> model_provider_;
   scoped_refptr<base::SequencedTaskRunner> background_task_runner_;
 
   std::unique_ptr<OptimizationGuideSegmentationModelHandler> model_handler_;
+#endif
 };
 
 }  // namespace segmentation_platform

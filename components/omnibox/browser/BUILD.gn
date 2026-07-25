@@ -371,6 +371,19 @@ static_library("browser") {
     "zero_suggest_verbatim_match_provider.h",
   ]
 
+  if (is_wasm) {
+    # M3 exposes the services but no local TFLite runtime. Their Wasm paths
+    # report that models are unavailable and never synthesize predictions.
+    sources -= [
+      "autocomplete_scoring_model_executor.cc",
+      "autocomplete_scoring_model_executor.h",
+      "autocomplete_scoring_model_handler.cc",
+      "autocomplete_scoring_model_handler.h",
+      "on_device_tail_model_executor.cc",
+    ]
+    sources += [ "on_device_tail_model_executor_wasm.cc" ]
+  }
+
   public_deps = [
     ":aim_eligibility_service_features",
     ":buildflags",
@@ -392,12 +405,16 @@ static_library("browser") {
     "//services/data_decoder/public/cpp",
     "//third_party/metrics_proto",
     "//third_party/omnibox_proto",
-    "//third_party/tflite",
-    "//third_party/tflite:tflite_public_headers",
-    "//third_party/tflite_support",
-    "//third_party/tflite_support:tflite_support_proto",
     "//url",
   ]
+  if (!is_wasm) {
+    public_deps += [
+      "//third_party/tflite",
+      "//third_party/tflite:tflite_public_headers",
+      "//third_party/tflite_support",
+      "//third_party/tflite_support:tflite_support_proto",
+    ]
+  }
 
   deps = [
     "//build:branding_buildflags",

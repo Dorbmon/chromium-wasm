@@ -9,7 +9,6 @@
 #include "base/memory/weak_ptr.h"
 #include "components/page_content_annotations/core/page_content_annotation_job.h"
 #include "components/page_content_annotations/core/page_content_annotations_common.h"
-#include "third_party/tflite_support/src/tensorflow_lite_support/cc/task/core/category.h"
 
 namespace page_content_annotations {
 

@@ -19,6 +19,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "build/build_config.h"
 #include "components/google/core/common/google_util.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
@@ -200,6 +201,7 @@ PageContentAnnotationsService::PageContentAnnotationsService(
       optimization_guide_model_provider);
   annotator_ = model_manager_.get();
 
+#if !BUILDFLAG(IS_WASM)
   if (features::ShouldExecutePageVisibilityModelOnPageContent(
           application_locale)) {
     model_manager_->RequestAndNotifyWhenModelAvailable(
@@ -213,6 +215,7 @@ PageContentAnnotationsService::PageContentAnnotationsService(
             optimization_guide_model_provider, embedder_metadata_provider);
     on_device_category_classifier_->AddObserver(this);
   }
+#endif
 
   if (features::RemotePageMetadataEnabled(application_locale, country_code)) {
     std::vector<optimization_guide::proto::OptimizationType> optimization_types;

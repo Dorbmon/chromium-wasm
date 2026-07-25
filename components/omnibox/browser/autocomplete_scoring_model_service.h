@@ -13,9 +13,12 @@
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/task/sequenced_task_runner.h"
+#include "build/build_config.h"
 #include "components/keyed_service/core/keyed_service.h"
+#if !BUILDFLAG(IS_WASM)
 #include "components/omnibox/browser/autocomplete_scoring_model_executor.h"
 #include "components/omnibox/browser/autocomplete_scoring_model_handler.h"
+#endif
 #include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #include "third_party/metrics_proto/omnibox_scoring_signals.pb.h"
 
@@ -24,7 +27,7 @@
 class AutocompleteScoringModelService : public KeyedService {
  public:
   using Result = std::optional<float>;
-  using ModelOutput = AutocompleteScoringModelExecutor::ModelOutput;
+  using ModelOutput = std::vector<float>;
   using ScoringSignals = ::metrics::OmniboxScoringSignals;
 
   explicit AutocompleteScoringModelService(
@@ -54,6 +57,7 @@ class AutocompleteScoringModelService : public KeyedService {
   // Returns whether the scoring model is enabled and loaded.
   bool UrlScoringModelAvailable();
 
+#if !BUILDFLAG(IS_WASM)
   // Autocomplete URL scoring model.
   std::unique_ptr<AutocompleteScoringModelHandler> url_scoring_model_handler_;
 
@@ -62,6 +66,7 @@ class AutocompleteScoringModelService : public KeyedService {
   base::LRUCache<std::vector<float>, float> score_cache_;
 
   base::WeakPtrFactory<AutocompleteScoringModelService> weak_ptr_factory_{this};
+#endif
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_AUTOCOMPLETE_SCORING_MODEL_SERVICE_H_

@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/types/optional_ref.h"
+#include "build/build_config.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
@@ -30,7 +31,9 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
-#include "components/optimization_guide/core/inference/model_handler.h"
+#if !BUILDFLAG(IS_WASM)
+#include "components/optimization_guide/core/inference/model_handler.h"  // nogncheck
+#endif
 #include "components/optimization_guide/proto/autofill_field_classification_model_metadata.pb.h"
 #include "components/optimization_guide/proto/models.pb.h"
 
@@ -43,11 +46,15 @@ namespace autofill {
 //
 // Users of this class should register to asynchronous model change events via
 // RegisterModelChangeCallback().
+#if !BUILDFLAG(IS_WASM)
 class FieldClassificationModelHandler
     : public optimization_guide::ModelHandler<
           FieldClassificationModelEncoder::ModelOutput,
           const FieldClassificationModelEncoder::ModelInput&>,
       public KeyedService {
+#else
+class FieldClassificationModelHandler : public KeyedService {
+#endif
  public:
   using ModelChangeCallbackList = base::RepeatingCallbackList<void()>;
 
@@ -92,11 +99,16 @@ class FieldClassificationModelHandler
       bool ignore_small_forms,
       base::OnceCallback<void(std::vector<ModelPredictions>)> callback);
 
+#if BUILDFLAG(IS_WASM)
+  // The local model runtime is not part of M3.
+  bool ModelAvailable() const { return false; }
+#else
   // optimization_guide::ModelHandler:
   void OnModelUpdated(
       optimization_guide::proto::OptimizationTarget optimization_target,
       base::optional_ref<const optimization_guide::ModelInfo> model_info)
       override;
+#endif
 
   bool ShouldApplySmallFormRules() const;
 
@@ -108,11 +120,15 @@ class FieldClassificationModelHandler
     return optimization_target_;
   }
 
-#if defined(UNIT_TEST)
+#if defined(UNIT_TEST) && !BUILDFLAG(IS_WASM)
   const FieldTypeSet& get_supported_types() const { return supported_types_; }
 #endif
 
  private:
+  // Specifies the model to load and execute.
+  const optimization_guide::proto::OptimizationTarget optimization_target_;
+
+#if !BUILDFLAG(IS_WASM)
   // Computes the predicted type for every element of `outputs`.
   // The size of the resulting vector is not guaranteed to have
   // `form.field_count()` elements if the maximum number of fields to be
@@ -168,20 +184,20 @@ class FieldClassificationModelHandler
   // the model's metadata.
   std::optional<ModelState> state_;
 
-  // Specifies the model to load and execute.
-  const optimization_guide::proto::OptimizationTarget optimization_target_;
-
   // Types which the model is able to output.
   FieldTypeSet supported_types_;
 
   // Cached model classifications.
   base::LRUCache<ModelInputHash, std::vector<FieldType>> predictions_cache_;
+#endif
 
   ModelChangeCallbackList model_change_callback_list_;
 
+#if !BUILDFLAG(IS_WASM)
   raw_ptr<autofill::MlLogRouter> log_router_ = nullptr;
 
   base::WeakPtrFactory<FieldClassificationModelHandler> weak_ptr_factory_{this};
+#endif
 };
 
 }  // namespace autofill
