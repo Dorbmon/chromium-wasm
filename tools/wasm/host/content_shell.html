@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm M3 Content Shell</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      background: #10141b;
+      color: #dbe7f5;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+    }
+
+    #smoke-root {
+      display: grid;
+      grid-template-columns: minmax(800px, 1fr) 320px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    #browser-canvas {
+      display: block;
+      width: 800px;
+      height: 600px;
+      border: 1px solid #53657d;
+      background: #000;
+      outline: none;
+    }
+
+    #browser-canvas:focus {
+      border-color: #72ddf7;
+    }
+
+    aside {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid #53657d;
+      background: #171e28;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 4px 12px;
+      margin: 0 0 12px;
+    }
+
+    dt {
+      color: #8da9c4;
+    }
+
+    dd {
+      min-width: 0;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      max-height: 420px;
+      margin: 0;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    #smoke-root[data-state="pass"] h1 {
+      color: #80ed99;
+    }
+
+    #smoke-root[data-state="fail"] h1 {
+      color: #ff758f;
+    }
+  </style>
+</head>
+<body>
+  <main id="smoke-root" data-state="running">
+    <canvas
+      id="browser-canvas"
+      width="800"
+      height="600"
+      tabindex="0"
+      aria-label="Chromium Content Shell output"></canvas>
+    <aside aria-label="M3 loader diagnostics">
+      <h1>Chromium Wasm M3 Content Shell</h1>
+      <dl id="versions"></dl>
+      <pre id="smoke-status">Starting deterministic M3 gate…</pre>
+    </aside>
+  </main>
+  <script type="module">
+    import {runM3SmokeFromQuery} from "/__m3__/content_shell_host.js";
+
+    runM3SmokeFromQuery().catch((error) => {
+      document.querySelector("#smoke-root").dataset.state = "fail";
+      document.querySelector("#smoke-status").textContent =
+        `HOST FAILURE: ${String(error)}`;
+    });
+  </script>
+</body>
+</html>

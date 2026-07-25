@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "fixture": "chromium-wasm-m3-static-v1",
+  "baseline": "m3_content_baseline.png",
+  "baseline_policy": "Capture only from an independently passing M3 runtime, review it, then require a separate comparison run. Capture mode never reports the M3 gate as passing.",
+  "width": 800,
+  "height": 600,
+  "channel_tolerance": 2,
+  "maximum_different_pixel_ratio": 0.0025,
+  "comparison": "A pixel differs when any RGBA channel delta exceeds channel_tolerance. The screenshot passes only when the differing-pixel ratio does not exceed maximum_different_pixel_ratio."
+}
