@@ -10,6 +10,7 @@
 #include <string_view>
 #include <type_traits>
 
+#include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
@@ -783,6 +784,9 @@ void ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Write(
     return;
   }
 
+#if BUILDFLAG(IS_WASM)
+  CHECK(false) << "IPC shared memory transport is unsupported on Wasm";
+#else
   WriteParam(m, p.GetMode());
   WriteParam(m, static_cast<uint64_t>(p.GetSize()));
   WriteParam(m, p.GetGUID());
@@ -812,6 +816,7 @@ void ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Write(
         new internal::PlatformFileAttachment(std::move(h.readonly_fd)));
   }
 #endif
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 bool ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Read(
@@ -835,6 +840,10 @@ bool ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Read(
       !ReadParam(m, iter, &guid)) {
     return false;
   }
+
+#if BUILDFLAG(IS_WASM)
+  return false;
+#else
   size_t size = static_cast<size_t>(shm_size);
 
 #if BUILDFLAG(IS_WIN)
@@ -903,6 +912,7 @@ bool ParamTraits<base::subtle::PlatformSharedMemoryRegion>::Read(
 #endif
 
   return true;
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 void ParamTraits<base::subtle::PlatformSharedMemoryRegion::Mode>::Write(
