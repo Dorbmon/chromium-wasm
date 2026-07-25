@@ -17,6 +17,10 @@ struct iovec {
 };
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include <sys/uio.h>
+#elif BUILDFLAG(IS_WASM)
+// Emscripten's libc supplies the POSIX-compatible iovec type even though
+// Chromium intentionally does not classify Wasm as a POSIX platform.
+#include <sys/uio.h>
 #endif  // BUILDFLAG(IS_WIN)
 
 #endif  // NET_THIRD_PARTY_QUICHE_OVERRIDES_QUICHE_PLATFORM_IMPL_QUICHE_IOVEC_IMPL_H_
