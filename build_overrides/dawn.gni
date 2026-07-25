@@ -6,7 +6,12 @@
 dawn_angle_dir = "//third_party/angle"
 dawn_glfw_dir = "//third_party/dawn/third_party/glfw3/src"
 dawn_googletest_dir = "//third_party/googletest/src"
-dawn_partition_alloc_dir = "//base/allocator/partition_allocator"
+if (!is_wasm) {
+  dawn_partition_alloc_dir = "//base/allocator/partition_allocator"
+} else {
+  dawn_enable_emdawnwebgpu = false
+  dawn_emscripten_dir = "//third_party/emsdk/upstream/emscripten"
+}
 dawn_jinja2_dir = "//third_party/jinja2"
 dawn_jsoncpp_dir = "//third_party/jsoncpp"
 dawn_spirv_tools_dir = "//third_party/spirv-tools/src"

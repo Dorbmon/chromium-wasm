@@ -20,7 +20,7 @@
     "dawn": {
       "path": "third_party/dawn",
       "upstream_revision": "d089fc91e7e4881362463faf8efe9ae435e34660",
-      "revision": "ad17c01003145f10c0f1fe5991b2edad1f75b267"
+      "revision": "da49530d50342500186d544a22fb3b70a22ede8d"
     },
     "angle": {
       "path": "third_party/angle",
@@ -217,6 +217,13 @@
       "path": "third_party/webgpu-headers/src",
       "revision": "dc16b3e531cf4f31be54236d1a3e988ba5f295a2"
     }
+  },
+  "dawn_lastchange": {
+    "dependency": "dawn",
+    "revision": "d089fc91e7e4881362463faf8efe9ae435e34660",
+    "revision_path": "gpu/webgpu/DAWN_VERSION",
+    "header_path": "gpu/webgpu/dawn_commit_hash.h",
+    "version_macro": "DAWN_COMMIT_HASH"
   },
   "gn": {
     "revision": "3357c4f51b1a9e676378c695dd9c7e9911c35ee6",
