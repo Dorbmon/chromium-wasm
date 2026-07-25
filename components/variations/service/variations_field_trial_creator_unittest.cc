@@ -197,7 +197,8 @@ VariationsSeed CreateTestSeedWithLimitedEntropyLayerUsingExcessiveEntropy() {
 
   // Add all platforms to the study's filter.
   auto* platforms = study->mutable_filter()->mutable_platform();
-  for (int p = static_cast<int>(Study_Platform_Platform_MIN);
+  // PLATFORM_UNKNOWN is a client-side sentinel, not a seed platform.
+  for (int p = static_cast<int>(Study::PLATFORM_WINDOWS);
        p <= static_cast<int>(Study_Platform_Platform_MAX); ++p) {
     platforms->Add(static_cast<Study_Platform>(p));
   }

@@ -234,8 +234,14 @@ message Study {
   }
 
   // Possible Chrome operating system platforms.
-  // These names must match those in tools/variations/fieldtrial_to_struct.py.
+  // Encoded platform names must match those in
+  // tools/variations/fieldtrial_to_struct.py.
   enum Platform {
+    // Used by clients that do not participate in platform-targeted
+    // variations. The negative value keeps it outside the nonnegative
+    // server-assigned platform ID space. This client-side sentinel must not be
+    // encoded in a seed filter.
+    PLATFORM_UNKNOWN = -1;
     PLATFORM_WINDOWS = 0;
     PLATFORM_MAC = 1;
     PLATFORM_LINUX = 2;

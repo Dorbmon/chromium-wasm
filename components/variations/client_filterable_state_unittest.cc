@@ -4,11 +4,14 @@
 
 #include "components/variations/client_filterable_state.h"
 
+#include <array>
+
 #include "base/functional/bind.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/variations/pref_names.h"
+#include "components/variations/study_filtering.h"
 #include "components/variations/variations_seed_store.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -49,6 +52,38 @@ TEST(ClientFilterableStateTest, GetHardwareManufacturer) {
   EXPECT_TRUE(manufacturer.empty());
 #endif
 }
+
+#if BUILDFLAG(IS_WASM)
+TEST(ClientFilterableStateTest,
+     WasmPlatformIsUnknownAndRejectsEverySeedPlatform) {
+  constexpr auto seed_platforms = std::to_array<Study::Platform>(
+      {Study::PLATFORM_WINDOWS, Study::PLATFORM_MAC, Study::PLATFORM_LINUX,
+       Study::PLATFORM_CHROMEOS, Study::PLATFORM_ANDROID, Study::PLATFORM_IOS,
+       Study::PLATFORM_ANDROID_WEBLAYER, Study::PLATFORM_FUCHSIA,
+       Study::PLATFORM_ANDROID_WEBVIEW});
+  static_assert(seed_platforms.size() == Study::Platform_ARRAYSIZE,
+                "|seed_platforms| must include every seed platform.");
+
+  EXPECT_EQ(Study::PLATFORM_UNKNOWN,
+            ClientFilterableState::GetCurrentPlatform());
+
+  // PLATFORM_UNKNOWN is a client-side sentinel, not a seed platform. Verify
+  // that a study targeting any encoded platform cannot match this client.
+  for (Study::Platform seed_platform : seed_platforms) {
+    Study::Filter filter;
+    filter.add_platform(seed_platform);
+    EXPECT_FALSE(internal::CheckStudyPlatform(
+        filter, ClientFilterableState::GetCurrentPlatform()))
+        << "Seed platform " << seed_platform;
+  }
+
+  // Reject the sentinel even if a malformed seed tries to target it.
+  Study::Filter invalid_filter;
+  invalid_filter.add_platform(Study::PLATFORM_UNKNOWN);
+  EXPECT_FALSE(internal::CheckStudyPlatform(
+      invalid_filter, ClientFilterableState::GetCurrentPlatform()));
+}
+#endif
 
 TEST(ClientFilterableStateTest, EnterpriseGroups) {
   // Test that enterprise_groups_function_ is called once.

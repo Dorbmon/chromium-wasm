@@ -201,6 +201,9 @@ bool CheckStudyCountry(const Study::Filter& filter,
 }
 
 bool CheckStudyPlatform(const Study::Filter& filter, Study::Platform platform) {
+  if (platform == Study::PLATFORM_UNKNOWN) {
+    return false;
+  }
   return std::ranges::contains(filter.platform(), platform);
 }
 

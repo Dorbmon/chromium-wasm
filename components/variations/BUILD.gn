@@ -167,6 +167,18 @@ component("variations") {
   }
 }
 
+if (is_wasm) {
+  executable("m3_variations_platform_smoke") {
+    testonly = true
+    sources = [ "m3_variations_platform_smoke.cc" ]
+    deps = [ ":variations" ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+}
+
 if (is_android) {
   static_library("variations_associated_data") {
     sources = [ "android/variations_associated_data_android.cc" ]

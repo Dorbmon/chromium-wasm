@@ -39,6 +39,8 @@ std::string ChannelToString(variations::Study::Channel channel) {
 
 std::string PlatformToString(variations::Study::Platform platform) {
   switch (platform) {
+    case variations::Study::PLATFORM_UNKNOWN:
+      return "Unknown";
     case variations::Study::PLATFORM_WINDOWS:
       return "Windows";
     case variations::Study::PLATFORM_MAC:

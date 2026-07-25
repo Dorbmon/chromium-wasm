@@ -274,6 +274,11 @@ TEST(VariationsStudyFilteringTest, CheckStudyPlatform) {
       platform_added[index] = true;
     }
   }
+
+  // PLATFORM_UNKNOWN is a client-side sentinel, not a seed target.
+  filter.clear_platform();
+  filter.add_platform(Study::PLATFORM_UNKNOWN);
+  EXPECT_FALSE(internal::CheckStudyPlatform(filter, Study::PLATFORM_UNKNOWN));
 }
 
 TEST(VariationsStudyFilteringTest, CheckStudyLowEndDevice) {
