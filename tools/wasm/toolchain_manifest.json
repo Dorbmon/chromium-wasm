@@ -87,7 +87,8 @@
     },
     "flac": {
       "path": "third_party/flac",
-      "revision": "e7108e2ed031547c3759217819a032065c820d73"
+      "upstream_revision": "e7108e2ed031547c3759217819a032065c820d73",
+      "revision": "6f98aedc1fad0b4ed947c9f6d16d460cf976dcd5"
     },
     "flatbuffers": {
       "path": "third_party/flatbuffers/src",
