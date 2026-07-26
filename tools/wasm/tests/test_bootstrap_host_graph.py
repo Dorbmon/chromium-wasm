@@ -69,6 +69,10 @@ class HostGraphManifestTest(unittest.TestCase):
                     ),
                     revision,
                 )
+        self.assertEqual(
+            dependencies["flac"]["revision"],
+            "6f98aedc1fad0b4ed947c9f6d16d460cf976dcd5",
+        )
 
     def test_m3_source_profile_covers_selected_content_gitlinks(self) -> None:
         manifest = load_manifest()
@@ -79,6 +83,7 @@ class HostGraphManifestTest(unittest.TestCase):
             "ced",
             "crc32c",
             "dragonbox",
+            "dom_distiller_js",
             "emoji_segmenter",
             "expat",
             "fast_float",
@@ -103,8 +108,10 @@ class HostGraphManifestTest(unittest.TestCase):
             "material_color_utilities",
             "ots",
             "quiche",
+            "quic_trace",
             "re2",
             "search_engines_data",
+            "smhasher",
             "snappy",
             "sqlite",
             "vulkan_headers",
@@ -126,6 +133,24 @@ class HostGraphManifestTest(unittest.TestCase):
             & set(bootstrap.M3_ADDITIONAL_SUBMODULES),
             set(),
         )
+        self.assertEqual(
+            set(bootstrap.M3_REQUIRED_SUBMODULES),
+            set(dependencies),
+        )
+        expected_new_pins = {
+            "quic_trace": (
+                "third_party/quic_trace/src",
+                "352288a06d2c83ae68b5a402b2219f4678be9f39",
+            ),
+            "smhasher": (
+                "third_party/smhasher/src",
+                "0ff96f7835817a27d0487325b6c16033e2992eb5",
+            ),
+        }
+        for name, (path, revision) in expected_new_pins.items():
+            with self.subTest(pin=name):
+                self.assertEqual(dependencies[name]["path"], path)
+                self.assertEqual(dependencies[name]["revision"], revision)
         for name in expected_names:
             with self.subTest(name=name):
                 dependency = dependencies[name]

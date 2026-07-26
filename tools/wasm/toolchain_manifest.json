@@ -15,7 +15,8 @@
     },
     "skia": {
       "path": "third_party/skia",
-      "revision": "587c5b0f5a7b0260826a0c19094c2d952195066e"
+      "upstream_revision": "587c5b0f5a7b0260826a0c19094c2d952195066e",
+      "revision": "ce6d1d63bd400cb019e993fe2eda0188f5e81c4c"
     },
     "dawn": {
       "path": "third_party/dawn",
@@ -166,6 +167,10 @@
       "path": "net/third_party/quiche/src",
       "revision": "997d654308b6a1a17435e472ef5190aecb12e3eb"
     },
+    "quic_trace": {
+      "path": "third_party/quic_trace/src",
+      "revision": "352288a06d2c83ae68b5a402b2219f4678be9f39"
+    },
     "re2": {
       "path": "third_party/re2/src",
       "revision": "972a15cedd008d846f1a39b2e88ce48d7f166cbd"
@@ -173,6 +178,10 @@
     "search_engines_data": {
       "path": "third_party/search_engines_data/resources",
       "revision": "1aab872af8d44dcf59362d7ba8255922f74fafde"
+    },
+    "smhasher": {
+      "path": "third_party/smhasher/src",
+      "revision": "0ff96f7835817a27d0487325b6c16033e2992eb5"
     },
     "snappy": {
       "path": "third_party/snappy/src",
