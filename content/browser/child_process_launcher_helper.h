@@ -14,6 +14,7 @@
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/kill.h"
+#include "base/process/launch.h"
 #include "base/process/process.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -37,8 +38,12 @@
 #include "base/win/scoped_handle.h"
 #include "base/win/windows_types.h"
 #include "sandbox/win/src/sandbox_types.h"
-#else
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include "content/public/browser/posix_file_descriptor_info.h"
+#elif BUILDFLAG(IS_WASM)
+// WebAssembly has no child-process handle mapping.
+#else
+#error "Unsupported child process launcher platform"
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -78,8 +83,13 @@ namespace internal {
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 using FileMappedForLaunch = PosixFileDescriptorInfo;
-#else
+#elif BUILDFLAG(IS_WIN)
 using FileMappedForLaunch = base::HandlesToInheritVector;
+#elif BUILDFLAG(IS_WASM)
+struct UnsupportedFileMappedForLaunch {};
+using FileMappedForLaunch = UnsupportedFileMappedForLaunch;
+#else
+#error "Unsupported child process launcher platform"
 #endif
 
 #if BUILDFLAG(IS_IOS)
