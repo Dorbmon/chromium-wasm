@@ -21,6 +21,7 @@
 #include "base/files/file.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/metrics/field_trial.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
@@ -58,30 +59,34 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_view_delegate.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/content_switch_dependent_feature_overrides.h"
 #include "content/public/common/content_switches.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/public/common/isolated_world_ids.h"
+#endif
 #include "content/public/common/url_constants.h"
-#include "content/public/test/setup_field_trials.h"
-#include "content/shell/browser/rust_test_service_ffi.rs.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_browser_context.h"
 #include "content/shell/browser/shell_browser_main_parts.h"
 #include "content/shell/browser/shell_devtools_manager_delegate.h"
 #include "content/shell/browser/shell_web_contents_view_delegate_creator.h"
-#include "content/shell/common/rust_test.test-mojom.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/shell/common/shell_controller.test-mojom.h"
+#endif
 #include "content/shell/common/shell_paths.h"
 #include "content/shell/common/shell_switches.h"
 #include "media/mojo/buildflags.h"
 #include "media/mojo/mojom/media_service.mojom.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#if !BUILDFLAG(IS_WASM)
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#endif
 #include "net/base/features.h"
 #include "net/dns/public/dns_over_https_config.h"
 #include "net/dns/public/secure_dns_mode.h"
 #include "net/ssl/client_cert_identity.h"
-#include "services/device/public/cpp/geolocation/location_system_permission_status.h"
+#include "services/device/public/cpp/geolocation/location_system_permission_status.h"  // nogncheck
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_service_buildflags.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
@@ -99,6 +104,12 @@
 #include "url/url_canon.h"
 #include "url/url_constants.h"
 
+#if !BUILDFLAG(IS_WASM)
+#include "content/public/test/setup_field_trials.h"  // nogncheck
+#include "content/shell/browser/rust_test_service_ffi.rs.h"
+#include "content/shell/common/rust_test.test-mojom.h"
+#endif
+
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/apk_assets.h"
 #include "base/android/path_utils.h"
@@ -114,8 +125,8 @@
 #endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
-#include "components/crash/core/app/crash_switches.h"
-#include "components/crash/core/app/crashpad.h"
+#include "components/crash/core/app/crash_switches.h"  // nogncheck
+#include "components/crash/core/app/crashpad.h"         // nogncheck
 #include "content/public/common/content_descriptors.h"
 #endif
 
@@ -168,7 +179,8 @@ int GetCrashSignalFD(const base::CommandLine& command_line) {
 }
 #endif
 
-class ShellControllerImpl : public mojom::ShellController {
+#if !BUILDFLAG(IS_WASM)
+class ShellControllerImpl final : public mojom::ShellController {
  public:
   ShellControllerImpl() = default;
   ~ShellControllerImpl() override = default;
@@ -194,7 +206,9 @@ class ShellControllerImpl : public mojom::ShellController {
 
   void ShutDown() override { Shell::Shutdown(); }
 };
+#endif
 
+#if !BUILDFLAG(IS_WASM)
 void BindRustTestServiceReceiver(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<content::rust_test::mojom::RustTestService>
@@ -203,6 +217,7 @@ void BindRustTestServiceReceiver(
       receiver.PassPipe());
   content::rust_test::BindRustTestService(std::move(pipe));
 }
+#endif
 
 void BindNetworkHintsHandler(
     content::RenderFrameHost* frame_host,
@@ -269,6 +284,13 @@ struct SharedState {
       nullptr;
 
   std::unique_ptr<PrefService> local_state;
+
+#if BUILDFLAG(IS_WASM)
+  // Content Shell normally installs a test variations configuration. M3 keeps
+  // only command-line feature selection and owns the corresponding field-trial
+  // registry for the lifetime of the browser process.
+  std::unique_ptr<base::FieldTrialList> field_trial_list;
+#endif
 };
 
 SharedState& GetSharedState() {
@@ -411,6 +433,7 @@ bool ShellContentBrowserClient::AreIsolatedWebAppsEnabled(
 void ShellContentBrowserClient::AppendExtraCommandLineSwitches(
     base::CommandLine* command_line,
     int child_process_id) {
+#if !BUILDFLAG(IS_WASM)
   static const char* const kForwardSwitches[] = {
 #if BUILDFLAG(IS_MAC)
       // Needed since on Mac, content_browsertests doesn't use
@@ -428,6 +451,7 @@ void ShellContentBrowserClient::AppendExtraCommandLineSwitches(
 
   command_line->CopySwitchesFrom(*base::CommandLine::ForCurrentProcess(),
                                  kForwardSwitches);
+#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -620,8 +644,10 @@ void ShellContentBrowserClient::RegisterBrowserInterfaceBindersForFrame(
       ->GetBinders()
       .ExposeInterfacesToRenderFrame(map);
   map->Add<network_hints::mojom::NetworkHintsHandler>(&BindNetworkHintsHandler);
+#if !BUILDFLAG(IS_WASM)
   map->Add<content::rust_test::mojom::RustTestService>(
       base::BindRepeating(&BindRustTestServiceReceiver));
+#endif
 #if BUILDFLAG(IS_WIN)
   map->Add<media::mojom::MediaFoundationPreferences>(
       &BindMediaFoundationPreferences);
@@ -643,10 +669,15 @@ void ShellContentBrowserClient::OpenURL(
     SiteInstance* site_instance,
     const OpenURLParams& params,
     base::OnceCallback<void(WebContents*)> callback) {
+#if BUILDFLAG(IS_WASM)
+  LOG(ERROR) << "Programmatic top-level navigation is unsupported until M4";
+  std::move(callback).Run(nullptr);
+#else
   std::move(callback).Run(
       Shell::CreateNewWindow(site_instance->GetBrowserContext(), params.url,
                              nullptr, gfx::Size())
           ->web_contents());
+#endif
 }
 
 void ShellContentBrowserClient::CreateThrottlesForNavigation(
@@ -811,9 +842,14 @@ void ShellContentBrowserClient::BindBrowserControlInterface(
   if (!pipe.is_valid()) {
     return;
   }
+#if BUILDFLAG(IS_WASM)
+  LOG(ERROR) << "External Mojo browser control is unsupported on Wasm";
+  pipe.reset();
+#else
   mojo::MakeSelfOwnedReceiver(
       std::make_unique<ShellControllerImpl>(),
       mojo::PendingReceiver<mojom::ShellController>(std::move(pipe)));
+#endif
 }
 
 void ShellContentBrowserClient::set_browser_main_parts(
@@ -878,7 +914,22 @@ void ShellContentBrowserClient::OnWebContentsCreated(
 
 void ShellContentBrowserClient::CreateFeatureListAndFieldTrials() {
   GetSharedState().local_state = CreateLocalState();
+#if BUILDFLAG(IS_WASM)
+  if (!base::FieldTrialList::GetInstance()) {
+    GetSharedState().field_trial_list =
+        std::make_unique<base::FieldTrialList>();
+  }
+  if (!base::FeatureList::GetInstance()) {
+    const base::CommandLine& command_line =
+        *base::CommandLine::ForCurrentProcess();
+    base::FeatureList::InitInstance(
+        command_line.GetSwitchValueASCII(switches::kEnableFeatures),
+        command_line.GetSwitchValueASCII(switches::kDisableFeatures),
+        GetSwitchDependentFeatureOverrides(command_line));
+  }
+#else
   SetupFieldTrials();
+#endif
 }
 
 // Tests may install their own ShellContentBrowserClient, track the list here.

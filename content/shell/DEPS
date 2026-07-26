@@ -37,6 +37,7 @@ include_rules = [
   "+components/embedder_support",
   "+components/keyed_service/core",
   "+components/network_session_configurator/browser",
+  "+components/network_session_configurator/common",
   "+components/performance_manager",
   "+components/permissions",
   "+components/strings/grit",
@@ -53,6 +54,10 @@ include_rules = [
 ]
 
 specific_include_rules = {
+  "wasm_host_api\\.cc": [
+    "+emscripten",
+  ],
+
   "shell_views\\.cc": [
     "+ui/wm/test"
   ],

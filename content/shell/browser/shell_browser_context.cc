@@ -21,9 +21,11 @@
 #include "components/network_session_configurator/common/network_switches.h"
 #include "components/origin_trials/browser/leveldb_persistence_provider.h"
 #include "components/origin_trials/browser/origin_trials.h"
+#include "content/public/browser/background_sync_controller.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/origin_trials_controller_delegate.h"
+#include "content/public/browser/reduce_accept_language_controller_delegate.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_switches.h"
 #include "content/shell/browser/shell_content_browser_client.h"
@@ -32,9 +34,12 @@
 #include "content/shell/browser/shell_permission_manager.h"
 #include "content/shell/common/shell_paths.h"
 #include "content/shell/common/shell_switches.h"
-#include "content/test/mock_background_sync_controller.h"
-#include "content/test/mock_reduce_accept_language_controller_delegate.h"
 #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "content/test/mock_background_sync_controller.h"  // nogncheck
+#include "content/test/mock_reduce_accept_language_controller_delegate.h"  // nogncheck
+#endif
 
 namespace content {
 
@@ -149,11 +154,16 @@ BackgroundFetchDelegate* ShellBrowserContext::GetBackgroundFetchDelegate() {
 }
 
 BackgroundSyncController* ShellBrowserContext::GetBackgroundSyncController() {
+#if BUILDFLAG(IS_WASM)
+  // Background Sync is outside M3 and has no browser wake-up backend yet.
+  return nullptr;
+#else
   if (!background_sync_controller_) {
     background_sync_controller_ =
         std::make_unique<MockBackgroundSyncController>();
   }
   return background_sync_controller_.get();
+#endif
 }
 
 BrowsingDataRemoverDelegate*
@@ -169,12 +179,17 @@ ContentIndexProvider* ShellBrowserContext::GetContentIndexProvider() {
 
 ReduceAcceptLanguageControllerDelegate*
 ShellBrowserContext::GetReduceAcceptLanguageControllerDelegate() {
+#if BUILDFLAG(IS_WASM)
+  // M3 does not persist per-origin language negotiation state.
+  return nullptr;
+#else
   if (!reduce_accept_lang_controller_delegate_) {
     reduce_accept_lang_controller_delegate_ =
         std::make_unique<MockReduceAcceptLanguageControllerDelegate>(
             GetShellLanguage());
   }
   return reduce_accept_lang_controller_delegate_.get();
+#endif
 }
 
 OriginTrialsControllerDelegate*

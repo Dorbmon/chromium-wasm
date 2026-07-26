@@ -4,6 +4,9 @@
 
 #include "content/shell/utility/shell_content_utility_client.h"
 
+#include "build/build_config.h"
+
+#if !BUILDFLAG(IS_WASM)
 #include <algorithm>
 #include <memory>
 #include <utility>
@@ -21,15 +24,14 @@
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/writable_shared_memory_region.h"
 #include "base/process/process.h"
-#include "base/test/allow_check_is_test_for_testing.h"
+#include "base/test/allow_check_is_test_for_testing.h"  // nogncheck
 #include "base/task/single_thread_task_runner.h"
-#include "build/build_config.h"
 #include "components/services/storage/test_api/test_api.h"
 #include "content/common/pseudonymization_salt.h"
 #include "content/public/child/child_thread.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/pseudonymization_util.h"
-#include "content/public/test/test_service.mojom.h"
+#include "content/public/test/test_service.mojom.h"  // nogncheck
 #include "content/public/utility/utility_thread.h"
 #include "content/shell/common/power_monitor_test_impl.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
@@ -48,9 +50,11 @@
 #if BUILDFLAG(IS_POSIX)
 #include "base/file_descriptor_store.h"
 #endif
+#endif  // !BUILDFLAG(IS_WASM)
 
 namespace content {
 
+#if !BUILDFLAG(IS_WASM)
 namespace {
 
 class TestUtilityServiceImpl : public mojom::TestService {
@@ -181,8 +185,13 @@ auto RunEchoService(mojo::PendingReceiver<echo::mojom::EchoService> receiver) {
 }
 
 }  // namespace
+#endif
 
 ShellContentUtilityClient::ShellContentUtilityClient(bool is_browsertest) {
+#if BUILDFLAG(IS_WASM)
+  // M3 does not expose Content's browser-test utility services.
+  static_cast<void>(is_browsertest);
+#else
   if (is_browsertest &&
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           switches::kProcessType) == switches::kUtilityProcess) {
@@ -192,12 +201,16 @@ ShellContentUtilityClient::ShellContentUtilityClient(bool is_browsertest) {
     storage::InjectTestApiImplementation();
     register_sandbox_status_helper_ = true;
   }
+#endif
 }
 
 ShellContentUtilityClient::~ShellContentUtilityClient() = default;
 
 void ShellContentUtilityClient::ExposeInterfacesToBrowser(
     mojo::BinderMap* binders) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(binders);
+#else
   binders->Add<mojom::PowerMonitorTest>(
       &PowerMonitorTestImpl::MakeSelfOwnedReceiver,
       base::SingleThreadTaskRunner::GetCurrentDefault());
@@ -209,12 +222,17 @@ void ShellContentUtilityClient::ExposeInterfacesToBrowser(
         base::SingleThreadTaskRunner::GetCurrentDefault());
   }
 #endif
+#endif
 }
 
 void ShellContentUtilityClient::RegisterIOThreadServices(
     mojo::ServiceFactory& services) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(services);
+#else
   services.Add(RunTestService);
   services.Add(RunEchoService);
+#endif
 }
 
 }  // namespace content

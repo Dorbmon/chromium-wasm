@@ -23,7 +23,11 @@
 #include "base/process/current_process.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
 #include "components/crash/core/common/crash_key.h"
+#else
+#include "components/network_session_configurator/common/network_switches.h"
+#endif
 #include "components/memory_system/initializer.h"
 #include "components/memory_system/parameters.h"
 #include "content/common/content_constants_internal.h"
@@ -32,7 +36,9 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/common/main_function_params.h"
 #include "content/public/common/url_constants.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/shell/app/shell_crash_reporter_client.h"
+#endif
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/shell/common/shell_content_client.h"
 #include "content/shell/common/shell_paths.h"
@@ -43,7 +49,7 @@
 #include "net/cookies/cookie_monster.h"
 #include "ui/base/resource/resource_bundle.h"
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 #include "content/web_test/browser/web_test_browser_main_runner.h"  // nogncheck
 #include "content/web_test/browser/web_test_content_browser_client.h"  // nogncheck
 #include "content/web_test/renderer/web_test_content_renderer_client.h"  // nogncheck
@@ -57,7 +63,7 @@
 #include "content/shell/android/shell_descriptors.h"
 #endif
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 #include "components/crash/core/app/crashpad.h"  // nogncheck
 #endif
 
@@ -95,6 +101,13 @@
 
 namespace {
 
+constexpr char kRunLayoutTestSwitch[] = "run-layout-test";
+
+#if BUILDFLAG(IS_WASM)
+constexpr char kDisabledGlImplementation[] = "disabled";
+constexpr char kUseGlSwitch[] = "use-gl";
+#endif
+
 enum class LoggingDest {
   kFile,
   kStderr,
@@ -103,7 +116,7 @@ enum class LoggingDest {
 #endif
 };
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 content::ShellCrashReporterClient& GetShellCrashReporterClient() {
   static base::NoDestructor<content::ShellCrashReporterClient>
       shell_crash_client;
@@ -209,13 +222,33 @@ ShellMainDelegate::~ShellMainDelegate() {
 
 std::optional<int> ShellMainDelegate::BasicStartupComplete() {
   base::CommandLine& command_line = *base::CommandLine::ForCurrentProcess();
-  if (command_line.HasSwitch("run-layout-test")) {
+
+#if BUILDFLAG(IS_WASM)
+  if (command_line.HasSwitch(kRunLayoutTestSwitch) ||
+      command_line.HasSwitch(switches::kRunWebTests)) {
+    std::cerr << "Content Shell web-test services are not available in the "
+                 "Wasm M3 runtime.\n";
+    return 1;
+  }
+
+  // The Wasm port has no process launcher or native GL implementation. Keep
+  // the renderer and compositor service in this module, while selecting the
+  // software compositor path rather than disabling the GPU service itself.
+  command_line.AppendSwitch(switches::kSingleProcess);
+  command_line.AppendSwitch(switches::kDisableQuic);
+  command_line.RemoveSwitch(switches::kDisableGpu);
+  command_line.AppendSwitch(switches::kDisableGpuCompositing);
+  command_line.AppendSwitchASCII(kUseGlSwitch, kDisabledGlImplementation);
+  command_line.AppendSwitchASCII(switches::kEnableLogging, "stderr");
+#else
+  if (command_line.HasSwitch(kRunLayoutTestSwitch)) {
     std::cerr << std::string(79, '*') << "\n"
               << "* The flag --run-layout-test is obsolete. Please use --"
               << switches::kRunWebTests << " instead. *\n"
               << std::string(79, '*') << "\n";
     command_line.AppendSwitch(switches::kRunWebTests);
   }
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
   Compositor::Initialize();
@@ -237,7 +270,7 @@ std::optional<int> ShellMainDelegate::BasicStartupComplete() {
 
   InitLogging(command_line);
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   if (switches::IsRunWebTestsSwitchPresent()) {
     // Instantiating `ui::OsSettingsProvider` will both provide sane default
     // behavior and prevent `ui::OsSettingsProvider::Get()` from instantiating a
@@ -289,7 +322,7 @@ void ShellMainDelegate::PreSandboxStartup() {
 // Disable platform crash handling and initialize the crash reporter, if
 // requested.
 // TODO(crbug.com/40188745): Implement crash reporter integration for Fuchsia.
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kEnableCrashReporter)) {
     std::string process_type =
@@ -305,9 +338,11 @@ void ShellMainDelegate::PreSandboxStartup() {
 #endif
     }
   }
-#endif  // !BUILDFLAG(IS_FUCHSIA)
+#endif  // !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 
+#if !BUILDFLAG(IS_WASM)
   crash_reporter::InitializeCrashKeys();
+#endif
 
   InitializeResourceBundle();
 }
@@ -322,7 +357,7 @@ std::variant<int, MainFunctionParams> ShellMainDelegate::RunProcess(
   base::CurrentProcess::GetInstance().SetProcessType(
       base::CurrentProcessType::PROCESS_BROWSER);
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   if (switches::IsRunWebTestsSwitchPresent()) {
     // Web tests implement their own BrowserMain() replacement.
     web_test_runner_->RunBrowserMain(std::move(main_function_params));
@@ -470,7 +505,7 @@ ContentClient* ShellMainDelegate::CreateContentClient() {
 }
 
 ContentBrowserClient* ShellMainDelegate::CreateContentBrowserClient() {
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   if (switches::IsRunWebTestsSwitchPresent()) {
     browser_client_ = std::make_unique<WebTestContentBrowserClient>();
     return browser_client_.get();
@@ -486,7 +521,7 @@ ContentGpuClient* ShellMainDelegate::CreateContentGpuClient() {
 }
 
 ContentRendererClient* ShellMainDelegate::CreateContentRendererClient() {
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   if (switches::IsRunWebTestsSwitchPresent()) {
     renderer_client_ = std::make_unique<WebTestContentRendererClient>();
     return renderer_client_.get();

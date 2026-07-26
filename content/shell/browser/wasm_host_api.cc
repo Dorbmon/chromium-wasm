@@ -1,0 +1,392 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "content/shell/browser/wasm_host_api.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/location.h"
+#include "base/logging.h"
+#include "base/memory/weak_ptr.h"
+#include "base/no_destructor.h"
+#include "base/synchronization/lock.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "base/values.h"
+#include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/isolated_world_ids.h"
+#include "content/shell/browser/shell.h"
+#include "emscripten/emscripten.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "ui/aura/window.h"
+#include "ui/aura/window_tree_host.h"
+#include "ui/events/event_utils.h"
+#include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
+
+namespace content {
+
+namespace {
+
+constexpr int kMaximumCanvasDimension = 16384;
+// Account for both the Skia raster backing and the unpremultiplied RGBA
+// presentation copy. This leaves at least 1.875 GiB of the configured 2 GiB
+// linear-memory ceiling to Content, V8, and browser services.
+constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
+constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
+
+extern "C" int chromium_wasm_report_readiness(
+    int shell_ready,
+    int surface_ready,
+    int first_visually_nonempty_paint);
+extern "C" int chromium_wasm_report_navigation();
+extern "C" int chromium_wasm_report_page_probe(const char* probe);
+extern "C" int chromium_wasm_report_fatal(const char* message);
+
+void ReportFatal(std::string_view message) {
+  const std::string terminated_message(message);
+  if (chromium_wasm_report_fatal(terminated_message.c_str()) != 1) {
+    LOG(ERROR) << "Unable to deliver M3 host failure: " << message;
+  }
+}
+
+class WasmHostObserver final : public WebContentsObserver {
+ public:
+  explicit WasmHostObserver(WebContents* web_contents)
+      : WebContentsObserver(web_contents) {}
+
+  WasmHostObserver(const WasmHostObserver&) = delete;
+  WasmHostObserver& operator=(const WasmHostObserver&) = delete;
+
+  ~WasmHostObserver() override = default;
+
+  void DidStartNavigation(NavigationHandle* navigation_handle) override {
+    if (!navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->IsSameDocument()) {
+      return;
+    }
+
+    probe_timer_.Stop();
+    probe_in_flight_ = false;
+    weak_ptr_factory_.InvalidateWeakPtrs();
+    ++navigation_generation_;
+  }
+
+  void DidFinishNavigation(NavigationHandle* navigation_handle) override {
+    if (!navigation_handle->IsInPrimaryMainFrame() ||
+        !navigation_handle->HasCommitted() ||
+        navigation_handle->IsSameDocument()) {
+      return;
+    }
+
+    if (!navigation_handle->GetURL().SchemeIs(url::kDataScheme)) {
+      return;
+    }
+
+    if (chromium_wasm_report_navigation() != 1) {
+      ReportFatal("host rejected the committed data navigation report");
+    }
+  }
+
+  void DocumentOnLoadCompletedInPrimaryMainFrame() override {
+    if (!web_contents()->GetLastCommittedURL().SchemeIs(url::kDataScheme)) {
+      return;
+    }
+    ProbePage();
+    probe_timer_.Start(FROM_HERE, base::Milliseconds(100), this,
+                       &WasmHostObserver::ProbePage);
+  }
+
+  void DidFirstVisuallyNonEmptyPaint() override {
+    if (!web_contents()->GetLastCommittedURL().SchemeIs(url::kDataScheme)) {
+      return;
+    }
+    if (chromium_wasm_report_readiness(
+            /*shell_ready=*/-1, /*surface_ready=*/-1,
+            /*first_visually_nonempty_paint=*/1) != 1) {
+      ReportFatal("host rejected the first visually nonempty paint report");
+    }
+  }
+
+  void WebContentsDestroyed() override {
+    probe_timer_.Stop();
+    probe_in_flight_ = false;
+    weak_ptr_factory_.InvalidateWeakPtrs();
+    Observe(nullptr);
+  }
+
+ private:
+  void ProbePage() {
+    if (probe_in_flight_ || !web_contents()) {
+      return;
+    }
+    RenderFrameHost* frame = web_contents()->GetPrimaryMainFrame();
+    if (!frame || !frame->IsRenderFrameLive()) {
+      return;
+    }
+
+    probe_in_flight_ = true;
+    frame->ExecuteJavaScriptForTests(
+        u"window.__chromiumWasmM3Probe ? "
+        u"window.__chromiumWasmM3Probe() : ''",
+        base::BindOnce(&WasmHostObserver::OnPageProbe,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       navigation_generation_),
+        ISOLATED_WORLD_ID_GLOBAL);
+  }
+
+  void OnPageProbe(uint64_t navigation_generation, base::Value result) {
+    if (navigation_generation != navigation_generation_) {
+      return;
+    }
+    probe_in_flight_ = false;
+    if (!result.is_string() || result.GetString().empty()) {
+      return;
+    }
+    if (chromium_wasm_report_page_probe(result.GetString().c_str()) != 1) {
+      ReportFatal("host rejected the deterministic page probe");
+      probe_timer_.Stop();
+    }
+  }
+
+  bool probe_in_flight_ = false;
+  uint64_t navigation_generation_ = 0;
+  base::RepeatingTimer probe_timer_;
+  base::WeakPtrFactory<WasmHostObserver> weak_ptr_factory_{this};
+};
+
+class WasmHostState {
+ public:
+  WasmHostState() = default;
+
+  WasmHostState(const WasmHostState&) = delete;
+  WasmHostState& operator=(const WasmHostState&) = delete;
+
+  scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner() {
+    base::AutoLock lock(lock_);
+    return task_runner_;
+  }
+
+  void SetTaskRunner(
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
+    base::AutoLock lock(lock_);
+    task_runner_ = std::move(task_runner);
+  }
+
+  void SetViewportSizeOnUiThread(const gfx::Size& viewport_size) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK(!viewport_size.IsEmpty());
+    viewport_size_ = viewport_size;
+  }
+
+  bool ContainsViewportPointOnUiThread(const gfx::Point& point) const {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    return gfx::Rect(viewport_size_).Contains(point);
+  }
+
+  std::unique_ptr<WasmHostObserver> observer;
+
+ private:
+  base::Lock lock_;
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner_
+      GUARDED_BY(lock_);
+  gfx::Size viewport_size_;
+};
+
+WasmHostState& GetWasmHostState() {
+  static base::NoDestructor<WasmHostState> state;
+  return *state;
+}
+
+bool PostHostCommand(base::OnceClosure command) {
+  scoped_refptr<base::SingleThreadTaskRunner> task_runner =
+      GetWasmHostState().GetTaskRunner();
+  return task_runner && task_runner->PostTask(FROM_HERE, std::move(command));
+}
+
+Shell* GetSingleShell() {
+  if (Shell::windows().size() != 1u) {
+    ReportFatal("M3 host command requires exactly one Content Shell window");
+    return nullptr;
+  }
+  return Shell::windows().front();
+}
+
+void ResizeOnUiThread(const gfx::Size& size) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  Shell* shell = GetSingleShell();
+  if (!shell) {
+    return;
+  }
+
+  aura::Window* window = shell->window();
+  if (!window || !window->GetHost()) {
+    ReportFatal("M3 Content Shell has no Aura host window");
+    return;
+  }
+  window->GetHost()->SetBoundsInPixels(gfx::Rect(size));
+  shell->ResizeWebContentForTests(size);
+  GetWasmHostState().SetViewportSizeOnUiThread(size);
+}
+
+void ClickOnUiThread(const gfx::Point& location) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!GetWasmHostState().ContainsViewportPointOnUiThread(location)) {
+    ReportFatal("M3 host click is outside the accepted viewport");
+    return;
+  }
+
+  Shell* shell = GetSingleShell();
+  if (!shell) {
+    return;
+  }
+
+  WebContents* web_contents = shell->web_contents();
+  RenderFrameHost* frame = web_contents->GetPrimaryMainFrame();
+  RenderWidgetHost* widget = frame ? frame->GetRenderWidgetHost() : nullptr;
+  if (!widget || !frame->IsRenderFrameLive()) {
+    ReportFatal("M3 Content Shell has no live renderer for host input");
+    return;
+  }
+
+  web_contents->Focus();
+  const gfx::PointF position(location);
+  blink::WebMouseEvent mouse_down(
+      blink::WebInputEvent::Type::kMouseDown, position, position,
+      blink::WebMouseEvent::Button::kLeft, /*click_count=*/1,
+      blink::WebInputEvent::kNoModifiers, ui::EventTimeForNow());
+  mouse_down.UpdateEventModifiersToMatchButton();
+  widget->ForwardMouseEvent(mouse_down);
+
+  blink::WebMouseEvent mouse_up(
+      blink::WebInputEvent::Type::kMouseUp, position, position,
+      blink::WebMouseEvent::Button::kLeft, /*click_count=*/1,
+      blink::WebInputEvent::kNoModifiers, ui::EventTimeForNow());
+  mouse_up.UpdateEventModifiersToMatchButton();
+  widget->ForwardMouseEvent(mouse_up);
+}
+
+void LoadUrlOnUiThread(GURL url) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  Shell* shell = GetSingleShell();
+  if (shell) {
+    shell->LoadURL(url);
+  }
+}
+
+void ShutdownOnUiThread() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  Shell::Shutdown();
+}
+
+}  // namespace
+
+void InitializeWasmHostApi() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  Shell* shell = GetSingleShell();
+  CHECK(shell);
+
+  WasmHostState& state = GetWasmHostState();
+  aura::Window* window = shell->window();
+  CHECK(window);
+  CHECK(window->GetHost());
+  state.SetViewportSizeOnUiThread(
+      window->GetHost()->GetBoundsInPixels().size());
+  state.SetTaskRunner(base::SingleThreadTaskRunner::GetCurrentDefault());
+  state.observer = std::make_unique<WasmHostObserver>(shell->web_contents());
+  if (chromium_wasm_report_readiness(
+          /*shell_ready=*/1, /*surface_ready=*/-1,
+          /*first_visually_nonempty_paint=*/-1) != 1) {
+    ReportFatal("host rejected the Content Shell readiness report");
+  }
+}
+
+void ShutdownWasmHostApi() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  state.observer.reset();
+  state.SetTaskRunner(nullptr);
+}
+
+}  // namespace content
+
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_resize(
+    int width,
+    int height,
+    double device_pixel_ratio) {
+  if (width <= 0 || width > content::kMaximumCanvasDimension || height <= 0 ||
+      height > content::kMaximumCanvasDimension ||
+      device_pixel_ratio != 1.0) {
+    return 0;
+  }
+  const int64_t canvas_bytes =
+      static_cast<int64_t>(width) * static_cast<int64_t>(height) * 4;
+  if (canvas_bytes * 2 > content::kMaximumCanvasStorageBytes) {
+    return 0;
+  }
+  return content::PostHostCommand(base::BindOnce(
+             &content::ResizeOnUiThread, gfx::Size(width, height)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_click(int x,
+                                                  int y,
+                                                  int button) {
+  if (button != 0 || x < 0 || y < 0) {
+    return 0;
+  }
+  return content::PostHostCommand(
+             base::BindOnce(&content::ClickOnUiThread, gfx::Point(x, y)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_url(const char* data_url) {
+  if (!data_url) {
+    return 0;
+  }
+  const size_t length = strnlen(data_url, content::kMaximumDataUrlBytes + 1);
+  if (length == 0 || length > content::kMaximumDataUrlBytes) {
+    return 0;
+  }
+  GURL url(std::string(data_url, length));
+  if (!url.is_valid() || !url.SchemeIs(url::kDataScheme)) {
+    return 0;
+  }
+  return content::PostHostCommand(
+             base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_shutdown() {
+  return content::PostHostCommand(
+             base::BindOnce(&content::ShutdownOnUiThread))
+             ? 1
+             : 0;
+}
+
+}  // extern "C"

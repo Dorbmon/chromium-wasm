@@ -42,6 +42,11 @@
 #include "ui/base/buildflags.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
+
+#if BUILDFLAG(IS_WASM)
+#include "content/shell/browser/wasm_host_api.h"
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/crash/content/browser/child_exit_observer_android.h"
@@ -75,6 +80,11 @@ namespace content {
 
 namespace {
 GURL GetStartupURL() {
+#if BUILDFLAG(IS_WASM)
+  // Navigation is driven by the versioned host bridge. Ignore positional
+  // command-line arguments so startup cannot escape the controlled M3 page.
+  return GURL(url::kAboutBlankURL);
+#else
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   if (command_line->HasSwitch(switches::kBrowserTest))
     return GURL();
@@ -97,6 +107,7 @@ GURL GetStartupURL() {
 
   return net::FilePathToFileURL(
       base::MakeAbsoluteFilePath(base::FilePath(args[0])));
+#endif
 #endif
 }
 
@@ -188,8 +199,13 @@ int ShellBrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
   Shell::Initialize(CreateShellPlatformDelegate());
   net::NetModule::SetResourceProvider(PlatformResourceProvider);
+#if !BUILDFLAG(IS_WASM)
   ShellDevToolsManagerDelegate::StartHttpHandler(browser_context_.get());
+#endif
   InitializeMessageLoopContext();
+#if BUILDFLAG(IS_WASM)
+  InitializeWasmHostApi();
+#endif
   return 0;
 }
 
@@ -200,7 +216,12 @@ void ShellBrowserMainParts::WillRunMainMessageLoop(
 
 void ShellBrowserMainParts::PostMainMessageLoopRun() {
   DCHECK_EQ(Shell::windows().size(), 0u);
+#if BUILDFLAG(IS_WASM)
+  ShutdownWasmHostApi();
+#endif
+#if !BUILDFLAG(IS_WASM)
   ShellDevToolsManagerDelegate::StopHttpHandler();
+#endif
   browser_context_.reset();
   off_the_record_browser_context_.reset();
 #if BUILDFLAG(IS_LINUX)

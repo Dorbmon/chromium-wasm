@@ -6,6 +6,12 @@
 #include "content/public/app/content_main.h"
 #include "content/shell/app/shell_main_delegate.h"
 
+#if BUILDFLAG(IS_WASM)
+#include <stdio.h>
+
+extern "C" int chromium_wasm_report_process_exit(int exit_code);
+#endif
+
 #if BUILDFLAG(IS_WIN)
 #include "base/win/dark_mode_support.h"
 #include "base/win/win_util.h"
@@ -93,11 +99,27 @@ extern "C" IOS_INIT_EXPORT int ContentAppMain(int argc, const char** argv) {
 #else
 
 int main(int argc, const char** argv) {
+#if BUILDFLAG(IS_WASM)
+  int exit_code;
+  {
+    content::ShellMainDelegate delegate;
+    content::ContentMainParams params(&delegate);
+    params.argc = argc;
+    params.argv = argv;
+    exit_code = content::ContentMain(std::move(params));
+  }
+  if (chromium_wasm_report_process_exit(exit_code) != 1) {
+    fputs("CHROMIUM_WASM_M3: host rejected process-exit report\n", stderr);
+    return exit_code == 0 ? 1 : exit_code;
+  }
+  return exit_code;
+#else
   content::ShellMainDelegate delegate;
   content::ContentMainParams params(&delegate);
   params.argc = argc;
   params.argv = argv;
   return content::ContentMain(std::move(params));
+#endif
 }
 
 #endif  // BUILDFLAG(IS_WIN)

@@ -11,39 +11,54 @@
 #include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/functional/bind.h"
+#if !BUILDFLAG(IS_WASM)
 #include "base/immediate_crash.h"
+#endif
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/pass_key.h"
+#include "build/build_config.h"
 #include "components/cdm/renderer/external_clear_key_key_system_info.h"
 #include "components/network_hints/renderer/web_prescient_networking_impl.h"
 #include "components/surface_embed/renderer/create_plugin.h"
 #include "components/web_cache/renderer/web_cache_impl.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/common/pseudonymization_salt.h"
+#endif
 #include "content/public/common/content_switches.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/public/common/pseudonymization_util.h"
+#endif
 #include "content/public/common/web_identity.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
-#include "content/public/test/test_service.mojom.h"
+#if !BUILDFLAG(IS_WASM)
+#include "content/public/test/test_service.mojom.h"  // nogncheck
 #include "content/shell/common/main_frame_counter_test_impl.h"
 #include "content/shell/common/power_monitor_test_impl.h"
+#endif
 #include "content/shell/common/shell_switches.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/shell/renderer/memory_coordinator/memory_coordinator_test_impl.h"
 #include "content/shell/renderer/shell_render_frame_observer.h"
+#endif
 #include "mojo/public/cpp/bindings/binder_map.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "net/base/net_errors.h"
+#if !BUILDFLAG(IS_WASM)
 #include "sandbox/policy/sandbox.h"
+#endif
 #include "third_party/blink/public/platform/url_loader_throttle_provider.h"
 #include "third_party/blink/public/platform/web_url_error.h"
 #include "third_party/blink/public/web/modules/credentialmanagement/throttle_helper.h"
 #include "third_party/blink/public/web/web_local_frame.h"
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/blink/public/web/web_testing_support.h"
+#endif
 #include "third_party/blink/public/web/web_view.h"
 #include "v8/include/v8-initialization.h"
 #include "v8/include/v8.h"
@@ -64,6 +79,7 @@ namespace content {
 
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 // A test service which can be driven by browser tests for various reasons.
 class TestRendererServiceImpl : public mojom::TestService {
  public:
@@ -167,6 +183,7 @@ class TestRendererServiceImpl : public mojom::TestService {
 
   mojo::Receiver<mojom::TestService> receiver_;
 };
+#endif
 
 class ShellContentRendererUrlLoaderThrottleProvider
     : public blink::URLLoaderThrottleProvider {
@@ -228,11 +245,13 @@ class ShellContentRendererUrlLoaderThrottleProvider
   scoped_refptr<base::SequencedTaskRunner> main_thread_task_runner_;
 };
 
+#if !BUILDFLAG(IS_WASM)
 void CreateRendererTestService(
     mojo::PendingReceiver<mojom::TestService> receiver) {
   // Owns itself.
   new TestRendererServiceImpl(std::move(receiver));
 }
+#endif
 
 }  // namespace
 
@@ -242,7 +261,11 @@ ShellContentRendererClient::~ShellContentRendererClient() {
 }
 
 void ShellContentRendererClient::SetUpWebAssemblyTrapHandler() {
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_WASM)
+  // Native signal-based trap handlers cannot be installed by the outer Wasm
+  // module, so V8 must use its non-signal trap paths.
+  return;
+#elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   // Mac and Windows use the default implementation (where the default v8 trap
   // handler gets set up).
   ContentRendererClient::SetUpWebAssemblyTrapHandler();
@@ -292,7 +315,7 @@ void ShellContentRendererClient::SetUpWebAssemblyTrapHandler() {
   // As the registration of the callback failed, we don't enable trap
   // handlers.
 #endif  // defined(ENABLE_WEB_ASSEMBLY_TRAP_HANDLER_LINUX)
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#endif  // BUILDFLAG(IS_WASM) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 }
 
 void ShellContentRendererClient::RenderThreadStarted() {
@@ -301,6 +324,7 @@ void ShellContentRendererClient::RenderThreadStarted() {
 
 void ShellContentRendererClient::ExposeInterfacesToBrowser(
     mojo::BinderMap* binders) {
+#if !BUILDFLAG(IS_WASM)
   binders->Add<mojom::TestService>(
       &CreateRendererTestService,
       base::SingleThreadTaskRunner::GetCurrentDefault());
@@ -313,6 +337,7 @@ void ShellContentRendererClient::ExposeInterfacesToBrowser(
   binders->Add<mojom::MainFrameCounterTest>(
       &MainFrameCounterTestImpl::Bind,
       base::SingleThreadTaskRunner::GetCurrentDefault());
+#endif
   binders->Add<web_cache::mojom::WebCache>(
       base::BindRepeating(&web_cache::WebCacheImpl::BindReceiver,
                           base::Unretained(web_cache_impl_.get())),
@@ -320,10 +345,14 @@ void ShellContentRendererClient::ExposeInterfacesToBrowser(
 }
 
 void ShellContentRendererClient::RenderFrameCreated(RenderFrame* render_frame) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(render_frame);
+#else
   // TODO(danakj): The ShellRenderFrameObserver is doing stuff only for
   // browser tests. If we only create that for browser tests then the override
   // of this method in WebTestContentRendererClient would not be needed.
   new ShellRenderFrameObserver(render_frame);
+#endif
 }
 
 bool ShellContentRendererClient::OverrideCreatePlugin(
@@ -383,10 +412,14 @@ void ShellContentRendererClient::PrepareErrorPageForHttpStatusError(
 
 void ShellContentRendererClient::DidInitializeWorkerContextOnWorkerThread(
     v8::Local<v8::Context> context) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(context);
+#else
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kExposeInternalsForTesting)) {
     blink::WebTestingSupport::InjectInternalsObject(context);
   }
+#endif
 }
 
 std::unique_ptr<blink::URLLoaderThrottleProvider>

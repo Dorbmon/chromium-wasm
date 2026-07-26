@@ -6,6 +6,7 @@ import("//build/config/cast.gni")
 import("//build/config/ozone.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/ui.gni")
+import("//build/config/wasm.gni")
 import("//build/config/win/console_app.gni")
 import("//build/config/win/manifest.gni")
 import("//build/rust/rust_static_library.gni")
@@ -58,8 +59,24 @@ config("content_shell_lib_warnings") {
   }
 }
 
-# Web test support not built on android, but is everywhere else.
-support_web_tests = !is_android
+if (is_wasm) {
+  config("content_shell_wasm_assets") {
+    ldflags = [
+      "-sEXPORTED_RUNTIME_METHODS=ccall",
+      "--embed-file=" +
+          rebase_path("$root_out_dir/content_shell.pak", root_build_dir) +
+          "@/assets/content_shell.pak",
+      "--embed-file=" +
+          rebase_path("$root_out_dir/icudtl.dat", root_build_dir) +
+          "@/assets/icudtl.dat",
+    ]
+  }
+}
+
+# Web-test support is not part of the M3 browser boot gate. Keeping it out of
+# the Wasm graph avoids substituting test services for production Content
+# services and keeps the first integration boundary reviewable.
+support_web_tests = !is_android && !is_wasm
 
 source_set("android_shell_descriptors") {
   testonly = true
@@ -92,11 +109,19 @@ static_library("content_shell_app") {
   ]
   deps = [
     ":content_shell_lib",
-    "//components/crash/core/common:crash_key",
     "//components/memory_system",
     "//content/public/app",
     "//v8",
   ]
+  if (is_wasm) {
+    sources -= [
+      "app/shell_crash_reporter_client.cc",
+      "app/shell_crash_reporter_client.h",
+    ]
+    deps += [ "//components/network_session_configurator/common" ]
+  } else {
+    deps += [ "//components/crash/core/common:crash_key" ]
+  }
   if (support_web_tests) {
     deps += [
       "//content/web_test:web_test_browser",
@@ -105,7 +130,7 @@ static_library("content_shell_app") {
       "//ui/native_theme",
     ]
   }
-  if (!is_fuchsia) {
+  if (!is_fuchsia && !is_wasm) {
     deps += [
       "//components/crash/core/app",
       "//components/crash/core/app:test_support",
@@ -383,13 +408,45 @@ static_library("content_shell_lib") {
     "//v8",
   ]
 
+  if (is_wasm) {
+    sources -= [
+      "common/main_frame_counter_test_impl.cc",
+      "common/main_frame_counter_test_impl.h",
+      "common/power_monitor_test_impl.cc",
+      "common/power_monitor_test_impl.h",
+      "renderer/memory_coordinator/memory_coordinator_test_impl.cc",
+      "renderer/memory_coordinator/memory_coordinator_test_impl.h",
+      "renderer/render_frame_test_helper.cc",
+      "renderer/render_frame_test_helper.h",
+      "renderer/shell_render_frame_observer.cc",
+      "renderer/shell_render_frame_observer.h",
+    ]
+    sources += [
+      "browser/wasm_host_api.cc",
+      "browser/wasm_host_api.h",
+    ]
+    deps -= [
+      ":content_browsertests_mojom",
+      ":rust_test_mojom",
+      ":rust_test_mojom_js",
+      ":rust_test_service_ffi",
+      ":shell_controller_mojom",
+      "//components/services/storage/test_api",
+      "//content/test:content_test_mojo_bindings",
+      "//content/test:test_support",
+      "//services/device/public/cpp:test_support",
+      "//services/test/echo:lib",
+      "//services/test/echo/public/mojom",
+    ]
+  }
+
   if (is_fuchsia) {
     sources += [
       "browser/fuchsia_view_presenter.cc",
       "browser/fuchsia_view_presenter.h",
     ]
     deps += [ "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.element:fuchsia.element_hlcpp" ]
-  } else {
+  } else if (!is_wasm) {
     deps += [
       "//components/crash/content/browser",
       "//components/crash/core/app",
@@ -455,10 +512,12 @@ static_library("content_shell_lib") {
   if (use_aura) {
     deps += [
       "//ui/aura",
-      "//ui/aura:test_support",
       "//ui/events",
       "//ui/wm",
     ]
+    if (!is_wasm) {
+      deps += [ "//ui/aura:test_support" ]
+    }
 
     if (shell_use_toolkit_views) {
       sources += [
@@ -469,10 +528,14 @@ static_library("content_shell_lib") {
       deps += [
         "//ui/color:color_headers",
         "//ui/resources",
-        "//ui/views:test_support",
         "//ui/views/controls/webview",
-        "//ui/wm:test_support",
       ]
+      if (!is_wasm) {
+        deps += [
+          "//ui/views:test_support",
+          "//ui/wm:test_support",
+        ]
+      }
     } else {
       sources += [
         "browser/shell_platform_delegate_aura.cc",
@@ -583,6 +646,17 @@ repack("pak") {
     "//ui/webui/resources",
   ]
 
+  if (is_wasm) {
+    sources -= [
+      "$root_gen_dir/content/test/web_ui_mojo_test_resources.pak",
+      "$root_gen_dir/third_party/blink/public/resources/inspector_overlay_resources.pak",
+    ]
+    deps -= [
+      "//content/test:web_ui_mojo_test_resources",
+      "//third_party/blink/public:devtools_inspector_resources",
+    ]
+  }
+
   if (enable_vr) {
     sources += [ "$root_gen_dir/content/webxr_internals_resources.pak" ]
   }
@@ -611,7 +685,7 @@ repack("pak") {
     sources +=
         [ "$root_gen_dir/ui/views/resources/views_resources_100_percent.pak" ]
   }
-  if (!is_android && !is_fuchsia && !is_ios) {
+  if (!is_android && !is_fuchsia && !is_ios && !is_wasm) {
     sources +=
         [ "$root_gen_dir/content/browser/devtools/devtools_resources.pak" ]
     deps += [ "//content/browser/devtools:devtools_resources" ]
@@ -750,6 +824,25 @@ if (is_android) {
       testonly = true
       bundle_identifier = ios_content_process_bundle_identifier
     }
+  }
+} else if (is_wasm) {
+  assert(enable_chromium_wasm_content)
+
+  executable("content_shell_wasm") {
+    testonly = true
+    sources = [ "app/shell_main.cc" ]
+    inputs = [
+      "$root_out_dir/content_shell.pak",
+      "$root_out_dir/icudtl.dat",
+    ]
+    configs += [ ":content_shell_wasm_assets" ]
+    deps = [
+      ":content_shell_app",
+      ":content_shell_lib",
+      ":pak",
+      "//content/public/app",
+      "//third_party/icu:icudata",
+    ]
   }
 } else {
   executable("content_shell") {
@@ -1107,89 +1200,93 @@ if (is_android) {
   }
 }
 
-group("content_shell_crash_test") {
-  testonly = true
-  data_deps = [
-    ":content_shell",
-    "//testing:test_scripts_shared",
-    "//third_party/angle:includes",
-  ]
-  data = [
-    "//content/shell/tools/breakpad_integration_test.py",
-    "//testing/scripts/content_shell_crash_test.py",
-  ]
-  if (is_mac && !use_system_xcode) {
-    data += [
-      # Scripts call otool, which calls either llvm-otool or otool-classic,
-      # so we need all three.
-      # llvm-otool shells out to llvm-objdump, so that's needed as well.
-      mac_bin_path + "llvm-objdump",
-      mac_bin_path + "llvm-otool",
-      mac_bin_path + "otool",
-      mac_bin_path + "otool-classic",
+if (!is_wasm) {
+  group("content_shell_crash_test") {
+    testonly = true
+    data_deps = [
+      ":content_shell",
+      "//testing:test_scripts_shared",
+      "//third_party/angle:includes",
     ]
-  }
-  if (is_posix) {
-    data += [
-      "//components/crash/content/tools/generate_breakpad_symbols.py",
-      "//components/crash/content/tools/dmp2minidump.py",
+    data = [
+      "//content/shell/tools/breakpad_integration_test.py",
+      "//testing/scripts/content_shell_crash_test.py",
     ]
-  }
-  if (is_win) {
-    data_deps += [ "//build/win:copy_cdb_to_output" ]
-  }
-  if (is_posix) {
-    data_deps += [
-      "//third_party/breakpad:dump_syms",
-      "//third_party/breakpad:minidump_stackwalk",
-    ]
-  }
-  if (is_android) {
-    data_deps += [
-      "//build/android:devil_chromium_py",
-      "//build/android:test_runner_py",
-      "//third_party/breakpad:microdump_stackwalk",
-      "//third_party/breakpad:minidump_dump",
-      "//third_party/breakpad:symupload",
-      "//tools/android/forwarder2",
-    ]
+    if (is_mac && !use_system_xcode) {
+      data += [
+        # Scripts call otool, which calls either llvm-otool or otool-classic,
+        # so we need all three.
+        # llvm-otool shells out to llvm-objdump, so that's needed as well.
+        mac_bin_path + "llvm-objdump",
+        mac_bin_path + "llvm-otool",
+        mac_bin_path + "otool",
+        mac_bin_path + "otool-classic",
+      ]
+    }
+    if (is_posix) {
+      data += [
+        "//components/crash/content/tools/generate_breakpad_symbols.py",
+        "//components/crash/content/tools/dmp2minidump.py",
+      ]
+    }
+    if (is_win) {
+      data_deps += [ "//build/win:copy_cdb_to_output" ]
+    }
+    if (is_posix) {
+      data_deps += [
+        "//third_party/breakpad:dump_syms",
+        "//third_party/breakpad:minidump_stackwalk",
+      ]
+    }
+    if (is_android) {
+      data_deps += [
+        "//build/android:devil_chromium_py",
+        "//build/android:test_runner_py",
+        "//third_party/breakpad:microdump_stackwalk",
+        "//third_party/breakpad:minidump_dump",
+        "//third_party/breakpad:symupload",
+        "//tools/android/forwarder2",
+      ]
+    }
   }
 }
 
-mojom("shell_controller_mojom") {
-  testonly = true
-  sources = [ "common/shell_controller.test-mojom" ]
-  public_deps = [ "//mojo/public/mojom/base" ]
-}
+if (!is_wasm) {
+  mojom("shell_controller_mojom") {
+    testonly = true
+    sources = [ "common/shell_controller.test-mojom" ]
+    public_deps = [ "//mojo/public/mojom/base" ]
+  }
 
-mojom("rust_test_mojom") {
-  testonly = true
-  sources = [ "common/rust_test.test-mojom" ]
-  generate_rust = true
-}
+  mojom("rust_test_mojom") {
+    testonly = true
+    sources = [ "common/rust_test.test-mojom" ]
+    generate_rust = true
+  }
 
-rust_static_library("rust_test_service") {
-  testonly = true
-  crate_root = "browser/rust_test_service.rs"
-  sources = [ "browser/rust_test_service.rs" ]
-  deps = [
-    ":rust_test_mojom_rust",
-    "//base:feature",
-    "//mojo/public/rust/bindings",
-  ]
-}
+  rust_static_library("rust_test_service") {
+    testonly = true
+    crate_root = "browser/rust_test_service.rs"
+    sources = [ "browser/rust_test_service.rs" ]
+    deps = [
+      ":rust_test_mojom_rust",
+      "//base:feature",
+      "//mojo/public/rust/bindings",
+    ]
+  }
 
-rust_static_library("rust_test_service_ffi") {
-  testonly = true
-  allow_unsafe = true
-  crate_root = "browser/rust_test_service_ffi.rs"
-  sources = [ "browser/rust_test_service_ffi.rs" ]
-  cxx_bindings = [ "browser/rust_test_service_ffi.rs" ]
-  deps = [
-    ":rust_test_mojom_rust",
-    ":rust_test_service",
-    "//base",
-    "//mojo/public/rust/bindings",
-    "//mojo/public/rust/system",
-  ]
+  rust_static_library("rust_test_service_ffi") {
+    testonly = true
+    allow_unsafe = true
+    crate_root = "browser/rust_test_service_ffi.rs"
+    sources = [ "browser/rust_test_service_ffi.rs" ]
+    cxx_bindings = [ "browser/rust_test_service_ffi.rs" ]
+    deps = [
+      ":rust_test_mojom_rust",
+      ":rust_test_service",
+      "//base",
+      "//mojo/public/rust/bindings",
+      "//mojo/public/rust/system",
+    ]
+  }
 }

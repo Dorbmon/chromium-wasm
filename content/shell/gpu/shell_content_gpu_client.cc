@@ -4,11 +4,14 @@
 
 #include "content/shell/gpu/shell_content_gpu_client.h"
 
+#include "build/build_config.h"
+#if !BUILDFLAG(IS_WASM)
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
 #include "content/shell/common/power_monitor_test_impl.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#endif
 
 namespace content {
 
@@ -21,9 +24,16 @@ void ShellContentGpuClient::ExposeInterfacesToBrowser(
     const gpu::GpuPreferences& gpu_preferences,
     const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
     mojo::BinderMap* binders) {
+#if BUILDFLAG(IS_WASM)
+  static_cast<void>(gpu_service);
+  static_cast<void>(gpu_preferences);
+  static_cast<void>(gpu_workarounds);
+  static_cast<void>(binders);
+#else
   binders->Add<mojom::PowerMonitorTest>(
       &PowerMonitorTestImpl::MakeSelfOwnedReceiver,
       base::SingleThreadTaskRunner::GetCurrentDefault());
+#endif
 }
 
 }  // namespace content

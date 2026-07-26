@@ -15,6 +15,7 @@
 #include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -314,6 +315,13 @@ WebContents* Shell::AddNewContents(
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
+#if BUILDFLAG(IS_WASM)
+  if (was_blocked) {
+    *was_blocked = true;
+  }
+  LOG(ERROR) << "Additional Content Shell surfaces are unsupported until M4";
+  return nullptr;
+#else
 #if !BUILDFLAG(IS_ANDROID)
   // If the shell is opening a document picture-in-picture window, it needs to
   // inform the DocumentPictureInPictureWindowController.
@@ -331,6 +339,7 @@ WebContents* Shell::AddNewContents(
       std::move(new_contents), AdjustWindowSize(window_features.bounds.size()),
       !delay_popup_contents_delegate_for_testing_ /* should_set_delegate */);
   return result;
+#endif
 }
 
 void Shell::GoBackOrForward(int offset) {
@@ -445,6 +454,11 @@ WebContents* Shell::OpenURLFromTab(
     // so we treat the cases below just like a NEW_WINDOW disposition.
     case WindowOpenDisposition::NEW_BACKGROUND_TAB:
     case WindowOpenDisposition::NEW_FOREGROUND_TAB: {
+#if BUILDFLAG(IS_WASM)
+      LOG(ERROR) << "Additional Content Shell surfaces are unsupported until "
+                    "M4";
+      return nullptr;
+#else
       Shell* new_window =
           Shell::CreateNewWindow(source->GetBrowserContext(),
                                  GURL(),  // Don't load anything just yet.
@@ -452,6 +466,7 @@ WebContents* Shell::OpenURLFromTab(
                                  gfx::Size());  // Use default size.
       target = new_window->web_contents();
       break;
+#endif
     }
 
     // No tabs in content_shell:

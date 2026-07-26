@@ -13,7 +13,7 @@
 #include "content/shell/browser/shell_browser_context.h"
 
 #if BUILDFLAG(IS_IOS)
-#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
+#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"  // nogncheck
 #endif
 
 namespace performance_manager {

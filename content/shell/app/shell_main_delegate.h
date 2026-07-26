@@ -13,7 +13,7 @@
 #include "components/memory_system/memory_system.h"
 #include "content/public/app/content_main_delegate.h"
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 namespace ui {
 class OsSettingsProvider;
 }
@@ -26,7 +26,7 @@ class ShellContentGpuClient;
 class ShellContentRendererClient;
 class ShellContentUtilityClient;
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 class WebTestBrowserMainRunner;
 #endif
 
@@ -68,7 +68,7 @@ class ShellMainDelegate : public ContentMainDelegate {
   // |is_content_browsertests_| and |web_test_runner_| are mutually exclusive.
   bool is_content_browsertests_;
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   // Only present when running web tests, which run inside Content Shell.
 
   // Web tests should not use the current machine settings for theming, but
