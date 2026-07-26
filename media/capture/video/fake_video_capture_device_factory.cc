@@ -231,6 +231,10 @@ void FakeVideoCaptureDeviceFactory::GetDevicesInfo(
     VideoCaptureApi api =
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
         VideoCaptureApi::LINUX_V4L2_SINGLE_PLANE;
+#elif BUILDFLAG(IS_WASM)
+        // Wasm has no native camera backend. Keep explicitly requested fake
+        // devices usable without claiming a host capture API.
+        VideoCaptureApi::UNKNOWN;
 #elif BUILDFLAG(IS_IOS)
         VideoCaptureApi::UNKNOWN;
 #elif BUILDFLAG(IS_MAC)
