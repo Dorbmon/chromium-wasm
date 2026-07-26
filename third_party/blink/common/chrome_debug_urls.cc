@@ -158,6 +158,13 @@ void HandleChromeDebugURL(const GURL& url) {
     PCHECK(kill(base::Process::Current().Pid(), SIGTERM) == 0);
 #elif BUILDFLAG(IS_FUCHSIA)
     zx_process_exit(ZX_TASK_RETCODE_SYSCALL_KILL);
+#elif BUILDFLAG(IS_WASM)
+    // The Wasm port runs the renderer in the browser's single process and has
+    // no native signal or termination status that can represent a killed
+    // renderer. Reject this renderer-process test operation explicitly rather
+    // than terminating the complete Wasm application.
+    LOG(ERROR) << "chrome://kill is unsupported in single-process WebAssembly";
+    return;
 #else
 #error Unsupported platform
 #endif
