@@ -719,6 +719,9 @@ GURL FixupRelativeFile(const base::FilePath& base_dir,
   std::string text_utf8 = base::WideToUTF8(text.value());
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   std::string text_utf8 = text.value();
+#elif BUILDFLAG(IS_WASM)
+  // Emscripten virtual filesystem paths use UTF-8.
+  std::string text_utf8 = text.value();
 #endif
   return FixupURL(text_utf8, std::string());
 }

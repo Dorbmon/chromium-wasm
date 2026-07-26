@@ -239,6 +239,9 @@ std::string AsUTF8ForSQL(const base::FilePath& path) {
   return base::WideToUTF8(path.value());
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   return path.value();
+#elif BUILDFLAG(IS_WASM)
+  // Emscripten virtual filesystem paths use UTF-8.
+  return path.value();
 #endif
 }
 
@@ -891,6 +894,13 @@ std::string Database::CollectErrorInfo(int sqlite_error_code,
     diagnostics->last_errno = last_errno;
   }
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+  int last_errno = GetLastErrno();
+  base::StringAppendF(&debug_info, "errno: %d\n", last_errno);
+  if (diagnostics) {
+    diagnostics->last_errno = last_errno;
+  }
+#elif BUILDFLAG(IS_WASM)
+  // SQLite's Emscripten-backed VFS exposes filesystem failures through errno.
   int last_errno = GetLastErrno();
   base::StringAppendF(&debug_info, "errno: %d\n", last_errno);
   if (diagnostics) {
