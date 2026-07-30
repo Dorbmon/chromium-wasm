@@ -79,11 +79,19 @@ class M3ServiceSourceContractTest(unittest.TestCase):
             '"enable_pdf_ink2 = false"',
             '"enable_pdf_save_to_drive = false"',
             '"enable_extensions = false"',
+            '"enable_guest_view = false"',
+            '"enable_plugins = false"',
+            '"enable_printing = false"',
+            '"enable_oop_printing = false"',
+            '"enable_paint_preview = false"',
+            '"enable_compute_pressure = false"',
+            '"is_p2p_enabled = false"',
             '"enable_libaom = false"',
             '"enable_dav1d_decoder = false"',
             '"enable_av1_decoder = false"',
             '"dawn_use_swiftshader = false"',
             '"build_tflite_with_xnnpack = false"',
+            '"build_with_model_execution = false"',
         ):
             with self.subTest(argument=argument):
                 self.assertIn(argument, manifest)
