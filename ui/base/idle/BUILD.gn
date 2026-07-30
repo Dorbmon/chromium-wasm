@@ -39,6 +39,10 @@ component("idle") {
     "idle_time_provider.h",
   ]
 
+  if (is_wasm) {
+    sources += [ "idle_wasm.cc" ]
+  }
+
   if (is_chromeos) {
     sources += [ "idle_chromeos.cc" ]
     deps += [ "//chromeos/ash/components/dbus/session_manager" ]
@@ -116,6 +120,10 @@ source_set("unit_tests") {
   testonly = true
 
   sources = []
+
+  if (is_wasm) {
+    sources += [ "idle_wasm_unittest.cc" ]
+  }
 
   if (is_win) {
     sources += [ "screensaver_state_observer_unittest.cc" ]
