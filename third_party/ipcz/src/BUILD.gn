@@ -125,7 +125,7 @@ template("ipcz_source_set") {
       if (!defined(public_deps)) {
         public_deps = []
       }
-      if (_is_wasm_port) {
+      if (_is_wasm_port && !enable_chromium_wasm_content) {
         public_deps += [ "//base:base_wasm_primitives" ]
       } else {
         public_deps += [ "//base" ]
@@ -153,7 +153,7 @@ template("ipcz_source_set") {
         configs += [ "//build/config/compiler:optimize_speed" ]
       }
 
-      if (_is_wasm_port) {
+      if (_is_wasm_port && !enable_chromium_wasm_content) {
         use_libcxx_modules = false
         configs -= [ "//build/config/compiler:runtime_library" ]
       }

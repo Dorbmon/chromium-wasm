@@ -98,8 +98,11 @@ source_set("tests") {
     "//mojo/public/interfaces/bindings/tests:test_interfaces_for_containers_of_optionals",
     "//mojo/public/interfaces/bindings/tests:test_struct_traits_interfaces",
     "//testing/gtest",
-    "//third_party/ipcz/src:ipcz_test_support_chromium",
   ]
+
+  if (!is_wasm) {
+    deps += [ "//third_party/ipcz/src:ipcz_test_support_chromium" ]
+  }
 
   if (is_ios) {
     deps += [

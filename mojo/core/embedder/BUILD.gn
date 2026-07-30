@@ -12,7 +12,7 @@ component("embedder") {
 
   defines = [ "IS_MOJO_CORE_EMBEDDER_IMPL" ]
 
-  if (is_wasm && enable_chromium_wasm_port) {
+  if (is_wasm && enable_chromium_wasm_port && !enable_chromium_wasm_content) {
     sources = [ "embedder_wasm.cc" ]
     public_deps = [
       "//base:base_wasm_primitives",
@@ -45,7 +45,7 @@ component("embedder") {
   }
 }
 
-if (!(is_wasm && enable_chromium_wasm_port)) {
+if (!(is_wasm && enable_chromium_wasm_port && !enable_chromium_wasm_content)) {
 component("features") {
   output_name = "mojo_core_embedder_features"
 

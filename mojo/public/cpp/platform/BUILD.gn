@@ -34,7 +34,7 @@ component("platform") {
     "//mojo/public/c/system:headers",
   ]
 
-  if (is_wasm && enable_chromium_wasm_port) {
+  if (is_wasm && enable_chromium_wasm_port && !enable_chromium_wasm_content) {
     public_deps -= [ "//base" ]
     public_deps += [ "//base:base_wasm_primitives" ]
   } else {
@@ -86,7 +86,7 @@ component("platform") {
 
   defines = [ "IS_MOJO_CPP_PLATFORM_IMPL" ]
 
-  if (is_wasm && enable_chromium_wasm_port) {
+  if (is_wasm && enable_chromium_wasm_port && !enable_chromium_wasm_content) {
     use_libcxx_modules = false
     configs -= [ "//build/config/compiler:runtime_library" ]
   }

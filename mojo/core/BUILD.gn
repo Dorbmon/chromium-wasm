@@ -103,7 +103,7 @@ source_set("impl_for_embedder") {
     "//third_party/ipcz/src:ipcz_chromium",
   ]
 
-  if (is_wasm && enable_chromium_wasm_port) {
+  if (is_wasm && enable_chromium_wasm_port && !enable_chromium_wasm_content) {
     public_deps -= [
       "//base",
       "//mojo/core/embedder:features",
@@ -203,7 +203,7 @@ source_set("impl_for_embedder") {
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   defines = [ "MOJO_SYSTEM_IMPL_IMPLEMENTATION" ]
-  if (is_wasm && enable_chromium_wasm_port) {
+  if (is_wasm && enable_chromium_wasm_port && !enable_chromium_wasm_content) {
     use_libcxx_modules = false
     configs -= [ "//build/config/compiler:runtime_library" ]
   } else {

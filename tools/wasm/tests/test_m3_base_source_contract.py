@@ -190,6 +190,37 @@ class M3BaseSourceContractTest(unittest.TestCase):
             platform_handle,
         )
 
+    def test_content_mojo_restores_full_base_dependencies(self) -> None:
+        m1_only = (
+            "is_wasm && enable_chromium_wasm_port && "
+            "!enable_chromium_wasm_content"
+        )
+        for path in (
+            "mojo/core/BUILD.gn",
+            "mojo/core/embedder/BUILD.gn",
+            "mojo/public/c/system/BUILD.gn",
+            "mojo/public/cpp/platform/BUILD.gn",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(m1_only, source(path))
+
+        ipcz = source("third_party/ipcz/src/BUILD.gn")
+        self.assertEqual(
+            ipcz.count("_is_wasm_port && !enable_chromium_wasm_content"),
+            2,
+        )
+
+        bindings_tests = source(
+            "mojo/public/cpp/bindings/tests/BUILD.gn"
+        )
+        self.assertIn(
+            "if (!is_wasm) {\n"
+            "    deps += [ "
+            '"//third_party/ipcz/src:ipcz_test_support_chromium" ]\n'
+            "  }",
+            bindings_tests,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
