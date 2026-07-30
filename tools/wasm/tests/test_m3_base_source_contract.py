@@ -221,6 +221,35 @@ class M3BaseSourceContractTest(unittest.TestCase):
             bindings_tests,
         )
 
+    def test_content_shell_omits_native_test_target_closure(self) -> None:
+        build = source("content/test/BUILD.gn")
+        test_support = build.split(
+            'static_library("test_support") {', 1
+        )[1]
+        test_support = test_support.split(
+            'group("telemetry_gpu_integration_test_scripts_only")', 1
+        )[0]
+        self.assertIn(
+            "if (!is_wasm) {\n"
+            '    deps += [ ":web_ui_mojo_test_resources" ]\n'
+            "  }",
+            test_support,
+        )
+
+        telemetry = build.index(
+            'group("telemetry_gpu_integration_test_scripts_only")'
+        )
+        telemetry_guard = build.rfind("if (!is_wasm) {", 0, telemetry)
+        self.assertGreater(telemetry_guard, 0)
+        self.assertLess(telemetry - telemetry_guard, 40)
+
+        browser_tests = build.index('test("content_browsertests")')
+        browser_tests_guard = build.rfind(
+            "if (!is_wasm) {", 0, browser_tests
+        )
+        self.assertGreater(browser_tests_guard, 0)
+        self.assertLess(browser_tests - browser_tests_guard, 250)
+
 
 if __name__ == "__main__":
     unittest.main()

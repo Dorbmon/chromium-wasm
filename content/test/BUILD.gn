@@ -595,7 +595,6 @@ static_library("test_support") {
 
   deps = [
     ":content_test_mojo_bindings",
-    ":web_ui_mojo_test_resources",
     "//build:chromeos_buildflags",
     "//build/config/linux/dbus:buildflags",
     "//cc:test_support",
@@ -704,6 +703,10 @@ static_library("test_support") {
     "//url/mojom:url_mojom_gurl",
     "//v8",
   ]
+
+  if (!is_wasm) {
+    deps += [ ":web_ui_mojo_test_resources" ]
+  }
 
   data_deps = [
     "//content/shell:pak",
@@ -948,7 +951,7 @@ if (is_fuchsia) {
   }
 }
 
-if (true) {
+if (!is_wasm) {
   group("telemetry_gpu_integration_test_scripts_only") {
     testonly = true
     deps = [ "//tools/perf/chrome_telemetry_build:telemetry_chrome_test_without_chrome" ]
@@ -1464,7 +1467,9 @@ static_library("content_test_entry") {
   sources = [ "content_test_launcher_exe.cc" ]
 }
 
-if (true) {
+# The M3 graph needs only the reusable support targets above. Do not resolve
+# desktop Content test binaries or their optional source dependencies for Wasm.
+if (!is_wasm) {
   test("content_browsertests") {
     use_xvfb = use_xvfb_in_this_config
 
