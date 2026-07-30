@@ -224,6 +224,24 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         )[0].rsplit("#if PA_BUILDFLAG(USE_PARTITION_ALLOC)", 1)[1]
         self.assertNotIn("#endif", registration)
 
+    def test_wasm_xml_libraries_use_the_pinned_portable_config(
+        self,
+    ) -> None:
+        libxml = source("third_party/libxml/BUILD.gn")
+        libxslt = source("third_party/libxslt/BUILD.gn")
+
+        self.assertIn("is_android || is_fuchsia || is_wasm", libxml)
+        self.assertIn(
+            "if (is_linux || is_chromeos || is_wasm) {\n"
+            '    sources += [ "linux/config.h" ]',
+            libxslt,
+        )
+        self.assertIn(
+            "is_android || is_fuchsia || is_wasm) {\n"
+            '    include_dirs = [ "linux" ]',
+            libxslt,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
