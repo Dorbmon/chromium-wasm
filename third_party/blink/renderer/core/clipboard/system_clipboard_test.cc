@@ -61,6 +61,27 @@ class MockPlatformEventController
 
 }  // namespace
 
+TEST(ClipboardSequenceNumberTest, EqualityIncludesBothWords) {
+  constexpr ClipboardSequenceNumber kSequenceNumber(0x123456789abcdef0,
+                                                     0xfedcba9876543210);
+  static_assert(
+      kSequenceNumber ==
+      ClipboardSequenceNumber(0x123456789abcdef0, 0xfedcba9876543210));
+  static_assert(
+      kSequenceNumber !=
+      ClipboardSequenceNumber(0x023456789abcdef0, 0xfedcba9876543210));
+  static_assert(
+      kSequenceNumber !=
+      ClipboardSequenceNumber(0x123456789abcdef0, 0x0edcba9876543210));
+
+  EXPECT_EQ(kSequenceNumber,
+            ClipboardSequenceNumber(0x123456789abcdef0, 0xfedcba9876543210));
+  EXPECT_NE(kSequenceNumber,
+            ClipboardSequenceNumber(0x023456789abcdef0, 0xfedcba9876543210));
+  EXPECT_NE(kSequenceNumber,
+            ClipboardSequenceNumber(0x123456789abcdef0, 0x0edcba9876543210));
+}
+
 class SystemClipboardTest : public testing::Test {
  public:
   SystemClipboardTest() {

@@ -65,7 +65,8 @@ ClipboardItem* ClipboardItem::Create(
 }
 
 ClipboardItem::ClipboardItem(const HeapVector<String>& mime_types,
-                             std::optional<absl::uint128> sequence_number,
+                             std::optional<ClipboardSequenceNumber>
+                                 sequence_number,
                              ExecutionContext* execution_context,
                              bool sanitize_html_for_lazy_read,
                              AccessMode access_mode)
@@ -103,7 +104,7 @@ ClipboardItem::ClipboardItem(
     const HeapVector<
         std::pair<String, MemberScriptPromise<V8UnionBlobOrString>>>&
         representations,
-    std::optional<absl::uint128> sequence_number)
+    std::optional<ClipboardSequenceNumber> sequence_number)
     : ExecutionContextLifecycleObserver(nullptr),
       sequence_number_(sequence_number) {
   for (const auto& representation : representations) {

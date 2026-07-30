@@ -17,6 +17,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_blob_string.h"
+#include "third_party/blink/renderer/core/clipboard/clipboard_sequence_number.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/fileapi/blob.h"
@@ -224,9 +225,11 @@ class MODULES_EXPORT ClipboardPromise final
   // Sequence number snapshotted before format enumeration so the lazy-read
   // path can detect a clipboard change during the async IPC.
   // See crbug.com/498411773.
-  std::optional<absl::uint128> sequence_number_at_read_start_;
+  std::optional<ClipboardSequenceNumber> sequence_number_at_read_start_;
   SEQUENCE_CHECKER(sequence_checker_);
 };
+
+static_assert(alignof(ClipboardPromise) <= 2 * sizeof(void*));
 
 }  // namespace blink
 

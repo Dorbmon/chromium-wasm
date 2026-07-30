@@ -32,9 +32,9 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CLIPBOARD_DATA_OBJECT_ITEM_H_
 
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "third_party/abseil-cpp/absl/numeric/int128.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_data_transfer_token.mojom-blink.h"
 #include "third_party/blink/public/platform/web_drag_data.h"
+#include "third_party/blink/renderer/core/clipboard/clipboard_sequence_number.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/fileapi/file.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -72,12 +72,13 @@ class CORE_EXPORT DataObjectItem final
       const AtomicString& content_disposition);
   static DataObjectItem* CreateFromClipboard(SystemClipboard* system_clipboard,
                                              const String& type,
-                                             absl::uint128 sequence_number);
+                                             ClipboardSequenceNumber
+                                                 sequence_number);
 
   DataObjectItem(ItemKind kind, const String& type);
   DataObjectItem(ItemKind,
                  const String& type,
-                 absl::uint128 sequence_number,
+                 ClipboardSequenceNumber sequence_number,
                  SystemClipboard* system_clipboard);
 
   ItemKind Kind() const { return kind_; }
@@ -123,13 +124,15 @@ class CORE_EXPORT DataObjectItem final
   String title_;
   KURL base_url_;
 
-  absl::uint128            // Only valid when |source_| ==
+  ClipboardSequenceNumber  // Only valid when |source_| ==
       sequence_number_;    // DataSource::kClipboardSource.
   String file_system_id_;  // Only valid when |file_| is backed by FileEntry.
 
   // Access to the global system clipboard.
   Member<SystemClipboard> system_clipboard_;
 };
+
+static_assert(alignof(DataObjectItem) <= 2 * sizeof(void*));
 
 }  // namespace blink
 

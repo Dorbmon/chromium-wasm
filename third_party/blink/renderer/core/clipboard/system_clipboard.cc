@@ -89,12 +89,13 @@ bool SystemClipboard::IsFormatAvailable(blink::mojom::ClipboardFormat format) {
   return result;
 }
 
-absl::uint128 SystemClipboard::SequenceNumber() {
+ClipboardSequenceNumber SystemClipboard::SequenceNumber() {
   if (!IsValidBufferType(buffer_) || !clipboard_.is_bound())
-    return 0;
+    return {};
   absl::uint128 result;
   clipboard_->GetSequenceNumber(buffer_, &result);
-  return result;
+  return ClipboardSequenceNumber(absl::Uint128High64(result),
+                                 absl::Uint128Low64(result));
 }
 
 Vector<String> SystemClipboard::ReadAvailableTypes() {

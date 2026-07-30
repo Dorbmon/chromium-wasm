@@ -11,9 +11,9 @@
 
 #include "base/metrics/single_sample_metrics.h"
 #include "base/time/time.h"
-#include "third_party/abseil-cpp/absl/numeric/int128.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_blob_string.h"
+#include "third_party/blink/renderer/core/clipboard/clipboard_sequence_number.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard_reader.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
@@ -64,9 +64,9 @@ class MODULES_EXPORT ClipboardItem final
       const HeapVector<
           std::pair<String, MemberScriptPromise<V8UnionBlobOrString>>>&
           representations,
-      std::optional<absl::uint128> sequence_number = std::nullopt);
+      std::optional<ClipboardSequenceNumber> sequence_number = std::nullopt);
   explicit ClipboardItem(const HeapVector<String>& mime_types,
-                         std::optional<absl::uint128> sequence_number,
+                         std::optional<ClipboardSequenceNumber> sequence_number,
                          ExecutionContext* execution_context,
                          bool sanitize_html_for_lazy_read,
                          AccessMode access_mode);
@@ -128,7 +128,7 @@ class MODULES_EXPORT ClipboardItem final
   Vector<String> custom_format_types_;
   // Use std::optional to distinguish "not yet set" from any valid sequence
   // number (0 is a valid clipboard sequence number).
-  std::optional<absl::uint128> sequence_number_;
+  std::optional<ClipboardSequenceNumber> sequence_number_;
   // Whether data is fetched from the clipboard on demand via `getType()`.
   AccessMode access_mode_ = AccessMode::kEager;
   // Whether HTML data should be sanitized when reading lazily.
@@ -145,6 +145,8 @@ class MODULES_EXPORT ClipboardItem final
   // The time this `ClipboardItem` was created, used for telemetry.
   base::TimeTicks creation_time_;
 };
+
+static_assert(alignof(ClipboardItem) <= 2 * sizeof(void*));
 
 }  // namespace blink
 

@@ -10,6 +10,7 @@
 
 #include "build/build_config.h"
 #include "third_party/blink/public/mojom/clipboard/clipboard.mojom-blink.h"
+#include "third_party/blink/renderer/core/clipboard/clipboard_sequence_number.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/frame/platform_event_dispatcher.h"
 #include "third_party/blink/renderer/platform/bindings/bigint.h"
@@ -59,7 +60,7 @@ class CORE_EXPORT SystemClipboard final
   };
   const ClipboardChangeData& GetClipboardChangeEventData();
 
-  absl::uint128 SequenceNumber();
+  ClipboardSequenceNumber SequenceNumber();
   bool IsSelectionMode() const;
   void SetSelectionMode(bool);
   Vector<String> ReadAvailableTypes();

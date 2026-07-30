@@ -36,7 +36,6 @@
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
-#include "third_party/abseil-cpp/absl/numeric/int128.h"
 #include "third_party/blink/public/platform/file_path_conversion.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_drag_data.h"
@@ -66,7 +65,7 @@ DataObject* DataObject::CreateFromClipboard(ExecutionContext* context,
 #if DCHECK_IS_ON()
   HashSet<String> types_seen;
 #endif
-  absl::uint128 sequence_number = system_clipboard->SequenceNumber();
+  ClipboardSequenceNumber sequence_number = system_clipboard->SequenceNumber();
   for (const String& type : system_clipboard->ReadAvailableTypes()) {
     if (paste_mode == PasteMode::kPlainTextOnly &&
         type != ui::kMimeTypePlainText) {

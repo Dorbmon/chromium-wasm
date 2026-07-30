@@ -114,7 +114,7 @@ DataObjectItem* DataObjectItem::CreateFromFileSharedBuffer(
 DataObjectItem* DataObjectItem::CreateFromClipboard(
     SystemClipboard* system_clipboard,
     const String& type,
-    absl::uint128 sequence_number) {
+    ClipboardSequenceNumber sequence_number) {
   if (type == ui::kMimeTypePng) {
     return MakeGarbageCollected<DataObjectItem>(
         kFileKind, type, sequence_number, system_clipboard);
@@ -127,12 +127,11 @@ DataObjectItem::DataObjectItem(ItemKind kind, const String& type)
     : source_(DataSource::kInternalSource),
       kind_(kind),
       type_(type),
-      sequence_number_(0),
       system_clipboard_(nullptr) {}
 
 DataObjectItem::DataObjectItem(ItemKind kind,
                                const String& type,
-                               absl::uint128 sequence_number,
+                               ClipboardSequenceNumber sequence_number,
                                SystemClipboard* system_clipboard)
     : source_(DataSource::kClipboardSource),
       kind_(kind),
