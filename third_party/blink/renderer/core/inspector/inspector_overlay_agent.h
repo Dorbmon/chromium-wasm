@@ -322,7 +322,7 @@ class CORE_EXPORT InspectorOverlayAgent final
   // Set or clear a mode tool, or add a highlight tool
   protocol::Response SetInspectTool(InspectTool* inspect_tool);
   void ClearInspectTool();
-  void LoadOverlayPageResource();
+  protocol::Response LoadOverlayPageResource();
   void EnsureEnableFrameOverlay();
   void DisableFrameOverlay();
   InspectorSourceOrderConfig SourceOrderConfigFromInspectorObject(

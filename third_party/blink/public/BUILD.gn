@@ -82,6 +82,7 @@ buildflag_header("buildflags") {
     "USE_MINIKIN_HYPHENATION=$use_minikin_hyphenation",
     "ENABLE_UNHANDLED_TAP=$enable_unhandled_tap",
     "VERBOSE_PERSISTENT=$cppgc_enable_object_names",
+    "ENABLE_BLINK_DEVTOOLS_INSPECTOR_RESOURCES=$_enable_blink_devtools_resources",
   ]
 }
 

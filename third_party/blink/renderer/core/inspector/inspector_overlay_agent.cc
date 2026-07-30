@@ -40,7 +40,12 @@
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/web_data.h"
+#include "third_party/blink/public/public_buildflags.h"
+
+#if BUILDFLAG(ENABLE_BLINK_DEVTOOLS_INSPECTOR_RESOURCES)
 #include "third_party/blink/public/resources/grit/inspector_overlay_resources_map.h"
+#endif
+
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
@@ -747,7 +752,11 @@ protocol::Response InspectorOverlayAgent::setShowHinge(
   hinge_ =
       MakeGarbageCollected<Hinge>(quad, content_color, outline_color, this);
 
-  LoadOverlayPageResource();
+  protocol::Response response = LoadOverlayPageResource();
+  if (!response.IsSuccess()) {
+    hinge_ = nullptr;
+    return response;
+  }
   EvaluateInOverlay("setOverlay", hinge_->GetOverlayName());
   EnsureEnableFrameOverlay();
 
@@ -1354,9 +1363,13 @@ float InspectorOverlayAgent::WindowToViewportScale() const {
                                                                     1.0f);
 }
 
-void InspectorOverlayAgent::LoadOverlayPageResource() {
+protocol::Response InspectorOverlayAgent::LoadOverlayPageResource() {
+#if !BUILDFLAG(ENABLE_BLINK_DEVTOOLS_INSPECTOR_RESOURCES)
+  return protocol::Response::ServerError(
+      "Inspector overlay resources are unavailable in this build.");
+#else
   if (overlay_page_) {
-    return;
+    return protocol::Response::Success();
   }
 
   ScriptForbiddenScope::AllowUserAgentScript allow_script;
@@ -1439,6 +1452,8 @@ void InspectorOverlayAgent::LoadOverlayPageResource() {
 #else
   EvaluateInOverlay("setPlatform", "other");
 #endif
+  return protocol::Response::Success();
+#endif  // BUILDFLAG(ENABLE_BLINK_DEVTOOLS_INSPECTOR_RESOURCES)
 }
 
 LocalFrame* InspectorOverlayAgent::OverlayMainFrame() {
@@ -1725,7 +1740,11 @@ protocol::Response InspectorOverlayAgent::SetInspectTool(
   inspect_tool_ = inspect_tool;
   // If the tool supports persistent overlays, the resources of the persistent
   // tool will be included into the JS resource.
-  LoadOverlayPageResource();
+  protocol::Response response = LoadOverlayPageResource();
+  if (!response.IsSuccess()) {
+    inspect_tool_ = nullptr;
+    return response;
+  }
   EvaluateInOverlay("setOverlay", inspect_tool->GetOverlayName());
   EnsureEnableFrameOverlay();
   EnsureAXContext(frame->GetDocument());
