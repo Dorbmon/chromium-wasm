@@ -985,6 +985,21 @@ void ReserveBackupRefPtrGuardRegionIfNeeded() {
 #endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) &&
         // !PA_BUILDFLAG(HAS_64_BIT_POINTERS)
 
+namespace {
+
+// WebAssembly cannot make a linear-memory subrange inaccessible. Direct-map
+// resize therefore uses the page backend's logical decommit/recommit state,
+// which preserves zero-on-recommit without claiming a permission transition.
+constexpr PageAccessibilityDisposition DirectMapResizeDisposition() {
+#if PA_BUILDFLAG(IS_WASM)
+  return PageAccessibilityDisposition::kAllowKeepForPerf;
+#else
+  return PageAccessibilityDisposition::kRequireUpdate;
+#endif
+}
+
+}  // namespace
+
 void PartitionRoot::Init(PartitionOptions opts) {
   {
 #if PA_BUILDFLAG(IS_APPLE)
@@ -1284,11 +1299,12 @@ bool PartitionRoot::TryReallocInPlaceForDirectMap(
     // No need to move any memory around, but update size and cookie below.
     // That's because raw_size may have changed.
   } else if (new_slot_size < current_slot_size) {
-    // Shrink by decommitting unneeded pages and making them inaccessible.
+    // Shrink by decommitting unneeded pages. Platforms with page protection
+    // also make them inaccessible; Wasm records a logical decommit and zeros
+    // the pages instead.
     size_t decommit_size = current_slot_size - new_slot_size;
     DecommitSystemPagesForData(slot_span_start.value() + new_slot_size,
-                               decommit_size,
-                               PageAccessibilityDisposition::kRequireUpdate);
+                               decommit_size, DirectMapResizeDisposition());
     // Since the decommited system pages are still reserved, we don't need to
     // change the entries for decommitted pages in the reservation offset table.
   } else if (new_slot_size <= available_reservation_size) {
@@ -1298,7 +1314,7 @@ bool PartitionRoot::TryReallocInPlaceForDirectMap(
     // Direct map never uses tagging, as size is always >kMaxMemoryTaggingSize.
     RecommitSystemPagesForData(
         slot_span_start.value() + current_slot_size, recommit_slot_size_growth,
-        PageAccessibilityDisposition::kRequireUpdate, false);
+        DirectMapResizeDisposition(), false);
     // The recommited system pages had been already reserved and all the
     // entries in the reservation offset table (for entire reservation_size
     // region) have been already initialized_.

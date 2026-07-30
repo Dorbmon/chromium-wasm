@@ -358,10 +358,21 @@ uintptr_t AddressPoolManager::Reserve(pool_handle handle,
                                       uintptr_t requested_address,
                                       size_t length) {
   PA_DCHECK(!(length & DirectMapAllocationGranularityOffsetMask()));
+  // WebAssembly linear memory cannot enforce inaccessible subranges. Keep the
+  // reservation writable so the page backend can represent it honestly.
+  // PartitionAlloc still excludes its guard-page ranges from allocator
+  // payloads, but those ranges are layout guards rather than protection
+  // boundaries on Wasm.
+#if PA_BUILDFLAG(IS_WASM)
+  constexpr auto kReservationPermissions =
+      PageAccessibilityConfiguration::kReadWrite;
+#else
+  constexpr auto kReservationPermissions =
+      PageAccessibilityConfiguration::kInaccessible;
+#endif
   uintptr_t address =
       AllocPages(requested_address, length, kSuperPageSize,
-                 PageAccessibilityConfiguration(
-                     PageAccessibilityConfiguration::kInaccessible),
+                 PageAccessibilityConfiguration(kReservationPermissions),
                  kPageTag);
   return address;
 }

@@ -11,7 +11,7 @@
 #include "partition_alloc/partition_alloc_base/immediate_crash.h"
 #include "partition_alloc/partition_alloc_check.h"
 
-#if PA_BUILDFLAG(IS_POSIX)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 #include <pthread.h>
 #endif
 
@@ -24,7 +24,8 @@
 // because it allocates memory.
 namespace partition_alloc::internal {
 
-#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
 using PartitionTlsKey = pthread_key_t;
 
 // Only on x86_64, the implementation is not stable on ARM64. For instance, in

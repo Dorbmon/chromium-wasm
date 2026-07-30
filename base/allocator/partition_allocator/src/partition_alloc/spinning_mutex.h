@@ -23,7 +23,7 @@
 #include "partition_alloc/partition_alloc_base/win/windows_types.h"
 #endif
 
-#if PA_BUILDFLAG(IS_POSIX)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 #include <pthread.h>
 
 #include <cerrno>
@@ -144,7 +144,7 @@ class PA_LOCKABLE PA_COMPONENT_EXPORT(PARTITION_ALLOC) SpinningMutex {
   PA_CHROME_SRWLOCK lock_ = SRWLOCK_INIT;
 #elif PA_BUILDFLAG(IS_APPLE)
   os_unfair_lock unfair_lock_ = OS_UNFAIR_LOCK_INIT;
-#elif PA_BUILDFLAG(IS_POSIX)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
   pthread_mutex_t lock_ = PTHREAD_MUTEX_INITIALIZER;
 #elif PA_BUILDFLAG(IS_FUCHSIA)
   sync_mutex lock_;
@@ -284,7 +284,7 @@ PA_ALWAYS_INLINE void SpinningMutex::Release() {
   return os_unfair_lock_unlock(&unfair_lock_);
 }
 
-#elif PA_BUILDFLAG(IS_POSIX)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 
 PA_ALWAYS_INLINE bool SpinningMutex::Try() {
   int retval = pthread_mutex_trylock(&lock_);

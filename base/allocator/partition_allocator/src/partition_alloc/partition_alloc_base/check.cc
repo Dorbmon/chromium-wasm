@@ -75,7 +75,8 @@ CheckError::~CheckError() {
   } else {
 #if PA_BUILDFLAG(IS_WIN)
     errno_log_message_.~Win32ErrorLogMessage();
-#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
     errno_log_message_.~ErrnoLogMessage();
 #endif  // PA_BUILDFLAG(IS_WIN)
   }

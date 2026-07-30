@@ -529,7 +529,12 @@ if (is_clang_or_gcc) {
     ]
 
     defines = []
-    if (is_win) {
+    if (is_wasm) {
+      sources += [
+        "page_allocator_internals_wasm.cc",
+        "page_allocator_internals_wasm.h",
+      ]
+    } else if (is_win) {
       sources += [
         "page_allocator_internals_win.h",
         "partition_tls_win.cc",
@@ -730,6 +735,20 @@ if (is_clang_or_gcc) {
       "partition_alloc_base/win/windows_types.h",
     ]
     libs = []
+
+    if (is_wasm) {
+      sources += [
+        "partition_alloc_base/debug/stack_trace_wasm.cc",
+        "partition_alloc_base/memory/page_size_wasm.cc",
+        "partition_alloc_base/posix/safe_strerror.cc",
+        "partition_alloc_base/posix/safe_strerror.h",
+        "partition_alloc_base/process/process_handle_wasm.cc",
+        "partition_alloc_base/rand_util_wasm.cc",
+        "partition_alloc_base/threading/platform_thread_wasm.cc",
+        "partition_alloc_base/time/time_conversion_wasm.cc",
+        "partition_alloc_base/time/time_wasm.cc",
+      ]
+    }
 
     if (is_win) {
       sources += [

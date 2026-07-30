@@ -120,6 +120,10 @@ PageAllocationGranularityShift() {
     page_characteristics.shift.store(shift, std::memory_order_relaxed);
   }
   return shift;
+#elif PA_BUILDFLAG(IS_WASM)
+  // WebAssembly linear memory grows in fixed 64 KiB pages. Emscripten's
+  // anonymous allocation API provides the same minimum alignment.
+  return 16;  // 64 KiB
 #elif PA_BUILDFLAG(IS_WIN) || PA_BUILDFLAG(PA_ARCH_CPU_PPC64)
   // Modern ppc64 systems support 4kB (shift = 12) and 64kB (shift = 16) page
   // sizes.  Since 64kB is the de facto standard on the platform and binaries
@@ -180,7 +184,9 @@ SystemPageShift() {
   // On Windows allocation granularity is higher than the page size. This comes
   // into play when reserving address space range (allocation granularity),
   // compared to committing pages into memory (system page granularity).
-#if PA_BUILDFLAG(IS_WIN)
+#if PA_BUILDFLAG(IS_WASM)
+  return 16;  // 64 KiB
+#elif PA_BUILDFLAG(IS_WIN)
   return 12;  // 4096=1<<12
 #else
   return PageAllocationGranularityShift();

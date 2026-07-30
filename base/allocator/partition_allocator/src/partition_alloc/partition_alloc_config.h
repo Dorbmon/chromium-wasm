@@ -54,9 +54,10 @@ static_assert(sizeof(void*) != 8, "");
   (PA_BUILDFLAG(IS_LINUX) || PA_BUILDFLAG(IS_CHROMEOS) || \
    PA_BUILDFLAG(IS_ANDROID))
 
-// Need TLS support.
-#define PA_CONFIG_THREAD_CACHE_SUPPORTED() \
-  (PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WIN) || PA_BUILDFLAG(IS_FUCHSIA))
+// Need TLS support. Emscripten pthreads provide real per-worker pthread TLS.
+#define PA_CONFIG_THREAD_CACHE_SUPPORTED()                             \
+  (PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM) ||                 \
+   PA_BUILDFLAG(IS_WIN) || PA_BUILDFLAG(IS_FUCHSIA))
 
 // Too expensive for official builds, as it adds cache misses to all
 // allocations. On the other hand, we want wide metrics coverage to get

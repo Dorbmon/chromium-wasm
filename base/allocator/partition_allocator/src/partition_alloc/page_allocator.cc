@@ -5,6 +5,7 @@
 #include "partition_alloc/page_allocator.h"
 
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <utility>
 
@@ -22,7 +23,9 @@
 #include "partition_alloc/partition_alloc_base/win/windows_handle_util.h"
 #endif
 
-#if PA_BUILDFLAG(IS_WIN)
+#if PA_BUILDFLAG(IS_WASM)
+#include "partition_alloc/page_allocator_internals_wasm.h"
+#elif PA_BUILDFLAG(IS_WIN)
 #include "partition_alloc/page_allocator_internals_win.h"
 #elif PA_BUILDFLAG(IS_POSIX)
 #include "partition_alloc/page_allocator_internals_posix.h"
@@ -71,7 +74,15 @@ uintptr_t AllocPagesIncludingReserved(
                                  file_descriptor_for_shared_alloc);
   if (!ret) {
     const bool cant_alloc_length = internal::kHintIsAdvisory || !address;
-    if (cant_alloc_length) {
+#if PA_BUILDFLAG(IS_WASM)
+    // Releasing the emergency reservation cannot make an invalid or unsupported
+    // Wasm request succeed. Preserve it unless linear memory was exhausted.
+    const bool can_retry_after_releasing_reservation =
+        GetAllocPageErrorCode() == ENOMEM;
+#else
+    constexpr bool can_retry_after_releasing_reservation = true;
+#endif
+    if (cant_alloc_length && can_retry_after_releasing_reservation) {
       // The system cannot allocate |length| bytes. Release any reserved address
       // space and try once more.
       ReleaseReservation();

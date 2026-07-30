@@ -11,7 +11,15 @@
 
 namespace partition_alloc::internal {
 
-#if PA_BUILDFLAG(HAS_64_BIT_POINTERS) && PA_BUILDFLAG(IS_APPLE)
+#if PA_BUILDFLAG(IS_WASM)
+// The generic slot-span selector starts one system page below a partition
+// page. For an 8-byte wasm32 bucket this is the largest representable span;
+// using the full 256 KiB partition page would require 32768 slots, one more
+// than the 15-bit slot counters can represent.
+static constexpr size_t kMaxSlotsPerSlotSpan =
+    (PartitionPageSize() - SystemPageSize()) /
+    BucketIndexLookup::kMinBucketSize;
+#elif PA_BUILDFLAG(HAS_64_BIT_POINTERS) && PA_BUILDFLAG(IS_APPLE)
 // System page size is not a constant on Apple OSes, but is either 4 or 16kiB
 // (1 << 12 or 1 << 14), as checked in PartitionRoot::Init(). And
 // PartitionPageSize() is 4 times the OS page size.

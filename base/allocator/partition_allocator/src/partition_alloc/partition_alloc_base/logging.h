@@ -276,7 +276,8 @@ constexpr LogSeverity LOGGING_0 = LOGGING_ERROR;
       __FILE__, __LINE__, -(verbose_level),                           \
       ::partition_alloc::internal::logging::GetLastSystemErrorCode()) \
       .stream()
-#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
 #define PA_VPLOG_STREAM(verbose_level)                                \
   ::partition_alloc::internal::logging::ErrnoLogMessage(              \
       __FILE__, __LINE__, -(verbose_level),                           \
@@ -303,7 +304,8 @@ constexpr LogSeverity LOGGING_0 = LOGGING_ERROR;
       Win32ErrorLogMessage,                                           \
       ::partition_alloc::internal::logging::GetLastSystemErrorCode()) \
       .stream()
-#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
 #define PA_PLOG_STREAM(severity)                                      \
   PA_COMPACT_GOOGLE_PLOG_EX_##severity(                               \
       ErrnoLogMessage,                                                \

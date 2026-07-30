@@ -70,6 +70,18 @@ struct PageAccessibilityConfiguration {
 #endif  // PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
 };
 
+// WebAssembly linear memory has no per-page protection primitive. The Wasm
+// backend exposes this so callers can use always-accessible allocations and
+// permission-preserving decommit/recommit operations. It still tracks logical
+// commit state and guarantees zero-on-recommit for those supported paths.
+constexpr bool PageAccessPermissionsAreEnforced() {
+#if PA_BUILDFLAG(IS_WASM)
+  return false;
+#else
+  return true;
+#endif
+}
+
 // Use for De/RecommitSystemPages API.
 enum class PageAccessibilityDisposition {
   // Enforces permission update (Decommit will set to

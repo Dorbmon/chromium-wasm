@@ -18,7 +18,7 @@
 //
 // Operating system:
 //   IS_IOS / IS_AIX / IS_ASMJS / IS_FREEBSD / IS_FUCHSIA / IS_LINUX / IS_MAC /
-//   IS_NETBSD / IS_OPENBSD / IS_QNX / IS_SOLARIS / IS_WIN
+//   IS_NETBSD / IS_OPENBSD / IS_QNX / IS_SOLARIS / IS_WASM / IS_WIN
 //
 // Operating system family:
 //   IS_APPLE / IS_BSD / IS_POSIX
@@ -102,7 +102,9 @@
 #define PA_IS_QNX
 #elif defined(_AIX)
 #define PA_IS_AIX
-#elif defined(__asmjs__) || defined(__wasm__)
+#elif defined(__wasm__)
+#define PA_IS_WASM
+#elif defined(__asmjs__)
 #define PA_IS_ASMJS
 #endif
 
@@ -117,10 +119,11 @@
 #define PA_IS_BSD
 #endif
 
-#if defined(PA_IS_AIX) || defined(PA_IS_ASMJS) || defined(PA_IS_FREEBSD) ||  \
-    defined(PA_IS_IOS) || defined(PA_IS_LINUX) || defined(PA_IS_CHROMEOS) || \
-    defined(PA_IS_MAC) || defined(PA_IS_NETBSD) || defined(PA_IS_OPENBSD) || \
-    defined(PA_IS_QNX) || defined(PA_IS_SOLARIS) ||                          \
+#if defined(PA_IS_AIX) || defined(PA_IS_ASMJS) || defined(PA_IS_FREEBSD) || \
+    defined(PA_IS_IOS) || defined(PA_IS_LINUX) ||                           \
+    defined(PA_IS_CHROMEOS) || defined(PA_IS_MAC) ||                        \
+    defined(PA_IS_NETBSD) || defined(PA_IS_OPENBSD) ||                      \
+    defined(PA_IS_QNX) || defined(PA_IS_SOLARIS) ||                         \
     PA_BUILDFLAG(IS_ANDROID) || PA_BUILDFLAG(IS_CHROMEOS)
 #define PA_IS_POSIX
 #endif
@@ -481,6 +484,13 @@
 #define PA_BUILDFLAG_INTERNAL_IS_SOLARIS() (0)
 #endif
 #undef PA_IS_SOLARIS
+
+#if defined(PA_IS_WASM)
+#define PA_BUILDFLAG_INTERNAL_IS_WASM() (1)
+#else
+#define PA_BUILDFLAG_INTERNAL_IS_WASM() (0)
+#endif
+#undef PA_IS_WASM
 
 #if defined(PA_IS_WIN)
 #define PA_BUILDFLAG_INTERNAL_IS_WIN() (1)

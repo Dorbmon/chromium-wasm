@@ -45,7 +45,8 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC_BASE) ScopedClearLastError
   const unsigned long last_system_error_;
 };
 
-#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
 
 using ScopedClearLastError = ScopedClearLastErrorBase;
 

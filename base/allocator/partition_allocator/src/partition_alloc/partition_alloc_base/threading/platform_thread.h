@@ -24,7 +24,7 @@
 #include <zircon/types.h>
 #elif PA_BUILDFLAG(IS_APPLE)
 #include <mach/mach_types.h>
-#elif PA_BUILDFLAG(IS_POSIX)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 #include <pthread.h>
 #include <unistd.h>
 #endif
@@ -40,6 +40,8 @@ typedef zx_handle_t PlatformThreadId;
 typedef mach_port_t PlatformThreadId;
 #elif PA_BUILDFLAG(IS_POSIX)
 typedef pid_t PlatformThreadId;
+#elif PA_BUILDFLAG(IS_WASM)
+typedef uintptr_t PlatformThreadId;
 #endif
 
 // Used to operate on threads.
@@ -47,7 +49,8 @@ class PlatformThreadHandle {
  public:
 #if PA_BUILDFLAG(IS_WIN)
   typedef void* Handle;
-#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
   typedef pthread_t Handle;
 #endif
 

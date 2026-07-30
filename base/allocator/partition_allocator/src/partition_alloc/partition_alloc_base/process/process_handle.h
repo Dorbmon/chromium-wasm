@@ -35,6 +35,11 @@ const ProcessId kNullProcessId = ZX_KOID_INVALID;
 // On POSIX, our ProcessHandle will just be the PID.
 typedef pid_t ProcessId;
 const ProcessId kNullProcessId = 0;
+#elif PA_BUILDFLAG(IS_WASM)
+// The Wasm port is a single-process application. Use a synthetic stable
+// numeric identifier for logging and allocator diagnostics.
+typedef int ProcessId;
+const ProcessId kNullProcessId = 0;
 #endif  // PA_BUILDFLAG(IS_WIN)
 
 // Returns the id of the current process.

@@ -28,7 +28,8 @@
 #include <io.h>
 #endif
 
-#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
 #include <unistd.h>
 
 #include <cerrno>

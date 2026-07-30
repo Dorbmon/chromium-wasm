@@ -91,7 +91,8 @@
 #include <jni.h>
 #endif
 
-#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
 #include <sys/time.h>
 #include <unistd.h>
 #endif
@@ -131,7 +132,8 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC_BASE) TimeDelta {
   // based on absolute time
   static TimeDelta FromFileTime(FILETIME ft);
   static TimeDelta FromWinrtDateTime(ABI::Windows::Foundation::DateTime dt);
-#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
   static TimeDelta FromTimeSpec(const timespec& ts);
 #endif
 #if PA_BUILDFLAG(IS_FUCHSIA)
@@ -194,7 +196,8 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC_BASE) TimeDelta {
   constexpr bool is_min() const { return *this == Min(); }
   constexpr bool is_inf() const { return is_min() || is_max(); }
 
-#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
   struct timespec ToTimeSpec() const;
 #endif
 #if PA_BUILDFLAG(IS_FUCHSIA)
@@ -589,7 +592,8 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC_BASE) Time
   static Time FromSecondsSinceUnixEpoch(double dt);
   double InSecondsFSinceUnixEpoch() const;
 
-#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
   // Converts the timespec structure to time. MacOS X 10.8.3 (and tentatively,
   // earlier versions) will have the |ts|'s tv_nsec component zeroed out,
   // having a 1 second resolution, which agrees with
@@ -616,7 +620,8 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC_BASE) Time
   static Time FromMillisecondsSinceUnixEpoch(int64_t ms_since_epoch);
   int64_t InMillisecondsSinceUnixEpoch() const;
 
-#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA) || \
+    PA_BUILDFLAG(IS_WASM)
   static Time FromTimeVal(struct timeval t);
   struct timeval ToTimeVal() const;
 #endif
@@ -818,6 +823,7 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC_BASE) TimeTicks
     LINUX_CLOCK_MONOTONIC,
     IOS_CF_ABSOLUTE_TIME_MINUS_KERN_BOOTTIME,
     MAC_MACH_ABSOLUTE_TIME,
+    WASM_EMSCRIPTEN_GET_NOW,
     WIN_QPC,
     WIN_ROLLOVER_PROTECTED_TIME_GET_TIME
   };
@@ -932,7 +938,9 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC_BASE) ThreadTicks
 
   // Returns true if ThreadTicks::Now() is supported on this system.
   [[nodiscard]] static bool IsSupported() {
-#if (defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
+#if PA_BUILDFLAG(IS_WASM)
+    return false;
+#elif (defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
     PA_BUILDFLAG(IS_APPLE) || PA_BUILDFLAG(IS_ANDROID) ||               \
     PA_BUILDFLAG(IS_FUCHSIA)
     return true;

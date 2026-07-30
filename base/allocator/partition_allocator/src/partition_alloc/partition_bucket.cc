@@ -39,6 +39,18 @@ namespace partition_alloc::internal {
 
 namespace {
 
+// WebAssembly reservations remain writable because linear memory has no
+// per-page protection primitive. Its page backend tracks logical decommit
+// state and zeroes those pages on recommit, so allowing permissions to remain
+// unchanged is the only honest disposition there.
+constexpr PageAccessibilityDisposition PageRecommitDisposition() {
+#if PA_BUILDFLAG(IS_WASM)
+  return PageAccessibilityDisposition::kAllowKeepForPerf;
+#else
+  return PageAccessibilityDisposition::kRequireUpdate;
+#endif
+}
+
 [[noreturn]] PA_NOINLINE void PartitionOutOfMemoryMappingFailure(
     PartitionRoot* root,
     size_t size) PA_LOCKS_EXCLUDED(PartitionRootLock(root)) {
@@ -287,7 +299,7 @@ SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
       RecommitSystemPages(metadata_start, SystemPageSize(),
                           root->PageAccessibilityWithThreadIsolationIfEnabled(
                               PageAccessibilityConfiguration::kReadWrite),
-                          PageAccessibilityDisposition::kRequireUpdate);
+                          PageRecommitDisposition());
     }
 
     if (pool == kBRPPoolHandle) {
@@ -301,7 +313,7 @@ SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
                           SystemPageSize(),
                           root->PageAccessibilityWithThreadIsolationIfEnabled(
                               PageAccessibilityConfiguration::kReadWrite),
-                          PageAccessibilityDisposition::kRequireUpdate);
+                          PageRecommitDisposition());
     }
 
     // No need to hold root->lock_. Now that memory is reserved, no other
@@ -373,12 +385,14 @@ SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
     new (&page_metadata->slot_span_metadata)
         SlotSpanMetadata(&direct_map_metadata->bucket);
 
-    // It is typically possible to map a large range of inaccessible pages, and
-    // this is leveraged in multiple places, including the pools. However,
-    // this doesn't mean that we can commit all this memory.  For the vast
-    // majority of allocations, this just means that we crash in a slightly
-    // different place, but for callers ready to handle failures, we have to
-    // return nullptr. See crbug.com/1187404.
+    // It is typically possible to reserve a large range without committing all
+    // of its pages, and this is leveraged in multiple places, including the
+    // pools. However, this doesn't mean that we can commit all this memory.
+    // Wasm is an exception: its reservation is already writable and backed by
+    // linear memory, so this step only updates logical commit state there. For
+    // the vast majority of allocations, a commit failure just means that we
+    // crash in a slightly different place, but callers ready to handle
+    // failures need nullptr. See crbug.com/1187404.
     //
     // Note that we didn't check above, because if we cannot even commit a
     // single page, then this is likely hopeless anyway, and we will crash very
@@ -387,8 +401,7 @@ SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
     // Direct map never uses tagging, as size is always >kMaxMemoryTaggingSize.
     PA_DCHECK(raw_size > kMaxMemoryTaggingSize);
     const bool ok = root->TryRecommitSystemPagesForDataWithAcquiringLock(
-        slot_start.value(), slot_size,
-        PageAccessibilityDisposition::kRequireUpdate, false);
+        slot_start.value(), slot_size, PageRecommitDisposition(), false);
     if (!ok) {
       if (!return_null) {
         PartitionOutOfMemoryCommitFailure(root, slot_size);
@@ -655,8 +668,7 @@ PA_ALWAYS_INLINE SlotSpanMetadata* PartitionBucket::AllocNewSlotSpan(
 
     root->RecommitSystemPagesForData(
         slot_span_start, SlotSpanCommittedSize(root),
-        PageAccessibilityDisposition::kRequireUpdate,
-        slot_size <= kMaxMemoryTaggingSize);
+        PageRecommitDisposition(), slot_size <= kMaxMemoryTaggingSize);
   }
 
   PA_CHECK(get_slots_per_span() <= kMaxSlotsPerSlotSpan);
@@ -778,15 +790,17 @@ PartitionBucket::InitializeSuperPage(PartitionRoot* root,
 
   uintptr_t metadata_start =
       PartitionSuperPageToMetadataPage(super_page, root->MetadataOffset());
-  // Keep the first partition page in the super page inaccessible to serve as a
-  // guard page, except an "island" in the middle where we put page metadata and
-  // also a tiny amount of extent metadata.
+  // Keep the first partition page out of allocator payloads to serve as a
+  // guard, except an "island" in the middle where we put page metadata and a
+  // tiny amount of extent metadata. Platforms with page protection keep the
+  // rest inaccessible. Wasm preserves the layout separation, but cannot
+  // enforce the guard with permissions.
   {
     ScopedSyscallTimer timer{root};
     RecommitSystemPages(metadata_start, SystemPageSize(),
                         root->PageAccessibilityWithThreadIsolationIfEnabled(
                             PageAccessibilityConfiguration::kReadWrite),
-                        PageAccessibilityDisposition::kRequireUpdate);
+                        PageRecommitDisposition());
   }
 
 #if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
@@ -800,7 +814,7 @@ PartitionBucket::InitializeSuperPage(PartitionRoot* root,
     RecommitSystemPages(super_page + SystemPageSize() * 2, SystemPageSize(),
                         root->PageAccessibilityWithThreadIsolationIfEnabled(
                             PageAccessibilityConfiguration::kReadWrite),
-                        PageAccessibilityDisposition::kRequireUpdate);
+                        PageRecommitDisposition());
   }
 #endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
 
@@ -905,13 +919,13 @@ PartitionBucket::ProvisionMoreSlotsAndAllocOne(PartitionRoot* root,
 
   // If lazy commit is enabled, meaning system pages in the slot span come
   // in an initially decommitted state, commit them here.
-  // Note, we can't use PageAccessibilityDisposition::kAllowKeepForPerf, because
-  // we have no knowledge which pages have been committed before (it doesn't
-  // matter on Windows anyway).
+  // On platforms that enforce page permissions, we can't allow permissions to
+  // remain unchanged because we don't know which pages were committed before
+  // (it doesn't matter on Windows anyway). Wasm mappings remain writable and
+  // their logical commit state is tracked by the page backend.
   if (kUseLazyCommit) {
     const bool ok = root->TryRecommitSystemPagesForDataLocked(
-        commit_start, commit_end - commit_start,
-        PageAccessibilityDisposition::kRequireUpdate,
+        commit_start, commit_end - commit_start, PageRecommitDisposition(),
         slot_size <= kMaxMemoryTaggingSize);
     if (!ok) {
       if (!ContainsFlags(flags, AllocFlags::kReturnNull)) {

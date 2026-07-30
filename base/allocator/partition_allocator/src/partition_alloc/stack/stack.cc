@@ -15,6 +15,8 @@
 
 #if PA_BUILDFLAG(IS_WIN)
 #include <windows.h>
+#elif PA_BUILDFLAG(IS_WASM)
+#include <emscripten/stack.h>
 #else
 #include <pthread.h>
 #endif
@@ -43,6 +45,12 @@ void* GetStackTop() {
 #else
 #error "Unsupported GetStackStart"
 #endif
+}
+
+#elif PA_BUILDFLAG(IS_WASM)
+
+void* GetStackTop() {
+  return reinterpret_cast<void*>(emscripten_stack_get_base());
 }
 
 #elif PA_BUILDFLAG(IS_APPLE)

@@ -15,7 +15,7 @@
 #include <windows.h>
 #endif
 
-#if PA_BUILDFLAG(IS_POSIX)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 #include <pthread.h>
 #endif
 
@@ -29,7 +29,7 @@
 
 #if !PA_CONFIG(HAS_LINUX_KERNEL) && !PA_BUILDFLAG(IS_WIN) && \
     !PA_BUILDFLAG(IS_APPLE) && !PA_BUILDFLAG(IS_POSIX) &&    \
-    !PA_BUILDFLAG(IS_FUCHSIA)
+    !PA_BUILDFLAG(IS_WASM) && !PA_BUILDFLAG(IS_FUCHSIA)
 #include "partition_alloc/partition_alloc_base/threading/platform_thread.h"
 
 #if PA_BUILDFLAG(IS_POSIX)
@@ -326,7 +326,7 @@ void SpinningMutex::LockSlow() {
   }
 }
 
-#elif PA_BUILDFLAG(IS_POSIX)
+#elif PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 
 void SpinningMutex::LockSlow() {
   int retval = pthread_mutex_lock(&lock_);

@@ -20,13 +20,13 @@
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
 
-#if PA_BUILDFLAG(IS_POSIX)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 #include <cerrno>
 #include <utility>
 #endif
 
 namespace partition_alloc {
-#if PA_BUILDFLAG(IS_POSIX)
+#if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 
 template <typename Fn>
 inline auto WrapEINTR(Fn fn) {
@@ -47,14 +47,14 @@ inline auto WrapEINTR(Fn fn) {
   };
 }
 
-#else  // !PA_BUILDFLAG(IS_POSIX)
+#else  // !PA_BUILDFLAG(IS_POSIX) && !PA_BUILDFLAG(IS_WASM)
 
 template <typename Fn>
 inline auto WrapEINTR(Fn fn) {
   return fn;
 }
 
-#endif  // !PA_BUILDFLAG(IS_POSIX)
+#endif  // PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WASM)
 
 }  // namespace partition_alloc
 
