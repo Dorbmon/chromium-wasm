@@ -987,9 +987,12 @@ bool GpuInit::InitializeAndStartSandbox(base::CommandLine* command_line,
   SetSkiaBackendType();
 #if BUILDFLAG(IS_OZONE)
   ui::OzonePlatform::GetInstance()->AfterSandboxEntry();
-  [[maybe_unused]] auto* factory =
+#if BUILDFLAG(ENABLE_VULKAN) || \
+    (BUILDFLAG(SKIA_USE_DAWN) && BUILDFLAG(IS_CHROMEOS))
+  auto* factory =
       ui::OzonePlatform::GetInstance()->GetSurfaceFactoryOzone();
   bool filter_set = false;
+#endif
 #if BUILDFLAG(ENABLE_VULKAN)
   if (gpu_feature_info_.status_values[GPU_FEATURE_TYPE_VULKAN] ==
           kGpuFeatureStatusEnabled &&

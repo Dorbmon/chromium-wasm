@@ -2974,7 +2974,7 @@ error::Error RasterDecoderImpl::DoRasterCHROMIUM(GLuint raster_shm_id,
 
   auto paint_buffer_opt =
       GetSharedMemoryAsSpan(raster_shm_id, raster_shm_offset, raster_shm_size);
-  if (paint_buffer_opt.value_or({}).empty()) {
+  if (!paint_buffer_opt || paint_buffer_opt->empty()) {
     LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glRasterCHROMIUM",
                        "Can not read paint buffer.");
     return error::kNoError;
@@ -3025,7 +3025,7 @@ error::Error RasterDecoderImpl::DoRasterCHROMIUM(GLuint raster_shm_id,
       // Deserialize fonts before raster.
       auto font_buffer_opt = GetSharedMemoryAsSpan<volatile uint8_t>(
           font_shm_id, font_shm_offset, font_shm_size);
-      if (font_buffer_opt.value_or({}).empty()) {
+      if (!font_buffer_opt || font_buffer_opt->empty()) {
         LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glRasterCHROMIUM",
                            "Can not read font buffer.");
         return error::kNoError;

@@ -141,13 +141,17 @@ config("skia_config") {
     ]
   }
 
-  if (skia_support_gpu) {
+  # The software-only Wasm Content Shell still compiles GPU service
+  # declarations that include public Ganesh types. Keep those headers on
+  # Chromium's merged workaround enum without enabling Ganesh itself.
+  if (skia_support_gpu || (is_wasm && enable_chromium_wasm_content)) {
     workaround_header = "gpu/config/gpu_driver_bug_workaround_autogen.h"
+    defines += [ "SK_GPU_WORKAROUNDS_HEADER=\"$workaround_header\"" ]
+  }
+
+  if (skia_support_gpu) {
     configs = []
-    defines += [
-      "SK_GANESH",
-      "SK_GPU_WORKAROUNDS_HEADER=\"$workaround_header\"",
-    ]
+    defines += [ "SK_GANESH" ]
     if (skia_use_gl) {
       defines += [ "SK_GL" ]
     }
@@ -999,6 +1003,9 @@ skia_source_set("skia_opts") {
     # Conditional and empty body needed to avoid assert() below.
   } else if (current_cpu == "loong64") {
     deps += [ ":skia_opts_lasx" ]
+  } else if (current_cpu == "wasm") {
+    # Emscripten supplies its own portable SIMD lowering. Do not select
+    # architecture-specific native Skia optimizations for the outer module.
   } else {
     assert(false, "Unknown cpu target")
   }
