@@ -598,7 +598,7 @@ PA_PAGE_RESULT_REQUIREMENTS = (
 
 PA_ROOT_RESULT_VALUES = {
     "host": "wasm32",
-    "production_pa": "off",
+    "production_pa": "on",
     "allocator_shim": "off",
     "pa_as_malloc": "off",
     "explicit_roots": "ok",

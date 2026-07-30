@@ -8,6 +8,9 @@
 # you add a new build file, there must be some path of dependencies from this
 # file to your new one or GN won't know about it.
 
+import("//base/allocator/partition_allocator/partition_alloc.gni")
+import("//build/config/wasm.gni")
+
 declare_args() {
   # Enables the V8 ARM-simulator bootstrap targets for the experimental
   # Chromium WebAssembly port. This requires the matching M2 V8 build args.
@@ -17,23 +20,43 @@ declare_args() {
 assert(!enable_chromium_wasm_v8 ||
            (enable_chromium_wasm_port && target_os == "emscripten"),
        "enable_chromium_wasm_v8 requires the Emscripten Wasm port")
+assert(!enable_chromium_wasm_content || enable_chromium_wasm_v8,
+       "M3 Content Shell requires the passing M2 V8 gate")
+assert(!enable_chromium_wasm_content || chromium_wasm_pthread_pool_size >= 4,
+       "M3 Content Shell requires at least four prewarmed pthreads")
 
-if (enable_chromium_wasm_port && target_os == "emscripten") {
+# Secondary host toolchains must retain the milestone-scoped source graph.
+# Re-entering the normal repository-wide gn_all target from a code-generation
+# toolchain would pull unrelated desktop products into the Wasm build.
+if (enable_chromium_wasm_port) {
   group("gn_all") {
-    deps = [
-      "//tools/wasm:m1_base_smoke($default_toolchain)",
-      "//tools/wasm:m1_mojo_smoke($default_toolchain)",
-      "//tools/wasm:m1_rust_panic_negative($default_toolchain)",
-      "//tools/wasm:m1_rust_smoke($default_toolchain)",
-      "//tools/wasm:m1_shared_memory_smoke($default_toolchain)",
-      "//tools/wasm:m1_task_smoke($default_toolchain)",
-      "//wasm:hello_wasm($default_toolchain)",
-    ]
-    if (enable_chromium_wasm_v8) {
-      deps += [
-        "//v8:wasm_v8_base_smoke($default_toolchain)",
-        "//v8:wasm_v8_snapshotless_smoke($default_toolchain)",
+    testonly = true
+    if (enable_chromium_wasm_content) {
+      deps = [
+        "//content/shell:content_shell_wasm($default_toolchain)",
+        "//tools/wasm:m3_allocator_oom_smoke($default_toolchain)",
+        "//tools/wasm:m3_partition_alloc_root_smoke($default_toolchain)",
       ]
+      if (!use_partition_alloc) {
+        deps +=
+            [ "//tools/wasm:m3_partition_alloc_page_smoke($default_toolchain)" ]
+      }
+    } else {
+      deps = [
+        "//tools/wasm:m1_base_smoke($default_toolchain)",
+        "//tools/wasm:m1_mojo_smoke($default_toolchain)",
+        "//tools/wasm:m1_rust_panic_negative($default_toolchain)",
+        "//tools/wasm:m1_rust_smoke($default_toolchain)",
+        "//tools/wasm:m1_shared_memory_smoke($default_toolchain)",
+        "//tools/wasm:m1_task_smoke($default_toolchain)",
+        "//wasm:hello_wasm($default_toolchain)",
+      ]
+      if (enable_chromium_wasm_v8) {
+        deps += [
+          "//v8:wasm_v8_base_smoke($default_toolchain)",
+          "//v8:wasm_v8_snapshotless_smoke($default_toolchain)",
+        ]
+      }
     }
   }
 } else {

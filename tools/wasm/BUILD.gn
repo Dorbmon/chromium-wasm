@@ -85,8 +85,6 @@ if (!enable_chromium_wasm_content) {
 if (enable_chromium_wasm_content) {
   import("//base/allocator/partition_allocator/partition_alloc.gni")
 
-  assert(!use_partition_alloc,
-         "The page backend smoke must run before production PA is enabled")
   assert(!use_allocator_shim)
   assert(!use_partition_alloc_as_malloc)
 
@@ -100,14 +98,16 @@ if (enable_chromium_wasm_content) {
     configs -= [ "//build/config/compiler:runtime_library" ]
   }
 
-  executable("m3_partition_alloc_page_smoke") {
-    testonly = true
-    sources = [ "m3_partition_alloc_page_smoke.cc" ]
-    deps = [ "//base/allocator/partition_allocator/src/partition_alloc" ]
+  if (!use_partition_alloc) {
+    executable("m3_partition_alloc_page_smoke") {
+      testonly = true
+      sources = [ "m3_partition_alloc_page_smoke.cc" ]
+      deps = [ "//base/allocator/partition_allocator/src/partition_alloc" ]
 
-    no_default_deps = true
-    use_libcxx_modules = false
-    configs -= [ "//build/config/compiler:runtime_library" ]
+      no_default_deps = true
+      use_libcxx_modules = false
+      configs -= [ "//build/config/compiler:runtime_library" ]
+    }
   }
 
   executable("m3_partition_alloc_root_smoke") {

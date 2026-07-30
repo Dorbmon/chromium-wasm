@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -129,6 +130,11 @@ class PartitionAllocRootSourceContractTest(unittest.TestCase):
         build = (TOOLS_DIR / "BUILD.gn").read_text(encoding="utf-8")
         self.assertIn('executable("m3_partition_alloc_root_smoke")', build)
         self.assertIn(
+            "if (!use_partition_alloc) {\n"
+            '    executable("m3_partition_alloc_page_smoke")',
+            build,
+        )
+        self.assertIn(
             '"//base/allocator/partition_allocator/src/partition_alloc"',
             build,
         )
@@ -136,6 +142,19 @@ class PartitionAllocRootSourceContractTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("partition_alloc/internal/", source)
+
+    def test_m3_profile_enables_production_partition_alloc(self) -> None:
+        manifest = json.loads(
+            (TOOLS_DIR / "toolchain_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        arguments = manifest["m3_content_gn_args"]
+        self.assertIn("use_partition_alloc = true", arguments)
+        self.assertIn("use_allocator_shim = false", arguments)
+        self.assertIn("use_partition_alloc_as_malloc = false", arguments)
+        self.assertIn("enable_backup_ref_ptr_support = false", arguments)
+        self.assertEqual(serve.PA_ROOT_RESULT_VALUES["production_pa"], "on")
 
     def test_wasm_thread_cache_is_enabled(self) -> None:
         config = REPO_ROOT / (

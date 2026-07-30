@@ -218,15 +218,73 @@ class ManifestTest(unittest.TestCase):
         for expected in (
             "enable_chromium_wasm_v8 = true\n",
             "enable_chromium_wasm_content = true\n",
+            "use_partition_alloc = true\n",
+            "use_allocator_shim = false\n",
+            "use_partition_alloc_as_malloc = false\n",
+            "enable_backup_ref_ptr_support = false\n",
+            "safe_browsing_mode = 0\n",
+            "disable_fieldtrial_testing_config = true\n",
+            "chromium_wasm_pthread_pool_size = 8\n",
             "use_aura = true\n",
             "use_ozone = true\n",
-            "toolkit_views = false\n",
+            "use_crash_key_stubs = true\n",
+            "v8_use_perfetto_json_export = false\n",
+            "enable_vulkan = false\n",
+            "enable_swiftshader = false\n",
+            "angle_shared_libvulkan = false\n",
+            "angle_build_vulkan_system_info = false\n",
+            "angle_enable_vulkan = false\n",
+            "angle_enable_swiftshader = false\n",
+            "angle_enable_gl = false\n",
+            "use_dawn = false\n",
             'v8_target_cpu = "arm"\n',
+            "v8_snapshot_toolchain = "
+            '"//build/toolchain/linux:clang_x86_v8_arm"\n',
+            "v8_snapshot_toolchain_runtime_root = "
+            '"//out/wasm-i386-runtime/root"\n',
             "v8_jitless = true\n",
             "v8_use_external_startup_data = false\n",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, arguments)
+        self.assertNotIn("toolkit_views =", arguments)
+
+    def test_m3_safe_browsing_stops_before_platform_resource_generation(
+        self,
+    ) -> None:
+        manifest = load_manifest()
+        arguments = gn_args_text(manifest, "m3_content_gn_args")
+        self.assertIn("safe_browsing_mode = 0\n", arguments)
+
+        resources_build = (
+            TOOLS_DIR.parents[1] / "components" / "resources" / "BUILD.gn"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'if (safe_browsing_mode > 0) {\n'
+            '    deps += [\n'
+            '      "//components/safe_browsing/content/resources:'
+            'make_file_types_protobuf",\n',
+            resources_build,
+        )
+
+    def test_m3_uses_an_empty_fieldtrial_testing_config(self) -> None:
+        manifest = load_manifest()
+        arguments = gn_args_text(manifest, "m3_content_gn_args")
+        self.assertIn(
+            "disable_fieldtrial_testing_config = true\n", arguments
+        )
+
+        field_trial_build = (
+            TOOLS_DIR.parents[1]
+            / "components"
+            / "variations"
+            / "field_trial_config"
+            / "BUILD.gn"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "if (!disable_fieldtrial_testing_config) {", field_trial_build
+        )
+        self.assertIn('args += [ "--empty" ]', field_trial_build)
 
 
 class CommonTest(unittest.TestCase):
@@ -399,6 +457,13 @@ class BootstrapTest(unittest.TestCase):
                     encoding="utf-8"
                 ),
                 gn_args_text(manifest, "m3_content_gn_args"),
+            )
+            self.assertIn(
+                "build_with_chromium = !enable_chromium_wasm_port || "
+                "enable_chromium_wasm_content\n",
+                (
+                    generated_root / "build/config/gclient_args.gni"
+                ).read_text(encoding="utf-8"),
             )
             self.assertEqual(
                 (generated_root / "build/util/LASTCHANGE").read_text(
