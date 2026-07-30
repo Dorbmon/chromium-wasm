@@ -17,6 +17,59 @@ def source(path: str) -> str:
 
 
 class M3NetDnsSourceContractTest(unittest.TestCase):
+    def test_wasm_platform_factories_have_explicit_semantics(self) -> None:
+        build = source("net/dns/BUILD.gn")
+        address_sorter = source("net/dns/address_sorter_wasm.cc")
+        address_sorter_test = source(
+            "net/dns/address_sorter_wasm_unittest.cc"
+        )
+        dns_config = source("net/dns/dns_config_service_wasm.cc")
+
+        self.assertIn(
+            'if (is_wasm) {\n'
+            '    sources += [ "dns_config_service_wasm.cc" ]',
+            build,
+        )
+        self.assertIn(
+            'if (is_wasm) {\n'
+            '      sources += [ "address_sorter_wasm.cc" ]',
+            build,
+        )
+        self.assertIn(
+            'if (is_wasm) {\n'
+            '    sources += [ "dns_config_service_wasm_unittest.cc" ]',
+            build,
+        )
+        self.assertIn(
+            'if (is_wasm) {\n'
+            '      sources += [ "address_sorter_wasm_unittest.cc" ]',
+            build,
+        )
+        self.assertIn(
+            "base::SequencedTaskRunner::GetCurrentDefault()->PostTask(",
+            address_sorter,
+        )
+        self.assertIn("endpoints));", address_sorter)
+        self.assertIn(
+            "Success describes the ordering operation, not network "
+            "reachability.",
+            address_sorter,
+        )
+        self.assertIn(
+            "std::move(callback).Run(/*success=*/true, "
+            "std::move(endpoints));",
+            address_sorter,
+        )
+        self.assertNotIn("socket", address_sorter.lower())
+        self.assertIn("EXPECT_FALSE(callback_called);", address_sorter_test)
+        self.assertIn("sorter.reset();", address_sorter_test)
+        self.assertIn("EXPECT_EQ(endpoints, sorted);", address_sorter_test)
+        self.assertIn(
+            "cannot read or watch the host browser's system DNS",
+            dns_config,
+        )
+        self.assertIn("return nullptr;", dns_config)
+
     def test_wasm_disables_mdns_without_a_udp_transport(self) -> None:
         features = source("net/features.gni")
         implementation = source("net/dns/public/util.cc")
