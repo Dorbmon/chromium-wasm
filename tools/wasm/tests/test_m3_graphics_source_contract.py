@@ -106,6 +106,13 @@ class M3GraphicsSourceContractTest(unittest.TestCase):
             build,
         )
         skia_target = build.split('component("skia") {', 1)[1]
+        workaround_dependency = (
+            "if (skia_support_gpu || "
+            "(is_wasm && enable_chromium_wasm_content)) {\n"
+            '    deps += [ "//gpu/config:workaround_list" ]\n'
+            "  }"
+        )
+        self.assertIn(workaround_dependency, skia_target)
         gpu_sources = skia_target.split(
             "if (skia_support_gpu) {", 1
         )[1].split("if (skia_support_pdf)", 1)[0]
@@ -113,6 +120,10 @@ class M3GraphicsSourceContractTest(unittest.TestCase):
         self.assertIn(
             "public_deps += [ \":skia_graphite_public\" ]", gpu_sources
         )
+        skia_core = build.split(
+            'skia_source_set("skia_core_and_effects") {', 1
+        )[1].split("if (current_cpu == ", 1)[0]
+        self.assertIn(workaround_dependency, skia_core)
 
     def test_wasm_omits_unused_tint_native_tooling(self) -> None:
         tint = source("build_overrides/tint.gni")

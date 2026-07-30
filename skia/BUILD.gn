@@ -563,6 +563,10 @@ component("skia") {
     deps += [ "//third_party/expat" ]
   }
 
+  if (skia_support_gpu || (is_wasm && enable_chromium_wasm_content)) {
+    deps += [ "//gpu/config:workaround_list" ]
+  }
+
   if (skia_support_gpu) {
     public += skia_gpu_public
     public += skia_gpu_chromium_public
@@ -584,10 +588,7 @@ component("skia") {
     }
 
     public_deps += [ ":skia_graphite_public" ]
-    deps += [
-      ":skia_graphite_private",
-      "//gpu/config:workaround_list",
-    ]
+    deps += [ ":skia_graphite_private" ]
   }
 
   if (skia_support_pdf) {
@@ -903,7 +904,7 @@ skia_source_set("skia_core_and_effects") {
   sources += skia_effects_imagefilter_sources
   sources += skia_pathops_sources
   deps = []
-  if (skia_support_gpu) {
+  if (skia_support_gpu || (is_wasm && enable_chromium_wasm_content)) {
     deps += [ "//gpu/config:workaround_list" ]
   }
   if (skia_use_dawn) {
