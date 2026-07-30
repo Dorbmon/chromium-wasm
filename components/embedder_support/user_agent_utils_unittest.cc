@@ -195,6 +195,9 @@ void CheckUserAgentStringOrdering(bool mobile_device) {
   // Fuchsia
   ASSERT_EQ(1u, pieces.size());
   ASSERT_EQ("Fuchsia", pieces[0]);
+#elif BUILDFLAG(IS_WASM)
+  ASSERT_EQ(1u, pieces.size());
+  ASSERT_EQ("WebAssembly", pieces[0]);
 #elif BUILDFLAG(IS_IOS)
   // Post-UA Reduction there are two possible <unifiedPlatform> values for iOS,
   // depending on whether this is an iPad or not:
@@ -346,6 +349,8 @@ class UserAgentUtilsTest : public testing::Test,
         ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET
             ? "iPad; CPU iPad OS 14_0 like Mac OS X"
             : "iPhone; CPU iPhone OS 14_0 like Mac OS X";
+#elif BUILDFLAG(IS_WASM)
+        "WebAssembly";
 #else
 #error Unsupported platform
 #endif
@@ -632,7 +637,7 @@ TEST_F(UserAgentUtilsTest, UserAgentMetadata) {
 
 #if BUILDFLAG(IS_WIN)
   VerifyWinPlatformVersion(metadata.platform_version);
-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   EXPECT_EQ(metadata.platform_version, "");
 #else
   int32_t major, minor, bugfix = 0;
@@ -669,6 +674,8 @@ TEST_F(UserAgentUtilsTest, UserAgentMetadata) {
   EXPECT_EQ(metadata.platform, "Solaris");
 #elif BUILDFLAG(IS_FUCHSIA)
   EXPECT_EQ(metadata.platform, "Fuchsia");
+#elif BUILDFLAG(IS_WASM)
+  EXPECT_EQ(metadata.platform, "WebAssembly");
 #else
   EXPECT_EQ(metadata.platform, "Unknown");
 #endif
@@ -1149,6 +1156,12 @@ TEST_F(UserAgentUtilsTest, BuildOSCpuInfoFromOSVersionAndCpuType) {
         /*cpu_type=*/"CPU TYPE",
         /*expected_os_cpu_info=*/"Fuchsia",
     },
+#elif BUILDFLAG(IS_WASM)
+    {
+        /*os_version=*/"VERSION",
+        /*cpu_type=*/"wasm32",
+        /*expected_os_cpu_info=*/"WebAssembly",
+    },
 #endif
   };
   // clang-format on
@@ -1165,6 +1178,8 @@ TEST_F(UserAgentUtilsTest, GetCpuArchitecture) {
 
 #if BUILDFLAG(IS_ANDROID)
   EXPECT_EQ("", arch);
+#elif BUILDFLAG(IS_WASM)
+  EXPECT_EQ("wasm", arch);
 #elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_POSIX)
   EXPECT_TRUE("arm" == arch || "x86" == arch);
 #else
@@ -1177,6 +1192,8 @@ TEST_F(UserAgentUtilsTest, GetCpuBitness) {
 
 #if BUILDFLAG(IS_ANDROID)
   EXPECT_EQ("", bitness);
+#elif BUILDFLAG(IS_WASM)
+  EXPECT_EQ("32", bitness);
 #elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_POSIX)
   EXPECT_TRUE("32" == bitness || "64" == bitness);
 #else

@@ -293,6 +293,8 @@ std::string GetUserAgentPlatform() {
   return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET
              ? "iPad; "
              : "iPhone; ";
+#elif BUILDFLAG(IS_WASM)
+  return "";
 #else
 #error Unsupported platform
 #endif
@@ -330,6 +332,8 @@ std::string GetUnifiedPlatform() {
     return "iPad; CPU iPad OS 14_0 like Mac OS X";
   }
   return "iPhone; CPU iPhone OS 14_0 like Mac OS X";
+#elif BUILDFLAG(IS_WASM)
+  return "WebAssembly";
 #else
 #error Unsupported platform
 #endif
@@ -371,6 +375,8 @@ std::string BuildCpuInfo() {
   } else {
     cpuinfo.assign(unixinfo.machine);
   }
+#elif BUILDFLAG(IS_WASM)
+  cpuinfo = "wasm32";
 #endif
 
   return cpuinfo;
@@ -592,7 +598,7 @@ std::string GetPlatformVersion() {
 
 #if BUILDFLAG(IS_WIN)
   return GetWindowsPlatformVersion();
-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return std::string();
 #else
 
@@ -698,8 +704,8 @@ std::string GetUnifiedPlatformForTesting() {
   return GetUnifiedPlatform();
 }
 
-// Return the CPU architecture in Windows/Mac/POSIX/Fuchsia and the empty string
-// on Android or if unknown.
+// Return the CPU architecture in Windows/Mac/POSIX/Fuchsia, "wasm" on
+// WebAssembly, and the empty string on Android or if unknown.
 std::string GetCpuArchitecture() {
 #if BUILDFLAG(IS_WIN)
   base::win::OSInfo::WindowsArchitecture windows_architecture =
@@ -734,6 +740,8 @@ std::string GetCpuArchitecture() {
     return "x86";
   }
   return std::string();
+#elif BUILDFLAG(IS_WASM)
+  return "wasm";
 #elif BUILDFLAG(IS_POSIX)
   std::string cpu_info = BuildCpuInfo();
   if (base::StartsWith(cpu_info, "arm") ||
@@ -758,8 +766,8 @@ std::string GetCpuArchitecture() {
   return std::string();
 }
 
-// Return the CPU bitness in Windows/Mac/POSIX/Fuchsia and the empty string
-// on Android.
+// Return the CPU bitness in Windows/Mac/POSIX/Fuchsia, "32" on WebAssembly,
+// and the empty string on Android.
 std::string GetCpuBitness() {
 #if BUILDFLAG(IS_WIN)
   return (base::win::OSInfo::GetInstance()->GetArchitecture() ==
@@ -774,6 +782,8 @@ std::string GetCpuBitness() {
     return "64";
   }
   return std::string();
+#elif BUILDFLAG(IS_WASM)
+  return "32";
 #elif BUILDFLAG(IS_POSIX)
   return BuildCpuInfo().contains("64") ? "64" : "32";
 #else
@@ -814,6 +824,8 @@ std::string BuildOSCpuInfoFromOSVersionAndCpuType(const std::string& os_version,
 #elif BUILDFLAG(IS_IOS)
                       "CPU %s OS %s like Mac OS X", cpu_type.c_str(),
                       os_version.c_str()
+#elif BUILDFLAG(IS_WASM)
+                      "WebAssembly"
 #elif BUILDFLAG(IS_POSIX)
                       "%s %s",
                       unixinfo.sysname,  // e.g. Linux

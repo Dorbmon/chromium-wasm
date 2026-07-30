@@ -339,7 +339,11 @@ blink::UserAgentMetadata GetShellUserAgentMetadata() {
   metadata.brand_full_version_list.emplace_back("content_shell",
                                                 CONTENT_SHELL_VERSION);
   metadata.full_version = CONTENT_SHELL_VERSION;
+#if BUILDFLAG(IS_WASM)
+  metadata.platform = "WebAssembly";
+#else
   metadata.platform = "Unknown";
+#endif
   metadata.architecture = embedder_support::GetCpuArchitecture();
   metadata.model = embedder_support::BuildModelInfo();
 

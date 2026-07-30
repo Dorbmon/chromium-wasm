@@ -4,20 +4,11 @@
 
 #include "third_party/blink/renderer/core/execution_context/navigator_base.h"
 
-#include "base/feature_list.h"
 #include "build/build_config.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
-
-#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
-#include <sys/utsname.h>
-#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
-#include "third_party/blink/renderer/platform/wtf/threading.h"
-#endif
 
 namespace blink {
 
@@ -36,6 +27,10 @@ String GetReducedNavigatorPlatform() {
   return "Linux x86_64";
 #elif BUILDFLAG(IS_IOS)
   return "iPhone";
+#elif BUILDFLAG(IS_WASM)
+  // Report the application target without exposing or impersonating the
+  // browser host operating system.
+  return "WebAssembly";
 #else
 #error Unsupported platform
 #endif

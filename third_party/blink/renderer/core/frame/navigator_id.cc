@@ -36,7 +36,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
-#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_WASM)
 #include <sys/utsname.h>
 #include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
@@ -65,6 +65,10 @@ String NavigatorID::platform() const {
 #elif BUILDFLAG(IS_WIN)
   // Match Safari and Mozilla on Windows.
   return "Win32";
+#elif BUILDFLAG(IS_WASM)
+  // Report the application target without exposing or impersonating the
+  // browser host operating system.
+  return "WebAssembly";
 #else  // Unix-like systems
   struct utsname osname;
   DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<String>, platform_name, ());

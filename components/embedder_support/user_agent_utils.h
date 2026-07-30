@@ -93,12 +93,12 @@ blink::UserAgentBrandVersion GetGreasedUserAgentBrandVersion(
 int GetHighestKnownUniversalApiContractVersionForTesting();
 #endif  // BUILDFLAG(IS_WIN)
 
-// Returns the CPU architecture in Windows/Mac/POSIX/Fuchsia and the empty
-// string on Android or if unknown.
+// Returns the CPU architecture in Windows/Mac/POSIX/Fuchsia, "wasm" on
+// WebAssembly, and the empty string on Android or if unknown.
 std::string GetCpuArchitecture();
 
-// Returns the CPU bitness in Windows/Mac/POSIX/Fuchsia and the empty string on
-// Android.
+// Returns the CPU bitness in Windows/Mac/POSIX/Fuchsia, "32" on WebAssembly,
+// and the empty string on Android.
 std::string GetCpuBitness();
 
 // We may also build the same User-agent compatible string describing OS and CPU

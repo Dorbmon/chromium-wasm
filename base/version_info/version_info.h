@@ -78,6 +78,8 @@ constexpr std::string_view GetOSType() {
   return "Solaris";
 #elif BUILDFLAG(IS_FUCHSIA)
   return "Fuchsia";
+#elif BUILDFLAG(IS_WASM)
+  return "WebAssembly";
 #else
   return "Unknown";
 #endif
