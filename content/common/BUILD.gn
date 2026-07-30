@@ -325,6 +325,10 @@ source_set("common") {
     sources += [ "cursors/webcursor_android.cc" ]
   }
 
+  if (is_wasm) {
+    sources += [ "font_list_wasm.cc" ]
+  }
+
   if (is_mac) {
     sources += [
       "mac/attributed_string_type_converters.h",
@@ -392,7 +396,7 @@ source_set("common") {
     ]
   }
 
-  if (is_mac || is_win || is_android || is_fuchsia || is_ios) {
+  if (is_mac || is_win || is_android || is_fuchsia || is_ios || is_wasm) {
     sources -= [ "font_list_fontconfig.cc" ]
   }
 

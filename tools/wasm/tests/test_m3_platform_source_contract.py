@@ -11,6 +11,31 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3PlatformSourceContractTest(unittest.TestCase):
+    def test_wasm_font_enumeration_does_not_probe_host_fonts(
+        self,
+    ) -> None:
+        build = source("content/common/BUILD.gn")
+        font_list = source("content/common/font_list_wasm.cc")
+
+        self.assertIn(
+            'if (is_wasm) {\n    sources += [ "font_list_wasm.cc" ]\n  }',
+            build,
+        )
+        self.assertIn(
+            "is_fuchsia || is_ios || is_wasm",
+            build,
+        )
+        self.assertIn(
+            'sources -= [ "font_list_fontconfig.cc" ]',
+            build,
+        )
+        self.assertIn(
+            "does not expose the outer browser's installed fonts",
+            font_list,
+        )
+        self.assertIn("return base::ListValue();", font_list)
+        self.assertNotIn("fontconfig", font_list.lower())
+
     def test_m3_sources_use_typed_optional_fallbacks(self) -> None:
         signin = source(
             "components/signin/public/base/hybrid_encryption_key.cc"
