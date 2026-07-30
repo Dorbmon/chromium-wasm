@@ -2,80 +2,121 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/rust/rust_static_library.gni")
-
 assert(enable_chromium_wasm_port)
 assert(is_wasm)
 
-executable("m1_base_smoke") {
-  sources = [ "m1_base_smoke.cc" ]
-  deps = [ "//base:base_wasm_primitives" ]
+if (!enable_chromium_wasm_content) {
+  import("//build/rust/rust_static_library.gni")
 
-  no_default_deps = true
-  use_libcxx_modules = false
-  configs -= [ "//build/config/compiler:runtime_library" ]
+  executable("m1_base_smoke") {
+    sources = [ "m1_base_smoke.cc" ]
+    deps = [ "//base:base_wasm_primitives" ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  executable("m1_task_smoke") {
+    sources = [ "m1_task_smoke.cc" ]
+    deps = [ "//base:base_wasm_task_runtime" ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  executable("m1_shared_memory_smoke") {
+    sources = [ "m1_shared_memory_smoke.cc" ]
+    deps = [ "//base:base_wasm_primitives" ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  executable("m1_mojo_smoke") {
+    sources = [ "m1_mojo_smoke.cc" ]
+    deps = [
+      "//mojo/core/embedder",
+      "//mojo/public/c/system",
+    ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  static_library("m1_rust_callback") {
+    sources = [
+      "m1_rust_callback.cc",
+      "m1_rust_callback.h",
+    ]
+  }
+
+  rust_static_library("m1_rust_bridge") {
+    sources = [ "m1_rust_smoke.rs" ]
+    crate_root = "m1_rust_smoke.rs"
+    crate_name = "chromium_wasm_m1_rust"
+    cxx_bindings = [ "m1_rust_smoke.rs" ]
+    allow_unsafe = true
+    deps = [ ":m1_rust_callback" ]
+  }
+
+  executable("m1_rust_smoke") {
+    sources = [ "m1_rust_smoke.cc" ]
+    deps = [ ":m1_rust_bridge" ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  executable("m1_rust_panic_negative") {
+    sources = [ "m1_rust_panic_negative.cc" ]
+    deps = [ ":m1_rust_bridge" ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
 }
 
-executable("m1_task_smoke") {
-  sources = [ "m1_task_smoke.cc" ]
-  deps = [ "//base:base_wasm_task_runtime" ]
+if (enable_chromium_wasm_content) {
+  import("//base/allocator/partition_allocator/partition_alloc.gni")
 
-  no_default_deps = true
-  use_libcxx_modules = false
-  configs -= [ "//build/config/compiler:runtime_library" ]
-}
+  assert(!use_partition_alloc,
+         "The page backend smoke must run before production PA is enabled")
+  assert(!use_allocator_shim)
+  assert(!use_partition_alloc_as_malloc)
 
-executable("m1_shared_memory_smoke") {
-  sources = [ "m1_shared_memory_smoke.cc" ]
-  deps = [ "//base:base_wasm_primitives" ]
+  executable("m3_allocator_oom_smoke") {
+    testonly = true
+    sources = [ "m3_allocator_oom_smoke.cc" ]
+    deps = [ "//base" ]
 
-  no_default_deps = true
-  use_libcxx_modules = false
-  configs -= [ "//build/config/compiler:runtime_library" ]
-}
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
 
-executable("m1_mojo_smoke") {
-  sources = [ "m1_mojo_smoke.cc" ]
-  deps = [
-    "//mojo/core/embedder",
-    "//mojo/public/c/system",
-  ]
+  executable("m3_partition_alloc_page_smoke") {
+    testonly = true
+    sources = [ "m3_partition_alloc_page_smoke.cc" ]
+    deps = [ "//base/allocator/partition_allocator/src/partition_alloc" ]
 
-  no_default_deps = true
-  use_libcxx_modules = false
-  configs -= [ "//build/config/compiler:runtime_library" ]
-}
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
 
-static_library("m1_rust_callback") {
-  sources = [
-    "m1_rust_callback.cc",
-    "m1_rust_callback.h",
-  ]
-}
+  executable("m3_partition_alloc_root_smoke") {
+    testonly = true
+    sources = [ "m3_partition_alloc_root_smoke.cc" ]
+    deps = [ "//base/allocator/partition_allocator/src/partition_alloc" ]
 
-rust_static_library("m1_rust_bridge") {
-  sources = [ "m1_rust_smoke.rs" ]
-  crate_root = "m1_rust_smoke.rs"
-  crate_name = "chromium_wasm_m1_rust"
-  cxx_bindings = [ "m1_rust_smoke.rs" ]
-  allow_unsafe = true
-  deps = [ ":m1_rust_callback" ]
-}
-
-executable("m1_rust_smoke") {
-  sources = [ "m1_rust_smoke.cc" ]
-  deps = [ ":m1_rust_bridge" ]
-
-  no_default_deps = true
-  use_libcxx_modules = false
-  configs -= [ "//build/config/compiler:runtime_library" ]
-}
-
-executable("m1_rust_panic_negative") {
-  sources = [ "m1_rust_panic_negative.cc" ]
-  deps = [ ":m1_rust_bridge" ]
-
-  no_default_deps = true
-  use_libcxx_modules = false
-  configs -= [ "//build/config/compiler:runtime_library" ]
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
 }

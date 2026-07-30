@@ -533,6 +533,112 @@ MOJO_RESULT_REQUIREMENTS = (
     "max_heap_bytes=2147483648",
 )
 
+PA_PAGE_RESULT_VALUES = {
+    "host": "wasm32",
+    "production_pa": "off",
+    "allocator_shim": "off",
+    "pa_as_malloc": "off",
+    "granularity_64k": "ok",
+    "system_page_64k": "ok",
+    "superpage_alignment": "ok",
+    "superpage_nonoverlap": "ok",
+    "superpage_fresh_zero": "ok",
+    "offset_alignment": "ok",
+    "bounded_reuse": "ok",
+    "reused_zero": "ok",
+    "free_accounting": "ok",
+    "pthread_contention": "ok",
+    "overflow_rejected": "ok",
+    "linear_limit_rejected": "ok",
+    "failure_isolation": "ok",
+    "discard_contract": "ok",
+    "decommit_recommit_zero": "ok",
+    "require_update": "unsupported",
+    "decommit_and_zero": "unsupported",
+    "permissions": "logical_only",
+    "unsupported_permissions": "reported",
+    "memory_growth": "ok",
+    "growth_reuse": "ok",
+    "mapped_accounting": "ok",
+    "threads": "4",
+    "iterations_per_thread": "64",
+    "contention_allocations": "256",
+    "reuse_cycles": "128",
+    "allocation_granularity_bytes": "65536",
+    "system_page_bytes": "65536",
+    "superpage_bytes": "2097152",
+    "alignment_offset_bytes": "65536",
+}
+PA_PAGE_METRIC_NAMES = (
+    "startup_heap_bytes",
+    "pre_growth_heap_bytes",
+    "grown_heap_bytes",
+    "final_heap_bytes",
+    "max_heap_bytes",
+    "initial_mapped_bytes",
+    "growth_request_bytes",
+    "mapped_during_growth_bytes",
+    "final_mapped_bytes",
+)
+PA_PAGE_PHASE_NAMES = (
+    "constants",
+    "aligned_superpages",
+    "alignment_offset",
+    "bounded_reuse",
+    "pthread_contention",
+    "allocation_failures",
+    "page_lifecycle",
+    "memory_growth",
+)
+PA_PAGE_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M3_PA_PAGE:RESULT",
+    "CHROMIUM_WASM_M3_PA_PAGE:METRICS",
+    *(f"{key}={value}" for key, value in PA_PAGE_RESULT_VALUES.items()),
+)
+
+PA_ROOT_RESULT_VALUES = {
+    "host": "wasm32",
+    "production_pa": "off",
+    "allocator_shim": "off",
+    "pa_as_malloc": "off",
+    "explicit_roots": "ok",
+    "root_isolation": "ok",
+    "bucket_allocation": "ok",
+    "zero_fill": "ok",
+    "capacity": "ok",
+    "realloc": "ok",
+    "direct_map": "ok",
+    "direct_map_stats": "ok",
+    "alignment": "ok",
+    "thread_cache": "ok",
+    "pthread_contention": "ok",
+    "purge": "ok",
+    "stats": "ok",
+    "reclaimer": "ok",
+}
+PA_ROOT_METRIC_NAMES = (
+    "committed_before_reclaim",
+    "committed_after_reclaim",
+    "threads",
+    "iterations_per_thread",
+    "contention_allocations",
+    "roots",
+)
+PA_ROOT_PHASE_NAMES = (
+    "root_initialization",
+    "root_isolation",
+    "bucket_zero_capacity_realloc",
+    "direct_map_realloc_stats",
+    "array_buffer_alignment",
+    "pthread_contention",
+    "purge_stats_reclaimer",
+)
+PA_ROOT_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M3_PA_ROOT:RESULT",
+    "CHROMIUM_WASM_M3_PA_ROOT:METRICS",
+    *(f"{key}={value}" for key, value in PA_ROOT_RESULT_VALUES.items()),
+)
+
 
 SMOKE_CASES = {
     "hello": SmokeCase(
@@ -622,6 +728,28 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M1_MOJO:PASS",
         ),
         minimum_runtime_ms=250,
+    ),
+    "pa_pages": SmokeCase(
+        module_name="m3_partition_alloc_page_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M3_PA_PAGE",
+        required_stdout=(
+            "CHROMIUM_WASM_M3_PA_PAGE:RUNTIME_START",
+            "CHROMIUM_WASM_M3_PA_PAGE:RUNTIME_END",
+            *PA_PAGE_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M3_PA_PAGE:PASS",
+        ),
+        gn_args_key="m3_content_gn_args",
+    ),
+    "pa_roots": SmokeCase(
+        module_name="m3_partition_alloc_root_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M3_PA_ROOT",
+        required_stdout=(
+            "CHROMIUM_WASM_M3_PA_ROOT:RUNTIME_START",
+            "CHROMIUM_WASM_M3_PA_ROOT:RUNTIME_END",
+            *PA_ROOT_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M3_PA_ROOT:PASS",
+        ),
+        gn_args_key="m3_content_gn_args",
     ),
 }
 
@@ -937,6 +1065,16 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         sentinel_prefix = "CHROMIUM_WASM_M1_MOJO"
         result_values = MOJO_RESULT_VALUES
         metric_names = MOJO_METRIC_NAMES
+    elif name == "pa_pages":
+        display_name = "PartitionAlloc page"
+        sentinel_prefix = "CHROMIUM_WASM_M3_PA_PAGE"
+        result_values = PA_PAGE_RESULT_VALUES
+        metric_names = PA_PAGE_METRIC_NAMES
+    elif name == "pa_roots":
+        display_name = "PartitionAlloc root"
+        sentinel_prefix = "CHROMIUM_WASM_M3_PA_ROOT"
+        result_values = PA_ROOT_RESULT_VALUES
+        metric_names = PA_ROOT_METRIC_NAMES
     else:
         return
 
@@ -982,6 +1120,33 @@ def validate_case_stdout(name: str, stdout: str) -> None:
             runtime_start_index,
             runtime_end_index,
         )
+    elif name in ("pa_pages", "pa_roots"):
+        phase_prefix = f"{sentinel_prefix}:PHASE"
+        phase_names = (
+            PA_PAGE_PHASE_NAMES
+            if name == "pa_pages"
+            else PA_ROOT_PHASE_NAMES
+        )
+        expected_phases = [
+            f"{phase_prefix} name={phase_name} status=ok"
+            for phase_name in phase_names
+        ]
+        indexed_phases = [
+            (index, line)
+            for index, line in enumerate(lines)
+            if line.startswith(phase_prefix)
+        ]
+        if [line for _, line in indexed_phases] != expected_phases:
+            raise M0Error(
+                f"{sentinel_prefix} phase sequence is inconsistent"
+            )
+        if any(
+            not runtime_start_index < index < runtime_end_index
+            for index, _ in indexed_phases
+        ):
+            raise M0Error(
+                f"{sentinel_prefix} phases escaped the runtime interval"
+            )
 
     if metric_names is None:
         if not (
@@ -1017,13 +1182,72 @@ def validate_case_stdout(name: str, stdout: str) -> None:
     ):
         raise M0Error(f"{metrics_prefix} values must be decimal integers")
 
-    initial = int(metrics["initial_heap_bytes"])
-    peak = int(metrics["peak_heap_bytes"])
-    maximum = int(metrics["max_heap_bytes"])
-    if initial <= 0 or peak < initial or peak > maximum:
-        raise M0Error(f"{metrics_prefix} values are out of range")
-    if maximum != 2147483648:
-        raise M0Error(f"{metrics_prefix} maximum memory changed")
+    if name == "pa_pages":
+        metric_values = {key: int(value) for key, value in metrics.items()}
+        page_bytes = 65536
+        heap_names = (
+            "startup_heap_bytes",
+            "pre_growth_heap_bytes",
+            "grown_heap_bytes",
+            "final_heap_bytes",
+            "max_heap_bytes",
+        )
+        if any(metric_values[key] % page_bytes for key in heap_names):
+            raise M0Error(f"{metrics_prefix} heap values are not page-aligned")
+        startup = metric_values["startup_heap_bytes"]
+        pre_growth = metric_values["pre_growth_heap_bytes"]
+        grown = metric_values["grown_heap_bytes"]
+        final = metric_values["final_heap_bytes"]
+        maximum = metric_values["max_heap_bytes"]
+        if not (0 < startup <= pre_growth < grown == final < maximum):
+            raise M0Error(f"{metrics_prefix} heap growth is inconsistent")
+        if maximum != 2147483648:
+            raise M0Error(f"{metrics_prefix} maximum memory changed")
+        growth_request = metric_values["growth_request_bytes"]
+        if (
+            growth_request <= pre_growth
+            or growth_request % page_bytes
+            or metric_values["initial_mapped_bytes"] != 0
+            or metric_values["mapped_during_growth_bytes"] != growth_request
+            or metric_values["final_mapped_bytes"] != 0
+        ):
+            raise M0Error(
+                f"{metrics_prefix} mapped/growth accounting is inconsistent"
+            )
+    elif name == "pa_roots":
+        metric_values = {key: int(value) for key, value in metrics.items()}
+        committed_before = metric_values["committed_before_reclaim"]
+        committed_after = metric_values["committed_after_reclaim"]
+        if (
+            committed_before <= 0
+            or committed_before % 65536
+            or committed_after % 65536
+            or not 0 <= committed_after < committed_before
+        ):
+            raise M0Error(
+                f"{metrics_prefix} reclaim accounting is inconsistent"
+            )
+        expected_counts = {
+            "threads": 4,
+            "iterations_per_thread": 128,
+            "contention_allocations": 512,
+            "roots": 3,
+        }
+        if any(
+            metric_values[key] != value
+            for key, value in expected_counts.items()
+        ):
+            raise M0Error(
+                f"{metrics_prefix} execution counts are inconsistent"
+            )
+    else:
+        initial = int(metrics["initial_heap_bytes"])
+        peak = int(metrics["peak_heap_bytes"])
+        maximum = int(metrics["max_heap_bytes"])
+        if initial <= 0 or peak < initial or peak > maximum:
+            raise M0Error(f"{metrics_prefix} values are out of range")
+        if maximum != 2147483648:
+            raise M0Error(f"{metrics_prefix} maximum memory changed")
 
 
 def artifact_names(case: SmokeCase) -> tuple[str, ...]:
