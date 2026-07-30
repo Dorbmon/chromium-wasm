@@ -132,7 +132,7 @@ void FullCardRequest::GetFullCardImpl(
   request_->card = std::move(card);
   request_->last_committed_primary_main_frame_origin =
       last_committed_primary_main_frame_origin;
-  request_->context_token = std::move(context_token).value_or({});
+  request_->context_token = std::move(context_token).value_or(std::string{});
   request_->selected_challenge_option = std::move(selected_challenge_option);
 
   should_unmask_card_ = request_->card.masked() ||

@@ -11,6 +11,34 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3PlatformSourceContractTest(unittest.TestCase):
+    def test_m3_sources_use_typed_optional_fallbacks(self) -> None:
+        signin = source(
+            "components/signin/public/base/hybrid_encryption_key.cc"
+        )
+        autofill = source(
+            "components/autofill/core/browser/payments/"
+            "full_card_request.cc"
+        )
+        service_worker = source(
+            "content/browser/service_worker/service_worker_version.cc"
+        )
+
+        self.assertIn(
+            "result.value_or(std::vector<uint8_t>{})",
+            signin,
+        )
+        self.assertIn(
+            "std::move(context_token).value_or(std::string{})",
+            autofill,
+        )
+        self.assertIn(
+            "request->timeout_iter.value_or(\n"
+            "        std::set<InflightRequestTimeoutInfo>::iterator{})",
+            service_worker,
+        )
+        for body in (signin, autofill, service_worker):
+            self.assertNotIn(".value_or({})", body)
+
     def test_gin_uses_v8s_default_wasm_page_allocator(
         self,
     ) -> None:
