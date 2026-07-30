@@ -1532,12 +1532,19 @@ component("net") {
     sources += [
       "base/file_stream_context_wasm.cc",
       "base/net_errors_posix.cc",
+      "base/network_interfaces_wasm.cc",
+      "base/platform_mime_util_wasm.cc",
+      "cert/test_root_certs_builtin.cc",
+      "http/url_security_manager_wasm.cc",
       "socket/socket_options_wasm.cc",
       "socket/tcp_socket_wasm.cc",
       "socket/tcp_socket_wasm.h",
       "socket/udp_socket_wasm.cc",
       "socket/udp_socket_wasm.h",
     ]
+    if (chrome_root_store_supported) {
+      sources += [ "cert/internal/system_trust_store_wasm.cc" ]
+    }
     sources -= [ "socket/socket_options.cc" ]
   }
 
@@ -3181,6 +3188,10 @@ target(_test_target_type, "net_unittests") {
     "url_request/url_request_quic_unittest.cc",
     "url_request/url_request_unittest.cc",
   ]
+
+  if (is_wasm) {
+    sources += [ "base/net_platform_wasm_unittest.cc" ]
+  }
 
   if (is_android) {
     sources += [
