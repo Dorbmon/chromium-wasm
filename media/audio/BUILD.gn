@@ -146,6 +146,10 @@ source_set("audio") {
     "//media:subcomponent_config",
   ]
 
+  if (is_wasm) {
+    sources += [ "audio_manager_wasm.cc" ]
+  }
+
   if (!is_wasm) {
     sources += [
       "audio_opus_encoder.cc",
@@ -472,6 +476,9 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//url",
   ]
+  if (is_wasm) {
+    sources += [ "audio_manager_wasm_unittest.cc" ]
+  }
   if (!is_wasm) {
     sources += [ "audio_encoders_unittest.cc" ]
     deps += [ "//third_party/opus" ]
