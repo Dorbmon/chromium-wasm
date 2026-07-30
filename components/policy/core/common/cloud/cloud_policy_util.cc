@@ -142,6 +142,9 @@ std::string GetMachineName() {
   return std::string();
 #elif BUILDFLAG(IS_CHROMEOS)
   NOTREACHED();
+#elif BUILDFLAG(IS_WASM)
+  // The host page does not expose a stable machine identity to the module.
+  return std::string();
 #else
 #error Unsupported platform
 #endif
@@ -149,7 +152,7 @@ std::string GetMachineName() {
 
 std::string GetOSVersion() {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_APPLE) || \
-    BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA)
+    BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return base::SysInfo::OperatingSystemVersion();
 #elif BUILDFLAG(IS_WIN)
   base::win::OSInfo::VersionNumber version_number =
@@ -197,9 +200,8 @@ std::string GetOSUsername() {
   if (!user)
     return std::string();
   return user->GetAccountId().GetUserEmail();
-#elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA)
-  // TODO(crbug.com/40200780): This should be fully implemented when there is
-  // support in fuchsia.
+#elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
+  // These platforms do not expose an OS username to cloud policy.
   return std::string();
 #else
   NOTREACHED();

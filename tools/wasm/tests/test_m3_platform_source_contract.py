@@ -67,6 +67,45 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         self.assertIn("return base::ListValue();", font_list)
         self.assertNotIn("fontconfig", font_list.lower())
 
+    def test_cloud_policy_does_not_fabricate_wasm_host_identity(
+        self,
+    ) -> None:
+        policy = source(
+            "components/policy/core/common/cloud/cloud_policy_util.cc"
+        )
+        machine_name = policy.split("std::string GetMachineName()", 1)[
+            1
+        ].split("std::string GetOSVersion()", 1)[0]
+        os_version = policy.split("std::string GetOSVersion()", 1)[1].split(
+            "std::string GetOSPlatform()", 1
+        )[0]
+        username = policy.split("std::string GetOSUsername()", 1)[1].split(
+            "em::Channel ConvertToProtoChannel", 1
+        )[0]
+
+        wasm_machine_name = machine_name.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn(
+            "The host page does not expose a stable machine identity",
+            wasm_machine_name,
+        )
+        self.assertIn("return std::string();", wasm_machine_name)
+        self.assertNotIn("gethostname", wasm_machine_name)
+        self.assertIn(
+            "BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)",
+            os_version,
+        )
+        self.assertIn(
+            "return base::SysInfo::OperatingSystemVersion();",
+            os_version,
+        )
+        self.assertIn(
+            "BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)",
+            username,
+        )
+        self.assertIn("return std::string();", username)
+
     def test_m3_sources_use_typed_optional_fallbacks(self) -> None:
         signin = source(
             "components/signin/public/base/hybrid_encryption_key.cc"
