@@ -11,6 +11,37 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3PlatformSourceContractTest(unittest.TestCase):
+    def test_wasm_resource_bundle_uses_staged_data_packs(
+        self,
+    ) -> None:
+        build = source("ui/base/BUILD.gn")
+        resource_bundle = source(
+            "ui/base/resource/resource_bundle_wasm.cc"
+        )
+
+        self.assertIn(
+            "if (is_wasm) {\n"
+            '    sources += [ "resource/resource_bundle_wasm.cc" ]\n'
+            "  }",
+            build,
+        )
+        load_common = resource_bundle.split(
+            "void ResourceBundle::LoadCommonResources()", 1
+        )[1].split(
+            "gfx::Image& ResourceBundle::GetNativeImageNamed", 1
+        )[0]
+        self.assertIn("staged in the module filesystem", load_common)
+        self.assertIn("LoadChromeResources();", load_common)
+        native_image = resource_bundle.split(
+            "gfx::Image& ResourceBundle::GetNativeImageNamed", 1
+        )[1]
+        self.assertIn(
+            "Wasm has no separate host-native image type",
+            native_image,
+        )
+        self.assertIn("return GetImageNamed(resource_id);", native_image)
+        self.assertNotIn("GetEmptyImage", native_image)
+
     def test_wasm_font_enumeration_does_not_probe_host_fonts(
         self,
     ) -> None:

@@ -462,6 +462,10 @@ component("base") {
     sources += [ "resource/resource_bundle_fuchsia.cc" ]
   }
 
+  if (is_wasm) {
+    sources += [ "resource/resource_bundle_wasm.cc" ]
+  }
+
   configs += [
     "//build/config/compiler:prevent_unsafe_narrowing",
     "//build/config/compiler:wexit_time_destructors",
