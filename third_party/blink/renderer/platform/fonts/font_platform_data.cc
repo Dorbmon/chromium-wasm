@@ -230,7 +230,7 @@ WebFontRenderStyle FontPlatformData::QuerySystemRenderStyle(
     TextRenderingMode text_rendering) {
   WebFontRenderStyle result;
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   // If the font name is missing (i.e. probably a web font) or the sandbox is
   // disabled, use the system defaults.
   if (family.length() && Platform::Current()->GetSandboxSupport()) {
@@ -254,8 +254,7 @@ WebFontRenderStyle FontPlatformData::QuerySystemRenderStyle(
     // 0 means HINTING_NONE, see |ConvertHinting| in font_service_app.cc.
     result.hint_style = 0;
   }
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA) &&
-        // !BUILDFLAG(IS_IOS)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
   return result;
 }

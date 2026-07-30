@@ -8,7 +8,9 @@
 #include "base/notreached.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WASM)
+#include <emscripten/stack.h>
+#elif BUILDFLAG(IS_WIN)
 #include <windows.h>
 
 #include <intrin.h>
@@ -94,6 +96,11 @@ size_t GetUnderestimatedStackSize() {
   return pthread_get_stacksize_np(pthread_self());
 #elif BUILDFLAG(IS_WIN) && defined(COMPILER_MSVC)
   return Threading::ThreadStackSize();
+#elif BUILDFLAG(IS_WASM)
+  const uintptr_t stack_base = emscripten_stack_get_base();
+  const uintptr_t stack_end = emscripten_stack_get_end();
+  CHECK_GT(stack_base, stack_end);
+  return stack_base - stack_end;
 #else
 #error "Stack frame size estimation not supported on this platform."
   return 0;
@@ -140,6 +147,10 @@ void* GetStackStartImpl() {
 #endif
 #elif BUILDFLAG(IS_APPLE)
   return pthread_get_stackaddr_np(pthread_self());
+#elif BUILDFLAG(IS_WASM)
+  const uintptr_t stack_base = emscripten_stack_get_base();
+  CHECK_NE(stack_base, 0u);
+  return reinterpret_cast<void*>(stack_base);
 #elif BUILDFLAG(IS_WIN) && defined(COMPILER_MSVC)
 // On Windows stack limits for the current thread are available in
 // the thread information block (TIB).

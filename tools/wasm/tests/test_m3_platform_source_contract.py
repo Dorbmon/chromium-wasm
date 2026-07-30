@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+from __future__ import annotations
+
+import unittest
+
+from tools.wasm.tests.m3_source_contract_test_support import source
+
+
+class M3PlatformSourceContractTest(unittest.TestCase):
+    def test_wasm_sql_and_url_paths_use_explicit_utf8_semantics(
+        self,
+    ) -> None:
+        database = source("sql/database.cc")
+        url_fixer = source("components/url_formatter/url_fixer.cc")
+
+        sql_path_conversion = database.split(
+            "std::string AsUTF8ForSQL", 1
+        )[1].split("// These values are persisted", 1)[0]
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            "  // Emscripten virtual filesystem paths use UTF-8.\n"
+            "  return path.value();",
+            sql_path_conversion,
+        )
+
+        sql_error_diagnostics = database.split(
+            "// System error information.", 1
+        )[1].split("  if (stmt)", 1)[0]
+        wasm_error_diagnostics = sql_error_diagnostics.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn(
+            "// SQLite's Emscripten-backed VFS exposes filesystem failures "
+            "through errno.",
+            wasm_error_diagnostics,
+        )
+        self.assertIn(
+            'base::StringAppendF(&debug_info, "errno: %d\\n", '
+            "last_errno);",
+            wasm_error_diagnostics,
+        )
+        self.assertIn(
+            "diagnostics->last_errno = last_errno;",
+            wasm_error_diagnostics,
+        )
+
+        relative_file_fixup = url_fixer.split(
+            "GURL FixupRelativeFile", 1
+        )[1].split("void OffsetComponent", 1)[0]
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            "  // Emscripten virtual filesystem paths use UTF-8.\n"
+            "  std::string text_utf8 = text.value();",
+            relative_file_fixup,
+        )
+
+    def test_wasm_stack_bounds_use_current_emscripten_thread(self) -> None:
+        stack_util = source(
+            "third_party/blink/renderer/platform/wtf/stack_util.cc"
+        )
+
+        self.assertIn(
+            "#if BUILDFLAG(IS_WASM)\n#include <emscripten/stack.h>",
+            stack_util,
+        )
+
+        estimate = stack_util.split(
+            "size_t GetUnderestimatedStackSize()", 1
+        )[1].split("namespace {", 1)[0]
+        wasm_estimate = estimate.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn(
+            "const uintptr_t stack_base = emscripten_stack_get_base();",
+            wasm_estimate,
+        )
+        self.assertIn(
+            "const uintptr_t stack_end = emscripten_stack_get_end();",
+            wasm_estimate,
+        )
+        self.assertIn("CHECK_GT(stack_base, stack_end);", wasm_estimate)
+        self.assertIn("return stack_base - stack_end;", wasm_estimate)
+        self.assertNotIn("return 0;", wasm_estimate)
+
+        get_stack_start = stack_util.split(
+            "void* GetStackStartImpl()", 1
+        )[1].split("}  // namespace", 1)[0]
+        wasm_stack_start = get_stack_start.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split(
+            "#elif BUILDFLAG(IS_WIN)", 1
+        )[0]
+        self.assertIn(
+            "const uintptr_t stack_base = emscripten_stack_get_base();",
+            wasm_stack_start,
+        )
+        self.assertIn(
+            "return reinterpret_cast<void*>(stack_base);",
+            wasm_stack_start,
+        )
+
+    def test_wasm_flac_enables_its_required_libc_declarations(
+        self,
+    ) -> None:
+        build = source("third_party/flac/BUILD.gn")
+        public_config = build.split(
+            'config("flac_config") {', 1
+        )[1].split("}", 1)[0]
+        flac_target = build.split(
+            'source_set("flac") {', 1
+        )[1]
+
+        self.assertNotIn("_GNU_SOURCE", public_config)
+        self.assertIn(
+            "if (is_wasm) {\n"
+            "    # Chromium's strict C11 Wasm configuration does not "
+            "enable the libc\n"
+            "    # declarations that libFLAC expects from GNU/POSIX "
+            "environments.\n"
+            '    defines += [ "_GNU_SOURCE" ]\n'
+            "  }",
+            flac_target,
+        )
+
+    def test_wasm_has_keyboard_code_values_without_posix_input(self) -> None:
+        selector = source("ui/events/keycodes/keyboard_codes.h")
+        wasm_codes = source("ui/events/keycodes/keyboard_codes_wasm.h")
+
+        self.assertIn(
+            '#elif BUILDFLAG(IS_WASM)\n'
+            '#include "ui/events/keycodes/keyboard_codes_wasm.h"',
+            selector,
+        )
+        self.assertIn(
+            '#include "ui/events/keycodes/keyboard_codes_posix.h"',
+            wasm_codes,
+        )
+        self.assertNotIn("BUILDFLAG(IS_POSIX)", wasm_codes)
+        self.assertNotIn("PlatformEvent", wasm_codes)
+
+    def test_wasm_denormal_fallback_has_no_virtual_final_destructor(
+        self,
+    ) -> None:
+        disabler = source(
+            "third_party/blink/renderer/platform/audio/"
+            "denormal_disabler.h"
+        )
+        fallback = disabler.split(
+            "// FIXME: add implementations for other architectures", 1
+        )[1].split("#endif", 1)[0]
+
+        self.assertIn("class DenormalModifier final", fallback)
+        self.assertIn("~DenormalModifier() = default;", fallback)
+        self.assertNotIn("virtual ~DenormalModifier()", fallback)
+
+    def test_system_font_render_style_uses_only_supported_platforms(
+        self,
+    ) -> None:
+        platform_data = source(
+            "third_party/blink/renderer/platform/fonts/"
+            "font_platform_data.cc"
+        )
+        query = platform_data.split(
+            "WebFontRenderStyle FontPlatformData::QuerySystemRenderStyle", 1
+        )[1].split("return result;", 1)[0]
+
+        self.assertIn(
+            "#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)", query
+        )
+        self.assertIn("FontCache::DeviceScaleFactor()", query)
+        self.assertNotIn(
+            "#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)",
+            query,
+        )
+
+    def test_blink_thread_id_can_hold_the_wasm_base_thread_id(
+        self,
+    ) -> None:
+        scheduler_thread = source(
+            "third_party/blink/renderer/platform/scheduler/common/thread.cc"
+        )
+        wasm_id_check = scheduler_thread.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+
+        self.assertIn("sizeof(blink::PlatformThreadId)", wasm_id_check)
+        self.assertIn(
+            "sizeof(base::PlatformThreadId::UnderlyingType)",
+            wasm_id_check,
+        )
+        self.assertNotIn("#error", wasm_id_check)
+
+    def test_partition_alloc_dumping_tracks_allocator_availability(
+        self,
+    ) -> None:
+        build = source(
+            "third_party/blink/renderer/platform/instrumentation/BUILD.gn"
+        )
+        platform = source(
+            "third_party/blink/renderer/platform/exported/platform.cc"
+        )
+
+        provider_sources = build.split(
+            "if (use_partition_alloc) {", 1
+        )[1].split("}", 1)[0]
+        self.assertIn(
+            '"partition_alloc_memory_dump_provider.cc"', provider_sources
+        )
+        self.assertIn(
+            '"partition_alloc_memory_dump_provider.h"', provider_sources
+        )
+        self.assertIn(
+            "#if PA_BUILDFLAG(USE_PARTITION_ALLOC)\n"
+            '#include "third_party/blink/renderer/platform/'
+            'instrumentation/partition_alloc_memory_dump_provider.h"',
+            platform,
+        )
+        registration = platform.split(
+            "PartitionAllocMemoryDumpProvider::Instance()", 1
+        )[0].rsplit("#if PA_BUILDFLAG(USE_PARTITION_ALLOC)", 1)[1]
+        self.assertNotIn("#endif", registration)
+
+
+if __name__ == "__main__":
+    unittest.main()

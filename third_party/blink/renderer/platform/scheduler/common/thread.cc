@@ -153,6 +153,11 @@ static_assert(sizeof(blink::PlatformThreadId) >= sizeof(DWORD),
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 static_assert(sizeof(blink::PlatformThreadId) >= sizeof(pid_t),
               "size of platform thread id is too small");
+#elif BUILDFLAG(IS_WASM)
+static_assert(
+    sizeof(blink::PlatformThreadId) >=
+        sizeof(base::PlatformThreadId::UnderlyingType),
+    "size of platform thread id is too small");
 #else
 #error Unexpected platform
 #endif

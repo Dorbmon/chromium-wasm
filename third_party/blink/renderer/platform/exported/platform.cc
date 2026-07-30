@@ -38,6 +38,7 @@
 #include "base/threading/thread_checker.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "build/build_config.h"
+#include "partition_alloc/buildflags.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
 #include "media/base/media_log.h"
@@ -56,7 +57,9 @@
 #include "third_party/blink/renderer/platform/instrumentation/canvas_memory_dump_provider.h"
 #include "third_party/blink/renderer/platform/instrumentation/instance_counters_memory_dump_provider.h"
 #include "third_party/blink/renderer/platform/instrumentation/memory_pressure_listener.h"
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC)
 #include "third_party/blink/renderer/platform/instrumentation/partition_alloc_memory_dump_provider.h"
+#endif
 #include "third_party/blink/renderer/platform/instrumentation/tracing/memory_cache_dump_provider.h"
 #include "third_party/blink/renderer/platform/language.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/url_loader_factory.h"
@@ -182,9 +185,11 @@ void Platform::InitializeMainThreadCommon(
   font_family_names::Init();
   InitializePlatformLanguage();
 
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC)
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
       PartitionAllocMemoryDumpProvider::Instance(), "PartitionAlloc",
       base::SingleThreadTaskRunner::GetCurrentDefault());
+#endif
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
       MemoryCacheDumpProvider::Instance(), "MemoryCache",
       base::SingleThreadTaskRunner::GetCurrentDefault());

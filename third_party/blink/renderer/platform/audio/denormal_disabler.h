@@ -171,7 +171,7 @@ class DenormalEnabler final : public DenormalModifier {
 // FIXME: add implementations for other architectures and compilers
 class DenormalModifier final {
  public:
-  virtual ~DenormalModifier() = default;
+  ~DenormalModifier() = default;
   static void DisableDenormals() {}
   static void EnableDenormals() {}
 };
