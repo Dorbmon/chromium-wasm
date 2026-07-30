@@ -82,10 +82,10 @@ component("gin") {
   ]
 
   if (use_partition_alloc) {
-    sources += [
-      "v8_platform_page_allocator.cc",
-      "v8_platform_page_allocator.h",
-    ]
+    sources += [ "v8_platform_page_allocator.h" ]
+    if (!is_wasm) {
+      sources += [ "v8_platform_page_allocator.cc" ]
+    }
     if (enable_pkeys) {
       sources += [
         "v8_platform_thread_isolated_allocator.cc",
@@ -233,7 +233,7 @@ test("gin_unittests") {
     "//v8",
   ]
 
-  if (use_partition_alloc) {
+  if (use_partition_alloc && !is_wasm) {
     sources += [ "v8_platform_page_allocator_unittest.cc" ]
     if (target_cpu == "arm64" && (is_linux || is_android)) {
       deps += [ "//base/allocator/partition_allocator/src/partition_alloc:arm_bti_testfunctions" ]

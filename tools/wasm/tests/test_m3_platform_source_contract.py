@@ -11,6 +11,54 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3PlatformSourceContractTest(unittest.TestCase):
+    def test_gin_uses_v8s_default_wasm_page_allocator(
+        self,
+    ) -> None:
+        build = source("gin/BUILD.gn")
+        platform = source("gin/v8_platform.cc")
+        v8_allocation = source("v8/src/utils/allocation.cc")
+
+        self.assertIn(
+            'sources += [ "v8_platform_page_allocator.h" ]\n'
+            "    if (!is_wasm) {\n"
+            '      sources += [ "v8_platform_page_allocator.cc" ]\n'
+            "    }",
+            build,
+        )
+        self.assertIn(
+            "if (use_partition_alloc && !is_wasm) {\n"
+            '    sources += [ "v8_platform_page_allocator_unittest.cc" ]',
+            build,
+        )
+        self.assertIn(
+            "#if PA_BUILDFLAG(USE_PARTITION_ALLOC) && "
+            "!BUILDFLAG(IS_WASM)\n\n"
+            "base::LazyInstance<gin::PageAllocator>::Leaky "
+            "g_page_allocator",
+            platform,
+        )
+        get_allocator = platform.split(
+            "PageAllocator* V8Platform::GetPageAllocator()", 1
+        )[1].split(
+            "#if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)", 1
+        )[0]
+        wasm_allocator = get_allocator.split(
+            "#if BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn(
+            "V8's Emscripten allocator records every logical permission "
+            "transition",
+            wasm_allocator,
+        )
+        self.assertIn("return nullptr;", wasm_allocator)
+        self.assertNotIn("g_page_allocator.Pointer()", wasm_allocator)
+        self.assertIn(
+            "if (page_allocator_ == nullptr) {\n"
+            "      static base::LeakyObject<base::PageAllocator> "
+            "default_page_allocator;",
+            v8_allocation,
+        )
+
     def test_wasm_sql_and_url_paths_use_explicit_utf8_semantics(
         self,
     ) -> None:

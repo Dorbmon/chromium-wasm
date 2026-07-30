@@ -27,10 +27,9 @@ class GIN_EXPORT V8Platform : public v8::Platform {
 // v8::Platform implementation.
 // Some configurations do not use page_allocator.
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC)
-  // GetPageAllocator returns gin::PageAllocator instead of v8::PageAllocator,
-  // so we can be sure that the allocator used employs security features such as
-  // enabling Arm's Branch Target Instructions for executable pages. This is
-  // verified in the tests for gin::PageAllocator.
+  // Native platforms return gin::PageAllocator so V8 allocations use security
+  // features such as Arm Branch Target Instructions. Wasm returns nullptr so
+  // V8 selects its Emscripten allocator with logical permission tracking.
   PageAllocator* GetPageAllocator() override;
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
   ThreadIsolatedAllocator* GetThreadIsolatedAllocator() override;

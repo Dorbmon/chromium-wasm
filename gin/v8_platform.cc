@@ -66,12 +66,12 @@ class ConvertableToTraceFormatWrapper final
 };
 
 
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC)
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC) && !BUILDFLAG(IS_WASM)
 
 base::LazyInstance<gin::PageAllocator>::Leaky g_page_allocator =
     LAZY_INSTANCE_INITIALIZER;
 
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC)
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC) && !BUILDFLAG(IS_WASM)
 
 base::TaskPriority ToBaseTaskPriority(v8::TaskPriority priority) {
   switch (priority) {
@@ -214,7 +214,15 @@ V8Platform::~V8Platform() = default;
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC)
 PageAllocator* V8Platform::GetPageAllocator() {
+#if BUILDFLAG(IS_WASM)
+  // V8's Emscripten allocator records every logical permission transition
+  // needed by the ARM simulator. PartitionAlloc cannot represent V8's
+  // inaccessible-page contract in WebAssembly linear memory, so let V8 select
+  // its default allocator instead of installing the PartitionAlloc adapter.
+  return nullptr;
+#else
   return g_page_allocator.Pointer();
+#endif
 }
 
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
