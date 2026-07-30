@@ -239,6 +239,12 @@
     "header_path": "gpu/webgpu/dawn_commit_hash.h",
     "version_macro": "DAWN_COMMIT_HASH"
   },
+  "skia_lastchange": {
+    "dependency": "skia",
+    "revision": "587c5b0f5a7b0260826a0c19094c2d952195066e",
+    "header_path": "skia/ext/skia_commit_hash.h",
+    "version_macro": "SKIA_COMMIT_HASH"
+  },
   "gn": {
     "revision": "3357c4f51b1a9e676378c695dd9c7e9911c35ee6",
     "cipd_package": "gn/gn/linux-amd64",
