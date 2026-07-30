@@ -307,6 +307,57 @@
     "url": "https://commondatastorage.googleapis.com/chrome-linux-sysroot",
     "sha256": "52d61d4446ffebfaa3dda2cd02da4ab4876ff237853f46d273e7f9b666652e1d"
   },
+  "v8_snapshot_sysroot": {
+    "arch": "i386",
+    "platform": "bullseye",
+    "path": "build/linux/debian_bullseye_i386-sysroot",
+    "metadata_path": "build/linux/sysroot_scripts/sysroots.json",
+    "tarball": "debian_bullseye_i386_sysroot.tar.xz",
+    "url": "https://commondatastorage.googleapis.com/chrome-linux-sysroot",
+    "sha256": "3de724b0d63478e1ae35f07b95d02261581a66e05c19aebe4e443d76179a565e"
+  },
+  "v8_snapshot_runtime": {
+    "path": "out/wasm-i386-runtime/root",
+    "package_list_path": "build/linux/sysroot_scripts/generated_package_lists/bullseye.i386",
+    "packages": [
+      {
+        "name": "libc6",
+        "archive_path": "out/wasm-i386-runtime/libc6_2.31-13+deb11u5_i386.deb",
+        "url": "https://snapshot.debian.org/archive/debian/20250129T203412Z/pool/main/g/glibc/libc6_2.31-13+deb11u5_i386.deb",
+        "size_bytes": 2757268,
+        "sha256": "6fe37330cca238038de35a5628ba4ae5788deb84e0bf15e2926ea76acbb00f72"
+      },
+      {
+        "name": "libgcc-s1",
+        "archive_path": "out/wasm-i386-runtime/libgcc-s1_10.2.1-6_i386.deb",
+        "url": "https://snapshot.debian.org/archive/debian/20250129T203412Z/pool/main/g/gcc-10/libgcc-s1_10.2.1-6_i386.deb",
+        "size_bytes": 49604,
+        "sha256": "0a52edec5d626f8d9acf1998248d276760aff3950f44a308d27d4a2a488fe18d"
+      }
+    ],
+    "artifacts": {
+      "lib/i386-linux-gnu/ld-2.31.so": "334213fa742bf3a3763c84ec24d2ae5b08c98b83692d92ecb84447694250da6a",
+      "lib/i386-linux-gnu/libc-2.31.so": "c9fee542cfc83cf2452d40d2ac90cb81a7fc98dc4ae37dcda9c1ccbb704b9036",
+      "lib/i386-linux-gnu/libdl-2.31.so": "393c039a0a659b60205372048517423c4b97ea3ab09e3d580d61743c649f5351",
+      "lib/i386-linux-gnu/libgcc_s.so.1": "4f3877cf36a72d6019eea2cd67ede0293fb0bd33103795ba08b2d75635153084",
+      "lib/i386-linux-gnu/libm-2.31.so": "de5da5f284de14f1ccd45f1ccdefd2cfd665d51d27b42534187a7929b74b090c",
+      "lib/i386-linux-gnu/libpthread-2.31.so": "acffb03c7c8f7c22ca70109900c3d347ccdc0f0124424f742784f5f2361ce9ee",
+      "lib/i386-linux-gnu/librt-2.31.so": "4819eb7a31be61b2a5d93f523c657798ffe17a0c98d3ad9c6d13ea1c992d8598"
+    },
+    "symlinks": {
+      "lib/ld-linux.so.2": "i386-linux-gnu/ld-2.31.so",
+      "lib/i386-linux-gnu/ld-linux.so.2": "ld-2.31.so",
+      "lib/i386-linux-gnu/libc.so.6": "libc-2.31.so",
+      "lib/i386-linux-gnu/libdl.so.2": "libdl-2.31.so",
+      "lib/i386-linux-gnu/libm.so.6": "libm-2.31.so",
+      "lib/i386-linux-gnu/libpthread.so.0": "libpthread-2.31.so",
+      "lib/i386-linux-gnu/librt.so.1": "librt-2.31.so"
+    },
+    "loader_path": "lib/ld-linux.so.2",
+    "library_paths": [
+      "lib/i386-linux-gnu"
+    ]
+  },
   "depot_tools_bootstrap": {
     "cipd_client_revision": "4048470b2263eb1bfee6134ea4b3b4b7da2e14b4",
     "cipd_client_instance": "mZe222Lar6jYhr1785F2gtqnNfe3w7VGD1WGguvRgr4C",
@@ -459,7 +510,8 @@
     "toolkit_views = false",
     "v8_target_cpu = \"arm\"",
     "v8_target_is_simulator = true",
-    "v8_snapshot_toolchain = \"//build/toolchain/linux:clang_x64\"",
+    "v8_snapshot_toolchain = \"//build/toolchain/linux:clang_x86_v8_arm\"",
+    "v8_snapshot_toolchain_runtime_root = \"//out/wasm-i386-runtime/root\"",
     "arm_float_abi = \"softfp\"",
     "v8_jitless = true",
     "v8_enable_webassembly = false",

@@ -1370,13 +1370,15 @@ def ensure_host_clang(
         )
 
 
-def ensure_host_sysroot(
+def ensure_chromium_sysroot(
     manifest: dict[str, object],
     bootstrap_python: Path,
     *,
+    manifest_key: str,
+    label: str,
     install: bool,
 ) -> None:
-    sysroot_pin = manifest["host_sysroot"]
+    sysroot_pin = manifest[manifest_key]
     assert isinstance(sysroot_pin, dict)
     metadata_path = REPO_ROOT / str(sysroot_pin["metadata_path"])
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1388,22 +1390,22 @@ def ensure_host_sysroot(
         raise M0Error(f"Chromium sysroot pin is missing: {sysroot_key}")
 
     require_equal(
-        "Chromium host sysroot path",
+        f"Chromium {label} sysroot path",
         (Path("build/linux") / str(source_pin["SysrootDir"])).as_posix(),
         str(sysroot_pin["path"]),
     )
     require_equal(
-        "Chromium host sysroot tarball",
+        f"Chromium {label} sysroot tarball",
         str(source_pin["Tarball"]),
         str(sysroot_pin["tarball"]),
     )
     require_equal(
-        "Chromium host sysroot URL",
+        f"Chromium {label} sysroot URL",
         str(source_pin["URL"]),
         str(sysroot_pin["url"]),
     )
     require_equal(
-        "Chromium host sysroot hash",
+        f"Chromium {label} sysroot hash",
         str(source_pin["Sha256Sum"]),
         str(sysroot_pin["sha256"]),
     )
@@ -1424,21 +1426,343 @@ def ensure_host_sysroot(
     sysroot = REPO_ROOT / str(sysroot_pin["path"])
     stamp = sysroot / ".stamp"
     if not sysroot.is_dir() or not stamp.is_file():
-        raise M0Error("pinned Chromium host sysroot is not installed")
+        raise M0Error(
+            f"pinned Chromium {label} sysroot is not installed"
+        )
     expected_stamp = f"{sysroot_pin['url']}/{sysroot_pin['sha256']}"
     require_equal(
-        "Chromium host sysroot stamp",
+        f"Chromium {label} sysroot stamp",
         stamp.read_text(encoding="utf-8"),
         expected_stamp,
     )
+    library_arch = {
+        "amd64": "x86_64-linux-gnu",
+        "i386": "i386-linux-gnu",
+    }.get(str(sysroot_pin["arch"]))
+    if library_arch is None:
+        raise M0Error(
+            f"unsupported Chromium {label} sysroot architecture: "
+            f"{sysroot_pin['arch']}"
+        )
     for relative_path in (
         "usr/include/stdlib.h",
-        "usr/lib/x86_64-linux-gnu/crt1.o",
+        f"usr/lib/{library_arch}/crt1.o",
     ):
         if not (sysroot / relative_path).is_file():
             raise M0Error(
-                f"Chromium host sysroot is missing {relative_path}"
+                f"Chromium {label} sysroot is missing {relative_path}"
             )
+
+
+def ensure_host_sysroot(
+    manifest: dict[str, object],
+    bootstrap_python: Path,
+    *,
+    install: bool,
+) -> None:
+    ensure_chromium_sysroot(
+        manifest,
+        bootstrap_python,
+        manifest_key="host_sysroot",
+        label="host",
+        install=install,
+    )
+
+
+def verify_pinned_runtime_package(
+    package: dict[str, object], archive_path: Path
+) -> None:
+    label = f"V8 snapshot runtime {package['name']}"
+    if archive_path.is_symlink() or not archive_path.is_file():
+        raise M0Error(f"pinned {label} package is not installed")
+    require_equal(
+        f"{label} package size",
+        str(archive_path.stat().st_size),
+        str(package["size_bytes"]),
+    )
+    require_equal(
+        f"{label} package SHA-256",
+        sha256(archive_path),
+        str(package["sha256"]),
+    )
+
+
+def download_pinned_runtime_package(
+    package: dict[str, object], archive_path: Path
+) -> None:
+    label = f"V8 snapshot runtime {package['name']}"
+    request = urllib.request.Request(
+        str(package["url"]),
+        headers={"User-Agent": "chromium-wasm-bootstrap/1"},
+    )
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=120) as response,
+            archive_path.open("xb") as output_file,
+        ):
+            copied = 0
+            expected_size = int(package["size_bytes"])
+            while chunk := response.read(1024 * 1024):
+                copied += len(chunk)
+                if copied > expected_size:
+                    raise M0Error(
+                        f"pinned {label} package exceeds "
+                        f"{expected_size} bytes"
+                    )
+                output_file.write(chunk)
+    except (OSError, urllib.error.URLError) as exc:
+        raise M0Error(f"failed to download pinned {label}: {exc}") from exc
+    verify_pinned_runtime_package(package, archive_path)
+
+
+def v8_snapshot_runtime_stamp(runtime: dict[str, object]) -> str:
+    packages = runtime["packages"]
+    assert isinstance(packages, list)
+    return "".join(
+        f"{package['name']} {package['sha256']}\n"
+        for package in packages
+        if isinstance(package, dict)
+    )
+
+
+def v8_snapshot_runtime_path(runtime: dict[str, object]) -> Path:
+    configured_root = Path(str(runtime["path"]))
+    expected_root = Path("out/wasm-i386-runtime/root")
+    if configured_root != expected_root:
+        raise M0Error(
+            "V8 snapshot runtime path mismatch: expected "
+            f"{expected_root}, got {configured_root}"
+        )
+    output_root = REPO_ROOT / "out"
+    runtime_parent = REPO_ROOT / expected_root.parent
+    for path in (output_root, runtime_parent):
+        if path.is_symlink():
+            raise M0Error(
+                f"V8 snapshot runtime parent must not be a symlink: {path}"
+            )
+        try:
+            path.resolve().relative_to(REPO_ROOT.resolve())
+        except ValueError as exc:
+            raise M0Error(
+                "V8 snapshot runtime must stay inside the checkout"
+            ) from exc
+    return REPO_ROOT / expected_root
+
+
+def v8_snapshot_package_archive_path(
+    runtime: dict[str, object], package: dict[str, object]
+) -> Path:
+    configured_archive = Path(str(package["archive_path"]))
+    expected_parent = Path(str(runtime["path"])).parent
+    if (
+        configured_archive.is_absolute()
+        or configured_archive.parent != expected_parent
+        or configured_archive.suffix != ".deb"
+    ):
+        raise M0Error(
+            "V8 snapshot runtime package path must be a .deb directly "
+            f"under {expected_parent}: {configured_archive}"
+        )
+    archive_path = REPO_ROOT / configured_archive
+    try:
+        archive_path.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise M0Error(
+            "V8 snapshot runtime package must stay inside the checkout"
+        ) from exc
+    return archive_path
+
+
+def verify_v8_snapshot_runtime(
+    runtime: dict[str, object],
+    *,
+    runtime_root: Path | None = None,
+    verify_execution: bool = True,
+) -> None:
+    configured_runtime_root = v8_snapshot_runtime_path(runtime)
+    if runtime_root is None:
+        runtime_root = configured_runtime_root
+    if runtime_root.is_symlink() or not runtime_root.is_dir():
+        raise M0Error("pinned V8 snapshot runtime is not installed")
+
+    packages = runtime["packages"]
+    assert isinstance(packages, list)
+    package_list_relative = Path(str(runtime["package_list_path"]))
+    if package_list_relative != Path(
+        "build/linux/sysroot_scripts/generated_package_lists/bullseye.i386"
+    ):
+        raise M0Error("V8 snapshot runtime package list path mismatch")
+    package_list_path = REPO_ROOT / package_list_relative
+    if package_list_path.is_symlink() or not package_list_path.is_file():
+        raise M0Error("Chromium i386 package list is missing")
+    package_urls = package_list_path.read_text(
+        encoding="utf-8"
+    ).splitlines()
+    for raw_package in packages:
+        assert isinstance(raw_package, dict)
+        package = raw_package
+        if package_urls.count(str(package["url"])) != 1:
+            raise M0Error(
+                "Chromium i386 package list must contain exactly one "
+                f"{package['name']} runtime pin"
+            )
+        archive_path = v8_snapshot_package_archive_path(runtime, package)
+        verify_pinned_runtime_package(package, archive_path)
+
+    stamp = runtime_root / ".stamp"
+    if stamp.is_symlink() or not stamp.is_file():
+        raise M0Error("pinned V8 snapshot runtime stamp is missing")
+    require_equal(
+        "V8 snapshot runtime stamp",
+        stamp.read_text(encoding="utf-8"),
+        v8_snapshot_runtime_stamp(runtime),
+    )
+
+    artifacts = runtime["artifacts"]
+    assert isinstance(artifacts, dict)
+    for relative_path, expected_hash in artifacts.items():
+        artifact = runtime_root / str(relative_path)
+        if artifact.is_symlink() or not artifact.is_file():
+            raise M0Error(
+                f"V8 snapshot runtime is missing {relative_path}"
+            )
+        require_equal(
+            f"V8 snapshot runtime {relative_path}",
+            sha256(artifact),
+            str(expected_hash),
+        )
+
+    symlinks = runtime["symlinks"]
+    assert isinstance(symlinks, dict)
+    for relative_path, expected_target in symlinks.items():
+        symlink = runtime_root / str(relative_path)
+        if not symlink.is_symlink():
+            raise M0Error(
+                f"V8 snapshot runtime is missing symlink {relative_path}"
+            )
+        require_equal(
+            f"V8 snapshot runtime symlink {relative_path}",
+            os.readlink(symlink),
+            str(expected_target),
+        )
+
+    loader = runtime_root / str(runtime["loader_path"])
+    if verify_execution:
+        library_paths = runtime["library_paths"]
+        if library_paths != ["lib/i386-linux-gnu"]:
+            raise M0Error("V8 snapshot runtime library path mismatch")
+        library_directory = runtime_root / str(library_paths[0])
+        libc_version = run(
+            [
+                str(loader),
+                "--library-path",
+                str(library_directory),
+                str(library_directory / "libc.so.6"),
+            ]
+        ).stdout.splitlines()
+        if not libc_version:
+            raise M0Error("V8 snapshot runtime libc returned no version")
+        require_equal(
+            "V8 snapshot runtime libc version",
+            libc_version[0],
+            "GNU C Library (Debian GLIBC 2.31-13+deb11u5) "
+            "stable release version 2.31.",
+        )
+
+
+def install_v8_snapshot_runtime(runtime: dict[str, object]) -> None:
+    runtime_root = v8_snapshot_runtime_path(runtime)
+    packages = runtime["packages"]
+    assert isinstance(packages, list)
+    runtime_root.parent.mkdir(parents=True, exist_ok=True)
+    if runtime_root.parent.is_symlink():
+        raise M0Error("V8 snapshot runtime parent must not be a symlink")
+
+    for raw_package in packages:
+        assert isinstance(raw_package, dict)
+        package = raw_package
+        archive_path = v8_snapshot_package_archive_path(runtime, package)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        if not os.path.lexists(archive_path):
+            staging_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{package['name']}.download-",
+                    dir=archive_path.parent,
+                )
+            )
+            candidate_archive = staging_root / archive_path.name
+            try:
+                download_pinned_runtime_package(
+                    package, candidate_archive
+                )
+                if os.path.lexists(archive_path):
+                    raise M0Error(
+                        "V8 snapshot runtime package path appeared "
+                        f"during installation: {archive_path}"
+                    )
+                os.replace(candidate_archive, archive_path)
+            finally:
+                shutil.rmtree(staging_root, ignore_errors=True)
+        verify_pinned_runtime_package(package, archive_path)
+
+    if os.path.lexists(runtime_root):
+        verify_v8_snapshot_runtime(runtime)
+        return
+
+    dpkg_deb = shutil.which("dpkg-deb")
+    if dpkg_deb is None:
+        raise M0Error(
+            "dpkg-deb is required to install the V8 snapshot runtime"
+        )
+    staging_root = Path(
+        tempfile.mkdtemp(
+            prefix=".runtime.install-",
+            dir=runtime_root.parent,
+        )
+    )
+    candidate_root = staging_root / "root"
+    candidate_root.mkdir()
+    try:
+        for raw_package in packages:
+            assert isinstance(raw_package, dict)
+            archive_path = v8_snapshot_package_archive_path(
+                runtime, raw_package
+            )
+            run(
+                [
+                    dpkg_deb,
+                    "--extract",
+                    str(archive_path),
+                    str(candidate_root),
+                ],
+                capture_output=False,
+            )
+        (candidate_root / ".stamp").write_text(
+            v8_snapshot_runtime_stamp(runtime),
+            encoding="utf-8",
+        )
+        verify_v8_snapshot_runtime(
+            runtime,
+            runtime_root=candidate_root,
+        )
+        if os.path.lexists(runtime_root):
+            raise M0Error(
+                "V8 snapshot runtime path appeared during installation"
+            )
+        os.replace(candidate_root, runtime_root)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def ensure_v8_snapshot_runtime(
+    manifest: dict[str, object], *, install: bool
+) -> None:
+    runtime = manifest["v8_snapshot_runtime"]
+    assert isinstance(runtime, dict)
+    if install:
+        install_v8_snapshot_runtime(runtime)
+    else:
+        verify_v8_snapshot_runtime(runtime)
 
 
 def ensure_emscripten(
@@ -2194,6 +2518,15 @@ def main() -> int:
         ensure_host_sysroot(
             manifest, bootstrap_python, install=install
         )
+        if args.profile == "m3":
+            ensure_chromium_sysroot(
+                manifest,
+                bootstrap_python,
+                manifest_key="v8_snapshot_sysroot",
+                label="V8 snapshot",
+                install=install,
+            )
+            ensure_v8_snapshot_runtime(manifest, install=install)
         ensure_emscripten(
             manifest, bootstrap_python, install=install
         )
