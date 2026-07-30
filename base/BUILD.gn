@@ -1392,6 +1392,7 @@ component("base") {
   if (is_wasm) {
     defines += [
       "BASE_WASM_FULL_COMPONENT=1",
+      "CHROMIUM_WASM_LOGICAL_PROCESSOR_LIMIT=$chromium_wasm_logical_processor_limit",
       "CHROMIUM_WASM_MAXIMUM_MEMORY_BYTES=$chromium_wasm_maximum_memory_bytes",
     ]
   }

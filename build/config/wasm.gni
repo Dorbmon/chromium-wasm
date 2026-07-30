@@ -7,6 +7,11 @@ declare_args() {
   # Later profiles can raise this without changing the passing M0-M2 output.
   chromium_wasm_pthread_pool_size = 2
 
+  # Maximum logical processor count exposed to Chromium's thread-pool sizing.
+  # This is an application concurrency budget, not the host's physical CPU
+  # count, and must fit within the prewarmed Emscripten worker pool.
+  chromium_wasm_logical_processor_limit = 2
+
   # DevTools frontend resources are deferred until their M8 host bridge and
   # pinned dependency closure are available.
   enable_chromium_wasm_devtools_resources = false
@@ -20,6 +25,10 @@ declare_args() {
 assert(chromium_wasm_pthread_pool_size >= 1 &&
            chromium_wasm_pthread_pool_size <= 32,
        "Chromium Wasm pthread pool size must be in [1, 32]")
+assert(chromium_wasm_logical_processor_limit >= 1 &&
+           chromium_wasm_logical_processor_limit <=
+               chromium_wasm_pthread_pool_size,
+       "Chromium Wasm logical processor limit must fit in the pthread pool")
 assert(chromium_wasm_initial_memory_bytes > 0 &&
            chromium_wasm_initial_memory_bytes <=
                chromium_wasm_maximum_memory_bytes,

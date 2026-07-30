@@ -56,6 +56,39 @@ class M3BaseSourceContractTest(unittest.TestCase):
         )
         self.assertIn("emscripten_get_heap_size()", sys_info)
 
+    def test_content_thread_budget_fits_the_prewarmed_worker_pool(
+        self,
+    ) -> None:
+        config = source("build/config/wasm.gni")
+        build = source("base/BUILD.gn")
+        sys_info = source("base/system/sys_info_wasm.cc")
+
+        self.assertIn(
+            "chromium_wasm_logical_processor_limit = 2", config
+        )
+        self.assertIn(
+            "chromium_wasm_logical_processor_limit <=\n"
+            "               chromium_wasm_pthread_pool_size",
+            config,
+        )
+        self.assertIn(
+            "CHROMIUM_WASM_LOGICAL_PROCESSOR_LIMIT="
+            "$chromium_wasm_logical_processor_limit",
+            build,
+        )
+        self.assertIn(
+            "#if defined(BASE_WASM_FULL_COMPONENT)", sys_info
+        )
+        self.assertIn(
+            "std::min(logical_cores, "
+            "CHROMIUM_WASM_LOGICAL_PROCESSOR_LIMIT)",
+            sys_info,
+        )
+        self.assertIn(
+            "// Preserve the passing M0-M2 primitive/runtime behavior.",
+            sys_info,
+        )
+
     def test_process_metrics_do_not_label_linear_memory_as_host_rss(
         self,
     ) -> None:

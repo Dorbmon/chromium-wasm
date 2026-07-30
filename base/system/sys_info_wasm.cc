@@ -28,7 +28,17 @@ namespace base {
 
 // static
 int SysInfo::NumberOfProcessors() {
-  return std::max(1, emscripten_num_logical_cores());
+  const int logical_cores = std::max(1, emscripten_num_logical_cores());
+#if defined(BASE_WASM_FULL_COMPONENT)
+  // Browser-reported hardware concurrency can exceed the number of Web
+  // Workers prewarmed for synchronous pthread creation. Keep full Chromium's
+  // derived thread pools within the explicit Wasm application budget.
+  static_assert(CHROMIUM_WASM_LOGICAL_PROCESSOR_LIMIT >= 1);
+  return std::min(logical_cores, CHROMIUM_WASM_LOGICAL_PROCESSOR_LIMIT);
+#else
+  // Preserve the passing M0-M2 primitive/runtime behavior.
+  return logical_cores;
+#endif
 }
 
 #if defined(BASE_WASM_FULL_COMPONENT)
