@@ -11,6 +11,28 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3ContentShellHostApiContractTest(unittest.TestCase):
+    def test_responsiveness_window_starts_at_committed_navigation(
+        self,
+    ) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        navigation = host.split("_reportNavigation(value)", 1)[1].split(
+            "_reportPageProbe(value)", 1
+        )[0]
+
+        self.assertIn(
+            'this.#resetHeartbeatWindow("data-navigation-committed")',
+            navigation,
+        )
+        self.assertGreater(
+            navigation.index("#resetHeartbeatWindow"),
+            navigation.index(
+                'this.#navigation = {committed: true, scheme: "data"}'
+            ),
+        )
+        self.assertIn("if (this.#heartbeatAnchor === null)", host)
+        self.assertIn("timerDelta: 0", host)
+        self.assertIn("animationFrameDelta: 0", host)
+
     def test_host_commands_copy_inputs_then_post_to_the_ui_sequence(
         self,
     ) -> None:

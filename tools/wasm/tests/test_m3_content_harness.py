@@ -73,6 +73,7 @@ def passing_result(
         "port": "port-revision",
     }
     heartbeat = {
+        "anchor": "data-navigation-committed",
         "elapsedMs": 3200,
         "timerDelta": 125,
         "animationFrameDelta": 181,
@@ -478,6 +479,22 @@ class M3ResultValidationTest(unittest.TestCase):
                 result, expected_versions=versions
             )
 
+    def test_outer_heartbeat_requires_committed_navigation_anchor(
+        self,
+    ) -> None:
+        for anchor in (None, "runtime-initialized"):
+            with self.subTest(anchor=anchor):
+                result, versions = passing_result(self.png)
+                result["heartbeat"]["anchor"] = anchor  # type: ignore[index]
+                readiness = result["readiness"]  # type: ignore[assignment]
+                readiness["heartbeat"]["anchor"] = anchor  # type: ignore[index]
+                with self.assertRaisesRegex(
+                    M0Error, "anchored to the committed data: navigation"
+                ):
+                    m3_content_server.validate_m3_result(
+                        result, expected_versions=versions
+                    )
+
 
 class M3ScreenshotTest(unittest.TestCase):
     def test_decoder_accepts_canvas_rgb_and_rgba_pngs(self) -> None:
@@ -570,6 +587,138 @@ class M3HostJavaScriptTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_heartbeat_window_ignores_pre_navigation_time(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable")
+        host_url = (
+            TOOLS_DIR / "host" / "content_shell_host.js"
+        ).resolve().as_uri()
+        with tempfile.TemporaryDirectory() as temporary:
+            mock_module = Path(temporary) / "m3_heartbeat_module.mjs"
+            mock_module.write_text(
+                """
+export default async function createModule(options) {
+  options.onRuntimeInitialized();
+  globalThis.__chromiumWasmHostBridgeV1.reportReadiness({
+    protocol: 1,
+    shellReady: true,
+    surfaceReady: false,
+    firstVisuallyNonEmptyPaint: false,
+  });
+  return {
+    HEAPU8: new Uint8Array(new ArrayBuffer(64 * 1024)),
+  };
+}
+""",
+                encoding="utf-8",
+            )
+            script = f"""
+let now = 0;
+let timerCallback = null;
+let animationFrameCallback = null;
+let nextHandle = 1;
+globalThis.performance = {{now: () => now}};
+globalThis.setInterval = (callback) => {{
+  timerCallback = callback;
+  return nextHandle++;
+}};
+globalThis.clearInterval = () => {{}};
+globalThis.requestAnimationFrame = (callback) => {{
+  animationFrameCallback = callback;
+  return nextHandle++;
+}};
+globalThis.cancelAnimationFrame = () => {{}};
+globalThis.window = globalThis;
+globalThis.location = {{origin: "null"}};
+globalThis.crossOriginIsolated = true;
+globalThis.addEventListener = () => {{}};
+globalThis.removeEventListener = () => {{}};
+class TestCanvas {{
+  constructor() {{
+    this.width = 800;
+    this.height = 600;
+    this.style = {{}};
+  }}
+  focus() {{
+    document.activeElement = this;
+  }}
+}}
+globalThis.HTMLCanvasElement = TestCanvas;
+globalThis.document = {{
+  activeElement: null,
+  baseURI: "file:///",
+  querySelector: () => null,
+}};
+
+function advanceHeartbeat(milliseconds, steps) {{
+  const step = milliseconds / steps;
+  for (let index = 0; index < steps; ++index) {{
+    now += step;
+    timerCallback();
+    const callback = animationFrameCallback;
+    callback(now);
+  }}
+}}
+
+const {{ChromiumWasmM3Host}} = await import({json.dumps(host_url)});
+const host = new ChromiumWasmM3Host(new TestCanvas(), {{
+  chromium: "c",
+  v8: "v",
+  emscripten: "e",
+  port: "p",
+}});
+await host.initialize({{modulePath: {json.dumps(mock_module.as_uri())}}});
+
+advanceHeartbeat(5000, 250);
+const beforeCommit = await host.readiness();
+if (
+  beforeCommit.heartbeat.anchor !== null ||
+  beforeCommit.heartbeat.elapsedMs !== 0 ||
+  beforeCommit.heartbeat.timerDelta !== 0 ||
+  beforeCommit.heartbeat.animationFrameDelta !== 0
+) {{
+  throw new Error("pre-navigation time leaked into the M3 heartbeat gate");
+}}
+
+globalThis.__chromiumWasmHostBridgeV1.reportNavigation({{
+  protocol: 1,
+  committed: true,
+  scheme: "data",
+}});
+const atCommit = await host.readiness();
+if (
+  atCommit.heartbeat.anchor !== "data-navigation-committed" ||
+  atCommit.heartbeat.elapsedMs !== 0 ||
+  atCommit.heartbeat.timerDelta !== 0 ||
+  atCommit.heartbeat.animationFrameDelta !== 0
+) {{
+  throw new Error("M3 heartbeat did not reset at navigation commit");
+}}
+
+advanceHeartbeat(3200, 200);
+const afterWindow = await host.readiness();
+if (
+  afterWindow.heartbeat.elapsedMs !== 3200 ||
+  afterWindow.heartbeat.timerDelta !== 200 ||
+  afterWindow.heartbeat.animationFrameDelta !== 200 ||
+  afterWindow.heartbeat.maxTimerGapMs > 250
+) {{
+  throw new Error("M3 heartbeat did not measure the post-commit window");
+}}
+console.log("M3_HEARTBEAT_WINDOW:PASS");
+"""
+            completed = subprocess.run(
+                [node, "--input-type=module"],
+                input=script,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("M3_HEARTBEAT_WINDOW:PASS", completed.stdout)
 
     def test_host_promise_api_executes_against_a_contract_module(self) -> None:
         node = shutil.which("node")

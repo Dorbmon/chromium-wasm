@@ -400,6 +400,11 @@ def validate_m3_result(
     )
     if heartbeat != readiness_heartbeat:
         raise M0Error("M3 readiness and result heartbeat evidence differ")
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M3 outer heartbeat was not anchored to the committed data: "
+            "navigation"
+        )
     _require_number(
         heartbeat.get("elapsedMs"),
         "M3 outer heartbeat elapsed time",

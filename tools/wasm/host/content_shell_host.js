@@ -160,7 +160,8 @@ export class ChromiumWasmM3Host {
   #initialLinearMemoryBytes = null;
   #versions;
   #logs = {host: [], stdout: [], stderr: []};
-  #heartbeatStartTime;
+  #heartbeatAnchor = null;
+  #heartbeatStartTime = null;
   #heartbeatStartTimerTicks = 0;
   #heartbeatStartAnimationFrameTicks = 0;
   #timerTicks = 0;
@@ -194,12 +195,13 @@ export class ChromiumWasmM3Host {
     });
     activeHost = this;
 
-    this.#heartbeatStartTime = performance.now();
-    this.#lastTimerTime = this.#heartbeatStartTime;
+    this.#lastTimerTime = performance.now();
     this.#timerHandle = setInterval(() => {
       const now = performance.now();
-      this.#maximumTimerGapMs = Math.max(
-        this.#maximumTimerGapMs, now - this.#lastTimerTime);
+      if (this.#heartbeatAnchor !== null) {
+        this.#maximumTimerGapMs = Math.max(
+          this.#maximumTimerGapMs, now - this.#lastTimerTime);
+      }
       this.#lastTimerTime = now;
       this.#timerTicks += 1;
     }, 25);
@@ -242,8 +244,32 @@ export class ChromiumWasmM3Host {
     }
   }
 
+  #resetHeartbeatWindow(anchor) {
+    const now = performance.now();
+    this.#heartbeatAnchor = anchor;
+    this.#heartbeatStartTime = now;
+    this.#heartbeatStartTimerTicks = this.#timerTicks;
+    this.#heartbeatStartAnimationFrameTicks = this.#animationFrameTicks;
+    this.#maximumTimerGapMs = 0;
+    this.#lastTimerTime = now;
+  }
+
   #heartbeat() {
+    if (this.#heartbeatAnchor === null) {
+      return {
+        anchor: null,
+        elapsedMs: 0,
+        timerStartTicks: this.#timerTicks,
+        timerEndTicks: this.#timerTicks,
+        timerDelta: 0,
+        animationFrameStartTicks: this.#animationFrameTicks,
+        animationFrameEndTicks: this.#animationFrameTicks,
+        animationFrameDelta: 0,
+        maxTimerGapMs: 0,
+      };
+    }
     return {
+      anchor: this.#heartbeatAnchor,
       elapsedMs: performance.now() - this.#heartbeatStartTime,
       timerStartTicks: this.#heartbeatStartTimerTicks,
       timerEndTicks: this.#timerTicks,
@@ -747,6 +773,7 @@ export class ChromiumWasmM3Host {
         throw new Error("navigation report must commit a data: URL");
       }
       this.#navigation = {committed: true, scheme: "data"};
+      this.#resetHeartbeatWindow("data-navigation-committed");
     } catch (error) {
       this._reportFatal(`invalid navigation report: ${String(error)}`);
     }
