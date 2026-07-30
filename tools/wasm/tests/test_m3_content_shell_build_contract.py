@@ -52,6 +52,65 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
         self.assertIn('"$root_out_dir/icudtl.dat"', build)
         self.assertIn('"//third_party/icu:icudata"', build)
 
+    def test_m3_pak_keeps_only_data_page_and_aura_resources(self) -> None:
+        build = source("content/shell/BUILD.gn")
+        pak = build.split('repack("pak") {', 1)[1].split(
+            "if (is_android) {", 1
+        )[0]
+        wasm_pak = pak.split("if (is_wasm) {", 1)[1].split(
+            "if (enable_vr)", 1
+        )[0]
+
+        for resource in (
+            "content/shell/shell_resources.pak",
+            "net/net_resources.pak",
+            "third_party/blink/public/resources/blink_resources.pak",
+            "third_party/blink/public/resources/"
+            "blink_scaled_resources_100_percent.pak",
+            "third_party/blink/public/strings/blink_strings_en-US.pak",
+            "ui/resources/ui_lottie_resources.pak",
+            "ui/resources/ui_resources_100_percent.pak",
+            "ui/strings/app_locale_settings_en-US.pak",
+            "ui/strings/auto_image_annotation_strings_en-US.pak",
+            "ui/strings/ax_strings_en-US.pak",
+            "ui/strings/ui_strings_en-US.pak",
+        ):
+            with self.subTest(resource=resource):
+                self.assertIn(resource, wasm_pak)
+
+        for dependency in (
+            ":resources",
+            "//net:net_resources",
+            "//third_party/blink/public:resources",
+            "//third_party/blink/public:scaled_resources_100_percent",
+            "//third_party/blink/public/strings",
+            "//ui/resources",
+            "//ui/strings",
+        ):
+            with self.subTest(dependency=dependency):
+                self.assertIn(f'"{dependency}"', wasm_pak)
+
+        for excluded in (
+            "tracing",
+            "ukm",
+            "content/browser/resources",
+            "media_internals",
+            "webrtc_internals",
+            "content_resources.pak",
+            "web_ui_mojo",
+            "mojo_bindings_resources",
+            "inspector_overlay",
+            "permission_element",
+            "ui/webui/resources",
+        ):
+            with self.subTest(excluded=excluded):
+                self.assertNotIn(excluded, wasm_pak)
+
+        self.assertIn(
+            "if (!is_android && !is_ios && !is_wasm) {",
+            pak,
+        )
+
     def test_content_shell_uses_an_honest_memfs_profile_directory(
         self,
     ) -> None:

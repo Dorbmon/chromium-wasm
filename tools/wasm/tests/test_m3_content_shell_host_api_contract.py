@@ -11,6 +11,13 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3ContentShellHostApiContractTest(unittest.TestCase):
+    def test_content_shell_uses_the_proven_v8_simulator_stack_budget(
+        self,
+    ) -> None:
+        build = source("content/shell/BUILD.gn")
+
+        self.assertIn("-sSTACK_SIZE=2097152", build)
+
     def test_responsiveness_window_starts_at_committed_navigation(
         self,
     ) -> None:
@@ -32,6 +39,23 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
         self.assertIn("if (this.#heartbeatAnchor === null)", host)
         self.assertIn("timerDelta: 0", host)
         self.assertIn("animationFrameDelta: 0", host)
+
+    def test_host_heap_access_uses_an_exported_growth_safe_view(self) -> None:
+        build = source("content/shell/BUILD.gn")
+        host = source("tools/wasm/host/content_shell_host.js")
+
+        self.assertIn(
+            "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8",
+            build,
+        )
+        self.assertIn(
+            "this.#module.HEAPU8.set(encoded, pointer)",
+            host,
+        )
+        self.assertIn(
+            "Fetch HEAPU8 after malloc because memory growth invalidates",
+            host,
+        )
 
     def test_host_commands_copy_inputs_then_post_to_the_ui_sequence(
         self,

@@ -62,7 +62,8 @@ config("content_shell_lib_warnings") {
 if (is_wasm) {
   config("content_shell_wasm_assets") {
     ldflags = [
-      "-sEXPORTED_RUNTIME_METHODS=ccall",
+      "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8",
+      "-sSTACK_SIZE=2097152",
       "--embed-file=" +
           rebase_path("$root_out_dir/content_shell.pak", root_build_dir) +
           "@/assets/content_shell.pak",
@@ -647,13 +648,32 @@ repack("pak") {
   ]
 
   if (is_wasm) {
-    sources -= [
-      "$root_gen_dir/content/test/web_ui_mojo_test_resources.pak",
-      "$root_gen_dir/third_party/blink/public/resources/inspector_overlay_resources.pak",
+    # M3 renders an ordinary data: page through Blink and Aura. Keep the shell,
+    # network, Blink, cursor, and localization resources that path consumes,
+    # without generating unrelated internal WebUI and diagnostics bundles.
+    sources = []
+    sources = [
+      "$root_gen_dir/content/shell/shell_resources.pak",
+      "$root_gen_dir/net/net_resources.pak",
+      "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
+      "$root_gen_dir/third_party/blink/public/resources/blink_scaled_resources_100_percent.pak",
+      "$root_gen_dir/third_party/blink/public/strings/blink_strings_en-US.pak",
+      "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
+      "$root_gen_dir/ui/resources/ui_resources_100_percent.pak",
+      "$root_gen_dir/ui/strings/app_locale_settings_en-US.pak",
+      "$root_gen_dir/ui/strings/auto_image_annotation_strings_en-US.pak",
+      "$root_gen_dir/ui/strings/ax_strings_en-US.pak",
+      "$root_gen_dir/ui/strings/ui_strings_en-US.pak",
     ]
-    deps -= [
-      "//content/test:web_ui_mojo_test_resources",
-      "//third_party/blink/public:devtools_inspector_resources",
+    deps = []
+    deps = [
+      ":resources",
+      "//net:net_resources",
+      "//third_party/blink/public:resources",
+      "//third_party/blink/public:scaled_resources_100_percent",
+      "//third_party/blink/public/strings",
+      "//ui/resources",
+      "//ui/strings",
     ]
   }
 
@@ -661,7 +681,7 @@ repack("pak") {
     sources += [ "$root_gen_dir/content/webxr_internals_resources.pak" ]
   }
 
-  if (!is_android && !is_ios) {
+  if (!is_android && !is_ios && !is_wasm) {
     deps += [ "//content/browser/tracing:resources" ]
     sources += [
       "$root_gen_dir/content/browser/tracing/tracing_resources.pak",
