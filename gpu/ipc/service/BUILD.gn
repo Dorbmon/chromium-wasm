@@ -137,6 +137,9 @@ component("service") {
   if (is_linux || is_chromeos) {
     sources += [ "image_transport_surface_linux.cc" ]
   }
+  if (is_wasm) {
+    sources += [ "image_transport_surface_wasm.cc" ]
+  }
   if (is_chromeos) {
     sources += [
       "arc_shared_image_interface.cc",

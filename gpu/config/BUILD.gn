@@ -200,6 +200,9 @@ component("config") {
   if (is_linux || is_chromeos) {
     sources += [ "gpu_info_collector_linux.cc" ]
   }
+  if (is_wasm) {
+    sources += [ "gpu_info_collector_wasm.cc" ]
+  }
   if (is_linux || is_chromeos || is_apple || is_fuchsia || is_android) {
     deps += [ "//third_party/angle:angle_gpu_info_util" ]
   }
