@@ -250,6 +250,47 @@ class M3BaseSourceContractTest(unittest.TestCase):
         self.assertGreater(browser_tests_guard, 0)
         self.assertLess(browser_tests - browser_tests_guard, 250)
 
+    def test_m3_prunes_native_only_resource_generators(self) -> None:
+        webauthn = source("components/webauthn/core/browser/BUILD.gn")
+        self.assertIn(
+            'if (is_apple) {\n'
+            '    frameworks = [ "Foundation.framework" ]\n'
+            "  }",
+            webauthn,
+        )
+
+        self.assertIn(
+            "if (use_blink && !is_wasm) {",
+            source("ipc/BUILD.gn"),
+        )
+        self.assertIn(
+            "if (enable_pdf) {\n"
+            '  import("//third_party/pdfium/pdfium.gni")\n'
+            "}",
+            source("pdf/BUILD.gn"),
+        )
+        self.assertIn(
+            "use_cpuinfo = !is_wasm &&",
+            source("third_party/cpuinfo/cpuinfo.gni"),
+        )
+
+        wasm_config = source("build/config/wasm.gni")
+        blink_public = source("third_party/blink/public/BUILD.gn")
+        self.assertIn(
+            "enable_chromium_wasm_devtools_resources = false",
+            wasm_config,
+        )
+        self.assertIn(
+            "_enable_blink_devtools_resources =\n"
+            "    !is_wasm || enable_chromium_wasm_devtools_resources",
+            blink_public,
+        )
+        self.assertIn(
+            "if (_enable_blink_devtools_resources) {\n"
+            '  grit("devtools_inspector_resources")',
+            blink_public,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

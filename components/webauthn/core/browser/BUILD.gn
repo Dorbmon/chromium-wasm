@@ -71,7 +71,9 @@ source_set("passkey_model") {
     "//crypto",
     "//device/fido",
   ]
-  frameworks = [ "Foundation.framework" ]
+  if (is_apple) {
+    frameworks = [ "Foundation.framework" ]
+  }
 }
 
 source_set("client_data") {

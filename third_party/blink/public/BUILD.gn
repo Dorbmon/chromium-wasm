@@ -4,6 +4,7 @@
 
 import("//build/buildflag_header.gni")
 import("//build/config/devtools.gni")
+import("//build/config/wasm.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 import("//third_party/blink/public/public_features.gni")
 import("//third_party/blink/renderer/build/scripts/scripts.gni")
@@ -20,6 +21,8 @@ if (is_android) {
 }
 
 blink_public_output_dir = "$root_gen_dir/third_party/blink/public"
+_enable_blink_devtools_resources =
+    !is_wasm || enable_chromium_wasm_devtools_resources
 
 group("blink") {
   public_deps = [ ":blink_headers" ]
@@ -429,7 +432,6 @@ source_set("blink_headers") {
   ]
 
   public_deps = [
-    ":devtools_inspector_resources_grit",
     ":resources_grit",
     ":runtime_features_for_public",
     "//components/subresource_filter/core/common",
@@ -447,6 +449,10 @@ source_set("blink_headers") {
     "//ui/base/prediction",
     "//url",
   ]
+
+  if (_enable_blink_devtools_resources) {
+    public_deps += [ ":devtools_inspector_resources_grit" ]
+  }
 
   if (is_mac) {
     public_deps += [ "//ui/gfx" ]
@@ -501,23 +507,33 @@ blink_python_runner("runtime_features_for_public") {
   ]
 }
 
-devtools_frontend_path = "//$devtools_root_location"
+if (_enable_blink_devtools_resources) {
+  devtools_frontend_path = "//$devtools_root_location"
+}
 
 group("blink_devtools_frontend_resources") {
-  public_deps = [ "$devtools_frontend_path:devtools_frontend_resources" ]
+  if (_enable_blink_devtools_resources) {
+    public_deps = [ "$devtools_frontend_path:devtools_frontend_resources" ]
+  }
 }
 
 group("blink_devtools_inspector_resources") {
-  public_deps = [ ":devtools_inspector_resources_grit" ]
+  if (_enable_blink_devtools_resources) {
+    public_deps = [ ":devtools_inspector_resources_grit" ]
+  }
 }
 
 group("blink_devtools_frontend_resources_files") {
   testonly = true
-  data_deps = [ "$devtools_frontend_path:devtools_all_files" ]
+  if (_enable_blink_devtools_resources) {
+    data_deps = [ "$devtools_frontend_path:devtools_all_files" ]
+  }
 }
 
 group("blink_generate_devtools_grd") {
-  public_deps = [ "$devtools_frontend_path:generate_devtools_grd" ]
+  if (_enable_blink_devtools_resources) {
+    public_deps = [ "$devtools_frontend_path:generate_devtools_grd" ]
+  }
 }
 
 resources_out_dir = "$blink_public_output_dir/resources"
@@ -532,30 +548,32 @@ grit("resources") {
   use_brotli = true
 }
 
-grit("devtools_inspector_resources") {
-  # Required because the .grd is generated.
-  enable_input_discovery_for_gn_analyze = false
+if (_enable_blink_devtools_resources) {
+  grit("devtools_inspector_resources") {
+    # Required because the .grd is generated.
+    enable_input_discovery_for_gn_analyze = false
 
-  source = "$root_out_dir/resources/inspector_overlay/inspector_overlay_resources.grd"
-  output_dir = resources_out_dir
-  outputs = [
-    "grit/inspector_overlay_resources_map.h",
-    "inspector_overlay_resources.pak",
-  ]
+    source = "$root_out_dir/resources/inspector_overlay/inspector_overlay_resources.grd"
+    output_dir = resources_out_dir
+    outputs = [
+      "grit/inspector_overlay_resources_map.h",
+      "inspector_overlay_resources.pak",
+    ]
 
-  _shared_intermediate_dir = rebase_path(root_out_dir, root_build_dir)
-  _devtools_grd_path = "$shared_intermediate_dir/$devtools_grd_location"
-  _devtools_grd_path_no_ext = get_path_info(_devtools_grd_path, "dir") + "/" +
-                              get_path_info(_devtools_grd_path, "name")
+    _shared_intermediate_dir = rebase_path(root_out_dir, root_build_dir)
+    _devtools_grd_path = "$shared_intermediate_dir/$devtools_grd_location"
+    _devtools_grd_path_no_ext = get_path_info(_devtools_grd_path, "dir") + "/" +
+                                get_path_info(_devtools_grd_path, "name")
 
-  defines = [
-    "SHARED_INTERMEDIATE_DIR=" + _shared_intermediate_dir,
-    "DEVTOOLS_GRD_PATH=" + _devtools_grd_path_no_ext,
-  ]
+    defines = [
+      "SHARED_INTERMEDIATE_DIR=" + _shared_intermediate_dir,
+      "DEVTOOLS_GRD_PATH=" + _devtools_grd_path_no_ext,
+    ]
 
-  deps = [
-    "$devtools_frontend_path:generate_devtools_inspector_overlay_resources",
-  ]
+    deps = [
+      "$devtools_frontend_path:generate_devtools_inspector_overlay_resources",
+    ]
+  }
 }
 
 grit("image_resources") {

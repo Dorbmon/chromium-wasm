@@ -7,6 +7,10 @@ declare_args() {
   # Later profiles can raise this without changing the passing M0-M2 output.
   chromium_wasm_pthread_pool_size = 2
 
+  # DevTools frontend resources are deferred until their M8 host bridge and
+  # pinned dependency closure are available.
+  enable_chromium_wasm_devtools_resources = false
+
   # Linear-memory bounds shared by the Emscripten link and Chromium's M3
   # in-process memory-budget policy.
   chromium_wasm_initial_memory_bytes = 67108864

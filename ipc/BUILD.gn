@@ -186,7 +186,7 @@ source_set("protobuf_support") {
   ]
 }
 
-if (use_blink) {
+if (use_blink && !is_wasm) {
   source_set("run_all_unittests") {
     testonly = true
 
