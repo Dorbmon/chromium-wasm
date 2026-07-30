@@ -139,7 +139,7 @@
 #endif
 
 #if BUILDFLAG(IS_IOS)
-#include "components/permissions/bluetooth_delegate_impl.h"
+#include "components/permissions/bluetooth_delegate_impl.h"  // nogncheck
 #include "content/shell/browser/bluetooth/shell_bluetooth_delegate_impl_client.h"
 #endif
 

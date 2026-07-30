@@ -28,7 +28,7 @@ static_library("custom_handlers") {
     "//third_party/blink/public/common:headers",
   ]
 
-  if (!is_android && !is_ios) {
+  if (!is_android && !is_ios && !is_wasm) {
     sources += [
       "protocol_handler_navigation_throttle.cc",
       "protocol_handler_navigation_throttle.h",

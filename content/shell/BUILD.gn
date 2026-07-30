@@ -432,6 +432,7 @@ static_library("content_shell_lib") {
       ":rust_test_mojom_js",
       ":rust_test_service_ffi",
       ":shell_controller_mojom",
+      "//components/permissions",
       "//components/services/storage/test_api",
       "//content/test:content_test_mojo_bindings",
       "//content/test:test_support",

@@ -4,18 +4,22 @@
 
 #include "content/shell/browser/shell_permission_manager.h"
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/functional/callback.h"
+#include "base/metrics/histogram_functions.h"
+#include "build/build_config.h"
 #include "components/content_settings/core/common/features.h"
-#include "components/permissions/permission_util.h"
 #include "content/public/browser/permission_controller.h"
 #include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/shell/common/shell_switches.h"
 #include "media/base/media_switches.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "url/origin.h"
 
 using blink::PermissionType;
@@ -23,6 +27,38 @@ using blink::PermissionType;
 namespace content {
 
 namespace {
+
+#if BUILDFLAG(IS_ANDROID)
+constexpr const char* kIsFileURLHistogram =
+    "Permissions.GetLastCommittedOriginAsURL.IsFileURL";
+#endif
+
+GURL GetLastCommittedOriginAsURL(RenderFrameHost* render_frame_host) {
+  CHECK(render_frame_host);
+
+  WebContents* web_contents =
+      WebContents::FromRenderFrameHost(render_frame_host);
+#if BUILDFLAG(IS_ANDROID)
+  // If `allow_universal_access_from_file_urls` is enabled, a file:/// URL can
+  // change via history.pushState/replaceState to any other URL, including
+  // about:blank. Use the visible URL to avoid showing a misleading origin.
+  if (web_contents->GetOrCreateWebPreferences()
+          .allow_universal_access_from_file_urls &&
+      render_frame_host->GetLastCommittedOrigin().GetURL().SchemeIsFile()) {
+    base::UmaHistogramBoolean(kIsFileURLHistogram, true);
+    return render_frame_host->GetLastCommittedURL().DeprecatedGetOriginAsURL();
+  }
+  base::UmaHistogramBoolean(kIsFileURLHistogram, false);
+#endif
+
+  GURL origin = render_frame_host->GetLastCommittedOrigin().GetURL();
+  if (origin.is_empty() && render_frame_host->IsInPrimaryMainFrame()) {
+    if (!web_contents->GetVisibleURL().is_empty()) {
+      origin = web_contents->GetVisibleURL();
+    }
+  }
+  return origin;
+}
 
 bool IsAllowlistedPermissionType(PermissionType permission) {
   switch (permission) {
@@ -172,11 +208,8 @@ PermissionResult ShellPermissionManager::GetPermissionResultForCurrentDocument(
   if (render_frame_host->IsNestedWithinFencedFrame())
     return PermissionResult(blink::mojom::PermissionStatus::DENIED);
   return PermissionResult(GetPermissionStatus(
-      permission_descriptor,
-      permissions::PermissionUtil::GetLastCommittedOriginAsURL(
-          render_frame_host),
-      permissions::PermissionUtil::GetLastCommittedOriginAsURL(
-          render_frame_host->GetMainFrame())));
+      permission_descriptor, GetLastCommittedOriginAsURL(render_frame_host),
+      GetLastCommittedOriginAsURL(render_frame_host->GetMainFrame())));
 }
 
 PermissionResult ShellPermissionManager::GetPermissionResultForWorker(
@@ -197,8 +230,7 @@ ShellPermissionManager::GetPermissionResultForEmbeddedRequester(
   }
   return PermissionResult(GetPermissionStatus(
       permission_descriptor, overridden_origin.GetURL(),
-      permissions::PermissionUtil::GetLastCommittedOriginAsURL(
-          render_frame_host->GetMainFrame())));
+      GetLastCommittedOriginAsURL(render_frame_host->GetMainFrame())));
 }
 
 }  // namespace content
