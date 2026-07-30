@@ -728,6 +728,10 @@ if (is_fuchsia) {
   blink_core_sources_layout += [ "layout_theme_fuchsia.cc" ]
 }
 
+if (is_wasm) {
+  blink_core_sources_layout += [ "layout_theme_wasm.cc" ]
+}
+
 blink_core_tests_layout = [
   "absolute_utils_test.cc",
   "anchor_evaluator_impl_test.cc",
