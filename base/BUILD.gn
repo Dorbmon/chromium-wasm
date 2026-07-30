@@ -1332,6 +1332,7 @@ component("base") {
       "process/process_iterator_wasm.cc",
       "process/process_metrics_wasm.cc",
       "process/process_wasm.cc",
+      "profiler/core_unwinders_wasm.cc",
       "profiler/module_cache_wasm.cc",
       "profiler/stack_sampler_wasm.cc",
       "rand_util_wasm.cc",
