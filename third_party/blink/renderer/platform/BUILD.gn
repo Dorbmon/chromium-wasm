@@ -1683,6 +1683,7 @@ component("platform") {
       "peerconnection/video_codec_factory.cc",
     ]
     sources += [
+      "fonts/wasm/font_cache_wasm.cc",
       "peerconnection/audio_codec_factory_wasm.cc",
       "peerconnection/video_codec_factory_wasm.cc",
     ]
