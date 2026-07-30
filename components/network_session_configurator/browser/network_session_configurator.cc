@@ -846,6 +846,11 @@ void ParseCommandLineAndFieldTrials(const base::CommandLine& command_line,
 }
 
 net::URLRequestContextBuilder::HttpCacheParams::Type ChooseCacheType() {
+#if BUILDFLAG(IS_WASM)
+  // The blockfile backend requires writable MAP_SHARED mappings, which the
+  // Wasm filesystem cannot provide. Do not let a field trial select it.
+  return net::URLRequestContextBuilder::HttpCacheParams::DISK_SIMPLE;
+#else
   if (base::FeatureList::IsEnabled(
           net::features::kDiskCacheBackendExperiment)) {
     switch (net::features::kDiskCacheBackendParam.Get()) {
@@ -865,6 +870,7 @@ net::URLRequestContextBuilder::HttpCacheParams::Type ChooseCacheType() {
   return disk_cache::IsSimpleBackendEnabledByDefaultPlatform()
              ? net::URLRequestContextBuilder::HttpCacheParams::DISK_SIMPLE
              : net::URLRequestContextBuilder::HttpCacheParams::DISK_BLOCKFILE;
+#endif
 }
 
 }  // namespace network_session_configurator

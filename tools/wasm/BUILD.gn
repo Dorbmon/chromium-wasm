@@ -98,6 +98,19 @@ if (enable_chromium_wasm_content) {
     configs -= [ "//build/config/compiler:runtime_library" ]
   }
 
+  executable("m3_disk_cache_smoke") {
+    testonly = true
+    sources = [ "m3_disk_cache_smoke.cc" ]
+    deps = [
+      "//base",
+      "//net",
+    ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
   if (!use_partition_alloc) {
     executable("m3_partition_alloc_page_smoke") {
       testonly = true

@@ -639,6 +639,23 @@ PA_ROOT_RESULT_REQUIREMENTS = (
     *(f"{key}={value}" for key, value in PA_ROOT_RESULT_VALUES.items()),
 )
 
+DISK_CACHE_RESULT_VALUES = {
+    "filesystem": "memfs",
+    "move": "ok",
+    "delete_open_reuse": "ok",
+    "default_backend": "simple",
+    "write_read": "ok",
+    "reopen": "ok",
+    "blockfile": "unsupported_async",
+}
+DISK_CACHE_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M3_DISK_CACHE:RESULT",
+    *(
+        f"{key}={value}"
+        for key, value in DISK_CACHE_RESULT_VALUES.items()
+    ),
+)
+
 
 SMOKE_CASES = {
     "hello": SmokeCase(
@@ -748,6 +765,17 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M3_PA_ROOT:RUNTIME_END",
             *PA_ROOT_RESULT_REQUIREMENTS,
             "CHROMIUM_WASM_M3_PA_ROOT:PASS",
+        ),
+        gn_args_key="m3_content_gn_args",
+    ),
+    "disk_cache": SmokeCase(
+        module_name="m3_disk_cache_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M3_DISK_CACHE",
+        required_stdout=(
+            "CHROMIUM_WASM_M3_DISK_CACHE:RUNTIME_START",
+            "CHROMIUM_WASM_M3_DISK_CACHE:RUNTIME_END",
+            *DISK_CACHE_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M3_DISK_CACHE:PASS",
         ),
         gn_args_key="m3_content_gn_args",
     ),
@@ -1075,6 +1103,10 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         sentinel_prefix = "CHROMIUM_WASM_M3_PA_ROOT"
         result_values = PA_ROOT_RESULT_VALUES
         metric_names = PA_ROOT_METRIC_NAMES
+    elif name == "disk_cache":
+        display_name = "disk-cache"
+        sentinel_prefix = "CHROMIUM_WASM_M3_DISK_CACHE"
+        result_values = DISK_CACHE_RESULT_VALUES
     else:
         return
 

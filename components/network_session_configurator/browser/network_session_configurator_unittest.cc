@@ -853,8 +853,13 @@ TEST_F(NetworkSessionConfiguratorTest, DiskCacheExperimentBlockfileBackend) {
   scoped_feature_list_.Reset();
   scoped_feature_list_.InitAndEnableFeatureWithParameters(
       net::features::kDiskCacheBackendExperiment, {{"backend", "blockfile"}});
+#if BUILDFLAG(IS_WASM)
+  EXPECT_EQ(net::URLRequestContextBuilder::HttpCacheParams::DISK_SIMPLE,
+            ChooseCacheType());
+#else
   EXPECT_EQ(net::URLRequestContextBuilder::HttpCacheParams::DISK_BLOCKFILE,
             ChooseCacheType());
+#endif
 }
 
 TEST_F(NetworkSessionConfiguratorTest, DiskCacheExperimentDefaultBackend) {

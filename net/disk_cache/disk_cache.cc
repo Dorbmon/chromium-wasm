@@ -25,7 +25,6 @@
 #include "net/base/net_errors.h"
 #include "net/disk_cache/backend_cleanup_tracker.h"
 #include "net/disk_cache/basic_cache_file.h"
-#include "net/disk_cache/blockfile/backend_impl.h"
 #include "net/disk_cache/buildflags.h"
 #include "net/disk_cache/cache_encryption_delegate.h"
 #include "net/disk_cache/cache_util.h"
@@ -35,6 +34,10 @@
 #include "net/disk_cache/simple/simple_file_enumerator.h"
 #include "net/disk_cache/simple/simple_util.h"
 #include "net/disk_cache/trivial_cache_entry_hasher.h"
+
+#if !BUILDFLAG(IS_WASM)
+#include "net/disk_cache/blockfile/backend_impl.h"
+#endif
 
 #if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
 #include "net/disk_cache/sql/sql_backend_impl.h"
@@ -153,7 +156,7 @@ CacheCreator::CacheCreator(
 CacheCreator::~CacheCreator() = default;
 
 void CacheCreator::Run() {
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   static const bool kSimpleBackendIsDefault = true;
 #else
   static const bool kSimpleBackendIsDefault = false;
@@ -206,8 +209,8 @@ void CacheCreator::Run() {
   }
 #endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 
-// Avoid references to blockfile functions on Android to reduce binary size.
-#if BUILDFLAG(IS_ANDROID)
+// Avoid references to blockfile functions on platforms that cannot select it.
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WASM)
   FailAttempt();
 #else
   auto cache = std::make_unique<disk_cache::BackendImpl>(
@@ -518,19 +521,29 @@ void FlushCacheThreadForTesting() {
   // For simple backend.
   base::ThreadPoolInstance::Get()->FlushForTesting();
 
+#if !BUILDFLAG(IS_WASM)
   // Block backend.
   BackendImpl::FlushForTesting();
+#endif
 }
 
 void FlushCacheThreadAsynchronouslyForTesting(base::OnceClosure callback) {
-  auto repeating_callback = base::BarrierClosure(2, std::move(callback));
+#if BUILDFLAG(IS_WASM)
+  constexpr int kBackendCount = 1;
+#else
+  constexpr int kBackendCount = 2;
+#endif
+  auto repeating_callback =
+      base::BarrierClosure(kBackendCount, std::move(callback));
 
   // For simple backend.
   base::ThreadPoolInstance::Get()->FlushAsyncForTesting(  // IN-TEST
       base::BindPostTaskToCurrentDefault(repeating_callback));
 
+#if !BUILDFLAG(IS_WASM)
   // Block backend.
   BackendImpl::FlushAsynchronouslyForTesting(repeating_callback);
+#endif
 }
 
 int64_t Backend::CalculateSizeOfEntriesBetween(

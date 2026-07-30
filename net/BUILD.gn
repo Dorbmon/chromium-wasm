@@ -1535,6 +1535,8 @@ component("net") {
       "base/network_interfaces_wasm.cc",
       "base/platform_mime_util_wasm.cc",
       "cert/test_root_certs_builtin.cc",
+      "disk_cache/cache_util_wasm.cc",
+      "disk_cache/simple/simple_util_wasm.cc",
       "http/url_security_manager_wasm.cc",
       "socket/socket_options_wasm.cc",
       "socket/tcp_socket_wasm.cc",
@@ -1546,6 +1548,27 @@ component("net") {
       sources += [ "cert/internal/system_trust_store_wasm.cc" ]
     }
     sources -= [ "socket/socket_options.cc" ]
+
+    # The blockfile backend requires writable MAP_SHARED mappings. Emscripten's
+    # MEMFS cannot provide that coherence contract, so Wasm uses Chromium's
+    # base::File-backed simple cache exclusively.
+    sources -= [
+      "disk_cache/blockfile/addr.cc",
+      "disk_cache/blockfile/backend_impl.cc",
+      "disk_cache/blockfile/bitmap.cc",
+      "disk_cache/blockfile/block_files.cc",
+      "disk_cache/blockfile/disk_format.cc",
+      "disk_cache/blockfile/entry_impl.cc",
+      "disk_cache/blockfile/eviction.cc",
+      "disk_cache/blockfile/file.cc",
+      "disk_cache/blockfile/file_lock.cc",
+      "disk_cache/blockfile/in_flight_backend_io.cc",
+      "disk_cache/blockfile/in_flight_io.cc",
+      "disk_cache/blockfile/mapped_file.cc",
+      "disk_cache/blockfile/rankings.cc",
+      "disk_cache/blockfile/sparse_control.cc",
+      "disk_cache/blockfile/stats.cc",
+    ]
   }
 
   if (is_posix || is_fuchsia) {
