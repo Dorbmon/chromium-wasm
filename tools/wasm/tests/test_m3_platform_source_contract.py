@@ -11,6 +11,39 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3PlatformSourceContractTest(unittest.TestCase):
+    def test_storage_file_paths_round_trip_as_utf8_on_wasm(
+        self,
+    ) -> None:
+        file_system_util = source(
+            "storage/common/file_system/file_system_util.cc"
+        )
+        encode = file_system_util.split(
+            "std::string FilePathToString", 1
+        )[1].split("base::FilePath StringToFilePath", 1)[0]
+        decode = file_system_util.split(
+            "base::FilePath StringToFilePath", 1
+        )[1].split("bool GetFileSystemPublicType", 1)[0]
+
+        wasm_encode = encode.split("#elif BUILDFLAG(IS_WASM)", 1)[1].split(
+            "#endif", 1
+        )[0]
+        wasm_decode = decode.split("#elif BUILDFLAG(IS_WASM)", 1)[1].split(
+            "#endif", 1
+        )[0]
+        self.assertIn(
+            "Wasm filesystem paths are UTF-8 strings",
+            wasm_encode,
+        )
+        self.assertIn("return file_path.value();", wasm_encode)
+        self.assertIn(
+            "Preserve the UTF-8 bytes used by Emscripten",
+            wasm_decode,
+        )
+        self.assertIn(
+            "return base::FilePath(file_path_string);",
+            wasm_decode,
+        )
+
     def test_wasm_resource_bundle_uses_staged_data_packs(
         self,
     ) -> None:

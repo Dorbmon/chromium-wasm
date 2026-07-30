@@ -295,6 +295,10 @@ std::string FilePathToString(const base::FilePath& file_path) {
   return file_path.AsUTF8Unsafe();
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   return file_path.value();
+#elif BUILDFLAG(IS_WASM)
+  // Wasm filesystem paths are UTF-8 strings in Emscripten's virtual
+  // filesystem, matching FilePath's native string representation.
+  return file_path.value();
 #endif
 }
 
@@ -303,6 +307,10 @@ base::FilePath StringToFilePath(const std::string& file_path_string) {
 #if BUILDFLAG(IS_WIN)
   return base::FilePath::FromUTF8Unsafe(file_path_string);
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+  return base::FilePath(file_path_string);
+#elif BUILDFLAG(IS_WASM)
+  // Preserve the UTF-8 bytes used by Emscripten's virtual filesystem so this
+  // remains the inverse of FilePathToString().
   return base::FilePath(file_path_string);
 #endif
 }
