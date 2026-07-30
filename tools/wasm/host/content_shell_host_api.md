@@ -18,17 +18,29 @@ methods:
 - `shutdown()`
 
 Every method returns a Promise. M3 accepts only a deterministic `data:` URL.
-Input is intentionally not forwarded yet and returns:
+The M3 input control supports exactly one primary-button click:
 
 ```json
 {
-  "ok": false,
-  "code": "INPUT_UNSUPPORTED_UNTIL_M4",
-  "milestone": "M4"
+  "ok": true,
+  "accepted": true,
+  "code": "CLICK_POSTED",
+  "eventType": "click",
+  "x": 570,
+  "y": 468,
+  "button": 0
 }
 ```
 
-Returning success while dropping an event is a contract failure.
+The click is forwarded through Content's `RenderWidgetHost` input path. The
+fixture proves delivery with a trusted DOM `click` and a later compositor
+frame. After the trusted probe is observed, the runner forces a deterministic
+799×600 resize and restores 800×600; both transitions must present newer
+frames before capture. This avoids assuming that the periodic probe runs
+before the CLICKED paint. Pointer movement, wheel, keyboard, IME, focus,
+capture, and the general Ozone event source remain the M4 gate. Returning
+success while dropping an event is a contract failure.
+
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
 Chromium reached `PreMainMessageLoopRun` and registered the UI runner before
@@ -42,6 +54,7 @@ The Emscripten module must expose these C ABI functions (directly or through
 ```c
 int chromium_wasm_host_resize(int width, int height, double device_pixel_ratio);
 int chromium_wasm_host_load_url(const char* data_url);
+int chromium_wasm_host_click(int x, int y, int button);
 int chromium_wasm_host_shutdown(void);
 ```
 
@@ -52,6 +65,15 @@ gate. For tests, equivalent functions may be supplied on
 releases its temporary UTF-8 allocation immediately after the call. Runtime
 exports sequence-hop to Chromium's application thread and must not block the
 browser JavaScript main thread.
+
+M3 resize accepts dimensions in `[1, 16384]`, at most 128 MiB total for the
+Skia raster backing plus its RGBA presentation copy, and device-pixel ratio 1.
+The runner proves an actual 640×480 frame before restoring the 800×600
+acceptance surface. `shutdown()` does not
+resolve when the task is merely posted: it waits for `ContentMain` and the
+shell delegate to finish, then requires Emscripten's `onExit` after it has
+requested termination of every running and prewarmed pthread worker. Both
+exit statuses must be zero and equal.
 
 ## Runtime-to-host bridge
 
@@ -90,6 +112,16 @@ bridge.reportPageProbe({
   timerTicks: 30,
   scrollTop: 48,
   formValue: "M3 form",
+  inputClicks: 1,
+  inputTrusted: true,
+  buttonText: "CLICKED",
+  buttonCenterX: 570,
+  buttonCenterY: 468,
+});
+
+bridge.reportProcessExit({
+  protocol: 1,
+  exitCode: 0,
 });
 ```
 
@@ -101,9 +133,9 @@ The page probe must be reported again as its timer count advances; readiness
 requires a probe with at least three ticks rather than treating initial script
 execution as sufficient evidence.
 
-Frame IDs must increase monotonically. The presentation bridge must copy pixel
-bytes before returning and must never retain a `HEAPU8` view across possible
-`WebAssembly.Memory` growth.
+Frame IDs must increase monotonically across surface recreation. The
+presentation bridge must copy pixel bytes before returning and must never
+retain a `HEAPU8` view across possible `WebAssembly.Memory` growth.
 
 ## Passing gate
 
@@ -113,14 +145,17 @@ boolean. It requires:
 - initialized runtime, shell, and software surface;
 - committed `data:` navigation and first visually nonempty paint;
 - a passing inner-page probe and at least three inner timer ticks;
+- one trusted primary-button click delivered to the fixture;
 - a compositor frame matching the 800×600 canvas;
+- a proved 799×600/800×600 redraw sequence after the interaction was first
+  observed;
 - at least 3 seconds of outer-page timer and animation-frame progress;
 - no timer gap above 250 ms and no fatal error.
 
-The runner then captures a PNG, verifies the structured M4 input rejection,
-requests deterministic shutdown, and compares the PNG with a reviewed
-baseline. The checked-in screenshot contract allows a per-channel delta of 2
-and at most 0.25% differing pixels.
+The runner then captures a PNG, waits for deterministic Content and Emscripten
+runtime shutdown, checks the ordered lifecycle logs, and compares the PNG with
+a reviewed baseline. The checked-in screenshot contract allows a per-channel
+delta of 2 and at most 0.25% differing pixels.
 
 `--capture-baseline PATH` writes a candidate only after every non-pixel runtime
 check passes and exits with status 2. It never reports the M3 gate as passing.

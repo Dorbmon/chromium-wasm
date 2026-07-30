@@ -300,7 +300,11 @@ def m3_smoke_url(
 
 
 def _require_number(
-    value: object, description: str, *, minimum: float | None = None
+    value: object,
+    description: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
 ) -> float:
     if (
         not isinstance(value, (int, float))
@@ -311,12 +315,48 @@ def _require_number(
     converted = float(value)
     if minimum is not None and converted < minimum:
         raise M0Error(f"{description} must be at least {minimum}")
+    if maximum is not None and converted > maximum:
+        raise M0Error(f"{description} must be at most {maximum}")
     return converted
 
 
 def _require_dict(value: object, description: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise M0Error(f"{description} must be an object")
+    return value
+
+
+def _require_safe_integer(
+    value: object,
+    description: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < -(1 << 53) + 1
+        or value > (1 << 53) - 1
+    ):
+        raise M0Error(f"{description} must be a safe integer")
+    if minimum is not None and value < minimum:
+        raise M0Error(f"{description} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise M0Error(f"{description} must be at most {maximum}")
+    return value
+
+
+def _require_linear_memory_bytes(value: object, description: str) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value <= 0
+        or value > (1 << 53) - 1
+    ):
+        raise M0Error(f"{description} must be a positive safe integer")
+    if value % (64 * 1024) != 0:
+        raise M0Error(f"{description} must be aligned to a 64 KiB page")
     return value
 
 
@@ -336,10 +376,14 @@ def validate_m3_result(
         "error": None,
     }
     for field, expected_value in expected.items():
-        if result.get(field) != expected_value:
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
             raise M0Error(
                 f"M3 result {field} mismatch: expected "
-                f"{expected_value!r}, got {result.get(field)!r}"
+                f"{expected_value!r}, got {actual_value!r}"
             )
 
     versions = _require_dict(result.get("versions"), "M3 versions")
@@ -382,6 +426,8 @@ def validate_m3_result(
 
     required_ready_fields = (
         "ready",
+        "baseReady",
+        "interactionReady",
         "runtimeInitialized",
         "shellReady",
         "surfaceReady",
@@ -396,10 +442,37 @@ def validate_m3_result(
         raise M0Error("M3 readiness reported fatal errors")
 
     frame = _require_dict(readiness.get("frame"), "M3 readiness frame")
-    _require_number(frame.get("id"), "M3 frame ID", minimum=1)
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M3 frame ID", minimum=1
+    )
     _require_number(frame.get("timestampMs"), "M3 frame timestamp", minimum=0)
-    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+    frame_width = _require_safe_integer(
+        frame.get("width"), "M3 frame width", minimum=1
+    )
+    frame_height = _require_safe_integer(
+        frame.get("height"), "M3 frame height", minimum=1
+    )
+    if frame_width != M3_WIDTH or frame_height != M3_HEIGHT:
         raise M0Error("M3 readiness frame dimensions do not match the canvas")
+    input_frame_id = _require_safe_integer(
+        readiness.get("inputPostedAtFrameId"),
+        "M3 input-post frame ID",
+        minimum=0,
+    )
+    interaction_frame_id = _require_safe_integer(
+        readiness.get("interactionObservedAtFrameId"),
+        "M3 interaction-observed frame ID",
+        minimum=0,
+    )
+    if interaction_frame_id < input_frame_id:
+        raise M0Error(
+            "M3 trusted interaction was observed before input was posted"
+        )
+    if frame_id <= interaction_frame_id:
+        raise M0Error(
+            "M3 screenshot readiness is not backed by a "
+            "post-interaction frame"
+        )
 
     page_probe = _require_dict(
         readiness.get("pageProbe"), "M3 page probe"
@@ -412,35 +485,119 @@ def validate_m3_result(
         "canvasReady": True,
         "scrollTop": 48,
         "formValue": "M3 form",
+        "inputClicks": 1,
+        "inputTrusted": True,
+        "buttonText": "CLICKED",
     }
     for field, expected_value in expected_probe.items():
-        if page_probe.get(field) != expected_value:
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
             raise M0Error(
                 f"M3 page probe {field} mismatch: expected "
-                f"{expected_value!r}, got {page_probe.get(field)!r}"
+                f"{expected_value!r}, got {actual_value!r}"
             )
-    _require_number(
+    _require_safe_integer(
         page_probe.get("timerTicks"), "M3 inner page timer ticks", minimum=3
+    )
+    button_center_x = _require_safe_integer(
+        page_probe.get("buttonCenterX"),
+        "M3 input target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    button_center_y = _require_safe_integer(
+        page_probe.get("buttonCenterY"),
+        "M3 input target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
     )
 
     input_result = _require_dict(
         result.get("inputResult"), "M3 input result"
     )
     expected_input = {
-        "ok": False,
-        "code": "INPUT_UNSUPPORTED_UNTIL_M4",
-        "milestone": "M4",
+        "ok": True,
+        "accepted": True,
+        "code": "CLICK_POSTED",
+        "eventType": "click",
     }
     for field, expected_value in expected_input.items():
-        if input_result.get(field) != expected_value:
+        actual_value = input_result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
             raise M0Error(
                 f"M3 input result {field} mismatch: expected "
-                f"{expected_value!r}, got {input_result.get(field)!r}"
+                f"{expected_value!r}, got {actual_value!r}"
             )
+    _require_safe_integer(
+        input_result.get("button"),
+        "M3 input button",
+        minimum=0,
+        maximum=0,
+    )
+    input_x = _require_safe_integer(
+        input_result.get("x"),
+        "M3 input result x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    input_y = _require_safe_integer(
+        input_result.get("y"),
+        "M3 input result y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    if (
+        input_x != button_center_x
+        or input_y != button_center_y
+    ):
+        raise M0Error("M3 input result does not target the fixture button")
 
     shutdown = _require_dict(result.get("shutdown"), "M3 shutdown result")
-    if shutdown.get("ok") is not True:
-        raise M0Error("M3 runtime did not accept deterministic shutdown")
+    expected_shutdown = {
+        "ok": True,
+        "accepted": True,
+        "complete": True,
+    }
+    for field, expected_value in expected_shutdown.items():
+        actual_value = shutdown.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M3 shutdown {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    for field in ("exitCode", "runtimeExitCode"):
+        exit_code = _require_safe_integer(
+            shutdown.get(field), f"M3 shutdown {field}"
+        )
+        if exit_code != 0:
+            raise M0Error(
+                f"M3 shutdown {field} mismatch: expected 0, "
+                f"got {exit_code!r}"
+            )
+    linear_memory = _require_dict(
+        shutdown.get("linearMemory"), "M3 shutdown linear memory"
+    )
+    initial_memory_bytes = _require_linear_memory_bytes(
+        linear_memory.get("initialBytes"),
+        "M3 initial linear memory bytes",
+    )
+    peak_memory_bytes = _require_linear_memory_bytes(
+        linear_memory.get("peakBytes"),
+        "M3 peak linear memory bytes",
+    )
+    if peak_memory_bytes < initial_memory_bytes:
+        raise M0Error(
+            "M3 peak linear memory bytes must be at least the initial bytes"
+        )
 
     logs = _require_dict(result.get("logs"), "M3 logs")
     for stream in ("host", "stdout", "stderr"):
@@ -453,6 +610,33 @@ def validate_m3_result(
     )
     if "abort:" in combined_logs.lower():
         raise M0Error("M3 logs contain a Wasm abort")
+    required_log_markers = (
+        "resize:640x480@1",
+        "resize:800x600@1",
+        "input:click:",
+        "resize:799x600@1",
+        "resize:800x600@1",
+        "shutdown:accepted",
+        "process:exit:0",
+        "runtime:exit:0",
+        "shutdown:complete",
+    )
+    host_logs = [str(line) for line in logs["host"]]
+    marker_cursor = 0
+    for marker in required_log_markers:
+        matching_position = next(
+            (
+                index
+                for index in range(marker_cursor, len(host_logs))
+                if marker in host_logs[index]
+            ),
+            None,
+        )
+        if matching_position is None:
+            if any(marker in line for line in host_logs):
+                raise M0Error("M3 lifecycle markers are out of order")
+            raise M0Error(f"M3 logs are missing lifecycle marker {marker!r}")
+        marker_cursor = matching_position + 1
 
     screenshot = _require_dict(result.get("screenshot"), "M3 screenshot")
     if (

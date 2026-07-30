@@ -236,6 +236,11 @@
     timerTicks: 0,
     scrollTop: 0,
     formValue: "",
+    inputClicks: 0,
+    inputTrusted: false,
+    buttonText: "READY",
+    buttonCenterX: 0,
+    buttonCenterY: 0,
   };
 
   window.__chromiumWasmM3Probe = () => JSON.stringify({...state});
@@ -270,12 +275,28 @@
     state.canvasReady = context.getImageData(20, 20, 1, 1).data[0] === 233;
 
     state.formValue = document.querySelector("#fixture-input").value;
+    const button = document.querySelector("button");
+    const buttonBounds = button.getBoundingClientRect();
+    state.buttonCenterX =
+      Math.floor(buttonBounds.left + buttonBounds.width / 2);
+    state.buttonCenterY =
+      Math.floor(buttonBounds.top + buttonBounds.height / 2);
+    button.addEventListener("click", (event) => {
+      state.inputClicks += 1;
+      state.inputTrusted = event.isTrusted;
+      button.textContent = "CLICKED";
+      state.buttonText = button.textContent;
+      document.documentElement.dataset.fixtureInput =
+        `${state.inputClicks}:${state.inputTrusted}`;
+    });
     state.ready =
       state.fontReady &&
       state.imageReady &&
       state.canvasReady &&
       state.scrollTop === 48 &&
-      state.formValue === "M3 form";
+      state.formValue === "M3 form" &&
+      state.buttonCenterX > 0 &&
+      state.buttonCenterY > 0;
     document.documentElement.dataset.fixtureReady = String(state.ready);
   }
 

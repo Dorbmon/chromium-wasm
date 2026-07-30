@@ -10,8 +10,11 @@ const REQUIRED_TIMER_TICKS = 60;
 const REQUIRED_ANIMATION_FRAMES = 30;
 const MAXIMUM_TIMER_GAP_MS = 250;
 const DEFAULT_RUNTIME_REGISTRATION_TIMEOUT_MS = 15000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15000;
 const DEFAULT_WIDTH = 800;
 const DEFAULT_HEIGHT = 600;
+const POST_INPUT_REDRAW_WIDTH = DEFAULT_WIDTH - 1;
+const WASM_PAGE_BYTES = 64 * 1024;
 
 let activeHost = null;
 const pendingBridgeReports = [];
@@ -57,6 +60,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportFatal(message) {
     deliverBridgeReport("_reportFatal", [message]);
+  },
+  reportProcessExit(report) {
+    deliverBridgeReport("_reportProcessExit", [report]);
   },
 });
 
@@ -142,6 +148,16 @@ export class ChromiumWasmM3Host {
   #navigation = {};
   #pageProbe = {};
   #frame = null;
+  #inputPostedAtFrameId = null;
+  #interactionObservedAtFrameId = null;
+  #processExit = null;
+  #processExitPromise;
+  #resolveProcessExit;
+  #runtimeExit = null;
+  #runtimeExitPromise;
+  #resolveRuntimeExit;
+  #exitReportSequence = 0;
+  #initialLinearMemoryBytes = null;
   #versions;
   #logs = {host: [], stdout: [], stderr: []};
   #heartbeatStartTime;
@@ -169,6 +185,12 @@ export class ChromiumWasmM3Host {
       v8: normalizeVersion(versions.v8),
       emscripten: normalizeVersion(versions.emscripten),
       port: normalizeVersion(versions.port),
+    });
+    this.#processExitPromise = new Promise((resolve) => {
+      this.#resolveProcessExit = resolve;
+    });
+    this.#runtimeExitPromise = new Promise((resolve) => {
+      this.#resolveRuntimeExit = resolve;
     });
     activeHost = this;
 
@@ -211,6 +233,15 @@ export class ChromiumWasmM3Host {
     cancelAnimationFrame(this.#animationFrameHandle);
   }
 
+  #releaseHost() {
+    this.#stopHeartbeat();
+    removeEventListener("error", this.#errorHandler);
+    removeEventListener("unhandledrejection", this.#rejectionHandler);
+    if (activeHost === this) {
+      activeHost = null;
+    }
+  }
+
   #heartbeat() {
     return {
       elapsedMs: performance.now() - this.#heartbeatStartTime,
@@ -229,6 +260,19 @@ export class ChromiumWasmM3Host {
     if (this.#lifecycle !== "running" || !this.#module) {
       throw new Error(`${operation} requires an initialized M3 runtime`);
     }
+  }
+
+  #sampleLinearMemoryBytes(description) {
+    const byteLength = this.#module?.HEAPU8?.buffer?.byteLength;
+    if (!Number.isSafeInteger(byteLength) || byteLength <= 0) {
+      throw new Error(
+        `${description} linear memory must have a positive safe byte length`);
+    }
+    if (byteLength % WASM_PAGE_BYTES !== 0) {
+      throw new Error(
+        `${description} linear memory must be aligned to 64 KiB pages`);
+    }
+    return byteLength;
   }
 
   #findCommand(name) {
@@ -323,7 +367,9 @@ export class ChromiumWasmM3Host {
     }
     const moduleOptions = {
       canvas: this.#canvas,
-      noExitRuntime: true,
+      // EXIT_RUNTIME tears down the prewarmed pthread pool after main returns.
+      // Keep this false so shutdown can require Emscripten's final onExit.
+      noExitRuntime: false,
       locateFile: (path) => new URL(path, resolvedModule).href,
       print: (line) => this.#logs.stdout.push(String(line)),
       printErr: (line) => this.#logs.stderr.push(String(line)),
@@ -335,10 +381,12 @@ export class ChromiumWasmM3Host {
         this._reportFatal(`abort: ${String(reason)}`);
       },
       onExit: (code) => {
-        this.#recordHost(`runtime:exit:${Number(code)}`);
+        this._reportRuntimeExit(code);
       },
     };
     this.#module = await namespace.default(moduleOptions);
+    this.#initialLinearMemoryBytes =
+      this.#sampleLinearMemoryBytes("initial");
     this.#module.chromiumWasmHostBridge =
       globalThis.__chromiumWasmHostBridgeV1;
     this.#runtimeInitialized = true;
@@ -371,26 +419,22 @@ export class ChromiumWasmM3Host {
     this.#requireRunning("resize");
     checkInteger(width, "width", 1, 16384);
     checkInteger(height, "height", 1, 16384);
-    if (
-      !Number.isFinite(devicePixelRatio) ||
-      devicePixelRatio <= 0 ||
-      devicePixelRatio > 8
-    ) {
-      throw new Error("devicePixelRatio is out of range");
+    if (devicePixelRatio !== 1) {
+      throw new Error("M3 only supports devicePixelRatio 1");
     }
-    this.#canvas.width = width;
-    this.#canvas.height = height;
-    this.#canvas.style.width = `${width}px`;
-    this.#canvas.style.height = `${height}px`;
     const result = this.#callExport(
       "chromium_wasm_host_resize",
       "number",
       ["number", "number", "number"],
       [width, height, devicePixelRatio],
     );
-    if (Number(result) !== 1) {
+    if (result !== 1) {
       throw new Error(`runtime rejected resize with status ${String(result)}`);
     }
+    this.#canvas.width = width;
+    this.#canvas.height = height;
+    this.#canvas.style.width = `${width}px`;
+    this.#canvas.style.height = `${height}px`;
     this.#recordHost(`resize:${width}x${height}@${devicePixelRatio}`);
     return {ok: true, width, height, devicePixelRatio};
   }
@@ -407,7 +451,7 @@ export class ChromiumWasmM3Host {
       ["string"],
       [url],
     );
-    if (Number(result) !== 1) {
+    if (result !== 1) {
       throw new Error(
         `runtime rejected data: navigation with status ${String(result)}`);
     }
@@ -416,13 +460,59 @@ export class ChromiumWasmM3Host {
   }
 
   async injectInput(event) {
-    // M3 proves presentation and liveness. Event forwarding is the M4 gate.
+    this.#requireRunning("injectInput");
+    if (
+      !event ||
+      event.type !== "click" ||
+      event.button !== 0
+    ) {
+      throw new Error("M3 input only supports a primary-button click");
+    }
+    const x = checkInteger(event.x, "input x", 0, DEFAULT_WIDTH - 1);
+    const y = checkInteger(event.y, "input y", 0, DEFAULT_HEIGHT - 1);
+    if (
+      this.#pageProbe.inputClicks !== 0 ||
+      this.#pageProbe.inputTrusted !== false ||
+      this.#pageProbe.buttonText !== "READY"
+    ) {
+      throw new Error(
+        "M3 input requires a pristine READY fixture probe");
+    }
+    const previousInputPostedAtFrameId = this.#inputPostedAtFrameId;
+    const previousInteractionObservedAtFrameId =
+      this.#interactionObservedAtFrameId;
+    this.#inputPostedAtFrameId = this.#frame?.id ?? 0;
+    this.#interactionObservedAtFrameId = null;
+    let result;
+    try {
+      result = this.#callExport(
+        "chromium_wasm_host_click",
+        "number",
+        ["number", "number", "number"],
+        [x, y, event.button],
+      );
+    } catch (error) {
+      this.#inputPostedAtFrameId = previousInputPostedAtFrameId;
+      this.#interactionObservedAtFrameId =
+        previousInteractionObservedAtFrameId;
+      throw error;
+    }
+    if (result !== 1) {
+      this.#inputPostedAtFrameId = previousInputPostedAtFrameId;
+      this.#interactionObservedAtFrameId =
+        previousInteractionObservedAtFrameId;
+      throw new Error(
+        `runtime rejected primary click with status ${String(result)}`);
+    }
+    this.#recordHost(`input:click:${x},${y}`);
     return {
-      ok: false,
-      code: "INPUT_UNSUPPORTED_UNTIL_M4",
-      milestone: "M4",
-      eventType:
-        event && typeof event.type === "string" ? event.type : "unknown",
+      ok: true,
+      accepted: true,
+      code: "CLICK_POSTED",
+      eventType: "click",
+      x,
+      y,
+      button: 0,
     };
   }
 
@@ -454,7 +544,7 @@ export class ChromiumWasmM3Host {
       this.#frame.width === this.#canvas.width &&
       this.#frame.height === this.#canvas.height;
     const pageTimerTicks = Number(this.#pageProbe.timerTicks);
-    const ready =
+    const baseReady =
       this.#runtimeInitialized &&
       this.#reportedReadiness.shellReady === true &&
       this.#reportedReadiness.surfaceReady === true &&
@@ -463,7 +553,18 @@ export class ChromiumWasmM3Host {
       this.#pageProbe.ready === true &&
       Number.isFinite(pageTimerTicks) &&
       pageTimerTicks >= 3 &&
-      Boolean(frameMatchesCanvas) &&
+      Boolean(frameMatchesCanvas);
+    const interactionReady =
+      this.#pageProbe.inputClicks === 1 &&
+      this.#pageProbe.inputTrusted === true &&
+      this.#pageProbe.buttonText === "CLICKED" &&
+      Number.isSafeInteger(this.#inputPostedAtFrameId) &&
+      Number.isSafeInteger(this.#interactionObservedAtFrameId) &&
+      Boolean(this.#frame) &&
+      this.#frame.id > this.#interactionObservedAtFrameId;
+    const ready =
+      baseReady &&
+      interactionReady &&
       heartbeat.elapsedMs >= REQUIRED_RUNTIME_MS &&
       heartbeat.timerDelta >= REQUIRED_TIMER_TICKS &&
       heartbeat.animationFrameDelta >= REQUIRED_ANIMATION_FRAMES &&
@@ -472,6 +573,8 @@ export class ChromiumWasmM3Host {
     return {
       protocol: HOST_PROTOCOL,
       ready,
+      baseReady,
+      interactionReady,
       runtimeInitialized: this.#runtimeInitialized,
       shellReady: this.#reportedReadiness.shellReady === true,
       surfaceReady: this.#reportedReadiness.surfaceReady === true,
@@ -482,6 +585,8 @@ export class ChromiumWasmM3Host {
       navigation: clone(this.#navigation),
       pageProbe: clone(this.#pageProbe),
       frame: this.#frame ? clone(this.#frame) : null,
+      inputPostedAtFrameId: this.#inputPostedAtFrameId,
+      interactionObservedAtFrameId: this.#interactionObservedAtFrameId,
       fatalErrors: clone(this.#fatalErrors),
       heartbeat,
     };
@@ -491,21 +596,96 @@ export class ChromiumWasmM3Host {
     return clone(this.#logs);
   }
 
-  async shutdown() {
+  async shutdown(timeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS) {
     this.#requireRunning("shutdown");
-    const result = this.#callExport(
-      "chromium_wasm_host_shutdown", "number", [], []);
-    if (Number(result) !== 1) {
+    if (
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs < 1000 ||
+      timeoutMs > 60000
+    ) {
+      throw new Error("shutdown timeoutMs is out of range");
+    }
+    this.#lifecycle = "shutting-down";
+    let result;
+    try {
+      result = this.#callExport(
+        "chromium_wasm_host_shutdown", "number", [], []);
+    } catch (error) {
+      this.#lifecycle = "running";
+      throw error;
+    }
+    if (result !== 1) {
+      this.#lifecycle = "running";
       throw new Error(
         `runtime rejected shutdown with status ${String(result)}`);
     }
-    this.#lifecycle = "shutdown";
     this.#recordHost("shutdown:accepted");
-    this.#stopHeartbeat();
-    removeEventListener("error", this.#errorHandler);
-    removeEventListener("unhandledrejection", this.#rejectionHandler);
-    activeHost = null;
-    return {ok: true, accepted: true};
+    let timeoutHandle;
+    const timeout = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(
+          new Error(
+            "Content Shell did not complete shutdown before timeout"));
+      }, timeoutMs);
+    });
+    try {
+      const [processExit, runtimeExit] = await Promise.race([
+        Promise.all([
+          this.#processExitPromise,
+          this.#runtimeExitPromise,
+        ]),
+        timeout,
+      ]);
+      if (processExit.exitCode !== 0) {
+        throw new Error(
+          `Content Shell exited with status ${processExit.exitCode}`);
+      }
+      if (runtimeExit.exitCode !== processExit.exitCode) {
+        throw new Error(
+          "Emscripten runtime exit did not match Content Shell exit");
+      }
+      if (runtimeExit.sequence <= processExit.sequence) {
+        throw new Error(
+          "Emscripten runtime exited before Content Shell completed");
+      }
+      // Emscripten calls onExit only after requesting termination of every
+      // running and prewarmed pthread worker. Let those asynchronous browser
+      // worker terminations and any trailing rejection surface before
+      // certifying teardown.
+      await delay(25);
+      if (this.#fatalErrors.length > 0) {
+        throw new Error(
+          `Content Shell teardown reported: ${this.#fatalErrors.join("; ")}`);
+      }
+      // WebAssembly linear memory cannot shrink, so a fresh post-teardown
+      // view reports the peak byte length reached during this lifecycle.
+      const peakLinearMemoryBytes =
+        this.#sampleLinearMemoryBytes("post-shutdown");
+      if (peakLinearMemoryBytes < this.#initialLinearMemoryBytes) {
+        throw new Error(
+          "post-shutdown linear memory is smaller than its initial size");
+      }
+      this.#lifecycle = "shutdown";
+      this.#recordHost("shutdown:complete");
+      return {
+        ok: true,
+        accepted: true,
+        complete: true,
+        exitCode: processExit.exitCode,
+        runtimeExitCode: runtimeExit.exitCode,
+        linearMemory: {
+          initialBytes: this.#initialLinearMemoryBytes,
+          peakBytes: peakLinearMemoryBytes,
+        },
+      };
+    } catch (error) {
+      this.#lifecycle = "failed";
+      this.#recordHost(`shutdown:failed:${String(error)}`);
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      this.#releaseHost();
+    }
   }
 
   _reportFrame(value) {
@@ -582,8 +762,67 @@ export class ChromiumWasmM3Host {
         throw new Error("page probe identity mismatch");
       }
       this.#pageProbe = clone(report);
+      if (
+        this.#interactionObservedAtFrameId === null &&
+        Number.isSafeInteger(this.#inputPostedAtFrameId) &&
+        report.inputClicks === 1 &&
+        report.inputTrusted === true &&
+        report.buttonText === "CLICKED"
+      ) {
+        this.#interactionObservedAtFrameId = this.#frame?.id ?? 0;
+      }
     } catch (error) {
       this._reportFatal(`invalid page probe: ${String(error)}`);
+    }
+  }
+
+  _reportProcessExit(value) {
+    try {
+      const report = asReport(value, "process exit report");
+      const exitCode = report.exitCode;
+      if (
+        report.protocol !== HOST_PROTOCOL ||
+        !Number.isSafeInteger(exitCode) ||
+        this.#processExit
+      ) {
+        throw new Error("process exit report is invalid or duplicated");
+      }
+      this.#processExit = {
+        exitCode,
+        sequence: ++this.#exitReportSequence,
+      };
+      this.#recordHost(`process:exit:${exitCode}`);
+      if (exitCode !== 0) {
+        this._reportFatal(`Content Shell exited with status ${exitCode}`);
+      } else if (this.#lifecycle !== "shutting-down") {
+        this._reportFatal("Content Shell exited before shutdown was requested");
+      }
+      this.#resolveProcessExit(this.#processExit);
+    } catch (error) {
+      this._reportFatal(`invalid process exit report: ${String(error)}`);
+    }
+  }
+
+  _reportRuntimeExit(value) {
+    try {
+      const exitCode = value;
+      if (!Number.isSafeInteger(exitCode) || this.#runtimeExit) {
+        throw new Error("runtime exit report is invalid or duplicated");
+      }
+      this.#runtimeExit = {
+        exitCode,
+        sequence: ++this.#exitReportSequence,
+      };
+      this.#recordHost(`runtime:exit:${exitCode}`);
+      if (exitCode !== 0) {
+        this._reportFatal(`Emscripten runtime exited with status ${exitCode}`);
+      } else if (this.#lifecycle !== "shutting-down") {
+        this._reportFatal(
+          "Emscripten runtime exited before shutdown was requested");
+      }
+      this.#resolveRuntimeExit(this.#runtimeExit);
+    } catch (error) {
+      this._reportFatal(`invalid runtime exit report: ${String(error)}`);
     }
   }
 
@@ -662,12 +901,121 @@ export async function runM3SmokeFromQuery() {
       modulePath: parameters.get("module"),
       readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
     });
+    await host.resize(640, 480, 1);
+    let resizedFrame = null;
+    while (performance.now() < deadline) {
+      const resizeReadiness = await host.readiness();
+      if (
+        resizeReadiness.frame?.width === 640 &&
+        resizeReadiness.frame?.height === 480
+      ) {
+        resizedFrame = resizeReadiness.frame;
+        break;
+      }
+      await delay(25);
+    }
+    if (!resizedFrame) {
+      throw new Error("M3 runtime did not present the 640x480 resize probe");
+    }
     await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    let restoredFrame = null;
+    while (performance.now() < deadline) {
+      const resizeReadiness = await host.readiness();
+      if (
+        resizeReadiness.frame?.id > resizedFrame.id &&
+        resizeReadiness.frame?.width === DEFAULT_WIDTH &&
+        resizeReadiness.frame?.height === DEFAULT_HEIGHT
+      ) {
+        restoredFrame = resizeReadiness.frame;
+        break;
+      }
+      await delay(25);
+    }
+    if (!restoredFrame) {
+      throw new Error("M3 runtime did not restore the 800x600 surface");
+    }
     const fixtureURL = await buildFixtureDataURL(
       parameters.get("fixture"), parameters.get("font"));
     await host.loadURL(fixtureURL);
 
     let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        `M3 base readiness timeout: ${JSON.stringify(readiness)}`);
+    }
+
+    const buttonCenterX = Number(readiness.pageProbe.buttonCenterX);
+    const buttonCenterY = Number(readiness.pageProbe.buttonCenterY);
+    const inputResult = await host.injectInput({
+      type: "click",
+      x: buttonCenterX,
+      y: buttonCenterY,
+      button: 0,
+    });
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (
+        readiness.pageProbe.inputClicks === 1 &&
+        readiness.pageProbe.inputTrusted === true &&
+        readiness.pageProbe.buttonText === "CLICKED" &&
+        Number.isSafeInteger(readiness.interactionObservedAtFrameId)
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!Number.isSafeInteger(readiness?.interactionObservedAtFrameId)) {
+      throw new Error(
+        `M3 trusted input observation timeout: ${JSON.stringify(readiness)}`);
+    }
+    const interactionObservedAtFrameId =
+      readiness.interactionObservedAtFrameId;
+
+    // The CLICKED paint can already be the current compositor frame when the
+    // periodic page probe observes it. Force and prove a later runtime redraw
+    // so the screenshot cannot be backed only by a pre-observation frame.
+    await host.resize(POST_INPUT_REDRAW_WIDTH, DEFAULT_HEIGHT, 1);
+    let redrawFrame = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (
+        readiness.frame?.id > interactionObservedAtFrameId &&
+        readiness.frame?.width === POST_INPUT_REDRAW_WIDTH &&
+        readiness.frame?.height === DEFAULT_HEIGHT
+      ) {
+        redrawFrame = readiness.frame;
+        break;
+      }
+      await delay(25);
+    }
+    if (!redrawFrame) {
+      throw new Error("M3 runtime did not present the post-input redraw");
+    }
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    let postInputRestoredFrame = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (
+        readiness.frame?.id > redrawFrame.id &&
+        readiness.frame?.width === DEFAULT_WIDTH &&
+        readiness.frame?.height === DEFAULT_HEIGHT
+      ) {
+        postInputRestoredFrame = readiness.frame;
+        break;
+      }
+      await delay(25);
+    }
+    if (!postInputRestoredFrame) {
+      throw new Error(
+        "M3 runtime did not restore the surface after the post-input redraw");
+    }
     while (performance.now() < deadline) {
       readiness = await host.readiness();
       if (readiness.ready) {
@@ -677,41 +1025,40 @@ export async function runM3SmokeFromQuery() {
     }
     if (!readiness?.ready) {
       throw new Error(
-        `M3 readiness timeout: ${JSON.stringify(readiness)}`);
+        `M3 post-input readiness timeout: ${JSON.stringify(readiness)}`);
     }
 
     const screenshot = await host.requestScreenshot();
-    const inputResult = await host.injectInput({
-      type: "pointerDown",
-      x: 16,
-      y: 16,
-      button: 0,
-    });
     const heartbeat = readiness.heartbeat;
-    const logsBeforeShutdown = await host.logs();
-    const shutdown = await host.shutdown();
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
     const logsAfterShutdown = await host.logs();
-    const logs = {
-      host: logsAfterShutdown.host,
-      stdout: logsBeforeShutdown.stdout,
-      stderr: logsBeforeShutdown.stderr,
-    };
+    const logs = logsAfterShutdown;
 
     const checks = {
       crossOriginIsolated,
       sharedArrayBuffer: typeof SharedArrayBuffer === "function",
       canvasFocused: document.activeElement === canvas,
       readiness: readiness.ready === true,
-      inputUnsupported:
-        inputResult.ok === false &&
-        inputResult.code === "INPUT_UNSUPPORTED_UNTIL_M4" &&
-        inputResult.milestone === "M4",
+      inputDelivered:
+        inputResult.ok === true &&
+        inputResult.accepted === true &&
+        inputResult.code === "CLICK_POSTED" &&
+        readiness.pageProbe.inputClicks === 1 &&
+        readiness.pageProbe.inputTrusted === true &&
+        readiness.pageProbe.buttonText === "CLICKED" &&
+        readiness.interactionReady === true,
       screenshot:
         screenshot.mimeType === "image/png" &&
         screenshot.width === DEFAULT_WIDTH &&
         screenshot.height === DEFAULT_HEIGHT &&
         screenshot.dataBase64.length > 0,
-      shutdown: shutdown.ok === true,
+      shutdown:
+        shutdown.ok === true &&
+        shutdown.complete === true &&
+        shutdown.exitCode === 0 &&
+        shutdown.runtimeExitCode === 0,
       versions: Object.values(versions).every((value) => value !== "missing"),
     };
     const failedChecks = Object.entries(checks)
@@ -740,10 +1087,14 @@ export async function runM3SmokeFromQuery() {
     if (host) {
       try {
         result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += `; diagnostics: ${String(diagnosticError)}`;
+      }
+      try {
         result.readiness = await host.readiness();
         result.heartbeat = result.readiness.heartbeat;
       } catch (diagnosticError) {
-        result.error += `; diagnostics: ${String(diagnosticError)}`;
+        result.error += `; readiness diagnostics: ${String(diagnosticError)}`;
       }
     }
   }

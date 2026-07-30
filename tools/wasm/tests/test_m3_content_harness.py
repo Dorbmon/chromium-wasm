@@ -88,6 +88,8 @@ def passing_result(
         "versions": versions,
         "readiness": {
             "ready": True,
+            "baseReady": True,
+            "interactionReady": True,
             "runtimeInitialized": True,
             "shellReady": True,
             "surfaceReady": True,
@@ -96,11 +98,13 @@ def passing_result(
             "pageReady": True,
             "fatalErrors": [],
             "frame": {
-                "id": 7,
+                "id": 9,
                 "width": 800,
                 "height": 600,
                 "timestampMs": 3150.5,
             },
+            "inputPostedAtFrameId": 8,
+            "interactionObservedAtFrameId": 8,
             "pageProbe": {
                 "protocol": 1,
                 "fixture": "chromium-wasm-m3-static-v1",
@@ -111,15 +115,23 @@ def passing_result(
                 "timerTicks": 31,
                 "scrollTop": 48,
                 "formValue": "M3 form",
+                "inputClicks": 1,
+                "inputTrusted": True,
+                "buttonText": "CLICKED",
+                "buttonCenterX": 570,
+                "buttonCenterY": 468,
             },
             "heartbeat": heartbeat,
         },
         "heartbeat": heartbeat,
         "inputResult": {
-            "ok": False,
-            "code": "INPUT_UNSUPPORTED_UNTIL_M4",
-            "milestone": "M4",
-            "eventType": "pointerDown",
+            "ok": True,
+            "accepted": True,
+            "code": "CLICK_POSTED",
+            "eventType": "click",
+            "x": 570,
+            "y": 468,
+            "button": 0,
         },
         "screenshot": {
             "ok": True,
@@ -129,11 +141,32 @@ def passing_result(
             "dataBase64": base64.b64encode(png_bytes).decode("ascii"),
         },
         "logs": {
-            "host": ["initialize:complete", "shutdown:accepted"],
+            "host": [
+                "initialize:complete",
+                "resize:640x480@1",
+                "resize:800x600@1",
+                "input:click:570,468",
+                "resize:799x600@1",
+                "resize:800x600@1",
+                "shutdown:accepted",
+                "process:exit:0",
+                "runtime:exit:0",
+                "shutdown:complete",
+            ],
             "stdout": [],
             "stderr": [],
         },
-        "shutdown": {"ok": True, "accepted": True},
+        "shutdown": {
+            "ok": True,
+            "accepted": True,
+            "complete": True,
+            "exitCode": 0,
+            "runtimeExitCode": 0,
+            "linearMemory": {
+                "initialBytes": 16 * 1024 * 1024,
+                "peakBytes": 24 * 1024 * 1024,
+            },
+        },
         "failedChecks": [],
         "error": None,
     }
@@ -167,6 +200,9 @@ class M3FixtureTest(unittest.TestCase):
             "<form",
             "<input",
             "setInterval",
+            'button.addEventListener("click"',
+            "event.isTrusted",
+            'button.textContent = "CLICKED"',
             "__chromiumWasmM3Probe",
             "chromium-wasm-m3-static-v1",
         )
@@ -304,10 +340,123 @@ class M3ResultValidationTest(unittest.TestCase):
             self.png,
         )
 
-    def test_fake_input_success_is_rejected(self) -> None:
+    def test_missing_real_input_delivery_is_rejected(self) -> None:
         result, versions = passing_result(self.png)
-        result["inputResult"]["ok"] = True  # type: ignore[index]
+        result["inputResult"]["ok"] = False  # type: ignore[index]
         with self.assertRaisesRegex(M0Error, "input result ok mismatch"):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_untrusted_fixture_click_is_rejected(self) -> None:
+        result, versions = passing_result(self.png)
+        page_probe = result["readiness"]["pageProbe"]  # type: ignore[index]
+        page_probe["inputTrusted"] = False
+        with self.assertRaisesRegex(M0Error, "inputTrusted mismatch"):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_pre_input_frame_is_rejected(self) -> None:
+        result, versions = passing_result(self.png)
+        result["readiness"]["frame"]["id"] = 8  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "post-interaction frame"):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_frame_ids_must_be_safe_integers(self) -> None:
+        for value in (9.0, True, 1 << 53):
+            with self.subTest(value=value):
+                result, versions = passing_result(self.png)
+                result["readiness"]["frame"]["id"] = value  # type: ignore[index]
+                with self.assertRaisesRegex(M0Error, "safe integer"):
+                    m3_content_server.validate_m3_result(
+                        result, expected_versions=versions
+                    )
+
+    def test_interaction_observed_before_input_is_rejected(self) -> None:
+        result, versions = passing_result(self.png)
+        result["readiness"]["interactionObservedAtFrameId"] = 7  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "before input was posted"):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_posted_but_incomplete_shutdown_is_rejected(self) -> None:
+        result, versions = passing_result(self.png)
+        result["shutdown"]["complete"] = False  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "shutdown complete mismatch"):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_missing_runtime_exit_is_rejected(self) -> None:
+        result, versions = passing_result(self.png)
+        del result["shutdown"]["runtimeExitCode"]  # type: ignore[index]
+        with self.assertRaisesRegex(
+            M0Error, "shutdown runtimeExitCode must be a safe integer"
+        ):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_exit_codes_must_be_safe_integers(self) -> None:
+        for value in (False, 0.0, 1 << 53):
+            with self.subTest(value=value):
+                result, versions = passing_result(self.png)
+                result["shutdown"]["exitCode"] = value  # type: ignore[index]
+                with self.assertRaisesRegex(M0Error, "safe integer"):
+                    m3_content_server.validate_m3_result(
+                        result, expected_versions=versions
+                    )
+
+    def test_linear_memory_bytes_must_be_positive_safe_integers(self) -> None:
+        cases = (
+            ("initialBytes", 0),
+            ("initialBytes", float(64 * 1024)),
+            ("peakBytes", 1 << 53),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                result, versions = passing_result(self.png)
+                linear_memory = result["shutdown"]["linearMemory"]  # type: ignore[index]
+                linear_memory[field] = value
+                with self.assertRaisesRegex(
+                    M0Error, "positive safe integer"
+                ):
+                    m3_content_server.validate_m3_result(
+                        result, expected_versions=versions
+                    )
+
+    def test_linear_memory_bytes_must_be_wasm_page_aligned(self) -> None:
+        result, versions = passing_result(self.png)
+        linear_memory = result["shutdown"]["linearMemory"]  # type: ignore[index]
+        linear_memory["peakBytes"] += 1
+        with self.assertRaisesRegex(M0Error, "aligned to a 64 KiB page"):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_peak_linear_memory_cannot_be_smaller_than_initial(self) -> None:
+        result, versions = passing_result(self.png)
+        linear_memory = result["shutdown"]["linearMemory"]  # type: ignore[index]
+        linear_memory["peakBytes"] = 8 * 1024 * 1024
+        with self.assertRaisesRegex(M0Error, "at least the initial bytes"):
+            m3_content_server.validate_m3_result(
+                result, expected_versions=versions
+            )
+
+    def test_out_of_order_runtime_exit_is_rejected(self) -> None:
+        result, versions = passing_result(self.png)
+        host_logs = result["logs"]["host"]  # type: ignore[index]
+        process_index = host_logs.index("process:exit:0")
+        runtime_index = host_logs.index("runtime:exit:0")
+        host_logs[process_index], host_logs[runtime_index] = (
+            host_logs[runtime_index],
+            host_logs[process_index],
+        )
+        with self.assertRaisesRegex(M0Error, "markers are out of order"):
             m3_content_server.validate_m3_result(
                 result, expected_versions=versions
             )
@@ -397,7 +546,12 @@ class M3HostJavaScriptTest(unittest.TestCase):
             with self.subTest(method=method):
                 self.assertIn(method, source)
         self.assertIn("__chromiumWasmHostBridgeV1", source)
-        self.assertIn("INPUT_UNSUPPORTED_UNTIL_M4", source)
+        self.assertIn("chromium_wasm_host_click", source)
+        self.assertIn("CLICK_POSTED", source)
+        self.assertIn("inputPostedAtFrameId", source)
+        self.assertIn("process:exit:", source)
+        self.assertIn("runtime:exit:", source)
+        self.assertIn("noExitRuntime: false", source)
         self.assertIn('parsed.protocol !== "data:"', source)
         self.assertIn("memory growth invalidates old views", source)
 
@@ -436,13 +590,37 @@ export default async function createModule(options) {
     surfaceReady: false,
     firstVisuallyNonEmptyPaint: false,
   });
-  return {
+  const module = {
+    HEAPU8: new Uint8Array(new ArrayBuffer(64 * 1024)),
     chromiumWasmHostCommands: {
       chromium_wasm_host_resize: () => 1,
       chromium_wasm_host_load_url: () => 1,
-      chromium_wasm_host_shutdown: () => 1,
+      chromium_wasm_host_click: () => {
+        globalThis.__m3MockClickCalls += 1;
+        return 1;
+      },
+      chromium_wasm_host_shutdown: () => {
+        module.HEAPU8 = new Uint8Array(new ArrayBuffer(2 * 64 * 1024));
+        queueMicrotask(() => {
+          const reportProcessExit = () => {
+            globalThis.__chromiumWasmHostBridgeV1.reportProcessExit({
+              protocol: 1,
+              exitCode: 0,
+            });
+          };
+          if (globalThis.__m3MockReverseExitOrder) {
+            options.onExit(0);
+            reportProcessExit();
+          } else {
+            reportProcessExit();
+            options.onExit(0);
+          }
+        });
+        return 1;
+      },
     },
   };
+  return module;
 }
 """,
                 encoding="utf-8",
@@ -451,6 +629,8 @@ export default async function createModule(options) {
 globalThis.window = globalThis;
 globalThis.location = {{origin: "null"}};
 globalThis.crossOriginIsolated = true;
+globalThis.__m3MockClickCalls = 0;
+globalThis.__m3MockReverseExitOrder = false;
 globalThis.addEventListener = () => {{}};
 globalThis.removeEventListener = () => {{}};
 globalThis.requestAnimationFrame =
@@ -477,58 +657,190 @@ globalThis.document = {{
 }};
 
 const {{ChromiumWasmM3Host}} = await import({json.dumps(host_url)});
-const canvas = new TestCanvas();
-const host = new ChromiumWasmM3Host(canvas, {{
-  chromium: "c",
-  v8: "v",
-  emscripten: "e",
-  port: "p",
-}});
-await host.initialize({{modulePath: {json.dumps(mock_module.as_uri())}}});
-await host.resize(800, 600, 1);
-await host.loadURL("data:text/html,%3Cp%3EM3%3C%2Fp%3E");
-globalThis.__chromiumWasmHostBridgeV1.reportFrame({{
-  protocol: 1,
-  id: 1,
-  width: 800,
-  height: 600,
-  timestampMs: 1,
-}});
-globalThis.__chromiumWasmHostBridgeV1.reportReadiness({{
-  protocol: 1,
-  shellReady: true,
-  surfaceReady: true,
-  firstVisuallyNonEmptyPaint: true,
-}});
-globalThis.__chromiumWasmHostBridgeV1.reportNavigation({{
-  protocol: 1,
-  committed: true,
-  scheme: "data",
-}});
-globalThis.__chromiumWasmHostBridgeV1.reportPageProbe({{
-  protocol: 1,
-  fixture: "chromium-wasm-m3-static-v1",
-  ready: true,
-  fontReady: true,
-  imageReady: true,
-  canvasReady: true,
-  timerTicks: 3,
-  scrollTop: 48,
-  formValue: "M3 form",
-}});
-const readiness = await host.readiness();
-const screenshot = await host.requestScreenshot();
-const input = await host.injectInput({{type: "pointerDown"}});
-const shutdown = await host.shutdown();
-if (
-  readiness.shellReady !== true ||
-  readiness.surfaceReady !== true ||
-  screenshot.mimeType !== "image/png" ||
-  input.code !== "INPUT_UNSUPPORTED_UNTIL_M4" ||
-  shutdown.ok !== true
-) {{
-  throw new Error("M3 Promise API contract failed");
+
+async function exerciseInteraction(frameBeforeProbe) {{
+  const canvas = new TestCanvas();
+  const host = new ChromiumWasmM3Host(canvas, {{
+    chromium: "c",
+    v8: "v",
+    emscripten: "e",
+    port: "p",
+  }});
+  await host.initialize({{modulePath: {json.dumps(mock_module.as_uri())}}});
+  await host.resize(800, 600, 1);
+  await host.loadURL("data:text/html,%3Cp%3EM3%3C%2Fp%3E");
+  globalThis.__chromiumWasmHostBridgeV1.reportFrame({{
+    protocol: 1,
+    id: 1,
+    width: 800,
+    height: 600,
+    timestampMs: 1,
+  }});
+  globalThis.__chromiumWasmHostBridgeV1.reportReadiness({{
+    protocol: 1,
+    shellReady: true,
+    surfaceReady: true,
+    firstVisuallyNonEmptyPaint: true,
+  }});
+  globalThis.__chromiumWasmHostBridgeV1.reportNavigation({{
+    protocol: 1,
+    committed: true,
+    scheme: "data",
+  }});
+  globalThis.__chromiumWasmHostBridgeV1.reportPageProbe({{
+    protocol: 1,
+    fixture: "chromium-wasm-m3-static-v1",
+    ready: true,
+    fontReady: true,
+    imageReady: true,
+    canvasReady: true,
+    timerTicks: 3,
+    scrollTop: 48,
+    formValue: "M3 form",
+    inputClicks: 0,
+    inputTrusted: false,
+    buttonText: "READY",
+    buttonCenterX: 570,
+    buttonCenterY: 468,
+  }});
+  const baseReadiness = await host.readiness();
+  const input = await host.injectInput({{
+    type: "click",
+    x: 570,
+    y: 468,
+    button: 0,
+  }});
+  const reportClickedProbe = () => {{
+    globalThis.__chromiumWasmHostBridgeV1.reportPageProbe({{
+      protocol: 1,
+      fixture: "chromium-wasm-m3-static-v1",
+      ready: true,
+      fontReady: true,
+      imageReady: true,
+      canvasReady: true,
+      timerTicks: 3,
+      scrollTop: 48,
+      formValue: "M3 form",
+      inputClicks: 1,
+      inputTrusted: true,
+      buttonText: "CLICKED",
+      buttonCenterX: 570,
+      buttonCenterY: 468,
+    }});
+  }};
+  let nextFrameId = 2;
+  const reportFrame = (width, height) => {{
+    globalThis.__chromiumWasmHostBridgeV1.reportFrame({{
+      protocol: 1,
+      id: nextFrameId,
+      width,
+      height,
+      timestampMs: nextFrameId,
+    }});
+    nextFrameId += 1;
+  }};
+  if (frameBeforeProbe) {{
+    reportFrame(800, 600);
+    reportClickedProbe();
+    const staleReadiness = await host.readiness();
+    if (
+      staleReadiness.interactionReady !== false ||
+      staleReadiness.interactionObservedAtFrameId !== 2
+    ) {{
+      throw new Error("M3 accepted a frame older than click observation");
+    }}
+  }} else {{
+    reportClickedProbe();
+  }}
+  await host.resize(799, 600, 1);
+  reportFrame(799, 600);
+  await host.resize(800, 600, 1);
+  reportFrame(800, 600);
+  const readiness = await host.readiness();
+  const screenshot = await host.requestScreenshot();
+  const shutdown = await host.shutdown();
+  if (
+    baseReadiness.baseReady !== true ||
+    readiness.shellReady !== true ||
+    readiness.surfaceReady !== true ||
+    readiness.interactionReady !== true ||
+    readiness.inputPostedAtFrameId !== 1 ||
+    readiness.interactionObservedAtFrameId !==
+      (frameBeforeProbe ? 2 : 1) ||
+    readiness.frame.id !== (frameBeforeProbe ? 4 : 3) ||
+    screenshot.mimeType !== "image/png" ||
+    input.code !== "CLICK_POSTED" ||
+    shutdown.complete !== true ||
+    shutdown.runtimeExitCode !== 0 ||
+    shutdown.linearMemory.initialBytes !== 64 * 1024 ||
+    shutdown.linearMemory.peakBytes !== 2 * 64 * 1024
+  ) {{
+    throw new Error(
+      "M3 Promise API contract failed for frameBeforeProbe=" +
+      String(frameBeforeProbe));
+  }}
 }}
+
+async function exerciseStaleInputRejection() {{
+  const host = new ChromiumWasmM3Host(new TestCanvas(), {{
+    chromium: "c",
+    v8: "v",
+    emscripten: "e",
+    port: "p",
+  }});
+  await host.initialize({{modulePath: {json.dumps(mock_module.as_uri())}}});
+  globalThis.__chromiumWasmHostBridgeV1.reportPageProbe({{
+    protocol: 1,
+    fixture: "chromium-wasm-m3-static-v1",
+    inputClicks: 1,
+    inputTrusted: true,
+    buttonText: "CLICKED",
+  }});
+  const clickCallsBefore = globalThis.__m3MockClickCalls;
+  let rejected = false;
+  try {{
+    await host.injectInput({{
+      type: "click",
+      x: 570,
+      y: 468,
+      button: 0,
+    }});
+  }} catch (error) {{
+    rejected = String(error).includes("pristine READY fixture probe");
+  }}
+  if (!rejected || globalThis.__m3MockClickCalls !== clickCallsBefore) {{
+    throw new Error("M3 accepted stale trusted fixture state");
+  }}
+  await host.shutdown();
+}}
+
+async function exerciseReversedShutdownRejection() {{
+  const host = new ChromiumWasmM3Host(new TestCanvas(), {{
+    chromium: "c",
+    v8: "v",
+    emscripten: "e",
+    port: "p",
+  }});
+  await host.initialize({{modulePath: {json.dumps(mock_module.as_uri())}}});
+  globalThis.__m3MockReverseExitOrder = true;
+  let rejected = false;
+  try {{
+    await host.shutdown();
+  }} catch (error) {{
+    rejected = String(error).includes(
+      "runtime exited before Content Shell completed");
+  }} finally {{
+    globalThis.__m3MockReverseExitOrder = false;
+  }}
+  if (!rejected) {{
+    throw new Error("M3 accepted reversed shutdown completion");
+  }}
+}}
+
+await exerciseInteraction(false);
+await exerciseInteraction(true);
+await exerciseStaleInputRejection();
+await exerciseReversedShutdownRejection();
 console.log("M3_HOST_CONTRACT:PASS");
 """
             completed = subprocess.run(
