@@ -43,6 +43,12 @@ bool GetDefaultUserDataDirectory(base::FilePath* result) {
 #elif BUILDFLAG(IS_FUCHSIA)
   *result = base::FilePath(base::kPersistedDataDirectoryPath)
                 .Append(FILE_PATH_LITERAL("content_shell"));
+#elif BUILDFLAG(IS_WASM)
+  base::FilePath home;
+  if (!base::PathService::Get(base::DIR_HOME, &home)) {
+    return false;
+  }
+  *result = home.Append(FILE_PATH_LITERAL("content_shell"));
 #else
   NOTIMPLEMENTED();
   return false;
@@ -54,11 +60,9 @@ bool GetDefaultUserDataDirectory(base::FilePath* result) {
 
 class ShellPathProvider {
  public:
-  static void CreateDir(const base::FilePath& path) {
+  static bool CreateDir(const base::FilePath& path) {
     base::ScopedAllowBlocking allow_io;
-    if (!base::PathExists(path)) {
-      base::CreateDirectory(path);
-    }
+    return base::DirectoryExists(path) || base::CreateDirectory(path);
   }
 };
 
@@ -82,11 +86,13 @@ bool ShellPathProvider(int key, base::FilePath* result) {
                        << path.value();
         }
       }
-      bool rv = GetDefaultUserDataDirectory(result);
-      if (rv) {
-        ShellPathProvider::CreateDir(*result);
+      base::FilePath path;
+      if (!GetDefaultUserDataDirectory(&path) ||
+          !ShellPathProvider::CreateDir(path)) {
+        return false;
       }
-      return rv;
+      *result = path;
+      return true;
     }
     default:
       return false;
