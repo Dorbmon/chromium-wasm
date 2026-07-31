@@ -13,6 +13,7 @@
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "mojo/core/ipcz_driver/validate_enum.h"
@@ -55,6 +56,7 @@ struct IPCZ_ALIGN(8) BufferHeader {
   uint64_t guid_high;
 };
 static_assert(sizeof(BufferHeader) == 32, "Invalid BufferHeader size");
+#endif
 
 // Produces a ScopedPlatformSharedMemoryHandle from a set of PlatformHandles and
 // an access mode.
@@ -74,6 +76,11 @@ CreateRegionHandleFromPlatformHandles(
   return handles[0].TakeMachSendRight();
 #elif BUILDFLAG(IS_ANDROID)
   return handles[0].TakeFD();
+#elif BUILDFLAG(IS_WASM)
+  if (handles.size() != 1) {
+    return {};
+  }
+  return handles[0].TakeSharedMemoryHandle();
 #else
   base::ScopedFD readonly_fd;
   if (mode == base::subtle::PlatformSharedMemoryRegion::Mode::kWritable) {
@@ -86,7 +93,6 @@ CreateRegionHandleFromPlatformHandles(
   return base::subtle::ScopedFDPair(std::move(fd), std::move(readonly_fd));
 #endif
 }
-#endif
 
 }  // namespace
 
@@ -124,13 +130,25 @@ std::pair<scoped_refptr<SharedBuffer>, IpczResult> SharedBuffer::Duplicate(
 // static
 scoped_refptr<SharedBuffer> SharedBuffer::CreateForMojoWrapper(
     base::span<const MojoPlatformHandle> mojo_platform_handles,
-    uint32_t size,
+    uint64_t size,
     const MojoSharedBufferGuid& mojo_guid,
     MojoPlatformSharedMemoryRegionAccessMode access) {
-#if BUILDFLAG(IS_WASM)
-  return nullptr;
-#else
   if (mojo_platform_handles.empty() || mojo_platform_handles.size() > 2) {
+    return nullptr;
+  }
+
+  std::array<PlatformHandle, 2> handles;
+  for (size_t i = 0; i < mojo_platform_handles.size(); ++i) {
+    handles[i] =
+        PlatformHandle::FromMojoPlatformHandle(&mojo_platform_handles[i]);
+  }
+
+#if BUILDFLAG(IS_WASM)
+  if (mojo_platform_handles.size() != 1) {
+    return nullptr;
+  }
+#endif
+  if (!base::IsValueInRangeForNumericType<uint32_t>(size)) {
     return nullptr;
   }
 
@@ -156,22 +174,15 @@ scoped_refptr<SharedBuffer> SharedBuffer::CreateForMojoWrapper(
     return nullptr;
   }
 
-  std::array<PlatformHandle, 2> handles;
-  for (size_t i = 0; i < mojo_platform_handles.size(); ++i) {
-    handles[i] =
-        PlatformHandle::FromMojoPlatformHandle(&mojo_platform_handles[i]);
-  }
-
   auto handle = CreateRegionHandleFromPlatformHandles(
       UNSAFE_TODO({&handles[0], mojo_platform_handles.size()}), mode);
-  auto region = base::subtle::PlatformSharedMemoryRegion::Take(
-      std::move(handle), mode, size, guid.value());
-  if (!region.IsValid()) {
+  auto maybe_region = base::subtle::PlatformSharedMemoryRegion::TakeOrFail(
+      std::move(handle), mode, static_cast<size_t>(size), guid.value());
+  if (!maybe_region.has_value() || !maybe_region->IsValid()) {
     return nullptr;
   }
 
-  return base::MakeRefCounted<SharedBuffer>(std::move(region));
-#endif
+  return base::MakeRefCounted<SharedBuffer>(std::move(*maybe_region));
 }
 
 void SharedBuffer::Close() {

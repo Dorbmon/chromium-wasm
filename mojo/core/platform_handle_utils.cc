@@ -40,9 +40,7 @@ void ExtractPlatformHandlesFromSharedMemoryRegionHandle(
   // This is a file descriptor. Same code as above, but separated for clarity.
   *extracted_handle = PlatformHandle(std::move(handle));
 #elif BUILDFLAG(IS_WASM)
-  // There is no native handle representation. Let `handle` release its
-  // process-local capability and leave both outputs invalid.
-  *extracted_handle = PlatformHandle();
+  *extracted_handle = PlatformHandle(std::move(handle));
   *extracted_readonly_handle = PlatformHandle();
 #else
   *extracted_handle = PlatformHandle(std::move(handle.fd));
@@ -67,7 +65,8 @@ CreateSharedMemoryRegionHandleFromPlatformHandles(
   DCHECK(!readonly_handle.is_valid());
   return handle.TakeFD();
 #elif BUILDFLAG(IS_WASM)
-  return {};
+  DCHECK(!readonly_handle.is_valid());
+  return handle.TakeSharedMemoryHandle();
 #else
   return base::subtle::ScopedFDPair(handle.TakeFD(), readonly_handle.TakeFD());
 #endif

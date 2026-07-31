@@ -106,10 +106,15 @@ class M3OzoneSourceContractTest(unittest.TestCase):
             platform_handle_wasm.count(
                 "Native platform handles are unsupported in WebAssembly"
             ),
-            3,
+            1,
         )
         self.assertIn(
-            "handle->type != MOJO_PLATFORM_HANDLE_TYPE_INVALID",
+            "handle->type != "
+            "MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY",
+            platform_handle_wasm,
+        )
+        self.assertIn(
+            "Invalid or consumed Wasm shared-memory transport token",
             platform_handle_wasm,
         )
 

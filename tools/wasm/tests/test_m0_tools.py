@@ -1090,6 +1090,14 @@ class NodeRunnerTest(unittest.TestCase):
                 )
         for old, new in (
             ("unsafe_duplicate=ok", "unsafe_duplicate=okay"),
+            (
+                "platform_region_single_owner=ok",
+                "platform_region_single_owner=leaked",
+            ),
+            (
+                "platform_region_unwrap_failure_closes=ok",
+                "platform_region_unwrap_failure_closes=leaked",
+            ),
             ("initial_heap_bytes=67108864", "initial_heap_bytes=garbage"),
             (
                 MOJO_RESULT_LINE,

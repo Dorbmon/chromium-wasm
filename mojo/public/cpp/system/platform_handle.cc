@@ -40,11 +40,6 @@ base::ScopedPlatformFile PlatformFileFromPlatformHandleValue(uint64_t value) {
 
 ScopedSharedBufferHandle WrapPlatformSharedMemoryRegion(
     base::subtle::PlatformSharedMemoryRegion region) {
-#if BUILDFLAG(IS_WASM)
-  // Wasm shared-memory handles are process-local capabilities, not native
-  // platform handles. The C wrapping API cannot represent them.
-  return ScopedSharedBufferHandle();
-#else
   if (!region.IsValid()) {
     return ScopedSharedBufferHandle();
   }
@@ -81,6 +76,9 @@ ScopedSharedBufferHandle WrapPlatformSharedMemoryRegion(
 #elif BUILDFLAG(IS_ANDROID)
   platform_handles[0].type = MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR;
   platform_handles[0].value = static_cast<uint64_t>(handle.release());
+#elif BUILDFLAG(IS_WASM)
+  PlatformHandle::ToMojoPlatformHandle(
+      PlatformHandle(std::move(handle)), &platform_handles[0]);
 #else
   platform_handles[0].type = MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR;
   platform_handles[0].value = static_cast<uint64_t>(handle.fd.release());
@@ -105,16 +103,10 @@ ScopedSharedBufferHandle WrapPlatformSharedMemoryRegion(
     return ScopedSharedBufferHandle();
   }
   return ScopedSharedBufferHandle(SharedBufferHandle(mojo_handle));
-#endif
 }
 
 base::subtle::PlatformSharedMemoryRegion UnwrapPlatformSharedMemoryRegion(
     ScopedSharedBufferHandle mojo_handle) {
-#if BUILDFLAG(IS_WASM)
-  // See WrapPlatformSharedMemoryRegion(). Process-local Wasm capabilities
-  // cannot be reconstructed from the native platform-handle C API.
-  return base::subtle::PlatformSharedMemoryRegion();
-#else
   if (!mojo_handle.is_valid()) {
     return base::subtle::PlatformSharedMemoryRegion();
   }
@@ -166,6 +158,13 @@ base::subtle::PlatformSharedMemoryRegion UnwrapPlatformSharedMemoryRegion(
     return base::subtle::PlatformSharedMemoryRegion();
   }
   region_handle.reset(static_cast<int>(platform_handles[0].value));
+#elif BUILDFLAG(IS_WASM)
+  if (num_platform_handles != 1) {
+    return base::subtle::PlatformSharedMemoryRegion();
+  }
+  region_handle =
+      PlatformHandle::FromMojoPlatformHandle(&platform_handles[0])
+          .TakeSharedMemoryHandle();
 #else
   if (access_mode == MOJO_PLATFORM_SHARED_MEMORY_REGION_ACCESS_MODE_WRITABLE) {
     if (num_platform_handles != 2) {
@@ -216,13 +215,19 @@ base::subtle::PlatformSharedMemoryRegion UnwrapPlatformSharedMemoryRegion(
     return base::subtle::PlatformSharedMemoryRegion();
   }
   return *std::move(maybe_region);
-#endif
 }
 
 ScopedHandle WrapPlatformHandle(PlatformHandle handle) {
   if (!handle.is_valid()) {
     return ScopedHandle();
   }
+#if BUILDFLAG(IS_WASM)
+  // Process-local shared-memory capabilities use the dedicated shared-memory
+  // wrapping API. Native platform-handle transport remains unsupported.
+  if (handle.is_wasm_shared_memory()) {
+    return ScopedHandle();
+  }
+#endif
 
   MojoPlatformHandle platform_handle;
   PlatformHandle::ToMojoPlatformHandle(std::move(handle), &platform_handle);

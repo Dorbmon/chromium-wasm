@@ -104,6 +104,32 @@ MappingTable& GetMappingTable() {
   return *table;
 }
 
+// Some Mojo C APIs consume a caller-supplied handle even when validation
+// fails. Unlike ScopedIpczHandle, this owner does not DCHECK if the required
+// best-effort close reports failure.
+class BestEffortScopedIpczHandle {
+ public:
+  explicit BestEffortScopedIpczHandle(IpczHandle handle) : handle_(handle) {}
+  BestEffortScopedIpczHandle(const BestEffortScopedIpczHandle&) = delete;
+  BestEffortScopedIpczHandle& operator=(
+      const BestEffortScopedIpczHandle&) = delete;
+  ~BestEffortScopedIpczHandle() {
+    if (handle_ != IPCZ_INVALID_HANDLE) {
+      std::ignore =
+          GetIpczAPI().Close(handle_, IPCZ_NO_FLAGS, nullptr);
+    }
+  }
+
+  IpczHandle get() const { return handle_; }
+  bool is_valid() const { return handle_ != IPCZ_INVALID_HANDLE; }
+  IpczHandle release() {
+    return std::exchange(handle_, IPCZ_INVALID_HANDLE);
+  }
+
+ private:
+  IpczHandle handle_;
+};
+
 // ipcz get and put operations differ slightly in their return code semantics as
 // compared to Mojo read and write operations. These helpers perform the
 // translation.
@@ -698,6 +724,12 @@ MojoResult MojoWrapPlatformHandleIpcz(
     const MojoWrapPlatformHandleOptions* options,
     MojoHandle* mojo_handle) {
 #if BUILDFLAG(IS_WASM)
+  if (platform_handle &&
+      platform_handle->struct_size >= sizeof(*platform_handle) &&
+      platform_handle->type ==
+          MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY) {
+    std::ignore = PlatformHandle::FromMojoPlatformHandle(platform_handle);
+  }
   return MOJO_RESULT_UNIMPLEMENTED;
 #else
   if (!platform_handle || !mojo_handle ||
@@ -740,11 +772,16 @@ MojoResult MojoWrapPlatformSharedMemoryRegionIpcz(
     MojoPlatformSharedMemoryRegionAccessMode access_mode,
     const MojoWrapPlatformSharedMemoryRegionOptions* options,
     MojoHandle* mojo_handle) {
-#if BUILDFLAG(IS_WASM)
-  return MOJO_RESULT_UNIMPLEMENTED;
-#else
   if (!platform_handles || !num_bytes || !guid || !mojo_handle) {
     return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (options && options->struct_size < sizeof(*options)) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (options &&
+      options->flags !=
+          MOJO_WRAP_PLATFORM_SHARED_BUFFER_HANDLE_FLAG_NONE) {
+    return MOJO_RESULT_UNIMPLEMENTED;
   }
   // SAFETY: The caller is a C-API which cannot be spanified further
   // up the stack. The caller guarantees that `platform_handles` points to
@@ -758,7 +795,6 @@ MojoResult MojoWrapPlatformSharedMemoryRegionIpcz(
 
   *mojo_handle = ipcz_driver::SharedBuffer::Box(std::move(buffer));
   return MOJO_RESULT_OK;
-#endif
 }
 
 MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
@@ -769,15 +805,21 @@ MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
     uint64_t* num_bytes,
     MojoSharedBufferGuid* mojo_guid,
     MojoPlatformSharedMemoryRegionAccessMode* access_mode) {
-#if BUILDFLAG(IS_WASM)
-  return MOJO_RESULT_UNIMPLEMENTED;
-#else
-  if (!mojo_handle || !platform_handles || !num_platform_handles ||
-      !mojo_guid) {
+  BestEffortScopedIpczHandle owned_handle(mojo_handle);
+  if (!owned_handle.is_valid() || !platform_handles || !num_platform_handles ||
+      !num_bytes || !mojo_guid || !access_mode) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
+  if (options && options->struct_size < sizeof(*options)) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (options &&
+      options->flags !=
+          MOJO_UNWRAP_PLATFORM_SHARED_BUFFER_HANDLE_FLAG_NONE) {
+    return MOJO_RESULT_UNIMPLEMENTED;
+  }
 
-  auto* buffer = ipcz_driver::SharedBuffer::FromBox(mojo_handle);
+  auto* buffer = ipcz_driver::SharedBuffer::FromBox(owned_handle.get());
   if (!buffer) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
@@ -785,7 +827,7 @@ MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
   using Mode = base::subtle::PlatformSharedMemoryRegion::Mode;
   const Mode mode = buffer->region().GetMode();
   const base::UnguessableToken guid = buffer->region().GetGUID();
-  const uint32_t size = static_cast<uint32_t>(buffer->region().GetSize());
+  const uint64_t size = buffer->region().GetSize();
 
   // SAFETY: The caller is a C-API which cannot be spanified further
   // up the stack. The caller guarantees that `platform_handles` points to
@@ -802,7 +844,7 @@ MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
 #endif
   *num_platform_handles = required_handles;
   if (capacity < required_handles) {
-    return MOJO_RESULT_RESOURCE_EXHAUSTED;
+    return MOJO_RESULT_INVALID_ARGUMENT;
   }
 
   std::array<PlatformHandle, 2> handles = {};
@@ -838,9 +880,9 @@ MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz(
       NOTREACHED();
   }
 
-  std::ignore = ipcz_driver::SharedBuffer::Unbox(mojo_handle);
+  std::ignore =
+      ipcz_driver::SharedBuffer::Unbox(owned_handle.release());
   return MOJO_RESULT_OK;
-#endif
 }
 
 MojoResult MojoCreateInvitationIpcz(const MojoCreateInvitationOptions* options,

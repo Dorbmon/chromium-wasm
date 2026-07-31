@@ -139,6 +139,39 @@ class ProcessLocalSharedMemoryRegistry {
     return ScopedPlatformSharedMemoryHandle(handle);
   }
 
+  uint64_t ExportForTransport(ScopedPlatformSharedMemoryHandle handle) {
+    if (!handle.is_valid()) {
+      return 0;
+    }
+
+    AutoLock hold(lock_);
+    if (!FindValid(handle.get()) || next_transport_token_ == 0) {
+      return 0;
+    }
+
+    const uint64_t token = next_transport_token_++;
+    const bool inserted =
+        transport_handles_.emplace(token, handle.get()).second;
+    CHECK(inserted);
+    (void)handle.release();
+    return token;
+  }
+
+  ScopedPlatformSharedMemoryHandle ImportForTransport(uint64_t token) {
+    if (token == 0) {
+      return {};
+    }
+
+    AutoLock hold(lock_);
+    auto it = transport_handles_.find(token);
+    if (it == transport_handles_.end()) {
+      return {};
+    }
+    PlatformSharedMemoryHandle handle = it->second;
+    transport_handles_.erase(it);
+    return ScopedPlatformSharedMemoryHandle(handle);
+  }
+
   bool Convert(PlatformSharedMemoryHandle handle,
                PlatformSharedMemoryHandleRights new_rights) {
     AutoLock hold(lock_);
@@ -278,8 +311,11 @@ class ProcessLocalSharedMemoryRegistry {
   Lock lock_;
   uint64_t next_region_id_ GUARDED_BY(lock_) = 1;
   uint64_t next_generation_ GUARDED_BY(lock_) = 1;
+  uint64_t next_transport_token_ GUARDED_BY(lock_) = 1;
   RegionMap regions_ GUARDED_BY(lock_);
   std::map<MappingKey, MappingRecord> mappings_ GUARDED_BY(lock_);
+  std::map<uint64_t, PlatformSharedMemoryHandle> transport_handles_
+      GUARDED_BY(lock_);
 };
 
 ProcessLocalSharedMemoryRegistry& GetRegistry() {
@@ -307,6 +343,19 @@ bool IsHandleValid(PlatformSharedMemoryHandle handle) {
 ScopedPlatformSharedMemoryHandle DuplicateHandle(
     PlatformSharedMemoryHandle handle) {
   return GetRegistry().Duplicate(handle);
+}
+
+uint64_t ExportHandleForTransport(ScopedPlatformSharedMemoryHandle handle) {
+  return GetRegistry().ExportForTransport(std::move(handle));
+}
+
+ScopedPlatformSharedMemoryHandle ImportHandleForTransport(uint64_t token) {
+  return GetRegistry().ImportForTransport(token);
+}
+
+void DiscardTransportHandle(uint64_t token) {
+  ScopedPlatformSharedMemoryHandle handle =
+      GetRegistry().ImportForTransport(token);
 }
 
 bool ConvertHandleRights(PlatformSharedMemoryHandle handle,

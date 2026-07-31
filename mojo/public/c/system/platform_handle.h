@@ -53,6 +53,12 @@ typedef uint32_t MojoPlatformHandleType;
 // An Android IBinder reference.
 #define MOJO_PLATFORM_HANDLE_TYPE_BINDER ((MojoPlatformHandleType)6)
 
+// A one-shot process-local shared-memory capability. Only usable by the
+// single-process WebAssembly port; the value must never cross a process or
+// WebAssembly application boundary.
+#define MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY \
+  ((MojoPlatformHandleType)7)
+
 // |MojoPlatformHandle|: A handle to a native platform object.
 //
 //     |uint32_t struct_size|: The size of this structure. Used for versioning

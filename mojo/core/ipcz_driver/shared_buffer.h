@@ -41,7 +41,7 @@ class MOJO_SYSTEM_IMPL_EXPORT SharedBuffer : public Object<SharedBuffer> {
   // Helper to support the MojoWrapPlatformSharedMemoryRegion API.
   static scoped_refptr<SharedBuffer> CreateForMojoWrapper(
       base::span<const MojoPlatformHandle> mojo_platform_handles,
-      uint32_t size,
+      uint64_t size,
       const MojoSharedBufferGuid& mojo_guid,
       MojoPlatformSharedMemoryRegionAccessMode access);
 

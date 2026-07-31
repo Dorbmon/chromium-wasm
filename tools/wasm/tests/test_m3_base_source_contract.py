@@ -200,29 +200,114 @@ class M3BaseSourceContractTest(unittest.TestCase):
         )
         self.assertNotIn("NOTIMPLEMENTED", shared_memory)
 
-    def test_mojo_native_shared_memory_wrapping_is_explicitly_unsupported(
+    def test_mojo_transfers_process_local_shared_memory_capabilities(
         self,
     ) -> None:
+        registry = source(
+            "base/memory/process_local_shared_memory_wasm.cc"
+        )
+        registry_header = source(
+            "base/memory/process_local_shared_memory_wasm.h"
+        )
+        platform_handle = source(
+            "mojo/public/cpp/platform/platform_handle_wasm.cc"
+        )
         wrapper = source("mojo/public/cpp/system/platform_handle.cc")
         ipcz = source("mojo/core/core_ipcz.cc")
+        shared_buffer = source(
+            "mojo/core/ipcz_driver/shared_buffer.cc"
+        )
 
-        self.assertEqual(
-            wrapper.count(
-                "Wasm shared-memory handles are process-local capabilities"
-            ),
-            1,
+        self.assertIn("ExportHandleForTransport", registry)
+        self.assertIn("ImportHandleForTransport", registry)
+        self.assertIn("DiscardTransportHandle", registry)
+        self.assertIn(
+            "[[nodiscard]] uint64_t ExportHandleForTransport",
+            registry_header,
         )
         self.assertIn(
-            "Process-local Wasm capabilities\n"
-            "  // cannot be reconstructed",
+            "MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY",
+            platform_handle,
+        )
+        self.assertIn("if (token == 0)", platform_handle)
+        self.assertNotIn("CHECK_NE(token", platform_handle)
+        self.assertIn(
+            "PlatformHandle(std::move(handle)), &platform_handles[0]",
             wrapper,
         )
-        self.assertGreaterEqual(
-            ipcz.count(
-                "#if BUILDFLAG(IS_WASM)\n"
-                "  return MOJO_RESULT_UNIMPLEMENTED;"
-            ),
-            4,
+        self.assertIn(
+            "PlatformHandle::FromMojoPlatformHandle(&platform_handles[0])",
+            wrapper,
+        )
+        wrap = ipcz.split(
+            "MojoResult MojoWrapPlatformSharedMemoryRegionIpcz", 1
+        )[1].split(
+            "MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz", 1
+        )[0]
+        unwrap = ipcz.split(
+            "MojoResult MojoUnwrapPlatformSharedMemoryRegionIpcz", 1
+        )[1].split("MojoResult MojoCreateInvitationIpcz", 1)[0]
+        self.assertIn(
+            "MOJO_WRAP_PLATFORM_SHARED_BUFFER_HANDLE_FLAG_NONE",
+            wrap,
+        )
+        self.assertIn(
+            "MOJO_UNWRAP_PLATFORM_SHARED_BUFFER_HANDLE_FLAG_NONE",
+            unwrap,
+        )
+        self.assertIn("!num_bytes || !mojo_guid || !access_mode", unwrap)
+        self.assertIn(
+            "BestEffortScopedIpczHandle owned_handle(mojo_handle)",
+            unwrap,
+        )
+        self.assertIn("SharedBuffer::FromBox(owned_handle.get())", unwrap)
+        self.assertIn(
+            "SharedBuffer::Unbox(owned_handle.release())", unwrap
+        )
+        self.assertNotIn("MOJO_RESULT_RESOURCE_EXHAUSTED", unwrap)
+
+        create = shared_buffer.split(
+            "SharedBuffer::CreateForMojoWrapper", 1
+        )[1].split("void SharedBuffer::Close", 1)[0]
+        self.assertIn(
+            "return handles[0].TakeSharedMemoryHandle();",
+            shared_buffer,
+        )
+        self.assertNotIn(
+            "#if BUILDFLAG(IS_WASM)\n  return nullptr;", create
+        )
+        self.assertLess(
+            create.index("PlatformHandle::FromMojoPlatformHandle"),
+            create.index("mojo_platform_handles.size() != 1"),
+        )
+        self.assertIn(
+            "base::IsValueInRangeForNumericType<uint32_t>(size)",
+            create,
+        )
+        self.assertIn(
+            "PlatformSharedMemoryRegion::TakeOrFail", create
+        )
+        self.assertNotIn("PlatformSharedMemoryRegion::Take(", create)
+
+        dimensions = shared_buffer.split(
+            "bool SharedBuffer::GetSerializedDimensions", 1
+        )[1].split("bool SharedBuffer::Serialize", 1)[0]
+        serialize = shared_buffer.split(
+            "bool SharedBuffer::Serialize", 1
+        )[1].split(
+            "scoped_refptr<SharedBuffer> SharedBuffer::Deserialize", 1
+        )[0]
+        deserialize = shared_buffer.split(
+            "scoped_refptr<SharedBuffer> SharedBuffer::Deserialize", 1
+        )[1]
+        self.assertIn(
+            "#if BUILDFLAG(IS_WASM)\n  return false;", dimensions
+        )
+        self.assertIn(
+            "#if BUILDFLAG(IS_WASM)\n  return false;", serialize
+        )
+        self.assertIn(
+            "#if BUILDFLAG(IS_WASM)\n  return nullptr;", deserialize
         )
 
     def test_mojo_platform_file_transport_is_explicitly_unsupported(
@@ -250,11 +335,13 @@ class M3BaseSourceContractTest(unittest.TestCase):
         )
         self.assertIn(
             "#elif BUILDFLAG(IS_WASM)\n"
-            "  // Native platform handles do not exist",
+            "  bool is_valid() const { "
+            "return wasm_shared_memory_handle_.is_valid(); }",
             platform_handle,
         )
-        self.assertNotIn(
-            "BUILDFLAG(IS_WASM)\n  explicit PlatformHandle(",
+        self.assertIn(
+            "explicit PlatformHandle(\n"
+            "      base::subtle::ScopedPlatformSharedMemoryHandle handle);",
             platform_handle,
         )
 

@@ -27,6 +27,8 @@
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/core/ipcz_api.h"
 #include "mojo/public/c/system/core.h"
+#include "mojo/public/c/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "m1_mojo_smoke must be built for WebAssembly"
@@ -41,6 +43,7 @@ namespace {
 constexpr char kPrefix[] = "CHROMIUM_WASM_M1_MOJO";
 constexpr size_t kBufferSize = 4096;
 constexpr size_t kPayloadSize = 24;
+constexpr size_t kPlatformRegionSize = 512;
 constexpr uint64_t kExpectedMaximumMemory = UINT64_C(2147483648);
 constexpr base::TimeDelta kResponsiveWindow = base::Milliseconds(300);
 
@@ -173,6 +176,171 @@ void TestDriverSharedMemoryFailures() {
   Require(driver.Close(driver_memory, IPCZ_NO_FLAGS, nullptr) ==
               IPCZ_RESULT_OK,
           "driver_memory_close");
+}
+
+void TestPlatformSharedMemoryRegionRoundTrip() {
+  BeginPhase("platform_shared_memory_region_round_trip");
+
+  base::UnsafeSharedMemoryRegion source_region =
+      base::UnsafeSharedMemoryRegion::Create(kPlatformRegionSize);
+  Require(source_region.IsValid(), "platform_region_create");
+  base::WritableSharedMemoryMapping source_mapping = source_region.Map();
+  Require(source_mapping.IsValid() &&
+              source_mapping.size() == kPlatformRegionSize,
+          "platform_region_source_map");
+  WritePattern(base::span(source_mapping), 0x53);
+
+  const base::subtle::PlatformSharedMemoryHandle raw_handle =
+      source_region.GetPlatformHandle();
+  const base::UnguessableToken guid = source_region.GetGUID();
+  base::subtle::PlatformSharedMemoryRegion platform_region =
+      base::UnsafeSharedMemoryRegion::TakeHandleForSerialization(
+          std::move(source_region));
+  Require(!source_region.IsValid() && platform_region.IsValid() &&
+              platform_region.GetMode() ==
+                  base::subtle::PlatformSharedMemoryRegion::Mode::kUnsafe &&
+              platform_region.GetSize() == kPlatformRegionSize,
+          "platform_region_serialize");
+
+  mojo::PlatformHandle outbound_handle(
+      platform_region.PassPlatformHandle());
+  Require(!platform_region.IsValid() &&
+              outbound_handle.is_wasm_shared_memory(),
+          "platform_region_platform_handle");
+  MojoPlatformHandle outbound_transport{};
+  mojo::PlatformHandle::ToMojoPlatformHandle(
+      std::move(outbound_handle), &outbound_transport);
+  Require(outbound_transport.type ==
+                  MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY &&
+              outbound_transport.value != 0,
+          "platform_region_transport_export");
+  const uint64_t outbound_token = outbound_transport.value;
+
+  MojoSharedBufferGuid outbound_guid{
+      .high = guid.GetHighForSerialization(),
+      .low = guid.GetLowForSerialization(),
+  };
+  MojoHandle wrapped_region = MOJO_HANDLE_INVALID;
+  Require(MojoWrapPlatformSharedMemoryRegion(
+              &outbound_transport, 1, kPlatformRegionSize, &outbound_guid,
+              MOJO_PLATFORM_SHARED_MEMORY_REGION_ACCESS_MODE_UNSAFE, nullptr,
+              &wrapped_region) == MOJO_RESULT_OK &&
+              wrapped_region != MOJO_HANDLE_INVALID &&
+              !base::subtle::wasm::ImportHandleForTransport(outbound_token)
+                   .is_valid() &&
+              base::subtle::wasm::IsHandleValid(raw_handle),
+          "platform_region_wrap");
+
+  MojoHandle failed_unwrap_duplicate = MOJO_HANDLE_INVALID;
+  Require(MojoDuplicateBufferHandle(wrapped_region, nullptr,
+                                    &failed_unwrap_duplicate) ==
+                  MOJO_RESULT_OK &&
+              failed_unwrap_duplicate != MOJO_HANDLE_INVALID,
+          "platform_region_failed_unwrap_duplicate");
+  MojoPlatformHandle rejected_transport{
+      .struct_size = sizeof(rejected_transport),
+      .type = MOJO_PLATFORM_HANDLE_TYPE_INVALID,
+      .value = 0,
+  };
+  uint32_t rejected_handle_count = 0;
+  uint64_t rejected_size = 0;
+  MojoSharedBufferGuid rejected_guid{};
+  MojoPlatformSharedMemoryRegionAccessMode rejected_mode =
+      MOJO_PLATFORM_SHARED_MEMORY_REGION_ACCESS_MODE_READ_ONLY;
+  MojoSharedBufferInfo preserved_info{.struct_size = sizeof(preserved_info)};
+  Require(MojoUnwrapPlatformSharedMemoryRegion(
+              failed_unwrap_duplicate, nullptr, &rejected_transport,
+              &rejected_handle_count, &rejected_size, &rejected_guid,
+              &rejected_mode) == MOJO_RESULT_INVALID_ARGUMENT &&
+              MojoGetBufferInfo(wrapped_region, nullptr, &preserved_info) ==
+                  MOJO_RESULT_OK &&
+              preserved_info.size == kPlatformRegionSize,
+          "platform_region_unwrap_failure_closes");
+  failed_unwrap_duplicate = MOJO_HANDLE_INVALID;
+
+  MojoSharedBufferInfo wrapped_info{.struct_size = sizeof(wrapped_info)};
+  void* wrapped_address = nullptr;
+  Require(MojoGetBufferInfo(wrapped_region, nullptr, &wrapped_info) ==
+                  MOJO_RESULT_OK &&
+              wrapped_info.size == kPlatformRegionSize &&
+              MojoMapBuffer(wrapped_region, 0, kPlatformRegionSize, nullptr,
+                            &wrapped_address) == MOJO_RESULT_OK &&
+              wrapped_address,
+          "platform_region_wrapped_map");
+  base::span<uint8_t> wrapped_bytes(
+      static_cast<uint8_t*>(wrapped_address), kPlatformRegionSize);
+  Require(HasPattern(wrapped_bytes, 0x53),
+          "platform_region_wrapped_pattern");
+  WritePattern(wrapped_bytes, 0x75);
+  Require(HasPattern(base::span(source_mapping), 0x75) &&
+              MojoUnmapBuffer(wrapped_address) == MOJO_RESULT_OK,
+          "platform_region_wrapped_alias");
+
+  MojoPlatformHandle inbound_transport{
+      .struct_size = sizeof(inbound_transport),
+      .type = MOJO_PLATFORM_HANDLE_TYPE_INVALID,
+      .value = 0,
+  };
+  uint32_t inbound_handle_count = 1;
+  uint64_t inbound_size = 0;
+  MojoSharedBufferGuid inbound_guid{};
+  MojoPlatformSharedMemoryRegionAccessMode inbound_mode =
+      MOJO_PLATFORM_SHARED_MEMORY_REGION_ACCESS_MODE_READ_ONLY;
+  Require(MojoUnwrapPlatformSharedMemoryRegion(
+              wrapped_region, nullptr, &inbound_transport,
+              &inbound_handle_count, &inbound_size, &inbound_guid,
+              &inbound_mode) == MOJO_RESULT_OK,
+          "platform_region_unwrap");
+  wrapped_region = MOJO_HANDLE_INVALID;
+  Require(inbound_handle_count == 1 &&
+              inbound_transport.type ==
+                  MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY &&
+              inbound_transport.value != 0 &&
+              inbound_size == kPlatformRegionSize &&
+              inbound_guid.high == guid.GetHighForSerialization() &&
+              inbound_guid.low == guid.GetLowForSerialization() &&
+              inbound_mode ==
+                  MOJO_PLATFORM_SHARED_MEMORY_REGION_ACCESS_MODE_UNSAFE,
+          "platform_region_metadata");
+
+  const uint64_t inbound_token = inbound_transport.value;
+  mojo::PlatformHandle inbound_handle =
+      mojo::PlatformHandle::FromMojoPlatformHandle(&inbound_transport);
+  Require(inbound_handle.is_wasm_shared_memory() &&
+              !base::subtle::wasm::ImportHandleForTransport(inbound_token)
+                   .is_valid(),
+          "platform_region_transport_replay");
+
+  base::WritableSharedMemoryMapping restored_mapping;
+  {
+    auto restored_platform_region =
+        base::subtle::PlatformSharedMemoryRegion::TakeOrFail(
+            inbound_handle.TakeSharedMemoryHandle(),
+            base::subtle::PlatformSharedMemoryRegion::Mode::kUnsafe,
+            inbound_size, guid);
+    Require(restored_platform_region.has_value() &&
+                restored_platform_region->IsValid(),
+            "platform_region_restore_metadata");
+    base::UnsafeSharedMemoryRegion restored_region =
+        base::UnsafeSharedMemoryRegion::Deserialize(
+            std::move(*restored_platform_region));
+    Require(restored_region.IsValid() &&
+                base::subtle::wasm::IsHandleValid(raw_handle),
+            "platform_region_restore");
+    restored_mapping = restored_region.Map();
+    Require(restored_mapping.IsValid() &&
+                HasPattern(base::span(restored_mapping), 0x75),
+            "platform_region_restored_map");
+    WritePattern(base::span(restored_mapping), 0x97);
+    Require(HasPattern(base::span(source_mapping), 0x97),
+            "platform_region_restored_alias");
+  }
+
+  Require(!base::subtle::wasm::IsHandleValid(raw_handle) &&
+              source_mapping.IsValid() && restored_mapping.IsValid() &&
+              HasPattern(base::span(source_mapping), 0x97) &&
+              HasPattern(base::span(restored_mapping), 0x97),
+          "platform_region_single_owner");
 }
 
 void TestMojoTransfer(MemoryMetrics* metrics) {
@@ -422,6 +590,7 @@ int main() {
 
   TestCapabilityValidation();
   TestDriverSharedMemoryFailures();
+  TestPlatformSharedMemoryRegionRoundTrip();
   TestMojoTransfer(&metrics);
 
   BeginPhase("browser_responsiveness");
@@ -456,6 +625,10 @@ int main() {
       "use_after_final_close_rejected=ok oversized_create_rejected=ok "
       "oversized_map_rejected=ok readonly_after_unsafe_rejected=ok "
       "readonly_mode_mismatch_rejected=ok corrupt_metadata_rejected=ok "
+      "platform_region_wrap=ok platform_region_unwrap=ok "
+      "platform_region_metadata=ok transport_token_one_shot=ok "
+      "platform_region_aliasing=ok platform_region_single_owner=ok "
+      "platform_region_unwrap_failure_closes=ok "
       "remote_transport_rejected=ok driver_failures_rejected=ok "
       "mapping_outlives_handles=ok all_handles_closed=ok "
       "clean_shutdown=ok memory_metrics=ok browser_heartbeat=external\n",

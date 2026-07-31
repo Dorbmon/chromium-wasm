@@ -5,6 +5,8 @@
 #ifndef MOJO_PUBLIC_CPP_PLATFORM_PLATFORM_HANDLE_H_
 #define MOJO_PUBLIC_CPP_PLATFORM_PLATFORM_HANDLE_H_
 
+#include <utility>
+
 #include "base/check_op.h"
 #include "base/component_export.h"
 #include "base/files/platform_file.h"
@@ -18,6 +20,8 @@
 #include <lib/zx/handle.h>
 #elif BUILDFLAG(IS_APPLE)
 #include "base/apple/scoped_mach_port.h"
+#elif BUILDFLAG(IS_WASM)
+#include "base/memory/platform_shared_memory_handle.h"
 #endif
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
@@ -53,6 +57,9 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
     kFd,
 #endif
+#if BUILDFLAG(IS_WASM)
+    kWasmSharedMemory,
+#endif
   };
 
   PlatformHandle();
@@ -69,6 +76,10 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   explicit PlatformHandle(base::ScopedFD fd);
+#endif
+#if BUILDFLAG(IS_WASM)
+  explicit PlatformHandle(
+      base::subtle::ScopedPlatformSharedMemoryHandle handle);
 #endif
 
   PlatformHandle(const PlatformHandle&) = delete;
@@ -176,8 +187,16 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #elif BUILDFLAG(IS_POSIX)
   bool is_valid() const { return is_valid_fd(); }
 #elif BUILDFLAG(IS_WASM)
-  // Native platform handles do not exist in the single-process Wasm port.
-  bool is_valid() const { return false; }
+  bool is_valid() const { return wasm_shared_memory_handle_.is_valid(); }
+  bool is_wasm_shared_memory() const {
+    return type_ == Type::kWasmSharedMemory;
+  }
+  base::subtle::ScopedPlatformSharedMemoryHandle TakeSharedMemoryHandle() {
+    if (type_ == Type::kWasmSharedMemory) {
+      type_ = Type::kNone;
+    }
+    return std::move(wasm_shared_memory_handle_);
+  }
 #else
 #error "Unsupported platform."
 #endif
@@ -248,6 +267,9 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   base::ScopedFD fd_;
+#endif
+#if BUILDFLAG(IS_WASM)
+  base::subtle::ScopedPlatformSharedMemoryHandle wasm_shared_memory_handle_;
 #endif
 };
 

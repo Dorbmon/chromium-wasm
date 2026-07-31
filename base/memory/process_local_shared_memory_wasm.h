@@ -39,6 +39,14 @@ bool IsHandleValid(PlatformSharedMemoryHandle handle);
 ScopedPlatformSharedMemoryHandle DuplicateHandle(
     PlatformSharedMemoryHandle handle);
 
+// Moves one registry reference through an opaque, process-local transfer
+// token. Tokens are one-shot capabilities: importing or discarding a token
+// consumes it.
+[[nodiscard]] uint64_t ExportHandleForTransport(
+    ScopedPlatformSharedMemoryHandle handle);
+ScopedPlatformSharedMemoryHandle ImportHandleForTransport(uint64_t token);
+void DiscardTransportHandle(uint64_t token);
+
 bool ConvertHandleRights(PlatformSharedMemoryHandle handle,
                          PlatformSharedMemoryHandleRights new_rights);
 
