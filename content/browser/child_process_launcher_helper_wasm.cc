@@ -15,12 +15,6 @@
 
 namespace content::internal {
 
-std::optional<mojo::NamedPlatformChannel>
-ChildProcessLauncherHelper::CreateNamedPlatformChannelOnLauncherThread() {
-  DCHECK(CurrentlyOnProcessLauncherTaskRunner());
-  return std::nullopt;
-}
-
 void ChildProcessLauncherHelper::BeforeLaunchOnClientThread() {
   DCHECK(client_task_runner_->RunsTasksInCurrentSequence());
   CHECK(false)

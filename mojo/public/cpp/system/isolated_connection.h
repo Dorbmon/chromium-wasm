@@ -7,9 +7,12 @@
 
 #include "base/process/process.h"
 #include "base/unguessable_token.h"
+#include "build/build_config.h"
 #include "mojo/public/c/system/invitation.h"
 #include "mojo/public/cpp/platform/platform_channel_endpoint.h"
+#if !BUILDFLAG(IS_WASM)
 #include "mojo/public/cpp/platform/platform_channel_server_endpoint.h"
+#endif
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "mojo/public/cpp/system/system_export.h"
 
@@ -68,7 +71,9 @@ class MOJO_CPP_SYSTEM_EXPORT IsolatedConnection {
 
   // Same as above but works with a server endpoint. The corresponding client
   // could use the above signature with NamedPlatformChannel::ConnectToServer.
+#if !BUILDFLAG(IS_WASM)
   ScopedMessagePipeHandle Connect(PlatformChannelServerEndpoint endpoint);
+#endif
 
  private:
   const base::UnguessableToken token_;

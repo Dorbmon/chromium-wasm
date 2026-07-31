@@ -4,8 +4,11 @@
 
 #include "mojo/public/cpp/system/isolated_connection.h"
 
+#include "build/build_config.h"
 #include "mojo/core/embedder/embedder.h"
+#if !BUILDFLAG(IS_WASM)
 #include "mojo/public/cpp/platform/platform_channel.h"
+#endif
 #include "mojo/public/cpp/system/invitation.h"
 
 namespace mojo {
@@ -25,11 +28,13 @@ IsolatedConnection::~IsolatedConnection() {
   //
   // This is not done with MojoIpcz enabled, because with MojoIpcz, isolated
   // connections are not transient and can outlive this object.
+#if !BUILDFLAG(IS_WASM)
   if (!mojo::core::IsMojoIpczEnabled()) {
     PlatformChannel channel;
     OutgoingInvitation::SendIsolated(channel.TakeLocalEndpoint(),
                                      token_.ToString());
   }
+#endif
 }
 
 ScopedMessagePipeHandle IsolatedConnection::Connect(
@@ -53,10 +58,12 @@ ScopedMessagePipeHandle IsolatedConnection::Connect(
                                           invitation_flags);
 }
 
+#if !BUILDFLAG(IS_WASM)
 ScopedMessagePipeHandle IsolatedConnection::Connect(
     PlatformChannelServerEndpoint endpoint) {
   return OutgoingInvitation::SendIsolated(std::move(endpoint),
                                           token_.ToString());
 }
+#endif
 
 }  // namespace mojo

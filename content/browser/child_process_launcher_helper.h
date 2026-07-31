@@ -26,7 +26,7 @@
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/system/invitation.h"
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #endif
 
@@ -158,7 +158,7 @@ class ChildProcessLauncherHelper
   // Platform specific.
   void BeforeLaunchOnClientThread();
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
   // Called to give implementors a chance at creating a server pipe. Platform-
   // specific. Returns |std::nullopt| if the helper should initialize
   // a regular PlatformChannel for communication instead.
@@ -330,7 +330,7 @@ class ChildProcessLauncherHelper
   // |CreateNamedPlatformChannelOnLauncherThread()|.
   std::optional<mojo::PlatformChannel> mojo_channel_;
 
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
   // May be used in exclusion to the above if the platform helper implementation
   // returns a valid server endpoint from
   // |CreateNamedPlatformChannelOnLauncherThread()|.

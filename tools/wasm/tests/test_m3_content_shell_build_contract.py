@@ -187,17 +187,22 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
         header = source(
             "content/browser/child_process_launcher_helper.h"
         )
+        implementation = source(
+            "content/browser/child_process_launcher_helper.cc"
+        )
         wasm = source(
             "content/browser/child_process_launcher_helper_wasm.cc"
         )
 
-        wasm_sources = build.split("  if (is_wasm) {", 1)[1].split(
-            "  } else if (is_fuchsia)", 1
-        )[0]
-        self.assertIn(
-            '"child_process_launcher_helper_wasm.cc"',
-            wasm_sources,
+        wasm_source_marker = (
+            'if (is_wasm) {\n    sources += [\n'
+            '      "child_process_launcher_helper_wasm.cc"'
         )
+        self.assertIn(wasm_source_marker, build)
+        wasm_sources = build.split(
+            wasm_source_marker, 1
+        )[1].split("} else if (is_fuchsia)", 1)[0]
+        self.assertIn('"speech/tts_wasm.cc"', wasm_sources)
         self.assertIn(
             "#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)\n"
             '#include "content/public/browser/'
@@ -221,6 +226,79 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
         self.assertIn("*launch_result = LAUNCH_RESULT_FAILURE;", wasm)
         self.assertIn("TERMINATION_STATUS_LAUNCH_FAILED", wasm)
         self.assertNotIn("base::LaunchProcess(", wasm)
+        self.assertNotIn("NamedPlatformChannel", wasm)
+        self.assertIn(
+            "#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)\n"
+            '#include "mojo/public/cpp/platform/'
+            'named_platform_channel.h"\n'
+            "#endif",
+            header,
+        )
+        named_factory = header.split(
+            "CreateNamedPlatformChannelOnLauncherThread();", 1
+        )[0].rsplit("#if ", 1)[1]
+        self.assertIn(
+            "!BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)",
+            named_factory,
+        )
+        named_member = header.split(
+            "std::optional<mojo::NamedPlatformChannel> "
+            "mojo_named_channel_;",
+            1,
+        )[0].rsplit("#if ", 1)[1]
+        self.assertIn(
+            "!BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)",
+            named_member,
+        )
+        channel_initialization = implementation.split(
+            "void ChildProcessLauncherHelper::LaunchOnLauncherThread()", 1
+        )[1].split("begin_launch_time_", 1)[0]
+        self.assertIn(
+            "#if !BUILDFLAG(IS_WASM)\n"
+            "#if BUILDFLAG(IS_FUCHSIA)\n"
+            "  mojo_channel_.emplace();",
+            channel_initialization,
+        )
+        self.assertIn(
+            "mojo_named_channel_ = "
+            "CreateNamedPlatformChannelOnLauncherThread();",
+            channel_initialization,
+        )
+        self.assertNotIn(
+            "BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)",
+            channel_initialization,
+        )
+        post_launch = implementation.split(
+            "void ChildProcessLauncherHelper::PostLaunchOnLauncherThread", 1
+        )[1].split(
+            "void ChildProcessLauncherHelper::PostLaunchOnClientThread", 1
+        )[0]
+        invalid_process_check = (
+            "#if BUILDFLAG(IS_WASM)\n"
+            "  CHECK(!process.process.IsValid())"
+        )
+        self.assertIn(invalid_process_check, post_launch)
+        self.assertLess(
+            post_launch.index(invalid_process_check),
+            post_launch.index("if (process.process.IsValid())"),
+        )
+        named_channel_guard = (
+            "#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)"
+        )
+        guarded_named_channel_send = post_launch.split(
+            named_channel_guard, 1
+        )[1].split("#endif", 1)[0]
+        for symbol in (
+            "if (mojo_named_channel_)",
+            "mojo::OutgoingInvitation::Send(\n"
+            "          std::move(invitation), base::kNullProcessHandle,\n"
+            "          mojo_named_channel_->TakeServerEndpoint(), "
+            "process_error_callback_);",
+            "mojo_named_channel_->TakeServerEndpoint()",
+        ):
+            with self.subTest(named_channel_symbol=symbol):
+                self.assertEqual(post_launch.count(symbol), 1)
+                self.assertIn(symbol, guarded_named_channel_send)
 
     def test_wasm_devtools_pipe_is_an_explicit_failure_boundary(
         self,

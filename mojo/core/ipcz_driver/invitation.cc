@@ -19,7 +19,6 @@
 #include "mojo/core/scoped_ipcz_handle.h"
 #include "mojo/public/c/system/invitation.h"
 #include "mojo/public/cpp/platform/platform_channel_endpoint.h"
-#include "mojo/public/cpp/platform/platform_channel_server_endpoint.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
 
 #if BUILDFLAG(IS_WIN)

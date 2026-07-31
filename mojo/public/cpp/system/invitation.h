@@ -12,9 +12,12 @@
 #include "base/component_export.h"
 #include "base/functional/callback.h"
 #include "base/process/process_handle.h"
+#include "build/build_config.h"
 #include "mojo/public/c/system/invitation.h"
 #include "mojo/public/cpp/platform/platform_channel_endpoint.h"
+#if !BUILDFLAG(IS_WASM)
 #include "mojo/public/cpp/platform/platform_channel_server_endpoint.h"
+#endif
 #include "mojo/public/cpp/system/handle.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "mojo/public/cpp/system/system_export.h"
@@ -100,10 +103,12 @@ class MOJO_CPP_SYSTEM_EXPORT OutgoingInvitation {
   // Similar to above, but sends |invitation| via |server_endpoint|, which
   // should correspond to a |PlatformChannelServerEndpoint| taken from a
   // |NamedPlatformChannel|.
+#if !BUILDFLAG(IS_WASM)
   static void Send(OutgoingInvitation invitation,
                    base::ProcessHandle target_process,
                    PlatformChannelServerEndpoint server_endpoint,
                    const ProcessErrorCallback& error_callback = {});
+#endif
 
   // Similar to |Send()|, but targets a process which will accept the invitation
   // with |IncomingInvitation::AcceptAsync()| instead of |Accept()|.
@@ -149,12 +154,14 @@ class MOJO_CPP_SYSTEM_EXPORT OutgoingInvitation {
   //
   // If |connection_name| is non-empty, any previously established isolated
   // connection using the same name will be disconnected.
+#if !BUILDFLAG(IS_WASM)
   static ScopedMessagePipeHandle SendIsolated(
       PlatformChannelServerEndpoint server_endpoint,
       std::string_view connection_name = {},
       base::ProcessHandle target_process = base::kNullProcessHandle,
       MojoSendInvitationFlags invitation_flags =
           MOJO_SEND_INVITATION_FLAG_NONE);
+#endif
 
  private:
   MojoSendInvitationFlags extra_flags_ = MOJO_SEND_INVITATION_FLAG_NONE;

@@ -20,7 +20,8 @@
 #include <windows.h>
 #endif
 
-#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS) && \
+    !BUILDFLAG(IS_WASM)
 #include "mojo/public/cpp/platform/platform_channel_server.h"
 #endif
 
@@ -115,7 +116,8 @@ void SendInvitation(ScopedInvitationHandle invitation,
   }
 }
 
-#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS) && \
+    !BUILDFLAG(IS_WASM)
 void WaitForServerConnection(
     PlatformChannelServerEndpoint server_endpoint,
     PlatformChannelServer::ConnectionCallback callback) {
@@ -147,7 +149,7 @@ base::Process CloneProcessFromHandle(base::ProcessHandle handle) {
   return clone;
 #endif
 }
-#endif  // !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
+#endif
 
 }  // namespace
 
@@ -212,6 +214,7 @@ void OutgoingInvitation::Send(OutgoingInvitation invitation,
 }
 
 // static
+#if !BUILDFLAG(IS_WASM)
 void OutgoingInvitation::Send(OutgoingInvitation invitation,
                               base::ProcessHandle target_process,
                               PlatformChannelServerEndpoint server_endpoint,
@@ -233,6 +236,7 @@ void OutgoingInvitation::Send(OutgoingInvitation invitation,
           error_callback));
 #endif  // !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 // static
 void OutgoingInvitation::SendAsync(OutgoingInvitation invitation,
@@ -264,6 +268,7 @@ ScopedMessagePipeHandle OutgoingInvitation::SendIsolated(
 }
 
 // static
+#if !BUILDFLAG(IS_WASM)
 ScopedMessagePipeHandle OutgoingInvitation::SendIsolated(
     PlatformChannelServerEndpoint server_endpoint,
     std::string_view connection_name,
@@ -292,6 +297,7 @@ ScopedMessagePipeHandle OutgoingInvitation::SendIsolated(
 #endif  // !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_IOS)
   return pipe;
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 IncomingInvitation::IncomingInvitation() = default;
 

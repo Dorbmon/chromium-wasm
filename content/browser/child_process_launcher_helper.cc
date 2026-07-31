@@ -276,14 +276,16 @@ void ChildProcessLauncherHelper::LaunchOnLauncherThread() {
   UMA_HISTOGRAM_TIMES("MPArch.ChildProcessLauncher.PreLaunchDelay",
                       base::TimeTicks::Now() - init_start_time_);
 
+#if !BUILDFLAG(IS_WASM)
 #if BUILDFLAG(IS_FUCHSIA)
   mojo_channel_.emplace();
-#else   // BUILDFLAG(IS_FUCHSIA)
+#else
   mojo_named_channel_ = CreateNamedPlatformChannelOnLauncherThread();
   if (!mojo_named_channel_) {
     mojo_channel_.emplace();
   }
-#endif  //  BUILDFLAG(IS_FUCHSIA)
+#endif
+#endif
 
   begin_launch_time_ = base::TimeTicks::Now();
   if (GetProcessType() == switches::kRendererProcess &&
@@ -374,6 +376,11 @@ void ChildProcessLauncherHelper::PostLaunchOnLauncherThread(
     DWORD last_error,
 #endif
     int launch_result) {
+#if BUILDFLAG(IS_WASM)
+  CHECK(!process.process.IsValid())
+      << "Child process launch is unsupported in single-process WebAssembly";
+#endif
+
 #if BUILDFLAG(IS_WIN)
   const bool launch_elevated = delegate_->ShouldLaunchElevated();
 #else
@@ -405,7 +412,7 @@ void ChildProcessLauncherHelper::PostLaunchOnLauncherThread(
   }
 
   if (process.process.IsValid()) {
-#if !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
     if (mojo_named_channel_) {
       DCHECK(!mojo_channel_);
       mojo::OutgoingInvitation::Send(
