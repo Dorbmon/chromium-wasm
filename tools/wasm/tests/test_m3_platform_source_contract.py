@@ -382,6 +382,33 @@ class M3PlatformSourceContractTest(unittest.TestCase):
             flac_target,
         )
 
+    def test_wasm_minizip_preserves_zip64_file_offsets(self) -> None:
+        build = source("third_party/zlib/BUILD.gn")
+        public_config = build.split(
+            'config("zlib_config") {', 1
+        )[1].split("}", 1)[0]
+        minizip_target = build.split(
+            'static_library("minizip") {', 1
+        )[1].split('executable("zlib_bench")', 1)[0]
+        wasm_features = minizip_target.split(
+            "if (is_wasm) {", 1
+        )[1].split("}", 1)[0]
+
+        self.assertIn("Minizip's Zip64 path", wasm_features)
+        self.assertIn("Emscripten's strict C11", wasm_features)
+        self.assertIn(
+            'defines = [ "_POSIX_C_SOURCE=200112L" ]',
+            wasm_features,
+        )
+        self.assertNotIn("_GNU_SOURCE", wasm_features)
+        self.assertNotIn("USE_FILE32API", wasm_features)
+        for private_feature in (
+            "_POSIX_C_SOURCE",
+            "_GNU_SOURCE",
+            "USE_FILE32API",
+        ):
+            self.assertNotIn(private_feature, public_config)
+
     def test_wasm_has_keyboard_code_values_without_posix_input(self) -> None:
         selector = source("ui/events/keycodes/keyboard_codes.h")
         wasm_codes = source("ui/events/keycodes/keyboard_codes_wasm.h")
