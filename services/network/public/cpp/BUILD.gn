@@ -766,7 +766,7 @@ component("cpp_base") {
   }
 }
 
-if (is_p2p_enabled) {
+if (is_p2p_mojo_bindings_enabled) {
   component("cpp_p2p") {
     output_name = "network_cpp_p2p"
 

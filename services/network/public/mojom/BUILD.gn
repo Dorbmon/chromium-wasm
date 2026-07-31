@@ -2062,12 +2062,13 @@ mojom("mojom") {
     sources += [ "ct_log_info.mojom" ]
   }
 
+  if (is_p2p_mojo_bindings_enabled) {
+    sources += [ "p2p.mojom" ]
+  }
+
   if (is_p2p_enabled) {
     enabled_features += [ "is_p2p_enabled" ]
-    sources += [
-      "p2p.mojom",
-      "p2p_trusted.mojom",
-    ]
+    sources += [ "p2p_trusted.mojom" ]
   }
 
   has_dchecks = is_debug || dcheck_always_on
@@ -2098,7 +2099,7 @@ mojom("mojom") {
   # Typemaps which apply to both Blink and non-Blink bindings.
   shared_cpp_typemaps = []
 
-  if (is_p2p_enabled) {
+  if (is_p2p_mojo_bindings_enabled) {
     shared_cpp_typemaps += [
       {
         types = [
