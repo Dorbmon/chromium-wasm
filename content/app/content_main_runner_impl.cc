@@ -827,7 +827,7 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
     DCHECK_NE(base::ThreadPoolInstance::Get(), nullptr);
   }
 
-#if !BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
   [[maybe_unused]] base::GlobalDescriptors* g_fds =
       base::GlobalDescriptors::GetInstance();
@@ -860,7 +860,7 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
         // BUILDFLAG(IS_OPENBSD)
 
-#endif  // !BUILDFLAG(IS_WIN)
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
   is_initialized_ = true;
   TRACE_EVENT0("startup,benchmark,rail", "ContentMainRunnerImpl::Initialize");

@@ -11,6 +11,25 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M3ContentShellBuildContractTest(unittest.TestCase):
+    def test_wasm_skips_posix_child_descriptor_initialization(self) -> None:
+        runner = source("content/app/content_main_runner_impl.cc")
+
+        self.assertIn(
+            "#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)\n"
+            "\n  [[maybe_unused]] base::GlobalDescriptors* g_fds",
+            runner,
+        )
+        self.assertIn(
+            "#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)\n"
+            "\n  is_initialized_ = true;",
+            runner,
+        )
+        self.assertNotIn(
+            "#if !BUILDFLAG(IS_WIN)\n\n"
+            "  [[maybe_unused]] base::GlobalDescriptors* g_fds",
+            runner,
+        )
+
     def test_content_shell_is_a_dedicated_single_process_wasm_target(
         self,
     ) -> None:
@@ -172,11 +191,12 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
             "content/browser/child_process_launcher_helper_wasm.cc"
         )
 
+        wasm_sources = build.split("  if (is_wasm) {", 1)[1].split(
+            "  } else if (is_fuchsia)", 1
+        )[0]
         self.assertIn(
-            'if (is_wasm) {\n'
-            '    sources += [ "child_process_launcher_helper_wasm.cc" ]\n'
-            "  } else if (is_fuchsia)",
-            build,
+            '"child_process_launcher_helper_wasm.cc"',
+            wasm_sources,
         )
         self.assertIn(
             "#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)\n"
