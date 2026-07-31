@@ -13,7 +13,8 @@
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/timer/elapsed_timer.h"
-#if !BUILDFLAG(IS_WASM)
+#include "base/tracing_buildflags.h"
+#if !BUILDFLAG(IS_WASM) || BUILDFLAG(CHROMIUM_WASM_CONTENT)
 #include "base/trace_event/trace_event.h"
 #endif
 #include "build/build_config.h"
@@ -210,7 +211,7 @@ std::string File::ErrorToString(Error error) {
   NOTREACHED();
 }
 
-#if !BUILDFLAG(IS_WASM)
+#if !BUILDFLAG(IS_WASM) || BUILDFLAG(CHROMIUM_WASM_CONTENT)
 void File::WriteIntoTrace(perfetto::TracedValue context) const {
   auto dict = std::move(context).WriteDictionary();
   dict.Add("is_valid", IsValid());

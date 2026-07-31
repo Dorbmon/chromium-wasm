@@ -103,6 +103,20 @@ class M3BaseSourceContractTest(unittest.TestCase):
             "Browsers do not expose system-wide committed memory.", metrics
         )
 
+    def test_content_restores_file_trace_serialization(self) -> None:
+        for path in ("base/files/file.cc", "base/files/file_path.cc"):
+            with self.subTest(path=path):
+                implementation = source(path)
+                self.assertIn(
+                    '#include "base/tracing_buildflags.h"', implementation
+                )
+                self.assertIn(
+                    "#if !BUILDFLAG(IS_WASM) || "
+                    "BUILDFLAG(CHROMIUM_WASM_CONTENT)\n"
+                    "void ",
+                    implementation,
+                )
+
     def test_wasm_filename_icu_uses_its_utf8_file_path_contract(
         self,
     ) -> None:

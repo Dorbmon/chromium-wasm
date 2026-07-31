@@ -21,7 +21,8 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
-#if !BUILDFLAG(IS_WASM)
+#include "base/tracing_buildflags.h"
+#if !BUILDFLAG(IS_WASM) || BUILDFLAG(CHROMIUM_WASM_CONTENT)
 #include "base/trace_event/trace_event.h"
 #endif
 
@@ -1618,7 +1619,7 @@ FilePath FilePath::NormalizePathSeparators() const {
   return NormalizePathSeparatorsTo(kSeparators[0]);
 }
 
-#if !BUILDFLAG(IS_WASM)
+#if !BUILDFLAG(IS_WASM) || BUILDFLAG(CHROMIUM_WASM_CONTENT)
 void FilePath::WriteIntoTrace(perfetto::TracedValue context) const {
   perfetto::WriteIntoTracedValue(std::move(context), value());
 }
