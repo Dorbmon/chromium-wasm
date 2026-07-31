@@ -167,6 +167,28 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         for body in (signin, autofill, service_worker):
             self.assertNotIn(".value_or({})", body)
 
+    def test_signin_builder_includes_destroyed_delegate_definition(
+        self,
+    ) -> None:
+        builder = source(
+            "components/signin/internal/identity_manager/"
+            "profile_oauth2_token_service_builder.cc"
+        )
+
+        unconditional_includes = builder.split(
+            "#if BUILDFLAG(IS_ANDROID)", 1
+        )[0]
+        self.assertIn(
+            '#include "components/signin/internal/identity_manager/'
+            'profile_oauth2_token_service_delegate.h"',
+            unconditional_includes,
+        )
+        self.assertIn(
+            "std::unique_ptr<ProfileOAuth2TokenServiceDelegate>\n"
+            "CreateOAuth2TokenServiceDelegate(",
+            builder,
+        )
+
     def test_gin_uses_v8s_default_wasm_page_allocator(
         self,
     ) -> None:
