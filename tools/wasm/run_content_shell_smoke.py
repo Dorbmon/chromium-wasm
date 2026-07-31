@@ -271,13 +271,18 @@ def main() -> int:
 
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m3-")
         stage = "launch_browser"
+        command = browser_command(
+            browser_path,
+            profile.name,
+            url,
+            no_sandbox=args.no_sandbox,
+        )
+        # Preserve JavaScript console diagnostics in the bounded stderr tail.
+        # In particular, Emscripten pthread worker failures can otherwise leave
+        # module initialization pending without a result reaching the server.
+        command.insert(1, "--enable-logging=stderr")
         browser = subprocess.Popen(
-            browser_command(
-                browser_path,
-                profile.name,
-                url,
-                no_sandbox=args.no_sandbox,
-            ),
+            command,
             cwd=REPO_ROOT,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
