@@ -224,7 +224,7 @@ class ManifestTest(unittest.TestCase):
             "enable_backup_ref_ptr_support = false\n",
             "safe_browsing_mode = 0\n",
             "disable_fieldtrial_testing_config = true\n",
-            "chromium_wasm_pthread_pool_size = 32\n",
+            "chromium_wasm_pthread_pool_size = 8\n",
             "chromium_wasm_logical_processor_limit = 8\n",
             "use_aura = true\n",
             "use_ozone = true\n",
