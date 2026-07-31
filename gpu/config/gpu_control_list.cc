@@ -843,6 +843,10 @@ GpuControlList::OsType GpuControlList::GetOsType() {
   return kOsMacosx;
 #elif BUILDFLAG(IS_IOS)
   return kOsIOS;
+#elif BUILDFLAG(IS_WASM)
+  // Wasm is a distinct software-only target. Returning kOsAny here would make
+  // the decision engine interpret the sentinel as an unresolved caller input.
+  return kOsWasm;
 #else
   return kOsAny;
 #endif

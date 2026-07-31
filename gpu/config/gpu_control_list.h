@@ -34,6 +34,7 @@ class GPU_CONFIG_EXPORT GpuControlList {
     kOsAndroid,
     kOsFuchsia,
     kOsIOS,
+    kOsWasm,
     kOsAny
   };
 

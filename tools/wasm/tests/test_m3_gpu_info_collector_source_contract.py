@@ -44,6 +44,17 @@ class M3GpuInfoCollectorSourceContractTest(unittest.TestCase):
         )
         self.assertIn('gpu_info->gl_vendor = "Disabled";', common)
 
+    def test_wasm_has_a_concrete_gpu_control_list_os(self) -> None:
+        header = source("gpu/config/gpu_control_list.h")
+        control_list = source("gpu/config/gpu_control_list.cc")
+
+        self.assertIn("kOsWasm,\n    kOsAny", header)
+        wasm_branch = control_list.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn("return kOsWasm;", wasm_branch)
+        self.assertNotIn("return kOsAny;", wasm_branch)
+
 
 if __name__ == "__main__":
     unittest.main()
