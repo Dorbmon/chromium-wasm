@@ -3073,14 +3073,22 @@ source_set("browser") {
     sources += [ "accessibility/browser_accessibility_state_impl_chromeos.cc" ]
   }
 
+  # Wasm builds document picture-in-picture without screen capture and needs
+  # the facade's null-returning implementation. Preserve the existing source
+  # selection for other platforms.
+  if (enable_screen_capture || is_wasm) {
+    sources += [
+      "media/capture/pip_screen_capture_coordinator.cc",
+      "media/capture/pip_screen_capture_coordinator.h",
+    ]
+  }
+
   # Desktop/Window/WebContents screen capture implementations, conditionally
   # built depending on the available implementations for each platform.
   if (enable_screen_capture) {
     sources += [
       "media/capture/frame_sink_video_capture_device.cc",
       "media/capture/frame_sink_video_capture_device.h",
-      "media/capture/pip_screen_capture_coordinator.cc",
-      "media/capture/pip_screen_capture_coordinator.h",
       "media/capture/pip_screen_capture_coordinator_proxy.h",
       "media/capture/sub_capture_target_id_web_contents_helper.cc",
       "media/capture/sub_capture_target_id_web_contents_helper.h",

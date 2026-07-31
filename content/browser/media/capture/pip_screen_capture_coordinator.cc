@@ -5,7 +5,10 @@
 #include "content/browser/media/capture/pip_screen_capture_coordinator.h"
 
 #include "build/build_config.h"
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 #include "content/browser/media/capture/pip_screen_capture_coordinator_impl.h"
+#endif
 
 namespace content {
 

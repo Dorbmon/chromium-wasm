@@ -16,6 +16,20 @@ def source(path: str) -> str:
     return (ROOT_DIR / path).read_text(encoding="utf-8")
 
 
+def braced_block(contents: str, marker: str) -> str:
+    marker_index = contents.index(marker)
+    open_brace = contents.index("{", marker_index + len(marker))
+    depth = 0
+    for index in range(open_brace, len(contents)):
+        if contents[index] == "{":
+            depth += 1
+        elif contents[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return contents[open_brace + 1 : index]
+    raise AssertionError(f"unterminated block after {marker}")
+
+
 class M3MediaSourceContractTest(unittest.TestCase):
     def test_webaudio_keeps_intentional_denormal_scopes(self) -> None:
         denormal_header = source(
@@ -467,6 +481,56 @@ class M3MediaSourceContractTest(unittest.TestCase):
             '"media/captured_surface_controller.cc"',
             screen_capture_sources,
         )
+
+    def test_disabled_screen_capture_keeps_nullable_pip_facade(self) -> None:
+        build = source("content/browser/BUILD.gn")
+        facade = source(
+            "content/browser/media/capture/"
+            "pip_screen_capture_coordinator.cc"
+        )
+
+        facade_sources = braced_block(
+            build,
+            "if (enable_screen_capture || is_wasm)",
+        )
+        capture_sources = braced_block(
+            build,
+            "if (enable_screen_capture)",
+        )
+        for facade_source in (
+            "media/capture/pip_screen_capture_coordinator.cc",
+            "media/capture/pip_screen_capture_coordinator.h",
+        ):
+            with self.subTest(facade_source=facade_source):
+                self.assertIn(facade_source, facade_sources)
+                self.assertEqual(build.count(f'"{facade_source}"'), 1)
+        self.assertIn(
+            "media/capture/pip_screen_capture_coordinator_proxy.h",
+            capture_sources,
+        )
+        native_implementation = capture_sources.split(
+            "if (is_mac || is_win) {", 1
+        )[1].split("}", 1)[0]
+        self.assertIn(
+            "media/capture/pip_screen_capture_coordinator_impl.cc",
+            native_implementation,
+        )
+        self.assertIn(
+            "media/capture/pip_screen_capture_coordinator_proxy_impl.cc",
+            native_implementation,
+        )
+
+        self.assertIn(
+            "#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)\n"
+            '#include "content/browser/media/capture/'
+            'pip_screen_capture_coordinator_impl.h"\n'
+            "#endif",
+            facade,
+        )
+        unsupported_platform = facade.split(
+            "#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)", 2
+        )[2].split("#endif", 1)[0]
+        self.assertIn("#else\n  return nullptr;", unsupported_platform)
 
     def test_webrtc_factories_advertise_no_wasm_codecs(self) -> None:
         platform_build = source(
