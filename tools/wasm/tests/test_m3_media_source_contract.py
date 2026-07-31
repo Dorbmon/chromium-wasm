@@ -17,6 +17,52 @@ def source(path: str) -> str:
 
 
 class M3MediaSourceContractTest(unittest.TestCase):
+    def test_blink_webrtc_exports_its_webrtc_dependency(self) -> None:
+        build = source(
+            "third_party/blink/renderer/modules/webrtc/BUILD.gn"
+        )
+        audio_device = source(
+            "third_party/blink/renderer/modules/webrtc/"
+            "webrtc_audio_device_not_impl.h"
+        )
+        audio_renderer = source(
+            "third_party/blink/renderer/modules/webrtc/"
+            "webrtc_audio_renderer.cc"
+        )
+        forwarding_header = source(
+            "third_party/webrtc/modules/audio_device/include/audio_device.h"
+        )
+
+        self.assertIn(
+            'public_deps = '
+            '[ "//third_party/webrtc_overrides:webrtc_component" ]',
+            build,
+        )
+        self.assertEqual(
+            build.count(
+                "//third_party/webrtc_overrides:webrtc_component"
+            ),
+            1,
+        )
+        private_deps = build.split("  deps = [", 1)[1].split("]", 1)[0]
+        self.assertNotIn(
+            "//third_party/webrtc_overrides:webrtc_component",
+            private_deps,
+        )
+        self.assertIn(
+            '#include "third_party/webrtc/modules/audio_device/include/'
+            'audio_device.h"',
+            audio_device,
+        )
+        self.assertIn(
+            '#include "api/audio/audio_device.h"',
+            forwarding_header,
+        )
+        self.assertIn(
+            '#include "third_party/webrtc/api/media_stream_interface.h"',
+            audio_renderer,
+        )
+
     def test_webrtc_factories_advertise_no_wasm_codecs(self) -> None:
         platform_build = source(
             "third_party/blink/renderer/platform/BUILD.gn"
