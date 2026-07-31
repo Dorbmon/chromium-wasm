@@ -761,6 +761,65 @@ class M3MediaSourceContractTest(unittest.TestCase):
             media_build,
         )
 
+    def test_mappable_capture_rejects_missing_gpu_channel_capability(
+        self,
+    ) -> None:
+        capture_build = source("media/capture/BUILD.gn")
+        implementation = source(
+            "media/capture/video/mappable_shared_image_utils.cc"
+        )
+
+        gpu_channel = capture_build.split(
+            'source_set("capture_gpu_channel") {', 1
+        )[1].split('source_set("test_support")', 1)[0]
+        self.assertIn(
+            "if (enable_gpu_channel_media_capture) {",
+            gpu_channel,
+        )
+        self.assertIn("video_capture_gpu_channel_host.cc", gpu_channel)
+        self.assertIn(
+            '#include "media/media_buildflags.h"',
+            implementation,
+        )
+        self.assertIn(
+            '#include "base/notimplemented.h"',
+            implementation,
+        )
+        self.assertIn(
+            "#if BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)\n"
+            '#include "base/logging.h"\n'
+            '#include "media/capture/video/'
+            'video_capture_gpu_channel_host.h"\n'
+            "#endif",
+            implementation,
+        )
+        unsupported = implementation.split(
+            "#if !BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn("static_cast<void>(capture_client);", unsupported)
+        self.assertIn("static_cast<void>(buffer_size);", unsupported)
+        self.assertIn("NOTIMPLEMENTED_LOG_ONCE()", unsupported)
+        self.assertIn(
+            "channel media capture is disabled.",
+            unsupported,
+        )
+        self.assertIn(
+            "VideoCaptureDevice::Client::ReserveResult::"
+            "kAllocationFailed",
+            unsupported,
+        )
+        self.assertNotIn("LOG(ERROR)", unsupported)
+        self.assertNotIn("ReserveOutputBuffer", unsupported)
+        supported = implementation.split(
+            "#if !BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)", 1
+        )[1].split("#else", 1)[1].rsplit("#endif", 1)[0]
+        self.assertIn("ReserveOutputBuffer", supported)
+        self.assertIn(
+            "VideoCaptureGpuChannelHost::GetInstance()", supported
+        )
+        self.assertIn("sii->CreateSharedImage(", supported)
+        self.assertEqual(supported.count("LOG(ERROR)"), 2)
+
     def test_optional_codec_and_tflite_deps_stay_out_of_wasm(self) -> None:
         media_build = source("media/BUILD.gn")
         filters_build = source("media/filters/BUILD.gn")

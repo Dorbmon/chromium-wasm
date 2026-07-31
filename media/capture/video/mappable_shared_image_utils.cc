@@ -4,9 +4,14 @@
 
 #include "media/capture/video/mappable_shared_image_utils.h"
 
+#include "base/check.h"
 #include "base/functional/callback_helpers.h"
+#include "base/notimplemented.h"
+#include "media/media_buildflags.h"
+#if BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)
 #include "base/logging.h"
 #include "media/capture/video/video_capture_gpu_channel_host.h"
+#endif
 
 namespace media {
 
@@ -18,6 +23,14 @@ VideoCaptureDevice::Client::ReserveResult AllocateNV12SharedImage(
   CHECK(out_shared_image);
   CHECK(out_capture_buffer);
 
+#if !BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)
+  static_cast<void>(capture_client);
+  static_cast<void>(buffer_size);
+  NOTIMPLEMENTED_LOG_ONCE()
+      << "Mappable video capture shared images are unavailable because GPU "
+         "channel media capture is disabled.";
+  return VideoCaptureDevice::Client::ReserveResult::kAllocationFailed;
+#else
   // When GpuMemoryBuffer is used, the frame data is opaque to the CPU for most
   // of the time.  Currently the only supported underlying format is NV12.
   constexpr VideoPixelFormat kOpaqueVideoFormat = PIXEL_FORMAT_NV12;
@@ -57,6 +70,7 @@ VideoCaptureDevice::Client::ReserveResult AllocateNV12SharedImage(
   }
 
   return reserve_result;
+#endif
 }
 
 }  // namespace media
