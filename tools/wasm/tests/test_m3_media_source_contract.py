@@ -213,6 +213,21 @@ class M3MediaSourceContractTest(unittest.TestCase):
         )
         self.assertIn('#include "api/priority.h"', webrtc_data_channel)
 
+    def test_breakout_box_avoids_unused_webrtc_dependency(self) -> None:
+        build = source(
+            "third_party/blink/renderer/modules/breakout_box/BUILD.gn"
+        )
+        frame_source = source(
+            "third_party/blink/renderer/modules/breakout_box/"
+            "frame_queue_underlying_source.cc"
+        )
+
+        breakout_box_target = build.split(
+            'blink_modules_sources("breakout_box") {', 1
+        )[1].split('source_set("unit_tests")', 1)[0]
+        self.assertNotIn("//third_party/webrtc", breakout_box_target)
+        self.assertNotIn("frame_transformer_interface", frame_source)
+
     def test_webrtc_factories_advertise_no_wasm_codecs(self) -> None:
         platform_build = source(
             "third_party/blink/renderer/platform/BUILD.gn"
