@@ -300,6 +300,29 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
                 self.assertEqual(post_launch.count(symbol), 1)
                 self.assertIn(symbol, guarded_named_channel_send)
 
+    def test_in_process_renderer_does_not_require_child_executable(
+        self,
+    ) -> None:
+        implementation = source(
+            "content/browser/renderer_host/render_process_host_impl.cc"
+        )
+        initialization = implementation.split(
+            "bool RenderProcessHostImpl::Init()", 1
+        )[1].split("is_initialized_ = true;", 1)[0]
+        before_in_process_guard, guarded_child_path = initialization.split(
+            "if (!run_renderer_in_process()) {", 1
+        )
+
+        self.assertNotIn("GetChildPath", before_in_process_guard)
+        self.assertIn(
+            "renderer_path = ChildProcessHost::GetChildPath(flags);",
+            guarded_child_path,
+        )
+        self.assertIn(
+            "if (renderer_path.empty())\n      return false;",
+            guarded_child_path,
+        )
+
     def test_wasm_devtools_pipe_is_an_explicit_failure_boundary(
         self,
     ) -> None:

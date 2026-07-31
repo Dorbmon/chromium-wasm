@@ -1897,10 +1897,14 @@ bool RenderProcessHostImpl::Init() {
 #endif
 
   // Find the renderer before creating the channel so if this fails early we
-  // return without creating the channel.
-  base::FilePath renderer_path = ChildProcessHost::GetChildPath(flags);
-  if (renderer_path.empty())
-    return false;
+  // return without creating the channel. Single-process mode runs the renderer
+  // on an in-process thread and does not require a child executable.
+  base::FilePath renderer_path;
+  if (!run_renderer_in_process()) {
+    renderer_path = ChildProcessHost::GetChildPath(flags);
+    if (renderer_path.empty())
+      return false;
+  }
 
   is_initialized_ = true;
   is_dead_ = false;
