@@ -14,6 +14,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace audio {
@@ -331,6 +332,15 @@ void OutputStream::SwitchAudioOutputDeviceId(
 
 void OutputStream::CreateAudioPipe(CreatedCallback created_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+
+#if BUILDFLAG(IS_WASM)
+  // Wasm has no transferable native sync-socket handle. SyncReader normally
+  // fails before this method is reached, but preserve the public stream
+  // creation failure contract for any unexpected caller.
+  std::move(created_callback).Run(nullptr);
+  OnError();
+  return;
+#else
   const base::TimeTicks start_time = base::TimeTicks::Now();
   DCHECK(reader_.IsValid());
   TRACE_EVENT_INSTANT("audio", "CreateAudioPipe", trace_track_);
@@ -351,6 +361,7 @@ void OutputStream::CreateAudioPipe(CreatedCallback created_callback) {
   SendLogMessage(base::StringPrintf(
       "%s() => (duration=%" PRId64 " ms)", __func__,
       (base::TimeTicks::Now() - start_time).InMilliseconds()));
+#endif
 }
 
 void OutputStream::OnControllerPlaying() {

@@ -18,6 +18,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
 #include "media/audio/audio_manager.h"
 #include "media/base/audio_parameters.h"
 #include "media/mojo/mojom/audio_processing.mojom.h"
@@ -241,6 +242,14 @@ void InputStream::OnCreated(bool initially_muted) {
   TRACE_EVENT_INSTANT("audio", "Created", trace_track_, "initially muted",
                       initially_muted);
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+
+#if BUILDFLAG(IS_WASM)
+  // Audio data pipes require a transferable native sync-socket handle. The
+  // Wasm audio manager normally prevents this callback from being reached, but
+  // fail explicitly if a future or test path reaches it.
+  OnStreamPlatformError();
+  return;
+#else
   const base::TimeTicks start_time = base::TimeTicks::Now();
   SendLogMessage(base::StringPrintf("%s({muted=%s})", __func__,
                                     base::ToString(initially_muted).c_str()));
@@ -263,6 +272,7 @@ void InputStream::OnCreated(bool initially_muted) {
       "%s({muted=%s}) => (completed, duration=%" PRId64 " ms)", __func__,
       base::ToString(initially_muted).c_str(),
       (base::TimeTicks::Now() - start_time).InMilliseconds()));
+#endif
 }
 
 DisconnectReason InputErrorToDisconnectReason(InputController::ErrorCode code) {

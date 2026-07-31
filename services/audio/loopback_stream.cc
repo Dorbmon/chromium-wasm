@@ -15,6 +15,7 @@
 #include "base/time/default_tick_clock.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/zip.h"
+#include "build/build_config.h"
 #include "media/base/audio_bus.h"
 #include "media/base/vector_math.h"
 #include "mojo/public/cpp/system/buffer.h"
@@ -68,6 +69,14 @@ LoopbackStream::LoopbackStream(
           [](const std::string& message) { VLOG(1) << message; }),
       shared_memory_count, params, &foreign_socket);
   if (writer) {
+#if BUILDFLAG(IS_WASM)
+    // Audio data pipes require a transferable native sync-socket handle. The
+    // Wasm SyncSocket implementation normally prevents writer creation, but
+    // reject the stream if that precondition ever changes independently.
+    std::move(created_callback).Run(nullptr);
+    OnError();
+    return;
+#else
     base::UnsafeSharedMemoryRegion shared_memory_region =
         writer->TakeSharedMemoryRegion();
     mojo::PlatformHandle socket_handle;
@@ -83,6 +92,7 @@ LoopbackStream::LoopbackStream(
         return;  // Success!
       }
     }
+#endif
   }
 
   // If this point is reached, one or more AudioDataPipe components failed to
