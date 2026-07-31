@@ -27,6 +27,7 @@
 #include "base/values.h"
 #include "base/version.h"
 #include "base/version_info/version_info.h"
+#include "build/build_config.h"
 #include "components/metrics/clean_exit_beacon.h"
 #include "components/metrics/client_info.h"
 #include "components/metrics/metrics_pref_names.h"
@@ -423,7 +424,11 @@ TEST_F(VariationsServiceTest, VariationsURLHasParams) {
 
   std::string osname;
   EXPECT_TRUE(net::GetValueForKeyInQuery(url, "osname", &osname));
+#if BUILDFLAG(IS_WASM)
+  EXPECT_EQ("wasm", osname);
+#else
   EXPECT_FALSE(osname.empty());
+#endif
 
   std::string milestone;
   EXPECT_TRUE(net::GetValueForKeyInQuery(url, "milestone", &milestone));

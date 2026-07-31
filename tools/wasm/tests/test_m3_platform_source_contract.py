@@ -224,6 +224,26 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         )
         self.assertIn("return std::string();", username)
 
+    def test_variations_identifies_wasm_without_linux_alias(self) -> None:
+        service = source(
+            "components/variations/service/variations_service.cc"
+        )
+        platform = service.split("std::string GetPlatformString()", 1)[
+            1
+        ].split(
+            "// Gets the restrict parameter", 1
+        )[0]
+        wasm_platform = platform.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split(
+            "#elif BUILDFLAG(IS_LINUX)", 1
+        )[0]
+
+        self.assertIn("identifies the application target", wasm_platform)
+        self.assertIn('return "wasm";', wasm_platform)
+        self.assertNotIn('"linux"', wasm_platform)
+        self.assertNotIn("PLATFORM_", wasm_platform)
+
     def test_trusted_vault_does_not_report_a_wasm_host_os(self) -> None:
         connection = source(
             "components/trusted_vault/trusted_vault_connection_impl.cc"

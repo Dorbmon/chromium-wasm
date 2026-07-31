@@ -102,6 +102,10 @@ std::string GetPlatformString() {
   return "android";
 #elif BUILDFLAG(IS_FUCHSIA)
   return "fuchsia";
+#elif BUILDFLAG(IS_WASM)
+  // This URL token identifies the application target. It does not opt Wasm
+  // into any server-defined seed platform.
+  return "wasm";
 #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_BSD) || BUILDFLAG(IS_SOLARIS)
   // Default BSD and SOLARIS to Linux to not break those builds, although these
   // platforms are not officially supported by Chrome.
