@@ -118,6 +118,9 @@ GetLocalPhysicalDeviceType() {
 #elif BUILDFLAG(IS_FUCHSIA)
   // Not used in Fuchsia.
   return trusted_vault_pb::PhysicalDeviceMetadata::DEVICE_TYPE_UNKNOWN;
+#elif BUILDFLAG(IS_WASM)
+  // The host OS is outside the Wasm platform boundary.
+  return trusted_vault_pb::PhysicalDeviceMetadata::DEVICE_TYPE_UNKNOWN;
 #else
 #error Please handle your new device OS here.
 #endif

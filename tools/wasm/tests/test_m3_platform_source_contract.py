@@ -139,6 +139,36 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         )
         self.assertIn("return std::string();", username)
 
+    def test_trusted_vault_does_not_report_a_wasm_host_os(self) -> None:
+        connection = source(
+            "components/trusted_vault/trusted_vault_connection_impl.cc"
+        )
+        device_type = connection.split(
+            "GetLocalPhysicalDeviceType()", 1
+        )[1].split("CreateSecurityDomainMember", 1)[0]
+        wasm_device_type = device_type.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+
+        self.assertIn(
+            "The host OS is outside the Wasm platform boundary",
+            wasm_device_type,
+        )
+        self.assertIn(
+            "return trusted_vault_pb::PhysicalDeviceMetadata::"
+            "DEVICE_TYPE_UNKNOWN;",
+            wasm_device_type,
+        )
+        for native_type in (
+            "DEVICE_TYPE_ANDROID",
+            "DEVICE_TYPE_CHROMEOS",
+            "DEVICE_TYPE_IOS",
+            "DEVICE_TYPE_LINUX",
+            "DEVICE_TYPE_MAC_OS",
+            "DEVICE_TYPE_WINDOWS",
+        ):
+            self.assertNotIn(native_type, wasm_device_type)
+
     def test_m3_sources_use_typed_optional_fallbacks(self) -> None:
         signin = source(
             "components/signin/public/base/hybrid_encryption_key.cc"
