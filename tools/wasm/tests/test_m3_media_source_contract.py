@@ -228,6 +228,60 @@ class M3MediaSourceContractTest(unittest.TestCase):
         self.assertNotIn("//third_party/webrtc", breakout_box_target)
         self.assertNotIn("frame_transformer_interface", frame_source)
 
+    def test_media_capabilities_keeps_webrtc_implementation_private(
+        self,
+    ) -> None:
+        build = source(
+            "third_party/blink/renderer/modules/media_capabilities/BUILD.gn"
+        )
+        header = source(
+            "third_party/blink/renderer/modules/media_capabilities/"
+            "media_capabilities.h"
+        )
+        implementation = source(
+            "third_party/blink/renderer/modules/media_capabilities/"
+            "media_capabilities.cc"
+        )
+        unit_test = source(
+            "third_party/blink/renderer/modules/media_capabilities/"
+            "media_capabilities_test.cc"
+        )
+
+        target = build.split(
+            'blink_modules_sources("media_capabilities") {', 1
+        )[1].split(
+            'fuzzable_proto_library("fuzzer_media_configuration_proto")',
+            1,
+        )[0]
+        private_deps = target.split("  deps = [", 1)[1].split(
+            "  ]", 1
+        )[0]
+        self.assertIn(
+            "//third_party/webrtc_overrides:webrtc_component",
+            private_deps,
+        )
+        self.assertNotIn("public_deps", target)
+
+        handlers = (
+            "webrtc_decoding_info_handler.h",
+            "webrtc_encoding_info_handler.h",
+        )
+        for handler in handlers:
+            with self.subTest(handler=handler):
+                self.assertNotIn(handler, header)
+                self.assertIn(handler, implementation)
+                self.assertIn(handler, unit_test)
+        self.assertIn("class WebrtcDecodingInfoHandler;", header)
+        self.assertIn("class WebrtcEncodingInfoHandler;", header)
+        self.assertIn(
+            "third_party/webrtc/api/audio_codecs/audio_format.h",
+            implementation,
+        )
+        self.assertIn(
+            "third_party/webrtc/api/video_codecs/sdp_video_format.h",
+            implementation,
+        )
+
     def test_webrtc_factories_advertise_no_wasm_codecs(self) -> None:
         platform_build = source(
             "third_party/blink/renderer/platform/BUILD.gn"

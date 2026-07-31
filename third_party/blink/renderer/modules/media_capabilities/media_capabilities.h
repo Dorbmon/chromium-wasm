@@ -21,8 +21,6 @@
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_wrapper_mode.h"
-#include "third_party/blink/renderer/platform/peerconnection/webrtc_decoding_info_handler.h"
-#include "third_party/blink/renderer/platform/peerconnection/webrtc_encoding_info_handler.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 
 namespace blink {
@@ -36,6 +34,8 @@ class MediaEncodingConfiguration;
 class MediaKeySystemAccess;
 class NavigatorBase;
 class ScriptState;
+class WebrtcDecodingInfoHandler;
+class WebrtcEncodingInfoHandler;
 
 class MODULES_EXPORT MediaCapabilities final
     : public ScriptWrappable,

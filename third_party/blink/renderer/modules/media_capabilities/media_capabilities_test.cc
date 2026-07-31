@@ -44,6 +44,8 @@
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_video_encoder_factory.h"
+#include "third_party/blink/renderer/platform/peerconnection/webrtc_decoding_info_handler.h"
+#include "third_party/blink/renderer/platform/peerconnection/webrtc_encoding_info_handler.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
