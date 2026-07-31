@@ -369,6 +369,91 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
             wasm_startup,
         )
 
+    def test_shell_devtools_frontend_follows_resource_capability(
+        self,
+    ) -> None:
+        features = source("content/browser/devtools/features.gni")
+        header = source(
+            "content/shell/browser/shell_devtools_bindings.h"
+        )
+        implementation = source(
+            "content/shell/browser/shell_devtools_bindings.cc"
+        )
+        guard = (
+            "#if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND) && "
+            "!BUILDFLAG(IS_ANDROID)"
+        )
+
+        self.assertIn(
+            "enable_devtools_frontend = "
+            "!is_ios && !is_fuchsia && !is_wasm",
+            features,
+        )
+        for contents in (header, implementation):
+            with self.subTest(file=contents[:40]):
+                self.assertIn(
+                    '#include "content/public/common/buildflags.h"',
+                    contents,
+                )
+                self.assertIn(guard, contents)
+
+        frontend_header = header.split(
+            '#include "content/public/common/buildflags.h"', 1
+        )[1].split(
+            '#include "content/public/browser/web_contents_observer.h"', 1
+        )[0]
+        self.assertIn(guard, frontend_header)
+        guarded_frontend_header = frontend_header.split(
+            guard, 1
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "devtools_frontend_host.h",
+            guarded_frontend_header,
+        )
+        frontend_member = header.split(
+            "scoped_refptr<DevToolsAgentHost> agent_host_;", 1
+        )[1].split("class NetworkResourceLoader;", 1)[0]
+        self.assertIn(guard, frontend_member)
+        guarded_frontend_member = frontend_member.split(
+            guard, 1
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "std::unique_ptr<DevToolsFrontendHost> frontend_host_;",
+            guarded_frontend_member,
+        )
+
+        frontend_includes = implementation.split(
+            '#include "services/network/public/mojom/'
+            'url_response_head.mojom.h"', 1
+        )[1].split("namespace content", 1)[0]
+        self.assertIn(guard, frontend_includes)
+        guarded_frontend_includes = frontend_includes.split(
+            guard, 1
+        )[1].split("#endif", 1)[0]
+        for symbol in (
+            "base/command_line.h",
+            "devtools_frontend_host.h",
+            "shell_switches.h",
+        ):
+            with self.subTest(frontend_include=symbol):
+                self.assertIn(symbol, guarded_frontend_includes)
+        navigation = implementation.split(
+            "void ShellDevToolsBindings::ReadyToCommitNavigation", 1
+        )[1].split(
+            "void ShellDevToolsBindings::AttachInternal", 1
+        )[0]
+        self.assertIn(guard, navigation)
+        guarded_navigation = navigation.split(
+            guard, 1
+        )[1].split("#endif", 1)[0]
+        for symbol in (
+            "DevToolsFrontendHost::Create",
+            "DevToolsFrontendHost::SetupExtensionsAPI",
+        ):
+            with self.subTest(frontend_symbol=symbol):
+                self.assertEqual(navigation.count(symbol), 1)
+                self.assertIn(symbol, guarded_navigation)
+
     def test_devtools_tracing_includes_process_id_definition(self) -> None:
         tracing = source(
             "content/browser/devtools/protocol/tracing_handler.h"
