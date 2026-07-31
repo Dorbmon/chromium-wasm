@@ -30,6 +30,7 @@ blink_modules_sources("v8") {
   deps = [
     ":generated",
     "//third_party/blink/renderer/platform",
+    "//third_party/webrtc_overrides:webrtc_component",
     "//v8",
   ]
 }

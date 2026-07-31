@@ -170,6 +170,49 @@ class M3MediaSourceContractTest(unittest.TestCase):
             audio_renderer,
         )
 
+    def test_generated_module_bindings_import_webrtc_config(self) -> None:
+        build = source(
+            "third_party/blink/renderer/bindings/modules/v8/BUILD.gn"
+        )
+        rtc_certificate = source(
+            "third_party/blink/renderer/modules/peerconnection/"
+            "rtc_certificate.h"
+        )
+        rtc_data_channel = source(
+            "third_party/blink/renderer/modules/peerconnection/"
+            "rtc_data_channel.h"
+        )
+        webrtc_certificate = source(
+            "third_party/webrtc/rtc_base/rtc_certificate.h"
+        )
+        webrtc_data_channel = source(
+            "third_party/webrtc/api/data_channel_interface.h"
+        )
+
+        v8_target = build.split(
+            'blink_modules_sources("v8") {', 1
+        )[1].split('source_set("testing")', 1)[0]
+        private_deps = v8_target.split("  deps = [", 1)[1].split(
+            "  ]", 1
+        )[0]
+        self.assertIn(
+            "//third_party/webrtc_overrides:webrtc_component",
+            private_deps,
+        )
+        self.assertNotIn("public_deps", v8_target)
+        self.assertIn(
+            '#include "third_party/webrtc/rtc_base/rtc_certificate.h"',
+            rtc_certificate,
+        )
+        self.assertIn(
+            '#include "third_party/webrtc/api/data_channel_interface.h"',
+            rtc_data_channel,
+        )
+        self.assertIn(
+            '#include "api/ref_counted_base.h"', webrtc_certificate
+        )
+        self.assertIn('#include "api/priority.h"', webrtc_data_channel)
+
     def test_webrtc_factories_advertise_no_wasm_codecs(self) -> None:
         platform_build = source(
             "third_party/blink/renderer/platform/BUILD.gn"
