@@ -161,6 +161,9 @@ webrtc_public_deps = [
   "//third_party/webrtc/stats:rtc_stats_test_utils",
   "//third_party/webrtc/system_wrappers",
 ]
+if (is_wasm) {
+  webrtc_public_deps += [ "//third_party/webrtc/rtc_base:null_socket_server" ]
+}
 if (!is_wasm) {
   webrtc_public_deps += [
     "//third_party/webrtc/api/audio:neural_residual_echo_estimator_creator",

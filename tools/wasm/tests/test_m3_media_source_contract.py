@@ -17,6 +17,68 @@ def source(path: str) -> str:
 
 
 class M3MediaSourceContractTest(unittest.TestCase):
+    def test_thread_wrapper_defers_wasm_sockets_to_wisp(self) -> None:
+        wrapper = source("components/webrtc/thread_wrapper.cc")
+        overrides = source("third_party/webrtc_overrides/BUILD.gn")
+        rtc_base_build = source("third_party/webrtc/rtc_base/BUILD.gn")
+        null_server = source(
+            "third_party/webrtc/rtc_base/null_socket_server.cc"
+        )
+
+        self.assertIn(
+            "#if BUILDFLAG(IS_WASM)\n"
+            '#include "third_party/webrtc/rtc_base/null_socket_server.h"\n'
+            "#else\n"
+            '#include "third_party/webrtc/rtc_base/'
+            'physical_socket_server.h"\n'
+            "#endif",
+            wrapper,
+        )
+        socket_factory = wrapper.split(
+            "std::unique_ptr<SocketServer> "
+            "CreateThreadWrapperSocketServer() {",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn(
+            "#if BUILDFLAG(IS_WASM)\n"
+            "  return std::make_unique<NullSocketServer>();\n"
+            "#else\n"
+            "  return std::make_unique<PhysicalSocketServer>();\n"
+            "#endif",
+            socket_factory,
+        )
+        self.assertIn(
+            ": Thread(CreateThreadWrapperSocketServer()),",
+            wrapper,
+        )
+        wasm_deps = overrides.split("if (is_wasm) {", 1)[1].split(
+            "}", 1
+        )[0]
+        self.assertIn(
+            "//third_party/webrtc/rtc_base:null_socket_server",
+            wasm_deps,
+        )
+        threading_target = rtc_base_build.split(
+            'rtc_library("threading") {', 1
+        )[1].split('rtc_source_set("socket_factory")', 1)[0]
+        native_threading_sources = threading_target.split(
+            "  if (!is_wasm) {", 1
+        )[1].split("  }", 1)[0]
+        for physical_source in (
+            "physical_socket_server.cc",
+            "physical_socket_server.h",
+        ):
+            with self.subTest(physical_source=physical_source):
+                self.assertIn(physical_source, native_threading_sources)
+                self.assertNotIn(
+                    physical_source,
+                    threading_target.split("  if (!is_wasm) {", 1)[0],
+                )
+        self.assertIn(
+            "RTC_DCHECK_NOTREACHED();\n  return nullptr;",
+            null_server,
+        )
+
     def test_blink_webrtc_exports_its_webrtc_dependency(self) -> None:
         build = source(
             "third_party/blink/renderer/modules/webrtc/BUILD.gn"

@@ -22,7 +22,12 @@
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
+#if BUILDFLAG(IS_WASM)
+#include "third_party/webrtc/rtc_base/null_socket_server.h"
+#else
 #include "third_party/webrtc/rtc_base/physical_socket_server.h"
+#endif
 #include "third_party/webrtc_overrides/api/location.h"
 #include "third_party/webrtc_overrides/metronome_source.h"
 #include "third_party/webrtc_overrides/timer_based_tick_provider.h"
@@ -33,6 +38,14 @@ namespace {
 constexpr base::TimeDelta kTaskLatencySampleDuration = base::Seconds(3);
 
 constinit thread_local ThreadWrapper* jingle_thread_wrapper = nullptr;
+
+std::unique_ptr<SocketServer> CreateThreadWrapperSocketServer() {
+#if BUILDFLAG(IS_WASM)
+  return std::make_unique<NullSocketServer>();
+#else
+  return std::make_unique<PhysicalSocketServer>();
+#endif
+}
 
 }  // namespace
 
@@ -129,7 +142,7 @@ void ThreadWrapper::SetLatencyAndTaskDurationCallbacks(
 
 ThreadWrapper::ThreadWrapper(
     ::scoped_refptr<base::SingleThreadTaskRunner> task_runner)
-    : Thread(std::make_unique<webrtc::PhysicalSocketServer>()),
+    : Thread(CreateThreadWrapperSocketServer()),
       resetter_(&jingle_thread_wrapper, this, nullptr),
       task_runner_(task_runner),
       send_allowed_(false),
