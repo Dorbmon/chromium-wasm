@@ -20,7 +20,7 @@ from m0_common import load_manifest
 
 
 DAWN_REVISION = "d089fc91e7e4881362463faf8efe9ae435e34660"
-DAWN_PORT_REVISION = "da49530d50342500186d544a22fb3b70a22ede8d"
+DAWN_PORT_REVISION = "bf197d90cc80ca4e1391953cfb7d57ce8b334bea"
 
 
 def test_manifest() -> dict[str, object]:

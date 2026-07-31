@@ -21,7 +21,7 @@
     "dawn": {
       "path": "third_party/dawn",
       "upstream_revision": "d089fc91e7e4881362463faf8efe9ae435e34660",
-      "revision": "da49530d50342500186d544a22fb3b70a22ede8d"
+      "revision": "bf197d90cc80ca4e1391953cfb7d57ce8b334bea"
     },
     "angle": {
       "path": "third_party/angle",
