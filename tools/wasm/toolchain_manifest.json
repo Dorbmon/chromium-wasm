@@ -26,7 +26,7 @@
     "angle": {
       "path": "third_party/angle",
       "upstream_revision": "edae461ad2122a3a2be0b5d3d067472aa0e3329c",
-      "revision": "f001b6b6439356959015e7e9506944b4c7380e7d"
+      "revision": "ebc91864f734815c3a33e090c0e253100a608d93"
     },
     "boringssl": {
       "path": "third_party/boringssl/src",
