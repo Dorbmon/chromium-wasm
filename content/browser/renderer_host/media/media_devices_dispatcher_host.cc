@@ -13,6 +13,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
@@ -349,7 +350,20 @@ void MediaDevicesDispatcherHost::ProduceSubCaptureTargetId(
           render_frame_host_id_, type),
       std::move(callback));
 }
-#endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE)
+#elif BUILDFLAG(IS_WASM)
+void MediaDevicesDispatcherHost::CloseFocusWindowOfOpportunity(
+    const std::string& label) {
+  LOG(ERROR) << "Display-surface focus is unsupported on WebAssembly";
+}
+
+void MediaDevicesDispatcherHost::ProduceSubCaptureTargetId(
+    media::mojom::SubCaptureTargetType type,
+    ProduceSubCaptureTargetIdCallback callback) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  LOG(ERROR) << "Sub-capture target IDs are unsupported on WebAssembly";
+  std::move(callback).Run(std::string());
+}
+#endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE) || BUILDFLAG(IS_WASM)
 
 void MediaDevicesDispatcherHost::SetPreferredSinkId(
     const std::string& hashed_sink_id,

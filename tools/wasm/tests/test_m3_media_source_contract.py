@@ -282,6 +282,192 @@ class M3MediaSourceContractTest(unittest.TestCase):
             implementation,
         )
 
+    def test_disabled_wasm_screen_capture_reports_unsupported(self) -> None:
+        devices_header = source(
+            "content/browser/renderer_host/media/"
+            "media_devices_dispatcher_host.h"
+        )
+        devices = source(
+            "content/browser/renderer_host/media/"
+            "media_devices_dispatcher_host.cc"
+        )
+        stream_header = source(
+            "content/browser/renderer_host/media/"
+            "media_stream_dispatcher_host.h"
+        )
+        stream = source(
+            "content/browser/renderer_host/media/"
+            "media_stream_dispatcher_host.cc"
+        )
+
+        capture_or_wasm = (
+            "#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) || BUILDFLAG(IS_WASM)"
+        )
+        self.assertIn(capture_or_wasm, devices_header)
+        self.assertIn(capture_or_wasm, stream_header)
+
+        devices_fallback = devices.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "Display-surface focus is unsupported on WebAssembly",
+            devices_fallback,
+        )
+        self.assertIn(
+            "Sub-capture target IDs are unsupported on WebAssembly",
+            devices_fallback,
+        )
+        self.assertIn(
+            "std::move(callback).Run(std::string());",
+            devices_fallback,
+        )
+
+        focus = stream.split(
+            "void MediaStreamDispatcherHost::FocusCapturedSurface", 1
+        )[1].split(
+            "void MediaStreamDispatcherHost::SendWheel", 1
+        )[0]
+        wasm_focus = focus.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "Captured-surface focus is unsupported on WebAssembly",
+            wasm_focus,
+        )
+        self.assertNotIn(
+            "SetCapturedDisplaySurfaceFocus",
+            wasm_focus,
+        )
+
+        apply_target = stream.split(
+            "#if BUILDFLAG(ENABLE_SCREEN_CAPTURE)\n"
+            "void MediaStreamDispatcherHost::ApplySubCaptureTarget",
+            1,
+        )[1].split(
+            "void MediaStreamDispatcherHost::GetOpenDevice", 1
+        )[0]
+        wasm_apply = apply_target.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "Sub-capture targets are unsupported on WebAssembly",
+            wasm_apply,
+        )
+        self.assertIn(
+            "ApplySubCaptureTargetResult::kNotImplemented",
+            wasm_apply,
+        )
+
+        wheel = stream.split(
+            "void MediaStreamDispatcherHost::SendWheel", 1
+        )[1].split(
+            "void MediaStreamDispatcherHost::UpdateZoomLevel", 1
+        )[0]
+        disabled_wheel = wheel.split("#else", 1)[1].split("#endif", 1)[0]
+        self.assertIn(
+            "Captured-surface wheel control is unsupported",
+            disabled_wheel,
+        )
+        self.assertNotIn("media_stream_manager_->SendWheel", disabled_wheel)
+
+        zoom = stream.split(
+            "void MediaStreamDispatcherHost::UpdateZoomLevel", 1
+        )[1].split(
+            "void MediaStreamDispatcherHost::"
+            "RequestCapturedSurfaceControlPermission",
+            1,
+        )[0]
+        disabled_zoom = zoom.split("#else", 1)[1].split("#endif", 1)[0]
+        self.assertIn(
+            "Captured-surface zoom control is unsupported",
+            disabled_zoom,
+        )
+        self.assertIn(
+            "CapturedSurfaceControlResult::kUnknownError",
+            disabled_zoom,
+        )
+        self.assertNotIn(
+            "media_stream_manager_->UpdateZoomLevel",
+            disabled_zoom,
+        )
+
+        permission = stream.split(
+            "void MediaStreamDispatcherHost::"
+            "RequestCapturedSurfaceControlPermission",
+            1,
+        )[1].split(
+            "#endif  // !BUILDFLAG(IS_ANDROID)", 1
+        )[0]
+        disabled_permission = permission.split(
+            "#else", 1
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "Captured-surface control permission is unsupported",
+            disabled_permission,
+        )
+        self.assertIn(
+            "CapturedSurfaceControlResult::kUnknownError",
+            disabled_permission,
+        )
+        self.assertNotIn(
+            "RequestCapturedSurfaceControlPermission(",
+            disabled_permission,
+        )
+
+    def test_disabled_screen_capture_omits_controller_linkage(self) -> None:
+        build = source("content/browser/BUILD.gn")
+        manager_header = source(
+            "content/browser/renderer_host/media/media_stream_manager.h"
+        )
+        manager = source(
+            "content/browser/renderer_host/media/media_stream_manager.cc"
+        )
+
+        capture_nonmobile = (
+            "#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) && "
+            "!BUILDFLAG(IS_ANDROID) && \\\n"
+            "    !BUILDFLAG(IS_IOS)"
+        )
+        self.assertIn(
+            capture_nonmobile
+            + '\n#include "content/browser/media/'
+            'captured_surface_controller.h"',
+            manager_header,
+        )
+        self.assertIn(
+            capture_nonmobile
+            + "\n  // Callback for creating a "
+            "CapturedSurfaceController.",
+            manager_header,
+        )
+        self.assertIn(
+            capture_nonmobile + "\n  // Captured Surface Control APIs.",
+            manager_header,
+        )
+        self.assertIn(
+            capture_nonmobile
+            + "\nCapturedSurfaceController* "
+            "MediaStreamManager::GetCapturedSurfaceController",
+            manager,
+        )
+        self.assertIn(
+            capture_nonmobile + "\nvoid MediaStreamManager::SendWheel",
+            manager,
+        )
+
+        delayed_focus = manager.split(
+            "void MediaStreamManager::PanTiltZoomPermissionChecked", 1
+        )[1].split("void MediaStreamManager::FinalizeRequestFailed", 1)[0]
+        self.assertIn(capture_nonmobile, delayed_focus)
+
+        screen_capture_sources = build.split(
+            "if (enable_screen_capture) {", 1
+        )[1].split("if (use_aura)", 1)[0]
+        self.assertIn(
+            '"media/captured_surface_controller.cc"',
+            screen_capture_sources,
+        )
+
     def test_webrtc_factories_advertise_no_wasm_codecs(self) -> None:
         platform_build = source(
             "third_party/blink/renderer/platform/BUILD.gn"

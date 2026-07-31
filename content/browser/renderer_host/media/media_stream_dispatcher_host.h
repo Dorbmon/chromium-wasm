@@ -149,12 +149,15 @@ class CONTENT_EXPORT MediaStreamDispatcherHost
       RequestCapturedSurfaceControlPermissionCallback callback) override;
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
-#if BUILDFLAG(ENABLE_SCREEN_CAPTURE)
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) || BUILDFLAG(IS_WASM)
   void ApplySubCaptureTarget(const base::UnguessableToken& session_id,
                              media::mojom::SubCaptureTargetType type,
                              const base::Token& sub_capture_target,
                              uint32_t sub_capture_target_version,
                              ApplySubCaptureTargetCallback callback) override;
+#endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE) || BUILDFLAG(IS_WASM)
+
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE)
   void OnSubCaptureTargetValidationComplete(
       const base::UnguessableToken& session_id,
       media::mojom::SubCaptureTargetType type,

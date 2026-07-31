@@ -52,7 +52,8 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) && \
+    !BUILDFLAG(IS_IOS)
 #include "content/browser/media/captured_surface_controller.h"
 #endif
 
@@ -145,7 +146,8 @@ class CONTENT_EXPORT MediaStreamManager
   using GenerateStreamTestCallback =
       base::OnceCallback<bool(const blink::StreamControls&)>;
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) && \
+    !BUILDFLAG(IS_IOS)
   // Callback for creating a CapturedSurfaceController. Used to override the
   // default CapturedSurfaceController in tests.
   using CapturedSurfaceControllerFactoryCallback =
@@ -399,7 +401,8 @@ class CONTENT_EXPORT MediaStreamManager
                           blink::mojom::MediaStreamType stream_type,
                           MediaRequestState new_state);
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) && \
+    !BUILDFLAG(IS_IOS)
   void SetConditionalFocusWindowForTesting(base::TimeDelta window);
 
   void SetCapturedSurfaceControllerFactoryForTesting(
@@ -450,7 +453,8 @@ class CONTENT_EXPORT MediaStreamManager
                                       bool is_from_timer);
 #endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE)
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) && \
+    !BUILDFLAG(IS_IOS)
   // Captured Surface Control APIs.
   void SendWheel(
       GlobalRenderFrameHostId capturer_rfh_id,
@@ -472,7 +476,8 @@ class CONTENT_EXPORT MediaStreamManager
       base::OnceCallback<void(blink::mojom::CapturedSurfaceControlResult)>
           callback);
 
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) &&
+        // !BUILDFLAG(IS_IOS)
 
   void RegisterDispatcherHost(
       std::unique_ptr<blink::mojom::MediaStreamDispatcherHost> host,
@@ -592,12 +597,14 @@ class CONTENT_EXPORT MediaStreamManager
   DeviceRequest* FindRequestByVideoSessionId(
       const base::UnguessableToken& session_id) const;
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) && \
+    !BUILDFLAG(IS_IOS)
   CapturedSurfaceController* GetCapturedSurfaceController(
       GlobalRenderFrameHostId capturer_rfh_id,
       const base::UnguessableToken& session_id,
       blink::mojom::CapturedSurfaceControlResult& result);
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) &&
+        // !BUILDFLAG(IS_IOS)
 
   // Clones an existing device identified by |existing_device_session_id| and
   // returns it. If no such device is found, it returns std::nullopt.
@@ -820,7 +827,8 @@ class CONTENT_EXPORT MediaStreamManager
   void OnVideoCaptureHostConnectionError();
 #endif
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE) && !BUILDFLAG(IS_ANDROID) && \
+    !BUILDFLAG(IS_IOS)
   // Defines a window of opportunity for the Web-application to decide
   // whether a display-surface which it's capturing should be focused.
   // After |kConditionalFocusWindow| past the beginning of the capture,

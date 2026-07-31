@@ -11,6 +11,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "build/build_config.h"
@@ -664,12 +665,15 @@ void MediaStreamDispatcherHost::FocusCapturedSurface(const std::string& label,
                                                      bool focus) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE)
   media_stream_manager_->SetCapturedDisplaySurfaceFocus(
       label, focus,
       /*is_from_microtask=*/false,
       /*is_from_timer=*/false);
+#elif BUILDFLAG(IS_WASM)
+  LOG(ERROR) << "Captured-surface focus is unsupported on WebAssembly";
+#endif
 }
-
 
 void MediaStreamDispatcherHost::SendWheel(
     const base::UnguessableToken& device_id,
@@ -687,8 +691,13 @@ void MediaStreamDispatcherHost::SendWheel(
     return;
   }
 
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE)
   media_stream_manager_->SendWheel(render_frame_host_id_, device_id,
                                    std::move(action), base::DoNothing());
+#else
+  LOG(ERROR) << "Captured-surface wheel control is unsupported because screen "
+                "capture is disabled";
+#endif
 }
 
 void MediaStreamDispatcherHost::UpdateZoomLevel(
@@ -703,8 +712,15 @@ void MediaStreamDispatcherHost::UpdateZoomLevel(
     return;
   }
 
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE)
   media_stream_manager_->UpdateZoomLevel(render_frame_host_id_, device_id,
                                          action, std::move(callback));
+#else
+  LOG(ERROR) << "Captured-surface zoom control is unsupported because screen "
+                "capture is disabled";
+  std::move(callback).Run(
+      blink::mojom::CapturedSurfaceControlResult::kUnknownError);
+#endif
 }
 
 void MediaStreamDispatcherHost::RequestCapturedSurfaceControlPermission(
@@ -718,8 +734,15 @@ void MediaStreamDispatcherHost::RequestCapturedSurfaceControlPermission(
     return;
   }
 
+#if BUILDFLAG(ENABLE_SCREEN_CAPTURE)
   media_stream_manager_->RequestCapturedSurfaceControlPermission(
       render_frame_host_id_, session_id, std::move(callback));
+#else
+  LOG(ERROR) << "Captured-surface control permission is unsupported because "
+                "screen capture is disabled";
+  std::move(callback).Run(
+      blink::mojom::CapturedSurfaceControlResult::kUnknownError);
+#endif
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
@@ -772,7 +795,19 @@ void MediaStreamDispatcherHost::OnSubCaptureTargetValidationComplete(
   media_stream_manager_->video_capture_manager()->ApplySubCaptureTarget(
       session_id, type, target, sub_capture_version, std::move(callback));
 }
-#endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE)
+#elif BUILDFLAG(IS_WASM)
+void MediaStreamDispatcherHost::ApplySubCaptureTarget(
+    const base::UnguessableToken& device_id,
+    media::mojom::SubCaptureTargetType type,
+    const base::Token& sub_capture_target,
+    uint32_t sub_capture_version,
+    ApplySubCaptureTargetCallback callback) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  LOG(ERROR) << "Sub-capture targets are unsupported on WebAssembly";
+  std::move(callback).Run(
+      media::mojom::ApplySubCaptureTargetResult::kNotImplemented);
+}
+#endif  // BUILDFLAG(ENABLE_SCREEN_CAPTURE) || BUILDFLAG(IS_WASM)
 
 void MediaStreamDispatcherHost::GetOpenDevice(
     int32_t page_request_id,
