@@ -3632,6 +3632,12 @@ source_set("browser") {
       "digital_credentials/cross_device_transaction_impl.h",
     ]
 
+    # WebUI and DevTools JavaScript error reporting is independent of the
+    # native on-device speech implementation below.
+    if (!is_fuchsia) {
+      deps += [ "//components/crash/content/browser/error_reporting" ]
+    }
+
     if (!is_fuchsia && !is_wasm) {
       sources += [
         "speech/on_device_speech_recognition_engine_impl.cc",
@@ -3640,10 +3646,7 @@ source_set("browser") {
         "speech/soda_speech_recognition_engine_impl.h",
       ]
 
-      deps += [
-        "//components/crash/content/browser/error_reporting",
-        "//media/mojo/mojom:web_speech_recognition",
-      ]
+      deps += [ "//media/mojo/mojom:web_speech_recognition" ]
     }
 
     deps += [
@@ -3665,7 +3668,7 @@ source_set("browser") {
   # NOTE: Fuchsia depends on this class, but probably shouldn't, as it doesn't
   # support extensions.
   if (is_win || is_apple || is_linux || is_chromeos || is_desktop_android ||
-      is_fuchsia) {
+      is_fuchsia || is_wasm) {
     sources += [
       "service_worker/service_worker_usb_delegate_observer.cc",
       "service_worker/service_worker_usb_delegate_observer.h",

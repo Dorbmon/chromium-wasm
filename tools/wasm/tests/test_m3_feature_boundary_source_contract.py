@@ -282,6 +282,56 @@ class M3FeatureBoundarySourceContractTest(unittest.TestCase):
         )[1].split("}", 1)[0]
         self.assertIn("kLanguageNotSupported", unavailable_error)
 
+    def test_wasm_keeps_portable_webui_error_and_usb_brokers(self) -> None:
+        browser_build = source("content/browser/BUILD.gn")
+        usb_observer = source(
+            "content/browser/service_worker/"
+            "service_worker_usb_delegate_observer.cc"
+        )
+
+        portable_error_reporting = browser_build.split(
+            "if (!is_fuchsia) {", 1
+        )[1].split("}", 1)[0]
+        self.assertIn(
+            "//components/crash/content/browser/error_reporting",
+            portable_error_reporting,
+        )
+
+        native_speech = browser_build.split(
+            "if (!is_fuchsia && !is_wasm) {", 1
+        )[1].split("}", 1)[0]
+        self.assertIn(
+            "speech/on_device_speech_recognition_engine_impl.cc",
+            native_speech,
+        )
+        self.assertIn(
+            "//media/mojo/mojom:web_speech_recognition",
+            native_speech,
+        )
+        self.assertNotIn(
+            "//components/crash/content/browser/error_reporting",
+            native_speech,
+        )
+
+        usb_platforms = browser_build.split(
+            "if (is_win || is_apple || is_linux || is_chromeos || "
+            "is_desktop_android ||",
+            1,
+        )[1].split("}", 1)[0]
+        self.assertIn("is_fuchsia || is_wasm", usb_platforms)
+        self.assertIn(
+            "service_worker/service_worker_usb_delegate_observer.cc",
+            usb_platforms,
+        )
+        self.assertIn(
+            "return delegate && delegate->HasDevicePermission",
+            usb_observer,
+        )
+        self.assertIn(
+            "if (delegate) {\n      usb_delegate_observation.Observe(delegate);",
+            usb_observer,
+        )
+
     def test_partition_alloc_dumping_tracks_allocator_availability(
         self,
     ) -> None:
