@@ -569,6 +569,9 @@ class M3HostJavaScriptTest(unittest.TestCase):
         self.assertIn("process:exit:", source)
         self.assertIn("runtime:exit:", source)
         self.assertIn("noExitRuntime: false", source)
+        self.assertIn("mainScriptUrlOrBlob", source)
+        self.assertIn("await import(resolvedModule.href)", source)
+        self.assertNotIn("URL.createObjectURL(moduleScriptBlob)", source)
         self.assertIn('parsed.protocol !== "data:"', source)
         self.assertIn("memory growth invalidates old views", source)
 

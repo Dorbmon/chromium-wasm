@@ -387,9 +387,18 @@ export class ChromiumWasmM3Host {
     }
     this.#recordHost("initialize:start");
 
-    const namespace = await import(resolvedModule.href);
-    if (typeof namespace.default !== "function") {
-      throw new Error("M3 module loader has no default factory export");
+    let moduleScriptBlob = null;
+    if (resolvedModule.protocol !== "file:") {
+      const moduleResponse = await fetch(
+        resolvedModule.href, {cache: "no-store"});
+      if (!moduleResponse.ok) {
+        throw new Error(
+          `M3 module request returned HTTP ${moduleResponse.status}`);
+      }
+      moduleScriptBlob = await moduleResponse.blob();
+      if (moduleScriptBlob.size === 0) {
+        throw new Error("M3 module loader is empty");
+      }
     }
     const moduleOptions = {
       canvas: this.#canvas,
@@ -410,6 +419,20 @@ export class ChromiumWasmM3Host {
         this._reportRuntimeExit(code);
       },
     };
+    if (moduleScriptBlob) {
+      // Pinned Emscripten's ES-module pthread path consumes this Blob when it
+      // creates each worker. Reusing the already-fetched source avoids a burst
+      // of independent worker-module requests and their unresolved
+      // loading-workers dependencies.
+      moduleOptions.mainScriptUrlOrBlob = moduleScriptBlob;
+    }
+    // Keep the main module on its original URL so Emscripten resolves and
+    // streams the large Wasm binary with the same origin and base URL. Only
+    // pthread workers consume the Blob above.
+    const namespace = await import(resolvedModule.href);
+    if (typeof namespace.default !== "function") {
+      throw new Error("M3 module loader has no default factory export");
+    }
     this.#module = await namespace.default(moduleOptions);
     this.#initialLinearMemoryBytes =
       this.#sampleLinearMemoryBytes("initial");
