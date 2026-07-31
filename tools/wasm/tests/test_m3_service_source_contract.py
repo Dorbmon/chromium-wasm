@@ -105,6 +105,7 @@ class M3ServiceSourceContractTest(unittest.TestCase):
     ) -> None:
         manifest = json.loads(source("tools/wasm/toolchain_manifest.json"))
         perfetto_build = source("third_party/perfetto/BUILD.gn")
+        build_overrides = source("build_overrides/build.gni")
 
         self.assertIn(
             "enable_perfetto_ipc = false",
@@ -124,6 +125,33 @@ class M3ServiceSourceContractTest(unittest.TestCase):
         )[1].split("}", 1)[0]
         self.assertIn('"src/tracing/ipc/producer"', ipc_block)
         self.assertIn('"src/tracing/ipc/service"', ipc_block)
+        wasm_overrides = build_overrides.split(
+            "if (enable_chromium_wasm_port) {", 1
+        )[1].split("}", 1)[0]
+        self.assertIn("perfetto_build_with_embedder = true", wasm_overrides)
+        self.assertNotIn(
+            "perfetto_libperfetto_includes_json", wasm_overrides
+        )
+
+    def test_wasm_os_metrics_report_unsupported_process_data(self) -> None:
+        build = source(
+            "services/resource_coordinator/public/cpp/"
+            "memory_instrumentation/BUILD.gn"
+        )
+        implementation = source(
+            "services/resource_coordinator/public/cpp/"
+            "memory_instrumentation/os_metrics_wasm.cc"
+        )
+
+        wasm_sources = build.split("if (is_wasm) {", 1)[1].split(
+            "}", 1
+        )[0]
+        self.assertIn('"os_metrics_wasm.cc"', wasm_sources)
+        self.assertIn("#if !BUILDFLAG(IS_WASM)", implementation)
+        self.assertIn("OSMetrics::FillOSMemoryDump", implementation)
+        self.assertIn("return false;", implementation)
+        self.assertIn("OSMetrics::GetProcessMemoryMaps", implementation)
+        self.assertIn("return {};", implementation)
 
     def test_native_only_component_test_labels_are_not_aggregated(self) -> None:
         components = source("components/BUILD.gn")

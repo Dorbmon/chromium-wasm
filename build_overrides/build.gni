@@ -22,7 +22,6 @@ if (enable_chromium_wasm_port) {
   # but Perfetto targets still need to resolve paths and generators from their
   # nested repository rather than from a standalone //gn tree.
   perfetto_build_with_embedder = true
-  perfetto_libperfetto_includes_json = false
 }
 
 # Enables assertions on safety checks in libc++.
