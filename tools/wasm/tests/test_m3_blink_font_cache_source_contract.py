@@ -93,6 +93,39 @@ class M3BlinkFontCacheSourceContractTest(unittest.TestCase):
         self.assertNotIn("fontconfig", implementation.lower())
         self.assertNotIn("WebSandboxSupport", implementation)
 
+    def test_wasm_does_not_enter_fontconfig_typeface_factory(self) -> None:
+        implementation = source(
+            "third_party/blink/renderer/platform/fonts/skia/"
+            "sktypeface_factory.cc"
+        )
+        fontconfig_factory = implementation.split(
+            "SkTypeface_Factory::FromFontConfigInterfaceIdAndTtcIndex(", 1
+        )[1].split(
+            "SkTypeface_Factory::FromFilenameAndTtcIndex(", 1
+        )[0]
+        filename_factory = implementation.split(
+            "SkTypeface_Factory::FromFilenameAndTtcIndex(", 1
+        )[1]
+
+        self.assertIn(
+            "!BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)",
+            fontconfig_factory,
+        )
+        self.assertIn("SkFontConfigInterface::RefGlobal()", fontconfig_factory)
+        self.assertIn("#else\n  NOTREACHED();", fontconfig_factory)
+        self.assertIn(
+            "#if !BUILDFLAG(IS_WASM)\n"
+            '#include "third_party/skia/include/ports/'
+            'SkFontConfigInterface.h"\n'
+            "#endif",
+            implementation,
+        )
+        self.assertIn(
+            "SkFontMgr_New_Fontations_Empty()->makeFromFile",
+            filename_factory,
+        )
+        self.assertNotIn("IS_WASM", filename_factory)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,9 @@
 #include "build/build_config.h"
 #include "skia/ext/font_utils.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
+#if !BUILDFLAG(IS_WASM)
 #include "third_party/skia/include/ports/SkFontConfigInterface.h"
+#endif
 
 #if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN) && \
     !BUILDFLAG(IS_FUCHSIA)
@@ -22,7 +24,7 @@ sk_sp<SkTypeface> SkTypeface_Factory::FromFontConfigInterfaceIdAndTtcIndex(
     int config_id,
     int ttc_index) {
 #if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN) && \
-    !BUILDFLAG(IS_FUCHSIA)
+    !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_WASM)
   sk_sp<SkFontConfigInterface> fci(SkFontConfigInterface::RefGlobal());
   SkFontConfigInterface::FontIdentity font_identity;
   font_identity.fID = config_id;
