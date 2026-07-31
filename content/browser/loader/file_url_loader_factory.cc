@@ -278,6 +278,9 @@ class FileURLDirectoryLoader
       std::string raw_bytes;  // Empty on Windows means UTF-8 encoded name.
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
       const std::string& raw_bytes = filename.value();
+#elif BUILDFLAG(IS_WASM)
+      // Emscripten filesystem paths are UTF-8 byte strings.
+      const std::string& raw_bytes = filename.value();
 #endif
       pending_data_.append(net::GetDirectoryListingEntry(
           filename.LossyDisplayName(), raw_bytes, data.info.IsDirectory(),

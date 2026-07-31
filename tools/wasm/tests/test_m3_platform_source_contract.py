@@ -65,6 +65,30 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         self.assertNotIn("UTF8ToWide", wasm_path)
         self.assertIn("full_path.ReferencesParent()", validate)
 
+    def test_file_url_listing_preserves_wasm_utf8_path_bytes(self) -> None:
+        loader = source(
+            "content/browser/loader/file_url_loader_factory.cc"
+        )
+        on_list_file = loader.split("void OnListFile(", 1)[1].split(
+            "void OnListDone", 1
+        )[0]
+        wasm_path = on_list_file.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#endif", 1)[0]
+
+        self.assertIn(
+            "Emscripten filesystem paths are UTF-8 byte strings",
+            wasm_path,
+        )
+        self.assertIn(
+            "const std::string& raw_bytes = filename.value();",
+            wasm_path,
+        )
+        self.assertIn(
+            "filename.LossyDisplayName(), raw_bytes",
+            on_list_file,
+        )
+
     def test_save_package_uses_wasm_filesystem_path_limits(self) -> None:
         save_package = source("content/browser/download/save_package.cc")
         save_package_test = source(
