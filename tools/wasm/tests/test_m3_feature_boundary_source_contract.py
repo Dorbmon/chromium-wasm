@@ -217,7 +217,8 @@ class M3FeatureBoundarySourceContractTest(unittest.TestCase):
 
         self.assertIn("if (!is_fuchsia && !is_wasm)", media_build)
         self.assertIn(
-            'if (!is_wasm) {\n    public_deps = [ "//third_party/tflite" ]',
+            'if (!is_wasm) {\n'
+            '    public_deps += [ "//third_party/tflite" ]',
             media_build,
         )
         self.assertIn(
