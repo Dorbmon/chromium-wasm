@@ -310,6 +310,39 @@ class M3BaseSourceContractTest(unittest.TestCase):
             "#if BUILDFLAG(IS_WASM)\n  return nullptr;", deserialize
         )
 
+    def test_full_base_uses_alias_aware_shared_memory_mappings(
+        self,
+    ) -> None:
+        build = source("base/BUILD.gn")
+        mapping = source("base/memory/shared_memory_mapping_wasm.cc")
+        full_base_wasm = build.split(
+            'if (is_wasm) {\n'
+            '    sources -= [ "memory/shared_memory_mapping.cc" ]',
+            1,
+        )[1].split("\n  }", 1)[0]
+
+        self.assertIn(
+            '"memory/shared_memory_mapping_wasm.cc"',
+            full_base_wasm,
+        )
+        self.assertNotIn(
+            '"memory/shared_memory_mapping.cc"',
+            full_base_wasm,
+        )
+        self.assertIn(
+            "process-local Wasm\n"
+            "  // mappings intentionally alias one allocation",
+            mapping,
+        )
+        self.assertNotIn(
+            '#include "base/memory/shared_memory_tracker.h"',
+            mapping,
+        )
+        self.assertNotIn(
+            "SharedMemoryTracker::GetInstance()",
+            mapping,
+        )
+
     def test_mojo_platform_file_transport_is_explicitly_unsupported(
         self,
     ) -> None:
