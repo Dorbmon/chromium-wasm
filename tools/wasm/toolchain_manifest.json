@@ -16,7 +16,7 @@
     "skia": {
       "path": "third_party/skia",
       "upstream_revision": "587c5b0f5a7b0260826a0c19094c2d952195066e",
-      "revision": "ce6d1d63bd400cb019e993fe2eda0188f5e81c4c"
+      "revision": "eba7a9942690181b9df56538c0d8302c9643fdb1"
     },
     "dawn": {
       "path": "third_party/dawn",

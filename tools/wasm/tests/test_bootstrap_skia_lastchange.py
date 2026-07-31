@@ -20,7 +20,7 @@ from m0_common import load_manifest
 
 
 SKIA_REVISION = "587c5b0f5a7b0260826a0c19094c2d952195066e"
-SKIA_PORT_REVISION = "ce6d1d63bd400cb019e993fe2eda0188f5e81c4c"
+SKIA_PORT_REVISION = "eba7a9942690181b9df56538c0d8302c9643fdb1"
 
 
 def test_manifest() -> dict[str, object]:
