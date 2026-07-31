@@ -275,8 +275,20 @@ class M3MediaSourceContractTest(unittest.TestCase):
             webrtc_build,
         )
         self.assertIn(
+            "public_deps =\n"
+            '      [ "//third_party/webrtc_overrides:webrtc_component" ]',
+            webrtc_build,
+        )
+        private_deps = webrtc_build.split("  deps = [", 1)[1].split(
+            "  ]", 1
+        )[0]
+        self.assertNotIn(
+            "//third_party/webrtc_overrides:webrtc_component",
+            private_deps,
+        )
+        self.assertIn(
             'if (!is_wasm) {\n'
-            '    public_deps = [ "//third_party/tflite" ]',
+            '    public_deps += [ "//third_party/tflite" ]',
             webrtc_build,
         )
         self.assertIn(

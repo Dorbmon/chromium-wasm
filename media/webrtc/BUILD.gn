@@ -27,15 +27,16 @@ component("webrtc") {
     "//base",
     "//build:chromecast_buildflags",
     "//media",
-    "//third_party/webrtc_overrides:webrtc_component",
   ]
+  public_deps =
+      [ "//third_party/webrtc_overrides:webrtc_component" ]
 
   if (!is_fuchsia && !is_wasm) {
     deps += [ "//components/optimization_guide/core/inference:op_resolver" ]
   }
 
   if (!is_wasm) {
-    public_deps = [ "//third_party/tflite" ]
+    public_deps += [ "//third_party/tflite" ]
   }
 }
 
