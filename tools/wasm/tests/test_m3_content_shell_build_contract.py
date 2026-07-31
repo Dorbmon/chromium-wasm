@@ -222,6 +222,75 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
         self.assertIn("TERMINATION_STATUS_LAUNCH_FAILED", wasm)
         self.assertNotIn("base::LaunchProcess(", wasm)
 
+    def test_wasm_devtools_pipe_is_an_explicit_failure_boundary(
+        self,
+    ) -> None:
+        build = source("content/browser/BUILD.gn")
+        agent_host = source(
+            "content/browser/devtools/devtools_agent_host_impl.cc"
+        )
+        main_parts = source(
+            "content/shell/browser/shell_browser_main_parts.cc"
+        )
+
+        wasm_sources = build.split(
+            'if (is_wasm) {\n    sources += [\n'
+            '      "child_process_launcher_helper_wasm.cc"',
+            1,
+        )[1].split("} else if (is_fuchsia)", 1)[0]
+        self.assertIn(
+            'sources -= [\n'
+            '      "devtools/devtools_pipe_handler.cc",\n'
+            '      "devtools/devtools_pipe_handler.h",',
+            wasm_sources,
+        )
+        self.assertIn(
+            "#if !BUILDFLAG(IS_WASM)\n"
+            '#include "content/browser/devtools/devtools_pipe_handler.h"\n'
+            "#endif",
+            agent_host,
+        )
+
+        start = agent_host.split(
+            "void DevToolsAgentHost::StartRemoteDebuggingPipeHandler", 1
+        )[1].split(
+            "void DevToolsAgentHost::StopRemoteDebuggingServer", 1
+        )[0]
+        wasm_start = start.split(
+            "#if BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn(
+            "--remote-debugging-pipe is unsupported on WebAssembly",
+            wasm_start,
+        )
+        self.assertIn("if (on_disconnect)", wasm_start)
+        self.assertIn("std::move(on_disconnect).Run();", wasm_start)
+        self.assertNotIn("DevToolsPipeHandler", wasm_start)
+
+        stop = agent_host.split(
+            "void DevToolsAgentHost::StopRemoteDebuggingPipeHandler", 1
+        )[1].split("DevToolsAgentHostImpl::DevToolsAgentHostImpl", 1)[0]
+        self.assertIn("#if !BUILDFLAG(IS_WASM)", stop)
+        self.assertIn("SetDevToolsPipeHandler(nullptr);", stop)
+
+        startup = main_parts.split(
+            "int ShellBrowserMainParts::PreMainMessageLoopRun()", 1
+        )[1].split(
+            "void ShellBrowserMainParts::WillRunMainMessageLoop", 1
+        )[0]
+        wasm_startup = startup.split(
+            "#if BUILDFLAG(IS_WASM)", 1
+        )[1].split("#else", 1)[0]
+        self.assertIn(
+            "switches::kRemoteDebuggingPipe",
+            wasm_startup,
+        )
+        self.assertIn(
+            "DevToolsAgentHost::StartRemoteDebuggingPipeHandler("
+            "base::OnceClosure());",
+            wasm_startup,
+        )
+
     def test_renderer_kill_debug_url_is_explicitly_unsupported(self) -> None:
         debug_urls = source(
             "third_party/blink/common/chrome_debug_urls.cc"

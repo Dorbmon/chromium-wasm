@@ -199,7 +199,12 @@ int ShellBrowserMainParts::PreMainMessageLoopRun() {
   InitializeBrowserContexts();
   Shell::Initialize(CreateShellPlatformDelegate());
   net::NetModule::SetResourceProvider(PlatformResourceProvider);
-#if !BUILDFLAG(IS_WASM)
+#if BUILDFLAG(IS_WASM)
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kRemoteDebuggingPipe)) {
+    DevToolsAgentHost::StartRemoteDebuggingPipeHandler(base::OnceClosure());
+  }
+#else
   ShellDevToolsManagerDelegate::StartHttpHandler(browser_context_.get());
 #endif
   InitializeMessageLoopContext();

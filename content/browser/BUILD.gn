@@ -2827,6 +2827,13 @@ source_set("browser") {
       "child_process_launcher_helper_wasm.cc",
       "speech/tts_wasm.cc",
     ]
+    # The native DevTools pipe transport requires inherited process file
+    # descriptors and blocking OS I/O threads. The public API rejects it on
+    # Wasm until a host-backed transport is available.
+    sources -= [
+      "devtools/devtools_pipe_handler.cc",
+      "devtools/devtools_pipe_handler.h",
+    ]
   } else if (is_fuchsia) {
     sources += [
       "accessibility/accessibility_tree_formatter_fuchsia.cc",

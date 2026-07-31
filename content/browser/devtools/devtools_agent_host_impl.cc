@@ -9,6 +9,7 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -16,11 +17,14 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_view_util.h"
+#include "build/build_config.h"
 #include "content/browser/devtools/auction_worklet_devtools_agent_host.h"
 #include "content/browser/devtools/dedicated_worker_devtools_agent_host.h"
 #include "content/browser/devtools/devtools_http_handler.h"
 #include "content/browser/devtools/devtools_manager.h"
+#if !BUILDFLAG(IS_WASM)
 #include "content/browser/devtools/devtools_pipe_handler.h"
+#endif
 #include "content/browser/devtools/devtools_stream_file.h"
 #include "content/browser/devtools/forwarding_agent_host.h"
 #include "content/browser/devtools/mojom_devtools_agent_host.h"
@@ -85,10 +89,12 @@ void SetDevToolsHttpHandler(std::unique_ptr<DevToolsHttpHandler> handler) {
   GetDevToolsHttpHandler() = std::move(handler);
 }
 
+#if !BUILDFLAG(IS_WASM)
 void SetDevToolsPipeHandler(std::unique_ptr<DevToolsPipeHandler> handler) {
   static base::NoDestructor<std::unique_ptr<DevToolsPipeHandler>> instance;
   *instance = std::move(handler);
 }
+#endif
 
 #if BUILDFLAG(IS_WIN)
 // Map handle to file descriptor
@@ -230,6 +236,12 @@ void DevToolsAgentHost::StartRemoteDebuggingServer(
 // static
 void DevToolsAgentHost::StartRemoteDebuggingPipeHandler(
     base::OnceClosure on_disconnect) {
+#if BUILDFLAG(IS_WASM)
+  LOG(ERROR) << "--remote-debugging-pipe is unsupported on WebAssembly";
+  if (on_disconnect)
+    std::move(on_disconnect).Run();
+  return;
+#else
   int read_fd = kReadFD;
   int write_fd = kWriteFD;
 #if BUILDFLAG(IS_WIN)
@@ -243,6 +255,7 @@ void DevToolsAgentHost::StartRemoteDebuggingPipeHandler(
 #endif
   SetDevToolsPipeHandler(std::make_unique<DevToolsPipeHandler>(
       read_fd, write_fd, std::move(on_disconnect)));
+#endif
 }
 
 // static
@@ -260,7 +273,9 @@ std::string DevToolsAgentHost::GetRemoteDebuggingServerAddress() {
 
 // static
 void DevToolsAgentHost::StopRemoteDebuggingPipeHandler() {
+#if !BUILDFLAG(IS_WASM)
   SetDevToolsPipeHandler(nullptr);
+#endif
 }
 
 DevToolsAgentHostImpl::DevToolsAgentHostImpl(const std::string& id)
