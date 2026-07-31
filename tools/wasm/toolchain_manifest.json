@@ -214,7 +214,7 @@
     "perfetto": {
       "path": "third_party/perfetto",
       "upstream_revision": "9ede949f025303868fa0c42418f122ac47312539",
-      "revision": "72722368828dde107df27d53410cab5ba232f8ee"
+      "revision": "876ca90baf8e82ff58c7d60357431374f33efaad"
     },
     "protobuf_javascript": {
       "path": "third_party/protobuf-javascript/src",

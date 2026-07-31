@@ -249,7 +249,7 @@ class HostGraphManifestTest(unittest.TestCase):
         )
         self.assertEqual(
             perfetto["revision"],
-            "72722368828dde107df27d53410cab5ba232f8ee",
+            "876ca90baf8e82ff58c7d60357431374f33efaad",
         )
         self.assertEqual(
             bootstrap.gitlink_revision(
