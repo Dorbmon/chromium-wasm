@@ -16,6 +16,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
+#include "base/process/process_handle.h"
 #include "content/browser/devtools/protocol/devtools_domain_handler.h"
 #include "content/browser/devtools/protocol/tracing.h"
 #include "content/common/content_export.h"

@@ -291,6 +291,23 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
             wasm_startup,
         )
 
+    def test_devtools_tracing_includes_process_id_definition(self) -> None:
+        tracing = source(
+            "content/browser/devtools/protocol/tracing_handler.h"
+        )
+        includes = tracing.split("namespace base", 1)[0]
+
+        self.assertIn(
+            '#include "base/process/process_handle.h"',
+            includes,
+        )
+        self.assertIn(
+            "const std::unordered_set<base::ProcessId>& "
+            "included_process_ids",
+            tracing,
+        )
+        self.assertIn("void AddProcessToFilter(base::ProcessId pid);", tracing)
+
     def test_renderer_kill_debug_url_is_explicitly_unsupported(self) -> None:
         debug_urls = source(
             "third_party/blink/common/chrome_debug_urls.cc"
