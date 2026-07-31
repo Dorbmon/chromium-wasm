@@ -101,6 +101,9 @@ base::File::Error ValidatePath(const std::string& raw_path,
   base::FilePath::StringType path = base::UTF8ToWide(raw_path);
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   base::FilePath::StringType path = raw_path;
+#elif BUILDFLAG(IS_WASM)
+  // Emscripten filesystem paths are UTF-8 byte strings.
+  base::FilePath::StringType path = raw_path;
 #endif
 
   // TODO(erg): This isn't really what we want. FilePath::AppendRelativePath()

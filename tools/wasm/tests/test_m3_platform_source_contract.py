@@ -44,6 +44,27 @@ class M3PlatformSourceContractTest(unittest.TestCase):
             wasm_decode,
         )
 
+    def test_filesystem_service_validates_utf8_wasm_paths(self) -> None:
+        util = source("components/services/filesystem/util.cc")
+        validate = util.split(
+            "base::File::Error ValidatePath", 1
+        )[1].split("}  // namespace filesystem", 1)[0]
+        wasm_path = validate.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split("#endif", 1)[0]
+
+        self.assertIn("base::IsStringUTF8(raw_path)", validate)
+        self.assertIn(
+            "Emscripten filesystem paths are UTF-8 byte strings",
+            wasm_path,
+        )
+        self.assertIn(
+            "base::FilePath::StringType path = raw_path;",
+            wasm_path,
+        )
+        self.assertNotIn("UTF8ToWide", wasm_path)
+        self.assertIn("full_path.ReferencesParent()", validate)
+
     def test_wasm_resource_bundle_uses_staged_data_packs(
         self,
     ) -> None:
