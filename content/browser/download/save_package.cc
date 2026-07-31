@@ -4,6 +4,8 @@
 
 #include "content/browser/download/save_package.h"
 
+#include <limits.h>
+
 #include <algorithm>
 #include <memory>
 #include <utility>
@@ -95,6 +97,9 @@ const uint32_t kMaxFilePathLength = MAX_PATH - 1;
 // Maximum component length for NTFS/FAT32 compatibility.
 const uint32_t kMaxComponentLength = 255;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+const uint32_t kMaxFilePathLength = PATH_MAX - 1;
+#elif BUILDFLAG(IS_WASM)
+// Emscripten FilePath lengths are UTF-8 byte counts governed by libc limits.
 const uint32_t kMaxFilePathLength = PATH_MAX - 1;
 #endif
 
@@ -427,6 +432,8 @@ uint32_t SavePackage::ComputeMaxPathLengthForDirectory(
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
     // Standard POSIX limit.
     max_component_length = NAME_MAX;
+#elif BUILDFLAG(IS_WASM)
+    max_component_length = NAME_MAX;
 #endif
   }
 
@@ -442,6 +449,8 @@ uint32_t SavePackage::GetMaxPathLengthForDirectory() const {
 #if BUILDFLAG(IS_WIN)
   max_component_length = kMaxComponentLength;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+  max_component_length = NAME_MAX;
+#elif BUILDFLAG(IS_WASM)
   max_component_length = NAME_MAX;
 #endif
 

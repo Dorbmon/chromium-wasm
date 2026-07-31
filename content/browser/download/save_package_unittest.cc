@@ -5,6 +5,7 @@
 
 #include "content/browser/download/save_package.h"
 
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -38,6 +39,8 @@ namespace content {
 #define FPL_HTML_EXTENSION L".html"
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #define FPL_HTML_EXTENSION ".html"
+#elif BUILDFLAG(IS_WASM)
+#define FPL_HTML_EXTENSION ".html"
 #endif
 
 namespace {
@@ -46,6 +49,8 @@ namespace {
 #if BUILDFLAG(IS_WIN)
 const uint32_t kMaxFilePathLength = MAX_PATH - 1;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+const uint32_t kMaxFilePathLength = PATH_MAX - 1;
+#elif BUILDFLAG(IS_WASM)
 const uint32_t kMaxFilePathLength = PATH_MAX - 1;
 #endif
 

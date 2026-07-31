@@ -65,6 +65,46 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         self.assertNotIn("UTF8ToWide", wasm_path)
         self.assertIn("full_path.ReferencesParent()", validate)
 
+    def test_save_package_uses_wasm_filesystem_path_limits(self) -> None:
+        save_package = source("content/browser/download/save_package.cc")
+        save_package_test = source(
+            "content/browser/download/save_package_unittest.cc"
+        )
+
+        for body in (save_package, save_package_test):
+            self.assertIn("#include <limits.h>", body)
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            "// Emscripten FilePath lengths are UTF-8 byte counts governed "
+            "by libc limits.\n"
+            "const uint32_t kMaxFilePathLength = PATH_MAX - 1;",
+            save_package,
+        )
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            "const uint32_t kMaxFilePathLength = PATH_MAX - 1;",
+            save_package_test,
+        )
+        self.assertEqual(
+            save_package.count(
+                "#elif BUILDFLAG(IS_WASM)\n"
+                "    max_component_length = NAME_MAX;"
+            ),
+            1,
+        )
+        self.assertEqual(
+            save_package.count(
+                "#elif BUILDFLAG(IS_WASM)\n"
+                "  max_component_length = NAME_MAX;"
+            ),
+            1,
+        )
+        self.assertIn(
+            "#elif BUILDFLAG(IS_WASM)\n"
+            '#define FPL_HTML_EXTENSION ".html"',
+            save_package_test,
+        )
+
     def test_wasm_resource_bundle_uses_staged_data_packs(
         self,
     ) -> None:
