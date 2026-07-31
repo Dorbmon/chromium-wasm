@@ -28,6 +28,8 @@ namespace {
 constexpr char kPrefix[] = "CHROMIUM_WASM_M3_PA_ROOT";
 constexpr char kTypeName[] = "m3_partition_alloc_root_smoke";
 constexpr size_t kSystemPageBytes = 64 * 1024;
+constexpr size_t kMinimumBucketRequestBytes =
+    partition_alloc::BucketIndexLookup::kMinBucketSize;
 constexpr size_t kBucketRequestBytes = 4097;
 constexpr size_t kReallocRequestBytes = 8193;
 constexpr size_t kDirectInitialBytes =
@@ -64,6 +66,7 @@ static_assert(!PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC));
 static_assert(sizeof(size_t) == 4);
 static_assert(partition_alloc::internal::SystemPageSize() ==
               kSystemPageBytes);
+static_assert(kMinimumBucketRequestBytes == 8);
 static_assert(kDirectInitialBytes >
               partition_alloc::BucketIndexLookup::kMaxBucketSize);
 static_assert(kDirectShrinkBytes >
@@ -225,6 +228,19 @@ const char* TestRootIsolation() {
 }
 
 const char* TestBucketZeroCapacityAndRealloc() {
+  void* minimum_bucket_object = g_buffer_root->Alloc<kTryZeroAlloc>(
+      kMinimumBucketRequestBytes, kTypeName);
+  if (!minimum_bucket_object ||
+      !IsFilled(minimum_bucket_object, kMinimumBucketRequestBytes, 0)) {
+    if (minimum_bucket_object) {
+      g_buffer_root->Free(minimum_bucket_object);
+    }
+    return "minimum_bucket_geometry";
+  }
+  g_buffer_root->Free(minimum_bucket_object);
+  g_buffer_root->PurgeMemory(
+      partition_alloc::PurgeFlags::kDecommitEmptySlotSpans);
+
   void* object =
       g_buffer_root->Alloc<kTryZeroAlloc>(kBucketRequestBytes, kTypeName);
   if (!object) {

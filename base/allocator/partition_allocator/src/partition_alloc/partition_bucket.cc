@@ -448,6 +448,12 @@ SlotSpanMetadata* PartitionDirectMap(PartitionRoot* root,
   return &page_metadata->slot_span_metadata;
 }
 
+PA_ALWAYS_INLINE bool CanRepresentSlotsInSpan(size_t system_page_count,
+                                              size_t slot_size) {
+  return ((system_page_count << SystemPageShift()) / slot_size) <=
+         kMaxSlotsPerSlotSpan;
+}
+
 uint8_t ComputeSystemPagesPerSlotSpanPreferSmall(size_t slot_size) {
   if (slot_size > MaxRegularSlotSpanSize()) {
     // This is technically not needed, as for now all the larger slot sizes are
@@ -482,10 +488,15 @@ uint8_t ComputeSystemPagesPerSlotSpanPreferSmall(size_t slot_size) {
   for (size_t partition_page_count = 1;
        partition_page_count <= kMaxPartitionPagesPerRegularSlotSpan;
        partition_page_count++) {
-    size_t candidate_size = partition_page_count * PartitionPageSize();
+    size_t system_page_count =
+        partition_page_count * NumSystemPagesPerPartitionPage();
+    if (!CanRepresentSlotsInSpan(system_page_count, slot_size)) {
+      continue;
+    }
+    size_t candidate_size = system_page_count * SystemPageSize();
     size_t waste = candidate_size % slot_size;
     if (waste <= .02 * SystemPageSize()) {
-      return partition_page_count * NumSystemPagesPerPartitionPage();
+      return system_page_count;
     }
   }
 
@@ -498,6 +509,9 @@ uint8_t ComputeSystemPagesPerSlotSpanPreferSmall(size_t slot_size) {
     for (size_t slack = 0; slack < partition_page_count; slack++) {
       size_t system_page_count =
           partition_page_count * NumSystemPagesPerPartitionPage() - slack;
+      if (!CanRepresentSlotsInSpan(system_page_count, slot_size)) {
+        continue;
+      }
       size_t candidate_size = system_page_count * SystemPageSize();
       size_t waste = candidate_size % slot_size;
       if (waste < best_waste) {
@@ -506,6 +520,8 @@ uint8_t ComputeSystemPagesPerSlotSpanPreferSmall(size_t slot_size) {
       }
     }
   }
+  PA_CHECK(best_count);
+  PA_CHECK(CanRepresentSlotsInSpan(best_count, slot_size));
   return best_count;
 }
 
@@ -533,6 +549,9 @@ uint8_t ComputeSystemPagesPerSlotSpanInternal(size_t slot_size) {
   PA_DCHECK(slot_size <= MaxRegularSlotSpanSize());
   for (uint16_t i = NumSystemPagesPerPartitionPage() - 1;
        i <= MaxSystemPagesPerRegularSlotSpan(); ++i) {
+    if (!CanRepresentSlotsInSpan(i, slot_size)) {
+      continue;
+    }
     size_t page_size = i << SystemPageShift();
     size_t num_slots = page_size / slot_size;
     size_t waste = page_size - (num_slots * slot_size);
@@ -558,6 +577,7 @@ uint8_t ComputeSystemPagesPerSlotSpanInternal(size_t slot_size) {
   }
   PA_DCHECK(best_pages > 0);
   PA_CHECK(best_pages <= MaxSystemPagesPerRegularSlotSpan());
+  PA_CHECK(CanRepresentSlotsInSpan(best_pages, slot_size));
   return static_cast<uint8_t>(best_pages);
 }
 

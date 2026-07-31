@@ -142,6 +142,10 @@ class PartitionAllocRootSourceContractTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("partition_alloc/internal/", source)
+        self.assertIn(
+            "BucketIndexLookup::kMinBucketSize",
+            source,
+        )
 
     def test_m3_profile_enables_production_partition_alloc(self) -> None:
         manifest = json.loads(

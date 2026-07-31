@@ -6314,6 +6314,21 @@ TEST_P(PartitionAllocTest, SmallSlotSpanWaste) {
   }
 }
 
+TEST_P(PartitionAllocTest, SlotSpanFitsMetadata) {
+  for (PartitionRoot::Bucket& bucket : allocator.root()->buckets_) {
+    for (bool prefer_smaller_slot_spans : {false, true}) {
+      const size_t system_page_count =
+          partition_alloc::internal::ComputeSystemPagesPerSlotSpan(
+              bucket.slot_size, prefer_smaller_slot_spans);
+      const size_t slots_per_span =
+          (system_page_count * SystemPageSize()) / bucket.slot_size;
+      EXPECT_LE(slots_per_span, kMaxSlotsPerSlotSpan)
+          << "slot_size=" << bucket.slot_size
+          << " prefer_smaller_slot_spans=" << prefer_smaller_slot_spans;
+    }
+  }
+}
+
 TEST_P(PartitionAllocTest, SortActiveSlotSpans) {
   auto run_test = [](size_t count) {
     PartitionBucket bucket;
