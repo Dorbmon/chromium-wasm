@@ -230,7 +230,7 @@ void RealtimeAudioDestinationHandler::Render(
 
   // Denormals can seriously hurt performance of audio processing. This will
   // take care of all AudioNode processes within this scope.
-  DenormalDisabler denormal_disabler;
+  [[maybe_unused]] DenormalDisabler denormal_disabler;
 
   AudioContext* context = Context();
 

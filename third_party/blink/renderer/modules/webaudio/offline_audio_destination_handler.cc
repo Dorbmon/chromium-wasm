@@ -271,7 +271,7 @@ bool OfflineAudioDestinationHandler::RenderIfNotSuspended(
   // since they can very seriously hurt performance.
   // This will take care of all AudioNodes because they all process within this
   // scope.
-  DenormalDisabler denormal_disabler;
+  [[maybe_unused]] DenormalDisabler denormal_disabler;
 
   // Need to check if the context actually alive. Otherwise the subsequent
   // steps will fail. If the context is not alive somehow, return immediately

@@ -17,6 +17,51 @@ def source(path: str) -> str:
 
 
 class M3MediaSourceContractTest(unittest.TestCase):
+    def test_webaudio_keeps_intentional_denormal_scopes(self) -> None:
+        denormal_header = source(
+            "third_party/blink/renderer/platform/audio/"
+            "denormal_disabler.h"
+        )
+        destinations = (
+            (
+                "offline",
+                source(
+                    "third_party/blink/renderer/modules/webaudio/"
+                    "offline_audio_destination_handler.cc"
+                ),
+            ),
+            (
+                "realtime",
+                source(
+                    "third_party/blink/renderer/modules/webaudio/"
+                    "realtime_audio_destination_handler.cc"
+                ),
+            ),
+        )
+
+        for name, destination in destinations:
+            with self.subTest(destination=name):
+                self.assertIn(
+                    "[[maybe_unused]] DenormalDisabler "
+                    "denormal_disabler;",
+                    destination,
+                )
+        unsupported_architecture = denormal_header.split(
+            "#else\n"
+            "// FIXME: add implementations for other architectures and "
+            "compilers",
+            1,
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "DenormalDisabler() = default;\n"
+            "  ~DenormalDisabler() = default;",
+            unsupported_architecture,
+        )
+        self.assertIn(
+            "return (fabs(f) < FLT_MIN) ? 0.0f : f;",
+            unsupported_architecture,
+        )
+
     def test_thread_wrapper_defers_wasm_sockets_to_wisp(self) -> None:
         wrapper = source("components/webrtc/thread_wrapper.cc")
         overrides = source("third_party/webrtc_overrides/BUILD.gn")
