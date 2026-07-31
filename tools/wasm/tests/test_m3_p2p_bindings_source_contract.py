@@ -22,7 +22,9 @@ class M3P2PBindingsSourceContractTest(unittest.TestCase):
         )[0]
 
         self.assertIn(
-            "is_p2p_mojo_bindings_enabled = is_p2p_enabled || is_wasm",
+            "is_p2p_mojo_bindings_enabled =\n"
+            "    is_p2p_enabled || "
+            "(is_wasm && enable_chromium_wasm_content)",
             features,
         )
 

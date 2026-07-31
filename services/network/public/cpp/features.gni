@@ -17,4 +17,5 @@ declare_args() {
 
 # Blink's P2P client types require the public Mojo bindings even when the
 # network service cannot expose a native P2P socket backend.
-is_p2p_mojo_bindings_enabled = is_p2p_enabled || is_wasm
+is_p2p_mojo_bindings_enabled =
+    is_p2p_enabled || (is_wasm && enable_chromium_wasm_content)
