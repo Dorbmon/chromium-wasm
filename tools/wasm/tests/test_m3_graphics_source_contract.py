@@ -88,15 +88,18 @@ class M3GraphicsSourceContractTest(unittest.TestCase):
         )
         self.assertNotIn(".value_or({}).empty()", decoder)
 
-    def test_software_only_wasm_skia_keeps_raster_without_gpu_backends(
+    def test_software_wasm_keeps_skia_api_closure_without_runtime_gpu(
         self,
     ) -> None:
         features = source("skia/features.gni")
         build = source("skia/BUILD.gn")
-
-        self.assertIn(
-            "skia_support_gpu = use_blink && !is_wasm", features
+        shell = source("content/shell/app/shell_main_delegate.cc")
+        surface_factory = source(
+            "ui/ozone/platform/wasm/wasm_surface_factory.cc"
         )
+
+        self.assertIn("skia_support_gpu = use_blink", features)
+        self.assertIn("compile-time API closure", features)
         self.assertIn("sources = skia_core_sources", build)
         self.assertIn(
             "if (skia_support_gpu || "
@@ -119,6 +122,21 @@ class M3GraphicsSourceContractTest(unittest.TestCase):
         self.assertIn("sources += skia_ganesh_private", gpu_sources)
         self.assertIn(
             "public_deps += [ \":skia_graphite_public\" ]", gpu_sources
+        )
+        self.assertIn(
+            "command_line.AppendSwitch(switches::kDisableGpuCompositing);",
+            shell,
+        )
+        self.assertIn(
+            "command_line.AppendSwitchASCII(kUseGlSwitch, "
+            "kDisabledGlImplementation);",
+            shell,
+        )
+        self.assertIn(
+            "WasmSurfaceFactory::GetAllowedGLImplementations() {\n"
+            "  return {};\n"
+            "}",
+            surface_factory,
         )
         skia_core = build.split(
             'skia_source_set("skia_core_and_effects") {', 1

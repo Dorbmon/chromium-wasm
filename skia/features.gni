@@ -15,11 +15,12 @@ declare_args() {
       (is_ios && use_blink) || (is_linux && !is_castos) || is_desktop_android
 }
 
-# Skia only needs to support GPU rasterization if we use the full Chromium
-# rendering stack i.e. |use_blink| is true.
-# The Wasm port keeps this disabled for its software-raster milestones.
+# Chromium's full rendering stack retains Skia GPU API-bearing classes even
+# when runtime switches select software compositing. This controls the
+# compile-time API closure; the Wasm Content Shell still disables GPU
+# compositing and native GL at startup.
 # TODO(crbug.com/40902173): Split out into separate enable_skia_ganesh flag.
-skia_support_gpu = use_blink && !is_wasm
+skia_support_gpu = use_blink
 
 # Skia Ganesh GL backend is always enabled on all platforms - applies only when
 # GPU rasterization is enabled.
