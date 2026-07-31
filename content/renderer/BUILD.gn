@@ -169,6 +169,10 @@ target(link_target_type, "renderer") {
     "worker/worker_thread_registry.h",
   ]
 
+  if (is_wasm) {
+    sources += [ "renderer_main_platform_delegate_wasm.cc" ]
+  }
+
   if (is_android) {
     sources += [
       "java/gin_java_bridge_dispatcher.cc",
