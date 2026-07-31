@@ -173,8 +173,10 @@ std::unique_ptr<MessagePump> MessagePump::Create(MessagePumpType type) {
         return message_pump_for_ui_factory_();
       }
 #if BUILDFLAG(IS_WASM)
-      // The generic pump does not provide native UI event integration.
-      NOTREACHED();
+      // Chromium's UI sequence runs on an Emscripten pthread. Host DOM input
+      // enters through Ozone and posts ordinary application tasks, so no
+      // native event-loop integration is required here.
+      return std::make_unique<MessagePumpDefault>();
 #elif BUILDFLAG(IS_APPLE)
       return message_pump_apple::Create();
 #elif BUILDFLAG(IS_AIX)
@@ -192,8 +194,10 @@ std::unique_ptr<MessagePump> MessagePump::Create(MessagePumpType type) {
 
     case MessagePumpType::IO:
 #if BUILDFLAG(IS_WASM)
-      // Asynchronous I/O requires a Wasm-specific transport integration.
-      NOTREACHED();
+      // Browser services still need an IO-typed sequence even though native
+      // descriptor watching is unavailable. Web transports wake it by posting
+      // tasks from their host callbacks.
+      return std::make_unique<MessagePumpDefault>();
 #else
       return std::make_unique<MessagePumpForIO>();
 #endif

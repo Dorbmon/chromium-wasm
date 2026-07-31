@@ -31,8 +31,9 @@
 namespace base {
 
 #if BUILDFLAG(IS_WASM)
-// Wasm UI pumps must be supplied through the registered factory. Without one,
-// MessagePump::Create(UI) rejects the request explicitly.
+// Wasm has no native UI event loop. MessagePump::Create(UI) supplies the
+// worker-compatible default pump and Ozone posts host input as application
+// tasks.
 using MessagePumpForUI = MessagePump;
 #elif BUILDFLAG(IS_WIN)
 // Windows defines it as-is.

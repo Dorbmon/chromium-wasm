@@ -28,8 +28,9 @@
 namespace base {
 
 #if BUILDFLAG(IS_WASM)
-// Wasm has no native asynchronous I/O pump. This alias keeps the common
-// CurrentIOThread type available while MessagePump::Create(IO) rejects it.
+// Wasm has no native descriptor-watching pump. MessagePump::Create(IO)
+// supplies the worker-compatible default pump; host transports post their
+// completions as tasks.
 using MessagePumpForIO = MessagePump;
 #elif BUILDFLAG(IS_WIN)
 // Windows defines it as-is.

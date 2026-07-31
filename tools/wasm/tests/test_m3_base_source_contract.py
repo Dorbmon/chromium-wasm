@@ -89,6 +89,27 @@ class M3BaseSourceContractTest(unittest.TestCase):
             sys_info,
         )
 
+    def test_content_ui_and_io_sequences_use_worker_message_pumps(
+        self,
+    ) -> None:
+        pump = source("base/message_loop/message_pump.cc")
+        ui_branch = pump.split(
+            "case MessagePumpType::UI:", 1
+        )[1].split("case MessagePumpType::IO:", 1)[0]
+        io_branch = pump.split(
+            "case MessagePumpType::IO:", 1
+        )[1].split("case MessagePumpType::CUSTOM:", 1)[0]
+
+        for branch in (ui_branch, io_branch):
+            with self.subTest(branch=branch[:40]):
+                wasm = branch.split(
+                    "#if BUILDFLAG(IS_WASM)", 1
+                )[1].split("#elif", 1)[0]
+                self.assertIn(
+                    "return std::make_unique<MessagePumpDefault>();", wasm
+                )
+                self.assertNotIn("NOTREACHED", wasm)
+
     def test_process_metrics_do_not_label_linear_memory_as_host_rss(
         self,
     ) -> None:
