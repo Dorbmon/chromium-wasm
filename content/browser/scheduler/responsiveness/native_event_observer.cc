@@ -90,7 +90,10 @@ void BrowserUINativeEventObserver::DidRunNativeEvent(uintptr_t identifier) {
 }
 #endif  // BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_IOS)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || \
+    BUILDFLAG(IS_IOS) || BUILDFLAG(IS_WASM)
+// These targets do not expose native UI event-pump observation through this
+// class. Wasm host input enters Chromium through Ozone instead.
 void BrowserUINativeEventObserver::RegisterObserver() {}
 void BrowserUINativeEventObserver::UnregisterObserver() {}
 #endif

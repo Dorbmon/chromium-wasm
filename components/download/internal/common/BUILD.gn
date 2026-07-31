@@ -117,7 +117,9 @@ source_set("internal") {
     sources += [ "base_file_win.cc" ]
   }
 
-  if (is_posix || is_fuchsia) {
+  # Emscripten supplies the stat, chmod, and rename semantics used here.
+  # Select this implementation explicitly without classifying Wasm as POSIX.
+  if (is_posix || is_fuchsia || is_wasm) {
     sources += [ "base_file_posix.cc" ]
   }
 }

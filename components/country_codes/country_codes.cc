@@ -132,6 +132,14 @@ CountryId GetCurrentCountryID() {
   return CountryId(base::android::GetDefaultCountryCode());
 }
 
+#elif BUILDFLAG(IS_WASM)
+
+CountryId GetCurrentCountryID() {
+  // The Wasm application target cannot inspect the outer host's configured
+  // region through a Web platform API.
+  return CountryId();
+}
+
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
 CountryId GetCurrentCountryID() {

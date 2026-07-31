@@ -115,7 +115,8 @@ base::TimeDelta Animation::RichAnimationDuration(base::TimeDelta duration) {
   return ShouldRenderRichAnimation() ? duration : base::TimeDelta();
 }
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || \
+    BUILDFLAG(IS_IOS) || BUILDFLAG(IS_WASM)
 // static
 bool Animation::ShouldRenderRichAnimationImpl() {
   return true;
@@ -140,7 +141,8 @@ void Animation::UpdatePrefersReducedMotion() {
   prefers_reduced_motion_ = false;
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS) || BUILDFLAG(IS_FUCHSIA)
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) ||
+        // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_WASM)
 
 // static
 bool Animation::PrefersReducedMotion() {

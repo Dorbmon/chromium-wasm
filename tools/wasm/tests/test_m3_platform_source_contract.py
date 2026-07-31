@@ -612,6 +612,146 @@ class M3PlatformSourceContractTest(unittest.TestCase):
         )[0].rsplit("#if PA_BUILDFLAG(USE_PARTITION_ALLOC)", 1)[1]
         self.assertNotIn("#endif", registration)
 
+    def test_wasm_native_event_observer_has_no_native_pump(self) -> None:
+        observer = source(
+            "content/browser/scheduler/responsiveness/"
+            "native_event_observer.cc"
+        )
+        generic_targets = observer.split(
+            "#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || \\\n"
+            "    BUILDFLAG(IS_IOS) || BUILDFLAG(IS_WASM)",
+            1,
+        )[1].split("#endif", 1)[0]
+
+        self.assertIn(
+            "do not expose native UI event-pump observation",
+            generic_targets,
+        )
+        self.assertIn(
+            "Wasm host input enters Chromium through Ozone",
+            generic_targets,
+        )
+        self.assertIn(
+            "void BrowserUINativeEventObserver::RegisterObserver() {}",
+            generic_targets,
+        )
+        self.assertIn(
+            "void BrowserUINativeEventObserver::UnregisterObserver() {}",
+            generic_targets,
+        )
+        for native_hook in (
+            "PlatformEventSource",
+            "CurrentUIThread",
+            "will_run_event_callback_",
+            "did_run_event_callback_",
+        ):
+            self.assertNotIn(native_hook, generic_targets)
+
+    def test_wasm_animation_uses_generic_non_host_policy(self) -> None:
+        animation = source("ui/gfx/animation/animation.cc")
+        generic_targets = animation.split(
+            "#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) || \\\n"
+            "    BUILDFLAG(IS_IOS) || BUILDFLAG(IS_WASM)",
+            1,
+        )[1].split(
+            "#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA) ||",
+            1,
+        )[0]
+
+        rich_animation = generic_targets.split(
+            "bool Animation::ShouldRenderRichAnimationImpl()", 1
+        )[1].split(
+            "bool Animation::ScrollAnimationsEnabledBySystem()", 1
+        )[0]
+        scroll_animation = generic_targets.split(
+            "bool Animation::ScrollAnimationsEnabledBySystem()", 1
+        )[1].split(
+            "void Animation::UpdatePrefersReducedMotion()", 1
+        )[0]
+        reduced_motion = generic_targets.split(
+            "void Animation::UpdatePrefersReducedMotion()", 1
+        )[1]
+
+        self.assertIn("return true;", rich_animation)
+        self.assertIn("return true;", scroll_animation)
+        self.assertIn("prefers_reduced_motion_ = false;", reduced_motion)
+        for host_api in (
+            "SystemParametersInfo",
+            "NSWorkspace",
+            "GtkSettings",
+            "PrefersReducedMotionChanged",
+        ):
+            self.assertNotIn(host_api, generic_targets)
+
+    def test_wasm_download_file_uses_explicit_filesystem_capability(
+        self,
+    ) -> None:
+        build = source("components/download/internal/common/BUILD.gn")
+        base_file = source(
+            "components/download/internal/common/base_file_posix.cc"
+        )
+
+        self.assertIn(
+            "Emscripten supplies the stat, chmod, and rename semantics",
+            build,
+        )
+        self.assertIn(
+            "Select this implementation explicitly without classifying "
+            "Wasm as POSIX",
+            build,
+        )
+        self.assertIn(
+            "if (is_posix || is_fuchsia || is_wasm) {\n"
+            '    sources += [ "base_file_posix.cc" ]\n'
+            "  }",
+            build,
+        )
+
+        move = base_file.split(
+            "BaseFile::MoveFileAndAdjustPermissions(", 1
+        )[1].split("}  // namespace download", 1)[0]
+        operations = (
+            "base::PathExists(new_path)",
+            'base::WriteFile(new_path, "")',
+            "stat(new_path.value().c_str(), &st)",
+            "base::Move(full_path_, new_path)",
+            "chmod(new_path.value().c_str(), st.st_mode)",
+        )
+        operation_offsets = [move.index(operation) for operation in operations]
+        self.assertEqual(operation_offsets, sorted(operation_offsets))
+        self.assertIn(
+            'return LogSystemError("WriteFile", errno);',
+            move,
+        )
+        self.assertIn(
+            'return LogSystemError("Move", errno);',
+            move,
+        )
+        self.assertIn("if (stat_succeeded)", move)
+        self.assertIn("return DOWNLOAD_INTERRUPT_REASON_NONE;", move)
+
+    def test_wasm_country_is_unknown_without_host_region_api(self) -> None:
+        country_codes = source("components/country_codes/country_codes.cc")
+        wasm_country = country_codes.split(
+            "#elif BUILDFLAG(IS_WASM)", 1
+        )[1].split(
+            "#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)", 1
+        )[0]
+
+        self.assertIn(
+            "cannot inspect the outer host's configured",
+            wasm_country,
+        )
+        self.assertIn("region through a Web platform API", wasm_country)
+        self.assertIn("return CountryId();", wasm_country)
+        for host_probe in (
+            "setlocale",
+            "GetUserGeoID",
+            "CFLocaleCopyCurrent",
+            "GetDefaultCountryCode",
+        ):
+            self.assertNotIn(host_probe, wasm_country)
+
     def test_wasm_xml_libraries_use_the_pinned_portable_config(
         self,
     ) -> None:
