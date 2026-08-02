@@ -518,6 +518,10 @@ MOJO_RESULT_VALUES = {
     "platform_region_aliasing": "ok",
     "platform_region_single_owner": "ok",
     "platform_region_unwrap_failure_closes": "ok",
+    "platform_file_wrap": "ok",
+    "platform_file_transfer": "ok",
+    "platform_file_unwrap": "ok",
+    "platform_file_read": "ok",
     "remote_transport_rejected": "ok",
     "driver_failures_rejected": "ok",
     "mapping_outlives_handles": "ok",
@@ -538,6 +542,31 @@ MOJO_RESULT_REQUIREMENTS = (
     "initial_heap_bytes=",
     "peak_heap_bytes=",
     "max_heap_bytes=2147483648",
+)
+
+MOJO_FILE_RESULT_VALUES = {
+    "file_serialize": "ok",
+    "file_sender_invalidated": "ok",
+    "file_message_transport": "ok",
+    "file_deserialize": "ok",
+    "file_content": "ok",
+    "file_async_preserved": "ok",
+    "file_receiver_ownership": "ok",
+    "file_close_ebadf": "ok",
+    "file_failed_unwrap_closes": "ok",
+    "read_only_serialize": "ok",
+    "read_only_sender_invalidated": "ok",
+    "read_only_message_transport": "ok",
+    "read_only_deserialize": "ok",
+    "read_only_content": "ok",
+    "read_only_async_preserved": "ok",
+    "read_only_receiver_ownership": "ok",
+    "read_only_close_ebadf": "ok",
+    "clean_shutdown": "ok",
+}
+MOJO_FILE_RESULT_REQUIREMENTS = (
+    "CHROMIUM_WASM_M3_MOJO_FILE:RESULT",
+    *(f"{key}={value}" for key, value in MOJO_FILE_RESULT_VALUES.items()),
 )
 
 PA_PAGE_RESULT_VALUES = {
@@ -752,6 +781,18 @@ SMOKE_CASES = {
             "CHROMIUM_WASM_M1_MOJO:PASS",
         ),
         minimum_runtime_ms=250,
+    ),
+    "mojo_file": SmokeCase(
+        module_name="m3_mojo_file_smoke.js",
+        sentinel_prefix="CHROMIUM_WASM_M3_MOJO_FILE",
+        required_stdout=(
+            "CHROMIUM_WASM_M3_MOJO_FILE:RUNTIME_START",
+            "CHROMIUM_WASM_M3_MOJO_FILE:RUNTIME_END",
+            *MOJO_FILE_RESULT_REQUIREMENTS,
+            "CHROMIUM_WASM_M3_MOJO_FILE:PASS",
+        ),
+        minimum_runtime_ms=0,
+        gn_args_key="m3_content_gn_args",
     ),
     "pa_pages": SmokeCase(
         module_name="m3_partition_alloc_page_smoke.js",
@@ -1100,6 +1141,10 @@ def validate_case_stdout(name: str, stdout: str) -> None:
         sentinel_prefix = "CHROMIUM_WASM_M1_MOJO"
         result_values = MOJO_RESULT_VALUES
         metric_names = MOJO_METRIC_NAMES
+    elif name == "mojo_file":
+        display_name = "Mojo file"
+        sentinel_prefix = "CHROMIUM_WASM_M3_MOJO_FILE"
+        result_values = MOJO_FILE_RESULT_VALUES
     elif name == "pa_pages":
         display_name = "PartitionAlloc page"
         sentinel_prefix = "CHROMIUM_WASM_M3_PA_PAGE"

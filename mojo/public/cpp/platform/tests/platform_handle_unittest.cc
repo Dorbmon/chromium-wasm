@@ -44,7 +44,7 @@ enum class HandleType {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_FUCHSIA)
   kHandle,
 #endif
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   kFileDescriptor,
 #endif
 #if BUILDFLAG(IS_MAC)
@@ -279,7 +279,7 @@ INSTANTIATE_TEST_SUITE_P(All,
 #elif BUILDFLAG(IS_MAC)
                          testing::Values(HandleType::kFileDescriptor,
                                          HandleType::kMachPort)
-#elif BUILDFLAG(IS_POSIX)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WASM)
                          testing::Values(HandleType::kFileDescriptor)
 #endif
 );

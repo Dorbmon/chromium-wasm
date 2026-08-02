@@ -24,7 +24,7 @@
 #include "base/memory/platform_shared_memory_handle.h"
 #endif
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
 #include "base/files/scoped_file.h"
 #endif
 
@@ -54,7 +54,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
     kMachSend,
     kMachReceive,
 #endif
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
     kFd,
 #endif
 #if BUILDFLAG(IS_WASM)
@@ -74,7 +74,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   explicit PlatformHandle(base::apple::ScopedMachReceiveRight mach_port);
 #endif
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   explicit PlatformHandle(base::ScopedFD fd);
 #endif
 #if BUILDFLAG(IS_WASM)
@@ -187,7 +187,9 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #elif BUILDFLAG(IS_POSIX)
   bool is_valid() const { return is_valid_fd(); }
 #elif BUILDFLAG(IS_WASM)
-  bool is_valid() const { return wasm_shared_memory_handle_.is_valid(); }
+  bool is_valid() const {
+    return is_valid_fd() || wasm_shared_memory_handle_.is_valid();
+  }
   bool is_wasm_shared_memory() const {
     return type_ == Type::kWasmSharedMemory;
   }
@@ -201,7 +203,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #error "Unsupported platform."
 #endif
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   bool is_valid_fd() const { return fd_.is_valid(); }
   bool is_fd() const { return type_ == Type::kFd; }
   const base::ScopedFD& GetFD() const { return fd_; }
@@ -225,7 +227,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #elif BUILDFLAG(IS_WIN)
     return is_valid_handle();
 #elif BUILDFLAG(IS_WASM)
-    return false;
+    return is_valid_fd();
 #else
 #error "Unsupported platform"
 #endif
@@ -236,7 +238,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #elif BUILDFLAG(IS_WIN)
     return TakeHandle();
 #elif BUILDFLAG(IS_WASM)
-    return {};
+    return TakeFD();
 #else
 #error "Unsupported platform"
 #endif
@@ -247,7 +249,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
 #elif BUILDFLAG(IS_WIN)
     return ReleaseHandle();
 #elif BUILDFLAG(IS_WASM)
-    return base::kInvalidPlatformFile;
+    return ReleaseFD();
 #else
 #error "Unsupported platform"
 #endif
@@ -265,7 +267,7 @@ class COMPONENT_EXPORT(MOJO_CPP_PLATFORM) PlatformHandle {
   base::apple::ScopedMachReceiveRight mach_receive_;
 #endif
 
-#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   base::ScopedFD fd_;
 #endif
 #if BUILDFLAG(IS_WASM)

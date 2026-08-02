@@ -723,45 +723,50 @@ MojoResult MojoWrapPlatformHandleIpcz(
     const MojoPlatformHandle* platform_handle,
     const MojoWrapPlatformHandleOptions* options,
     MojoHandle* mojo_handle) {
-#if BUILDFLAG(IS_WASM)
-  if (platform_handle &&
-      platform_handle->struct_size >= sizeof(*platform_handle) &&
-      platform_handle->type ==
-          MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY) {
-    std::ignore = PlatformHandle::FromMojoPlatformHandle(platform_handle);
-  }
-  return MOJO_RESULT_UNIMPLEMENTED;
-#else
   if (!platform_handle || !mojo_handle ||
       platform_handle->struct_size < sizeof(*platform_handle)) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
+#if BUILDFLAG(IS_WASM)
+  if (platform_handle->type ==
+      MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY) {
+    std::ignore = PlatformHandle::FromMojoPlatformHandle(platform_handle);
+    return MOJO_RESULT_UNIMPLEMENTED;
+  }
+  if (platform_handle->type != MOJO_PLATFORM_HANDLE_TYPE_INVALID &&
+      platform_handle->type !=
+          MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+  if (platform_handle->type ==
+          MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR &&
+      !base::IsValueInRangeForNumericType<int>(platform_handle->value)) {
+    return MOJO_RESULT_INVALID_ARGUMENT;
+  }
+#endif
   auto handle = PlatformHandle::FromMojoPlatformHandle(platform_handle);
   *mojo_handle =
       ipcz_driver::WrappedPlatformHandle::MakeBoxed(std::move(handle));
   return MOJO_RESULT_OK;
-#endif
 }
 
 MojoResult MojoUnwrapPlatformHandleIpcz(
     MojoHandle mojo_handle,
     const MojoUnwrapPlatformHandleOptions* options,
     MojoPlatformHandle* platform_handle) {
-#if BUILDFLAG(IS_WASM)
-  return MOJO_RESULT_UNIMPLEMENTED;
-#else
-  if (!mojo_handle || !platform_handle ||
+  BestEffortScopedIpczHandle owned_handle(mojo_handle);
+  if (!owned_handle.is_valid() || !platform_handle ||
       platform_handle->struct_size < sizeof(*platform_handle)) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
-  auto wrapper = ipcz_driver::WrappedPlatformHandle::Unbox(mojo_handle);
+  auto wrapper = ipcz_driver::WrappedPlatformHandle::Unbox(owned_handle.get());
   if (!wrapper) {
     return MOJO_RESULT_INVALID_ARGUMENT;
   }
+  owned_handle.release();
   PlatformHandle::ToMojoPlatformHandle(std::move(wrapper->handle()),
                                        platform_handle);
   return MOJO_RESULT_OK;
-#endif
 }
 
 MojoResult MojoWrapPlatformSharedMemoryRegionIpcz(

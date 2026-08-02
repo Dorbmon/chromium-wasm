@@ -343,7 +343,7 @@ class M3BaseSourceContractTest(unittest.TestCase):
             mapping,
         )
 
-    def test_mojo_platform_file_transport_is_explicitly_unsupported(
+    def test_mojo_transfers_virtual_files_with_process_local_ownership(
         self,
     ) -> None:
         file_traits = source("mojo/public/cpp/base/file_mojom_traits.cc")
@@ -353,30 +353,73 @@ class M3BaseSourceContractTest(unittest.TestCase):
         platform_handle = source(
             "mojo/public/cpp/platform/platform_handle.h"
         )
-        unsupported = (
-            'CHECK(false) << "Mojo platform file transport is unsupported '
-            'on Wasm";'
+        wasm_handle = source(
+            "mojo/public/cpp/platform/platform_handle_wasm.cc"
         )
+        ipcz = source("mojo/core/core_ipcz.cc")
 
-        self.assertEqual(file_traits.count(unsupported), 1)
-        self.assertEqual(read_only_traits.count(unsupported), 1)
+        for traits in (file_traits, read_only_traits):
+            with self.subTest(traits=traits[:40]):
+                self.assertNotIn(
+                    "Mojo platform file transport is unsupported", traits
+                )
+                self.assertIn("file.TakePlatformFile()", traits)
+                self.assertIn(
+                    "data.TakeFd().TakePlatformFile()", traits
+                )
+        self.assertIn("BUILDFLAG(IS_WASM)", read_only_traits)
+        self.assertIn("fcntl(file.GetPlatformFile(), F_GETFL)", read_only_traits)
+        self.assertIn("S_ISREG(st.st_mode)", read_only_traits)
+
         self.assertIn(
-            "#if BUILDFLAG(IS_WASM)\n  return false;", file_traits
-        )
-        self.assertIn(
-            "#if BUILDFLAG(IS_WASM)\n  return false;", read_only_traits
-        )
-        self.assertIn(
-            "#elif BUILDFLAG(IS_WASM)\n"
-            "  bool is_valid() const { "
-            "return wasm_shared_memory_handle_.is_valid(); }",
+            "BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)",
             platform_handle,
         )
+        self.assertIn("return is_valid_fd() ||", platform_handle)
+        self.assertIn("return TakeFD();", platform_handle)
+        self.assertIn("return ReleaseFD();", platform_handle)
         self.assertIn(
             "explicit PlatformHandle(\n"
             "      base::subtle::ScopedPlatformSharedMemoryHandle handle);",
             platform_handle,
         )
+        self.assertIn(
+            "PlatformHandle::PlatformHandle(base::ScopedFD fd)", wasm_handle
+        )
+        self.assertIn(
+            "MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR", wasm_handle
+        )
+        self.assertIn(
+            "IsValueInRangeForNumericType<int>(handle->value)", wasm_handle
+        )
+        self.assertIn("HANDLE_EINTR(dup(fd_.get()))", wasm_handle)
+        self.assertIn(
+            "MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY", wasm_handle
+        )
+
+        wrap = ipcz.split(
+            "MojoResult MojoWrapPlatformHandleIpcz", 1
+        )[1].split("MojoResult MojoUnwrapPlatformHandleIpcz", 1)[0]
+        unwrap = ipcz.split(
+            "MojoResult MojoUnwrapPlatformHandleIpcz", 1
+        )[1].split(
+            "MojoResult MojoWrapPlatformSharedMemoryRegionIpcz", 1
+        )[0]
+        self.assertIn(
+            "MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR", wrap
+        )
+        self.assertIn(
+            "IsValueInRangeForNumericType<int>(platform_handle->value)",
+            wrap,
+        )
+        self.assertIn(
+            "MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY", wrap
+        )
+        self.assertIn("return MOJO_RESULT_UNIMPLEMENTED;", wrap)
+        self.assertIn("BestEffortScopedIpczHandle owned_handle(mojo_handle);", unwrap)
+        self.assertIn("WrappedPlatformHandle::Unbox(owned_handle.get())", unwrap)
+        self.assertIn("owned_handle.release();", unwrap)
+        self.assertNotIn("return MOJO_RESULT_UNIMPLEMENTED;", unwrap)
 
     def test_content_mojo_restores_full_base_dependencies(self) -> None:
         m1_only = (

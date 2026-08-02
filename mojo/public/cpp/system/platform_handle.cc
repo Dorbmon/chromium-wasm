@@ -223,7 +223,8 @@ ScopedHandle WrapPlatformHandle(PlatformHandle handle) {
   }
 #if BUILDFLAG(IS_WASM)
   // Process-local shared-memory capabilities use the dedicated shared-memory
-  // wrapping API. Native platform-handle transport remains unsupported.
+  // wrapping API. Virtual filesystem descriptors may use this process-local
+  // platform-handle path.
   if (handle.is_wasm_shared_memory()) {
     return ScopedHandle();
   }

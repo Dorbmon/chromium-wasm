@@ -4,9 +4,12 @@
 
 #include <emscripten/heap.h>
 #include <emscripten/threading.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +47,7 @@ constexpr char kPrefix[] = "CHROMIUM_WASM_M1_MOJO";
 constexpr size_t kBufferSize = 4096;
 constexpr size_t kPayloadSize = 24;
 constexpr size_t kPlatformRegionSize = 512;
+constexpr size_t kPlatformFileSize = 96;
 constexpr uint64_t kExpectedMaximumMemory = UINT64_C(2147483648);
 constexpr base::TimeDelta kResponsiveWindow = base::Milliseconds(300);
 
@@ -343,6 +347,165 @@ void TestPlatformSharedMemoryRegionRoundTrip() {
           "platform_region_single_owner");
 }
 
+void TestPlatformFileRoundTrip() {
+  BeginPhase("platform_file_round_trip");
+
+  MojoPlatformHandle oversized_file{
+      .struct_size = sizeof(oversized_file),
+      .type = MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR,
+      .value =
+          static_cast<uint64_t>(std::numeric_limits<int>::max()) + 1,
+  };
+  MojoHandle rejected_file = MOJO_HANDLE_INVALID;
+  Require(MojoWrapPlatformHandle(&oversized_file, nullptr, &rejected_file) ==
+                  MOJO_RESULT_INVALID_ARGUMENT &&
+              rejected_file == MOJO_HANDLE_INVALID,
+          "platform_file_oversized_descriptor");
+
+  constexpr char kPath[] = "/tmp/chromium_wasm_mojo_platform_file";
+  std::ignore = unlink(kPath);
+  int file_descriptor =
+      open(kPath, O_CREAT | O_EXCL | O_RDWR, 0600);
+  Require(file_descriptor >= 0, "platform_file_create");
+
+  std::array<uint8_t, kPlatformFileSize> expected{};
+  WritePattern(base::span(expected), 0x6b);
+  Require(write(file_descriptor, expected.data(), expected.size()) ==
+                  static_cast<ssize_t>(expected.size()) &&
+              lseek(file_descriptor, 0, SEEK_SET) == 0,
+          "platform_file_prepare");
+
+  const int close_test_descriptor = dup(file_descriptor);
+  Require(close_test_descriptor >= 0, "platform_file_close_test_duplicate");
+  MojoPlatformHandle close_test_file{
+      .struct_size = sizeof(close_test_file),
+      .type = MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR,
+      .value = static_cast<uint64_t>(close_test_descriptor),
+  };
+  MojoHandle close_test_wrapper = MOJO_HANDLE_INVALID;
+  Require(MojoWrapPlatformHandle(&close_test_file, nullptr,
+                                 &close_test_wrapper) == MOJO_RESULT_OK &&
+              close_test_wrapper != MOJO_HANDLE_INVALID &&
+              MojoClose(close_test_wrapper) == MOJO_RESULT_OK,
+          "platform_file_close_adopted");
+  errno = 0;
+  Require(fcntl(close_test_descriptor, F_GETFD) == -1 && errno == EBADF,
+          "platform_file_close_retained_descriptor");
+
+  const int clone_source_descriptor = dup(file_descriptor);
+  Require(clone_source_descriptor >= 0,
+          "platform_file_clone_source_duplicate");
+  mojo::PlatformHandle original_file{
+      base::ScopedFD(clone_source_descriptor)};
+  mojo::PlatformHandle cloned_file = original_file.Clone();
+  Require(original_file.is_valid() && cloned_file.is_valid() &&
+              original_file.GetFD().get() == clone_source_descriptor &&
+              cloned_file.GetFD().get() != clone_source_descriptor,
+          "platform_file_clone");
+  const int cloned_descriptor = cloned_file.GetFD().get();
+  original_file.reset();
+  errno = 0;
+  Require(fcntl(clone_source_descriptor, F_GETFD) == -1 && errno == EBADF &&
+              lseek(cloned_descriptor, 0, SEEK_SET) == 0,
+          "platform_file_clone_independent_owner");
+  std::array<uint8_t, kPlatformFileSize> cloned_actual{};
+  Require(read(cloned_descriptor, cloned_actual.data(),
+               cloned_actual.size()) ==
+                  static_cast<ssize_t>(cloned_actual.size()) &&
+              cloned_actual == expected,
+          "platform_file_clone_read");
+  cloned_file.reset();
+  errno = 0;
+  Require(fcntl(cloned_descriptor, F_GETFD) == -1 && errno == EBADF &&
+              lseek(file_descriptor, 0, SEEK_SET) == 0,
+          "platform_file_clone_close");
+
+  MojoPlatformHandle outbound_file{
+      .struct_size = sizeof(outbound_file),
+      .type = MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR,
+      .value = static_cast<uint64_t>(file_descriptor),
+  };
+  MojoHandle wrapped_file = MOJO_HANDLE_INVALID;
+  Require(MojoWrapPlatformHandle(&outbound_file, nullptr, &wrapped_file) ==
+                  MOJO_RESULT_OK &&
+              wrapped_file != MOJO_HANDLE_INVALID,
+          "platform_file_wrap");
+  file_descriptor = -1;
+
+  MojoHandle sender = MOJO_HANDLE_INVALID;
+  MojoHandle receiver = MOJO_HANDLE_INVALID;
+  Require(MojoCreateMessagePipe(nullptr, &sender, &receiver) ==
+                  MOJO_RESULT_OK &&
+              sender != MOJO_HANDLE_INVALID &&
+              receiver != MOJO_HANDLE_INVALID,
+          "platform_file_pipe_create");
+
+  MojoMessageHandle outgoing = MOJO_MESSAGE_HANDLE_INVALID;
+  Require(MojoCreateMessage(nullptr, &outgoing) == MOJO_RESULT_OK &&
+              outgoing != MOJO_MESSAGE_HANDLE_INVALID,
+          "platform_file_message_create");
+  MojoAppendMessageDataOptions append_options{
+      .struct_size = sizeof(append_options),
+      .flags = MOJO_APPEND_MESSAGE_DATA_FLAG_COMMIT_SIZE,
+  };
+  void* outgoing_payload = nullptr;
+  uint32_t outgoing_capacity = 0;
+  Require(MojoAppendMessageData(
+              outgoing, 1, &wrapped_file, 1, &append_options,
+              &outgoing_payload, &outgoing_capacity) == MOJO_RESULT_OK &&
+              outgoing_payload && outgoing_capacity >= 1,
+          "platform_file_attach");
+  wrapped_file = MOJO_HANDLE_INVALID;
+  *static_cast<uint8_t*>(outgoing_payload) = 0xa7;
+  Require(MojoWriteMessage(sender, outgoing, nullptr) == MOJO_RESULT_OK,
+          "platform_file_send");
+  outgoing = MOJO_MESSAGE_HANDLE_INVALID;
+
+  MojoMessageHandle incoming = MOJO_MESSAGE_HANDLE_INVALID;
+  Require(MojoReadMessage(receiver, nullptr, &incoming) == MOJO_RESULT_OK &&
+              incoming != MOJO_MESSAGE_HANDLE_INVALID,
+          "platform_file_receive");
+  void* incoming_payload = nullptr;
+  uint32_t incoming_size = 0;
+  MojoHandle received_file = MOJO_HANDLE_INVALID;
+  uint32_t incoming_handle_count = 1;
+  Require(MojoGetMessageData(
+              incoming, nullptr, &incoming_payload, &incoming_size,
+              &received_file, &incoming_handle_count) == MOJO_RESULT_OK &&
+              incoming_payload && incoming_size == 1 &&
+              *static_cast<uint8_t*>(incoming_payload) == 0xa7 &&
+              incoming_handle_count == 1 &&
+              received_file != MOJO_HANDLE_INVALID &&
+              MojoDestroyMessage(incoming) == MOJO_RESULT_OK,
+          "platform_file_extract");
+  incoming = MOJO_MESSAGE_HANDLE_INVALID;
+
+  MojoPlatformHandle inbound_file{
+      .struct_size = sizeof(inbound_file),
+      .type = MOJO_PLATFORM_HANDLE_TYPE_INVALID,
+      .value = 0,
+  };
+  Require(MojoUnwrapPlatformHandle(received_file, nullptr, &inbound_file) ==
+                  MOJO_RESULT_OK &&
+              inbound_file.type ==
+                  MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR &&
+              inbound_file.value <=
+                  static_cast<uint64_t>(std::numeric_limits<int>::max()),
+          "platform_file_unwrap");
+  received_file = MOJO_HANDLE_INVALID;
+
+  file_descriptor = static_cast<int>(inbound_file.value);
+  std::array<uint8_t, kPlatformFileSize> actual{};
+  Require(read(file_descriptor, actual.data(), actual.size()) ==
+                  static_cast<ssize_t>(actual.size()) &&
+              actual == expected,
+          "platform_file_read");
+  Require(close(file_descriptor) == 0 && unlink(kPath) == 0 &&
+              MojoClose(sender) == MOJO_RESULT_OK &&
+              MojoClose(receiver) == MOJO_RESULT_OK,
+          "platform_file_cleanup");
+}
+
 void TestMojoTransfer(MemoryMetrics* metrics) {
   BeginPhase("message_pipe_shared_buffer");
 
@@ -535,17 +698,26 @@ void TestMojoTransfer(MemoryMetrics* metrics) {
               oversized_buffer == MOJO_HANDLE_INVALID,
           "oversized_create_allowed");
 
-  MojoPlatformHandle platform_handle{
-      .struct_size = sizeof(platform_handle),
-      .type = MOJO_PLATFORM_HANDLE_TYPE_INVALID,
-      .value = 0,
-  };
+  base::UnsafeSharedMemoryRegion generic_region =
+      base::UnsafeSharedMemoryRegion::Create(64);
+  Require(generic_region.IsValid(), "generic_shared_memory_region_create");
+  auto generic_platform_region =
+      base::UnsafeSharedMemoryRegion::TakeHandleForSerialization(
+          std::move(generic_region));
+  MojoPlatformHandle platform_handle{};
+  mojo::PlatformHandle::ToMojoPlatformHandle(
+      mojo::PlatformHandle(generic_platform_region.PassPlatformHandle()),
+      &platform_handle);
+  Require(platform_handle.type ==
+                  MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY &&
+              platform_handle.value != 0,
+          "generic_shared_memory_handle_export");
   MojoHandle wrapped_platform_handle = MOJO_HANDLE_INVALID;
   Require(MojoWrapPlatformHandle(&platform_handle, nullptr,
                                  &wrapped_platform_handle) ==
                   MOJO_RESULT_UNIMPLEMENTED &&
               wrapped_platform_handle == MOJO_HANDLE_INVALID,
-          "platform_handle_claimed_supported");
+          "generic_shared_memory_handle_claimed_supported");
 
   MojoInvitationTransportEndpoint remote_endpoint{
       .struct_size = sizeof(remote_endpoint),
@@ -591,6 +763,7 @@ int main() {
   TestCapabilityValidation();
   TestDriverSharedMemoryFailures();
   TestPlatformSharedMemoryRegionRoundTrip();
+  TestPlatformFileRoundTrip();
   TestMojoTransfer(&metrics);
 
   BeginPhase("browser_responsiveness");
@@ -629,6 +802,8 @@ int main() {
       "platform_region_metadata=ok transport_token_one_shot=ok "
       "platform_region_aliasing=ok platform_region_single_owner=ok "
       "platform_region_unwrap_failure_closes=ok "
+      "platform_file_wrap=ok platform_file_transfer=ok "
+      "platform_file_unwrap=ok platform_file_read=ok "
       "remote_transport_rejected=ok driver_failures_rejected=ok "
       "mapping_outlives_handles=ok all_handles_closed=ok "
       "clean_shutdown=ok memory_metrics=ok browser_heartbeat=external\n",

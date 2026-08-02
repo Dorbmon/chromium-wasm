@@ -26,8 +26,9 @@ typedef uint32_t MojoPlatformHandleType;
 // ignored.
 #define MOJO_PLATFORM_HANDLE_TYPE_INVALID ((MojoPlatformHandleType)0)
 
-// The |MojoPlatformHandle| value represents a POSIX file descriptor. Only
-// usable on POSIX host systems (e.g. Android, Linux, Chrome OS, Mac).
+// The |MojoPlatformHandle| value represents a POSIX file descriptor. Usable on
+// POSIX host systems (e.g. Android, Linux, Chrome OS, Mac) and for virtual
+// filesystem descriptors within a single WebAssembly application.
 #define MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR ((MojoPlatformHandleType)1)
 
 // Deprecated. TYPE_MACH_PORT is equivalent to TYPE_MACH_SEND_RIGHT.

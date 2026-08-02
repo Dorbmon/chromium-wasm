@@ -35,6 +35,7 @@ if (enable_chromium_wasm_port) {
       deps = [
         "//content/shell:content_shell_wasm($default_toolchain)",
         "//tools/wasm:m3_allocator_oom_smoke($default_toolchain)",
+        "//tools/wasm:m3_mojo_file_smoke($default_toolchain)",
         "//tools/wasm:m3_partition_alloc_root_smoke($default_toolchain)",
       ]
       if (!use_partition_alloc) {

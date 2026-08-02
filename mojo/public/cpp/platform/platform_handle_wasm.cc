@@ -4,11 +4,16 @@
 
 #include "mojo/public/cpp/platform/platform_handle.h"
 
+#include <unistd.h>
+
 #include <utility>
 
 #include "base/check.h"
+#include "base/files/scoped_file.h"
 #include "base/logging.h"
 #include "base/memory/process_local_shared_memory_wasm.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/posix/eintr_wrapper.h"
 #include "build/build_config.h"
 
 #if !BUILDFLAG(IS_WASM)
@@ -23,6 +28,9 @@ PlatformHandle::PlatformHandle(PlatformHandle&& other) {
   *this = std::move(other);
 }
 
+PlatformHandle::PlatformHandle(base::ScopedFD fd)
+    : type_(fd.is_valid() ? Type::kFd : Type::kNone), fd_(std::move(fd)) {}
+
 PlatformHandle::PlatformHandle(
     base::subtle::ScopedPlatformSharedMemoryHandle handle)
     : type_(handle.is_valid() ? Type::kWasmSharedMemory : Type::kNone),
@@ -36,6 +44,7 @@ PlatformHandle& PlatformHandle::operator=(PlatformHandle&& other) {
   }
   reset();
   type_ = other.type_;
+  fd_ = std::move(other.fd_);
   wasm_shared_memory_handle_ =
       std::move(other.wasm_shared_memory_handle_);
   other.type_ = Type::kNone;
@@ -49,6 +58,13 @@ void PlatformHandle::ToMojoPlatformHandle(PlatformHandle handle,
   if (!handle.is_valid()) {
     out_handle->type = MOJO_PLATFORM_HANDLE_TYPE_INVALID;
     out_handle->value = 0;
+    return;
+  }
+
+  if (handle.type_ == Type::kFd) {
+    out_handle->type = MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR;
+    out_handle->value =
+        static_cast<uint64_t>(handle.TakeFD().release());
     return;
   }
 
@@ -72,6 +88,14 @@ PlatformHandle PlatformHandle::FromMojoPlatformHandle(
       handle->type == MOJO_PLATFORM_HANDLE_TYPE_INVALID) {
     return PlatformHandle();
   }
+  if (handle->type == MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR) {
+    if (!base::IsValueInRangeForNumericType<int>(handle->value)) {
+      LOG(ERROR) << "Invalid Wasm virtual filesystem descriptor";
+      return PlatformHandle();
+    }
+    return PlatformHandle(
+        base::ScopedFD(static_cast<int>(handle->value)));
+  }
   if (handle->type != MOJO_PLATFORM_HANDLE_TYPE_WASM_SHARED_MEMORY) {
     LOG(ERROR) << "Native platform handles are unsupported in WebAssembly";
     return PlatformHandle();
@@ -87,11 +111,13 @@ PlatformHandle PlatformHandle::FromMojoPlatformHandle(
 }
 
 void PlatformHandle::reset() {
+  fd_.reset();
   wasm_shared_memory_handle_.reset();
   type_ = Type::kNone;
 }
 
 void PlatformHandle::release() {
+  (void)fd_.release();
   (void)wasm_shared_memory_handle_.release();
   type_ = Type::kNone;
 }
@@ -99,6 +125,10 @@ void PlatformHandle::release() {
 PlatformHandle PlatformHandle::Clone() const {
   if (!is_valid()) {
     return PlatformHandle();
+  }
+  if (type_ == Type::kFd) {
+    return PlatformHandle(
+        base::ScopedFD(HANDLE_EINTR(dup(fd_.get()))));
   }
   CHECK_EQ(type_, Type::kWasmSharedMemory);
   return PlatformHandle(base::subtle::wasm::DuplicateHandle(

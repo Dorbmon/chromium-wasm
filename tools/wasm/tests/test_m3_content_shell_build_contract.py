@@ -43,6 +43,7 @@ class M3ContentShellBuildContractTest(unittest.TestCase):
         )[1].split("} else {", 1)[0]
         self.assertIn("//content/shell:content_shell_wasm", m3_profile)
         self.assertIn("//tools/wasm:m3_allocator_oom_smoke", m3_profile)
+        self.assertIn("//tools/wasm:m3_mojo_file_smoke", m3_profile)
         self.assertNotIn("//tools/wasm:m1_", m3_profile)
         self.assertIn('executable("content_shell_wasm")', build)
         self.assertIn("assert(enable_chromium_wasm_content)", build)
