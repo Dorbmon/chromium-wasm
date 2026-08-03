@@ -4,6 +4,7 @@
 
 #include "base/time/time.h"
 
+#include <atomic>
 #include <cmath>
 
 #include <emscripten/emscripten.h>
@@ -15,6 +16,28 @@
 namespace base {
 
 namespace {
+
+// `performance.timeOrigin + performance.now()` is comparable between workers,
+// but worker clocks can still differ by a few microseconds due to their
+// independently rounded browser readings. Chromium tasks retain a queue time
+// on the posting sequence and compare it with their start time on the target
+// sequence, so preserve the TimeTicks contract across the shared Wasm memory.
+std::atomic<int64_t> g_last_monotonic_microseconds{0};
+
+TimeTicks MakeGloballyMonotonicTimeTicks(TimeTicks candidate) {
+  const int64_t candidate_microseconds =
+      (candidate - TimeTicks()).InMicroseconds();
+  int64_t observed =
+      g_last_monotonic_microseconds.load(std::memory_order_relaxed);
+  while (candidate_microseconds > observed) {
+    if (g_last_monotonic_microseconds.compare_exchange_weak(
+            observed, candidate_microseconds, std::memory_order_relaxed,
+            std::memory_order_relaxed)) {
+      return candidate;
+    }
+  }
+  return TimeTicks() + Microseconds(observed);
+}
 
 double WallClockMilliseconds() {
   const double now = emscripten_date_now();
@@ -49,7 +72,8 @@ Time TimeNowFromSystemTimeIgnoringOverride() {
 namespace subtle {
 
 TimeTicks TimeTicksNowIgnoringOverride() {
-  return TimeTicks() + Milliseconds(MonotonicClockMilliseconds());
+  return MakeGloballyMonotonicTimeTicks(
+      TimeTicks() + Milliseconds(MonotonicClockMilliseconds()));
 }
 
 TimeTicks TimeTicksLowResolutionNowIgnoringOverride() {
@@ -70,8 +94,9 @@ bool TimeTicks::IsHighResolution() {
 
 // static
 bool TimeTicks::IsConsistentAcrossProcesses() {
-  // All Chromium services share one Emscripten process, and the pthread
-  // runtime synchronizes this clock across its workers.
+  // All Chromium services share one Emscripten process. Emscripten aligns the
+  // workers' clock origins, and the shared high-water mark in
+  // TimeTicksNowIgnoringOverride() closes the remaining rounding gap.
   return true;
 }
 
