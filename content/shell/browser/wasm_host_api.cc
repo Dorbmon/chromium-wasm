@@ -35,8 +35,10 @@
 #include "content/shell/browser/shell.h"
 #include "emscripten/emscripten.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "ui/aura/client/focus_client.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/aura/window_tree_host_platform.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
@@ -47,6 +49,7 @@
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/system_input_injector.h"
+#include "ui/platform_window/platform_window.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -400,6 +403,46 @@ void LoadUrlOnUiThread(GURL url) {
   }
 }
 
+void DeactivateHostWindowOnUiThread() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  Shell* shell = GetSingleShell();
+  if (!shell || !shell->window()) {
+    ReportFatal("M4 host focus loss has no Content Shell window");
+    return;
+  }
+
+  aura::Window* root_window = shell->window();
+  aura::client::FocusClient* focus_client =
+      aura::client::GetFocusClient(root_window);
+  aura::WindowTreeHostPlatform* host =
+      aura::WindowTreeHostPlatform::GetHostForWindow(root_window);
+  if (!focus_client || !host || !host->platform_window()) {
+    ReportFatal("M4 host focus loss has no Aura/Ozone window path");
+    return;
+  }
+
+  // Dropping the Aura focus target reaches the regular renderer focus-loss
+  // path. Deactivating the generic PlatformWindow separately clears
+  // ozone_wasm's keyboard target without exposing a Wasm implementation type
+  // to Content Shell.
+  focus_client->FocusWindow(nullptr);
+
+  // Focus notifications can synchronously close the Content Shell window.
+  // Do not retain the old Aura or PlatformWindow pointers across them.
+  shell = GetSingleShell();
+  if (!shell || !shell->window()) {
+    ReportFatal("M4 host focus loss closed the Content Shell window");
+    return;
+  }
+  root_window = shell->window();
+  host = aura::WindowTreeHostPlatform::GetHostForWindow(root_window);
+  if (!host || !host->platform_window()) {
+    ReportFatal("M4 host focus loss has no surviving Aura/Ozone window path");
+    return;
+  }
+  host->platform_window()->Deactivate();
+}
+
 void ShutdownOnUiThread() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   Shell::Shutdown();
@@ -547,6 +590,13 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_url(const char* data_url) {
   }
   return content::PostHostCommand(
              base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_deactivate() {
+  return content::PostHostCommand(
+             base::BindOnce(&content::DeactivateHostWindowOnUiThread))
              ? 1
              : 0;
 }

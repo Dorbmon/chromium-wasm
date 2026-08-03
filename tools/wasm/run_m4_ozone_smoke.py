@@ -31,13 +31,16 @@ from m0_common import (
 )
 from m3_content_server import (
     M4_CASE,
+    M4_FOCUS_CASE,
     M4_WHEEL_CASE,
     M4_KEYBOARD_CASE,
     create_m3_server,
+    m4_focus_smoke_url,
     m4_smoke_url,
     m4_wheel_smoke_url,
     m4_keyboard_smoke_url,
     validate_m4_result,
+    validate_m4_focus_result,
     validate_m4_wheel_result,
     validate_m4_keyboard_result,
 )
@@ -175,6 +178,48 @@ def read_canvas_geometry(client: DevToolsClient) -> dict[str, Any]:
     return value
 
 
+def read_focus_sink_position(client: DevToolsClient) -> tuple[float, float]:
+    value = client.evaluate(
+        """(() => {
+          const sink = document.querySelector('#m4-focus-sink');
+          if (!(sink instanceof HTMLButtonElement) || sink.hidden) return null;
+          const rect = sink.getBoundingClientRect();
+          return {
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+            viewportWidth: innerWidth,
+            viewportHeight: innerHeight,
+          };
+        })()"""
+    )
+    if not isinstance(value, dict):
+        raise M0Error("M4 host focus sink geometry is unavailable")
+    left = _require_finite_number(value.get("left"), "focus sink left")
+    top = _require_finite_number(value.get("top"), "focus sink top")
+    width = _require_finite_number(value.get("width"), "focus sink width")
+    height = _require_finite_number(value.get("height"), "focus sink height")
+    viewport_width = _require_finite_number(
+        value.get("viewportWidth"), "focus sink viewport width"
+    )
+    viewport_height = _require_finite_number(
+        value.get("viewportHeight"), "focus sink viewport height"
+    )
+    if width <= 0 or height <= 0 or viewport_width <= 0 or viewport_height <= 0:
+        raise M0Error("M4 host focus sink has nonpositive dimensions")
+    center_x = left + width / 2
+    center_y = top + height / 2
+    if (
+        center_x < 0
+        or center_y < 0
+        or center_x >= viewport_width
+        or center_y >= viewport_height
+    ):
+        raise M0Error("M4 host focus sink center is outside the viewport")
+    return center_x, center_y
+
+
 def wait_for_input_state(
     client: DevToolsClient,
     browser: subprocess.Popen[str],
@@ -250,7 +295,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--input",
-        choices=("pointer", "wheel", "keyboard"),
+        choices=("pointer", "wheel", "keyboard", "focus"),
         default="pointer",
         help="trusted DOM input path to drive",
     )
@@ -268,13 +313,21 @@ def main() -> int:
         state_expression = "window.__chromiumWasmM4WheelState || null"
         expected_state = "awaiting-dom-wheel"
         input_driver = "Chrome DevTools Input.dispatchMouseEvent:mouseWheel"
-    else:
+    elif args.input == "keyboard":
         case = M4_KEYBOARD_CASE
         state_expression = "window.__chromiumWasmM4KeyboardState || null"
         expected_state = "awaiting-dom-keyboard-activation"
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent + "
             "Input.dispatchKeyEvent:rawKeyDown/keyUp"
+        )
+    else:
+        case = M4_FOCUS_CASE
+        state_expression = "window.__chromiumWasmM4FocusState || null"
+        expected_state = "awaiting-dom-focus-activation"
+        input_driver = (
+            "Chrome DevTools Input.dispatchMouseEvent + "
+            "Input.dispatchKeyEvent:rawKeyDown"
         )
 
     out_dir = args.out_dir
@@ -364,8 +417,16 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
             )
-        else:
+        elif args.input == "keyboard":
             url = m4_keyboard_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
+        else:
+            url = m4_focus_smoke_url(
                 server,
                 token,
                 versions,
@@ -438,7 +499,7 @@ def main() -> int:
         elif args.input == "wheel":
             stage = "dispatch_trusted_dom_wheel"
             client.dispatch_mouse_wheel(click_x, click_y, 0.0, 160.0)
-        else:
+        elif args.input == "keyboard":
             stage = "dispatch_trusted_dom_keyboard_activation"
             client.dispatch_primary_click(click_x, click_y)
             stage = "wait_for_keyboard_activation"
@@ -453,6 +514,35 @@ def main() -> int:
             )
             stage = "dispatch_trusted_dom_key"
             client.dispatch_arrow_down()
+        else:
+            stage = "dispatch_trusted_dom_focus_activation"
+            client.dispatch_primary_click(click_x, click_y)
+            stage = "wait_for_focus_key_down"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-focus-key-down",
+            )
+            stage = "dispatch_trusted_dom_focus_key_down"
+            client.dispatch_arrow_down_down()
+            stage = "wait_for_focus_loss"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-focus-loss",
+            )
+            stage = "measure_focus_sink"
+            focus_sink_x, focus_sink_y = read_focus_sink_position(client)
+            stage = "dispatch_trusted_host_focus_loss"
+            client.dispatch_primary_click(focus_sink_x, focus_sink_y)
         stage = "wait_for_result"
         result = wait_for_result(
             browser, browser_stderr, result_queue, deadline
@@ -464,9 +554,12 @@ def main() -> int:
         elif args.input == "wheel":
             validate_m4_wheel_result(result, expected_versions=versions)
             input_key = "wheelInput"
-        else:
+        elif args.input == "keyboard":
             validate_m4_keyboard_result(result, expected_versions=versions)
             input_key = "keyboardInput"
+        else:
+            validate_m4_focus_result(result, expected_versions=versions)
+            input_key = "focusInput"
         print(
             f"{SENTINEL}:BROWSER_RESULT "
             + json.dumps(

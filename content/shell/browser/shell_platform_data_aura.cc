@@ -108,6 +108,9 @@ class ShellFocusClient : public aura::client::FocusClient,
     if (window && !window->CanFocus()) {
       return;
     }
+    if (focused_window_ == window) {
+      return;
+    }
 
     observation_.Reset();
     aura::Window* old_focused_window = focused_window_;

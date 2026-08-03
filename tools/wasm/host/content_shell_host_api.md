@@ -40,13 +40,14 @@ frames before capture. This avoids assuming that the periodic probe runs
 before the CLICKED paint. This legacy M3 click path remains an M3 regression
 control; it is not the M4 input path.
 
-M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, and the narrowly
-scoped `enableM4KeyboardInput()` for the diagnostic harness after
-initialization. They attach host-canvas listeners, not a replacement HTML
-browser UI. Primary mouse pointer input, pixel wheel input, and the one raw
-non-printable `ArrowDown` key pair cross the public Ozone input-injector
-boundary. Text entry, modifiers, repeat, IME, touch, pen, non-primary buttons,
-cursor control, and richer multi-window behavior remain outside this first M4
+M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, the narrowly scoped
+`enableM4KeyboardInput()`, and `enableM4FocusInput()` for the diagnostic
+harness after initialization. They attach host-canvas listeners, not a
+replacement HTML browser UI. Primary mouse pointer input, pixel wheel input,
+the one raw non-printable `ArrowDown` key pair, and host focus loss cross the
+public Ozone input-injector boundary. Text entry, modifiers, repeat, IME,
+touch, pen, non-primary buttons, cursor control, focus regain without a
+pointer press, and richer multi-window behavior remain outside this first M4
 input slice. Returning success while dropping an event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
@@ -66,6 +67,7 @@ int chromium_wasm_host_click(int x, int y, int button);
 int chromium_wasm_host_pointer(int type, int x, int y, int button);
 int chromium_wasm_host_wheel(int x, int y, int delta_x, int delta_y);
 int chromium_wasm_host_key(const char* code, int down);
+int chromium_wasm_host_deactivate(void);
 int chromium_wasm_host_shutdown(void);
 ```
 
@@ -89,7 +91,7 @@ shell delegate to finish, then requires Emscripten's `onExit` after it has
 requested termination of every running and prewarmed pthread worker. Both
 exit statuses must be zero and equal.
 
-### M4 pointer, wheel, and raw-key ABI
+### M4 pointer, wheel, raw-key, and focus-loss ABI
 
 `chromium_wasm_host_pointer` accepts only primary mouse input: `type` is `0`
 for move, `1` for down, or `2` for up, and `button` must be `0`. The host
@@ -130,6 +132,17 @@ key state on canvas or window blur, visibility loss, teardown, and shutdown,
 queuing a matching release when Chromium is still running. It prevents the
 outer canvas event's default action only after queue acceptance.
 
+`chromium_wasm_host_deactivate` accepts no arguments and is one-way: it is
+queued only when the host canvas, host window, or document visibility loses
+focus. The host cancels an active pointer and queues held raw-key releases
+before it queues deactivation, preserving event order on Chromium's UI task
+runner. The UI task clears the normal Aura `FocusClient` target and then calls
+the generic `PlatformWindow::Deactivate()` API. This reaches Blink's ordinary
+lost-focus handling while clearing ozone_wasm's keyboard target without
+referencing a Wasm platform class from Content Shell. Focus regain remains the
+existing trusted primary-pointer activation path; a wheel event focusing the
+outer canvas must not activate the browser window.
+
 The pointer, wheel, and raw-key exports create a `SystemInputInjector`
 through public `OzonePlatform`, then route through the Wasm
 `PlatformEventSource`, Aura's `PlatformWindowDelegate`, and Blink. A
@@ -145,6 +158,14 @@ events and normal document scrolling, verifies no text, beforeinput, input, or
 composition side effects, and requires a newer compositor frame after the key
 down. These checks, rather than an export return value, establish
 Ozone/Aura/Blink delivery.
+
+The M4 focus-loss smoke holds one trusted raw `ArrowDown` down event, uses a
+trusted DevTools mouse click on a real host-page focus-sink button, and requires
+the canvas blur record, generated matching key-up, cleared Ozone keyboard
+state confirmed by a UI-thread Ozone focus report, trusted inner `keyup`, inner
+`window.blur`, `document.hasFocus() == false`, a later compositor frame, and
+clean shutdown. It never calls inner-page `focus()`, `blur()`, or
+`dispatchEvent()`.
 
 ## Runtime-to-host bridge
 
@@ -165,6 +186,12 @@ bridge.reportReadiness({
   shellReady: true,
   surfaceReady: true,
   firstVisuallyNonEmptyPaint: true,
+});
+
+bridge.reportOzoneFocusState({
+  protocol: 1,
+  keyboardTargetPresent: false,
+  active: false,
 });
 
 bridge.reportNavigation({
@@ -199,6 +226,11 @@ bridge.reportProcessExit({
 Fatal runtime failures call `bridge.reportFatal(message)`. Wasm aborts,
 uncaught outer-page exceptions, and unhandled Promise rejections are also
 captured as fatal errors.
+
+ozone_wasm sends `reportOzoneFocusState` after each activation transition.
+Its values come from the UI-thread `WasmWindowManager` and platform activation
+state, rather than host-page bookkeeping. The M4 focus-loss smoke requires a
+fresh false/false report after the trusted focus-sink click.
 
 The page probe must be reported again as its timer count advances; readiness
 requires a probe with at least three ticks rather than treating initial script

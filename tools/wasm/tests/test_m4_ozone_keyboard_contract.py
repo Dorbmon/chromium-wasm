@@ -199,20 +199,24 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         )
 
         release = section(
-            host, "  #releaseM4KeyboardKeys(reason)", "  #handleM4KeyboardEvent"
+            host,
+            "  #releaseM4KeyboardKeys(reason, triggerEvent = null)",
+            "  #handleM4KeyboardEvent",
         )
         self.assertIn("this.#keyboardCodesDown.clear();", release)
         self.assertIn("chromium_wasm_host_key", release)
-        listeners = section(host, "  enableM4KeyboardInput()", "  #heartbeat()")
+        self.assertIn("generated: true", release)
+        focus_listeners = section(
+            host, "  enableM4FocusInput()", "  #heartbeat()"
+        )
         for marker in (
-            '"keydown", "down"',
-            '"keyup", "up"',
             '"blur"',
             '"visibilitychange"',
-            "m4:keyboard:listeners-attached",
+            "#deactivateM4HostWindow",
+            "m4:focus:listeners-attached",
         ):
             with self.subTest(marker=marker):
-                self.assertIn(marker, listeners)
+                self.assertIn(marker, focus_listeners)
 
     def test_fixture_requires_real_focus_default_scroll_and_no_text_input(
         self,
@@ -248,24 +252,30 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         server = source("tools/wasm/m3_content_server.py")
         host = source("tools/wasm/host/content_shell_host.js")
 
+        cdp_key_down = section(
+            cdp,
+            "def dispatch_arrow_down_down(self) -> None:",
+            "\n\n    def dispatch_arrow_down(self) -> None:",
+        )
+        for marker in (
+            '"Input.dispatchKeyEvent"',
+            '"type": "rawKeyDown"',
+            '"code": "ArrowDown"',
+            '"windowsVirtualKeyCode": 40',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, cdp_key_down)
+        self.assertNotIn('"text":', cdp_key_down)
         cdp_key = section(
             cdp,
             "def dispatch_arrow_down(self) -> None:",
             "\n\ndef wait_for_page_client",
         )
-        for marker in (
-            '"Input.dispatchKeyEvent"',
-            '"type": "rawKeyDown"',
-            '"type": "keyUp"',
-            '"code": "ArrowDown"',
-            '"windowsVirtualKeyCode": 40',
-        ):
-            with self.subTest(marker=marker):
-                self.assertIn(marker, cdp_key)
-        self.assertNotIn('"text":', cdp_key)
+        self.assertIn("self.dispatch_arrow_down_down()", cdp_key)
+        self.assertIn('"type": "keyUp"', cdp_key)
 
         for marker in (
-            'choices=("pointer", "wheel", "keyboard")',
+            'choices=("pointer", "wheel", "keyboard", "focus")',
             "M4_KEYBOARD_CASE",
             '"awaiting-dom-keyboard-activation"',
             '"awaiting-dom-key"',

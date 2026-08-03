@@ -37,6 +37,14 @@
       border-color: #72ddf7;
     }
 
+    #m4-focus-sink {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 1;
+      padding: 8px 12px;
+    }
+
     aside {
       min-width: 0;
       padding: 12px;
@@ -91,6 +99,9 @@
       height="600"
       tabindex="0"
       aria-label="Chromium Content Shell output"></canvas>
+    <button id="m4-focus-sink" type="button" hidden>
+      Move host focus
+    </button>
     <aside aria-label="Content Shell loader diagnostics">
       <h1>Chromium Wasm Content Shell</h1>
       <dl id="versions"></dl>

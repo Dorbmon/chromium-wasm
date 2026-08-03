@@ -28,6 +28,7 @@ M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
 M4_WHEEL_CASE = "ozone_wheel_m4"
 M4_KEYBOARD_CASE = "ozone_keyboard_m4"
+M4_FOCUS_CASE = "ozone_focus_m4"
 M3_PROTOCOL = 1
 M3_WIDTH = 800
 M3_HEIGHT = 600
@@ -49,6 +50,7 @@ M3_SCREENSHOT_CONTRACT = (
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
 M4_WHEEL_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_wheel_page.html"
 M4_KEYBOARD_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_keyboard_page.html"
+M4_FOCUS_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_focus_page.html"
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -183,6 +185,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
             "/__m3__/m4-wheel-fixture.html": M4_WHEEL_FIXTURE,
             "/__m3__/m4-keyboard-fixture.html": M4_KEYBOARD_FIXTURE,
+            "/__m3__/m4-focus-fixture.html": M4_FOCUS_FIXTURE,
             "/__m3__/Ahem.woff2": M3_AHEM_FONT,
             "/__m3__/screenshot-contract.json": M3_SCREENSHOT_CONTRACT,
         }
@@ -235,6 +238,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_CASE,
                 M4_WHEEL_CASE,
                 M4_KEYBOARD_CASE,
+                M4_FOCUS_CASE,
             )
         ):
             self.send_error(400)
@@ -384,6 +388,34 @@ def m4_keyboard_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-keyboard-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_focus_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_FOCUS_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-focus-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -1617,6 +1649,399 @@ def validate_m4_keyboard_result(
             raise M0Error(
                 "M4 keyboard logs are missing lifecycle marker "
                 f"{marker!r}"
+            )
+
+
+def validate_m4_focus_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate a trusted host focus loss clears Aura and Ozone state."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_FOCUS_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": False,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 focus result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 focus versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 focus version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    readiness = _require_dict(result.get("readiness"), "M4 focus readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 focus readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 focus readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 focus heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error("M4 focus heartbeat was not anchored to data navigation")
+    _require_number(
+        heartbeat.get("elapsedMs"), "M4 focus heartbeat elapsed time", minimum=0
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 focus frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 focus frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 focus frame timestamp", minimum=0
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error("M4 focus frame dimensions do not match the canvas")
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 focus page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-focus-v1",
+        "ready": True,
+        "activeElementId": "focus-target",
+        "activationCount": 1,
+        "clickTrusted": True,
+        "focusTrusted": True,
+        "windowBlurTrusted": True,
+        "documentHasFocus": False,
+        "resultText": "WINDOW BLURRED",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 focus page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        page_probe.get("focusCount"), "M4 focus target focus count", minimum=1
+    )
+    _require_safe_integer(
+        page_probe.get("windowBlurCount"), "M4 focus inner window blur count",
+        minimum=1,
+    )
+    target_x = _require_safe_integer(
+        page_probe.get("targetCenterX"),
+        "M4 focus target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    target_y = _require_safe_integer(
+        page_probe.get("targetCenterY"),
+        "M4 focus target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    _require_safe_integer(
+        page_probe.get("timerTicks"), "M4 focus inner page timer ticks", minimum=3
+    )
+    _require_number(
+        page_probe.get("scrollTop"), "M4 focus document scroll top", minimum=1
+    )
+    key_events = _require_dict(
+        page_probe.get("keyEvents"), "M4 focus inner key events"
+    )
+    for field in ("keydownCount", "keyupCount"):
+        if _require_safe_integer(
+            key_events.get(field), f"M4 focus inner {field}", minimum=1
+        ) != 1:
+            raise M0Error(f"M4 focus inner {field} is not exactly one")
+    for event_name in ("keydown", "keyup"):
+        expected_event = {
+            f"{event_name}Trusted": True,
+            f"{event_name}Code": "ArrowDown",
+            f"{event_name}Key": "ArrowDown",
+            f"{event_name}Repeat": False,
+            f"{event_name}Composing": False,
+            f"{event_name}DefaultPrevented": False,
+            f"{event_name}TargetId": "focus-target",
+        }
+        for field, expected_value in expected_event.items():
+            actual_value = key_events.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 focus inner {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 focus pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 focus readiness pointer input"
+    )
+    if pointer_input != readiness_pointer:
+        raise M0Error("M4 focus pointer evidence differs from readiness evidence")
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 focus pointer listeners were not enabled")
+    for count_name, minimum in (
+        ("receivedCount", 2),
+        ("trustedCount", 2),
+        ("queuedCount", 2),
+    ):
+        _require_safe_integer(
+            pointer_input.get(count_name),
+            f"M4 focus pointer {count_name}",
+            minimum=minimum,
+        )
+    last_pointer = _require_dict(
+        pointer_input.get("lastQueued"), "M4 focus last queued pointer"
+    )
+    for field, expected_value in {
+        "type": "up",
+        "trusted": True,
+        "queued": True,
+        "canvasFocused": True,
+    }.items():
+        if last_pointer.get(field) != expected_value:
+            raise M0Error(
+                f"M4 focus queued pointer {field} mismatch: expected "
+                f"{expected_value!r}, got {last_pointer.get(field)!r}"
+            )
+    if _require_safe_integer(
+        last_pointer.get("x"),
+        "M4 focus queued pointer x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    ) != target_x:
+        raise M0Error("M4 focus pointer x does not match the fixture target")
+    if _require_safe_integer(
+        last_pointer.get("y"),
+        "M4 focus queued pointer y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    ) != target_y:
+        raise M0Error("M4 focus pointer y does not match the fixture target")
+
+    keyboard_input = _require_dict(
+        result.get("keyboardInput"), "M4 focus keyboard input"
+    )
+    readiness_keyboard = _require_dict(
+        readiness.get("keyboardInput"), "M4 focus readiness keyboard input"
+    )
+    if keyboard_input != readiness_keyboard:
+        raise M0Error("M4 focus keyboard evidence differs from readiness evidence")
+    if keyboard_input.get("enabled") is not True:
+        raise M0Error("M4 focus keyboard listeners were not enabled")
+    if keyboard_input.get("activated") is not False:
+        raise M0Error("M4 focus keyboard activation survived host focus loss")
+    if keyboard_input.get("pressedCodes") != []:
+        raise M0Error("M4 focus key state was not released before deactivation")
+    keyboard_received = _require_safe_integer(
+        keyboard_input.get("receivedCount"),
+        "M4 focus received keyboard count",
+        minimum=2,
+    )
+    keyboard_trusted = _require_safe_integer(
+        keyboard_input.get("trustedCount"),
+        "M4 focus trusted DOM keyboard count",
+        minimum=1,
+    )
+    keyboard_queued = _require_safe_integer(
+        keyboard_input.get("queuedCount"),
+        "M4 focus queued host keyboard count",
+        minimum=2,
+    )
+    if keyboard_trusted > keyboard_received or keyboard_queued > keyboard_received:
+        raise M0Error("M4 focus keyboard count exceeds received records")
+    key_down = _require_dict(
+        keyboard_input.get("lastQueuedDown"), "M4 focus last queued key down"
+    )
+    for field, expected_value in {
+        "type": "down",
+        "code": "ArrowDown",
+        "key": "ArrowDown",
+        "trusted": True,
+        "queued": True,
+        "repeat": False,
+        "isComposing": False,
+        "canvasFocused": True,
+        "pointerActivated": True,
+        "defaultPrevented": True,
+    }.items():
+        if key_down.get(field) != expected_value:
+            raise M0Error(
+                f"M4 focus key down {field} mismatch: expected "
+                f"{expected_value!r}, got {key_down.get(field)!r}"
+            )
+    key_down_frame_id = _require_safe_integer(
+        key_down.get("frameIdBefore"), "M4 focus key down frame ID", minimum=1
+    )
+    key_up = _require_dict(
+        keyboard_input.get("lastQueuedUp"), "M4 focus generated key up"
+    )
+    for field, expected_value in {
+        "type": "up",
+        "code": "ArrowDown",
+        "key": "ArrowDown",
+        "trusted": False,
+        "queued": True,
+        "generated": True,
+        "trigger": "canvas-blur",
+        "triggerTrusted": True,
+        "relatedTargetId": "m4-focus-sink",
+        "repeat": False,
+        "isComposing": False,
+        "canvasFocused": False,
+        "pointerActivated": False,
+    }.items():
+        if key_up.get(field) != expected_value:
+            raise M0Error(
+                f"M4 focus generated key up {field} mismatch: expected "
+                f"{expected_value!r}, got {key_up.get(field)!r}"
+            )
+    key_up_frame_id = _require_safe_integer(
+        key_up.get("frameIdBefore"), "M4 focus key up frame ID", minimum=1
+    )
+    if key_up_frame_id < key_down_frame_id:
+        raise M0Error("M4 focus generated key up precedes the held key down")
+
+    focus_input = _require_dict(result.get("focusInput"), "M4 focus input")
+    readiness_focus = _require_dict(
+        readiness.get("focusInput"), "M4 readiness focus input"
+    )
+    if focus_input != readiness_focus:
+        raise M0Error("M4 focus evidence differs from readiness evidence")
+    if focus_input.get("enabled") is not True:
+        raise M0Error("M4 focus listeners were not enabled")
+    if focus_input.get("hostWindowActive") is not False:
+        raise M0Error("M4 Ozone window remained active after host focus loss")
+    _require_safe_integer(
+        focus_input.get("receivedCount"), "M4 focus received focus count", minimum=2
+    )
+    _require_safe_integer(
+        focus_input.get("trustedCount"), "M4 trusted focus count", minimum=2
+    )
+    _require_safe_integer(
+        focus_input.get("queuedCount"), "M4 queued focus count", minimum=2
+    )
+    focus_loss = _require_dict(
+        focus_input.get("lastQueuedFocusLoss"), "M4 queued focus loss"
+    )
+    for field, expected_value in {
+        "type": "canvas-blur",
+        "trusted": True,
+        "queued": True,
+        "canvasFocused": False,
+        "relatedTargetId": "m4-focus-sink",
+    }.items():
+        if focus_loss.get(field) != expected_value:
+            raise M0Error(
+                f"M4 queued focus loss {field} mismatch: expected "
+                f"{expected_value!r}, got {focus_loss.get(field)!r}"
+            )
+    focus_loss_frame_id = _require_safe_integer(
+        focus_loss.get("frameIdBefore"), "M4 focus loss frame ID", minimum=1
+    )
+    if frame_id <= focus_loss_frame_id:
+        raise M0Error("M4 focus result has no compositor frame after focus loss")
+
+    ozone_focus_state = _require_dict(
+        result.get("ozoneFocusState"), "M4 focus Ozone focus state"
+    )
+    readiness_ozone_focus_state = _require_dict(
+        readiness.get("ozoneFocusState"), "M4 readiness Ozone focus state"
+    )
+    if ozone_focus_state != readiness_ozone_focus_state:
+        raise M0Error("M4 focus Ozone state differs from readiness evidence")
+    if ozone_focus_state.get("keyboardTargetPresent") is not False:
+        raise M0Error("M4 Ozone keyboard target remained after host focus loss")
+    if ozone_focus_state.get("active") is not False:
+        raise M0Error("M4 Ozone window remained active after host focus loss")
+    ozone_focus_sequence = _require_safe_integer(
+        ozone_focus_state.get("sequence"), "M4 Ozone focus report sequence", minimum=1
+    )
+    focus_report_sequence_before = _require_safe_integer(
+        focus_loss.get("ozoneFocusReportSequenceBefore"),
+        "M4 focus report sequence before deactivation",
+        minimum=0,
+    )
+    if ozone_focus_sequence <= focus_report_sequence_before:
+        raise M0Error("M4 Ozone focus state was not reported after deactivation")
+
+    focus_sink_click = _require_dict(
+        result.get("focusSinkClick"), "M4 focus sink click"
+    )
+    if focus_sink_click.get("trusted") is not True:
+        raise M0Error("M4 host focus sink click was not trusted")
+    if focus_sink_click.get("defaultPrevented") is not False:
+        raise M0Error("M4 host focus sink click default was prevented")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 focus shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 focus shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 focus shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 focus shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 focus logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 focus {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 focus logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    for marker in (
+        "m4:pointer:listeners-attached",
+        "m4:keyboard:listeners-attached",
+        "m4:focus:listeners-attached",
+        "m4:pointer:down:queued",
+        "m4:pointer:up:queued",
+        "m4:keyboard:pointer-activation",
+        "m4:focus:pointer-activation",
+        "m4:keyboard:down:queued",
+        "m4:keyboard:canvas-blur:release-queued",
+        "m4:focus:canvas-blur:deactivate-queued",
+        "ozone:focus:keyboard-target-absent:inactive",
+        "shutdown:complete",
+    ):
+        if not any(marker in line for line in host_logs):
+            raise M0Error(
+                "M4 focus logs are missing lifecycle marker " f"{marker!r}"
             )
 
 

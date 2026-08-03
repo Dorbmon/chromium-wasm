@@ -7,9 +7,11 @@ const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
+const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
+const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
@@ -65,6 +67,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportPageProbe(report) {
     deliverBridgeReport("_reportPageProbe", [report]);
+  },
+  reportOzoneFocusState(report) {
+    deliverBridgeReport("_reportOzoneFocusState", [report]);
   },
   reportFatal(message) {
     deliverBridgeReport("_reportFatal", [message]);
@@ -156,6 +161,8 @@ export class ChromiumWasmM3Host {
   #reportedReadiness = {};
   #navigation = {};
   #pageProbe = {};
+  #ozoneFocusState = null;
+  #ozoneFocusReportSequence = 0;
   #frame = null;
   #inputPostedAtFrameId = null;
   #interactionObservedAtFrameId = null;
@@ -203,6 +210,12 @@ export class ChromiumWasmM3Host {
   #lastQueuedKeyUp = null;
   #keyboardActivated = false;
   #keyboardCodesDown = new Set();
+  #focusInputEnabled = false;
+  #focusListeners = [];
+  #focusSequence = 0;
+  #focusRecords = [];
+  #lastQueuedFocusLoss = null;
+  #hostWindowActive = false;
 
   constructor(
     canvas,
@@ -276,8 +289,9 @@ export class ChromiumWasmM3Host {
 
   #releaseHost() {
     this.#stopHeartbeat();
-    this.#disableM4KeyboardInput();
     this.#disableM4PointerInput();
+    this.#disableM4KeyboardInput();
+    this.#disableM4FocusInput();
     this.#disableM4WheelInput();
     removeEventListener("error", this.#errorHandler);
     removeEventListener("unhandledrejection", this.#rejectionHandler);
@@ -364,6 +378,30 @@ export class ChromiumWasmM3Host {
         : null,
       lastQueuedUp: this.#lastQueuedKeyUp
         ? clone(this.#lastQueuedKeyUp)
+        : null,
+    };
+  }
+
+  #recordFocus(record) {
+    this.#focusRecords.push(record);
+    if (this.#focusRecords.length > 32) {
+      this.#focusRecords.shift();
+    }
+  }
+
+  #focusInputStatus() {
+    const queuedCount = this.#focusRecords.filter(
+      (record) => record.queued === true).length;
+    const trustedCount = this.#focusRecords.filter(
+      (record) => record.trusted === true).length;
+    return {
+      enabled: this.#focusInputEnabled,
+      hostWindowActive: this.#hostWindowActive,
+      receivedCount: this.#focusRecords.length,
+      trustedCount,
+      queuedCount,
+      lastQueuedFocusLoss: this.#lastQueuedFocusLoss
+        ? clone(this.#lastQueuedFocusLoss)
         : null,
     };
   }
@@ -537,6 +575,19 @@ export class ChromiumWasmM3Host {
         if (type === "down" && this.#keyboardInputEnabled) {
           this.#keyboardActivated = true;
           this.#recordHost("m4:keyboard:pointer-activation");
+        }
+        if (type === "down" && this.#focusInputEnabled) {
+          this.#hostWindowActive = true;
+          this.#recordFocus({
+            sequence: ++this.#focusSequence,
+            type: "pointer-activation",
+            trusted: record.trusted,
+            queued: true,
+            frameIdBefore: record.frameIdBefore,
+            canvasFocused: record.canvasFocused,
+            relatedTargetId: null,
+          });
+          this.#recordHost("m4:focus:pointer-activation");
         }
       }
     } catch (error) {
@@ -764,7 +815,7 @@ export class ChromiumWasmM3Host {
     return this.#wheelInputStatus();
   }
 
-  #releaseM4KeyboardKeys(reason) {
+  #releaseM4KeyboardKeys(reason, triggerEvent = null) {
     const codes = Array.from(this.#keyboardCodesDown);
     this.#keyboardCodesDown.clear();
     this.#keyboardActivated = false;
@@ -776,6 +827,35 @@ export class ChromiumWasmM3Host {
       return;
     }
     for (const code of codes) {
+      const relatedTarget = triggerEvent?.relatedTarget;
+      const relatedTargetId =
+        typeof Element !== "undefined" &&
+        relatedTarget instanceof Element && relatedTarget.id
+          ? relatedTarget.id
+          : null;
+      const record = {
+        sequence: ++this.#keyboardSequence,
+        type: "up",
+        code,
+        key: code === M4_KEYBOARD_DOM_CODE ? M4_KEYBOARD_DOM_CODE : "",
+        trusted: false,
+        queued: false,
+        generated: true,
+        trigger: reason,
+        triggerTrusted: triggerEvent?.isTrusted === true,
+        relatedTargetId,
+        repeat: false,
+        isComposing: false,
+        modifiers: {
+          alt: false,
+          control: false,
+          meta: false,
+          shift: false,
+        },
+        frameIdBefore: this.#frame?.id ?? 0,
+        canvasFocused: document.activeElement === this.#canvas,
+        pointerActivated: false,
+      };
       try {
         const result = this.#callExport(
           "chromium_wasm_host_key",
@@ -783,12 +863,20 @@ export class ChromiumWasmM3Host {
           ["string", "number"],
           [code, 0],
         );
+        record.queued = result === 1;
+        if (record.queued) {
+          this.#lastQueuedKeyUp = record;
+        } else {
+          record.reason = "QUEUE_REJECTED";
+        }
         this.#recordHost(
           "m4:keyboard:" + reason + ":" +
-          (result === 1 ? "release-queued" : "release-rejected"));
+          (record.queued ? "release-queued" : "release-rejected"));
       } catch (error) {
+        record.reason = "EXPORT_ERROR:" + String(error);
         this.#recordHost("m4:keyboard:" + reason + ":release-failed");
       }
+      this.#recordKeyboard(record);
     }
   }
 
@@ -939,38 +1027,114 @@ export class ChromiumWasmM3Host {
         listener,
       });
     }
-    const releaseOnCanvasBlur = () => {
-      this.#releaseM4KeyboardKeys("canvas-blur");
-    };
-    this.#canvas.addEventListener("blur", releaseOnCanvasBlur);
-    this.#keyboardListeners.push({
-      target: this.#canvas,
-      type: "blur",
-      listener: releaseOnCanvasBlur,
-    });
-    const releaseOnWindowBlur = () => {
-      this.#releaseM4KeyboardKeys("window-blur");
-    };
-    addEventListener("blur", releaseOnWindowBlur);
-    this.#keyboardListeners.push({
-      target: window,
-      type: "blur",
-      listener: releaseOnWindowBlur,
-    });
-    const releaseWhenHidden = () => {
-      if (document.visibilityState !== "visible") {
-        this.#releaseM4KeyboardKeys("visibility-loss");
-      }
-    };
-    document.addEventListener("visibilitychange", releaseWhenHidden);
-    this.#keyboardListeners.push({
-      target: document,
-      type: "visibilitychange",
-      listener: releaseWhenHidden,
-    });
     this.#keyboardInputEnabled = true;
     this.#recordHost("m4:keyboard:listeners-attached");
     return this.#keyboardInputStatus();
+  }
+
+  #deactivateM4HostWindow(reason, event = null) {
+    if (this.#lifecycle !== "running") {
+      return;
+    }
+    const relatedTarget = event?.relatedTarget;
+    const relatedTargetId =
+      typeof Element !== "undefined" &&
+      relatedTarget instanceof Element && relatedTarget.id
+        ? relatedTarget.id
+        : null;
+    const record = {
+      sequence: ++this.#focusSequence,
+      type: reason,
+      trusted: event?.isTrusted === true,
+      queued: false,
+      frameIdBefore: this.#frame?.id ?? 0,
+      canvasFocused: document.activeElement === this.#canvas,
+      relatedTargetId,
+    };
+
+    // Releases must run while ozone_wasm still has its keyboard target. The
+    // UI task queue preserves this ordering before the later deactivation.
+    this.#cancelActiveM4Pointer(reason);
+    this.#releaseM4KeyboardKeys(reason, event);
+    if (!this.#focusInputEnabled) {
+      record.reason = "FOCUS_INPUT_DISABLED";
+      this.#recordFocus(record);
+      return;
+    }
+    if (!this.#hostWindowActive) {
+      record.reason = "DUPLICATE_FOCUS_LOSS";
+      this.#recordFocus(record);
+      this.#recordHost("m4:focus:" + reason + ":duplicate");
+      return;
+    }
+    record.ozoneFocusReportSequenceBefore = this.#ozoneFocusReportSequence;
+    this.#ozoneFocusState = null;
+    try {
+      const result = this.#callExport(
+        "chromium_wasm_host_deactivate", "number", [], []);
+      record.queued = result === 1;
+      if (record.queued) {
+        this.#hostWindowActive = false;
+        this.#lastQueuedFocusLoss = record;
+      } else {
+        record.reason = "QUEUE_REJECTED";
+      }
+    } catch (error) {
+      record.reason = "EXPORT_ERROR:" + String(error);
+    }
+    this.#recordFocus(record);
+    this.#recordHost(
+      "m4:focus:" + reason + ":" +
+      (record.queued ? "deactivate-queued" : "deactivate-rejected"));
+  }
+
+  #disableM4FocusInput() {
+    for (const {target, type, listener} of this.#focusListeners) {
+      target.removeEventListener(type, listener);
+    }
+    this.#focusListeners = [];
+    this.#deactivateM4HostWindow("teardown");
+    this.#focusInputEnabled = false;
+  }
+
+  enableM4FocusInput() {
+    this.#requireRunning("enableM4FocusInput");
+    if (this.#focusInputEnabled) {
+      return this.#focusInputStatus();
+    }
+    this.#focusInputEnabled = true;
+    this.#hostWindowActive = document.activeElement === this.#canvas;
+    const canvasBlurListener = (event) => {
+      this.#deactivateM4HostWindow("canvas-blur", event);
+    };
+    this.#canvas.addEventListener("blur", canvasBlurListener);
+    this.#focusListeners.push({
+      target: this.#canvas,
+      type: "blur",
+      listener: canvasBlurListener,
+    });
+    const windowBlurListener = (event) => {
+      this.#deactivateM4HostWindow("window-blur", event);
+    };
+    addEventListener("blur", windowBlurListener);
+    this.#focusListeners.push({
+      target: window,
+      type: "blur",
+      listener: windowBlurListener,
+    });
+    const visibilityListener = (event) => {
+      if (document.visibilityState !== "visible") {
+        this.#deactivateM4HostWindow("visibility-loss", event);
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityListener);
+    this.#focusListeners.push({
+      target: document,
+      type: "visibilitychange",
+      listener: visibilityListener,
+    });
+    this.#recordHost("m4:focus:listeners-attached");
+    return this.#focusInputStatus();
   }
 
   #heartbeat() {
@@ -1352,6 +1516,9 @@ export class ChromiumWasmM3Host {
       pageReady: this.#pageProbe.ready === true,
       navigation: clone(this.#navigation),
       pageProbe: clone(this.#pageProbe),
+      ozoneFocusState: this.#ozoneFocusState
+        ? clone(this.#ozoneFocusState)
+        : null,
       frame: this.#frame ? clone(this.#frame) : null,
       inputPostedAtFrameId: this.#inputPostedAtFrameId,
       interactionObservedAtFrameId: this.#interactionObservedAtFrameId,
@@ -1360,6 +1527,7 @@ export class ChromiumWasmM3Host {
       pointerInput: this.#pointerInputStatus(),
       wheelInput: this.#wheelInputStatus(),
       keyboardInput: this.#keyboardInputStatus(),
+      focusInput: this.#focusInputStatus(),
     };
   }
 
@@ -1376,7 +1544,9 @@ export class ChromiumWasmM3Host {
     ) {
       throw new Error("shutdown timeoutMs is out of range");
     }
+    this.#cancelActiveM4Pointer("shutdown");
     this.#releaseM4KeyboardKeys("shutdown");
+    this.#deactivateM4HostWindow("shutdown");
     this.#lifecycle = "shutting-down";
     let result;
     try {
@@ -1546,6 +1716,32 @@ export class ChromiumWasmM3Host {
       }
     } catch (error) {
       this._reportFatal(`invalid page probe: ${String(error)}`);
+    }
+  }
+
+  _reportOzoneFocusState(value) {
+    try {
+      const report = asReport(value, "Ozone focus-state report");
+      if (
+        report.protocol !== HOST_PROTOCOL ||
+        typeof report.keyboardTargetPresent !== "boolean" ||
+        typeof report.active !== "boolean"
+      ) {
+        throw new Error("Ozone focus-state report is invalid");
+      }
+      this.#ozoneFocusState = {
+        sequence: ++this.#ozoneFocusReportSequence,
+        keyboardTargetPresent: report.keyboardTargetPresent,
+        active: report.active,
+      };
+      this.#recordHost(
+        "ozone:focus:" +
+        (report.keyboardTargetPresent ? "keyboard-target-present" :
+          "keyboard-target-absent") + ":" +
+        (report.active ? "active" : "inactive"));
+    } catch (error) {
+      this._reportFatal(
+        `invalid Ozone focus-state report: ${String(error)}`);
     }
   }
 
@@ -1937,11 +2133,13 @@ async function runM4OzonePointerSmokeFromQuery() {
     checkInteger(targetX, "M4 target x", 0, DEFAULT_WIDTH - 1);
     checkInteger(targetY, "M4 target y", 0, DEFAULT_HEIGHT - 1);
     const listeners = host.enableM4PointerInput();
+    const focusListeners = host.enableM4FocusInput();
     window.__chromiumWasmM4State = {
       state: "awaiting-dom-pointer",
       targetX,
       targetY,
       listeners,
+      focusListeners,
     };
     statusElement.textContent = "M4 ready for trusted canvas pointer input";
 
@@ -2113,11 +2311,13 @@ async function runM4OzoneWheelSmokeFromQuery() {
     checkInteger(targetX, "M4 wheel target x", 0, DEFAULT_WIDTH - 1);
     checkInteger(targetY, "M4 wheel target y", 0, DEFAULT_HEIGHT - 1);
     const listeners = host.enableM4WheelInput();
+    const focusListeners = host.enableM4FocusInput();
     window.__chromiumWasmM4WheelState = {
       state: "awaiting-dom-wheel",
       targetX,
       targetY,
       listeners,
+      focusListeners,
     };
     statusElement.textContent = "M4 ready for trusted canvas wheel input";
 
@@ -2307,12 +2507,14 @@ async function runM4OzoneKeyboardSmokeFromQuery() {
     checkInteger(targetY, "M4 keyboard target y", 0, DEFAULT_HEIGHT - 1);
     const pointerListeners = host.enableM4PointerInput();
     const keyboardListeners = host.enableM4KeyboardInput();
+    const focusListeners = host.enableM4FocusInput();
     window.__chromiumWasmM4KeyboardState = {
       state: "awaiting-dom-keyboard-activation",
       targetX,
       targetY,
       pointerListeners,
       keyboardListeners,
+      focusListeners,
     };
     statusElement.textContent =
       "M4 ready for trusted canvas click and raw ArrowDown input";
@@ -2576,6 +2778,414 @@ async function runM4OzoneKeyboardSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneFocusSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const focusSink = document.querySelector("#m4-focus-sink");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+  let focusSinkClick = null;
+  let focusSinkListener = null;
+
+  try {
+    if (parameters.get("case") !== M4_FOCUS_CASE) {
+      throw new Error("M4 focus case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 focus result token");
+    }
+    if (!(focusSink instanceof HTMLButtonElement)) {
+      throw new Error("M4 focus host sink is missing");
+    }
+    focusSink.hidden = false;
+    focusSinkListener = (event) => {
+      focusSinkClick = {
+        trusted: event.isTrusted === true,
+        defaultPrevented: event.defaultPrevented === true,
+      };
+    };
+    focusSink.addEventListener("click", focusSinkListener);
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_FOCUS_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 focus base readiness timeout: " + JSON.stringify(readiness));
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 focus target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 focus target y", 0, DEFAULT_HEIGHT - 1);
+    const pointerListeners = host.enableM4PointerInput();
+    const keyboardListeners = host.enableM4KeyboardInput();
+    const focusListeners = host.enableM4FocusInput();
+    window.__chromiumWasmM4FocusState = {
+      state: "awaiting-dom-focus-activation",
+      targetX,
+      targetY,
+      pointerListeners,
+      keyboardListeners,
+      focusListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas click before host focus loss";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer.lastQueued;
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer.queuedCount >= 2 &&
+        lastQueued?.type === "up" &&
+        pageProbe?.activationCount === 1 &&
+        pageProbe?.clickTrusted === true &&
+        pageProbe?.focusCount >= 1 &&
+        pageProbe?.focusTrusted === true &&
+        pageProbe?.activeElementId === "focus-target" &&
+        readiness.frame?.id > lastQueued.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const lastQueuedPointer = pointer?.lastQueued;
+    const pageAfterActivation = readiness?.pageProbe;
+    if (
+      !readiness ||
+      pointer?.queuedCount < 2 ||
+      lastQueuedPointer?.type !== "up" ||
+      pageAfterActivation?.activationCount !== 1 ||
+      pageAfterActivation?.clickTrusted !== true ||
+      pageAfterActivation?.focusCount < 1 ||
+      pageAfterActivation?.focusTrusted !== true ||
+      pageAfterActivation?.activeElementId !== "focus-target" ||
+      !(readiness.frame?.id > lastQueuedPointer.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone focus activation timeout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4FocusState = {
+      state: "awaiting-dom-focus-key-down",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(readiness.keyboardInput),
+      focus: clone(readiness.focusInput),
+    };
+    statusElement.textContent =
+      "M4 ready for a trusted raw ArrowDown keydown";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const keyDown = keyboard.lastQueuedDown;
+      const pageProbe = readiness.pageProbe;
+      const keyEvents = pageProbe?.keyEvents;
+      if (
+        keyboard.queuedCount >= 1 &&
+        keyboard.pressedCodes?.length === 1 &&
+        keyboard.pressedCodes[0] === M4_KEYBOARD_DOM_CODE &&
+        keyDown?.type === "down" &&
+        keyDown?.trusted === true &&
+        keyDown?.queued === true &&
+        keyDown?.defaultPrevented === true &&
+        keyEvents?.keydownCount === 1 &&
+        keyEvents?.keydownTrusted === true &&
+        keyEvents?.keydownCode === M4_KEYBOARD_DOM_CODE &&
+        keyEvents?.keydownKey === M4_KEYBOARD_DOM_CODE &&
+        keyEvents?.keydownTargetId === "focus-target"
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const keyboardBeforeFocusLoss = readiness?.keyboardInput;
+    const keyDown = keyboardBeforeFocusLoss?.lastQueuedDown;
+    const pageBeforeFocusLoss = readiness?.pageProbe;
+    const keyEventsBeforeFocusLoss = pageBeforeFocusLoss?.keyEvents;
+    if (
+      !readiness ||
+      keyboardBeforeFocusLoss?.queuedCount < 1 ||
+      keyboardBeforeFocusLoss?.pressedCodes?.length !== 1 ||
+      keyboardBeforeFocusLoss.pressedCodes[0] !== M4_KEYBOARD_DOM_CODE ||
+      keyDown?.type !== "down" ||
+      keyDown?.trusted !== true ||
+      keyDown?.queued !== true ||
+      keyDown?.defaultPrevented !== true ||
+      keyEventsBeforeFocusLoss?.keydownCount !== 1 ||
+      keyEventsBeforeFocusLoss?.keydownTrusted !== true ||
+      keyEventsBeforeFocusLoss?.keydownCode !== M4_KEYBOARD_DOM_CODE ||
+      keyEventsBeforeFocusLoss?.keydownKey !== M4_KEYBOARD_DOM_CODE ||
+      keyEventsBeforeFocusLoss?.keydownTargetId !== "focus-target"
+    ) {
+      throw new Error(
+        "M4 trusted Ozone focus keydown timeout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4FocusState = {
+      state: "awaiting-dom-focus-loss",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(keyboardBeforeFocusLoss),
+      focus: clone(readiness.focusInput),
+    };
+    statusElement.textContent =
+      "M4 ready for trusted host focus loss with a held ArrowDown key";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const focus = readiness.focusInput;
+      const focusLoss = focus.lastQueuedFocusLoss;
+      const ozoneFocusState = readiness.ozoneFocusState;
+      const keyUp = keyboard.lastQueuedUp;
+      const pageProbe = readiness.pageProbe;
+      const keyEvents = pageProbe?.keyEvents;
+      if (
+        focus.hostWindowActive === false &&
+        focusLoss?.type === "canvas-blur" &&
+        focusLoss?.trusted === true &&
+        focusLoss?.queued === true &&
+        focusLoss?.canvasFocused === false &&
+        focusLoss?.relatedTargetId === "m4-focus-sink" &&
+        ozoneFocusState?.sequence >
+          focusLoss?.ozoneFocusReportSequenceBefore &&
+        ozoneFocusState?.keyboardTargetPresent === false &&
+        ozoneFocusState?.active === false &&
+        focusSinkClick?.trusted === true &&
+        focusSinkClick?.defaultPrevented === false &&
+        document.activeElement === focusSink &&
+        keyboard.activated === false &&
+        keyboard.pressedCodes?.length === 0 &&
+        keyUp?.type === "up" &&
+        keyUp?.generated === true &&
+        keyUp?.trigger === "canvas-blur" &&
+        keyUp?.triggerTrusted === true &&
+        keyUp?.queued === true &&
+        keyUp?.code === M4_KEYBOARD_DOM_CODE &&
+        keyEvents?.keyupCount === 1 &&
+        keyEvents?.keyupTrusted === true &&
+        keyEvents?.keyupCode === M4_KEYBOARD_DOM_CODE &&
+        keyEvents?.keyupKey === M4_KEYBOARD_DOM_CODE &&
+        keyEvents?.keyupTargetId === "focus-target" &&
+        pageProbe?.windowBlurCount >= 1 &&
+        pageProbe?.windowBlurTrusted === true &&
+        pageProbe?.documentHasFocus === false &&
+        pageProbe?.activeElementId === "focus-target" &&
+        pageProbe?.resultText === "WINDOW BLURRED" &&
+        readiness.frame?.id > focusLoss.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const keyboard = readiness?.keyboardInput;
+    const focus = readiness?.focusInput;
+    const focusLoss = focus?.lastQueuedFocusLoss;
+    const ozoneFocusState = readiness?.ozoneFocusState;
+    const keyUp = keyboard?.lastQueuedUp;
+    const pageProbe = readiness?.pageProbe;
+    const keyEvents = pageProbe?.keyEvents;
+    if (
+      !readiness ||
+      focus?.hostWindowActive !== false ||
+      focusLoss?.type !== "canvas-blur" ||
+      focusLoss?.trusted !== true ||
+      focusLoss?.queued !== true ||
+      focusLoss?.canvasFocused !== false ||
+      focusLoss?.relatedTargetId !== "m4-focus-sink" ||
+      !(ozoneFocusState?.sequence >
+        focusLoss?.ozoneFocusReportSequenceBefore) ||
+      ozoneFocusState?.keyboardTargetPresent !== false ||
+      ozoneFocusState?.active !== false ||
+      focusSinkClick?.trusted !== true ||
+      focusSinkClick?.defaultPrevented !== false ||
+      document.activeElement !== focusSink ||
+      keyboard?.activated !== false ||
+      keyboard?.pressedCodes?.length !== 0 ||
+      keyUp?.type !== "up" ||
+      keyUp?.generated !== true ||
+      keyUp?.trigger !== "canvas-blur" ||
+      keyUp?.triggerTrusted !== true ||
+      keyUp?.queued !== true ||
+      keyUp?.code !== M4_KEYBOARD_DOM_CODE ||
+      keyEvents?.keyupCount !== 1 ||
+      keyEvents?.keyupTrusted !== true ||
+      keyEvents?.keyupCode !== M4_KEYBOARD_DOM_CODE ||
+      keyEvents?.keyupKey !== M4_KEYBOARD_DOM_CODE ||
+      keyEvents?.keyupTargetId !== "focus-target" ||
+      pageProbe?.windowBlurCount < 1 ||
+      pageProbe?.windowBlurTrusted !== true ||
+      pageProbe?.documentHasFocus !== false ||
+      pageProbe?.activeElementId !== "focus-target" ||
+      pageProbe?.resultText !== "WINDOW BLURRED" ||
+      !(readiness.frame?.id > focusLoss.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone focus loss timeout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4FocusState = {
+      state: "focus-loss-delivered",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(keyboard),
+      focus: clone(focus),
+      ozoneFocusState: clone(ozoneFocusState),
+      focusSinkClick: clone(focusSinkClick),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasUnfocused: document.activeElement === focusSink,
+      baseReady: readiness.baseReady === true,
+      pointerActivation:
+        pointer.trustedCount >= 2 &&
+        pointer.queuedCount >= 2 &&
+        lastQueuedPointer.trusted === true &&
+        lastQueuedPointer.queued === true,
+      heldKeyDelivered:
+        keyDown.trusted === true &&
+        keyDown.queued === true &&
+        keyEvents.keydownCount === 1 &&
+        keyEvents.keydownTrusted === true,
+      trustedHostFocusLoss:
+        focusLoss.trusted === true &&
+        focusLoss.queued === true &&
+        focusLoss.relatedTargetId === "m4-focus-sink" &&
+        focusSinkClick.trusted === true &&
+        focusSinkClick.defaultPrevented === false,
+      ozoneKeyboardTargetCleared:
+        ozoneFocusState.sequence > focusLoss.ozoneFocusReportSequenceBefore &&
+        ozoneFocusState.keyboardTargetPresent === false &&
+        ozoneFocusState.active === false,
+      auraAndBlinkDeactivated:
+        keyboard.activated === false &&
+        keyboard.pressedCodes.length === 0 &&
+        keyUp.generated === true &&
+        keyUp.queued === true &&
+        keyEvents.keyupCount === 1 &&
+        keyEvents.keyupTrusted === true &&
+        pageProbe.windowBlurCount >= 1 &&
+        pageProbe.windowBlurTrusted === true &&
+        pageProbe.documentHasFocus === false &&
+        pageProbe.activeElementId === "focus-target" &&
+        pageProbe.resultText === "WINDOW BLURRED" &&
+        readiness.frame.id > focusLoss.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_FOCUS_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      keyboardInput: keyboard,
+      focusInput: focus,
+      ozoneFocusState,
+      focusSinkClick,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_FOCUS_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      keyboardInput: null,
+      focusInput: null,
+      ozoneFocusState: null,
+      focusSinkClick,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.keyboardInput = result.readiness.keyboardInput;
+        result.focusInput = result.readiness.focusInput;
+        result.ozoneFocusState = result.readiness.ozoneFocusState;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  if (focusSink instanceof HTMLButtonElement && focusSinkListener) {
+    focusSink.removeEventListener("click", focusSinkListener);
+  }
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 export async function runContentShellSmokeFromQuery() {
   const selectedCase = new URLSearchParams(location.search).get("case");
   if (selectedCase === M3_CASE) {
@@ -2589,6 +3199,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_KEYBOARD_CASE) {
     return runM4OzoneKeyboardSmokeFromQuery();
+  }
+  if (selectedCase === M4_FOCUS_CASE) {
+    return runM4OzoneFocusSmokeFromQuery();
   }
   throw new Error("unknown Content Shell Wasm smoke case");
 }

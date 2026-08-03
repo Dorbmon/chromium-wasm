@@ -6,6 +6,7 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/notimplemented.h"
 #include "ui/base/cursor/platform_cursor.h"
 #include "ui/display/screen.h"
@@ -16,7 +17,24 @@
 #include "ui/ozone/platform/wasm/wasm_window_manager.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
+extern "C" int chromium_wasm_report_ozone_focus_state(
+    int keyboard_target_present,
+    int active);
+
 namespace ui {
+
+namespace {
+
+void ReportOzoneFocusState(WasmWindowManager* manager, bool active) {
+  CHECK(manager);
+  const int result = chromium_wasm_report_ozone_focus_state(
+      manager->GetKeyboardFocusedWindow() ? 1 : 0, active ? 1 : 0);
+  if (result != 1) {
+    LOG(ERROR) << "host rejected ozone_wasm focus-state report";
+  }
+}
+
+}  // namespace
 
 WasmWindow::WasmWindow(PlatformWindowDelegate* delegate,
                        WasmWindowManager* manager,
@@ -183,20 +201,28 @@ PlatformWindowState WasmWindow::GetPlatformWindowState() const {
 void WasmWindow::Activate() {
   manager_->SetKeyboardFocusedWindow(this);
   if (activation_state_ == ActivationState::kActive) {
+    ReportOzoneFocusState(manager_, /*active=*/true);
     return;
   }
   activation_state_ = ActivationState::kActive;
+  // Report manager-owned keyboard focus before delegate callbacks that can
+  // destroy this PlatformWindow.
+  ReportOzoneFocusState(manager_, /*active=*/true);
   delegate_->OnActivationChanged(true);
 }
 
 void WasmWindow::Deactivate() {
-  if (activation_state_ == ActivationState::kInactive) {
-    return;
-  }
   if (manager_->GetKeyboardFocusedWindow() == this) {
     manager_->SetKeyboardFocusedWindow(nullptr);
   }
+  if (activation_state_ == ActivationState::kInactive) {
+    ReportOzoneFocusState(manager_, /*active=*/false);
+    return;
+  }
   activation_state_ = ActivationState::kInactive;
+  // Report after clearing the authoritative keyboard target and before the
+  // delegate callback, which may destroy this PlatformWindow.
+  ReportOzoneFocusState(manager_, /*active=*/false);
   delegate_->OnActivationChanged(false);
 }
 

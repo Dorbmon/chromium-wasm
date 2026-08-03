@@ -150,6 +150,26 @@ mergeInto(LibraryManager.library, {
     return ChromiumWasmHostBridge.reportReadiness(update) ? 1 : 0;
   },
 
+  chromium_wasm_report_ozone_focus_state__deps: ['$ChromiumWasmHostBridge'],
+  chromium_wasm_report_ozone_focus_state__proxy: 'sync',
+  chromium_wasm_report_ozone_focus_state: (
+      keyboardTargetPresent, active) => {
+    if ((keyboardTargetPresent !== 0 && keyboardTargetPresent !== 1) ||
+        (active !== 0 && active !== 1)) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportOzoneFocusState !== 'function') {
+      return 0;
+    }
+    bridge.reportOzoneFocusState({
+      protocol: ChromiumWasmHostBridge.version,
+      keyboardTargetPresent: keyboardTargetPresent === 1,
+      active: active === 1,
+    });
+    return 1;
+  },
+
   chromium_wasm_report_navigation__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_navigation__proxy: 'sync',
   chromium_wasm_report_navigation: () => {
