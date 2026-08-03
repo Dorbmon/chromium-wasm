@@ -430,7 +430,8 @@ void ClickOnUiThread(const gfx::Point& location) {
 }
 
 void DispatchDomPointerOnUiThread(DomPointerEventType type,
-                                  const gfx::Point& location) {
+                                  const gfx::Point& location,
+                                  ui::EventFlags button) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
   if (!state.ContainsViewportPointOnUiThread(location)) {
@@ -460,12 +461,10 @@ void DispatchDomPointerOnUiThread(DomPointerEventType type,
     case DomPointerEventType::kMove:
       return;
     case DomPointerEventType::kDown:
-      input_injector->InjectMouseButton(ui::EF_LEFT_MOUSE_BUTTON,
-                                        /*down=*/true);
+      input_injector->InjectMouseButton(button, /*down=*/true);
       return;
     case DomPointerEventType::kUp:
-      input_injector->InjectMouseButton(ui::EF_LEFT_MOUSE_BUTTON,
-                                        /*down=*/false);
+      input_injector->InjectMouseButton(button, /*down=*/false);
       return;
   }
   NOTREACHED();
@@ -683,13 +682,15 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_pointer(int type,
                                                     int button) {
   if (type < static_cast<int>(content::DomPointerEventType::kMove) ||
       type > static_cast<int>(content::DomPointerEventType::kUp) ||
-      button != 0 || x < 0 || y < 0) {
+      (button != 0 && button != 1) || x < 0 || y < 0) {
     return 0;
   }
+  const ui::EventFlags mouse_button =
+      button == 0 ? ui::EF_LEFT_MOUSE_BUTTON : ui::EF_MIDDLE_MOUSE_BUTTON;
   const auto event_type = static_cast<content::DomPointerEventType>(type);
   return content::PostHostCommand(base::BindOnce(
              &content::DispatchDomPointerOnUiThread, event_type,
-             gfx::Point(x, y)))
+             gfx::Point(x, y), mouse_button))
              ? 1
              : 0;
 }

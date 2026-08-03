@@ -153,6 +153,11 @@ struct BLINK_COMMON_EXPORT WebPreferences {
       mojom::EditingBehavior::kEditingAndroidBehavior;
 #elif BUILDFLAG(IS_CHROMEOS)
       mojom::EditingBehavior::kEditingChromeOSBehavior;
+#elif BUILDFLAG(IS_WASM)
+      // Wasm Ozone has a process-local primary-selection clipboard. Use the
+      // Unix editing behavior so Blink keeps its normal primary-selection
+      // semantics without treating Wasm as a POSIX platform.
+      mojom::EditingBehavior::kEditingUnixBehavior;
 #elif BUILDFLAG(IS_POSIX)
       mojom::EditingBehavior::kEditingUnixBehavior;
 #else

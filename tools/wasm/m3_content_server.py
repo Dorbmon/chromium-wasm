@@ -27,6 +27,7 @@ from m0_common import M0Error, REPO_ROOT
 M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
 M4_SELECTION_CASE = "ozone_selection_m4"
+M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4"
 M4_WHEEL_CASE = "ozone_wheel_m4"
 M4_KEYBOARD_CASE = "ozone_keyboard_m4"
 M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4"
@@ -53,6 +54,9 @@ M3_SCREENSHOT_CONTRACT = (
 )
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
 M4_SELECTION_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_selection_page.html"
+M4_PRIMARY_PASTE_FIXTURE = (
+    M3_TESTDATA_DIR / "m4_ozone_primary_paste_page.html"
+)
 M4_WHEEL_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_wheel_page.html"
 M4_KEYBOARD_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_keyboard_page.html"
 M4_PRINTABLE_KEY_FIXTURE = (
@@ -194,6 +198,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             ),
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
             "/__m3__/m4-selection-fixture.html": M4_SELECTION_FIXTURE,
+            "/__m3__/m4-primary-paste-fixture.html": M4_PRIMARY_PASTE_FIXTURE,
             "/__m3__/m4-wheel-fixture.html": M4_WHEEL_FIXTURE,
             "/__m3__/m4-keyboard-fixture.html": M4_KEYBOARD_FIXTURE,
             "/__m3__/m4-printable-key-fixture.html": M4_PRINTABLE_KEY_FIXTURE,
@@ -251,6 +256,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M3_CASE,
                 M4_CASE,
                 M4_SELECTION_CASE,
+                M4_PRIMARY_PASTE_CASE,
                 M4_WHEEL_CASE,
                 M4_KEYBOARD_CASE,
                 M4_PRINTABLE_KEY_CASE,
@@ -378,6 +384,34 @@ def m4_selection_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-selection-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_primary_paste_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_PRIMARY_PASTE_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-primary-paste-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -1216,7 +1250,7 @@ def validate_m4_selection_result(
         "outerTraceExact",
         "activationEvidence",
         "selectionCollapsed",
-        "selectionDirectionNone",
+        "selectionDirectionNeutral",
         "selectedTextEmpty",
         "frameAfterActivation",
     ):
@@ -1240,9 +1274,12 @@ def validate_m4_selection_result(
         raise M0Error(
             "M4 selection activation proof selection is not collapsed"
         )
-    if activation_proof.get("selectionDirection") != "none":
+    if activation_proof.get("selectionDirection") not in (
+        "none",
+        "forward",
+    ):
         raise M0Error(
-            "M4 selection activation proof selection direction is not 'none'"
+            "M4 selection activation proof selection direction is invalid"
         )
     if activation_proof.get("selectedText") != "":
         raise M0Error(
@@ -1661,6 +1698,468 @@ def validate_m4_selection_result(
         for line in host_logs[shutdown_index + 1 :]
     ):
         raise M0Error("M4 selection pointer lifecycle continued after shutdown")
+
+
+def validate_m4_primary_paste_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate native primary-selection paste through Ozone, Aura, and Blink.
+
+    The source drag writes the Ozone-supported process-local primary-selection
+    buffer. A later trusted middle mouse release must make Blink execute its
+    normal PasteGlobalSelection command. No host Clipboard API or DOM editing
+    command is involved.
+    """
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_PRIMARY_PASTE_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 primary paste result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(
+        result.get("versions"), "M4 primary paste versions"
+    )
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 primary paste version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    for proof_name, required_fields in {
+        "activationProof": (
+            "outerTraceExact",
+            "sourceActivated",
+            "selectionCollapsed",
+            "frameAfterActivation",
+        ),
+        "selectionProof": (
+            "outerTraceExact",
+            "nativeSelection",
+            "innerSourceEvents",
+            "frameAfterDrag",
+        ),
+        "primaryPasteProof": (
+            "sourceSelection",
+            "outerTraceExact",
+            "nativePaste",
+            "frameAfterPaste",
+        ),
+    }.items():
+        proof = _require_dict(
+            result.get(proof_name), f"M4 primary paste {proof_name}"
+        )
+        for field in required_fields:
+            if proof.get(field) is not True:
+                raise M0Error(
+                    f"M4 primary paste {proof_name} {field} is not true"
+                )
+
+    readiness = _require_dict(
+        result.get("readiness"), "M4 primary paste readiness"
+    )
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(
+                f"M4 primary paste readiness field {field} is not true"
+            )
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 primary paste readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 primary paste heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M4 primary paste heartbeat was not anchored to data navigation"
+        )
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 primary paste heartbeat elapsed time",
+        minimum=0,
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 primary paste frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 primary paste frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"),
+        "M4 primary paste frame timestamp",
+        minimum=0,
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error(
+            "M4 primary paste frame dimensions do not match the canvas"
+        )
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 primary paste page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-primary-paste-v1",
+        "ready": True,
+        "activeElementId": "paste-target",
+        "sourceValue": "WASM",
+        "sourceSelectionStart": 0,
+        "sourceSelectionEnd": 4,
+        "sourceSelectedText": "WASM",
+        "sourceActivationCount": 2,
+        "sourceClickTrusted": True,
+        "sourceFocusTrusted": True,
+        "pasteActivationCount": 0,
+        "pasteClickTrusted": False,
+        "pasteAuxClickCount": 1,
+        "pasteAuxClickTrusted": True,
+        "pasteFocusTrusted": True,
+        "pasteValue": "WASM",
+        "pasteSelectionStart": 4,
+        "pasteSelectionEnd": 4,
+        "resultText": "PRIMARY SELECTION PASTED",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 primary paste page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    if page_probe.get("sourceSelectionDirection") not in (
+        "none",
+        "forward",
+    ):
+        raise M0Error(
+            "M4 primary paste source selection direction is invalid"
+        )
+    for field in ("sourceFocusCount", "pasteFocusCount"):
+        _require_safe_integer(
+            page_probe.get(field),
+            f"M4 primary paste {field}",
+            minimum=1,
+        )
+    _require_safe_integer(
+        page_probe.get("timerTicks"),
+        "M4 primary paste inner page timer ticks",
+        minimum=3,
+    )
+
+    coordinates: dict[str, int] = {}
+    for field in (
+        "sourceTargetX",
+        "sourceTargetY",
+        "dragStartX",
+        "dragStartY",
+        "dragMiddleX",
+        "dragMiddleY",
+        "dragEndX",
+        "dragEndY",
+        "pasteTargetX",
+        "pasteTargetY",
+    ):
+        maximum = M3_WIDTH - 1 if field.endswith("X") else M3_HEIGHT - 1
+        coordinates[field] = _require_safe_integer(
+            page_probe.get(field),
+            f"M4 primary paste {field}",
+            minimum=0,
+            maximum=maximum,
+        )
+    if not (
+        coordinates["dragStartX"]
+        < coordinates["dragMiddleX"]
+        < coordinates["dragEndX"]
+        and coordinates["dragStartY"]
+        == coordinates["dragMiddleY"]
+        == coordinates["dragEndY"]
+    ):
+        raise M0Error("M4 primary paste drag geometry is not strictly forward")
+
+    source_activity = _require_dict(
+        page_probe.get("sourceSelectionActivity"),
+        "M4 primary paste source selection activity",
+    )
+    for field in (
+        "trusted",
+        "nonCollapsed",
+        "trustedNonCollapsed",
+        "selectTrusted",
+        "selectionChangeTrusted",
+    ):
+        if source_activity.get(field) is not True:
+            raise M0Error(
+                f"M4 primary paste source selection {field} is not true"
+            )
+    for field in ("count", "selectCount", "selectionChangeCount"):
+        _require_safe_integer(
+            source_activity.get(field),
+            f"M4 primary paste source selection {field}",
+            minimum=1,
+        )
+
+    source_text = _require_dict(
+        page_probe.get("sourceTextInputEvents"),
+        "M4 primary paste source text input events",
+    )
+    for field in (
+        "beforeinputCount",
+        "inputCount",
+        "compositionstartCount",
+        "compositionupdateCount",
+        "compositionendCount",
+    ):
+        if _require_safe_integer(
+            source_text.get(field),
+            f"M4 primary paste source {field}",
+            minimum=0,
+        ) != 0:
+            raise M0Error(
+                "M4 primary paste source unexpectedly received text or "
+                f"composition input: {field}"
+            )
+
+    paste_events = page_probe.get("pasteEventTrace")
+    if not isinstance(paste_events, list) or len(paste_events) != 1:
+        raise M0Error("M4 primary paste event trace is not exactly one event")
+    paste_event = _require_dict(paste_events[0], "M4 primary paste event")
+    for field, expected_value in {
+        "type": "paste",
+        "trusted": True,
+        "targetId": "paste-target",
+        "defaultPrevented": False,
+    }.items():
+        if paste_event.get(field) != expected_value:
+            raise M0Error(
+                f"M4 primary paste event {field} mismatch: expected "
+                f"{expected_value!r}, got {paste_event.get(field)!r}"
+            )
+
+    paste_text = page_probe.get("pasteTextInputTrace")
+    if not isinstance(paste_text, list) or len(paste_text) != 2:
+        raise M0Error(
+            "M4 primary paste text trace is not exactly two events"
+        )
+    for index, event_type in enumerate(("beforeinput", "input")):
+        text_event = _require_dict(
+            paste_text[index], f"M4 primary paste text trace {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "trusted": True,
+            "inputType": "insertFromPaste",
+            "data": "WASM",
+            "isComposing": False,
+            "targetId": "paste-target",
+        }.items():
+            if text_event.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 primary paste text trace {index} {field} mismatch: "
+                    f"expected {expected_value!r}, got "
+                    f"{text_event.get(field)!r}"
+                )
+
+    expected_outer_trace = (
+        ("move", coordinates["sourceTargetX"], coordinates["sourceTargetY"], -1, 0),
+        ("down", coordinates["sourceTargetX"], coordinates["sourceTargetY"], 0, 1),
+        ("up", coordinates["sourceTargetX"], coordinates["sourceTargetY"], 0, 0),
+        ("move", coordinates["dragStartX"], coordinates["dragStartY"], -1, 0),
+        ("down", coordinates["dragStartX"], coordinates["dragStartY"], 0, 1),
+        ("move", coordinates["dragMiddleX"], coordinates["dragMiddleY"], -1, 1),
+        ("move", coordinates["dragEndX"], coordinates["dragEndY"], -1, 1),
+        ("up", coordinates["dragEndX"], coordinates["dragEndY"], 0, 0),
+        ("move", coordinates["pasteTargetX"], coordinates["pasteTargetY"], -1, 0),
+        ("down", coordinates["pasteTargetX"], coordinates["pasteTargetY"], 1, 4),
+        ("up", coordinates["pasteTargetX"], coordinates["pasteTargetY"], 1, 0),
+    )
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 primary paste pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 primary paste readiness pointer"
+    )
+    if not _exact_json_value_equal(pointer_input, readiness_pointer):
+        raise M0Error(
+            "M4 primary paste pointer evidence differs from readiness evidence"
+        )
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 primary paste pointer listeners were not enabled")
+    for field in ("receivedCount", "trustedCount", "queuedCount"):
+        if _require_safe_integer(
+            pointer_input.get(field),
+            f"M4 primary paste pointer {field}",
+            minimum=0,
+        ) != len(expected_outer_trace):
+            raise M0Error(
+                f"M4 primary paste pointer {field} is not exactly "
+                f"{len(expected_outer_trace)}"
+            )
+    queued_records = pointer_input.get("queuedRecords")
+    if not isinstance(queued_records, list) or len(queued_records) != len(
+        expected_outer_trace
+    ):
+        raise M0Error(
+            "M4 primary paste queued pointer trace is not exactly eleven "
+            "records"
+        )
+    paste_up_frame_id = 0
+    for index, (event_type, x, y, button, buttons) in enumerate(
+        expected_outer_trace
+    ):
+        record = _require_dict(
+            queued_records[index],
+            f"M4 primary paste queued pointer trace {index}",
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "trusted": True,
+            "queued": True,
+            "button": button,
+            "buttons": buttons,
+            "sequence": index + 1,
+            "x": x,
+            "y": y,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 primary paste queued pointer trace {index} {field} "
+                    f"mismatch: expected {expected_value!r}, got "
+                    f"{record.get(field)!r}"
+                )
+        if record.get("canvasFocused") is not True:
+            raise M0Error(
+                f"M4 primary paste queued pointer trace {index} canvas focus "
+                "mismatch"
+            )
+        if index >= len(expected_outer_trace) - 2:
+            if record.get("defaultPrevented") is not True:
+                raise M0Error(
+                    "M4 primary paste middle-button pointer trace did not "
+                    "prevent the outer page default"
+                )
+        record_frame_id = _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 primary paste queued pointer trace {index} frame ID",
+            minimum=1,
+        )
+        if index == len(expected_outer_trace) - 1:
+            paste_up_frame_id = record_frame_id
+    last_queued = _require_dict(
+        pointer_input.get("lastQueued"), "M4 primary paste last queued pointer"
+    )
+    if not _exact_json_value_equal(last_queued, queued_records[-1]):
+        raise M0Error(
+            "M4 primary paste last queued pointer does not match middle release"
+        )
+    if frame_id <= paste_up_frame_id:
+        raise M0Error(
+            "M4 primary paste result has no compositor frame after paste"
+        )
+
+    def require_inner_button(
+        field: str,
+        prefix: str,
+        target_id: str,
+        button: int,
+        buttons: int,
+    ) -> None:
+        trace = page_probe.get(field)
+        if not isinstance(trace, list):
+            raise M0Error(f"M4 primary paste {field} is not an array")
+        for event_type in ("down", "up"):
+            expected_buttons = buttons if event_type == "down" else 0
+            if not any(
+                isinstance(record, dict)
+                and record.get("type") == prefix + event_type
+                and record.get("trusted") is True
+                and record.get("button") == button
+                and record.get("buttons") == expected_buttons
+                and record.get("targetId") == target_id
+                and record.get("defaultPrevented") is False
+                for record in trace
+            ):
+                raise M0Error(
+                    f"M4 primary paste {field} has no trusted {event_type} "
+                    f"for {target_id} button {button}"
+                )
+
+    require_inner_button(
+        "sourceMouseEventTrace", "mouse", "source-target", 0, 1
+    )
+    require_inner_button(
+        "sourcePointerEventTrace", "pointer", "source-target", 0, 1
+    )
+    require_inner_button(
+        "pasteMouseEventTrace", "mouse", "paste-target", 1, 4
+    )
+    require_inner_button(
+        "pastePointerEventTrace", "pointer", "paste-target", 1, 4
+    )
+
+    shutdown = _require_dict(
+        result.get("shutdown"), "M4 primary paste shutdown"
+    )
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 primary paste shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 primary paste shutdown {field}"
+        ) != 0:
+            raise M0Error(
+                f"M4 primary paste shutdown {field} is not zero"
+            )
+
+    logs = _require_dict(result.get("logs"), "M4 primary paste logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(
+                f"M4 primary paste {stream} log must be an array"
+            )
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 primary paste logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    for marker in (
+        "m4:pointer:listeners-attached",
+        "m4:pointer:down:queued",
+        "m4:pointer:up:queued",
+        "shutdown:complete",
+    ):
+        if not any(marker in line for line in host_logs):
+            raise M0Error(
+                f"M4 primary paste logs are missing lifecycle marker {marker!r}"
+            )
 
 
 def validate_m4_wheel_result(

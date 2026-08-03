@@ -148,7 +148,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         "selectionCollapsed": True,
         "selectionStart": 2,
         "selectionEnd": 2,
-        "selectionDirectionNone": True,
+        "selectionDirectionNeutral": True,
         "selectionDirection": "none",
         "selectedTextEmpty": True,
         "selectedText": "",
@@ -332,12 +332,16 @@ class M4SelectionResultValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "selection is not collapsed"):
             self.assert_valid(result, versions)
 
-    def test_activation_proof_requires_none_direction_and_empty_text(self) -> None:
+    def test_activation_proof_requires_valid_direction_and_empty_text(self) -> None:
         result, versions = passing_result()
         proof = self.activation_proof(result)
         proof["selectionDirection"] = "forward"
+        self.assert_valid(result, versions)
 
-        with self.assertRaisesRegex(M0Error, "direction is not 'none'"):
+        result, versions = passing_result()
+        proof = self.activation_proof(result)
+        proof["selectionDirection"] = "backward"
+        with self.assertRaisesRegex(M0Error, "selection direction is invalid"):
             self.assert_valid(result, versions)
 
         result, versions = passing_result()
@@ -501,7 +505,7 @@ class M4SelectionActivationStageTest(unittest.TestCase):
                 "selectionCollapsed": True,
                 "selectionStart": 2,
                 "selectionEnd": 2,
-                "selectionDirectionNone": True,
+                "selectionDirectionNeutral": True,
                 "selectionDirection": "none",
                 "selectedTextEmpty": True,
                 "selectedText": "",
@@ -525,7 +529,7 @@ class M4SelectionActivationStageTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "selectionCollapsed"):
             run_m4_ozone_smoke.validate_selection_activation_stage(state)
 
-    def test_drag_requires_empty_none_collapsed_native_selection(self) -> None:
+    def test_drag_requires_empty_valid_collapsed_native_selection(self) -> None:
         state = self.passing_state()
         proof = state["activationProof"]
         assert isinstance(proof, dict)
@@ -537,7 +541,13 @@ class M4SelectionActivationStageTest(unittest.TestCase):
         proof = state["activationProof"]
         assert isinstance(proof, dict)
         proof["selectionDirection"] = "forward"
-        with self.assertRaisesRegex(M0Error, "direction is not 'none'"):
+        run_m4_ozone_smoke.validate_selection_activation_stage(state)
+
+        state = self.passing_state()
+        proof = state["activationProof"]
+        assert isinstance(proof, dict)
+        proof["selectionDirection"] = "backward"
+        with self.assertRaisesRegex(M0Error, "selection direction is invalid"):
             run_m4_ozone_smoke.validate_selection_activation_stage(state)
 
         state = self.passing_state()
@@ -615,7 +625,6 @@ class M4SelectionDevToolsClientTest(unittest.TestCase):
                         "type": "mouseMoved",
                         "x": 10.5,
                         "y": 20.5,
-                        "button": "left",
                         "pointerType": "mouse",
                     },
                 ),

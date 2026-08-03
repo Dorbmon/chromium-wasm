@@ -1,0 +1,379 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 Ozone primary-selection paste fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  body {
+    min-height: 900px;
+    margin: 0;
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    width: 520px;
+    margin: 72px 0 0 96px;
+    padding: 28px;
+    border: 4px solid #163a63;
+    background: #ffffff;
+  }
+
+  label {
+    display: block;
+    margin-top: 22px;
+  }
+
+  input {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 18px;
+    border: 3px solid #0f5b94;
+    background: #d8f0ff;
+    color: #062b4d;
+    font: 20px/20px Ahem, sans-serif;
+    letter-spacing: 0;
+    outline: none;
+  }
+
+  input:focus {
+    border-color: #ff8a00;
+    box-shadow: 0 0 0 4px #ffcf75;
+  }
+
+  #result[data-primary-selection-pasted="true"] {
+    color: #08763b;
+  }
+</style>
+<main>
+  <p id="title">M4 OZONE PRIMARY-SELECTION PASTE</p>
+  <label for="source-target">DRAG LEFT TO RIGHT TO SELECT TEXT</label>
+  <input id="source-target" type="text" value="WASM" autocomplete="off" spellcheck="false">
+  <label for="paste-target">MIDDLE-CLICK TO PASTE THE PRIMARY SELECTION</label>
+  <input id="paste-target" type="text" autocomplete="off" spellcheck="false">
+  <p id="result" data-primary-selection-pasted="false">WAITING FOR PRIMARY-SELECTION PASTE</p>
+</main>
+<script>
+  (() => {
+    const SOURCE_VALUE = "WASM";
+    const VIEWPORT_WIDTH = 800;
+    const VIEWPORT_HEIGHT = 600;
+    const sourceTarget = document.querySelector("#source-target");
+    const pasteTarget = document.querySelector("#paste-target");
+    const result = document.querySelector("#result");
+    const sourceMouseEventTrace = [];
+    const sourcePointerEventTrace = [];
+    const pasteMouseEventTrace = [];
+    const pastePointerEventTrace = [];
+    const pasteEventTrace = [];
+    const pasteTextInputTrace = [];
+    const sourceTextInputEvents = {
+      beforeinputCount: 0,
+      inputCount: 0,
+      compositionstartCount: 0,
+      compositionupdateCount: 0,
+      compositionendCount: 0,
+    };
+    const sourceSelectionActivity = {
+      count: 0,
+      trusted: false,
+      nonCollapsed: false,
+      trustedNonCollapsed: false,
+      selectCount: 0,
+      selectTrusted: false,
+      selectionChangeCount: 0,
+      selectionChangeTrusted: false,
+    };
+    let sourceActivationCount = 0;
+    let sourceClickTrusted = false;
+    let sourceFocusCount = 0;
+    let sourceFocusTrusted = false;
+    let pasteActivationCount = 0;
+    let pasteClickTrusted = false;
+    let pasteAuxClickCount = 0;
+    let pasteAuxClickTrusted = false;
+    let pasteFocusCount = 0;
+    let pasteFocusTrusted = false;
+    let fontReady = !document.fonts;
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    let timerTicks = 0;
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    function tracePointerEvent(event) {
+      return {
+        type: event.type,
+        trusted: event.isTrusted === true,
+        button: event.button,
+        buttons: event.buttons,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+      };
+    }
+
+    for (const eventType of ["mousedown", "mousemove", "mouseup"]) {
+      sourceTarget.addEventListener(eventType, (event) => {
+        sourceMouseEventTrace.push(tracePointerEvent(event));
+      });
+      pasteTarget.addEventListener(eventType, (event) => {
+        pasteMouseEventTrace.push(tracePointerEvent(event));
+      });
+    }
+    for (const eventType of ["pointerdown", "pointermove", "pointerup"]) {
+      sourceTarget.addEventListener(eventType, (event) => {
+        sourcePointerEventTrace.push(tracePointerEvent(event));
+      });
+      pasteTarget.addEventListener(eventType, (event) => {
+        pastePointerEventTrace.push(tracePointerEvent(event));
+      });
+    }
+    for (const eventType of [
+      "beforeinput", "input", "compositionstart", "compositionupdate",
+      "compositionend",
+    ]) {
+      sourceTarget.addEventListener(eventType, () => {
+        sourceTextInputEvents[eventType + "Count"] += 1;
+      });
+    }
+
+    sourceTarget.addEventListener("click", (event) => {
+      sourceActivationCount += 1;
+      sourceClickTrusted = sourceClickTrusted || event.isTrusted === true;
+    });
+    sourceTarget.addEventListener("focus", (event) => {
+      sourceFocusCount += 1;
+      sourceFocusTrusted = sourceFocusTrusted || event.isTrusted === true;
+    });
+    pasteTarget.addEventListener("click", (event) => {
+      pasteActivationCount += 1;
+      pasteClickTrusted = pasteClickTrusted || event.isTrusted === true;
+    });
+    pasteTarget.addEventListener("auxclick", (event) => {
+      pasteAuxClickCount += 1;
+      pasteAuxClickTrusted = pasteAuxClickTrusted || event.isTrusted === true;
+    });
+    pasteTarget.addEventListener("focus", (event) => {
+      pasteFocusCount += 1;
+      pasteFocusTrusted = pasteFocusTrusted || event.isTrusted === true;
+    });
+    pasteTarget.addEventListener("paste", (event) => {
+      pasteEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+      });
+    });
+    for (const eventType of ["beforeinput", "input"]) {
+      pasteTarget.addEventListener(eventType, (event) => {
+        pasteTextInputTrace.push({
+          type: event.type,
+          trusted: event.isTrusted === true,
+          inputType: event.inputType,
+          data: typeof event.data === "string" ? event.data : null,
+          isComposing: event.isComposing === true,
+          targetId: event.target?.id || null,
+        });
+        if (
+          event.type === "input" &&
+          pasteTarget.value === SOURCE_VALUE &&
+          pasteTarget.selectionStart === SOURCE_VALUE.length &&
+          pasteTarget.selectionEnd === SOURCE_VALUE.length
+        ) {
+          result.dataset.primarySelectionPasted = "true";
+          result.textContent = event.isTrusted
+            ? "PRIMARY SELECTION PASTED"
+            : "UNTRUSTED PRIMARY-SELECTION PASTE";
+        }
+      });
+    }
+
+    function sourceSelectedText() {
+      const selectionStart = sourceTarget.selectionStart;
+      const selectionEnd = sourceTarget.selectionEnd;
+      if (
+        !Number.isSafeInteger(selectionStart) ||
+        !Number.isSafeInteger(selectionEnd) ||
+        selectionStart < 0 || selectionEnd < selectionStart
+      ) {
+        return null;
+      }
+      return sourceTarget.value.slice(selectionStart, selectionEnd);
+    }
+
+    function recordSourceSelectionActivity(event, kind) {
+      const nonCollapsed =
+        Number.isSafeInteger(sourceTarget.selectionStart) &&
+        Number.isSafeInteger(sourceTarget.selectionEnd) &&
+        sourceTarget.selectionStart < sourceTarget.selectionEnd;
+      const trusted = event.isTrusted === true;
+      sourceSelectionActivity.count += 1;
+      sourceSelectionActivity.trusted = sourceSelectionActivity.trusted || trusted;
+      sourceSelectionActivity.nonCollapsed =
+        sourceSelectionActivity.nonCollapsed || nonCollapsed;
+      sourceSelectionActivity.trustedNonCollapsed =
+        sourceSelectionActivity.trustedNonCollapsed || trusted && nonCollapsed;
+      if (kind === "select") {
+        sourceSelectionActivity.selectCount += 1;
+        sourceSelectionActivity.selectTrusted =
+          sourceSelectionActivity.selectTrusted || trusted;
+      } else {
+        sourceSelectionActivity.selectionChangeCount += 1;
+        sourceSelectionActivity.selectionChangeTrusted =
+          sourceSelectionActivity.selectionChangeTrusted || trusted;
+      }
+    }
+
+    sourceTarget.addEventListener("select", (event) => {
+      recordSourceSelectionActivity(event, "select");
+    });
+    document.addEventListener("selectionchange", (event) => {
+      recordSourceSelectionActivity(event, "selectionchange");
+    });
+
+    function viewportCoordinate(value, maximum) {
+      const coordinate = Math.floor(value);
+      return Number.isSafeInteger(coordinate) && coordinate >= 0 &&
+          coordinate <= maximum ? coordinate : null;
+    }
+
+    function captureGeometry() {
+      const sourceRect = sourceTarget.getBoundingClientRect();
+      const pasteRect = pasteTarget.getBoundingClientRect();
+      const style = getComputedStyle(sourceTarget);
+      const borderLeft = Number.parseFloat(style.borderLeftWidth);
+      const borderRight = Number.parseFloat(style.borderRightWidth);
+      const paddingLeft = Number.parseFloat(style.paddingLeft);
+      const paddingRight = Number.parseFloat(style.paddingRight);
+      if (
+        !Number.isFinite(sourceRect.left) || !Number.isFinite(sourceRect.right) ||
+        !Number.isFinite(sourceRect.top) || !Number.isFinite(sourceRect.width) ||
+        !Number.isFinite(sourceRect.height) || !Number.isFinite(pasteRect.left) ||
+        !Number.isFinite(pasteRect.top) || !Number.isFinite(pasteRect.width) ||
+        !Number.isFinite(pasteRect.height) || !Number.isFinite(borderLeft) ||
+        !Number.isFinite(borderRight) || !Number.isFinite(paddingLeft) ||
+        !Number.isFinite(paddingRight) || sourceRect.width <= 0 ||
+        sourceRect.height <= 0 || pasteRect.width <= 0 || pasteRect.height <= 0
+      ) {
+        return {
+          sourceTargetX: null,
+          sourceTargetY: null,
+          dragStartX: null,
+          dragStartY: null,
+          dragMiddleX: null,
+          dragMiddleY: null,
+          dragEndX: null,
+          dragEndY: null,
+          pasteTargetX: null,
+          pasteTargetY: null,
+          ready: false,
+        };
+      }
+      const textLeft = sourceRect.left + borderLeft + paddingLeft;
+      const textRight = sourceRect.right - borderRight - paddingRight;
+      const sourceY = sourceRect.top + sourceRect.height / 2;
+      const sourceTargetX = viewportCoordinate(
+          sourceRect.left + sourceRect.width / 2, VIEWPORT_WIDTH - 1);
+      const sourceTargetY = viewportCoordinate(
+          sourceY, VIEWPORT_HEIGHT - 1);
+      const dragStartX = viewportCoordinate(
+          textLeft + 1, VIEWPORT_WIDTH - 1);
+      const dragStartY = viewportCoordinate(sourceY, VIEWPORT_HEIGHT - 1);
+      const dragMiddleX = viewportCoordinate(
+          textLeft + (textRight - textLeft) / 2, VIEWPORT_WIDTH - 1);
+      const dragMiddleY = viewportCoordinate(sourceY, VIEWPORT_HEIGHT - 1);
+      const dragEndX = viewportCoordinate(textRight - 1, VIEWPORT_WIDTH - 1);
+      const dragEndY = viewportCoordinate(sourceY, VIEWPORT_HEIGHT - 1);
+      const pasteTargetX = viewportCoordinate(
+          pasteRect.left + pasteRect.width / 2, VIEWPORT_WIDTH - 1);
+      const pasteTargetY = viewportCoordinate(
+          pasteRect.top + pasteRect.height / 2, VIEWPORT_HEIGHT - 1);
+      const coordinates = [
+        sourceTargetX,
+        sourceTargetY,
+        dragStartX,
+        dragStartY,
+        dragMiddleX,
+        dragMiddleY,
+        dragEndX,
+        dragEndY,
+        pasteTargetX,
+        pasteTargetY,
+      ];
+      return {
+        sourceTargetX,
+        sourceTargetY,
+        dragStartX,
+        dragStartY,
+        dragMiddleX,
+        dragMiddleY,
+        dragEndX,
+        dragEndY,
+        pasteTargetX,
+        pasteTargetY,
+        ready: coordinates.every(Number.isSafeInteger) &&
+          textRight > textLeft && dragStartX < dragMiddleX &&
+          dragMiddleX < dragEndX && dragStartY === dragMiddleY &&
+          dragMiddleY === dragEndY,
+      };
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      const geometry = captureGeometry();
+      return JSON.stringify({
+        protocol: 1,
+        timerTicks,
+        fixture: "chromium-wasm-m4-ozone-primary-paste-v1",
+        fontReady,
+        sourceMouseEventTrace,
+        sourcePointerEventTrace,
+        pasteMouseEventTrace,
+        pastePointerEventTrace,
+        pasteEventTrace,
+        pasteTextInputTrace,
+        sourceTextInputEvents,
+        sourceSelectionActivity,
+        ready: document.readyState === "complete" && fontReady && geometry.ready,
+        sourceTargetX: geometry.sourceTargetX,
+        sourceTargetY: geometry.sourceTargetY,
+        dragStartX: geometry.dragStartX,
+        dragStartY: geometry.dragStartY,
+        dragMiddleX: geometry.dragMiddleX,
+        dragMiddleY: geometry.dragMiddleY,
+        dragEndX: geometry.dragEndX,
+        dragEndY: geometry.dragEndY,
+        pasteTargetX: geometry.pasteTargetX,
+        pasteTargetY: geometry.pasteTargetY,
+        activeElementId: document.activeElement?.id || null,
+        sourceActivationCount,
+        sourceClickTrusted,
+        sourceFocusCount,
+        sourceFocusTrusted,
+        sourceValue: sourceTarget.value,
+        sourceSelectionStart: sourceTarget.selectionStart,
+        sourceSelectionEnd: sourceTarget.selectionEnd,
+        sourceSelectionDirection: sourceTarget.selectionDirection,
+        sourceSelectedText: sourceSelectedText(),
+        pasteActivationCount,
+        pasteClickTrusted,
+        pasteAuxClickCount,
+        pasteAuxClickTrusted,
+        pasteFocusCount,
+        pasteFocusTrusted,
+        pasteValue: pasteTarget.value,
+        pasteSelectionStart: pasteTarget.selectionStart,
+        pasteSelectionEnd: pasteTarget.selectionEnd,
+        resultText: result.textContent,
+      });
+    };
+  })();
+</script>

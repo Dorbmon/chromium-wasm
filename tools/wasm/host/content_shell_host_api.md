@@ -48,9 +48,10 @@ browser UI. Primary mouse pointer input, pixel wheel input, the bounded raw-key
 paths, host focus loss, and the limited composition route cross normal Ozone
 boundaries. A primary-mouse drag can use the same pointer path to make a native
 Blink selection; it is not a host selection command. Generic text entry,
-programmatic or arbitrary selection/replacement, deletion, paste, modifiers,
-repeat, touch, pen, non-primary buttons, cursor control, focus regain without
-a pointer press, and richer multi-window behavior remain outside this first M4
+programmatic or arbitrary selection/replacement, deletion, generic paste,
+modifiers, repeat, touch, pen, non-primary buttons other than the bounded
+middle-click primary-paste route, cursor control, focus regain without a
+pointer press, and richer multi-window behavior remain outside this first M4
 input slice. Returning success while dropping an event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
@@ -103,11 +104,21 @@ exit statuses must be zero and equal.
 
 ### M4 pointer, wheel, raw-key, focus-loss, and IME ABI
 
-`chromium_wasm_host_pointer` accepts only primary mouse input: `type` is `0`
-for move, `1` for down, or `2` for up, and `button` must be `0`. The host
-accepts only trusted primary mouse `PointerEvent`s. It focuses and captures the
-canvas for a press, and releases or cancels that capture on pointer up, pointer
-cancel, blur, visibility loss, or teardown.
+`chromium_wasm_host_pointer` accepts the bounded mouse buttons `0` (primary)
+and `1` (middle): `type` is `0` for move, `1` for down, or `2` for up. The
+host accepts only trusted mouse `PointerEvent`s for those two buttons. It
+focuses and captures the canvas for a press, and releases or cancels that
+capture with the same button on pointer up, pointer cancel, blur, visibility
+loss, or teardown. Other mouse buttons, touch, and pen remain explicitly
+unsupported. Middle input is presently limited to the native
+primary-selection-paste proof below; it is not generic auxiliary-button input.
+One unmodified pointer ID/button stream may be active at a time; additional
+button chords, mismatched releases, and held moves with the wrong button mask
+are rejected before reaching Ozone. A matching active-button release remains a
+cleanup path once its own button bit has cleared, even if an unsupported button
+is still held, so the native input state cannot stick. Once a middle-button
+record is queued, the host prevents the outer page default so the embedding page
+cannot start its own middle-click behavior such as autoscroll.
 
 The `x` and `y` arguments of both M4 exports are physical canvas backing
 pixels, never outer-page CSS pixels. The host subtracts the canvas border and
@@ -208,6 +219,19 @@ or text-input events and a compositor frame newer than the drag release. It
 also requires the initial activation click to leave Blink's native selection
 collapsed. It does not expose a script-driven selection API or general
 selection semantics.
+
+The separate M4 primary-selection paste smoke starts with the same native
+source selection and then sends a trusted middle-button click to a second,
+initially empty Blink text input. Wasm selects Unix editing behavior explicitly
+without declaring itself POSIX, because Blink's Mac fallback disables global
+selection. The middle-button release therefore takes Blink's ordinary
+`PasteGlobalSelection` command, which reads the process-local
+`ClipboardBuffer::kSelection` data written by Aura after the source drag. The
+test requires native trusted `paste`, `beforeinput`, and `input` events with
+`insertFromPaste`, an unchanged source value, a target value of `"WASM"`, and
+a post-paste compositor frame. It does not call `navigator.clipboard`, use a
+host text command, or claim system-clipboard integration. Ctrl+C/Ctrl+V and
+the asynchronous, permission-gated host clipboard bridge remain later work.
 
 #### Bounded IME composition route
 

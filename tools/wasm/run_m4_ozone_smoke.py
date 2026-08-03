@@ -32,6 +32,7 @@ from m0_common import (
 from m3_content_server import (
     M4_CASE,
     M4_SELECTION_CASE,
+    M4_PRIMARY_PASTE_CASE,
     M4_FOCUS_CASE,
     M4_WHEEL_CASE,
     M4_KEYBOARD_CASE,
@@ -42,6 +43,7 @@ from m3_content_server import (
     m4_focus_smoke_url,
     m4_smoke_url,
     m4_selection_smoke_url,
+    m4_primary_paste_smoke_url,
     m4_wheel_smoke_url,
     m4_keyboard_smoke_url,
     m4_printable_key_smoke_url,
@@ -49,6 +51,7 @@ from m3_content_server import (
     m4_ime_bridge_smoke_url,
     validate_m4_result,
     validate_m4_selection_result,
+    validate_m4_primary_paste_result,
     validate_m4_focus_result,
     validate_m4_wheel_result,
     validate_m4_keyboard_result,
@@ -264,6 +267,7 @@ def wait_for_input_state(
     state_expression: str,
     expected_state: str,
 ) -> dict[str, Any]:
+    last_state: Any = None
     while time.monotonic() < deadline:
         if browser.poll() is not None:
             raise M0Error(
@@ -280,13 +284,17 @@ def wait_for_input_state(
                 + json.dumps(result, sort_keys=True, separators=(",", ":"))
             )
         state = client.evaluate(state_expression)
+        last_state = state
         if (
             isinstance(state, dict)
             and state.get("state") == expected_state
         ):
             return state
         time.sleep(0.05)
-    raise M0Error(f"M4 host did not become ready for {expected_state}")
+    raise M0Error(
+        f"M4 host did not become ready for {expected_state}: "
+        + json.dumps(last_state, sort_keys=True, separators=(",", ":"))
+    )
 
 
 def validate_backspace_key_a_stage(state: dict[str, Any]) -> None:
@@ -326,7 +334,7 @@ def validate_selection_activation_stage(state: dict[str, Any]) -> None:
         "outerTraceExact",
         "activationEvidence",
         "selectionCollapsed",
-        "selectionDirectionNone",
+        "selectionDirectionNeutral",
         "selectedTextEmpty",
         "frameAfterActivation",
     ):
@@ -347,9 +355,9 @@ def validate_selection_activation_stage(state: dict[str, Any]) -> None:
             "M4 selection activation did not retain a collapsed native "
             "selection"
         )
-    if proof.get("selectionDirection") != "none":
+    if proof.get("selectionDirection") not in ("none", "forward"):
         raise M0Error(
-            "M4 selection activation selection direction is not 'none'"
+            "M4 selection activation selection direction is invalid"
         )
     if proof.get("selectedText") != "":
         raise M0Error("M4 selection activation selected text is not empty")
@@ -399,6 +407,7 @@ def main() -> int:
         choices=(
             "pointer",
             "selection",
+            "primary-paste",
             "wheel",
             "keyboard",
             "printable-key",
@@ -434,6 +443,14 @@ def main() -> int:
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent primary click followed "
             "by a primary drag with two held-button moves; no text commands"
+        )
+    elif args.input == "primary-paste":
+        case = M4_PRIMARY_PASTE_CASE
+        state_expression = "window.__chromiumWasmM4PrimaryPasteState || null"
+        expected_state = "awaiting-dom-primary-paste-activation"
+        input_driver = (
+            "Chrome DevTools Input.dispatchMouseEvent primary click and drag "
+            "followed by a middle click; no clipboard or text commands"
         )
     elif args.input == "wheel":
         case = M4_WHEEL_CASE
@@ -576,6 +593,14 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
             )
+        elif args.input == "primary-paste":
+            url = m4_primary_paste_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
         elif args.input == "wheel":
             url = m4_wheel_smoke_url(
                 server,
@@ -683,7 +708,16 @@ def main() -> int:
         )
         stage = "measure_canvas"
         canvas_geometry = read_canvas_geometry(client)
-        click_x, click_y = canvas_click_position(state, canvas_geometry)
+        if args.input == "primary-paste":
+            click_x, click_y = canvas_point_position(
+                state,
+                canvas_geometry,
+                x_field="sourceTargetX",
+                y_field="sourceTargetY",
+                description="primary-paste source target",
+            )
+        else:
+            click_x, click_y = canvas_click_position(state, canvas_geometry)
         if args.input == "pointer":
             stage = "dispatch_trusted_dom_pointer"
             client.dispatch_primary_click(click_x, click_y)
@@ -733,6 +767,70 @@ def main() -> int:
                 drag_end_x,
                 drag_end_y,
             )
+        elif args.input == "primary-paste":
+            stage = "dispatch_trusted_dom_primary_paste_activation"
+            client.dispatch_primary_click(click_x, click_y)
+            stage = "wait_for_primary_paste_drag"
+            primary_paste_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-primary-paste-drag",
+            )
+            stage = "measure_primary_paste_drag"
+            drag_start_x, drag_start_y = canvas_point_position(
+                primary_paste_state,
+                canvas_geometry,
+                x_field="dragStartX",
+                y_field="dragStartY",
+                description="primary-paste drag start",
+            )
+            drag_middle_x, drag_middle_y = canvas_point_position(
+                primary_paste_state,
+                canvas_geometry,
+                x_field="dragMiddleX",
+                y_field="dragMiddleY",
+                description="primary-paste drag middle",
+            )
+            drag_end_x, drag_end_y = canvas_point_position(
+                primary_paste_state,
+                canvas_geometry,
+                x_field="dragEndX",
+                y_field="dragEndY",
+                description="primary-paste drag end",
+            )
+            stage = "dispatch_trusted_dom_primary_paste_drag"
+            client.dispatch_primary_drag(
+                drag_start_x,
+                drag_start_y,
+                drag_middle_x,
+                drag_middle_y,
+                drag_end_x,
+                drag_end_y,
+            )
+            stage = "wait_for_primary_selection"
+            primary_selection_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-primary-paste",
+            )
+            stage = "measure_primary_paste_target"
+            paste_x, paste_y = canvas_point_position(
+                primary_selection_state,
+                canvas_geometry,
+                x_field="pasteTargetX",
+                y_field="pasteTargetY",
+                description="primary-paste target",
+            )
+            stage = "dispatch_trusted_dom_primary_paste"
+            client.dispatch_middle_click(paste_x, paste_y)
         elif args.input == "wheel":
             stage = "dispatch_trusted_dom_wheel"
             client.dispatch_mouse_wheel(click_x, click_y, 0.0, 160.0)
@@ -863,6 +961,11 @@ def main() -> int:
             input_key = "pointerInput"
         elif args.input == "selection":
             validate_m4_selection_result(result, expected_versions=versions)
+            input_key = "pointerInput"
+        elif args.input == "primary-paste":
+            validate_m4_primary_paste_result(
+                result, expected_versions=versions
+            )
             input_key = "pointerInput"
         elif args.input == "wheel":
             validate_m4_wheel_result(result, expected_versions=versions)

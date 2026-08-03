@@ -245,7 +245,9 @@ class M4OzonePointerContractTest(unittest.TestCase):
         for marker in (
             "GetInputInjectorOnUiThread",
             "input_injector->MoveCursorTo",
-            "input_injector->InjectMouseButton(ui::EF_LEFT_MOUSE_BUTTON",
+            "ui::EventFlags button",
+            "input_injector->InjectMouseButton(button, /*down=*/true)",
+            "input_injector->InjectMouseButton(button, /*down=*/false)",
             "DomPointerEventType::kMove",
             "DomPointerEventType::kDown",
             "DomPointerEventType::kUp",
@@ -268,7 +270,8 @@ class M4OzonePointerContractTest(unittest.TestCase):
         for marker in (
             "DomPointerEventType::kMove",
             "DomPointerEventType::kUp",
-            "button != 0",
+            "(button != 0 && button != 1)",
+            "ui::EF_MIDDLE_MOUSE_BUTTON",
             "x < 0 || y < 0",
             "PostHostCommand",
             "DispatchDomPointerOnUiThread",

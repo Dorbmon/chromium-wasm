@@ -294,7 +294,6 @@ class M4DevToolsClientTest(unittest.TestCase):
                         "type": "mouseMoved",
                         "x": 12.5,
                         "y": 34.75,
-                        "button": "left",
                         "pointerType": "mouse",
                     },
                 ),

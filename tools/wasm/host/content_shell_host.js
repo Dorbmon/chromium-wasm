@@ -10,6 +10,7 @@ const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
 const M4_BACKSPACE_CASE = "ozone_backspace_m4";
 const M4_SELECTION_CASE = "ozone_selection_m4";
+const M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
@@ -19,6 +20,8 @@ const M4_PRINTABLE_KEY_FIXTURE =
   "chromium-wasm-m4-ozone-printable-key-v1";
 const M4_BACKSPACE_FIXTURE = "chromium-wasm-m4-ozone-backspace-v1";
 const M4_SELECTION_FIXTURE = "chromium-wasm-m4-ozone-selection-v1";
+const M4_PRIMARY_PASTE_FIXTURE =
+  "chromium-wasm-m4-ozone-primary-paste-v1";
 const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
@@ -185,7 +188,7 @@ function hasM4SelectionCollapsedNativeSelection(pageProbe) {
   return Number.isSafeInteger(pageProbe?.selectionStart) &&
     Number.isSafeInteger(pageProbe?.selectionEnd) &&
     pageProbe.selectionStart === pageProbe.selectionEnd &&
-    pageProbe?.selectionDirection === "none" &&
+    hasM4SelectionForwardOrNeutralDirection(pageProbe) &&
     pageProbe?.selectedText === "";
 }
 
@@ -217,6 +220,123 @@ function hasM4SelectionFinalPageEvidence(pageProbe, innerTraces) {
         pageProbe?.mouseEventTrace, "mouse", innerTraces.mouse) &&
     matchesM4SelectionInnerTrace(
         pageProbe?.pointerEventTrace, "pointer", innerTraces.pointer);
+}
+
+function matchesM4PrimaryPasteQueuedPointerRecord(
+    record, type, x, y, button, buttons) {
+  return record?.type === type &&
+    record?.trusted === true &&
+    record?.queued === true &&
+    record?.button === button &&
+    record?.buttons === buttons &&
+    Number.isSafeInteger(record?.sequence) && record.sequence >= 1 &&
+    Number.isSafeInteger(record?.x) && record.x === x &&
+    Number.isSafeInteger(record?.y) && record.y === y &&
+    Number.isSafeInteger(record?.frameIdBefore) && record.frameIdBefore >= 1;
+}
+
+function matchesM4PrimaryPasteQueuedPointerTrace(records, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, x, y, button, buttons], index) =>
+          matchesM4PrimaryPasteQueuedPointerRecord(
+              records[index], type, x, y, button, buttons) &&
+          records[index].sequence === index + 1);
+}
+
+function matchesM4PrimaryPasteInnerEvent(
+    record, prefix, type, button, buttons, targetId) {
+  return record?.type === `${prefix}${type}` &&
+    record?.trusted === true &&
+    record?.button === button &&
+    record?.buttons === buttons &&
+    record?.targetId === targetId && record?.defaultPrevented === false;
+}
+
+function hasM4PrimaryPasteSourceSelection(pageProbe) {
+  const selectionActivity = pageProbe?.sourceSelectionActivity;
+  return pageProbe?.activeElementId === "source-target" &&
+    // Selection can be observed before Blink dispatches the drag's trailing
+    // click. The final paste proof below requires that exact second click.
+    Number.isSafeInteger(pageProbe?.sourceActivationCount) &&
+    pageProbe.sourceActivationCount >= 1 &&
+    pageProbe?.sourceClickTrusted === true &&
+    pageProbe?.sourceFocusCount >= 1 &&
+    pageProbe?.sourceFocusTrusted === true &&
+    pageProbe?.sourceValue === "WASM" &&
+    pageProbe?.sourceSelectionStart === 0 &&
+    pageProbe?.sourceSelectionEnd === 4 &&
+    (pageProbe?.sourceSelectionDirection === "none" ||
+      pageProbe?.sourceSelectionDirection === "forward") &&
+    pageProbe?.sourceSelectedText === "WASM" &&
+    selectionActivity?.count >= 1 && selectionActivity?.trusted === true &&
+    selectionActivity?.nonCollapsed === true &&
+    selectionActivity?.trustedNonCollapsed === true &&
+    selectionActivity?.selectCount >= 1 &&
+    selectionActivity?.selectTrusted === true &&
+    selectionActivity?.selectionChangeCount >= 1 &&
+    selectionActivity?.selectionChangeTrusted === true &&
+    pageProbe?.sourceTextInputEvents?.beforeinputCount === 0 &&
+    pageProbe?.sourceTextInputEvents?.inputCount === 0 &&
+    pageProbe?.sourceTextInputEvents?.compositionstartCount === 0 &&
+    pageProbe?.sourceTextInputEvents?.compositionupdateCount === 0 &&
+    pageProbe?.sourceTextInputEvents?.compositionendCount === 0;
+}
+
+function hasM4PrimaryPasteInnerSourceEvents(pageProbe) {
+  const mouse = pageProbe?.sourceMouseEventTrace;
+  const pointer = pageProbe?.sourcePointerEventTrace;
+  return Array.isArray(mouse) && Array.isArray(pointer) &&
+    mouse.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "mouse", "down", 0, 1, "source-target")) &&
+    mouse.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "mouse", "up", 0, 0, "source-target")) &&
+    pointer.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "pointer", "down", 0, 1, "source-target")) &&
+    pointer.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "pointer", "up", 0, 0, "source-target"));
+}
+
+function hasM4PrimaryPasteInnerPasteEvents(pageProbe) {
+  const mouse = pageProbe?.pasteMouseEventTrace;
+  const pointer = pageProbe?.pastePointerEventTrace;
+  const paste = pageProbe?.pasteEventTrace;
+  const text = pageProbe?.pasteTextInputTrace;
+  return Array.isArray(mouse) && Array.isArray(pointer) &&
+    Array.isArray(paste) && paste.length === 1 &&
+    paste[0]?.type === "paste" && paste[0]?.trusted === true &&
+    paste[0]?.targetId === "paste-target" &&
+    paste[0]?.defaultPrevented === false && Array.isArray(text) &&
+    text.length === 2 &&
+    text.every((record) => record?.trusted === true &&
+      record?.inputType === "insertFromPaste" && record?.data === "WASM" &&
+      record?.isComposing === false && record?.targetId === "paste-target") &&
+    text[0]?.type === "beforeinput" && text[1]?.type === "input" &&
+    mouse.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "mouse", "down", 1, 4, "paste-target")) &&
+    mouse.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "mouse", "up", 1, 0, "paste-target")) &&
+    pointer.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "pointer", "down", 1, 4, "paste-target")) &&
+    pointer.some((record) => matchesM4PrimaryPasteInnerEvent(
+        record, "pointer", "up", 1, 0, "paste-target"));
+}
+
+function hasM4PrimaryPasteFinalPageEvidence(pageProbe) {
+  return pageProbe?.activeElementId === "paste-target" &&
+    pageProbe?.sourceValue === "WASM" &&
+    pageProbe?.sourceActivationCount === 2 &&
+    pageProbe?.pasteActivationCount === 0 &&
+    pageProbe?.pasteClickTrusted === false &&
+    pageProbe?.pasteAuxClickCount === 1 &&
+    pageProbe?.pasteAuxClickTrusted === true &&
+    pageProbe?.pasteFocusCount >= 1 &&
+    pageProbe?.pasteFocusTrusted === true &&
+    pageProbe?.pasteValue === "WASM" &&
+    pageProbe?.pasteSelectionStart === 4 && pageProbe?.pasteSelectionEnd === 4 &&
+    pageProbe?.resultText === "PRIMARY SELECTION PASTED" &&
+    hasM4PrimaryPasteInnerSourceEvents(pageProbe) &&
+    hasM4PrimaryPasteInnerPasteEvents(pageProbe);
 }
 
 function isWellFormedUtf16(value) {
@@ -431,6 +551,7 @@ export class ChromiumWasmM3Host {
   #pointerRecords = [];
   #lastQueuedPointer = null;
   #activeM4PointerId = null;
+  #activeM4PointerButton = null;
   #lastM4PointerPoint = null;
   #wheelInputEnabled = false;
   #wheelListeners = [];
@@ -1521,11 +1642,13 @@ export class ChromiumWasmM3Host {
 
   #cancelActiveM4Pointer(reason) {
     const pointerId = this.#activeM4PointerId;
+    const button = this.#activeM4PointerButton;
     const point = this.#lastM4PointerPoint;
-    if (pointerId === null) {
+    if (pointerId === null || button === null) {
       return;
     }
     this.#activeM4PointerId = null;
+    this.#activeM4PointerButton = null;
     this.#lastM4PointerPoint = null;
     this.#releaseM4PointerCapture(pointerId);
     if (this.#lifecycle !== "running" || !point) {
@@ -1537,7 +1660,7 @@ export class ChromiumWasmM3Host {
         "chromium_wasm_host_pointer",
         "number",
         ["number", "number", "number", "number"],
-        [2, point.x, point.y, 0],
+        [2, point.x, point.y, button],
       );
       this.#recordHost(
         `m4:pointer:${reason}:${result === 1 ? "release-queued" : "rejected"}`);
@@ -1557,13 +1680,18 @@ export class ChromiumWasmM3Host {
       pointerId,
       trusted: event.isTrusted === true,
       queued: false,
+      button: Number(event.button),
+      buttons: Number(event.buttons),
       frameIdBefore: this.#frame?.id ?? 0,
       canvasFocused: document.activeElement === this.#canvas,
     };
-    if (!record.trusted) {
-      record.reason = "UNTRUSTED_DOM_EVENT";
+    const recordAndReject = (reason, detail) => {
+      record.reason = reason;
       this.#recordPointer(record);
-      this.#recordHost(`m4:pointer:${type}:untrusted`);
+      this.#recordHost(`m4:pointer:${type}:${detail}`);
+    };
+    if (!record.trusted) {
+      recordAndReject("UNTRUSTED_DOM_EVENT", "untrusted");
       return;
     }
     if (
@@ -1571,47 +1699,113 @@ export class ChromiumWasmM3Host {
       event.isPrimary !== true ||
       !Number.isSafeInteger(pointerId)
     ) {
-      record.reason = "UNSUPPORTED_POINTER";
-      this.#recordPointer(record);
-      this.#recordHost(`m4:pointer:${type}:unsupported-pointer`);
+      recordAndReject("UNSUPPORTED_POINTER", "unsupported-pointer");
       return;
     }
-    if ((type === "down" || type === "up") && event.button !== 0) {
-      record.reason = "UNSUPPORTED_BUTTON";
-      this.#recordPointer(record);
-      this.#recordHost(`m4:pointer:${type}:unsupported-button`);
+    if (
+      !Number.isSafeInteger(record.button) ||
+      !Number.isSafeInteger(record.buttons) ||
+      record.buttons < 0
+    ) {
+      recordAndReject("INVALID_BUTTON_STATE", "invalid-button-state");
       return;
     }
-    const captured = this.#activeM4PointerId === pointerId;
+    if (
+      (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) &&
+      type !== "up" && type !== "cancel"
+    ) {
+      recordAndReject("UNSUPPORTED_MODIFIERS", "unsupported-modifiers");
+      return;
+    }
+    if (
+      (type === "down" || type === "up") &&
+      event.button !== 0 && event.button !== 1
+    ) {
+      recordAndReject("UNSUPPORTED_BUTTON", "unsupported-button");
+      return;
+    }
+    const activePointerId = this.#activeM4PointerId;
+    const activeButton = this.#activeM4PointerButton;
+    if ((activePointerId === null) !== (activeButton === null)) {
+      this.#cancelActiveM4Pointer("invalid-active-state");
+      recordAndReject("INVALID_ACTIVE_POINTER_STATE", "invalid-active-state");
+      return;
+    }
+    const buttonMask = (button) => button === 0 ? 1 : 4;
+    let button;
+    if (type === "down") {
+      if (activePointerId !== null) {
+        recordAndReject("POINTER_ALREADY_ACTIVE", "pointer-already-active");
+        return;
+      }
+      if (record.buttons !== buttonMask(record.button)) {
+        recordAndReject("INVALID_BUTTON_STATE", "invalid-button-state");
+        return;
+      }
+      button = record.button;
+    } else if (type === "move") {
+      if (activePointerId === null) {
+        if (record.buttons !== 0) {
+          recordAndReject("UNTRACKED_BUTTON_STATE", "untracked-button-state");
+          return;
+        }
+        button = 0;
+      } else {
+        if (pointerId !== activePointerId) {
+          recordAndReject("POINTER_STREAM_MISMATCH", "pointer-stream-mismatch");
+          return;
+        }
+        if (record.buttons !== buttonMask(activeButton)) {
+          recordAndReject("INVALID_BUTTON_STATE", "invalid-button-state");
+          return;
+        }
+        button = activeButton;
+      }
+    } else if (type === "up") {
+      if (pointerId !== activePointerId) {
+        recordAndReject("POINTER_STREAM_MISMATCH", "pointer-stream-mismatch");
+        return;
+      }
+      if (record.button !== activeButton) {
+        recordAndReject("POINTER_BUTTON_MISMATCH", "pointer-button-mismatch");
+        return;
+      }
+      if ((record.buttons & buttonMask(activeButton)) !== 0) {
+        recordAndReject("INVALID_POINTER_RELEASE", "invalid-pointer-release");
+        return;
+      }
+      button = activeButton;
+    } else {
+      if (pointerId !== activePointerId) {
+        recordAndReject("POINTER_STREAM_MISMATCH", "pointer-stream-mismatch");
+        return;
+      }
+      button = activeButton;
+    }
+    const captured = activePointerId === pointerId;
     let point = this.#canvasPointForPointerEvent(event);
     if (!point && (type === "up" || type === "cancel") && captured) {
       point = this.#lastM4PointerPoint;
       record.usedCapturedPoint = point !== null;
     }
     if (!point) {
-      record.reason = "OUTSIDE_CANVAS";
-      this.#recordPointer(record);
-      this.#recordHost(`m4:pointer:${type}:outside-canvas`);
+      recordAndReject("OUTSIDE_CANVAS", "outside-canvas");
       return;
     }
+    let capturedOnThisEvent = false;
     if (type === "down") {
       this.#canvas.focus({preventScroll: true});
       if (typeof this.#canvas.setPointerCapture !== "function") {
-        record.reason = "HOST_CAPTURE_UNSUPPORTED";
-        this.#recordPointer(record);
-        this.#recordHost(`m4:pointer:${type}:capture-unsupported`);
+        recordAndReject("HOST_CAPTURE_UNSUPPORTED", "capture-unsupported");
         return;
       }
       try {
         this.#canvas.setPointerCapture(pointerId);
+        capturedOnThisEvent = true;
       } catch (error) {
-        record.reason = "HOST_CAPTURE_FAILED";
-        this.#recordPointer(record);
-        this.#recordHost(`m4:pointer:${type}:capture-failed`);
+        recordAndReject("HOST_CAPTURE_FAILED", "capture-failed");
         return;
       }
-      this.#activeM4PointerId = pointerId;
-      this.#lastM4PointerPoint = point;
     } else if (captured) {
       this.#lastM4PointerPoint = point;
     }
@@ -1621,7 +1815,7 @@ export class ChromiumWasmM3Host {
         "chromium_wasm_host_pointer",
         "number",
         ["number", "number", "number", "number"],
-        [eventType, point.x, point.y, 0],
+        [eventType, point.x, point.y, button],
       );
       record.x = point.x;
       record.y = point.y;
@@ -1631,11 +1825,16 @@ export class ChromiumWasmM3Host {
         record.reason = "QUEUE_REJECTED";
       } else {
         this.#lastQueuedPointer = record;
-        if (type === "down" && this.#keyboardInputEnabled) {
+        if (type === "down") {
+          this.#activeM4PointerId = pointerId;
+          this.#activeM4PointerButton = button;
+          this.#lastM4PointerPoint = point;
+        }
+        if (type === "down" && button === 0 && this.#keyboardInputEnabled) {
           this.#keyboardActivated = true;
           this.#recordHost("m4:keyboard:pointer-activation");
         }
-        if (type === "down" && this.#focusInputEnabled) {
+        if (type === "down" && button === 0 && this.#focusInputEnabled) {
           this.#hostWindowActive = true;
           this.#recordFocus({
             sequence: ++this.#focusSequence,
@@ -1648,21 +1847,29 @@ export class ChromiumWasmM3Host {
           });
           this.#recordHost("m4:focus:pointer-activation");
         }
-        if (type === "down") {
+        if (type === "down" && button === 0) {
           this.#armM4ImeProxyActivation(record);
+        }
+        if (button === 1 && event.cancelable) {
+          event.preventDefault();
+          record.defaultPrevented = event.defaultPrevented === true;
         }
       }
     } catch (error) {
       record.reason = `EXPORT_ERROR:${String(error)}`;
     }
-    if (type === "up" || type === "cancel") {
+    if (type === "down" && !record.queued && capturedOnThisEvent) {
       this.#releaseM4PointerCapture(pointerId);
+    }
+    if (type === "up" || type === "cancel") {
       if (this.#activeM4PointerId === pointerId) {
         this.#activeM4PointerId = null;
+        this.#activeM4PointerButton = null;
         this.#lastM4PointerPoint = null;
       }
+      this.#releaseM4PointerCapture(pointerId);
     }
-    if (type === "up" && record.queued) {
+    if (type === "up" && button === 0 && record.queued) {
       this.#markM4ImeProxyPointerUp(record);
     }
     this.#recordPointer(record);
@@ -3623,8 +3830,8 @@ async function runM4OzoneSelectionSmokeFromQuery() {
         activationPageProbe.selectionStart === activationPageProbe.selectionEnd,
       selectionStart: activationPageProbe?.selectionStart,
       selectionEnd: activationPageProbe?.selectionEnd,
-      selectionDirectionNone:
-        activationPageProbe?.selectionDirection === "none",
+      selectionDirectionNeutral:
+        hasM4SelectionForwardOrNeutralDirection(activationPageProbe),
       selectionDirection: activationPageProbe?.selectionDirection,
       selectedTextEmpty: activationPageProbe?.selectedText === "",
       selectedText: activationPageProbe?.selectedText,
@@ -3635,7 +3842,7 @@ async function runM4OzoneSelectionSmokeFromQuery() {
       activationProof.outerTraceExact &&
       activationProof.activationEvidence &&
       activationProof.selectionCollapsed &&
-      activationProof.selectionDirectionNone &&
+      activationProof.selectionDirectionNeutral &&
       activationProof.selectedTextEmpty &&
       activationProof.frameAfterActivation;
     if (!activationReady) {
@@ -3757,6 +3964,378 @@ async function runM4OzoneSelectionSmokeFromQuery() {
       readiness: null,
       pointerInput: null,
       activationProof: activationProof ? clone(activationProof) : null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
+async function runM4OzonePrimaryPasteSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+      1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+  let activationProof = null;
+  let selectionProof = null;
+
+  try {
+    if (parameters.get("case") !== M4_PRIMARY_PASTE_CASE) {
+      throw new Error("M4 primary paste case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 primary paste result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_PRIMARY_PASTE_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+        parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+          "M4 primary paste base readiness timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    const source = {
+      targetX: Number(readiness.pageProbe.sourceTargetX),
+      targetY: Number(readiness.pageProbe.sourceTargetY),
+      dragStartX: Number(readiness.pageProbe.dragStartX),
+      dragStartY: Number(readiness.pageProbe.dragStartY),
+      dragMiddleX: Number(readiness.pageProbe.dragMiddleX),
+      dragMiddleY: Number(readiness.pageProbe.dragMiddleY),
+      dragEndX: Number(readiness.pageProbe.dragEndX),
+      dragEndY: Number(readiness.pageProbe.dragEndY),
+    };
+    const paste = {
+      targetX: Number(readiness.pageProbe.pasteTargetX),
+      targetY: Number(readiness.pageProbe.pasteTargetY),
+    };
+    for (const [name, value, maximum] of [
+      ["source target x", source.targetX, DEFAULT_WIDTH - 1],
+      ["source target y", source.targetY, DEFAULT_HEIGHT - 1],
+      ["source drag start x", source.dragStartX, DEFAULT_WIDTH - 1],
+      ["source drag start y", source.dragStartY, DEFAULT_HEIGHT - 1],
+      ["source drag middle x", source.dragMiddleX, DEFAULT_WIDTH - 1],
+      ["source drag middle y", source.dragMiddleY, DEFAULT_HEIGHT - 1],
+      ["source drag end x", source.dragEndX, DEFAULT_WIDTH - 1],
+      ["source drag end y", source.dragEndY, DEFAULT_HEIGHT - 1],
+      ["paste target x", paste.targetX, DEFAULT_WIDTH - 1],
+      ["paste target y", paste.targetY, DEFAULT_HEIGHT - 1],
+    ]) {
+      checkInteger(value, "M4 primary paste " + name, 0, maximum);
+    }
+    if (!(source.dragStartX < source.dragMiddleX &&
+          source.dragMiddleX < source.dragEndX &&
+          source.dragStartY === source.dragMiddleY &&
+          source.dragMiddleY === source.dragEndY)) {
+      throw new Error("M4 primary paste drag geometry is not strictly forward");
+    }
+
+    const activationTrace = [
+      ["move", source.targetX, source.targetY, -1, 0],
+      ["down", source.targetX, source.targetY, 0, 1],
+      ["up", source.targetX, source.targetY, 0, 0],
+    ];
+    const sourceTrace = [
+      ...activationTrace,
+      ["move", source.dragStartX, source.dragStartY, -1, 0],
+      ["down", source.dragStartX, source.dragStartY, 0, 1],
+      ["move", source.dragMiddleX, source.dragMiddleY, -1, 1],
+      ["move", source.dragEndX, source.dragEndY, -1, 1],
+      ["up", source.dragEndX, source.dragEndY, 0, 0],
+    ];
+    const pasteTrace = [
+      ["move", paste.targetX, paste.targetY, -1, 0],
+      ["down", paste.targetX, paste.targetY, 1, 4],
+      ["up", paste.targetX, paste.targetY, 1, 0],
+    ];
+    const fullTrace = [...sourceTrace, ...pasteTrace];
+    const pointerListeners = host.enableM4PointerInput();
+    window.__chromiumWasmM4PrimaryPasteState = {
+      state: "awaiting-dom-primary-paste-activation",
+      sourceTargetX: source.targetX,
+      sourceTargetY: source.targetY,
+      pointerListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas source activation before selection";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[activationTrace.length - 1];
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer?.receivedCount === activationTrace.length &&
+        pointer?.trustedCount === activationTrace.length &&
+        pointer?.queuedCount === activationTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, activationTrace) &&
+        pageProbe?.activeElementId === "source-target" &&
+        pageProbe?.sourceActivationCount === 1 &&
+        pageProbe?.sourceClickTrusted === true &&
+        pageProbe?.sourceFocusCount >= 1 &&
+        pageProbe?.sourceFocusTrusted === true &&
+        pageProbe?.sourceValue === "WASM" &&
+        pageProbe?.sourceSelectionStart === pageProbe?.sourceSelectionEnd &&
+        pageProbe?.sourceSelectedText === "" &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const activationPointer = readiness?.pointerInput;
+    const activationRecords = activationPointer?.queuedRecords;
+    const activationRelease = activationRecords?.[activationTrace.length - 1];
+    const activationPageProbe = readiness?.pageProbe;
+    activationProof = Object.freeze({
+      outerTraceExact:
+        activationPointer?.receivedCount === activationTrace.length &&
+        activationPointer?.trustedCount === activationTrace.length &&
+        activationPointer?.queuedCount === activationTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            activationRecords, activationTrace),
+      sourceActivated: activationPageProbe?.activeElementId === "source-target" &&
+        activationPageProbe?.sourceActivationCount === 1 &&
+        activationPageProbe?.sourceClickTrusted === true &&
+        activationPageProbe?.sourceFocusCount >= 1 &&
+        activationPageProbe?.sourceFocusTrusted === true,
+      selectionCollapsed:
+        activationPageProbe?.sourceSelectionStart ===
+          activationPageProbe?.sourceSelectionEnd &&
+        activationPageProbe?.sourceSelectedText === "",
+      selectionStart: activationPageProbe?.sourceSelectionStart,
+      selectionEnd: activationPageProbe?.sourceSelectionEnd,
+      selectedText: activationPageProbe?.sourceSelectedText,
+      frameAfterActivation:
+        readiness?.frame?.id > activationRelease?.frameIdBefore,
+    });
+    if (!activationProof.outerTraceExact || !activationProof.sourceActivated ||
+        !activationProof.selectionCollapsed ||
+        !activationProof.frameAfterActivation) {
+      throw new Error(
+          "M4 primary paste source activation timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4PrimaryPasteState = {
+      state: "awaiting-dom-primary-paste-drag",
+      sourceTargetX: source.targetX,
+      sourceTargetY: source.targetY,
+      dragStartX: source.dragStartX,
+      dragStartY: source.dragStartY,
+      dragMiddleX: source.dragMiddleX,
+      dragMiddleY: source.dragMiddleY,
+      dragEndX: source.dragEndX,
+      dragEndY: source.dragEndY,
+      pointer: clone(activationPointer),
+      activationProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas source selection drag";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[sourceTrace.length - 1];
+      if (
+        pointer?.receivedCount === sourceTrace.length &&
+        pointer?.trustedCount === sourceTrace.length &&
+        pointer?.queuedCount === sourceTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, sourceTrace) &&
+        hasM4PrimaryPasteSourceSelection(readiness.pageProbe) &&
+        hasM4PrimaryPasteInnerSourceEvents(readiness.pageProbe) &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const sourcePointer = readiness?.pointerInput;
+    const sourceRecords = sourcePointer?.queuedRecords;
+    const sourceRelease = sourceRecords?.[sourceTrace.length - 1];
+    const sourcePageProbe = readiness?.pageProbe;
+    selectionProof = Object.freeze({
+      outerTraceExact:
+        sourcePointer?.receivedCount === sourceTrace.length &&
+        sourcePointer?.trustedCount === sourceTrace.length &&
+        sourcePointer?.queuedCount === sourceTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(sourceRecords, sourceTrace),
+      nativeSelection: hasM4PrimaryPasteSourceSelection(sourcePageProbe),
+      innerSourceEvents: hasM4PrimaryPasteInnerSourceEvents(sourcePageProbe),
+      frameAfterDrag: readiness?.frame?.id > sourceRelease?.frameIdBefore,
+    });
+    if (!selectionProof.outerTraceExact || !selectionProof.nativeSelection ||
+        !selectionProof.innerSourceEvents || !selectionProof.frameAfterDrag) {
+      throw new Error(
+          "M4 primary paste source selection timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4PrimaryPasteState = {
+      state: "awaiting-dom-primary-paste",
+      pasteTargetX: paste.targetX,
+      pasteTargetY: paste.targetY,
+      pointer: clone(sourcePointer),
+      activationProof,
+      selectionProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas middle-click primary-selection paste";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[fullTrace.length - 1];
+      if (
+        pointer?.receivedCount === fullTrace.length &&
+        pointer?.trustedCount === fullTrace.length &&
+        pointer?.queuedCount === fullTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, fullTrace) &&
+        hasM4PrimaryPasteFinalPageEvidence(readiness.pageProbe) &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const records = pointer?.queuedRecords;
+    const pasteRelease = records?.[fullTrace.length - 1];
+    const pageProbe = readiness?.pageProbe;
+    const primaryPasteProof = Object.freeze({
+      sourceSelection: selectionProof.nativeSelection === true,
+      outerTraceExact:
+        pointer?.receivedCount === fullTrace.length &&
+        pointer?.trustedCount === fullTrace.length &&
+        pointer?.queuedCount === fullTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, fullTrace),
+      nativePaste: hasM4PrimaryPasteFinalPageEvidence(pageProbe),
+      frameAfterPaste: readiness?.frame?.id > pasteRelease?.frameIdBefore,
+    });
+    if (!primaryPasteProof.sourceSelection ||
+        !primaryPasteProof.outerTraceExact || !primaryPasteProof.nativePaste ||
+        !primaryPasteProof.frameAfterPaste) {
+      throw new Error(
+          "M4 primary-selection paste timeout: " + JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4PrimaryPasteState = {
+      state: "input-delivered",
+      sourceTargetX: source.targetX,
+      sourceTargetY: source.targetY,
+      pasteTargetX: paste.targetX,
+      pasteTargetY: paste.targetY,
+      pointer: clone(pointer),
+      activationProof,
+      selectionProof,
+      primaryPasteProof,
+    };
+    const shutdownTimeoutMs = Math.max(
+        1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      sourceActivation: activationProof.sourceActivated === true,
+      sourceSelection: selectionProof.nativeSelection === true,
+      primarySelectionPaste: primaryPasteProof.nativePaste === true,
+      trustedDomInput: primaryPasteProof.outerTraceExact === true,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_PRIMARY_PASTE_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      activationProof: clone(activationProof),
+      selectionProof: clone(selectionProof),
+      primaryPasteProof: clone(primaryPasteProof),
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_PRIMARY_PASTE_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      activationProof: activationProof ? clone(activationProof) : null,
+      selectionProof: selectionProof ? clone(selectionProof) : null,
+      primaryPasteProof: null,
       logs: null,
       shutdown: null,
       failedChecks: ["exception"],
@@ -6076,6 +6655,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_SELECTION_CASE) {
     return runM4OzoneSelectionSmokeFromQuery();
+  }
+  if (selectedCase === M4_PRIMARY_PASTE_CASE) {
+    return runM4OzonePrimaryPasteSmokeFromQuery();
   }
   if (selectedCase === M4_WHEEL_CASE) {
     return runM4OzoneWheelSmokeFromQuery();

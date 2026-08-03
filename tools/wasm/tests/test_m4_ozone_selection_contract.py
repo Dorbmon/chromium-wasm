@@ -104,7 +104,7 @@ class M4OzoneSelectionContractTest(unittest.TestCase):
             "hasM4SelectionFinalPageEvidence",
             "Object.freeze({",
             "selectionCollapsed",
-            "selectionDirectionNone",
+            "selectionDirectionNeutral",
             "selectedTextEmpty",
             "queuedRecords",
             "async function runM4OzoneSelectionSmokeFromQuery()",

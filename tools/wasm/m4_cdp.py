@@ -183,15 +183,53 @@ class DevToolsClient:
         return remote.get("value")
 
     def dispatch_primary_click(self, x: float, y: float) -> None:
-        base = {"x": x, "y": y, "button": "left", "pointerType": "mouse"}
-        self.call("Input.dispatchMouseEvent", {**base, "type": "mouseMoved"})
+        position = {"x": x, "y": y, "pointerType": "mouse"}
         self.call(
-            "Input.dispatchMouseEvent",
-            {**base, "type": "mousePressed", "clickCount": 1},
+            "Input.dispatchMouseEvent", {**position, "type": "mouseMoved"}
         )
         self.call(
             "Input.dispatchMouseEvent",
-            {**base, "type": "mouseReleased", "clickCount": 1},
+            {
+                **position,
+                "type": "mousePressed",
+                "button": "left",
+                "clickCount": 1,
+            },
+        )
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                **position,
+                "type": "mouseReleased",
+                "button": "left",
+                "clickCount": 1,
+            },
+        )
+
+    def dispatch_middle_click(self, x: float, y: float) -> None:
+        """Drive one physical middle-button click without clipboard APIs."""
+
+        position = {"x": x, "y": y, "pointerType": "mouse"}
+        self.call(
+            "Input.dispatchMouseEvent", {**position, "type": "mouseMoved"}
+        )
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                **position,
+                "type": "mousePressed",
+                "button": "middle",
+                "clickCount": 1,
+            },
+        )
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                **position,
+                "type": "mouseReleased",
+                "button": "middle",
+                "clickCount": 1,
+            },
         )
 
     def dispatch_primary_drag(
@@ -211,16 +249,23 @@ class DevToolsClient:
         as a click or using a DOM selection command.
         """
 
-        start = {
+        start_position = {
             "x": start_x,
             "y": start_y,
-            "button": "left",
             "pointerType": "mouse",
         }
-        self.call("Input.dispatchMouseEvent", {**start, "type": "mouseMoved"})
         self.call(
             "Input.dispatchMouseEvent",
-            {**start, "type": "mousePressed", "clickCount": 1},
+            {**start_position, "type": "mouseMoved"},
+        )
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                **start_position,
+                "type": "mousePressed",
+                "button": "left",
+                "clickCount": 1,
+            },
         )
         for x, y in ((middle_x, middle_y), (end_x, end_y)):
             self.call(
