@@ -32,7 +32,7 @@ class M4OzonePrintableKeyContractTest(unittest.TestCase):
             "code_string != content::kM4PrintableDomCode",
             "ui::KeycodeConverter::CodeStringToDomCode(code_string)",
             "content::IsSupportedM4DomCode(physical_key)",
-            "PostHostCommand",
+            "GetWasmHostState().PostM4KeyCommand",
             "DispatchDomKeyOnUiThread",
         ):
             with self.subTest(marker=marker):

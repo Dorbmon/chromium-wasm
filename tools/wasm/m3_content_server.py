@@ -28,6 +28,7 @@ M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
 M4_SELECTION_CASE = "ozone_selection_m4"
 M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4"
+M4_COPY_PASTE_CASE = "ozone_copy_paste_m4"
 M4_WHEEL_CASE = "ozone_wheel_m4"
 M4_KEYBOARD_CASE = "ozone_keyboard_m4"
 M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4"
@@ -57,6 +58,7 @@ M4_SELECTION_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_selection_page.html"
 M4_PRIMARY_PASTE_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_primary_paste_page.html"
 )
+M4_COPY_PASTE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_copy_paste_page.html"
 M4_WHEEL_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_wheel_page.html"
 M4_KEYBOARD_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_keyboard_page.html"
 M4_PRINTABLE_KEY_FIXTURE = (
@@ -199,6 +201,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
             "/__m3__/m4-selection-fixture.html": M4_SELECTION_FIXTURE,
             "/__m3__/m4-primary-paste-fixture.html": M4_PRIMARY_PASTE_FIXTURE,
+            "/__m3__/m4-copy-paste-fixture.html": M4_COPY_PASTE_FIXTURE,
             "/__m3__/m4-wheel-fixture.html": M4_WHEEL_FIXTURE,
             "/__m3__/m4-keyboard-fixture.html": M4_KEYBOARD_FIXTURE,
             "/__m3__/m4-printable-key-fixture.html": M4_PRINTABLE_KEY_FIXTURE,
@@ -257,6 +260,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_CASE,
                 M4_SELECTION_CASE,
                 M4_PRIMARY_PASTE_CASE,
+                M4_COPY_PASTE_CASE,
                 M4_WHEEL_CASE,
                 M4_KEYBOARD_CASE,
                 M4_PRINTABLE_KEY_CASE,
@@ -412,6 +416,34 @@ def m4_primary_paste_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-primary-paste-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_copy_paste_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_COPY_PASTE_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-copy-paste-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -2160,6 +2192,660 @@ def validate_m4_primary_paste_result(
             raise M0Error(
                 f"M4 primary paste logs are missing lifecycle marker {marker!r}"
             )
+
+
+def validate_m4_copy_paste_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate Ctrl+V after a decoy selection, then primary paste last."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_COPY_PASTE_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        if result.get(field) != expected_value:
+            raise M0Error(
+                f"M4 copy/paste result {field} mismatch: expected "
+                f"{expected_value!r}, got {result.get(field)!r}"
+            )
+    versions = _require_dict(
+        result.get("versions"), "M4 copy/paste versions"
+    )
+    if versions != expected_versions:
+        raise M0Error("M4 copy/paste version display mismatch")
+
+    for proof_name, fields in {
+        "activationProof": (
+            "outerTraceExact",
+            "sourceActivated",
+            "frameAfterActivation",
+        ),
+        "bareShortcutProof": (
+            "hostRejected",
+            "noBlinkDelivery",
+        ),
+        "sourceSelectionProof": (
+            "outerTraceExact",
+            "nativeSelection",
+            "frameAfterDrag",
+        ),
+        "copyProof": (
+            "outerTraceExact",
+            "nativeCopy",
+            "bareShortcutRejected",
+            "innerKeys",
+            "shortcutReleased",
+        ),
+        "decoySelectionProof": (
+            "outerTraceExact",
+            "primarySelectionOverwritten",
+            "releaseQueued",
+        ),
+        "primarySelectionPasteProof": (
+            "outerTraceExact",
+            "primaryBufferContainsDecoy",
+            "frameAfterPrimaryPaste",
+        ),
+        "pasteProof": (
+            "outerPointerTraceExact",
+            "outerKeyTraceExact",
+            "innerKeys",
+            "nativePaste",
+            "copyPasteBufferWins",
+            "frameAfterPaste",
+        ),
+    }.items():
+        proof = _require_dict(
+            result.get(proof_name), f"M4 copy/paste {proof_name}"
+        )
+        for field in fields:
+            if proof.get(field) is not True:
+                raise M0Error(
+                    f"M4 copy/paste {proof_name} {field} is not true"
+                )
+
+    readiness = _require_dict(
+        result.get("readiness"), "M4 copy/paste readiness"
+    )
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(
+                f"M4 copy/paste readiness field {field} is not true"
+            )
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 copy/paste readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 copy/paste heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M4 copy/paste heartbeat was not anchored to data navigation"
+        )
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 copy/paste heartbeat elapsed time",
+        minimum=0,
+    )
+    frame = _require_dict(readiness.get("frame"), "M4 copy/paste frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 copy/paste frame ID", minimum=1
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error(
+            "M4 copy/paste frame dimensions do not match the canvas"
+        )
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 copy/paste page probe"
+    )
+    for field, expected_value in {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-copy-paste-v1",
+        "ready": True,
+        "activeElementId": "primary-verify-target",
+        "copySourceValue": "COPY",
+        "decoyValue": "DECOY",
+        "primaryVerifyValue": "DECOY",
+        "primaryVerifySelectionStart": 5,
+        "primaryVerifySelectionEnd": 5,
+        "pasteValue": "COPY",
+        "pasteSelectionStart": 4,
+        "pasteSelectionEnd": 4,
+        "pasteTargetActivationCount": 1,
+        "resultText": "CTRL COPY/PASTE DELIVERED",
+    }.items():
+        if page_probe.get(field) != expected_value:
+            raise M0Error(
+                f"M4 copy/paste page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {page_probe.get(field)!r}"
+            )
+    _require_safe_integer(
+        page_probe.get("timerTicks"),
+        "M4 copy/paste page timer ticks",
+        minimum=3,
+    )
+    for field in (
+        "copySourceActivationCount",
+        "copySourceFocusCount",
+        "selectionDecoyActivationCount",
+        "selectionDecoyFocusCount",
+        "primaryVerifyFocusCount",
+        "pasteTargetFocusCount",
+    ):
+        _require_safe_integer(
+            page_probe.get(field),
+            f"M4 copy/paste page probe {field}",
+            minimum=1,
+        )
+    for field, expected_value in {
+        "primaryVerifyAuxClickCount": 1,
+        "primaryVerifyAuxClickTrusted": True,
+        "primaryVerifyFocusTrusted": True,
+    }.items():
+        if page_probe.get(field) != expected_value:
+            raise M0Error(
+                f"M4 copy/paste page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {page_probe.get(field)!r}"
+            )
+
+    coordinates: dict[str, int] = {}
+    for field in (
+        "copySourceTargetX",
+        "copySourceTargetY",
+        "copyDragStartX",
+        "copyDragStartY",
+        "copyDragMiddleX",
+        "copyDragMiddleY",
+        "copyDragEndX",
+        "copyDragEndY",
+        "decoyTargetX",
+        "decoyTargetY",
+        "decoyDragStartX",
+        "decoyDragStartY",
+        "decoyDragMiddleX",
+        "decoyDragMiddleY",
+        "decoyDragEndX",
+        "decoyDragEndY",
+        "primaryVerifyTargetX",
+        "primaryVerifyTargetY",
+        "pasteTargetX",
+        "pasteTargetY",
+    ):
+        maximum = M3_WIDTH - 1 if field.endswith("X") else M3_HEIGHT - 1
+        coordinates[field] = _require_safe_integer(
+            page_probe.get(field),
+            f"M4 copy/paste {field}",
+            minimum=0,
+            maximum=maximum,
+        )
+    for prefix in ("copyDrag", "decoyDrag"):
+        if not (
+            coordinates[prefix + "StartX"]
+            < coordinates[prefix + "MiddleX"]
+            < coordinates[prefix + "EndX"]
+            and coordinates[prefix + "StartY"]
+            == coordinates[prefix + "MiddleY"]
+            == coordinates[prefix + "EndY"]
+        ):
+            raise M0Error(
+                f"M4 copy/paste {prefix} geometry is not strictly forward"
+            )
+
+    def require_selection(field: str, value: str) -> None:
+        activity = _require_dict(
+            page_probe.get(field), f"M4 copy/paste {field}"
+        )
+        for activity_field in (
+            "trusted",
+            "nonCollapsed",
+            "trustedNonCollapsed",
+            "selectTrusted",
+            "selectionChangeTrusted",
+        ):
+            if activity.get(activity_field) is not True:
+                raise M0Error(
+                    f"M4 copy/paste {field} {activity_field} is not true"
+                )
+        selection = _require_dict(
+            activity.get("lastNonCollapsed"),
+            f"M4 copy/paste {field} last selection",
+        )
+        for selection_field, expected_value in {
+            "trusted": True,
+            "start": 0,
+            "end": len(value),
+            "text": value,
+        }.items():
+            if selection.get(selection_field) != expected_value:
+                raise M0Error(
+                    f"M4 copy/paste {field} {selection_field} mismatch"
+                )
+        if selection.get("direction") not in ("none", "forward"):
+            raise M0Error(
+                f"M4 copy/paste {field} selection direction is invalid"
+            )
+
+    require_selection("copySelectionActivity", "COPY")
+    require_selection("decoySelectionActivity", "DECOY")
+    for field in ("sourceTextInputEvents", "decoyTextInputEvents"):
+        text_events = _require_dict(
+            page_probe.get(field), f"M4 copy/paste {field}"
+        )
+        for event_field in (
+            "beforeinputCount",
+            "inputCount",
+            "compositionstartCount",
+            "compositionupdateCount",
+            "compositionendCount",
+        ):
+            if _require_safe_integer(
+                text_events.get(event_field),
+                f"M4 copy/paste {field} {event_field}",
+                minimum=0,
+            ) != 0:
+                raise M0Error(
+                    f"M4 copy/paste {field} unexpectedly received "
+                    f"text or composition input: {event_field}"
+                )
+
+    copy_events = page_probe.get("copyEventTrace")
+    if not isinstance(copy_events, list) or len(copy_events) != 1:
+        raise M0Error("M4 copy/paste copy trace is not exactly one event")
+    copy_event = _require_dict(copy_events[0], "M4 copy/paste copy event")
+    for field, expected_value in {
+        "type": "copy",
+        "trusted": True,
+        "targetId": "copy-source",
+        "defaultPrevented": False,
+    }.items():
+        if copy_event.get(field) != expected_value:
+            raise M0Error(f"M4 copy/paste copy event {field} mismatch")
+    copy_selection = _require_dict(
+        copy_event.get("selection"), "M4 copy/paste copy selection"
+    )
+    if copy_selection.get("start") != 0 or copy_selection.get("end") != 4:
+        raise M0Error("M4 copy/paste copy selection range mismatch")
+    if copy_selection.get("text") != "COPY":
+        raise M0Error("M4 copy/paste copy selection text mismatch")
+
+    primary_paste_events = page_probe.get("primaryVerifyPasteEventTrace")
+    if not isinstance(primary_paste_events, list) or len(
+        primary_paste_events
+    ) != 1:
+        raise M0Error(
+            "M4 copy/paste primary verification trace is not exactly one "
+            "event"
+        )
+    primary_paste_event = _require_dict(
+        primary_paste_events[0], "M4 copy/paste primary verification event"
+    )
+    for field, expected_value in {
+        "type": "paste",
+        "trusted": True,
+        "targetId": "primary-verify-target",
+        "defaultPrevented": False,
+        "text": "DECOY",
+    }.items():
+        if primary_paste_event.get(field) != expected_value:
+            raise M0Error(
+                f"M4 copy/paste primary verification {field} mismatch"
+            )
+    primary_paste_text = page_probe.get("primaryVerifyPasteTextInputTrace")
+    if not isinstance(primary_paste_text, list) or len(primary_paste_text) != 2:
+        raise M0Error(
+            "M4 copy/paste primary verification text trace has wrong length"
+        )
+    for index, event_type in enumerate(("beforeinput", "input")):
+        text_event = _require_dict(
+            primary_paste_text[index],
+            f"M4 copy/paste primary verification text {index}",
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "trusted": True,
+            "inputType": "insertFromPaste",
+            "data": "DECOY",
+            "isComposing": False,
+            "targetId": "primary-verify-target",
+        }.items():
+            if text_event.get(field) != expected_value:
+                raise M0Error(
+                    "M4 copy/paste primary verification text "
+                    f"{index} {field} mismatch"
+                )
+
+    paste_events = page_probe.get("pasteEventTrace")
+    if not isinstance(paste_events, list) or len(paste_events) != 1:
+        raise M0Error("M4 copy/paste paste trace is not exactly one event")
+    paste_event = _require_dict(paste_events[0], "M4 copy/paste paste event")
+    for field, expected_value in {
+        "type": "paste",
+        "trusted": True,
+        "targetId": "paste-target",
+        "defaultPrevented": False,
+        "text": "COPY",
+    }.items():
+        if paste_event.get(field) != expected_value:
+            raise M0Error(f"M4 copy/paste paste event {field} mismatch")
+    paste_text = page_probe.get("pasteTextInputTrace")
+    if not isinstance(paste_text, list) or len(paste_text) != 2:
+        raise M0Error("M4 copy/paste paste text trace has wrong length")
+    for index, event_type in enumerate(("beforeinput", "input")):
+        text_event = _require_dict(
+            paste_text[index], f"M4 copy/paste paste text {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "trusted": True,
+            "inputType": "insertFromPaste",
+            "data": "COPY",
+            "isComposing": False,
+            "targetId": "paste-target",
+        }.items():
+            if text_event.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 copy/paste paste text {index} {field} mismatch"
+                )
+
+    def click_trace(x: int, y: int) -> tuple[tuple[str, int, int, int, int], ...]:
+        return (
+            ("move", x, y, -1, 0),
+            ("down", x, y, 0, 1),
+            ("up", x, y, 0, 0),
+        )
+
+    def middle_click_trace(
+        x: int, y: int
+    ) -> tuple[tuple[str, int, int, int, int], ...]:
+        return (
+            ("move", x, y, -1, 0),
+            ("down", x, y, 1, 4),
+            ("up", x, y, 1, 0),
+        )
+
+    def drag_trace(prefix: str) -> tuple[tuple[str, int, int, int, int], ...]:
+        return (
+            ("move", coordinates[prefix + "StartX"],
+             coordinates[prefix + "StartY"], -1, 0),
+            ("down", coordinates[prefix + "StartX"],
+             coordinates[prefix + "StartY"], 0, 1),
+            ("move", coordinates[prefix + "MiddleX"],
+             coordinates[prefix + "MiddleY"], -1, 1),
+            ("move", coordinates[prefix + "EndX"],
+             coordinates[prefix + "EndY"], -1, 1),
+            ("up", coordinates[prefix + "EndX"],
+             coordinates[prefix + "EndY"], 0, 0),
+        )
+
+    expected_pointer_trace = (
+        *click_trace(
+            coordinates["copySourceTargetX"],
+            coordinates["copySourceTargetY"],
+        ),
+        *drag_trace("copyDrag"),
+        *click_trace(
+            coordinates["decoyTargetX"], coordinates["decoyTargetY"]
+        ),
+        *drag_trace("decoyDrag"),
+        *click_trace(
+            coordinates["pasteTargetX"], coordinates["pasteTargetY"]
+        ),
+        *middle_click_trace(
+            coordinates["primaryVerifyTargetX"],
+            coordinates["primaryVerifyTargetY"],
+        ),
+    )
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 copy/paste pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 copy/paste readiness pointer"
+    )
+    if not _exact_json_value_equal(pointer_input, readiness_pointer):
+        raise M0Error(
+            "M4 copy/paste pointer evidence differs from readiness evidence"
+        )
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 copy/paste pointer listeners were not enabled")
+    queued_pointer = pointer_input.get("queuedRecords")
+    if not isinstance(queued_pointer, list) or len(queued_pointer) != len(
+        expected_pointer_trace
+    ):
+        raise M0Error("M4 copy/paste pointer trace has wrong length")
+    for field in ("receivedCount", "trustedCount", "queuedCount"):
+        if pointer_input.get(field) != len(expected_pointer_trace):
+            raise M0Error(f"M4 copy/paste pointer {field} mismatch")
+    for index, (event_type, x, y, button, buttons) in enumerate(
+        expected_pointer_trace
+    ):
+        record = _require_dict(
+            queued_pointer[index],
+            f"M4 copy/paste pointer trace {index}",
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "trusted": True,
+            "queued": True,
+            "button": button,
+            "buttons": buttons,
+            "sequence": index + 1,
+            "x": x,
+            "y": y,
+            "canvasFocused": True,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 copy/paste pointer trace {index} {field} mismatch"
+                )
+        _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 copy/paste pointer trace {index} frame",
+            minimum=1,
+        )
+
+    expected_key_trace = (
+        ("down", "ControlLeft", "Control", True),
+        ("down", "KeyC", "c", True),
+        ("up", "KeyC", "c", True),
+        ("up", "ControlLeft", "Control", False),
+        ("down", "ControlLeft", "Control", True),
+        ("down", "KeyV", "v", True),
+        ("up", "KeyV", "v", True),
+        ("up", "ControlLeft", "Control", False),
+    )
+    keyboard_input = _require_dict(
+        result.get("keyboardInput"), "M4 copy/paste keyboard input"
+    )
+    readiness_keyboard = _require_dict(
+        readiness.get("keyboardInput"), "M4 copy/paste readiness keyboard"
+    )
+    if not _exact_json_value_equal(keyboard_input, readiness_keyboard):
+        raise M0Error(
+            "M4 copy/paste keyboard evidence differs from readiness evidence"
+        )
+    if (
+        keyboard_input.get("enabled") is not True
+        or keyboard_input.get("activated") is not True
+        or keyboard_input.get("pressedCodes") != []
+    ):
+        raise M0Error("M4 copy/paste keyboard state is invalid")
+    queued_keys = keyboard_input.get("queuedRecords")
+    if not isinstance(queued_keys, list) or len(queued_keys) != len(
+        expected_key_trace
+    ):
+        raise M0Error("M4 copy/paste key trace has wrong length")
+    if keyboard_input.get("receivedCount") != len(expected_key_trace) + 2:
+        raise M0Error("M4 copy/paste keyboard receivedCount mismatch")
+    if keyboard_input.get("trustedCount") != len(expected_key_trace) + 2:
+        raise M0Error("M4 copy/paste keyboard trustedCount mismatch")
+    if keyboard_input.get("queuedCount") != len(expected_key_trace):
+        raise M0Error("M4 copy/paste keyboard queuedCount mismatch")
+    rejected_keys = keyboard_input.get("rejectedRecords")
+    if not isinstance(rejected_keys, list) or len(rejected_keys) != 2:
+        raise M0Error("M4 copy/paste rejected shortcut trace has wrong length")
+    for index, (event_type, reason) in enumerate(
+        (("down", "UNSUPPORTED_SHORTCUT_STATE"), ("up", "UNMATCHED_UP"))
+    ):
+        record = _require_dict(
+            rejected_keys[index], f"M4 copy/paste rejected shortcut {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "code": "KeyC",
+            "key": "c",
+            "trusted": True,
+            "queued": False,
+            "reason": reason,
+            "repeat": False,
+            "isComposing": False,
+            "sequence": index + 1,
+            "canvasFocused": True,
+            "pointerActivated": True,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 copy/paste rejected shortcut {index} {field} mismatch"
+                )
+        modifiers = _require_dict(
+            record.get("modifiers"),
+            f"M4 copy/paste rejected shortcut {index} modifiers",
+        )
+        if modifiers != {
+            "alt": False,
+            "control": False,
+            "meta": False,
+            "shift": False,
+        }:
+            raise M0Error(
+                f"M4 copy/paste rejected shortcut {index} modifiers mismatch"
+            )
+    paste_key_down_frame_id = 0
+    for index, (event_type, code, key, control) in enumerate(
+        expected_key_trace
+    ):
+        record = _require_dict(
+            queued_keys[index], f"M4 copy/paste key trace {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "code": code,
+            "key": key,
+            "trusted": True,
+            "queued": True,
+            "repeat": False,
+            "isComposing": False,
+            "sequence": index + 3,
+            "canvasFocused": True,
+            "pointerActivated": True,
+            "defaultPrevented": True,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 copy/paste key trace {index} {field} mismatch"
+                )
+        modifiers = _require_dict(
+            record.get("modifiers"),
+            f"M4 copy/paste key trace {index} modifiers",
+        )
+        if modifiers != {
+            "alt": False,
+            "control": control,
+            "meta": False,
+            "shift": False,
+        }:
+            raise M0Error(
+                f"M4 copy/paste key trace {index} modifier mismatch"
+            )
+        record_frame_id = _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 copy/paste key trace {index} frame",
+            minimum=1,
+        )
+        if index == 5:
+            paste_key_down_frame_id = record_frame_id
+    if frame_id <= paste_key_down_frame_id:
+        raise M0Error("M4 copy/paste has no compositor frame after Ctrl+V")
+
+    inner_keys = page_probe.get("keyEventTrace")
+    if not isinstance(inner_keys, list) or len(inner_keys) != len(
+        expected_key_trace
+    ):
+        raise M0Error("M4 copy/paste inner key trace has wrong length")
+    expected_targets = (
+        "copy-source",
+        "copy-source",
+        "copy-source",
+        "copy-source",
+        "paste-target",
+        "paste-target",
+        "paste-target",
+        "paste-target",
+    )
+    for index, (event_type, code, key, _) in enumerate(expected_key_trace):
+        record = _require_dict(
+            inner_keys[index], f"M4 copy/paste inner key trace {index}"
+        )
+        for field, expected_value in {
+            "type": "keydown" if event_type == "down" else "keyup",
+            "code": code,
+            "key": key,
+            "trusted": True,
+            "repeat": False,
+            "isComposing": False,
+            "targetId": expected_targets[index],
+            "defaultPrevented": False,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 copy/paste inner key trace {index} {field} mismatch"
+                )
+        if code in ("KeyC", "KeyV") and record.get("ctrlKey") is not True:
+            raise M0Error(
+                f"M4 copy/paste inner key trace {index} lost Control"
+            )
+
+    shutdown = _require_dict(
+        result.get("shutdown"), "M4 copy/paste shutdown"
+    )
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 copy/paste shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if shutdown.get(field) != 0:
+            raise M0Error(f"M4 copy/paste shutdown {field} is not zero")
+    logs = _require_dict(result.get("logs"), "M4 copy/paste logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 copy/paste {stream} log is not an array")
+    host_logs = logs["host"]
+    if (
+        "m4:pointer:listeners-attached" not in host_logs
+        or "m4:keyboard:listeners-attached" not in host_logs
+        or "m4:keyboard:down:unsupported-shortcut-state" not in host_logs
+        or "m4:keyboard:up:unmatched" not in host_logs
+        or host_logs.count("m4:keyboard:down:queued") != 4
+        or host_logs.count("m4:keyboard:up:queued") != 4
+        or host_logs[-1:] != ["shutdown:complete"]
+    ):
+        raise M0Error("M4 copy/paste host lifecycle logs are invalid")
 
 
 def validate_m4_wheel_result(

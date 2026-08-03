@@ -33,6 +33,7 @@ from m3_content_server import (
     M4_CASE,
     M4_SELECTION_CASE,
     M4_PRIMARY_PASTE_CASE,
+    M4_COPY_PASTE_CASE,
     M4_FOCUS_CASE,
     M4_WHEEL_CASE,
     M4_KEYBOARD_CASE,
@@ -44,6 +45,7 @@ from m3_content_server import (
     m4_smoke_url,
     m4_selection_smoke_url,
     m4_primary_paste_smoke_url,
+    m4_copy_paste_smoke_url,
     m4_wheel_smoke_url,
     m4_keyboard_smoke_url,
     m4_printable_key_smoke_url,
@@ -52,6 +54,7 @@ from m3_content_server import (
     validate_m4_result,
     validate_m4_selection_result,
     validate_m4_primary_paste_result,
+    validate_m4_copy_paste_result,
     validate_m4_focus_result,
     validate_m4_wheel_result,
     validate_m4_keyboard_result,
@@ -408,6 +411,7 @@ def main() -> int:
             "pointer",
             "selection",
             "primary-paste",
+            "copy-paste",
             "wheel",
             "keyboard",
             "printable-key",
@@ -451,6 +455,15 @@ def main() -> int:
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent primary click and drag "
             "followed by a middle click; no clipboard or text commands"
+        )
+    elif args.input == "copy-paste":
+        case = M4_COPY_PASTE_CASE
+        state_expression = "window.__chromiumWasmM4CopyPasteState || null"
+        expected_state = "awaiting-dom-copy-paste-source-activation"
+        input_driver = (
+            "Chrome DevTools Input.dispatchMouseEvent source/decoy drags "
+            "plus raw ControlLeft+KeyC and ControlLeft+KeyV; no clipboard "
+            "or text commands"
         )
     elif args.input == "wheel":
         case = M4_WHEEL_CASE
@@ -601,6 +614,16 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
             )
+        elif args.input == "copy-paste":
+            # This case has eight separately observed physical input phases.
+            # Leave time for the outer driver to collect the posted result.
+            url = m4_copy_paste_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(90.0, max(1.0, args.timeout - 5.0)),
+            )
         elif args.input == "wheel":
             url = m4_wheel_smoke_url(
                 server,
@@ -715,6 +738,14 @@ def main() -> int:
                 x_field="sourceTargetX",
                 y_field="sourceTargetY",
                 description="primary-paste source target",
+            )
+        elif args.input == "copy-paste":
+            click_x, click_y = canvas_point_position(
+                state,
+                canvas_geometry,
+                x_field="copySourceTargetX",
+                y_field="copySourceTargetY",
+                description="copy-paste source target",
             )
         else:
             click_x, click_y = canvas_click_position(state, canvas_geometry)
@@ -831,6 +862,187 @@ def main() -> int:
             )
             stage = "dispatch_trusted_dom_primary_paste"
             client.dispatch_middle_click(paste_x, paste_y)
+        elif args.input == "copy-paste":
+            stage = "dispatch_trusted_dom_copy_source_activation"
+            client.dispatch_primary_click(click_x, click_y)
+            stage = "wait_for_bare_key_c_rejection"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-bare-shortcut-rejection",
+            )
+            stage = "dispatch_trusted_dom_bare_key_c"
+            client.dispatch_bare_key_c()
+            stage = "wait_for_copy_source_drag"
+            copy_drag_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-source-drag",
+            )
+            stage = "measure_copy_source_drag"
+            copy_drag_start_x, copy_drag_start_y = canvas_point_position(
+                copy_drag_state,
+                canvas_geometry,
+                x_field="copyDragStartX",
+                y_field="copyDragStartY",
+                description="copy-paste COPY drag start",
+            )
+            copy_drag_middle_x, copy_drag_middle_y = canvas_point_position(
+                copy_drag_state,
+                canvas_geometry,
+                x_field="copyDragMiddleX",
+                y_field="copyDragMiddleY",
+                description="copy-paste COPY drag middle",
+            )
+            copy_drag_end_x, copy_drag_end_y = canvas_point_position(
+                copy_drag_state,
+                canvas_geometry,
+                x_field="copyDragEndX",
+                y_field="copyDragEndY",
+                description="copy-paste COPY drag end",
+            )
+            stage = "dispatch_trusted_dom_copy_source_drag"
+            client.dispatch_primary_drag(
+                copy_drag_start_x,
+                copy_drag_start_y,
+                copy_drag_middle_x,
+                copy_drag_middle_y,
+                copy_drag_end_x,
+                copy_drag_end_y,
+            )
+            stage = "wait_for_ctrl_c"
+            copy_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-copy",
+            )
+            stage = "dispatch_trusted_dom_ctrl_c"
+            client.dispatch_ctrl_c()
+            stage = "wait_for_decoy_activation"
+            decoy_activation_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-decoy-activation",
+            )
+            stage = "measure_decoy_activation"
+            decoy_x, decoy_y = canvas_point_position(
+                decoy_activation_state,
+                canvas_geometry,
+                x_field="decoyTargetX",
+                y_field="decoyTargetY",
+                description="copy-paste DECOY target",
+            )
+            stage = "dispatch_trusted_dom_decoy_activation"
+            client.dispatch_primary_click(decoy_x, decoy_y)
+            stage = "wait_for_decoy_drag"
+            decoy_drag_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-decoy-drag",
+            )
+            stage = "measure_decoy_drag"
+            decoy_drag_start_x, decoy_drag_start_y = canvas_point_position(
+                decoy_drag_state,
+                canvas_geometry,
+                x_field="decoyDragStartX",
+                y_field="decoyDragStartY",
+                description="copy-paste DECOY drag start",
+            )
+            decoy_drag_middle_x, decoy_drag_middle_y = canvas_point_position(
+                decoy_drag_state,
+                canvas_geometry,
+                x_field="decoyDragMiddleX",
+                y_field="decoyDragMiddleY",
+                description="copy-paste DECOY drag middle",
+            )
+            decoy_drag_end_x, decoy_drag_end_y = canvas_point_position(
+                decoy_drag_state,
+                canvas_geometry,
+                x_field="decoyDragEndX",
+                y_field="decoyDragEndY",
+                description="copy-paste DECOY drag end",
+            )
+            stage = "dispatch_trusted_dom_decoy_drag"
+            client.dispatch_primary_drag(
+                decoy_drag_start_x,
+                decoy_drag_start_y,
+                decoy_drag_middle_x,
+                decoy_drag_middle_y,
+                decoy_drag_end_x,
+                decoy_drag_end_y,
+            )
+            stage = "wait_for_paste_activation"
+            paste_activation_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-paste-activation",
+            )
+            stage = "measure_paste_target"
+            paste_x, paste_y = canvas_point_position(
+                paste_activation_state,
+                canvas_geometry,
+                x_field="pasteTargetX",
+                y_field="pasteTargetY",
+                description="copy-paste paste target",
+            )
+            stage = "dispatch_trusted_dom_paste_activation"
+            client.dispatch_primary_click(paste_x, paste_y)
+            stage = "wait_for_ctrl_v"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-paste",
+            )
+            stage = "dispatch_trusted_dom_ctrl_v"
+            client.dispatch_ctrl_v()
+            stage = "wait_for_primary_selection_verification"
+            primary_verify_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-copy-paste-primary-verify",
+            )
+            stage = "measure_primary_selection_verification_target"
+            primary_verify_x, primary_verify_y = canvas_point_position(
+                primary_verify_state,
+                canvas_geometry,
+                x_field="primaryVerifyTargetX",
+                y_field="primaryVerifyTargetY",
+                description="copy-paste primary-selection verification target",
+            )
+            stage = "dispatch_trusted_dom_primary_selection_verification"
+            client.dispatch_middle_click(primary_verify_x, primary_verify_y)
         elif args.input == "wheel":
             stage = "dispatch_trusted_dom_wheel"
             client.dispatch_mouse_wheel(click_x, click_y, 0.0, 160.0)
@@ -967,6 +1179,11 @@ def main() -> int:
                 result, expected_versions=versions
             )
             input_key = "pointerInput"
+        elif args.input == "copy-paste":
+            validate_m4_copy_paste_result(
+                result, expected_versions=versions
+            )
+            input_key = "keyboardInput"
         elif args.input == "wheel":
             validate_m4_wheel_result(result, expected_versions=versions)
             input_key = "wheelInput"

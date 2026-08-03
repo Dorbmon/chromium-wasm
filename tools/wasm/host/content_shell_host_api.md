@@ -143,19 +143,23 @@ whose Chromium convention is positive for left and up. This keeps Blink's
 observed DOM wheel delta in the original right/down convention.
 
 `chromium_wasm_host_key` accepts exactly the bounded DOM code strings
-`"ArrowDown"`, `"KeyA"`, and `"Backspace"`, with `down == 0` or `1`.
-This physical-key ABI has no text payload. The `"KeyA"` and `"Backspace"`
-slices also require the unmodified DOM keys `"a"` and `"Backspace"`,
-respectively. `"KeyA"` is a fixed-US physical-layout experiment and
-`"Backspace"` is one fixed backward-edit key; neither is a host text,
-composition, IME, generic editing, or generic keyboard API. The host accepts
-only a trusted, cancelable canvas `keydown`/`keyup` pair after a queued
-primary-pointer press has activated the Wasm window. It rejects modifier,
-repeat, composition, dead-key, process-key, unsupported-code, mismatched key,
-duplicate-down, and unmatched-up records explicitly. A successful export means
-the record was queued on the UI task runner; it does not mean Blink has received
-it. The host cancels its held key state on canvas or window blur, visibility
-loss, teardown, and shutdown, queuing a matching release when Chromium is still
+`"ArrowDown"`, `"KeyA"`, `"Backspace"`, `"ControlLeft"`, `"KeyC"`, and
+`"KeyV"`, with `down == 0` or `1`. This physical-key ABI has no text payload.
+The `"KeyA"` and `"Backspace"` slices require the unmodified DOM keys `"a"`
+and `"Backspace"`, respectively. `"KeyA"` is a fixed-US physical-layout
+experiment and `"Backspace"` is one fixed backward-edit key. `"KeyC"` and
+`"KeyV"` are admitted only as a paired `ControlLeft` chord; Alt, Meta, Shift,
+other Control combinations, and generic modifier handling remain unsupported.
+None of these keys is a host text, composition, IME, generic editing, or generic
+keyboard API. The ABI rejects unpaired or duplicate Control, `KeyC`, and
+`KeyV` transitions before queueing. The host accepts only a trusted,
+cancelable canvas `keydown`/`keyup` pair after a queued primary-pointer press
+has activated the Wasm window. It rejects modifier, repeat, composition,
+dead-key, process-key, unsupported-code, mismatched key, duplicate-down, and
+unmatched-up records explicitly. A successful export means the record was
+queued on the UI task runner; it does not mean Blink has received it. The host
+cancels its held key state on canvas or window blur, visibility loss, teardown,
+and shutdown, releasing chord keys before `ControlLeft` when Chromium is still
 running. It prevents the outer canvas event's default action only after queue
 acceptance.
 
@@ -230,8 +234,25 @@ selection. The middle-button release therefore takes Blink's ordinary
 test requires native trusted `paste`, `beforeinput`, and `input` events with
 `insertFromPaste`, an unchanged source value, a target value of `"WASM"`, and
 a post-paste compositor frame. It does not call `navigator.clipboard`, use a
-host text command, or claim system-clipboard integration. Ctrl+C/Ctrl+V and
-the asynchronous, permission-gated host clipboard bridge remain later work.
+host text command, or claim system-clipboard integration.
+
+The separate M4 Ctrl copy/paste smoke uses one native source input containing
+`"COPY"`, selects it through a trusted primary drag, and sends raw physical
+`ControlLeft`+`KeyC` records. It then replaces the primary selection with a
+trusted drag over a second native input containing `"DECOY"`. A trusted middle
+click later pastes `"DECOY"` into a separate blank verification input through
+Blink's normal `PasteGlobalSelection` route. Before that final verification,
+the smoke focuses a third blank input through the canvas and sends raw
+`ControlLeft`+`KeyV` records; it receives `"COPY"` after the primary selection
+has already been overwritten. Those two native paste results prove that the
+process-local standard `ClipboardBuffer::kCopyPaste` buffer is distinct from
+the overwritten `ClipboardBuffer::kSelection` primary buffer. Before the
+accepted chord, the smoke also sends an unmodified raw `KeyC` pair and requires
+the host to reject it without Blink delivery. The proof requires exact outer
+pointer and key traces, exact trusted inner key traces, no text payload,
+clipboard API, or DOM command, no source/decoy mutation, and post-paste
+compositor frames. It does not provide system-clipboard integration or the
+asynchronous, permission-gated host clipboard bridge.
 
 #### Bounded IME composition route
 

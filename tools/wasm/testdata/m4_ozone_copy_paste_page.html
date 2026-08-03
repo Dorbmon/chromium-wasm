@@ -1,0 +1,504 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 Ozone Ctrl copy/paste fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  body {
+    min-height: 900px;
+    margin: 0;
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    width: 520px;
+    margin: 32px 0 0 96px;
+    padding: 24px;
+    border: 4px solid #163a63;
+    background: #ffffff;
+  }
+
+  label {
+    display: block;
+    margin-top: 16px;
+  }
+
+  input {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    padding: 14px;
+    border: 3px solid #0f5b94;
+    background: #d8f0ff;
+    color: #062b4d;
+    font: 20px/20px Ahem, sans-serif;
+    letter-spacing: 0;
+    outline: none;
+  }
+
+  input:focus {
+    border-color: #ff8a00;
+    box-shadow: 0 0 0 4px #ffcf75;
+  }
+
+  #result[data-copy-pasted="true"] {
+    color: #08763b;
+  }
+</style>
+<main>
+  <p id="title">M4 OZONE PROCESS-LOCAL CTRL COPY/PASTE</p>
+  <label for="copy-source">DRAG LEFT TO RIGHT, THEN PRESS CTRL+C</label>
+  <input id="copy-source" type="text" value="COPY" autocomplete="off" spellcheck="false">
+  <label for="selection-decoy">DRAG THIS DECOY AFTER COPYING</label>
+  <input id="selection-decoy" type="text" value="DECOY" autocomplete="off" spellcheck="false">
+  <label for="primary-verify-target">MIDDLE-CLICK TO VERIFY THE PRIMARY SELECTION</label>
+  <input id="primary-verify-target" type="text" autocomplete="off" spellcheck="false">
+  <label for="paste-target">CLICK, THEN PRESS CTRL+V</label>
+  <input id="paste-target" type="text" autocomplete="off" spellcheck="false">
+  <p id="result" data-copy-pasted="false">WAITING FOR CTRL COPY/PASTE</p>
+</main>
+<script>
+  (() => {
+    const COPY_VALUE = "COPY";
+    const DECOY_VALUE = "DECOY";
+    const VIEWPORT_WIDTH = 800;
+    const VIEWPORT_HEIGHT = 600;
+    const copySource = document.querySelector("#copy-source");
+    const selectionDecoy = document.querySelector("#selection-decoy");
+    const primaryVerifyTarget = document.querySelector("#primary-verify-target");
+    const pasteTarget = document.querySelector("#paste-target");
+    const result = document.querySelector("#result");
+    const pointerTraces = {
+      copySource: [],
+      selectionDecoy: [],
+      primaryVerifyTarget: [],
+      pasteTarget: [],
+    };
+    const keyEventTrace = [];
+    const copyEventTrace = [];
+    const primaryVerifyPasteEventTrace = [];
+    const primaryVerifyPasteTextInputTrace = [];
+    const pasteEventTrace = [];
+    const pasteTextInputTrace = [];
+    const sourceTextInputEvents = {
+      beforeinputCount: 0,
+      inputCount: 0,
+      compositionstartCount: 0,
+      compositionupdateCount: 0,
+      compositionendCount: 0,
+    };
+    const decoyTextInputEvents = {
+      beforeinputCount: 0,
+      inputCount: 0,
+      compositionstartCount: 0,
+      compositionupdateCount: 0,
+      compositionendCount: 0,
+    };
+    const copySelectionActivity = {
+      count: 0,
+      trusted: false,
+      nonCollapsed: false,
+      trustedNonCollapsed: false,
+      selectCount: 0,
+      selectTrusted: false,
+      selectionChangeCount: 0,
+      selectionChangeTrusted: false,
+      lastNonCollapsed: null,
+    };
+    const decoySelectionActivity = {
+      count: 0,
+      trusted: false,
+      nonCollapsed: false,
+      trustedNonCollapsed: false,
+      selectCount: 0,
+      selectTrusted: false,
+      selectionChangeCount: 0,
+      selectionChangeTrusted: false,
+      lastNonCollapsed: null,
+    };
+    let copySourceActivationCount = 0;
+    let copySourceFocusCount = 0;
+    let selectionDecoyActivationCount = 0;
+    let selectionDecoyFocusCount = 0;
+    let primaryVerifyAuxClickCount = 0;
+    let primaryVerifyAuxClickTrusted = false;
+    let primaryVerifyFocusCount = 0;
+    let primaryVerifyFocusTrusted = false;
+    let pasteTargetActivationCount = 0;
+    let pasteTargetFocusCount = 0;
+    let fontReady = !document.fonts;
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    let timerTicks = 0;
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    function tracePointerEvent(event) {
+      return {
+        type: event.type,
+        trusted: event.isTrusted === true,
+        button: event.button,
+        buttons: event.buttons,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+      };
+    }
+
+    function textSelection(target) {
+      const start = target.selectionStart;
+      const end = target.selectionEnd;
+      if (
+        !Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+        start < 0 || end < start
+      ) {
+        return null;
+      }
+      return {
+        start,
+        end,
+        text: target.value.slice(start, end),
+        direction: target.selectionDirection,
+      };
+    }
+
+    function recordSelectionActivity(target, activity, event, kind) {
+      const selection = textSelection(target);
+      const nonCollapsed = selection !== null && selection.start < selection.end;
+      const trusted = event.isTrusted === true;
+      activity.count += 1;
+      activity.trusted = activity.trusted || trusted;
+      activity.nonCollapsed = activity.nonCollapsed || nonCollapsed;
+      activity.trustedNonCollapsed =
+        activity.trustedNonCollapsed || trusted && nonCollapsed;
+      if (nonCollapsed) {
+        activity.lastNonCollapsed = {
+          ...selection,
+          trusted,
+          kind,
+        };
+      }
+      if (kind === "select") {
+        activity.selectCount += 1;
+        activity.selectTrusted = activity.selectTrusted || trusted;
+      } else {
+        activity.selectionChangeCount += 1;
+        activity.selectionChangeTrusted =
+          activity.selectionChangeTrusted || trusted;
+      }
+    }
+
+    for (const [target, trace] of [
+      [copySource, pointerTraces.copySource],
+      [selectionDecoy, pointerTraces.selectionDecoy],
+      [primaryVerifyTarget, pointerTraces.primaryVerifyTarget],
+      [pasteTarget, pointerTraces.pasteTarget],
+    ]) {
+      for (const type of [
+        "mousedown", "mousemove", "mouseup",
+        "pointerdown", "pointermove", "pointerup",
+      ]) {
+        target.addEventListener(type, (event) => {
+          trace.push(tracePointerEvent(event));
+        });
+      }
+    }
+
+    for (const type of [
+      "beforeinput", "input", "compositionstart", "compositionupdate",
+      "compositionend",
+    ]) {
+      copySource.addEventListener(type, () => {
+        sourceTextInputEvents[type + "Count"] += 1;
+      });
+      selectionDecoy.addEventListener(type, () => {
+        decoyTextInputEvents[type + "Count"] += 1;
+      });
+    }
+
+    copySource.addEventListener("click", (event) => {
+      copySourceActivationCount += 1;
+    });
+    copySource.addEventListener("focus", (event) => {
+      if (event.isTrusted) {
+        copySourceFocusCount += 1;
+      }
+    });
+    selectionDecoy.addEventListener("click", () => {
+      selectionDecoyActivationCount += 1;
+    });
+    selectionDecoy.addEventListener("focus", (event) => {
+      if (event.isTrusted) {
+        selectionDecoyFocusCount += 1;
+      }
+    });
+    primaryVerifyTarget.addEventListener("auxclick", (event) => {
+      primaryVerifyAuxClickCount += 1;
+      primaryVerifyAuxClickTrusted =
+        primaryVerifyAuxClickTrusted || event.isTrusted === true;
+    });
+    primaryVerifyTarget.addEventListener("focus", (event) => {
+      primaryVerifyFocusCount += 1;
+      primaryVerifyFocusTrusted =
+        primaryVerifyFocusTrusted || event.isTrusted === true;
+    });
+    pasteTarget.addEventListener("click", () => {
+      pasteTargetActivationCount += 1;
+    });
+    pasteTarget.addEventListener("focus", (event) => {
+      if (event.isTrusted) {
+        pasteTargetFocusCount += 1;
+      }
+    });
+
+    copySource.addEventListener("select", (event) => {
+      recordSelectionActivity(copySource, copySelectionActivity, event, "select");
+    });
+    selectionDecoy.addEventListener("select", (event) => {
+      recordSelectionActivity(
+          selectionDecoy, decoySelectionActivity, event, "select");
+    });
+    document.addEventListener("selectionchange", (event) => {
+      if (document.activeElement === copySource) {
+        recordSelectionActivity(
+            copySource, copySelectionActivity, event, "selectionchange");
+      } else if (document.activeElement === selectionDecoy) {
+        recordSelectionActivity(
+            selectionDecoy, decoySelectionActivity, event, "selectionchange");
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      keyEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        code: event.code,
+        key: event.key,
+        ctrlKey: event.ctrlKey === true,
+        repeat: event.repeat === true,
+        isComposing: event.isComposing === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+      });
+    });
+    document.addEventListener("keyup", (event) => {
+      keyEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        code: event.code,
+        key: event.key,
+        ctrlKey: event.ctrlKey === true,
+        repeat: event.repeat === true,
+        isComposing: event.isComposing === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+      });
+    });
+
+    copySource.addEventListener("copy", (event) => {
+      copyEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+        selection: textSelection(copySource),
+      });
+    });
+    primaryVerifyTarget.addEventListener("paste", (event) => {
+      primaryVerifyPasteEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+        text: event.clipboardData?.getData("text/plain") || null,
+      });
+    });
+    pasteTarget.addEventListener("paste", (event) => {
+      pasteEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+        text: event.clipboardData?.getData("text/plain") || null,
+      });
+    });
+    for (const type of ["beforeinput", "input"]) {
+      primaryVerifyTarget.addEventListener(type, (event) => {
+        primaryVerifyPasteTextInputTrace.push({
+          type: event.type,
+          trusted: event.isTrusted === true,
+          inputType: event.inputType,
+          data: typeof event.data === "string" ? event.data : null,
+          isComposing: event.isComposing === true,
+          targetId: event.target?.id || null,
+        });
+      });
+    }
+    for (const type of ["beforeinput", "input"]) {
+      pasteTarget.addEventListener(type, (event) => {
+        pasteTextInputTrace.push({
+          type: event.type,
+          trusted: event.isTrusted === true,
+          inputType: event.inputType,
+          data: typeof event.data === "string" ? event.data : null,
+          isComposing: event.isComposing === true,
+          targetId: event.target?.id || null,
+        });
+        if (
+          event.type === "input" &&
+          event.isTrusted === true &&
+          pasteTarget.value === COPY_VALUE &&
+          pasteTarget.selectionStart === COPY_VALUE.length &&
+          pasteTarget.selectionEnd === COPY_VALUE.length
+        ) {
+          result.dataset.copyPasted = "true";
+          result.textContent = "CTRL COPY/PASTE DELIVERED";
+        }
+      });
+    }
+
+    function viewportCoordinate(value, maximum) {
+      const coordinate = Math.floor(value);
+      return Number.isSafeInteger(coordinate) && coordinate >= 0 &&
+          coordinate <= maximum ? coordinate : null;
+    }
+
+    function selectionGeometry(target) {
+      const rect = target.getBoundingClientRect();
+      const style = getComputedStyle(target);
+      const borderLeft = Number.parseFloat(style.borderLeftWidth);
+      const borderRight = Number.parseFloat(style.borderRightWidth);
+      const paddingLeft = Number.parseFloat(style.paddingLeft);
+      const paddingRight = Number.parseFloat(style.paddingRight);
+      if (
+        !Number.isFinite(rect.left) || !Number.isFinite(rect.right) ||
+        !Number.isFinite(rect.top) || !Number.isFinite(rect.width) ||
+        !Number.isFinite(rect.height) || !Number.isFinite(borderLeft) ||
+        !Number.isFinite(borderRight) || !Number.isFinite(paddingLeft) ||
+        !Number.isFinite(paddingRight) || rect.width <= 0 || rect.height <= 0
+      ) {
+        return {ready: false};
+      }
+      const textLeft = rect.left + borderLeft + paddingLeft;
+      const textRight = rect.right - borderRight - paddingRight;
+      const y = rect.top + rect.height / 2;
+      const targetX = viewportCoordinate(
+          rect.left + rect.width / 2, VIEWPORT_WIDTH - 1);
+      const targetY = viewportCoordinate(y, VIEWPORT_HEIGHT - 1);
+      const dragStartX = viewportCoordinate(textLeft + 1, VIEWPORT_WIDTH - 1);
+      const dragMiddleX = viewportCoordinate(
+          textLeft + (textRight - textLeft) / 2, VIEWPORT_WIDTH - 1);
+      const dragEndX = viewportCoordinate(textRight - 1, VIEWPORT_WIDTH - 1);
+      const dragY = viewportCoordinate(y, VIEWPORT_HEIGHT - 1);
+      return {
+        targetX,
+        targetY,
+        dragStartX,
+        dragStartY: dragY,
+        dragMiddleX,
+        dragMiddleY: dragY,
+        dragEndX,
+        dragEndY: dragY,
+        ready: [
+          targetX, targetY, dragStartX, dragY, dragMiddleX, dragEndX,
+        ].every(Number.isSafeInteger) &&
+          textRight > textLeft && dragStartX < dragMiddleX &&
+          dragMiddleX < dragEndX,
+      };
+    }
+
+    function targetGeometry(target) {
+      const rect = target.getBoundingClientRect();
+      if (
+        !Number.isFinite(rect.left) || !Number.isFinite(rect.top) ||
+        !Number.isFinite(rect.width) || !Number.isFinite(rect.height) ||
+        rect.width <= 0 || rect.height <= 0
+      ) {
+        return {ready: false};
+      }
+      const targetX = viewportCoordinate(
+          rect.left + rect.width / 2, VIEWPORT_WIDTH - 1);
+      const targetY = viewportCoordinate(
+          rect.top + rect.height / 2, VIEWPORT_HEIGHT - 1);
+      return {
+        targetX,
+        targetY,
+        ready: Number.isSafeInteger(targetX) && Number.isSafeInteger(targetY),
+      };
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      const copyGeometry = selectionGeometry(copySource);
+      const decoyGeometry = selectionGeometry(selectionDecoy);
+      const primaryVerifyGeometry = targetGeometry(primaryVerifyTarget);
+      const pasteGeometry = targetGeometry(pasteTarget);
+      return JSON.stringify({
+        protocol: 1,
+        timerTicks,
+        fixture: "chromium-wasm-m4-ozone-copy-paste-v1",
+        fontReady,
+        ready: document.readyState === "complete" && fontReady &&
+          copyGeometry.ready && decoyGeometry.ready &&
+          primaryVerifyGeometry.ready && pasteGeometry.ready,
+        copySourceTargetX: copyGeometry.targetX,
+        copySourceTargetY: copyGeometry.targetY,
+        copyDragStartX: copyGeometry.dragStartX,
+        copyDragStartY: copyGeometry.dragStartY,
+        copyDragMiddleX: copyGeometry.dragMiddleX,
+        copyDragMiddleY: copyGeometry.dragMiddleY,
+        copyDragEndX: copyGeometry.dragEndX,
+        copyDragEndY: copyGeometry.dragEndY,
+        decoyTargetX: decoyGeometry.targetX,
+        decoyTargetY: decoyGeometry.targetY,
+        decoyDragStartX: decoyGeometry.dragStartX,
+        decoyDragStartY: decoyGeometry.dragStartY,
+        decoyDragMiddleX: decoyGeometry.dragMiddleX,
+        decoyDragMiddleY: decoyGeometry.dragMiddleY,
+        decoyDragEndX: decoyGeometry.dragEndX,
+        decoyDragEndY: decoyGeometry.dragEndY,
+        primaryVerifyTargetX: primaryVerifyGeometry.targetX,
+        primaryVerifyTargetY: primaryVerifyGeometry.targetY,
+        pasteTargetX: pasteGeometry.targetX,
+        pasteTargetY: pasteGeometry.targetY,
+        activeElementId: document.activeElement?.id || null,
+        copySourceValue: copySource.value,
+        decoyValue: selectionDecoy.value,
+        primaryVerifyValue: primaryVerifyTarget.value,
+        primaryVerifySelectionStart: primaryVerifyTarget.selectionStart,
+        primaryVerifySelectionEnd: primaryVerifyTarget.selectionEnd,
+        pasteValue: pasteTarget.value,
+        pasteSelectionStart: pasteTarget.selectionStart,
+        pasteSelectionEnd: pasteTarget.selectionEnd,
+        copySourceActivationCount,
+        copySourceFocusCount,
+        selectionDecoyActivationCount,
+        selectionDecoyFocusCount,
+        primaryVerifyAuxClickCount,
+        primaryVerifyAuxClickTrusted,
+        primaryVerifyFocusCount,
+        primaryVerifyFocusTrusted,
+        pasteTargetActivationCount,
+        pasteTargetFocusCount,
+        pointerTraces,
+        keyEventTrace,
+        copyEventTrace,
+        primaryVerifyPasteEventTrace,
+        primaryVerifyPasteTextInputTrace,
+        pasteEventTrace,
+        pasteTextInputTrace,
+        sourceTextInputEvents,
+        decoyTextInputEvents,
+        copySelectionActivity,
+        decoySelectionActivity,
+        resultText: result.textContent,
+      });
+    };
+  })();
+</script>

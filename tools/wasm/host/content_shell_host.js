@@ -11,6 +11,7 @@ const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
 const M4_BACKSPACE_CASE = "ozone_backspace_m4";
 const M4_SELECTION_CASE = "ozone_selection_m4";
 const M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4";
+const M4_COPY_PASTE_CASE = "ozone_copy_paste_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
@@ -22,6 +23,7 @@ const M4_BACKSPACE_FIXTURE = "chromium-wasm-m4-ozone-backspace-v1";
 const M4_SELECTION_FIXTURE = "chromium-wasm-m4-ozone-selection-v1";
 const M4_PRIMARY_PASTE_FIXTURE =
   "chromium-wasm-m4-ozone-primary-paste-v1";
+const M4_COPY_PASTE_FIXTURE = "chromium-wasm-m4-ozone-copy-paste-v1";
 const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
@@ -29,6 +31,14 @@ const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
 const M4_PRINTABLE_KEY_DOM_KEY = "a";
 const M4_BACKSPACE_DOM_CODE = "Backspace";
 const M4_BACKSPACE_DOM_KEY = "Backspace";
+const M4_CONTROL_LEFT_DOM_CODE = "ControlLeft";
+const M4_CONTROL_LEFT_DOM_KEY = "Control";
+const M4_COPY_DOM_CODE = "KeyC";
+const M4_COPY_DOM_KEY = "c";
+const M4_PASTE_DOM_CODE = "KeyV";
+const M4_PASTE_DOM_KEY = "v";
+const M4_COPY_PASTE_SOURCE_VALUE = "COPY";
+const M4_COPY_PASTE_DECOY_VALUE = "DECOY";
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -61,9 +71,19 @@ function expectedM4KeyboardKey(code) {
       return M4_PRINTABLE_KEY_DOM_KEY;
     case M4_BACKSPACE_DOM_CODE:
       return M4_BACKSPACE_DOM_KEY;
+    case M4_CONTROL_LEFT_DOM_CODE:
+      return M4_CONTROL_LEFT_DOM_KEY;
+    case M4_COPY_DOM_CODE:
+      return M4_COPY_DOM_KEY;
+    case M4_PASTE_DOM_CODE:
+      return M4_PASTE_DOM_KEY;
     default:
       return null;
   }
+}
+
+function isM4CopyPasteShortcutCode(code) {
+  return code === M4_COPY_DOM_CODE || code === M4_PASTE_DOM_CODE;
 }
 
 function matchesM4BackspaceOuterKeyRecord(record, type, code, key) {
@@ -337,6 +357,170 @@ function hasM4PrimaryPasteFinalPageEvidence(pageProbe) {
     pageProbe?.resultText === "PRIMARY SELECTION PASTED" &&
     hasM4PrimaryPasteInnerSourceEvents(pageProbe) &&
     hasM4PrimaryPasteInnerPasteEvents(pageProbe);
+}
+
+function matchesM4CopyPasteQueuedKeyRecord(
+    record, type, code, key, control) {
+  const modifiers = record?.modifiers;
+  return record?.type === type &&
+    record?.code === code &&
+    record?.key === key &&
+    record?.trusted === true &&
+    record?.queued === true &&
+    record?.repeat === false &&
+    record?.isComposing === false &&
+    record?.canvasFocused === true &&
+    record?.pointerActivated === true &&
+    record?.defaultPrevented === true &&
+    modifiers?.alt === false && modifiers?.control === control &&
+    modifiers?.meta === false && modifiers?.shift === false &&
+    Number.isSafeInteger(record?.frameIdBefore) && record.frameIdBefore >= 1;
+}
+
+function matchesM4CopyPasteQueuedKeyTrace(
+    records, expectedRecords, sequenceStart = 1) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, code, key, control], index) =>
+          matchesM4CopyPasteQueuedKeyRecord(
+              records[index], type, code, key, control) &&
+          records[index].sequence === sequenceStart + index);
+}
+
+function hasM4CopyPasteBareShortcutRejection(keyboard) {
+  const rejected = keyboard?.rejectedRecords;
+  const expected = [
+    ["down", "UNSUPPORTED_SHORTCUT_STATE"],
+    ["up", "UNMATCHED_UP"],
+  ];
+  return keyboard?.receivedCount === expected.length &&
+    keyboard?.trustedCount === expected.length &&
+    keyboard?.queuedCount === 0 && keyboard?.pressedCodes?.length === 0 &&
+    Array.isArray(rejected) && rejected.length === expected.length &&
+    expected.every(([type, reason], index) => {
+      const record = rejected[index];
+      const modifiers = record?.modifiers;
+      return record?.type === type && record?.code === M4_COPY_DOM_CODE &&
+        record?.key === M4_COPY_DOM_KEY && record?.trusted === true &&
+        record?.queued === false && record?.reason === reason &&
+        record?.repeat === false && record?.isComposing === false &&
+        record?.canvasFocused === true && record?.pointerActivated === true &&
+        modifiers?.alt === false && modifiers?.control === false &&
+        modifiers?.meta === false && modifiers?.shift === false;
+    });
+}
+
+function matchesM4CopyPasteInnerKeyRecord(
+    record, type, code, key, control, targetId) {
+  return record?.type === type &&
+    record?.trusted === true &&
+    record?.code === code &&
+    record?.key === key &&
+    (control === null || record?.ctrlKey === control) &&
+    record?.repeat === false &&
+    record?.isComposing === false &&
+    record?.targetId === targetId &&
+    record?.defaultPrevented === false;
+}
+
+function matchesM4CopyPasteInnerKeyTrace(records, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, code, key, control, targetId], index) =>
+          matchesM4CopyPasteInnerKeyRecord(
+              records[index], type, code, key, control, targetId));
+}
+
+function hasM4CopyPasteSelection(activity, value) {
+  const selection = activity?.lastNonCollapsed;
+  return activity?.trusted === true && activity?.nonCollapsed === true &&
+    activity?.trustedNonCollapsed === true && activity?.selectCount >= 1 &&
+    activity?.selectTrusted === true && activity?.selectionChangeCount >= 1 &&
+    activity?.selectionChangeTrusted === true && selection?.trusted === true &&
+    selection?.start === 0 && selection?.end === value.length &&
+    selection?.text === value &&
+    (selection?.direction === "none" || selection?.direction === "forward");
+}
+
+function hasM4CopyPasteCopyEvidence(pageProbe) {
+  const copy = pageProbe?.copyEventTrace;
+  const selection = copy?.[0]?.selection;
+  const sourceText = pageProbe?.sourceTextInputEvents;
+  return pageProbe?.copySourceValue === M4_COPY_PASTE_SOURCE_VALUE &&
+    hasM4CopyPasteSelection(
+        pageProbe?.copySelectionActivity, M4_COPY_PASTE_SOURCE_VALUE) &&
+    Array.isArray(copy) && copy.length === 1 &&
+    copy[0]?.type === "copy" && copy[0]?.trusted === true &&
+    copy[0]?.targetId === "copy-source" &&
+    copy[0]?.defaultPrevented === false &&
+    selection?.start === 0 &&
+    selection?.end === M4_COPY_PASTE_SOURCE_VALUE.length &&
+    selection?.text === M4_COPY_PASTE_SOURCE_VALUE &&
+    sourceText?.beforeinputCount === 0 && sourceText?.inputCount === 0 &&
+    sourceText?.compositionstartCount === 0 &&
+    sourceText?.compositionupdateCount === 0 &&
+    sourceText?.compositionendCount === 0;
+}
+
+function hasM4CopyPastePrimarySelectionPasteEvidence(pageProbe) {
+  const paste = pageProbe?.primaryVerifyPasteEventTrace;
+  const text = pageProbe?.primaryVerifyPasteTextInputTrace;
+  return pageProbe?.activeElementId === "primary-verify-target" &&
+    pageProbe?.copySourceValue === M4_COPY_PASTE_SOURCE_VALUE &&
+    pageProbe?.decoyValue === M4_COPY_PASTE_DECOY_VALUE &&
+    hasM4CopyPasteSelection(
+        pageProbe?.decoySelectionActivity, M4_COPY_PASTE_DECOY_VALUE) &&
+    pageProbe?.primaryVerifyAuxClickCount === 1 &&
+    pageProbe?.primaryVerifyAuxClickTrusted === true &&
+    pageProbe?.primaryVerifyFocusCount >= 1 &&
+    pageProbe?.primaryVerifyFocusTrusted === true &&
+    pageProbe?.primaryVerifyValue === M4_COPY_PASTE_DECOY_VALUE &&
+    pageProbe?.primaryVerifySelectionStart === M4_COPY_PASTE_DECOY_VALUE.length &&
+    pageProbe?.primaryVerifySelectionEnd === M4_COPY_PASTE_DECOY_VALUE.length &&
+    Array.isArray(paste) && paste.length === 1 &&
+    paste[0]?.type === "paste" && paste[0]?.trusted === true &&
+    paste[0]?.targetId === "primary-verify-target" &&
+    paste[0]?.defaultPrevented === false &&
+    paste[0]?.text === M4_COPY_PASTE_DECOY_VALUE &&
+    Array.isArray(text) && text.length === 2 &&
+    text[0]?.type === "beforeinput" && text[1]?.type === "input" &&
+    text.every((record) => record?.trusted === true &&
+      record?.inputType === "insertFromPaste" &&
+      record?.data === M4_COPY_PASTE_DECOY_VALUE &&
+      record?.isComposing === false &&
+      record?.targetId === "primary-verify-target");
+}
+
+function hasM4CopyPastePasteEvidence(pageProbe) {
+  const paste = pageProbe?.pasteEventTrace;
+  const text = pageProbe?.pasteTextInputTrace;
+  const decoyText = pageProbe?.decoyTextInputEvents;
+  return pageProbe?.copySourceValue === M4_COPY_PASTE_SOURCE_VALUE &&
+    pageProbe?.decoyValue === M4_COPY_PASTE_DECOY_VALUE &&
+    hasM4CopyPasteSelection(
+        pageProbe?.decoySelectionActivity, M4_COPY_PASTE_DECOY_VALUE) &&
+    decoyText?.beforeinputCount === 0 && decoyText?.inputCount === 0 &&
+    decoyText?.compositionstartCount === 0 &&
+    decoyText?.compositionupdateCount === 0 &&
+    decoyText?.compositionendCount === 0 &&
+    pageProbe?.pasteTargetActivationCount === 1 &&
+    pageProbe?.pasteTargetFocusCount >= 1 &&
+    pageProbe?.pasteValue === M4_COPY_PASTE_SOURCE_VALUE &&
+    pageProbe?.pasteSelectionStart === M4_COPY_PASTE_SOURCE_VALUE.length &&
+    pageProbe?.pasteSelectionEnd === M4_COPY_PASTE_SOURCE_VALUE.length &&
+    pageProbe?.resultText === "CTRL COPY/PASTE DELIVERED" &&
+    Array.isArray(paste) && paste.length === 1 &&
+    paste[0]?.type === "paste" && paste[0]?.trusted === true &&
+    paste[0]?.targetId === "paste-target" &&
+    paste[0]?.defaultPrevented === false &&
+    paste[0]?.text === M4_COPY_PASTE_SOURCE_VALUE &&
+    Array.isArray(text) && text.length === 2 &&
+    text[0]?.type === "beforeinput" && text[1]?.type === "input" &&
+    text.every((record) => record?.trusted === true &&
+      record?.inputType === "insertFromPaste" &&
+      record?.data === M4_COPY_PASTE_SOURCE_VALUE &&
+      record?.isComposing === false &&
+      record?.targetId === "paste-target");
 }
 
 function isWellFormedUtf16(value) {
@@ -762,6 +946,8 @@ export class ChromiumWasmM3Host {
       queuedCount,
       queuedRecords: this.#keyboardRecords.filter(
         (record) => record.queued === true).map((record) => clone(record)),
+      rejectedRecords: this.#keyboardRecords.filter(
+        (record) => record.queued !== true).map((record) => clone(record)),
       pressedCodes: Array.from(this.#keyboardCodesDown).sort(),
       lastQueuedDown: this.#lastQueuedKeyDown
         ? clone(this.#lastQueuedKeyDown)
@@ -2088,7 +2274,14 @@ export class ChromiumWasmM3Host {
   }
 
   #releaseM4KeyboardKeys(reason, triggerEvent = null) {
-    const codes = Array.from(this.#keyboardCodesDown);
+    // Release non-modifier keys first, so the native Ozone state sees their
+    // matching keyup while ControlLeft is still down. This is also safe for a
+    // partially delivered DOM chord during blur or teardown.
+    const heldCodes = Array.from(this.#keyboardCodesDown);
+    const codes = [
+      ...heldCodes.filter((code) => code !== M4_CONTROL_LEFT_DOM_CODE).reverse(),
+      ...heldCodes.filter((code) => code === M4_CONTROL_LEFT_DOM_CODE).reverse(),
+    ];
     this.#keyboardCodesDown.clear();
     this.#keyboardActivated = false;
     if (codes.length === 0) {
@@ -2098,7 +2291,11 @@ export class ChromiumWasmM3Host {
       this.#recordHost("m4:keyboard:" + reason + ":release-skipped");
       return;
     }
-    for (const code of codes) {
+    for (let index = 0; index < codes.length; index += 1) {
+      const code = codes[index];
+      const controlStillHeld =
+        code !== M4_CONTROL_LEFT_DOM_CODE &&
+        codes.slice(index + 1).includes(M4_CONTROL_LEFT_DOM_CODE);
       const relatedTarget = triggerEvent?.relatedTarget;
       const relatedTargetId =
         typeof Element !== "undefined" &&
@@ -2120,7 +2317,7 @@ export class ChromiumWasmM3Host {
         isComposing: false,
         modifiers: {
           alt: false,
-          control: false,
+          control: controlStillHeld,
           meta: false,
           shift: false,
         },
@@ -2203,10 +2400,39 @@ export class ChromiumWasmM3Host {
     }
     if (
       record.modifiers.alt ||
-      record.modifiers.control ||
       record.modifiers.meta ||
       record.modifiers.shift
     ) {
+      record.reason = "UNSUPPORTED_MODIFIERS";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":unsupported-modifiers");
+      return;
+    }
+    const controlHeld = this.#keyboardCodesDown.has(
+      M4_CONTROL_LEFT_DOM_CODE);
+    if (record.code === M4_CONTROL_LEFT_DOM_CODE) {
+      // DOM reports Control as down on its keydown and not down on its keyup.
+      if (record.modifiers.control !== (type === "down")) {
+        record.reason = "INVALID_CONTROL_STATE";
+        this.#recordKeyboard(record);
+        this.#recordHost("m4:keyboard:" + type + ":invalid-control-state");
+        return;
+      }
+    } else if (isM4CopyPasteShortcutCode(record.code)) {
+      // Admit only C/V while this bounded physical ControlLeft record is
+      // active. A late C/V keyup is allowed after Control's own release so
+      // focus-loss cleanup cannot leave the browser input state stuck.
+      if (
+        (type === "down" && !controlHeld) ||
+        record.modifiers.control !== controlHeld
+      ) {
+        record.reason = "UNSUPPORTED_SHORTCUT_STATE";
+        this.#recordKeyboard(record);
+        this.#recordHost(
+          "m4:keyboard:" + type + ":unsupported-shortcut-state");
+        return;
+      }
+    } else if (record.modifiers.control) {
       record.reason = "UNSUPPORTED_MODIFIERS";
       this.#recordKeyboard(record);
       this.#recordHost("m4:keyboard:" + type + ":unsupported-modifiers");
@@ -4350,6 +4576,774 @@ async function runM4OzonePrimaryPasteSmokeFromQuery() {
       try {
         result.readiness = await host.readiness();
         result.pointerInput = result.readiness.pointerInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
+async function runM4OzoneCopyPasteSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+      1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+  let readiness = null;
+  let activationProof = null;
+  let bareShortcutProof = null;
+  let sourceSelectionProof = null;
+  let copyProof = null;
+  let decoySelectionProof = null;
+  let primarySelectionPasteProof = null;
+  let pasteProof = null;
+
+  try {
+    if (parameters.get("case") !== M4_COPY_PASTE_CASE) {
+      throw new Error("M4 copy/paste case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 copy/paste result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_COPY_PASTE_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+        parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+          "M4 copy/paste base readiness timeout: " + JSON.stringify(readiness));
+    }
+
+    const copySource = {
+      targetX: Number(readiness.pageProbe.copySourceTargetX),
+      targetY: Number(readiness.pageProbe.copySourceTargetY),
+      dragStartX: Number(readiness.pageProbe.copyDragStartX),
+      dragStartY: Number(readiness.pageProbe.copyDragStartY),
+      dragMiddleX: Number(readiness.pageProbe.copyDragMiddleX),
+      dragMiddleY: Number(readiness.pageProbe.copyDragMiddleY),
+      dragEndX: Number(readiness.pageProbe.copyDragEndX),
+      dragEndY: Number(readiness.pageProbe.copyDragEndY),
+    };
+    const decoy = {
+      targetX: Number(readiness.pageProbe.decoyTargetX),
+      targetY: Number(readiness.pageProbe.decoyTargetY),
+      dragStartX: Number(readiness.pageProbe.decoyDragStartX),
+      dragStartY: Number(readiness.pageProbe.decoyDragStartY),
+      dragMiddleX: Number(readiness.pageProbe.decoyDragMiddleX),
+      dragMiddleY: Number(readiness.pageProbe.decoyDragMiddleY),
+      dragEndX: Number(readiness.pageProbe.decoyDragEndX),
+      dragEndY: Number(readiness.pageProbe.decoyDragEndY),
+    };
+    const paste = {
+      targetX: Number(readiness.pageProbe.pasteTargetX),
+      targetY: Number(readiness.pageProbe.pasteTargetY),
+    };
+    const primaryVerify = {
+      targetX: Number(readiness.pageProbe.primaryVerifyTargetX),
+      targetY: Number(readiness.pageProbe.primaryVerifyTargetY),
+    };
+    for (const [name, value, maximum] of [
+      ["copy source target x", copySource.targetX, DEFAULT_WIDTH - 1],
+      ["copy source target y", copySource.targetY, DEFAULT_HEIGHT - 1],
+      ["copy drag start x", copySource.dragStartX, DEFAULT_WIDTH - 1],
+      ["copy drag start y", copySource.dragStartY, DEFAULT_HEIGHT - 1],
+      ["copy drag middle x", copySource.dragMiddleX, DEFAULT_WIDTH - 1],
+      ["copy drag middle y", copySource.dragMiddleY, DEFAULT_HEIGHT - 1],
+      ["copy drag end x", copySource.dragEndX, DEFAULT_WIDTH - 1],
+      ["copy drag end y", copySource.dragEndY, DEFAULT_HEIGHT - 1],
+      ["decoy target x", decoy.targetX, DEFAULT_WIDTH - 1],
+      ["decoy target y", decoy.targetY, DEFAULT_HEIGHT - 1],
+      ["decoy drag start x", decoy.dragStartX, DEFAULT_WIDTH - 1],
+      ["decoy drag start y", decoy.dragStartY, DEFAULT_HEIGHT - 1],
+      ["decoy drag middle x", decoy.dragMiddleX, DEFAULT_WIDTH - 1],
+      ["decoy drag middle y", decoy.dragMiddleY, DEFAULT_HEIGHT - 1],
+      ["decoy drag end x", decoy.dragEndX, DEFAULT_WIDTH - 1],
+      ["decoy drag end y", decoy.dragEndY, DEFAULT_HEIGHT - 1],
+      ["primary verification target x", primaryVerify.targetX,
+       DEFAULT_WIDTH - 1],
+      ["primary verification target y", primaryVerify.targetY,
+       DEFAULT_HEIGHT - 1],
+      ["paste target x", paste.targetX, DEFAULT_WIDTH - 1],
+      ["paste target y", paste.targetY, DEFAULT_HEIGHT - 1],
+    ]) {
+      checkInteger(value, "M4 copy/paste " + name, 0, maximum);
+    }
+    for (const [name, geometry] of [
+      ["copy source", copySource],
+      ["decoy", decoy],
+    ]) {
+      if (!(geometry.dragStartX < geometry.dragMiddleX &&
+            geometry.dragMiddleX < geometry.dragEndX &&
+            geometry.dragStartY === geometry.dragMiddleY &&
+            geometry.dragMiddleY === geometry.dragEndY)) {
+        throw new Error("M4 copy/paste " + name + " drag is not forward");
+      }
+    }
+
+    const clickTrace = (point) => [
+      ["move", point.targetX, point.targetY, -1, 0],
+      ["down", point.targetX, point.targetY, 0, 1],
+      ["up", point.targetX, point.targetY, 0, 0],
+    ];
+    const middleClickTrace = (point) => [
+      ["move", point.targetX, point.targetY, -1, 0],
+      ["down", point.targetX, point.targetY, 1, 4],
+      ["up", point.targetX, point.targetY, 1, 0],
+    ];
+    const dragTrace = (point) => [
+      ["move", point.dragStartX, point.dragStartY, -1, 0],
+      ["down", point.dragStartX, point.dragStartY, 0, 1],
+      ["move", point.dragMiddleX, point.dragMiddleY, -1, 1],
+      ["move", point.dragEndX, point.dragEndY, -1, 1],
+      ["up", point.dragEndX, point.dragEndY, 0, 0],
+    ];
+    const sourceActivationTrace = clickTrace(copySource);
+    const sourceTrace = [...sourceActivationTrace, ...dragTrace(copySource)];
+    const decoyActivationTrace = [
+      ...sourceTrace,
+      ...clickTrace(decoy),
+    ];
+    const decoyTrace = [...decoyActivationTrace, ...dragTrace(decoy)];
+    const pasteTargetTrace = [
+      ...decoyTrace,
+      ...clickTrace(paste),
+    ];
+    const fullPointerTrace = [
+      ...pasteTargetTrace,
+      ...middleClickTrace(primaryVerify),
+    ];
+    const copyKeyTrace = [
+      ["down", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, true],
+      ["down", M4_COPY_DOM_CODE, M4_COPY_DOM_KEY, true],
+      ["up", M4_COPY_DOM_CODE, M4_COPY_DOM_KEY, true],
+      ["up", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, false],
+    ];
+    const fullKeyTrace = [
+      ...copyKeyTrace,
+      ["down", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, true],
+      ["down", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY, true],
+      ["up", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY, true],
+      ["up", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, false],
+    ];
+    const bareShortcutRecordCount = 2;
+    const innerKeyTrace = [
+      ["keydown", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, null,
+       "copy-source"],
+      ["keydown", M4_COPY_DOM_CODE, M4_COPY_DOM_KEY, true, "copy-source"],
+      ["keyup", M4_COPY_DOM_CODE, M4_COPY_DOM_KEY, true, "copy-source"],
+      ["keyup", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, null,
+       "copy-source"],
+      ["keydown", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, null,
+       "paste-target"],
+      ["keydown", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY, true, "paste-target"],
+      ["keyup", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY, true, "paste-target"],
+      ["keyup", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, null,
+       "paste-target"],
+    ];
+
+    const pointerListeners = host.enableM4PointerInput();
+    const keyboardListeners = host.enableM4KeyboardInput();
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-source-activation",
+      copySourceTargetX: copySource.targetX,
+      copySourceTargetY: copySource.targetY,
+      pointerListeners,
+      keyboardListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas source activation before Ctrl+C";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[sourceActivationTrace.length - 1];
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer?.receivedCount === sourceActivationTrace.length &&
+        pointer?.trustedCount === sourceActivationTrace.length &&
+        pointer?.queuedCount === sourceActivationTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            records, sourceActivationTrace) &&
+        pageProbe?.activeElementId === "copy-source" &&
+        pageProbe?.copySourceActivationCount === 1 &&
+        pageProbe?.copySourceFocusCount >= 1 &&
+        pageProbe?.copySourceValue === M4_COPY_PASTE_SOURCE_VALUE &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const activationPointer = readiness?.pointerInput;
+    const activationRecords = activationPointer?.queuedRecords;
+    const activationRelease =
+      activationRecords?.[sourceActivationTrace.length - 1];
+    const activationPage = readiness?.pageProbe;
+    activationProof = Object.freeze({
+      outerTraceExact:
+        activationPointer?.receivedCount === sourceActivationTrace.length &&
+        activationPointer?.trustedCount === sourceActivationTrace.length &&
+        activationPointer?.queuedCount === sourceActivationTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            activationRecords, sourceActivationTrace),
+      sourceActivated:
+        activationPage?.activeElementId === "copy-source" &&
+        activationPage?.copySourceActivationCount === 1 &&
+        activationPage?.copySourceFocusCount >= 1 &&
+        activationPage?.copySourceValue === M4_COPY_PASTE_SOURCE_VALUE,
+      frameAfterActivation:
+        readiness?.frame?.id > activationRelease?.frameIdBefore,
+    });
+    if (!activationProof.outerTraceExact || !activationProof.sourceActivated ||
+        !activationProof.frameAfterActivation) {
+      throw new Error(
+          "M4 copy/paste source activation timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-bare-shortcut-rejection",
+      pointer: clone(activationPointer),
+      keyboard: clone(readiness.keyboardInput),
+      activationProof,
+    };
+    statusElement.textContent =
+      "M4 ready to reject an unmodified physical KeyC";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (hasM4CopyPasteBareShortcutRejection(readiness.keyboardInput) &&
+          readiness.pageProbe?.keyEventTrace?.length === 0 &&
+          readiness.pageProbe?.copyEventTrace?.length === 0) {
+        break;
+      }
+      await delay(50);
+    }
+    bareShortcutProof = Object.freeze({
+      hostRejected: hasM4CopyPasteBareShortcutRejection(
+          readiness?.keyboardInput),
+      noBlinkDelivery:
+        readiness?.pageProbe?.keyEventTrace?.length === 0 &&
+        readiness?.pageProbe?.copyEventTrace?.length === 0,
+    });
+    if (!bareShortcutProof.hostRejected ||
+        !bareShortcutProof.noBlinkDelivery) {
+      throw new Error(
+          "M4 bare KeyC rejection timeout: " + JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-source-drag",
+      copyDragStartX: copySource.dragStartX,
+      copyDragStartY: copySource.dragStartY,
+      copyDragMiddleX: copySource.dragMiddleX,
+      copyDragMiddleY: copySource.dragMiddleY,
+      copyDragEndX: copySource.dragEndX,
+      copyDragEndY: copySource.dragEndY,
+      pointer: clone(activationPointer),
+      keyboard: clone(readiness.keyboardInput),
+      activationProof,
+      bareShortcutProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas COPY selection drag";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[sourceTrace.length - 1];
+      if (
+        pointer?.receivedCount === sourceTrace.length &&
+        pointer?.trustedCount === sourceTrace.length &&
+        pointer?.queuedCount === sourceTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, sourceTrace) &&
+        hasM4CopyPasteSelection(
+            readiness.pageProbe?.copySelectionActivity,
+            M4_COPY_PASTE_SOURCE_VALUE) &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const sourcePointer = readiness?.pointerInput;
+    const sourceRecords = sourcePointer?.queuedRecords;
+    const sourceRelease = sourceRecords?.[sourceTrace.length - 1];
+    sourceSelectionProof = Object.freeze({
+      outerTraceExact:
+        sourcePointer?.receivedCount === sourceTrace.length &&
+        sourcePointer?.trustedCount === sourceTrace.length &&
+        sourcePointer?.queuedCount === sourceTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(sourceRecords, sourceTrace),
+      nativeSelection: hasM4CopyPasteSelection(
+          readiness?.pageProbe?.copySelectionActivity,
+          M4_COPY_PASTE_SOURCE_VALUE),
+      frameAfterDrag: readiness?.frame?.id > sourceRelease?.frameIdBefore,
+    });
+    if (!sourceSelectionProof.outerTraceExact ||
+        !sourceSelectionProof.nativeSelection ||
+        !sourceSelectionProof.frameAfterDrag) {
+      throw new Error(
+          "M4 copy/paste source selection timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-copy",
+      keyboard: clone(readiness.keyboardInput),
+      bareShortcutProof,
+      sourceSelectionProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted physical ControlLeft+KeyC";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const records = keyboard?.queuedRecords;
+      if (
+        keyboard?.receivedCount ===
+          copyKeyTrace.length + bareShortcutRecordCount &&
+        keyboard?.trustedCount ===
+          copyKeyTrace.length + bareShortcutRecordCount &&
+        keyboard?.queuedCount === copyKeyTrace.length &&
+        keyboard?.rejectedRecords?.length === bareShortcutRecordCount &&
+        keyboard?.pressedCodes?.length === 0 &&
+        matchesM4CopyPasteQueuedKeyTrace(
+            records, copyKeyTrace, bareShortcutRecordCount + 1) &&
+        hasM4CopyPasteCopyEvidence(readiness.pageProbe) &&
+        matchesM4CopyPasteInnerKeyTrace(
+            readiness.pageProbe?.keyEventTrace,
+            innerKeyTrace.slice(0, copyKeyTrace.length))
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const copiedKeyboard = readiness?.keyboardInput;
+    const copiedRecords = copiedKeyboard?.queuedRecords;
+    copyProof = Object.freeze({
+      outerTraceExact:
+        copiedKeyboard?.receivedCount ===
+          copyKeyTrace.length + bareShortcutRecordCount &&
+        copiedKeyboard?.trustedCount ===
+          copyKeyTrace.length + bareShortcutRecordCount &&
+        copiedKeyboard?.queuedCount === copyKeyTrace.length &&
+        copiedKeyboard?.rejectedRecords?.length === bareShortcutRecordCount &&
+        copiedKeyboard?.pressedCodes?.length === 0 &&
+        matchesM4CopyPasteQueuedKeyTrace(
+            copiedRecords, copyKeyTrace, bareShortcutRecordCount + 1),
+      nativeCopy: hasM4CopyPasteCopyEvidence(readiness?.pageProbe),
+      bareShortcutRejected: bareShortcutProof.hostRejected === true &&
+        bareShortcutProof.noBlinkDelivery === true,
+      innerKeys: matchesM4CopyPasteInnerKeyTrace(
+          readiness?.pageProbe?.keyEventTrace,
+          innerKeyTrace.slice(0, copyKeyTrace.length)),
+      shortcutReleased: copiedKeyboard?.pressedCodes?.length === 0,
+    });
+    if (!copyProof.outerTraceExact || !copyProof.nativeCopy ||
+        !copyProof.bareShortcutRejected || !copyProof.innerKeys ||
+        !copyProof.shortcutReleased) {
+      throw new Error(
+          "M4 Ctrl+C copy timeout: " + JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-decoy-activation",
+      decoyTargetX: decoy.targetX,
+      decoyTargetY: decoy.targetY,
+      pointer: clone(sourcePointer),
+      keyboard: clone(copiedKeyboard),
+      sourceSelectionProof,
+      copyProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas DECOY activation";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[decoyActivationTrace.length - 1];
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer?.receivedCount === decoyActivationTrace.length &&
+        pointer?.trustedCount === decoyActivationTrace.length &&
+        pointer?.queuedCount === decoyActivationTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, decoyActivationTrace) &&
+        pageProbe?.activeElementId === "selection-decoy" &&
+        pageProbe?.selectionDecoyActivationCount === 1 &&
+        pageProbe?.selectionDecoyFocusCount >= 1 &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const decoyActivatedPointer = readiness?.pointerInput;
+
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-decoy-drag",
+      decoyDragStartX: decoy.dragStartX,
+      decoyDragStartY: decoy.dragStartY,
+      decoyDragMiddleX: decoy.dragMiddleX,
+      decoyDragMiddleY: decoy.dragMiddleY,
+      decoyDragEndX: decoy.dragEndX,
+      decoyDragEndY: decoy.dragEndY,
+      pointer: clone(decoyActivatedPointer),
+      copyProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas DECOY selection drag";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[decoyTrace.length - 1];
+      if (
+        pointer?.receivedCount === decoyTrace.length &&
+        pointer?.trustedCount === decoyTrace.length &&
+        pointer?.queuedCount === decoyTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, decoyTrace) &&
+        hasM4CopyPasteSelection(
+            readiness.pageProbe?.decoySelectionActivity,
+            M4_COPY_PASTE_DECOY_VALUE) &&
+        release?.queued === true
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const decoyPointer = readiness?.pointerInput;
+    const decoyRecords = decoyPointer?.queuedRecords;
+    const decoyRelease = decoyRecords?.[decoyTrace.length - 1];
+    decoySelectionProof = Object.freeze({
+      outerTraceExact:
+        decoyPointer?.receivedCount === decoyTrace.length &&
+        decoyPointer?.trustedCount === decoyTrace.length &&
+        decoyPointer?.queuedCount === decoyTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(decoyRecords, decoyTrace),
+      primarySelectionOverwritten: hasM4CopyPasteSelection(
+          readiness?.pageProbe?.decoySelectionActivity,
+          M4_COPY_PASTE_DECOY_VALUE),
+      // A second native selection may leave the compositor's visible state
+      // unchanged.  Its trusted selection event and queued pointer release
+      // prove delivery; the subsequent paste still requires a new frame.
+      releaseQueued: decoyRelease?.queued === true,
+    });
+    if (!decoySelectionProof.outerTraceExact ||
+        !decoySelectionProof.primarySelectionOverwritten ||
+        !decoySelectionProof.releaseQueued) {
+      throw new Error(
+          "M4 copy/paste decoy selection timeout: " +
+          JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-paste-activation",
+      pasteTargetX: paste.targetX,
+      pasteTargetY: paste.targetY,
+      pointer: clone(decoyPointer),
+      keyboard: clone(copiedKeyboard),
+      copyProof,
+      decoySelectionProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas paste-target activation";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[pasteTargetTrace.length - 1];
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer?.receivedCount === pasteTargetTrace.length &&
+        pointer?.trustedCount === pasteTargetTrace.length &&
+        pointer?.queuedCount === pasteTargetTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, pasteTargetTrace) &&
+        pageProbe?.activeElementId === "paste-target" &&
+        pageProbe?.pasteTargetActivationCount === 1 &&
+        pageProbe?.pasteTargetFocusCount >= 1 &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pasteActivatedPointer = readiness?.pointerInput;
+
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-paste",
+      pointer: clone(pasteActivatedPointer),
+      keyboard: clone(copiedKeyboard),
+      copyProof,
+      decoySelectionProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted physical ControlLeft+KeyV";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const keyboard = readiness.keyboardInput;
+      const pointerRecords = pointer?.queuedRecords;
+      const keyRecords = keyboard?.queuedRecords;
+      const pasteKeyDown = keyRecords?.[copyKeyTrace.length + 1];
+      if (
+        pointer?.receivedCount === pasteTargetTrace.length &&
+        pointer?.trustedCount === pasteTargetTrace.length &&
+        pointer?.queuedCount === pasteTargetTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pointerRecords, pasteTargetTrace) &&
+        keyboard?.receivedCount ===
+          fullKeyTrace.length + bareShortcutRecordCount &&
+        keyboard?.trustedCount ===
+          fullKeyTrace.length + bareShortcutRecordCount &&
+        keyboard?.queuedCount === fullKeyTrace.length &&
+        keyboard?.rejectedRecords?.length === bareShortcutRecordCount &&
+        keyboard?.pressedCodes?.length === 0 &&
+        matchesM4CopyPasteQueuedKeyTrace(
+            keyRecords, fullKeyTrace, bareShortcutRecordCount + 1) &&
+        matchesM4CopyPasteInnerKeyTrace(
+            readiness.pageProbe?.keyEventTrace, innerKeyTrace) &&
+        hasM4CopyPastePasteEvidence(readiness.pageProbe) &&
+        readiness.frame?.id > pasteKeyDown?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pastePointer = readiness?.pointerInput;
+    const pasteKeyboard = readiness?.keyboardInput;
+    const keyRecords = pasteKeyboard?.queuedRecords;
+    const pasteKeyDown = keyRecords?.[copyKeyTrace.length + 1];
+    const pageProbe = readiness?.pageProbe;
+    pasteProof = Object.freeze({
+      outerPointerTraceExact:
+        pastePointer?.receivedCount === pasteTargetTrace.length &&
+        pastePointer?.trustedCount === pasteTargetTrace.length &&
+        pastePointer?.queuedCount === pasteTargetTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pastePointer?.queuedRecords, pasteTargetTrace),
+      outerKeyTraceExact:
+        pasteKeyboard?.receivedCount ===
+          fullKeyTrace.length + bareShortcutRecordCount &&
+        pasteKeyboard?.trustedCount ===
+          fullKeyTrace.length + bareShortcutRecordCount &&
+        pasteKeyboard?.queuedCount === fullKeyTrace.length &&
+        pasteKeyboard?.rejectedRecords?.length === bareShortcutRecordCount &&
+        pasteKeyboard?.pressedCodes?.length === 0 &&
+        matchesM4CopyPasteQueuedKeyTrace(
+            keyRecords, fullKeyTrace, bareShortcutRecordCount + 1),
+      innerKeys: matchesM4CopyPasteInnerKeyTrace(
+          pageProbe?.keyEventTrace, innerKeyTrace),
+      nativePaste: hasM4CopyPastePasteEvidence(pageProbe),
+      copyPasteBufferWins:
+        pageProbe?.pasteValue === M4_COPY_PASTE_SOURCE_VALUE &&
+        pageProbe?.pasteValue !== M4_COPY_PASTE_DECOY_VALUE,
+      frameAfterPaste: readiness?.frame?.id > pasteKeyDown?.frameIdBefore,
+    });
+    if (!pasteProof.outerPointerTraceExact ||
+        !pasteProof.outerKeyTraceExact || !pasteProof.innerKeys ||
+        !pasteProof.nativePaste || !pasteProof.copyPasteBufferWins ||
+        !pasteProof.frameAfterPaste) {
+      throw new Error(
+          "M4 Ctrl+V paste timeout: " + JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "awaiting-dom-copy-paste-primary-verify",
+      primaryVerifyTargetX: primaryVerify.targetX,
+      primaryVerifyTargetY: primaryVerify.targetY,
+      pointer: clone(pastePointer),
+      keyboard: clone(pasteKeyboard),
+      copyProof,
+      decoySelectionProof,
+      pasteProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted middle-click primary-selection verification";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const candidatePointer = readiness.pointerInput;
+      const records = candidatePointer?.queuedRecords;
+      const release = records?.[fullPointerTrace.length - 1];
+      if (
+        candidatePointer?.receivedCount === fullPointerTrace.length &&
+        candidatePointer?.trustedCount === fullPointerTrace.length &&
+        candidatePointer?.queuedCount === fullPointerTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, fullPointerTrace) &&
+        hasM4CopyPastePrimarySelectionPasteEvidence(readiness.pageProbe) &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const keyboard = readiness?.keyboardInput;
+    const primaryVerifyRecords = pointer?.queuedRecords;
+    const primaryVerifyRelease =
+      primaryVerifyRecords?.[fullPointerTrace.length - 1];
+    primarySelectionPasteProof = Object.freeze({
+      outerTraceExact:
+        pointer?.receivedCount === fullPointerTrace.length &&
+        pointer?.trustedCount === fullPointerTrace.length &&
+        pointer?.queuedCount === fullPointerTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            primaryVerifyRecords, fullPointerTrace),
+      primaryBufferContainsDecoy:
+        hasM4CopyPastePrimarySelectionPasteEvidence(readiness?.pageProbe),
+      frameAfterPrimaryPaste:
+        readiness?.frame?.id > primaryVerifyRelease?.frameIdBefore,
+    });
+    if (!primarySelectionPasteProof.outerTraceExact ||
+        !primarySelectionPasteProof.primaryBufferContainsDecoy ||
+        !primarySelectionPasteProof.frameAfterPrimaryPaste) {
+      throw new Error(
+          "M4 primary-selection verification timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4CopyPasteState = {
+      state: "input-delivered",
+      pointer: clone(pointer),
+      keyboard: clone(keyboard),
+      activationProof,
+      sourceSelectionProof,
+      copyProof,
+      decoySelectionProof,
+      primarySelectionPasteProof,
+      pasteProof,
+    };
+    const shutdownTimeoutMs = Math.max(
+        1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      sourceSelection: sourceSelectionProof.nativeSelection === true,
+      bareShortcutRejected:
+        bareShortcutProof.hostRejected === true &&
+        bareShortcutProof.noBlinkDelivery === true,
+      nativeCopy: copyProof.nativeCopy === true,
+      primarySelectionOverwritten:
+        decoySelectionProof.primarySelectionOverwritten === true,
+      primaryBufferContainsDecoy:
+        primarySelectionPasteProof.primaryBufferContainsDecoy === true,
+      nativePaste: pasteProof.nativePaste === true,
+      copyPasteBufferWins: pasteProof.copyPasteBufferWins === true,
+      trustedDomInput:
+        pasteProof.outerPointerTraceExact === true &&
+        pasteProof.outerKeyTraceExact === true,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_COPY_PASTE_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      keyboardInput: keyboard,
+      activationProof: clone(activationProof),
+      bareShortcutProof: clone(bareShortcutProof),
+      sourceSelectionProof: clone(sourceSelectionProof),
+      copyProof: clone(copyProof),
+      decoySelectionProof: clone(decoySelectionProof),
+      primarySelectionPasteProof: clone(primarySelectionPasteProof),
+      pasteProof: clone(pasteProof),
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_COPY_PASTE_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      keyboardInput: null,
+      activationProof: activationProof ? clone(activationProof) : null,
+      bareShortcutProof: bareShortcutProof
+        ? clone(bareShortcutProof) : null,
+      sourceSelectionProof: sourceSelectionProof
+        ? clone(sourceSelectionProof) : null,
+      copyProof: copyProof ? clone(copyProof) : null,
+      decoySelectionProof: decoySelectionProof
+        ? clone(decoySelectionProof) : null,
+      primarySelectionPasteProof: primarySelectionPasteProof
+        ? clone(primarySelectionPasteProof) : null,
+      pasteProof: pasteProof ? clone(pasteProof) : null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.keyboardInput = result.readiness.keyboardInput;
       } catch (diagnosticError) {
         result.error += "; readiness diagnostics: " + String(diagnosticError);
       }
@@ -6658,6 +7652,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_PRIMARY_PASTE_CASE) {
     return runM4OzonePrimaryPasteSmokeFromQuery();
+  }
+  if (selectedCase === M4_COPY_PASTE_CASE) {
+    return runM4OzoneCopyPasteSmokeFromQuery();
   }
   if (selectedCase === M4_WHEEL_CASE) {
     return runM4OzoneWheelSmokeFromQuery();

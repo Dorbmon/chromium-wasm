@@ -32,7 +32,9 @@ bool IsSupportedMouseButton(EventFlags button) {
 
 bool IsSupportedM4DomCode(DomCode dom_code) {
   return dom_code == DomCode::ARROW_DOWN || dom_code == DomCode::US_A ||
-         dom_code == DomCode::BACKSPACE;
+         dom_code == DomCode::BACKSPACE ||
+         dom_code == DomCode::CONTROL_LEFT || dom_code == DomCode::US_C ||
+         dom_code == DomCode::US_V;
 }
 
 class WasmSystemInputInjector final : public SystemInputInjector {
@@ -98,12 +100,12 @@ class WasmSystemInputInjector final : public SystemInputInjector {
     // The host accepts explicit trusted DOM keydown/keyup pairs and rejects
     // repeats, so duplicate state changes must not manufacture repeat events.
     // The bounded printable slice maps through the Ozone keyboard layout
-    // engine below; one Backspace edit key does not make this generic
+    // engine below. Backspace plus Ctrl+C/Ctrl+V do not make this generic
     // keyboard or host-synthesized text input to Blink.
     if (!IsSupportedM4DomCode(physical_key)) {
       NOTIMPLEMENTED_LOG_ONCE()
-          << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, and one "
-             "Backspace edit key only";
+          << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, "
+             "Backspace, and Ctrl+C/Ctrl+V only";
       return;
     }
     bool* key_down = &backspace_;
@@ -111,16 +113,37 @@ class WasmSystemInputInjector final : public SystemInputInjector {
       key_down = &arrow_down_;
     } else if (physical_key == DomCode::US_A) {
       key_down = &key_a_;
+    } else if (physical_key == DomCode::CONTROL_LEFT) {
+      key_down = &control_left_;
+    } else if (physical_key == DomCode::US_C) {
+      key_down = &key_c_;
+    } else if (physical_key == DomCode::US_V) {
+      key_down = &key_v_;
     } else {
       DCHECK_EQ(physical_key, DomCode::BACKSPACE);
     }
     if (*key_down == down) {
       return;
     }
+    if (down &&
+        (physical_key == DomCode::US_C || physical_key == DomCode::US_V) &&
+        !control_left_) {
+      NOTIMPLEMENTED_LOG_ONCE()
+          << "ozone_wasm only accepts KeyC and KeyV while ControlLeft is "
+             "held";
+      return;
+    }
+    // Keep Control in the flag state of its own press/release and every
+    // bounded chord key. That is the normal Ozone modifier representation;
+    // SystemInputInjector deliberately accepts physical keys only.
+    const EventFlags flags =
+        (control_left_ || physical_key == DomCode::CONTROL_LEFT)
+            ? EF_CONTROL_DOWN
+            : EF_NONE;
     *key_down = down;
     event_source_->DispatchKeyEvent(
         down ? EventType::kKeyPressed : EventType::kKeyReleased,
-        physical_key, EF_NONE, device_id_);
+        physical_key, flags, device_id_);
   }
 
  private:
@@ -131,6 +154,9 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   bool arrow_down_ = false;
   bool key_a_ = false;
   bool backspace_ = false;
+  bool control_left_ = false;
+  bool key_c_ = false;
+  bool key_v_ = false;
 };
 
 }  // namespace

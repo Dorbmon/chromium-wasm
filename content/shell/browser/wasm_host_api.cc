@@ -71,16 +71,23 @@ constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr size_t kMaximumM4TextInputUtf16Units = 64 * 1024;
 constexpr size_t kMaximumM4TextInputUtf8Bytes =
     kMaximumM4TextInputUtf16Units * 3;
-// This remains a bounded physical-key ABI. Backspace is one editing key, not
-// a generic keyboard or text-insertion path.
+// This remains a bounded physical-key ABI. Backspace and the explicit
+// Ctrl+C/Ctrl+V chord are editing experiments, not a generic keyboard or
+// text-insertion path.
 constexpr std::string_view kM4NavigationDomCode = "ArrowDown";
 constexpr std::string_view kM4PrintableDomCode = "KeyA";
 constexpr std::string_view kM4BackspaceDomCode = "Backspace";
+constexpr std::string_view kM4ControlLeftDomCode = "ControlLeft";
+constexpr std::string_view kM4CopyDomCode = "KeyC";
+constexpr std::string_view kM4PasteDomCode = "KeyV";
+constexpr size_t kMaximumM4DomCodeLength = kM4ControlLeftDomCode.size();
 
 bool IsSupportedM4DomCode(ui::DomCode dom_code) {
   return dom_code == ui::DomCode::ARROW_DOWN ||
          dom_code == ui::DomCode::US_A ||
-         dom_code == ui::DomCode::BACKSPACE;
+         dom_code == ui::DomCode::BACKSPACE ||
+         dom_code == ui::DomCode::CONTROL_LEFT ||
+         dom_code == ui::DomCode::US_C || dom_code == ui::DomCode::US_V;
 }
 
 enum class DomPointerEventType {
@@ -322,6 +329,25 @@ class WasmHostState {
       scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
     base::AutoLock lock(lock_);
     task_runner_ = std::move(task_runner);
+    m4_control_left_down_ = false;
+    m4_copy_down_ = false;
+    m4_paste_down_ = false;
+  }
+
+  bool PostM4KeyCommand(ui::DomCode physical_key,
+                        bool down,
+                        base::OnceClosure command) {
+    base::AutoLock lock(lock_);
+    // Track successfully posted chord transitions at the ABI boundary. This
+    // keeps a direct caller from receiving queue success for a KeyC/KeyV
+    // record that the Ozone injector would otherwise drop as unpaired.
+    if (!IsM4KeyTransitionAllowedLocked(physical_key, down) ||
+        !task_runner_ ||
+        !task_runner_->PostTask(FROM_HERE, std::move(command))) {
+      return false;
+    }
+    RecordM4KeyTransitionLocked(physical_key, down);
+    return true;
   }
 
   void SetViewportSizeOnUiThread(const gfx::Size& viewport_size) {
@@ -349,9 +375,39 @@ class WasmHostState {
   std::unique_ptr<WasmHostObserver> observer;
 
  private:
+  bool IsM4KeyTransitionAllowedLocked(ui::DomCode physical_key,
+                                      bool down) const
+      EXCLUSIVE_LOCKS_REQUIRED(lock_) {
+    if (physical_key == ui::DomCode::CONTROL_LEFT) {
+      return m4_control_left_down_ != down;
+    }
+    if (physical_key != ui::DomCode::US_C &&
+        physical_key != ui::DomCode::US_V) {
+      return true;
+    }
+    const bool key_down = physical_key == ui::DomCode::US_C
+                              ? m4_copy_down_
+                              : m4_paste_down_;
+    return key_down != down && (!down || m4_control_left_down_);
+  }
+
+  void RecordM4KeyTransitionLocked(ui::DomCode physical_key, bool down)
+      EXCLUSIVE_LOCKS_REQUIRED(lock_) {
+    if (physical_key == ui::DomCode::CONTROL_LEFT) {
+      m4_control_left_down_ = down;
+    } else if (physical_key == ui::DomCode::US_C) {
+      m4_copy_down_ = down;
+    } else if (physical_key == ui::DomCode::US_V) {
+      m4_paste_down_ = down;
+    }
+  }
+
   base::Lock lock_;
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_
       GUARDED_BY(lock_);
+  bool m4_control_left_down_ GUARDED_BY(lock_) = false;
+  bool m4_copy_down_ GUARDED_BY(lock_) = false;
+  bool m4_paste_down_ GUARDED_BY(lock_) = false;
   std::unique_ptr<ui::SystemInputInjector> input_injector_;
   gfx::Size viewport_size_;
 };
@@ -716,11 +772,14 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_key(const char* code, int down) {
     return 0;
   }
   const size_t length =
-      strnlen(code, content::kM4NavigationDomCode.size() + 1);
+      strnlen(code, content::kMaximumM4DomCodeLength + 1);
   const std::string_view code_string(code, length);
   if (code_string != content::kM4NavigationDomCode &&
       code_string != content::kM4PrintableDomCode &&
-      code_string != content::kM4BackspaceDomCode) {
+      code_string != content::kM4BackspaceDomCode &&
+      code_string != content::kM4ControlLeftDomCode &&
+      code_string != content::kM4CopyDomCode &&
+      code_string != content::kM4PasteDomCode) {
     return 0;
   }
   const ui::DomCode physical_key =
@@ -728,9 +787,10 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_key(const char* code, int down) {
   if (!content::IsSupportedM4DomCode(physical_key)) {
     return 0;
   }
-  return content::PostHostCommand(base::BindOnce(
-             &content::DispatchDomKeyOnUiThread, physical_key,
-             down == 1))
+  return content::GetWasmHostState().PostM4KeyCommand(
+             physical_key, down == 1,
+             base::BindOnce(&content::DispatchDomKeyOnUiThread, physical_key,
+                            down == 1))
              ? 1
              : 0;
 }

@@ -82,11 +82,18 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "DomCode::ARROW_DOWN",
             "DomCode::US_A",
             "DomCode::BACKSPACE",
+            "DomCode::CONTROL_LEFT",
+            "DomCode::US_C",
+            "DomCode::US_V",
             "arrow_down_",
             "key_a_",
             "backspace_",
+            "control_left_",
+            "key_c_",
+            "key_v_",
             "*key_down == down",
             "*key_down = down;",
+            "EF_CONTROL_DOWN",
             "EventType::kKeyPressed",
             "EventType::kKeyReleased",
             "event_source_->DispatchKeyEvent(",
@@ -142,7 +149,14 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         )
         self.assertEqual(
             re.findall(r"ui::DomCode::([A-Z_]+)", abi_whitelist),
-            ["ARROW_DOWN", "US_A", "BACKSPACE"],
+            [
+                "ARROW_DOWN",
+                "US_A",
+                "BACKSPACE",
+                "CONTROL_LEFT",
+                "US_C",
+                "US_V",
+            ],
         )
 
         dispatch = section(
@@ -171,12 +185,15 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         )
         for marker in (
             "!code || (down != 0 && down != 1)",
-            "strnlen(code, content::kM4NavigationDomCode.size() + 1)",
+            "strnlen(code, content::kMaximumM4DomCodeLength + 1)",
             "std::string_view code_string(code, length)",
             "code_string != content::kM4BackspaceDomCode",
+            "code_string != content::kM4ControlLeftDomCode",
+            "code_string != content::kM4CopyDomCode",
+            "code_string != content::kM4PasteDomCode",
             "ui::KeycodeConverter::CodeStringToDomCode",
             "content::IsSupportedM4DomCode(physical_key)",
-            "PostHostCommand",
+            "GetWasmHostState().PostM4KeyCommand",
             "DispatchDomKeyOnUiThread",
         ):
             with self.subTest(marker=marker):
@@ -184,9 +201,15 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         self.assertIn("kM4NavigationDomCode", api)
         self.assertIn("kM4PrintableDomCode", api)
         self.assertIn("kM4BackspaceDomCode", api)
+        self.assertIn("kM4ControlLeftDomCode", api)
+        self.assertIn("kM4CopyDomCode", api)
+        self.assertIn("kM4PasteDomCode", api)
         self.assertIn("ui::DomCode::ARROW_DOWN", api)
         self.assertIn("ui::DomCode::US_A", api)
         self.assertIn("ui::DomCode::BACKSPACE", api)
+        self.assertIn("ui::DomCode::CONTROL_LEFT", api)
+        self.assertIn("ui::DomCode::US_C", api)
+        self.assertIn("ui::DomCode::US_V", api)
 
     def test_backspace_proof_is_a_raw_key_insert_then_delete_sequence(
         self,
@@ -304,6 +327,13 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "  #handleM4KeyboardEvent",
         )
         self.assertIn("this.#keyboardCodesDown.clear();", release)
+        self.assertIn("const heldCodes = Array.from(this.#keyboardCodesDown);", release)
+        self.assertIn(
+            "code !== M4_CONTROL_LEFT_DOM_CODE", release
+        )
+        self.assertIn(
+            "code === M4_CONTROL_LEFT_DOM_CODE", release
+        )
         self.assertIn("chromium_wasm_host_key", release)
         self.assertIn("generated: true", release)
         focus_listeners = section(

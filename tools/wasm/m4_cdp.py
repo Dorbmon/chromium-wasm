@@ -387,6 +387,88 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_control_shortcut(
+        self, code: str, key: str, windows_virtual_key_code: int
+    ) -> None:
+        """Drive one bounded physical ControlLeft shortcut without text."""
+
+        control_down = {
+            "code": "ControlLeft",
+            "key": "Control",
+            "windowsVirtualKeyCode": 17,
+            "modifiers": 2,
+        }
+        shortcut = {
+            "code": code,
+            "key": key,
+            "windowsVirtualKeyCode": windows_virtual_key_code,
+            "modifiers": 2,
+        }
+        control_up = {
+            "code": "ControlLeft",
+            "key": "Control",
+            "windowsVirtualKeyCode": 17,
+            "modifiers": 0,
+        }
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **control_down,
+                "type": "rawKeyDown",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **shortcut,
+                "type": "rawKeyDown",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **shortcut,
+                "type": "keyUp",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **control_up,
+                "type": "keyUp",
+            },
+        )
+
+    def dispatch_ctrl_c(self) -> None:
+        self.dispatch_control_shortcut("KeyC", "c", 67)
+
+    def dispatch_ctrl_v(self) -> None:
+        self.dispatch_control_shortcut("KeyV", "v", 86)
+
+    def dispatch_bare_key_c(self) -> None:
+        """Drive an unmodified physical KeyC pair with no text payload."""
+
+        key = {
+            "code": "KeyC",
+            "key": "c",
+            "windowsVirtualKeyCode": 67,
+            "modifiers": 0,
+        }
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **key,
+                "type": "rawKeyDown",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **key,
+                "type": "keyUp",
+            },
+        )
+
     def dispatch_ime_preedit(self) -> None:
         """Drive one outer host textarea composition candidate."""
 
