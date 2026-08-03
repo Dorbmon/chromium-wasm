@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run the M4 trusted host-pointer to Ozone/Aura smoke in host Chrome."""
+"""Run trusted M4 host input through Ozone/Aura in host Chrome."""
 
 from __future__ import annotations
 
@@ -31,9 +31,12 @@ from m0_common import (
 )
 from m3_content_server import (
     M4_CASE,
+    M4_WHEEL_CASE,
     create_m3_server,
     m4_smoke_url,
+    m4_wheel_smoke_url,
     validate_m4_result,
+    validate_m4_wheel_result,
 )
 from m4_cdp import DevToolsClient, unused_loopback_port, wait_for_page_client
 from run_browser_smoke import (
@@ -59,13 +62,14 @@ def write_failure_diagnostics(
     browser: subprocess.Popen[str] | None,
     browser_stderr: deque[str],
     result: dict[str, Any] | None,
+    case: str,
 ) -> Path:
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
-    diagnostic_path = diagnostics_dir / "m4-ozone-pointer-failure.json"
+    diagnostic_path = diagnostics_dir / f"m4-{case}-failure.json"
     diagnostic = {
         "schema_version": 1,
         "runner": "run_m4_ozone_smoke.py",
-        "case": M4_CASE,
+        "case": case,
         "status": "fail",
         "stage": stage,
         "failure": {
@@ -174,6 +178,8 @@ def wait_for_input_state(
     browser_stderr: deque[str],
     result_queue: queue.Queue[dict[str, Any]],
     deadline: float,
+    state_expression: str,
+    expected_state: str,
 ) -> dict[str, Any]:
     while time.monotonic() < deadline:
         if browser.poll() is not None:
@@ -190,14 +196,14 @@ def wait_for_input_state(
                 "M4 host finished before accepting trusted DOM input: "
                 + json.dumps(result, sort_keys=True, separators=(",", ":"))
             )
-        state = client.evaluate("window.__chromiumWasmM4State || null")
+        state = client.evaluate(state_expression)
         if (
             isinstance(state, dict)
-            and state.get("state") == "awaiting-dom-pointer"
+            and state.get("state") == expected_state
         ):
             return state
         time.sleep(0.05)
-    raise M0Error("M4 host did not become ready for trusted DOM input")
+    raise M0Error(f"M4 host did not become ready for {expected_state}")
 
 
 def wait_for_result(
@@ -222,7 +228,7 @@ def wait_for_result(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run trusted host DOM pointer input through Ozone and Aura."
+        description="Run trusted host DOM input through Ozone and Aura."
     )
     parser.add_argument("--browser", type=Path)
     parser.add_argument(
@@ -239,9 +245,26 @@ def main() -> int:
         action="store_true",
         help="disable the host browser sandbox (isolated CI only)",
     )
+    parser.add_argument(
+        "--input",
+        choices=("pointer", "wheel"),
+        default="pointer",
+        help="trusted DOM input path to drive",
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=120.0)
     parser.add_argument("--verbose-server", action="store_true")
     args = parser.parse_args()
+
+    if args.input == "pointer":
+        case = M4_CASE
+        state_expression = "window.__chromiumWasmM4State || null"
+        expected_state = "awaiting-dom-pointer"
+        input_driver = "Chrome DevTools Input.dispatchMouseEvent:mouse"
+    else:
+        case = M4_WHEEL_CASE
+        state_expression = "window.__chromiumWasmM4WheelState || null"
+        expected_state = "awaiting-dom-wheel"
+        input_driver = "Chrome DevTools Input.dispatchMouseEvent:mouseWheel"
 
     out_dir = args.out_dir
     if not out_dir.is_absolute():
@@ -274,13 +297,13 @@ def main() -> int:
         context = print_context(
             "run_m4_ozone_smoke.py",
             manifest,
-            case=M4_CASE,
+            case=case,
             gn_args=manifest.get(
                 "m3_content_gn_args", manifest.get("gn_args")
             ),
             module_name=args.module_name,
             host_browser_sandbox=not args.no_sandbox,
-            input_driver="Chrome DevTools Input.dispatchMouseEvent",
+            input_driver=input_driver,
         )
 
         stage = "find_browser"
@@ -314,13 +337,22 @@ def main() -> int:
         )
         server_thread.start()
         server_started = True
-        url = m4_smoke_url(
-            server,
-            token,
-            versions,
-            module_name=args.module_name,
-            timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
-        )
+        if args.input == "pointer":
+            url = m4_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
+        else:
+            url = m4_wheel_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
 
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m4-")
         debug_port = unused_loopback_port()
@@ -369,25 +401,40 @@ def main() -> int:
         client = wait_for_page_client(debug_port, expected_url_prefix, deadline)
         stage = "wait_for_input_state"
         state = wait_for_input_state(
-            client, browser, browser_stderr, result_queue, deadline
+            client,
+            browser,
+            browser_stderr,
+            result_queue,
+            deadline,
+            state_expression,
+            expected_state,
         )
         stage = "measure_canvas"
         click_x, click_y = canvas_click_position(
             state, read_canvas_geometry(client)
         )
-        stage = "dispatch_trusted_dom_pointer"
-        client.dispatch_primary_click(click_x, click_y)
+        if args.input == "pointer":
+            stage = "dispatch_trusted_dom_pointer"
+            client.dispatch_primary_click(click_x, click_y)
+        else:
+            stage = "dispatch_trusted_dom_wheel"
+            client.dispatch_mouse_wheel(click_x, click_y, 0.0, 160.0)
         stage = "wait_for_result"
         result = wait_for_result(
             browser, browser_stderr, result_queue, deadline
         )
         stage = "validate_runtime_contract"
-        validate_m4_result(result, expected_versions=versions)
+        if args.input == "pointer":
+            validate_m4_result(result, expected_versions=versions)
+            input_key = "pointerInput"
+        else:
+            validate_m4_wheel_result(result, expected_versions=versions)
+            input_key = "wheelInput"
         print(
             f"{SENTINEL}:BROWSER_RESULT "
             + json.dumps(
                 {
-                    "pointerInput": result["pointerInput"],
+                    input_key: result[input_key],
                     "readiness": result["readiness"],
                     "shutdown": result["shutdown"],
                     "versions": result["versions"],
@@ -415,6 +462,7 @@ def main() -> int:
                 browser=browser,
                 browser_stderr=browser_stderr,
                 result=result,
+                case=case,
             )
             print(
                 f"{SENTINEL}:DIAGNOSTICS "

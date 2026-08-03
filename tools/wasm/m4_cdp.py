@@ -194,6 +194,25 @@ class DevToolsClient:
             {**base, "type": "mouseReleased", "clickCount": 1},
         )
 
+    def dispatch_mouse_wheel(
+        self,
+        x: float,
+        y: float,
+        delta_x: float,
+        delta_y: float,
+    ) -> None:
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseWheel",
+                "x": x,
+                "y": y,
+                "deltaX": delta_x,
+                "deltaY": delta_y,
+                "pointerType": "mouse",
+            },
+        )
+
 
 def wait_for_page_client(
     port: int, expected_url_prefix: str, deadline: float

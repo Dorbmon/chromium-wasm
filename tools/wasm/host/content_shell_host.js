@@ -5,7 +5,9 @@
 const HOST_PROTOCOL = 1;
 const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
+const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
+const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -17,6 +19,7 @@ const DEFAULT_WIDTH = 800;
 const DEFAULT_HEIGHT = 600;
 const POST_INPUT_REDRAW_WIDTH = DEFAULT_WIDTH - 1;
 const WASM_PAGE_BYTES = 64 * 1024;
+const MAXIMUM_WHEEL_DELTA = 0x7fffffff;
 
 let activeHost = null;
 const pendingBridgeReports = [];
@@ -182,6 +185,13 @@ export class ChromiumWasmM3Host {
   #lastQueuedPointer = null;
   #activeM4PointerId = null;
   #lastM4PointerPoint = null;
+  #wheelInputEnabled = false;
+  #wheelListeners = [];
+  #wheelSequence = 0;
+  #wheelRecords = [];
+  #lastQueuedWheel = null;
+  #wheelResidualX = 0;
+  #wheelResidualY = 0;
 
   constructor(
     canvas,
@@ -256,6 +266,7 @@ export class ChromiumWasmM3Host {
   #releaseHost() {
     this.#stopHeartbeat();
     this.#disableM4PointerInput();
+    this.#disableM4WheelInput();
     removeEventListener("error", this.#errorHandler);
     removeEventListener("unhandledrejection", this.#rejectionHandler);
     if (activeHost === this) {
@@ -293,6 +304,27 @@ export class ChromiumWasmM3Host {
       lastQueued: this.#lastQueuedPointer
         ? clone(this.#lastQueuedPointer)
         : null,
+    };
+  }
+
+  #recordWheel(record) {
+    this.#wheelRecords.push(record);
+    if (this.#wheelRecords.length > 32) {
+      this.#wheelRecords.shift();
+    }
+  }
+
+  #wheelInputStatus() {
+    const queuedCount = this.#wheelRecords.filter(
+      (record) => record.queued === true).length;
+    const trustedCount = this.#wheelRecords.filter(
+      (record) => record.trusted === true).length;
+    return {
+      enabled: this.#wheelInputEnabled,
+      receivedCount: this.#wheelRecords.length,
+      trustedCount,
+      queuedCount,
+      lastQueued: this.#lastQueuedWheel ? clone(this.#lastQueuedWheel) : null,
     };
   }
 
@@ -538,6 +570,154 @@ export class ChromiumWasmM3Host {
       listener: cancelWhenHidden,
     });
     return this.#pointerInputStatus();
+  }
+
+  #handleM4WheelEvent(event) {
+    if (this.#lifecycle !== "running") {
+      return;
+    }
+    const record = {
+      sequence: ++this.#wheelSequence,
+      type: "wheel",
+      trusted: event.isTrusted === true,
+      queued: false,
+      frameIdBefore: this.#frame?.id ?? 0,
+      canvasFocused: document.activeElement === this.#canvas,
+    };
+    if (!record.trusted) {
+      record.reason = "UNTRUSTED_DOM_EVENT";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:untrusted");
+      return;
+    }
+    if (!event.cancelable) {
+      record.reason = "NONCANCELABLE_DOM_EVENT";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:noncancelable");
+      return;
+    }
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      record.reason = "UNSUPPORTED_MODIFIERS";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:unsupported-modifiers");
+      return;
+    }
+    if (event.deltaMode !== 0) {
+      record.reason = "UNSUPPORTED_DELTA_MODE";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:unsupported-delta-mode");
+      return;
+    }
+    const point = this.#canvasPointForPointerEvent(event);
+    if (!point) {
+      record.reason = "OUTSIDE_CANVAS";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:outside-canvas");
+      return;
+    }
+    const domDeltaX = Number(event.deltaX);
+    const domDeltaY = Number(event.deltaY);
+    const scaleX = this.#canvas.width / this.#canvas.clientWidth;
+    const scaleY = this.#canvas.height / this.#canvas.clientHeight;
+    if (
+      !Number.isFinite(domDeltaX) ||
+      !Number.isFinite(domDeltaY) ||
+      !Number.isFinite(scaleX) ||
+      !Number.isFinite(scaleY) ||
+      scaleX <= 0 || scaleY <= 0
+    ) {
+      record.reason = "INVALID_DELTA";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:invalid-delta");
+      return;
+    }
+    const accumulatedX = domDeltaX * scaleX + this.#wheelResidualX;
+    const accumulatedY = domDeltaY * scaleY + this.#wheelResidualY;
+    const deltaX = Math.trunc(accumulatedX);
+    const deltaY = Math.trunc(accumulatedY);
+    if (
+      !Number.isSafeInteger(deltaX) ||
+      !Number.isSafeInteger(deltaY) ||
+      deltaX < -MAXIMUM_WHEEL_DELTA ||
+      deltaX > MAXIMUM_WHEEL_DELTA ||
+      deltaY < -MAXIMUM_WHEEL_DELTA ||
+      deltaY > MAXIMUM_WHEEL_DELTA
+    ) {
+      record.reason = "OUT_OF_RANGE_DELTA";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:out-of-range-delta");
+      return;
+    }
+    record.x = point.x;
+    record.y = point.y;
+    record.deltaMode = event.deltaMode;
+    record.domDeltaX = domDeltaX;
+    record.domDeltaY = domDeltaY;
+    record.deltaX = deltaX;
+    record.deltaY = deltaY;
+    record.canvasFocused = document.activeElement === this.#canvas;
+    if (deltaX === 0 && deltaY === 0) {
+      this.#wheelResidualX = accumulatedX;
+      this.#wheelResidualY = accumulatedY;
+      event.preventDefault();
+      record.defaultPrevented = event.defaultPrevented;
+      record.reason = "FRACTIONAL_DELTA_BUFFERED";
+      this.#recordWheel(record);
+      this.#recordHost("m4:wheel:fractional-buffered");
+      return;
+    }
+    this.#canvas.focus({preventScroll: true});
+    try {
+      const result = this.#callExport(
+        "chromium_wasm_host_wheel",
+        "number",
+        ["number", "number", "number", "number"],
+        [point.x, point.y, deltaX, deltaY],
+      );
+      record.queued = result === 1;
+      record.canvasFocused = document.activeElement === this.#canvas;
+      if (record.queued) {
+        this.#wheelResidualX = accumulatedX - deltaX;
+        this.#wheelResidualY = accumulatedY - deltaY;
+        event.preventDefault();
+        record.defaultPrevented = event.defaultPrevented;
+        this.#lastQueuedWheel = record;
+      } else {
+        record.reason = "QUEUE_REJECTED";
+      }
+    } catch (error) {
+      record.reason = `EXPORT_ERROR:${String(error)}`;
+    }
+    this.#recordWheel(record);
+    this.#recordHost(
+      `m4:wheel:${record.queued ? "queued" : "rejected"}`);
+  }
+
+  #disableM4WheelInput() {
+    for (const {target, type, listener} of this.#wheelListeners) {
+      target.removeEventListener(type, listener);
+    }
+    this.#wheelListeners = [];
+    this.#wheelInputEnabled = false;
+    this.#wheelResidualX = 0;
+    this.#wheelResidualY = 0;
+  }
+
+  enableM4WheelInput() {
+    this.#requireRunning("enableM4WheelInput");
+    if (this.#wheelInputEnabled) {
+      return this.#wheelInputStatus();
+    }
+    const listener = (event) => this.#handleM4WheelEvent(event);
+    this.#canvas.addEventListener("wheel", listener, {passive: false});
+    this.#wheelListeners.push({
+      target: this.#canvas,
+      type: "wheel",
+      listener,
+    });
+    this.#wheelInputEnabled = true;
+    this.#recordHost("m4:wheel:listeners-attached");
+    return this.#wheelInputStatus();
   }
 
   #heartbeat() {
@@ -925,6 +1105,7 @@ export class ChromiumWasmM3Host {
       fatalErrors: clone(this.#fatalErrors),
       heartbeat,
       pointerInput: this.#pointerInputStatus(),
+      wheelInput: this.#wheelInputStatus(),
     };
   }
 
@@ -1622,6 +1803,199 @@ async function runM4OzonePointerSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneWheelSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_WHEEL_CASE) {
+      throw new Error("M4 wheel case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 wheel result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_WHEEL_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        `M4 wheel base readiness timeout: ${JSON.stringify(readiness)}`);
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 wheel target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 wheel target y", 0, DEFAULT_HEIGHT - 1);
+    const listeners = host.enableM4WheelInput();
+    window.__chromiumWasmM4WheelState = {
+      state: "awaiting-dom-wheel",
+      targetX,
+      targetY,
+      listeners,
+    };
+    statusElement.textContent = "M4 ready for trusted canvas wheel input";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const wheel = readiness.wheelInput;
+      const lastQueued = wheel.lastQueued;
+      const pageWheel = readiness.pageProbe.wheelEvents;
+      if (
+        wheel.queuedCount >= 1 &&
+        lastQueued?.type === "wheel" &&
+        lastQueued?.defaultPrevented === true &&
+        pageWheel?.count >= 1 &&
+        pageWheel?.trusted === true &&
+        pageWheel?.deltaMode === 0 &&
+        pageWheel?.deltaX === 0 &&
+        pageWheel?.deltaY === 160 &&
+        readiness.pageProbe.innerScrollTop > 0 &&
+        readiness.pageProbe.outerScrollTop === 0 &&
+        readiness.frame?.id > lastQueued.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const wheel = readiness?.wheelInput;
+    const lastQueued = wheel?.lastQueued;
+    const pageWheel = readiness?.pageProbe?.wheelEvents;
+    if (
+      !readiness ||
+      wheel?.queuedCount < 1 ||
+      lastQueued?.type !== "wheel" ||
+      lastQueued?.defaultPrevented !== true ||
+      pageWheel?.count < 1 ||
+      pageWheel?.trusted !== true ||
+      pageWheel?.deltaMode !== 0 ||
+      pageWheel?.deltaX !== 0 ||
+      pageWheel?.deltaY !== 160 ||
+      !(readiness.pageProbe.innerScrollTop > 0) ||
+      readiness.pageProbe.outerScrollTop !== 0 ||
+      !(readiness.frame?.id > lastQueued.frameIdBefore)
+    ) {
+      throw new Error(
+        `M4 trusted Ozone wheel timeout: ${JSON.stringify(readiness)}`);
+    }
+    window.__chromiumWasmM4WheelState = {
+      state: "input-delivered",
+      targetX,
+      targetY,
+      wheel: clone(wheel),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      trustedDomInput:
+        wheel.trustedCount >= 1 && wheel.queuedCount >= 1 &&
+        lastQueued.trusted === true && lastQueued.defaultPrevented === true,
+      ozoneDelivered:
+        pageWheel.count >= 1 &&
+        pageWheel.trusted === true &&
+        pageWheel.deltaMode === 0 &&
+        pageWheel.deltaX === 0 &&
+        pageWheel.deltaY === 160 &&
+        readiness.pageProbe.innerScrollTop > 0 &&
+        readiness.pageProbe.outerScrollTop === 0 &&
+        readiness.frame.id > lastQueued.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_WHEEL_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      wheelInput: wheel,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : `failed checks: ${failedChecks.join(", ")}`,
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_WHEEL_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      wheelInput: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += `; diagnostics: ${String(diagnosticError)}`;
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.wheelInput = result.readiness.wheelInput;
+      } catch (diagnosticError) {
+        result.error += `; readiness diagnostics: ${String(diagnosticError)}`;
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 export async function runContentShellSmokeFromQuery() {
   const selectedCase = new URLSearchParams(location.search).get("case");
   if (selectedCase === M3_CASE) {
@@ -1629,6 +2003,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_CASE) {
     return runM4OzonePointerSmokeFromQuery();
+  }
+  if (selectedCase === M4_WHEEL_CASE) {
+    return runM4OzoneWheelSmokeFromQuery();
   }
   throw new Error("unknown Content Shell Wasm smoke case");
 }

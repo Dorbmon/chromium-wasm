@@ -5,8 +5,8 @@ recreate browser controls in HTML.
 
 ## JavaScript API
 
-`window.chromiumWasmHost` is installed by the M3 page and exposes asynchronous
-methods:
+`window.chromiumWasmHost` is installed by the M3/M4 page and exposes
+asynchronous methods:
 
 - `initialize({modulePath, readyTimeoutMs})`
 - `resize(width, height, devicePixelRatio)`
@@ -37,9 +37,16 @@ fixture proves delivery with a trusted DOM `click` and a later compositor
 frame. After the trusted probe is observed, the runner forces a deterministic
 799×600 resize and restores 800×600; both transitions must present newer
 frames before capture. This avoids assuming that the periodic probe runs
-before the CLICKED paint. Pointer movement, wheel, keyboard, IME, focus,
-capture, and the general Ozone event source remain the M4 gate. Returning
-success while dropping an event is a contract failure.
+before the CLICKED paint. This legacy M3 click path remains an M3 regression
+control; it is not the M4 input path.
+
+M4 adds `enableM4PointerInput()` and `enableM4WheelInput()` for the diagnostic
+harness after initialization. They attach host-canvas listeners, not a
+replacement HTML browser UI. Primary mouse pointer input and pixel wheel input
+then cross the public Ozone input-injector boundary. Keyboard, IME, touch,
+pen, non-primary buttons, cursor control, and richer multi-window behavior
+remain outside this first M4 input slice. Returning success while dropping an
+event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -55,11 +62,16 @@ The Emscripten module must expose these C ABI functions (directly or through
 int chromium_wasm_host_resize(int width, int height, double device_pixel_ratio);
 int chromium_wasm_host_load_url(const char* data_url);
 int chromium_wasm_host_click(int x, int y, int button);
+int chromium_wasm_host_pointer(int type, int x, int y, int button);
+int chromium_wasm_host_wheel(int x, int y, int delta_x, int delta_y);
 int chromium_wasm_host_shutdown(void);
 ```
 
-Each returns `1` only after accepting the operation. Any other value fails the
-gate. For tests, equivalent functions may be supplied on
+Each returns `1` only after accepting and queueing the operation on Chromium's
+UI task runner. Any other value fails the gate. In particular, `1` from either
+M4 input export means **queued**, not that Ozone, Aura, or Blink has delivered
+the event. End-to-end evidence must come from the inner-page probe and a later
+compositor frame. For tests, equivalent functions may be supplied on
 `Module.chromiumWasmHostCommands`, keyed by the full C function name.
 `chromium_wasm_host_load_url` must copy the URL before returning. The host
 releases its temporary UTF-8 allocation immediately after the call. Runtime
@@ -74,6 +86,45 @@ resolve when the task is merely posted: it waits for `ContentMain` and the
 shell delegate to finish, then requires Emscripten's `onExit` after it has
 requested termination of every running and prewarmed pthread worker. Both
 exit statuses must be zero and equal.
+
+### M4 pointer and wheel ABI
+
+`chromium_wasm_host_pointer` accepts only primary mouse input: `type` is `0`
+for move, `1` for down, or `2` for up, and `button` must be `0`. The host
+accepts only trusted primary mouse `PointerEvent`s. It focuses and captures the
+canvas for a press, and releases or cancels that capture on pointer up, pointer
+cancel, blur, visibility loss, or teardown.
+
+The `x` and `y` arguments of both M4 exports are physical canvas backing
+pixels, never outer-page CSS pixels. The host subtracts the canvas border and
+content origin from `clientX`/`clientY`, scales through
+`canvas.width / canvas.clientWidth` and its Y equivalent, then floors the
+result. Coordinates must be nonnegative; the UI-side task separately checks
+that they still fall within the current Wasm viewport.
+
+`chromium_wasm_host_wheel` receives a trusted, cancelable, unmodified DOM
+`WheelEvent` with `deltaMode == DOM_DELTA_PIXEL` and no modifier keys. The host
+does not emulate page scrolling in JavaScript. It converts the DOM CSS-pixel
+deltas to physical backing-pixel deltas, retaining fractional residuals until
+an integral physical-pixel wheel command can be queued. A zero integral delta
+is deliberately buffered rather than reported as delivered. Non-pixel,
+untrusted, noncancelable, modified, out-of-canvas, invalid, and out-of-range
+wheel events are explicitly rejected.
+
+DOM wheel deltas are positive for right and down. The host passes that physical
+pixel convention unchanged to `chromium_wasm_host_wheel`; the C++ ABI boundary
+converts the sign exactly once before `SystemInputInjector::InjectMouseWheel`,
+whose Chromium convention is positive for left and up. This keeps Blink's
+observed DOM wheel delta in the original right/down convention.
+
+The pointer and wheel exports create a `SystemInputInjector` through public
+`OzonePlatform`, then route through the Wasm `PlatformEventSource`, Aura's
+`PlatformWindowDelegate`, and Blink. The M4 pointer smoke proves trusted inner
+mouse and pointer events, trusted link activation, and a newer compositor
+frame after the queued release. The M4 wheel smoke proves a trusted inner
+pixel-mode wheel event with the expected DOM delta, inner scrolling while the
+outer page remains unscrolled, and a newer compositor frame. These checks,
+rather than an export return value, establish Ozone/Aura/Blink delivery.
 
 ## Runtime-to-host bridge
 

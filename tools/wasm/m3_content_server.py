@@ -26,6 +26,7 @@ from m0_common import M0Error, REPO_ROOT
 
 M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
+M4_WHEEL_CASE = "ozone_wheel_m4"
 M3_PROTOCOL = 1
 M3_WIDTH = 800
 M3_HEIGHT = 600
@@ -45,6 +46,7 @@ M3_SCREENSHOT_CONTRACT = (
     M3_TESTDATA_DIR / "m3_content_screenshot_contract.json"
 )
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
+M4_WHEEL_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_wheel_page.html"
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -177,6 +179,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M3_TESTDATA_DIR / "m3_content_page.html"
             ),
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
+            "/__m3__/m4-wheel-fixture.html": M4_WHEEL_FIXTURE,
             "/__m3__/Ahem.woff2": M3_AHEM_FONT,
             "/__m3__/screenshot-contract.json": M3_SCREENSHOT_CONTRACT,
         }
@@ -224,7 +227,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
         if (
             not isinstance(result, dict)
             or result.get("protocol") != M3_PROTOCOL
-            or result.get("case") not in (M3_CASE, M4_CASE)
+            or result.get("case") not in (M3_CASE, M4_CASE, M4_WHEEL_CASE)
         ):
             self.send_error(400)
             return
@@ -317,6 +320,34 @@ def m4_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_wheel_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_WHEEL_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-wheel-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -907,6 +938,257 @@ def validate_m4_result(
     ):
         if not any(marker in line for line in host_logs):
             raise M0Error(f"M4 logs are missing lifecycle marker {marker!r}")
+
+
+def validate_m4_wheel_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate trusted DOM wheel input reaches Ozone, Aura, and Blink."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_WHEEL_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 wheel result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 wheel versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 wheel version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    readiness = _require_dict(result.get("readiness"), "M4 wheel readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 wheel readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 wheel readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 wheel heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error("M4 wheel heartbeat was not anchored to data navigation")
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 wheel heartbeat elapsed time",
+        minimum=0,
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 wheel frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 wheel frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 wheel frame timestamp", minimum=0
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error("M4 wheel frame dimensions do not match the canvas")
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 wheel page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-wheel-v1",
+        "ready": True,
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 wheel page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    target_x = _require_safe_integer(
+        page_probe.get("targetCenterX"),
+        "M4 wheel target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    target_y = _require_safe_integer(
+        page_probe.get("targetCenterY"),
+        "M4 wheel target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    _require_safe_integer(
+        page_probe.get("timerTicks"),
+        "M4 wheel inner page timer ticks",
+        minimum=3,
+    )
+    wheel_events = _require_dict(
+        page_probe.get("wheelEvents"), "M4 inner wheel events"
+    )
+    _require_safe_integer(
+        wheel_events.get("count"), "M4 inner wheel count", minimum=1
+    )
+    if wheel_events.get("trusted") is not True:
+        raise M0Error("M4 inner wheel event was not trusted")
+    if wheel_events.get("deltaMode") != 0:
+        raise M0Error("M4 inner wheel did not use pixel delta mode")
+    if _require_number(
+        wheel_events.get("deltaX"), "M4 inner wheel deltaX"
+    ) != 0:
+        raise M0Error("M4 inner wheel deltaX is not zero")
+    if _require_number(
+        wheel_events.get("deltaY"), "M4 inner wheel deltaY"
+    ) != 160:
+        raise M0Error("M4 inner wheel deltaY is not the trusted DOM delta")
+    _require_safe_integer(
+        page_probe.get("innerScrollTop"),
+        "M4 inner scroll top",
+        minimum=1,
+    )
+    for field in (
+        "innerScrollLeft",
+        "outerScrollLeft",
+        "outerScrollTop",
+        "documentScrollTop",
+    ):
+        if _require_safe_integer(
+            page_probe.get(field), f"M4 wheel {field}"
+        ) != 0:
+            raise M0Error(f"M4 wheel {field} changed unexpectedly")
+
+    wheel_input = _require_dict(
+        result.get("wheelInput"), "M4 wheel input"
+    )
+    readiness_wheel = _require_dict(
+        readiness.get("wheelInput"), "M4 readiness wheel input"
+    )
+    if wheel_input != readiness_wheel:
+        raise M0Error("M4 wheel evidence differs from readiness evidence")
+    if wheel_input.get("enabled") is not True:
+        raise M0Error("M4 wheel listeners were not enabled")
+    received_count = _require_safe_integer(
+        wheel_input.get("receivedCount"),
+        "M4 received wheel count",
+        minimum=1,
+    )
+    trusted_count = _require_safe_integer(
+        wheel_input.get("trustedCount"),
+        "M4 trusted DOM wheel count",
+        minimum=1,
+    )
+    queued_count = _require_safe_integer(
+        wheel_input.get("queuedCount"),
+        "M4 queued host wheel count",
+        minimum=1,
+    )
+    if trusted_count > received_count or queued_count > received_count:
+        raise M0Error("M4 wheel count exceeds received wheel records")
+    last_queued = _require_dict(
+        wheel_input.get("lastQueued"), "M4 last queued wheel"
+    )
+    for field, expected_value in {
+        "type": "wheel",
+        "trusted": True,
+        "queued": True,
+        "canvasFocused": True,
+        "defaultPrevented": True,
+        "deltaMode": 0,
+        "deltaX": 0,
+        "deltaY": 160,
+    }.items():
+        if last_queued.get(field) != expected_value:
+            raise M0Error(
+                f"M4 queued wheel {field} mismatch: expected "
+                f"{expected_value!r}, got {last_queued.get(field)!r}"
+            )
+    if _require_number(
+        last_queued.get("domDeltaX"), "M4 queued DOM wheel deltaX"
+    ) != 0:
+        raise M0Error("M4 queued DOM wheel deltaX is not zero")
+    if _require_number(
+        last_queued.get("domDeltaY"), "M4 queued DOM wheel deltaY"
+    ) != 160:
+        raise M0Error("M4 queued DOM wheel deltaY is not positive down")
+    _require_safe_integer(
+        last_queued.get("sequence"), "M4 wheel sequence", minimum=1
+    )
+    if _require_safe_integer(
+        last_queued.get("x"),
+        "M4 queued wheel x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    ) != target_x:
+        raise M0Error("M4 wheel x does not match the fixture target")
+    if _require_safe_integer(
+        last_queued.get("y"),
+        "M4 queued wheel y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    ) != target_y:
+        raise M0Error("M4 wheel y does not match the fixture target")
+    input_frame_id = _require_safe_integer(
+        last_queued.get("frameIdBefore"),
+        "M4 wheel input frame ID",
+        minimum=1,
+    )
+    if frame_id <= input_frame_id:
+        raise M0Error("M4 result has no compositor frame after wheel input")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 wheel shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 wheel shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 wheel shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 wheel shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 wheel logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 wheel {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 wheel logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    for marker in (
+        "m4:wheel:listeners-attached",
+        "m4:wheel:queued",
+        "shutdown:complete",
+    ):
+        if not any(marker in line for line in host_logs):
+            raise M0Error(
+                f"M4 wheel logs are missing lifecycle marker {marker!r}"
+            )
 
 
 @dataclass(frozen=True)
