@@ -27,6 +27,7 @@ from m0_common import M0Error, REPO_ROOT
 M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
 M4_WHEEL_CASE = "ozone_wheel_m4"
+M4_KEYBOARD_CASE = "ozone_keyboard_m4"
 M3_PROTOCOL = 1
 M3_WIDTH = 800
 M3_HEIGHT = 600
@@ -47,6 +48,7 @@ M3_SCREENSHOT_CONTRACT = (
 )
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
 M4_WHEEL_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_wheel_page.html"
+M4_KEYBOARD_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_keyboard_page.html"
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -180,6 +182,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             ),
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
             "/__m3__/m4-wheel-fixture.html": M4_WHEEL_FIXTURE,
+            "/__m3__/m4-keyboard-fixture.html": M4_KEYBOARD_FIXTURE,
             "/__m3__/Ahem.woff2": M3_AHEM_FONT,
             "/__m3__/screenshot-contract.json": M3_SCREENSHOT_CONTRACT,
         }
@@ -227,7 +230,12 @@ class M3RequestHandler(BaseHTTPRequestHandler):
         if (
             not isinstance(result, dict)
             or result.get("protocol") != M3_PROTOCOL
-            or result.get("case") not in (M3_CASE, M4_CASE, M4_WHEEL_CASE)
+            or result.get("case") not in (
+                M3_CASE,
+                M4_CASE,
+                M4_WHEEL_CASE,
+                M4_KEYBOARD_CASE,
+            )
         ):
             self.send_error(400)
             return
@@ -359,6 +367,35 @@ def m4_wheel_smoke_url(
         }
     )
     return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_keyboard_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_KEYBOARD_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-keyboard-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
 
 
 def _require_number(
@@ -1188,6 +1225,398 @@ def validate_m4_wheel_result(
         if not any(marker in line for line in host_logs):
             raise M0Error(
                 f"M4 wheel logs are missing lifecycle marker {marker!r}"
+            )
+
+
+def validate_m4_keyboard_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate trusted raw ArrowDown delivery through Ozone, Aura, and
+    Blink."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_KEYBOARD_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 keyboard result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(
+        result.get("versions"), "M4 keyboard versions"
+    )
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 keyboard version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    readiness = _require_dict(
+        result.get("readiness"), "M4 keyboard readiness"
+    )
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(
+                f"M4 keyboard readiness field {field} is not true"
+            )
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 keyboard readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 keyboard heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M4 keyboard heartbeat was not anchored to data navigation"
+        )
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 keyboard heartbeat elapsed time",
+        minimum=0,
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 keyboard frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 keyboard frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 keyboard frame timestamp", minimum=0
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error(
+            "M4 keyboard frame dimensions do not match the canvas"
+        )
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 keyboard page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-keyboard-v1",
+        "ready": True,
+        "activeElementId": "keyboard-target",
+        "activationCount": 1,
+        "clickTrusted": True,
+        "focusTrusted": True,
+        "resultText": "ARROW DOWN RECEIVED",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 keyboard page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        page_probe.get("focusCount"),
+        "M4 keyboard focus count",
+        minimum=1,
+    )
+    target_x = _require_safe_integer(
+        page_probe.get("targetCenterX"),
+        "M4 keyboard target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    target_y = _require_safe_integer(
+        page_probe.get("targetCenterY"),
+        "M4 keyboard target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    _require_safe_integer(
+        page_probe.get("timerTicks"),
+        "M4 keyboard inner page timer ticks",
+        minimum=3,
+    )
+    _require_number(
+        page_probe.get("scrollTop"),
+        "M4 keyboard document scroll top",
+        minimum=1,
+    )
+    key_events = _require_dict(
+        page_probe.get("keyEvents"), "M4 inner key events"
+    )
+    for field in ("keydownCount", "keyupCount"):
+        if _require_safe_integer(
+            key_events.get(field), f"M4 inner {field}", minimum=1
+        ) != 1:
+            raise M0Error(f"M4 inner {field} is not exactly one")
+    for event_name in ("keydown", "keyup"):
+        expected_event = {
+            f"{event_name}Trusted": True,
+            f"{event_name}Code": "ArrowDown",
+            f"{event_name}Key": "ArrowDown",
+            f"{event_name}Repeat": False,
+            f"{event_name}Composing": False,
+            f"{event_name}DefaultPrevented": False,
+            f"{event_name}TargetId": "keyboard-target",
+        }
+        for field, expected_value in expected_event.items():
+            actual_value = key_events.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 inner {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+    text_input_events = _require_dict(
+        page_probe.get("textInputEvents"),
+        "M4 keyboard text input events",
+    )
+    for field in (
+        "beforeinputCount",
+        "inputCount",
+        "compositionstartCount",
+        "compositionupdateCount",
+        "compositionendCount",
+    ):
+        if _require_safe_integer(
+            text_input_events.get(field),
+            f"M4 keyboard {field}",
+            minimum=0,
+        ) != 0:
+            raise M0Error(
+                f"M4 keyboard unexpected text or composition event {field}"
+            )
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 keyboard pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 keyboard readiness pointer input"
+    )
+    if pointer_input != readiness_pointer:
+        raise M0Error(
+            "M4 keyboard pointer evidence differs from readiness evidence"
+        )
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 keyboard pointer listeners were not enabled")
+    pointer_received = _require_safe_integer(
+        pointer_input.get("receivedCount"),
+        "M4 keyboard received pointer count",
+        minimum=2,
+    )
+    pointer_trusted = _require_safe_integer(
+        pointer_input.get("trustedCount"),
+        "M4 keyboard trusted pointer count",
+        minimum=2,
+    )
+    pointer_queued = _require_safe_integer(
+        pointer_input.get("queuedCount"),
+        "M4 keyboard queued pointer count",
+        minimum=2,
+    )
+    if pointer_trusted > pointer_received or pointer_queued > pointer_received:
+        raise M0Error(
+            "M4 keyboard pointer count exceeds received pointer records"
+        )
+    last_pointer = _require_dict(
+        pointer_input.get("lastQueued"),
+        "M4 keyboard last queued pointer",
+    )
+    for field, expected_value in {
+        "type": "up",
+        "trusted": True,
+        "queued": True,
+        "canvasFocused": True,
+    }.items():
+        if last_pointer.get(field) != expected_value:
+            raise M0Error(
+                f"M4 keyboard queued pointer {field} mismatch: expected "
+                f"{expected_value!r}, got {last_pointer.get(field)!r}"
+            )
+    if _require_safe_integer(
+        last_pointer.get("x"),
+        "M4 keyboard queued pointer x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    ) != target_x:
+        raise M0Error(
+            "M4 keyboard pointer x does not match the fixture target"
+        )
+    if _require_safe_integer(
+        last_pointer.get("y"),
+        "M4 keyboard queued pointer y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    ) != target_y:
+        raise M0Error(
+            "M4 keyboard pointer y does not match the fixture target"
+        )
+    _require_safe_integer(
+        last_pointer.get("sequence"),
+        "M4 keyboard pointer sequence",
+        minimum=1,
+    )
+    _require_safe_integer(
+        last_pointer.get("frameIdBefore"),
+        "M4 keyboard pointer frame ID",
+        minimum=1,
+    )
+
+    keyboard_input = _require_dict(
+        result.get("keyboardInput"), "M4 keyboard input"
+    )
+    readiness_keyboard = _require_dict(
+        readiness.get("keyboardInput"), "M4 readiness keyboard input"
+    )
+    if keyboard_input != readiness_keyboard:
+        raise M0Error(
+            "M4 keyboard evidence differs from readiness evidence"
+        )
+    if keyboard_input.get("enabled") is not True:
+        raise M0Error("M4 keyboard listeners were not enabled")
+    if keyboard_input.get("activated") is not True:
+        raise M0Error("M4 keyboard input was not activated by pointer input")
+    if keyboard_input.get("pressedCodes") != []:
+        raise M0Error("M4 keyboard key state was not released")
+    keyboard_received = _require_safe_integer(
+        keyboard_input.get("receivedCount"),
+        "M4 received keyboard count",
+        minimum=2,
+    )
+    keyboard_trusted = _require_safe_integer(
+        keyboard_input.get("trustedCount"),
+        "M4 trusted DOM keyboard count",
+        minimum=2,
+    )
+    keyboard_queued = _require_safe_integer(
+        keyboard_input.get("queuedCount"),
+        "M4 queued host keyboard count",
+        minimum=2,
+    )
+    if (
+        keyboard_trusted > keyboard_received
+        or keyboard_queued > keyboard_received
+    ):
+        raise M0Error(
+            "M4 keyboard count exceeds received keyboard records"
+        )
+
+    def require_key_record(
+        value: object, description: str, expected_type: str
+    ) -> int:
+        record = _require_dict(value, description)
+        expected_record = {
+            "type": expected_type,
+            "code": "ArrowDown",
+            "key": "ArrowDown",
+            "trusted": True,
+            "queued": True,
+            "repeat": False,
+            "isComposing": False,
+            "canvasFocused": True,
+            "pointerActivated": True,
+            "defaultPrevented": True,
+        }
+        for field, expected_value in expected_record.items():
+            actual_value = record.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"{description} {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+        if record.get("modifiers") != {
+            "alt": False,
+            "control": False,
+            "meta": False,
+            "shift": False,
+        }:
+            raise M0Error(f"{description} modifiers are not all false")
+        _require_safe_integer(
+            record.get("sequence"), f"{description} sequence", minimum=1
+        )
+        return _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"{description} frame ID",
+            minimum=1,
+        )
+
+    key_down_frame_id = require_key_record(
+        keyboard_input.get("lastQueuedDown"),
+        "M4 last queued key down",
+        "down",
+    )
+    require_key_record(
+        keyboard_input.get("lastQueuedUp"),
+        "M4 last queued key up",
+        "up",
+    )
+    if frame_id <= key_down_frame_id:
+        raise M0Error(
+            "M4 keyboard result has no compositor frame after raw key input"
+        )
+
+    shutdown = _require_dict(
+        result.get("shutdown"), "M4 keyboard shutdown"
+    )
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 keyboard shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 keyboard shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 keyboard shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 keyboard logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 keyboard {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 keyboard logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    for marker in (
+        "m4:pointer:listeners-attached",
+        "m4:keyboard:listeners-attached",
+        "m4:pointer:down:queued",
+        "m4:pointer:up:queued",
+        "m4:keyboard:pointer-activation",
+        "m4:keyboard:down:queued",
+        "m4:keyboard:up:queued",
+        "shutdown:complete",
+    ):
+        if not any(marker in line for line in host_logs):
+            raise M0Error(
+                "M4 keyboard logs are missing lifecycle marker "
+                f"{marker!r}"
             )
 
 

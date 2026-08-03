@@ -6,8 +6,11 @@ const HOST_PROTOCOL = 1;
 const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
+const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
+const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
+const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -192,6 +195,14 @@ export class ChromiumWasmM3Host {
   #lastQueuedWheel = null;
   #wheelResidualX = 0;
   #wheelResidualY = 0;
+  #keyboardInputEnabled = false;
+  #keyboardListeners = [];
+  #keyboardSequence = 0;
+  #keyboardRecords = [];
+  #lastQueuedKeyDown = null;
+  #lastQueuedKeyUp = null;
+  #keyboardActivated = false;
+  #keyboardCodesDown = new Set();
 
   constructor(
     canvas,
@@ -265,6 +276,7 @@ export class ChromiumWasmM3Host {
 
   #releaseHost() {
     this.#stopHeartbeat();
+    this.#disableM4KeyboardInput();
     this.#disableM4PointerInput();
     this.#disableM4WheelInput();
     removeEventListener("error", this.#errorHandler);
@@ -325,6 +337,34 @@ export class ChromiumWasmM3Host {
       trustedCount,
       queuedCount,
       lastQueued: this.#lastQueuedWheel ? clone(this.#lastQueuedWheel) : null,
+    };
+  }
+
+  #recordKeyboard(record) {
+    this.#keyboardRecords.push(record);
+    if (this.#keyboardRecords.length > 32) {
+      this.#keyboardRecords.shift();
+    }
+  }
+
+  #keyboardInputStatus() {
+    const queuedCount = this.#keyboardRecords.filter(
+      (record) => record.queued === true).length;
+    const trustedCount = this.#keyboardRecords.filter(
+      (record) => record.trusted === true).length;
+    return {
+      enabled: this.#keyboardInputEnabled,
+      activated: this.#keyboardActivated,
+      receivedCount: this.#keyboardRecords.length,
+      trustedCount,
+      queuedCount,
+      pressedCodes: Array.from(this.#keyboardCodesDown).sort(),
+      lastQueuedDown: this.#lastQueuedKeyDown
+        ? clone(this.#lastQueuedKeyDown)
+        : null,
+      lastQueuedUp: this.#lastQueuedKeyUp
+        ? clone(this.#lastQueuedKeyUp)
+        : null,
     };
   }
 
@@ -494,6 +534,10 @@ export class ChromiumWasmM3Host {
         record.reason = "QUEUE_REJECTED";
       } else {
         this.#lastQueuedPointer = record;
+        if (type === "down" && this.#keyboardInputEnabled) {
+          this.#keyboardActivated = true;
+          this.#recordHost("m4:keyboard:pointer-activation");
+        }
       }
     } catch (error) {
       record.reason = `EXPORT_ERROR:${String(error)}`;
@@ -718,6 +762,215 @@ export class ChromiumWasmM3Host {
     this.#wheelInputEnabled = true;
     this.#recordHost("m4:wheel:listeners-attached");
     return this.#wheelInputStatus();
+  }
+
+  #releaseM4KeyboardKeys(reason) {
+    const codes = Array.from(this.#keyboardCodesDown);
+    this.#keyboardCodesDown.clear();
+    this.#keyboardActivated = false;
+    if (codes.length === 0) {
+      return;
+    }
+    if (this.#lifecycle !== "running") {
+      this.#recordHost("m4:keyboard:" + reason + ":release-skipped");
+      return;
+    }
+    for (const code of codes) {
+      try {
+        const result = this.#callExport(
+          "chromium_wasm_host_key",
+          "number",
+          ["string", "number"],
+          [code, 0],
+        );
+        this.#recordHost(
+          "m4:keyboard:" + reason + ":" +
+          (result === 1 ? "release-queued" : "release-rejected"));
+      } catch (error) {
+        this.#recordHost("m4:keyboard:" + reason + ":release-failed");
+      }
+    }
+  }
+
+  #handleM4KeyboardEvent(type, event) {
+    if (this.#lifecycle !== "running") {
+      return;
+    }
+    const code = typeof event.code === "string" ? event.code : "";
+    const key = typeof event.key === "string" ? event.key : "";
+    const record = {
+      sequence: ++this.#keyboardSequence,
+      type,
+      code,
+      key,
+      trusted: event.isTrusted === true,
+      queued: false,
+      repeat: event.repeat === true,
+      isComposing: event.isComposing === true,
+      modifiers: {
+        alt: event.altKey === true,
+        control: event.ctrlKey === true,
+        meta: event.metaKey === true,
+        shift: event.shiftKey === true,
+      },
+      frameIdBefore: this.#frame?.id ?? 0,
+      canvasFocused: document.activeElement === this.#canvas,
+      pointerActivated: this.#keyboardActivated,
+    };
+    if (!record.trusted) {
+      record.reason = "UNTRUSTED_DOM_EVENT";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":untrusted");
+      return;
+    }
+    if (!event.cancelable) {
+      record.reason = "NONCANCELABLE_DOM_EVENT";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":noncancelable");
+      return;
+    }
+    if (!record.canvasFocused) {
+      record.reason = "CANVAS_NOT_FOCUSED";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":canvas-not-focused");
+      return;
+    }
+    if (!record.pointerActivated) {
+      record.reason = "NO_POINTER_ACTIVATION";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":no-pointer-activation");
+      return;
+    }
+    if (
+      record.modifiers.alt ||
+      record.modifiers.control ||
+      record.modifiers.meta ||
+      record.modifiers.shift
+    ) {
+      record.reason = "UNSUPPORTED_MODIFIERS";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":unsupported-modifiers");
+      return;
+    }
+    if (record.repeat) {
+      record.reason = "UNSUPPORTED_REPEAT";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":unsupported-repeat");
+      return;
+    }
+    if (
+      record.isComposing ||
+      record.key === "Dead" ||
+      record.key === "Process"
+    ) {
+      record.reason = "UNSUPPORTED_COMPOSITION";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":unsupported-composition");
+      return;
+    }
+    if (record.code !== M4_KEYBOARD_DOM_CODE) {
+      record.reason = "UNSUPPORTED_DOM_CODE";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":unsupported-code");
+      return;
+    }
+    if (type === "down" && this.#keyboardCodesDown.has(record.code)) {
+      record.reason = "DUPLICATE_DOWN";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:down:duplicate");
+      return;
+    }
+    if (type === "up" && !this.#keyboardCodesDown.has(record.code)) {
+      record.reason = "UNMATCHED_UP";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:up:unmatched");
+      return;
+    }
+    try {
+      const result = this.#callExport(
+        "chromium_wasm_host_key",
+        "number",
+        ["string", "number"],
+        [record.code, type === "down" ? 1 : 0],
+      );
+      record.queued = result === 1;
+      if (record.queued) {
+        if (type === "down") {
+          this.#keyboardCodesDown.add(record.code);
+          this.#lastQueuedKeyDown = record;
+        } else {
+          this.#keyboardCodesDown.delete(record.code);
+          this.#lastQueuedKeyUp = record;
+        }
+        event.preventDefault();
+        record.defaultPrevented = event.defaultPrevented;
+      } else {
+        record.reason = "QUEUE_REJECTED";
+      }
+    } catch (error) {
+      record.reason = "EXPORT_ERROR:" + String(error);
+    }
+    this.#recordKeyboard(record);
+    this.#recordHost(
+      "m4:keyboard:" + type + ":" +
+      (record.queued ? "queued" : "rejected"));
+  }
+
+  #disableM4KeyboardInput() {
+    for (const {target, type, listener} of this.#keyboardListeners) {
+      target.removeEventListener(type, listener);
+    }
+    this.#keyboardListeners = [];
+    this.#releaseM4KeyboardKeys("teardown");
+    this.#keyboardInputEnabled = false;
+  }
+
+  enableM4KeyboardInput() {
+    this.#requireRunning("enableM4KeyboardInput");
+    if (this.#keyboardInputEnabled) {
+      return this.#keyboardInputStatus();
+    }
+    for (const [domType, type] of [["keydown", "down"], ["keyup", "up"]]) {
+      const listener = (event) => this.#handleM4KeyboardEvent(type, event);
+      this.#canvas.addEventListener(domType, listener);
+      this.#keyboardListeners.push({
+        target: this.#canvas,
+        type: domType,
+        listener,
+      });
+    }
+    const releaseOnCanvasBlur = () => {
+      this.#releaseM4KeyboardKeys("canvas-blur");
+    };
+    this.#canvas.addEventListener("blur", releaseOnCanvasBlur);
+    this.#keyboardListeners.push({
+      target: this.#canvas,
+      type: "blur",
+      listener: releaseOnCanvasBlur,
+    });
+    const releaseOnWindowBlur = () => {
+      this.#releaseM4KeyboardKeys("window-blur");
+    };
+    addEventListener("blur", releaseOnWindowBlur);
+    this.#keyboardListeners.push({
+      target: window,
+      type: "blur",
+      listener: releaseOnWindowBlur,
+    });
+    const releaseWhenHidden = () => {
+      if (document.visibilityState !== "visible") {
+        this.#releaseM4KeyboardKeys("visibility-loss");
+      }
+    };
+    document.addEventListener("visibilitychange", releaseWhenHidden);
+    this.#keyboardListeners.push({
+      target: document,
+      type: "visibilitychange",
+      listener: releaseWhenHidden,
+    });
+    this.#keyboardInputEnabled = true;
+    this.#recordHost("m4:keyboard:listeners-attached");
+    return this.#keyboardInputStatus();
   }
 
   #heartbeat() {
@@ -1106,6 +1359,7 @@ export class ChromiumWasmM3Host {
       heartbeat,
       pointerInput: this.#pointerInputStatus(),
       wheelInput: this.#wheelInputStatus(),
+      keyboardInput: this.#keyboardInputStatus(),
     };
   }
 
@@ -1122,6 +1376,7 @@ export class ChromiumWasmM3Host {
     ) {
       throw new Error("shutdown timeoutMs is out of range");
     }
+    this.#releaseM4KeyboardKeys("shutdown");
     this.#lifecycle = "shutting-down";
     let result;
     try {
@@ -1996,6 +2251,331 @@ async function runM4OzoneWheelSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneKeyboardSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_KEYBOARD_CASE) {
+      throw new Error("M4 keyboard case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 keyboard result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_KEYBOARD_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 keyboard base readiness timeout: " + JSON.stringify(readiness));
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 keyboard target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 keyboard target y", 0, DEFAULT_HEIGHT - 1);
+    const pointerListeners = host.enableM4PointerInput();
+    const keyboardListeners = host.enableM4KeyboardInput();
+    window.__chromiumWasmM4KeyboardState = {
+      state: "awaiting-dom-keyboard-activation",
+      targetX,
+      targetY,
+      pointerListeners,
+      keyboardListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas click and raw ArrowDown input";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer.lastQueued;
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer.queuedCount >= 2 &&
+        lastQueued?.type === "up" &&
+        pageProbe?.activationCount === 1 &&
+        pageProbe?.clickTrusted === true &&
+        pageProbe?.focusCount >= 1 &&
+        pageProbe?.focusTrusted === true &&
+        pageProbe?.activeElementId === "keyboard-target" &&
+        readiness.frame?.id > lastQueued.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const lastQueuedPointer = pointer?.lastQueued;
+    const pageAfterActivation = readiness?.pageProbe;
+    if (
+      !readiness ||
+      pointer?.queuedCount < 2 ||
+      lastQueuedPointer?.type !== "up" ||
+      pageAfterActivation?.activationCount !== 1 ||
+      pageAfterActivation?.clickTrusted !== true ||
+      pageAfterActivation?.focusCount < 1 ||
+      pageAfterActivation?.focusTrusted !== true ||
+      pageAfterActivation?.activeElementId !== "keyboard-target" ||
+      !(readiness.frame?.id > lastQueuedPointer.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone keyboard activation timeout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4KeyboardState = {
+      state: "awaiting-dom-key",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(readiness.keyboardInput),
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas raw ArrowDown input";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const keyDown = keyboard.lastQueuedDown;
+      const keyUp = keyboard.lastQueuedUp;
+      const pageProbe = readiness.pageProbe;
+      const keyEvents = pageProbe?.keyEvents;
+      const textInputEvents = pageProbe?.textInputEvents;
+      if (
+        keyboard.queuedCount >= 2 &&
+        keyboard.pressedCodes.length === 0 &&
+        keyDown?.type === "down" &&
+        keyDown?.defaultPrevented === true &&
+        keyUp?.type === "up" &&
+        keyUp?.defaultPrevented === true &&
+        keyEvents?.keydownCount === 1 &&
+        keyEvents?.keyupCount === 1 &&
+        keyEvents?.keydownTrusted === true &&
+        keyEvents?.keyupTrusted === true &&
+        keyEvents?.keydownCode === M4_KEYBOARD_DOM_CODE &&
+        keyEvents?.keyupCode === M4_KEYBOARD_DOM_CODE &&
+        keyEvents?.keydownKey === "ArrowDown" &&
+        keyEvents?.keyupKey === "ArrowDown" &&
+        keyEvents?.keydownRepeat === false &&
+        keyEvents?.keyupRepeat === false &&
+        keyEvents?.keydownComposing === false &&
+        keyEvents?.keyupComposing === false &&
+        keyEvents?.keydownDefaultPrevented === false &&
+        keyEvents?.keyupDefaultPrevented === false &&
+        keyEvents?.keydownTargetId === "keyboard-target" &&
+        keyEvents?.keyupTargetId === "keyboard-target" &&
+        textInputEvents?.beforeinputCount === 0 &&
+        textInputEvents?.inputCount === 0 &&
+        textInputEvents?.compositionstartCount === 0 &&
+        textInputEvents?.compositionupdateCount === 0 &&
+        textInputEvents?.compositionendCount === 0 &&
+        pageProbe?.activeElementId === "keyboard-target" &&
+        pageProbe?.scrollTop > 0 &&
+        pageProbe?.resultText === "ARROW DOWN RECEIVED" &&
+        readiness.frame?.id > keyDown.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const keyboard = readiness?.keyboardInput;
+    const lastQueuedDown = keyboard?.lastQueuedDown;
+    const lastQueuedUp = keyboard?.lastQueuedUp;
+    const pageProbe = readiness?.pageProbe;
+    const keyEvents = pageProbe?.keyEvents;
+    const textInputEvents = pageProbe?.textInputEvents;
+    if (
+      !readiness ||
+      keyboard?.queuedCount < 2 ||
+      keyboard?.pressedCodes?.length !== 0 ||
+      lastQueuedDown?.type !== "down" ||
+      lastQueuedDown?.defaultPrevented !== true ||
+      lastQueuedUp?.type !== "up" ||
+      lastQueuedUp?.defaultPrevented !== true ||
+      keyEvents?.keydownCount !== 1 ||
+      keyEvents?.keyupCount !== 1 ||
+      keyEvents?.keydownTrusted !== true ||
+      keyEvents?.keyupTrusted !== true ||
+      keyEvents?.keydownCode !== M4_KEYBOARD_DOM_CODE ||
+      keyEvents?.keyupCode !== M4_KEYBOARD_DOM_CODE ||
+      keyEvents?.keydownKey !== "ArrowDown" ||
+      keyEvents?.keyupKey !== "ArrowDown" ||
+      keyEvents?.keydownRepeat !== false ||
+      keyEvents?.keyupRepeat !== false ||
+      keyEvents?.keydownComposing !== false ||
+      keyEvents?.keyupComposing !== false ||
+      keyEvents?.keydownDefaultPrevented !== false ||
+      keyEvents?.keyupDefaultPrevented !== false ||
+      keyEvents?.keydownTargetId !== "keyboard-target" ||
+      keyEvents?.keyupTargetId !== "keyboard-target" ||
+      textInputEvents?.beforeinputCount !== 0 ||
+      textInputEvents?.inputCount !== 0 ||
+      textInputEvents?.compositionstartCount !== 0 ||
+      textInputEvents?.compositionupdateCount !== 0 ||
+      textInputEvents?.compositionendCount !== 0 ||
+      pageProbe?.activeElementId !== "keyboard-target" ||
+      !(pageProbe?.scrollTop > 0) ||
+      pageProbe?.resultText !== "ARROW DOWN RECEIVED" ||
+      !(readiness.frame?.id > lastQueuedDown.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone keyboard timeout: " + JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4KeyboardState = {
+      state: "input-delivered",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(keyboard),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      pointerActivation:
+        pointer.trustedCount >= 2 &&
+        pointer.queuedCount >= 2 &&
+        lastQueuedPointer.trusted === true &&
+        lastQueuedPointer.queued === true,
+      trustedDomInput:
+        keyboard.trustedCount >= 2 &&
+        keyboard.queuedCount >= 2 &&
+        lastQueuedDown.trusted === true &&
+        lastQueuedDown.queued === true &&
+        lastQueuedDown.defaultPrevented === true &&
+        lastQueuedUp.trusted === true &&
+        lastQueuedUp.queued === true &&
+        lastQueuedUp.defaultPrevented === true,
+      ozoneDelivered:
+        pageProbe.activationCount === 1 &&
+        pageProbe.clickTrusted === true &&
+        pageProbe.focusCount >= 1 &&
+        pageProbe.focusTrusted === true &&
+        pageProbe.activeElementId === "keyboard-target" &&
+        keyEvents.keydownCount === 1 &&
+        keyEvents.keyupCount === 1 &&
+        keyEvents.keydownTrusted === true &&
+        keyEvents.keyupTrusted === true &&
+        keyEvents.keydownCode === M4_KEYBOARD_DOM_CODE &&
+        keyEvents.keyupCode === M4_KEYBOARD_DOM_CODE &&
+        keyEvents.keydownKey === "ArrowDown" &&
+        keyEvents.keyupKey === "ArrowDown" &&
+        keyEvents.keydownRepeat === false &&
+        keyEvents.keyupRepeat === false &&
+        keyEvents.keydownComposing === false &&
+        keyEvents.keyupComposing === false &&
+        keyEvents.keydownDefaultPrevented === false &&
+        keyEvents.keyupDefaultPrevented === false &&
+        keyEvents.keydownTargetId === "keyboard-target" &&
+        keyEvents.keyupTargetId === "keyboard-target" &&
+        textInputEvents.beforeinputCount === 0 &&
+        textInputEvents.inputCount === 0 &&
+        textInputEvents.compositionstartCount === 0 &&
+        textInputEvents.compositionupdateCount === 0 &&
+        textInputEvents.compositionendCount === 0 &&
+        pageProbe.scrollTop > 0 &&
+        pageProbe.resultText === "ARROW DOWN RECEIVED" &&
+        readiness.frame.id > lastQueuedDown.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_KEYBOARD_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      keyboardInput: keyboard,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_KEYBOARD_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      keyboardInput: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.keyboardInput = result.readiness.keyboardInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 export async function runContentShellSmokeFromQuery() {
   const selectedCase = new URLSearchParams(location.search).get("case");
   if (selectedCase === M3_CASE) {
@@ -2006,6 +2586,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_WHEEL_CASE) {
     return runM4OzoneWheelSmokeFromQuery();
+  }
+  if (selectedCase === M4_KEYBOARD_CASE) {
+    return runM4OzoneKeyboardSmokeFromQuery();
   }
   throw new Error("unknown Content Shell Wasm smoke case");
 }

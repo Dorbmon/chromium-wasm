@@ -40,13 +40,14 @@ frames before capture. This avoids assuming that the periodic probe runs
 before the CLICKED paint. This legacy M3 click path remains an M3 regression
 control; it is not the M4 input path.
 
-M4 adds `enableM4PointerInput()` and `enableM4WheelInput()` for the diagnostic
-harness after initialization. They attach host-canvas listeners, not a
-replacement HTML browser UI. Primary mouse pointer input and pixel wheel input
-then cross the public Ozone input-injector boundary. Keyboard, IME, touch,
-pen, non-primary buttons, cursor control, and richer multi-window behavior
-remain outside this first M4 input slice. Returning success while dropping an
-event is a contract failure.
+M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, and the narrowly
+scoped `enableM4KeyboardInput()` for the diagnostic harness after
+initialization. They attach host-canvas listeners, not a replacement HTML
+browser UI. Primary mouse pointer input, pixel wheel input, and the one raw
+non-printable `ArrowDown` key pair cross the public Ozone input-injector
+boundary. Text entry, modifiers, repeat, IME, touch, pen, non-primary buttons,
+cursor control, and richer multi-window behavior remain outside this first M4
+input slice. Returning success while dropping an event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -64,6 +65,7 @@ int chromium_wasm_host_load_url(const char* data_url);
 int chromium_wasm_host_click(int x, int y, int button);
 int chromium_wasm_host_pointer(int type, int x, int y, int button);
 int chromium_wasm_host_wheel(int x, int y, int delta_x, int delta_y);
+int chromium_wasm_host_key(const char* code, int down);
 int chromium_wasm_host_shutdown(void);
 ```
 
@@ -87,7 +89,7 @@ shell delegate to finish, then requires Emscripten's `onExit` after it has
 requested termination of every running and prewarmed pthread worker. Both
 exit statuses must be zero and equal.
 
-### M4 pointer and wheel ABI
+### M4 pointer, wheel, and raw-key ABI
 
 `chromium_wasm_host_pointer` accepts only primary mouse input: `type` is `0`
 for move, `1` for down, or `2` for up, and `button` must be `0`. The host
@@ -117,14 +119,32 @@ converts the sign exactly once before `SystemInputInjector::InjectMouseWheel`,
 whose Chromium convention is positive for left and up. This keeps Blink's
 observed DOM wheel delta in the original right/down convention.
 
-The pointer and wheel exports create a `SystemInputInjector` through public
-`OzonePlatform`, then route through the Wasm `PlatformEventSource`, Aura's
-`PlatformWindowDelegate`, and Blink. The M4 pointer smoke proves trusted inner
-mouse and pointer events, trusted link activation, and a newer compositor
-frame after the queued release. The M4 wheel smoke proves a trusted inner
-pixel-mode wheel event with the expected DOM delta, inner scrolling while the
-outer page remains unscrolled, and a newer compositor frame. These checks,
-rather than an export return value, establish Ozone/Aura/Blink delivery.
+`chromium_wasm_host_key` accepts only the bounded DOM code string
+`"ArrowDown"` and `down == 0` or `1`. The host accepts only a trusted,
+cancelable canvas `keydown`/`keyup` pair after a queued primary-pointer
+press has activated the Wasm window. It rejects modifier, repeat, composition,
+dead-key, process-key, unsupported-code, duplicate-down, and unmatched-up
+records explicitly. A successful export means the record was queued on the UI
+task runner; it does not mean Blink has received it. The host cancels its held
+key state on canvas or window blur, visibility loss, teardown, and shutdown,
+queuing a matching release when Chromium is still running. It prevents the
+outer canvas event's default action only after queue acceptance.
+
+The pointer, wheel, and raw-key exports create a `SystemInputInjector`
+through public `OzonePlatform`, then route through the Wasm
+`PlatformEventSource`, Aura's `PlatformWindowDelegate`, and Blink. A
+primary pointer press activates the Ozone window; raw key records target that
+keyboard-focused window rather than hover or wheel hit testing. The M4 pointer
+smoke proves trusted inner mouse and pointer events, trusted link activation,
+and a newer compositor frame after the queued release. The M4 wheel smoke
+proves a trusted inner pixel-mode wheel event with the expected DOM delta,
+inner scrolling while the outer page remains unscrolled, and a newer compositor
+frame. The M4 raw-key smoke clicks a real focusable page element, drives one
+trusted DevTools `rawKeyDown`/`keyUp` pair, proves trusted inner ArrowDown
+events and normal document scrolling, verifies no text, beforeinput, input, or
+composition side effects, and requires a newer compositor frame after the key
+down. These checks, rather than an export return value, establish
+Ozone/Aura/Blink delivery.
 
 ## Runtime-to-host bridge
 

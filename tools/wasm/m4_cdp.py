@@ -213,6 +213,28 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_arrow_down(self) -> None:
+        base = {
+            "code": "ArrowDown",
+            "key": "ArrowDown",
+            "windowsVirtualKeyCode": 40,
+            "modifiers": 0,
+        }
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "rawKeyDown",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "keyUp",
+            },
+        )
+
 
 def wait_for_page_client(
     port: int, expected_url_prefix: str, deadline: float

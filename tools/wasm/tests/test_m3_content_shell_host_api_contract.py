@@ -120,7 +120,7 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
         self.assertNotIn("kM3Width", api)
         self.assertNotIn("kM3Height", api)
 
-    def test_m3_posts_one_real_click_without_claiming_the_m4_event_matrix(
+    def test_m3_legacy_click_path_stays_separate_from_m4_input(
         self,
     ) -> None:
         host = source("tools/wasm/host/content_shell_host.js")
@@ -135,7 +135,7 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
         self.assertIn("widget->ForwardMouseEvent(mouse_up)", click)
         self.assertIn("web_contents->Focus()", click)
         self.assertNotIn("SystemInputInjector", click)
-        self.assertNotIn("chromium_wasm_host_key", api)
+        self.assertNotIn("chromium_wasm_host_key", click)
 
     def test_page_probes_are_bound_to_the_committed_navigation(self) -> None:
         api = source("content/shell/browser/wasm_host_api.cc")
