@@ -124,16 +124,17 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
         self,
     ) -> None:
         host = source("tools/wasm/host/content_shell_host.js")
-        ozone = source("ui/ozone/platform/wasm/ozone_platform_wasm.cc")
         api = source("content/shell/browser/wasm_host_api.cc")
+        click = api.split("void ClickOnUiThread", 1)[1].split(
+            "void DispatchDomPointerOnUiThread", 1
+        )[0]
 
         self.assertIn("chromium_wasm_host_click", host)
         self.assertIn("CLICK_POSTED", host)
-        self.assertIn("widget->ForwardMouseEvent(mouse_down)", api)
-        self.assertIn("widget->ForwardMouseEvent(mouse_up)", api)
-        self.assertIn("web_contents->Focus()", api)
-        self.assertIn("CreateSystemInputInjector() override", ozone)
-        self.assertIn("return nullptr;", ozone)
+        self.assertIn("widget->ForwardMouseEvent(mouse_down)", click)
+        self.assertIn("widget->ForwardMouseEvent(mouse_up)", click)
+        self.assertIn("web_contents->Focus()", click)
+        self.assertNotIn("SystemInputInjector", click)
         self.assertNotIn("chromium_wasm_host_key", api)
 
     def test_page_probes_are_bound_to_the_committed_navigation(self) -> None:

@@ -25,6 +25,7 @@ from m0_common import M0Error, REPO_ROOT
 
 
 M3_CASE = "content_shell_m3"
+M4_CASE = "ozone_pointer_m4"
 M3_PROTOCOL = 1
 M3_WIDTH = 800
 M3_HEIGHT = 600
@@ -43,6 +44,7 @@ M3_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__"
 M3_SCREENSHOT_CONTRACT = (
     M3_TESTDATA_DIR / "m3_content_screenshot_contract.json"
 )
+M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -174,6 +176,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             "/__m3__/fixture.html": (
                 M3_TESTDATA_DIR / "m3_content_page.html"
             ),
+            "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
             "/__m3__/Ahem.woff2": M3_AHEM_FONT,
             "/__m3__/screenshot-contract.json": M3_SCREENSHOT_CONTRACT,
         }
@@ -221,7 +224,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
         if (
             not isinstance(result, dict)
             or result.get("protocol") != M3_PROTOCOL
-            or result.get("case") != M3_CASE
+            or result.get("case") not in (M3_CASE, M4_CASE)
         ):
             self.send_error(400)
             return
@@ -286,6 +289,34 @@ def m3_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -660,6 +691,222 @@ def validate_m3_result(
     if not png_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         raise M0Error("M3 screenshot is not a PNG")
     return png_bytes
+
+
+def validate_m4_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate the M4 trusted-DOM-pointer to Ozone/Aura evidence."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 versions")
+    if versions != expected_versions:
+        raise M0Error(
+            f"M4 version display mismatch: expected {expected_versions!r}, "
+            f"got {versions!r}"
+        )
+
+    readiness = _require_dict(result.get("readiness"), "M4 readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 readiness reported fatal errors")
+    heartbeat = _require_dict(readiness.get("heartbeat"), "M4 heartbeat")
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error("M4 heartbeat was not anchored to data navigation")
+    _require_number(
+        heartbeat.get("elapsedMs"), "M4 heartbeat elapsed time", minimum=0
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 readiness frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 frame ID", minimum=1
+    )
+    _require_number(frame.get("timestampMs"), "M4 frame timestamp", minimum=0)
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error("M4 readiness frame dimensions do not match the canvas")
+
+    page_probe = _require_dict(readiness.get("pageProbe"), "M4 page probe")
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-pointer-v1",
+        "ready": True,
+        "activationCount": 1,
+        "clickTrusted": True,
+        "resultText": "ACTIVATED",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    target_x = _require_safe_integer(
+        page_probe.get("targetCenterX"),
+        "M4 input target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    target_y = _require_safe_integer(
+        page_probe.get("targetCenterY"),
+        "M4 input target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    _require_safe_integer(
+        page_probe.get("timerTicks"), "M4 inner page timer ticks", minimum=3
+    )
+    pointer_events = _require_dict(
+        page_probe.get("pointerEvents"), "M4 inner pointer events"
+    )
+    for event_name in (
+        "mousemove",
+        "mousedown",
+        "mouseup",
+        "pointermove",
+        "pointerdown",
+        "pointerup",
+    ):
+        _require_safe_integer(
+            pointer_events.get(event_name),
+            f"M4 inner {event_name} count",
+            minimum=1,
+        )
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 readiness pointer input"
+    )
+    if pointer_input != readiness_pointer:
+        raise M0Error("M4 pointer evidence differs from readiness evidence")
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 pointer listeners were not enabled")
+    received_count = _require_safe_integer(
+        pointer_input.get("receivedCount"),
+        "M4 received pointer count",
+        minimum=2,
+    )
+    trusted_count = _require_safe_integer(
+        pointer_input.get("trustedCount"),
+        "M4 trusted DOM pointer count",
+        minimum=2,
+    )
+    queued_count = _require_safe_integer(
+        pointer_input.get("queuedCount"),
+        "M4 queued host pointer count",
+        minimum=2,
+    )
+    if trusted_count > received_count or queued_count > received_count:
+        raise M0Error("M4 pointer count exceeds received pointer records")
+    last_queued = _require_dict(
+        pointer_input.get("lastQueued"), "M4 last queued pointer"
+    )
+    if last_queued.get("type") != "up":
+        raise M0Error("M4 final queued pointer is not a primary release")
+    if last_queued.get("trusted") is not True:
+        raise M0Error("M4 queued pointer was not a trusted DOM event")
+    if last_queued.get("queued") is not True:
+        raise M0Error("M4 final pointer was not queued on the UI runner")
+    if last_queued.get("canvasFocused") is not True:
+        raise M0Error("M4 canvas was not focused before pointer delivery")
+    _require_safe_integer(
+        last_queued.get("sequence"), "M4 pointer sequence", minimum=1
+    )
+    if _require_safe_integer(
+        last_queued.get("x"),
+        "M4 queued pointer x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    ) != target_x:
+        raise M0Error("M4 pointer x does not match the fixture target")
+    if _require_safe_integer(
+        last_queued.get("y"),
+        "M4 queued pointer y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    ) != target_y:
+        raise M0Error("M4 pointer y does not match the fixture target")
+    input_frame_id = _require_safe_integer(
+        last_queued.get("frameIdBefore"),
+        "M4 input frame ID",
+        minimum=1,
+    )
+    if frame_id <= input_frame_id:
+        raise M0Error("M4 result has no compositor frame after input")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 shutdown result")
+    for field, expected_value in {
+        "ok": True,
+        "accepted": True,
+        "complete": True,
+    }.items():
+        if shutdown.get(field) is not expected_value:
+            raise M0Error(f"M4 shutdown field {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if (
+            _require_safe_integer(shutdown.get(field), f"M4 shutdown {field}")
+            != 0
+        ):
+            raise M0Error(f"M4 shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    for marker in (
+        "m4:pointer:listeners-attached",
+        "m4:pointer:down:queued",
+        "m4:pointer:up:queued",
+        "shutdown:complete",
+    ):
+        if not any(marker in line for line in host_logs):
+            raise M0Error(f"M4 logs are missing lifecycle marker {marker!r}")
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+"""Run the M4 trusted host-pointer to Ozone/Aura smoke in host Chrome."""
+
+from __future__ import annotations
+
+import argparse
+from collections import deque
+import json
+import math
+from pathlib import Path
+import queue
+import secrets
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from typing import Any
+
+from m0_common import (
+    M0Error,
+    REPO_ROOT,
+    checked_output,
+    load_manifest,
+    parse_timeout,
+    print_context,
+)
+from m3_content_server import (
+    M4_CASE,
+    create_m3_server,
+    m4_smoke_url,
+    validate_m4_result,
+)
+from m4_cdp import DevToolsClient, unused_loopback_port, wait_for_page_client
+from run_browser_smoke import (
+    browser_command,
+    drain_stream,
+    find_browser,
+    stop_browser,
+)
+from run_content_shell_smoke import manifest_versions
+
+
+SENTINEL = "CHROMIUM_WASM_M4_OZONE"
+
+
+def write_failure_diagnostics(
+    diagnostics_dir: Path,
+    *,
+    stage: str,
+    error: Exception,
+    context: dict[str, object] | None,
+    browser_path: Path | None,
+    browser_version: str | None,
+    browser: subprocess.Popen[str] | None,
+    browser_stderr: deque[str],
+    result: dict[str, Any] | None,
+) -> Path:
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    diagnostic_path = diagnostics_dir / "m4-ozone-pointer-failure.json"
+    diagnostic = {
+        "schema_version": 1,
+        "runner": "run_m4_ozone_smoke.py",
+        "case": M4_CASE,
+        "status": "fail",
+        "stage": stage,
+        "failure": {
+            "type": type(error).__name__,
+            "message": str(error),
+        },
+        "context": context,
+        "host_browser": {
+            "path": str(browser_path) if browser_path else None,
+            "version": browser_version,
+            "return_code": browser.poll() if browser else None,
+            "stderr_tail": list(browser_stderr),
+        },
+        "runtime_result": result,
+    }
+    temporary = diagnostic_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(diagnostic, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(diagnostic_path)
+    return diagnostic_path
+
+
+def _require_finite_number(value: object, description: str) -> float:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+    ):
+        raise M0Error(f"{description} must be a finite number")
+    return float(value)
+
+
+def canvas_click_position(
+    state: dict[str, Any], geometry: dict[str, Any]
+) -> tuple[float, float]:
+    try:
+        target_x = state["targetX"]
+        target_y = state["targetY"]
+    except KeyError as exc:
+        raise M0Error(
+            "M4 host did not publish fixture target coordinates"
+        ) from exc
+    if (
+        not isinstance(target_x, int)
+        or isinstance(target_x, bool)
+        or not isinstance(target_y, int)
+        or isinstance(target_y, bool)
+        or target_x < 0
+        or target_y < 0
+    ):
+        raise M0Error("M4 host published invalid fixture target coordinates")
+    left = _require_finite_number(geometry.get("left"), "canvas left")
+    top = _require_finite_number(geometry.get("top"), "canvas top")
+    client_left = _require_finite_number(
+        geometry.get("clientLeft"), "canvas clientLeft"
+    )
+    client_top = _require_finite_number(
+        geometry.get("clientTop"), "canvas clientTop"
+    )
+    client_width = _require_finite_number(
+        geometry.get("clientWidth"), "canvas clientWidth"
+    )
+    client_height = _require_finite_number(
+        geometry.get("clientHeight"), "canvas clientHeight"
+    )
+    width = _require_finite_number(geometry.get("width"), "canvas width")
+    height = _require_finite_number(geometry.get("height"), "canvas height")
+    if client_width <= 0 or client_height <= 0 or width <= 0 or height <= 0:
+        raise M0Error("M4 canvas has nonpositive dimensions")
+    if target_x >= width or target_y >= height:
+        raise M0Error("M4 fixture target is outside the backing canvas")
+    return (
+        left + client_left + (target_x + 0.5) * client_width / width,
+        top + client_top + (target_y + 0.5) * client_height / height,
+    )
+
+
+def read_canvas_geometry(client: DevToolsClient) -> dict[str, Any]:
+    value = client.evaluate(
+        """(() => {
+          const canvas = document.querySelector('#browser-canvas');
+          if (!(canvas instanceof HTMLCanvasElement)) return null;
+          const rect = canvas.getBoundingClientRect();
+          return {
+            left: rect.left,
+            top: rect.top,
+            clientLeft: canvas.clientLeft,
+            clientTop: canvas.clientTop,
+            clientWidth: canvas.clientWidth,
+            clientHeight: canvas.clientHeight,
+            width: canvas.width,
+            height: canvas.height,
+          };
+        })()"""
+    )
+    if not isinstance(value, dict):
+        raise M0Error("M4 host canvas geometry is unavailable")
+    return value
+
+
+def wait_for_input_state(
+    client: DevToolsClient,
+    browser: subprocess.Popen[str],
+    browser_stderr: deque[str],
+    result_queue: queue.Queue[dict[str, Any]],
+    deadline: float,
+) -> dict[str, Any]:
+    while time.monotonic() < deadline:
+        if browser.poll() is not None:
+            raise M0Error(
+                "host browser exited before accepting M4 input "
+                f"(status {browser.returncode}): " + "\n".join(browser_stderr)
+            )
+        try:
+            result = result_queue.get_nowait()
+        except queue.Empty:
+            result = None
+        if result is not None:
+            raise M0Error(
+                "M4 host finished before accepting trusted DOM input: "
+                + json.dumps(result, sort_keys=True, separators=(",", ":"))
+            )
+        state = client.evaluate("window.__chromiumWasmM4State || null")
+        if (
+            isinstance(state, dict)
+            and state.get("state") == "awaiting-dom-pointer"
+        ):
+            return state
+        time.sleep(0.05)
+    raise M0Error("M4 host did not become ready for trusted DOM input")
+
+
+def wait_for_result(
+    browser: subprocess.Popen[str],
+    browser_stderr: deque[str],
+    result_queue: queue.Queue[dict[str, Any]],
+    deadline: float,
+) -> dict[str, Any]:
+    while time.monotonic() < deadline:
+        if browser.poll() is not None:
+            raise M0Error(
+                "host browser exited before the M4 result "
+                f"(status {browser.returncode}): " + "\n".join(browser_stderr)
+            )
+        remaining = deadline - time.monotonic()
+        try:
+            return result_queue.get(timeout=min(0.1, remaining))
+        except queue.Empty:
+            continue
+    raise M0Error("M4 browser timeout: " + "\n".join(browser_stderr))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run trusted host DOM pointer input through Ozone and Aura."
+    )
+    parser.add_argument("--browser", type=Path)
+    parser.add_argument(
+        "--out-dir", type=Path, default=Path("out/wasm-content-m3")
+    )
+    parser.add_argument("--module-name", default="content_shell_wasm")
+    parser.add_argument(
+        "--diagnostics-dir",
+        type=Path,
+        help="failure directory (default: OUT_DIR/diagnostics-m4)",
+    )
+    parser.add_argument(
+        "--no-sandbox",
+        action="store_true",
+        help="disable the host browser sandbox (isolated CI only)",
+    )
+    parser.add_argument("--timeout", type=parse_timeout, default=120.0)
+    parser.add_argument("--verbose-server", action="store_true")
+    args = parser.parse_args()
+
+    out_dir = args.out_dir
+    if not out_dir.is_absolute():
+        out_dir = REPO_ROOT / out_dir
+    diagnostics_dir = args.diagnostics_dir
+    if diagnostics_dir is None:
+        diagnostics_dir = out_dir / "diagnostics-m4"
+    elif not diagnostics_dir.is_absolute():
+        diagnostics_dir = REPO_ROOT / diagnostics_dir
+
+    server = None
+    server_thread = None
+    server_started = False
+    browser: subprocess.Popen[str] | None = None
+    browser_path: Path | None = None
+    browser_version: str | None = None
+    browser_stderr: deque[str] = deque(maxlen=300)
+    stderr_thread: threading.Thread | None = None
+    profile: tempfile.TemporaryDirectory[str] | None = None
+    client: DevToolsClient | None = None
+    result: dict[str, Any] | None = None
+    context: dict[str, object] | None = None
+    stage = "load_manifest"
+
+    try:
+        manifest = load_manifest()
+        port_revision = checked_output(["git", "rev-parse", "HEAD"])
+        versions = manifest_versions(manifest, port_revision)
+        stage = "print_context"
+        context = print_context(
+            "run_m4_ozone_smoke.py",
+            manifest,
+            case=M4_CASE,
+            gn_args=manifest.get(
+                "m3_content_gn_args", manifest.get("gn_args")
+            ),
+            module_name=args.module_name,
+            host_browser_sandbox=not args.no_sandbox,
+            input_driver="Chrome DevTools Input.dispatchMouseEvent",
+        )
+
+        stage = "find_browser"
+        browser_path, browser_version = find_browser(args.browser)
+        print(
+            f"{SENTINEL}:HOST_BROWSER "
+            + json.dumps(
+                {"browser_version": browser_version},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+
+        token = secrets.token_urlsafe(24)
+        result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+        stage = "create_server"
+        server = create_m3_server(
+            "127.0.0.1",
+            0,
+            out_dir,
+            token,
+            result_queue,
+            module_name=args.module_name,
+            verbose=args.verbose_server,
+        )
+        server_thread = threading.Thread(
+            target=server.serve_forever,
+            name="chromium-wasm-m4-server",
+            daemon=True,
+        )
+        server_thread.start()
+        server_started = True
+        url = m4_smoke_url(
+            server,
+            token,
+            versions,
+            module_name=args.module_name,
+            timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+        )
+
+        profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m4-")
+        debug_port = unused_loopback_port()
+        stage = "launch_browser"
+        command = browser_command(
+            browser_path,
+            profile.name,
+            url,
+            no_sandbox=args.no_sandbox,
+        )
+        command[1:1] = [
+            "--enable-logging=stderr",
+            "--remote-allow-origins=http://localhost",
+            "--remote-debugging-address=127.0.0.1",
+            f"--remote-debugging-port={debug_port}",
+        ]
+        browser = subprocess.Popen(
+            command,
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        assert browser.stderr is not None
+        stderr_thread = threading.Thread(
+            target=drain_stream,
+            args=(browser.stderr, browser_stderr),
+            name="chromium-wasm-m4-browser-stderr",
+            daemon=True,
+        )
+        stderr_thread.start()
+
+        deadline = time.monotonic() + args.timeout
+        stage = "connect_devtools"
+        # Connecting and immediately evaluating while Content Shell is still
+        # establishing its UI sequence can perturb the Wasm scheduler. Let the
+        # page begin normally, then use DevTools solely as the external input
+        # driver.
+        stage = "allow_wasm_startup"
+        time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+        if browser.poll() is not None:
+            raise M0Error("host browser exited during M4 startup")
+
+        expected_url_prefix = url.split("?", 1)[0]
+        client = wait_for_page_client(debug_port, expected_url_prefix, deadline)
+        stage = "wait_for_input_state"
+        state = wait_for_input_state(
+            client, browser, browser_stderr, result_queue, deadline
+        )
+        stage = "measure_canvas"
+        click_x, click_y = canvas_click_position(
+            state, read_canvas_geometry(client)
+        )
+        stage = "dispatch_trusted_dom_pointer"
+        client.dispatch_primary_click(click_x, click_y)
+        stage = "wait_for_result"
+        result = wait_for_result(
+            browser, browser_stderr, result_queue, deadline
+        )
+        stage = "validate_runtime_contract"
+        validate_m4_result(result, expected_versions=versions)
+        print(
+            f"{SENTINEL}:BROWSER_RESULT "
+            + json.dumps(
+                {
+                    "pointerInput": result["pointerInput"],
+                    "readiness": result["readiness"],
+                    "shutdown": result["shutdown"],
+                    "versions": result["versions"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        print(f"{SENTINEL}:PASS", flush=True)
+        return 0
+    except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
+        if browser is not None:
+            stop_browser(browser)
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=1)
+        try:
+            diagnostic_path = write_failure_diagnostics(
+                diagnostics_dir,
+                stage=stage,
+                error=exc,
+                context=context,
+                browser_path=browser_path,
+                browser_version=browser_version,
+                browser=browser,
+                browser_stderr=browser_stderr,
+                result=result,
+            )
+            print(
+                f"{SENTINEL}:DIAGNOSTICS "
+                + json.dumps(
+                    {"path": str(diagnostic_path)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+        except (OSError, TypeError, ValueError) as diagnostic_error:
+            print(
+                f"{SENTINEL}:DIAGNOSTICS_FAIL reason={diagnostic_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        print(f"{SENTINEL}:FAIL reason={exc}", file=sys.stderr, flush=True)
+        return 1
+    finally:
+        if client is not None:
+            client.close()
+        if browser is not None:
+            stop_browser(browser)
+        if profile is not None:
+            profile.cleanup()
+        if server is not None:
+            if server_started:
+                server.shutdown()
+            server.server_close()
+        if server_started and server_thread is not None:
+            server_thread.join(timeout=3)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

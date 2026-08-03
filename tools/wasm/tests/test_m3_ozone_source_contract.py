@@ -152,24 +152,23 @@ class M3OzoneSourceContractTest(unittest.TestCase):
             factory,
         )
 
-    def test_window_input_and_host_decorations_are_explicitly_unsupported(
+    def test_window_cursor_and_host_decorations_are_explicitly_unsupported(
         self,
     ) -> None:
         window = source("ui/ozone/platform/wasm/wasm_window.cc")
         screen = source("ui/ozone/platform/wasm/wasm_screen.cc")
 
         for message in (
-            "Host pointer capture is unsupported until the M4 input gate",
-            "Host cursor updates are unsupported until the M4 input gate",
-            "Host cursor movement is unsupported until the M4 input gate",
-            "Host cursor confinement is unsupported until the M4 input gate",
+            "Host cursor updates are unsupported by the M4 pointer slice",
+            "Host cursor movement is unsupported by the M4 pointer slice",
+            "Host cursor confinement is unsupported by the M4 pointer slice",
             "ozone_wasm M3 has no host-native title surface",
             "ozone_wasm M3 has no host-native window icon surface",
         ):
             with self.subTest(message=message):
                 self.assertIn(message, window)
         self.assertIn(
-            "Host cursor position is unsupported until the M4 input gate",
+            "Host cursor position is unsupported by the M4 pointer slice",
             screen,
         )
 
