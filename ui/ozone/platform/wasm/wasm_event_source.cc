@@ -75,9 +75,12 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   }
 
   void InjectMouseWheel(int delta_x, int delta_y) override {
-    NOTIMPLEMENTED_LOG_ONCE()
-        << "ozone_wasm wheel injection is not implemented by the first M4 "
-           "pointer slice";
+    if (delta_x == 0 && delta_y == 0) {
+      return;
+    }
+    event_source_->DispatchMouseWheelEvent(
+        location_, gfx::Vector2d(delta_x, delta_y),
+        button_flags_ | EF_PRECISION_SCROLLING_DELTA, device_id_);
   }
 
   void InjectKeyEvent(DomCode physical_key,
@@ -131,6 +134,36 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
                   -target->GetBoundsInPixels().y());
   MouseEvent event(type, location, root_location, EventTimeForNow(), flags,
                    changed_button_flags);
+  event.set_source_device_id(source_device_id);
+  Event::DispatcherApi(&event).set_target(target);
+  PlatformEventSource::DispatchEvent(&event);
+  return true;
+}
+
+bool WasmPlatformEventSource::DispatchMouseWheelEvent(
+    const gfx::PointF& screen_location,
+    const gfx::Vector2d& offset,
+    EventFlags flags,
+    int source_device_id) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  if (PlatformEventSource::ShouldIgnoreNativePlatformEvents() ||
+      !std::isfinite(screen_location.x()) ||
+      !std::isfinite(screen_location.y()) ||
+      (offset.x() == 0 && offset.y() == 0)) {
+    return false;
+  }
+
+  const gfx::Point root_location = gfx::ToFlooredPoint(screen_location);
+  WasmWindow* target = window_manager_->GetPointerTarget(root_location);
+  if (!target) {
+    return false;
+  }
+
+  gfx::Point location = root_location;
+  location.Offset(-target->GetBoundsInPixels().x(),
+                  -target->GetBoundsInPixels().y());
+  MouseWheelEvent event(offset, location, root_location, EventTimeForNow(),
+                        flags, EF_NONE);
   event.set_source_device_id(source_device_id);
   Event::DispatcherApi(&event).set_target(target);
   PlatformEventSource::DispatchEvent(&event);

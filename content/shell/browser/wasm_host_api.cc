@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -42,6 +43,7 @@
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/vector2d.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/system_input_injector.h"
 #include "url/gurl.h"
@@ -351,6 +353,28 @@ void DispatchDomPointerOnUiThread(DomPointerEventType type,
   NOTREACHED();
 }
 
+void DispatchDomWheelOnUiThread(const gfx::Point& location,
+                                const gfx::Vector2d& dom_delta) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  if (!state.ContainsViewportPointOnUiThread(location)) {
+    ReportFatal("M4 host wheel event is outside the accepted viewport");
+    return;
+  }
+
+  ui::SystemInputInjector* input_injector =
+      state.GetInputInjectorOnUiThread();
+  if (!input_injector) {
+    ReportFatal("M4 host wheel event has no Ozone input injector");
+    return;
+  }
+
+  input_injector->MoveCursorTo(gfx::PointF(location));
+  // DOM WheelEvent deltas are positive for right/down. Chromium wheel offsets
+  // are positive for left/up, so convert at the host ABI boundary exactly once.
+  input_injector->InjectMouseWheel(-dom_delta.x(), -dom_delta.y());
+}
+
 void LoadUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   Shell* shell = GetSingleShell();
@@ -450,6 +474,22 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_pointer(int type,
   return content::PostHostCommand(base::BindOnce(
              &content::DispatchDomPointerOnUiThread, event_type,
              gfx::Point(x, y)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_wheel(int x,
+                                                  int y,
+                                                  int delta_x,
+                                                  int delta_y) {
+  if (x < 0 || y < 0 || (delta_x == 0 && delta_y == 0) ||
+      delta_x == std::numeric_limits<int>::min() ||
+      delta_y == std::numeric_limits<int>::min()) {
+    return 0;
+  }
+  return content::PostHostCommand(base::BindOnce(
+             &content::DispatchDomWheelOnUiThread, gfx::Point(x, y),
+             gfx::Vector2d(delta_x, delta_y)))
              ? 1
              : 0;
 }

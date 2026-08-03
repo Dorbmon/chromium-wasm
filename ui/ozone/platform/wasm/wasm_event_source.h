@@ -13,6 +13,7 @@
 #include "ui/events/platform/platform_event_source.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/vector2d.h"
 
 namespace ui {
 
@@ -36,6 +37,11 @@ class WasmPlatformEventSource final : public PlatformEventSource {
                           EventFlags flags,
                           EventFlags changed_button_flags,
                           int source_device_id);
+
+  bool DispatchMouseWheelEvent(const gfx::PointF& screen_location,
+                               const gfx::Vector2d& offset,
+                               EventFlags flags,
+                               int source_device_id);
 
  private:
   raw_ptr<WasmWindowManager> window_manager_;
