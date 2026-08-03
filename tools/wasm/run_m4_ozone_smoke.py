@@ -31,6 +31,7 @@ from m0_common import (
 )
 from m3_content_server import (
     M4_CASE,
+    M4_SELECT_CASE,
     M4_SELECTION_CASE,
     M4_PRIMARY_PASTE_CASE,
     M4_COPY_PASTE_CASE,
@@ -43,6 +44,7 @@ from m3_content_server import (
     create_m3_server,
     m4_focus_smoke_url,
     m4_smoke_url,
+    m4_select_smoke_url,
     m4_selection_smoke_url,
     m4_primary_paste_smoke_url,
     m4_copy_paste_smoke_url,
@@ -52,6 +54,7 @@ from m3_content_server import (
     m4_backspace_smoke_url,
     m4_ime_bridge_smoke_url,
     validate_m4_result,
+    validate_m4_select_result,
     validate_m4_selection_result,
     validate_m4_primary_paste_result,
     validate_m4_copy_paste_result,
@@ -409,6 +412,7 @@ def main() -> int:
         "--input",
         choices=(
             "pointer",
+            "select",
             "selection",
             "primary-paste",
             "copy-paste",
@@ -440,6 +444,14 @@ def main() -> int:
         state_expression = "window.__chromiumWasmM4State || null"
         expected_state = "awaiting-dom-pointer"
         input_driver = "Chrome DevTools Input.dispatchMouseEvent:mouse"
+    elif args.input == "select":
+        case = M4_SELECT_CASE
+        state_expression = "window.__chromiumWasmM4SelectState || null"
+        expected_state = "awaiting-dom-select-open"
+        input_driver = (
+            "Chrome DevTools Input.dispatchMouseEvent two primary clicks; "
+            "the second target is derived from native popup canvas pixels"
+        )
     elif args.input == "selection":
         case = M4_SELECTION_CASE
         state_expression = "window.__chromiumWasmM4SelectionState || null"
@@ -592,6 +604,14 @@ def main() -> int:
         server_started = True
         if args.input == "pointer":
             url = m4_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
+        elif args.input == "select":
+            url = m4_select_smoke_url(
                 server,
                 token,
                 versions,
@@ -752,6 +772,29 @@ def main() -> int:
         if args.input == "pointer":
             stage = "dispatch_trusted_dom_pointer"
             client.dispatch_primary_click(click_x, click_y)
+        elif args.input == "select":
+            stage = "dispatch_trusted_dom_select_opener"
+            client.dispatch_primary_click(click_x, click_y)
+            stage = "wait_for_select_popup"
+            select_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-select-option",
+            )
+            stage = "measure_select_popup_option"
+            option_x, option_y = canvas_point_position(
+                select_state,
+                canvas_geometry,
+                x_field="optionTargetX",
+                y_field="optionTargetY",
+                description="scan-derived native select option",
+            )
+            stage = "dispatch_trusted_dom_select_option"
+            client.dispatch_primary_click(option_x, option_y)
         elif args.input == "selection":
             stage = "dispatch_trusted_dom_selection_activation"
             client.dispatch_primary_click(click_x, click_y)
@@ -1170,6 +1213,9 @@ def main() -> int:
         stage = "validate_runtime_contract"
         if args.input == "pointer":
             validate_m4_result(result, expected_versions=versions)
+            input_key = "pointerInput"
+        elif args.input == "select":
+            validate_m4_select_result(result, expected_versions=versions)
             input_key = "pointerInput"
         elif args.input == "selection":
             validate_m4_selection_result(result, expected_versions=versions)

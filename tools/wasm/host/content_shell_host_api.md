@@ -201,6 +201,15 @@ composition side effects, and requires a newer compositor frame after the key
 down. These checks, rather than an export return value, establish
 Ozone/Aura/Blink delivery.
 
+The M4 native-select smoke makes two trusted primary-pointer clicks. The first
+opens Blink's internal Aura popup for a real HTML `<select>`; the host finds
+the fixture's option color only in actual compositor canvas pixels and uses the
+scan-derived center for the second click. It requires native trusted `input`
+then `change` delivery for option `two`, popup disappearance, and a newer
+compositor frame. This proves one collapsed HTML select control, not
+Chrome/Views menus, dialogs, tooltips, arbitrary transient surfaces, or a
+general popup protocol.
+
 The M4 printable-key smoke clicks a real initially empty Blink text input and
 drives one trusted DevTools `KeyA` `rawKeyDown`/`keyUp` pair without a DevTools
 text payload. It requires trusted inner key events, exactly one trusted

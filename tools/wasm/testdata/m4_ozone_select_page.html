@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 native select fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  html {
+    min-height: 100%;
+    overflow-y: scroll;
+  }
+
+  body {
+    min-height: 1500px;
+    margin: 0;
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    width: 520px;
+    margin: 72px 0 0 96px;
+    padding: 24px;
+    border: 4px solid #163a63;
+    background: #fff;
+  }
+
+  #select-target {
+    display: block;
+    box-sizing: border-box;
+    width: 360px;
+    height: 48px;
+    margin-top: 20px;
+    font: 16px Ahem, sans-serif;
+  }
+
+  option {
+    background: rgb(250, 0, 250);
+    color: rgb(0, 250, 0);
+  }
+
+  #result[data-selected="true"] {
+    color: #08763b;
+  }
+</style>
+<main>
+  <p>M4 NATIVE SELECT</p>
+  <select id="select-target" aria-label="Select target">
+    <option value="one" selected>ONE</option>
+    <option value="two">TWO</option>
+    <option value="three">THREE</option>
+  </select>
+  <p id="result" data-selected="false">WAITING</p>
+</main>
+<script>
+  (() => {
+    const target = document.querySelector("#select-target");
+    const result = document.querySelector("#result");
+    const openerEventTrace = [];
+    const inputEventTrace = [];
+    const changeEventTrace = [];
+    let fontReady = !document.fonts;
+    let timerTicks = 0;
+    let eventSequence = 0;
+
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    function record(targetTrace, event) {
+      targetTrace.push({
+        sequence: ++eventSequence,
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        button: event.button,
+        buttons: event.buttons,
+        value: target.value,
+        selectedIndex: target.selectedIndex,
+      });
+    }
+
+    for (const eventType of [
+      "pointerdown", "mousedown", "pointerup", "mouseup", "click",
+    ]) {
+      target.addEventListener(eventType, (event) => {
+        record(openerEventTrace, event);
+      });
+    }
+    target.addEventListener("input", (event) => {
+      record(inputEventTrace, event);
+      result.dataset.selected = "true";
+      result.textContent = `INPUT:${target.value}`;
+    });
+    target.addEventListener("change", (event) => {
+      record(changeEventTrace, event);
+      result.dataset.selected = "true";
+      result.textContent = `SELECTED:${target.value}`;
+    });
+
+    function targetBounds() {
+      const rect = target.getBoundingClientRect();
+      return {
+        left: Math.floor(rect.left),
+        top: Math.floor(rect.top),
+        right: Math.ceil(rect.right),
+        bottom: Math.ceil(rect.bottom),
+      };
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      const bounds = targetBounds();
+      return JSON.stringify({
+        protocol: 1,
+        fixture: "chromium-wasm-m4-ozone-select-v1",
+        fontReady,
+        timerTicks,
+        ready: document.readyState === "complete" && fontReady &&
+            bounds.left >= 0 && bounds.top >= 0 &&
+            bounds.right > bounds.left && bounds.bottom > bounds.top,
+        targetBounds: bounds,
+        targetCenterX: Math.floor((bounds.left + bounds.right) / 2),
+        targetCenterY: Math.floor((bounds.top + bounds.bottom) / 2),
+        activeElementId: document.activeElement?.id || null,
+        selectValue: target.value,
+        selectedIndex: target.selectedIndex,
+        openerEventTrace,
+        inputEventTrace,
+        changeEventTrace,
+        resultText: result.textContent,
+      });
+    };
+  })();
+</script>

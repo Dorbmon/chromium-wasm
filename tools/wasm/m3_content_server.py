@@ -26,6 +26,7 @@ from m0_common import M0Error, REPO_ROOT
 
 M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
+M4_SELECT_CASE = "ozone_select_m4"
 M4_SELECTION_CASE = "ozone_selection_m4"
 M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4"
 M4_COPY_PASTE_CASE = "ozone_copy_paste_m4"
@@ -54,6 +55,7 @@ M3_SCREENSHOT_CONTRACT = (
     M3_TESTDATA_DIR / "m3_content_screenshot_contract.json"
 )
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
+M4_SELECT_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_select_page.html"
 M4_SELECTION_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_selection_page.html"
 M4_PRIMARY_PASTE_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_primary_paste_page.html"
@@ -199,6 +201,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M3_TESTDATA_DIR / "m3_content_page.html"
             ),
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
+            "/__m3__/m4-select-fixture.html": M4_SELECT_FIXTURE,
             "/__m3__/m4-selection-fixture.html": M4_SELECTION_FIXTURE,
             "/__m3__/m4-primary-paste-fixture.html": M4_PRIMARY_PASTE_FIXTURE,
             "/__m3__/m4-copy-paste-fixture.html": M4_COPY_PASTE_FIXTURE,
@@ -258,6 +261,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             or result.get("case") not in (
                 M3_CASE,
                 M4_CASE,
+                M4_SELECT_CASE,
                 M4_SELECTION_CASE,
                 M4_PRIMARY_PASTE_CASE,
                 M4_COPY_PASTE_CASE,
@@ -360,6 +364,34 @@ def m4_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_select_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_SELECT_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-select-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -1261,6 +1293,355 @@ def validate_m4_result(
     ):
         if not any(marker in line for line in host_logs):
             raise M0Error(f"M4 logs are missing lifecycle marker {marker!r}")
+
+
+def validate_m4_select_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate native select popup rendering and pointer selection in M4."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_SELECT_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "popupClosed": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 select result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 select versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 select version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    readiness = _require_dict(result.get("readiness"), "M4 select readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 select readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 select readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 select heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error("M4 select heartbeat was not anchored to data navigation")
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 select heartbeat elapsed time",
+        minimum=0,
+    )
+    frame = _require_dict(readiness.get("frame"), "M4 select frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 select frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 select frame timestamp", minimum=0
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error("M4 select frame dimensions do not match the canvas")
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 select page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-select-v1",
+        "ready": True,
+        "selectValue": "two",
+        "selectedIndex": 1,
+        "resultText": "SELECTED:two",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 select page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    target_x = _require_safe_integer(
+        page_probe.get("targetCenterX"),
+        "M4 select target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    target_y = _require_safe_integer(
+        page_probe.get("targetCenterY"),
+        "M4 select target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    _require_safe_integer(
+        page_probe.get("timerTicks"),
+        "M4 select inner page timer ticks",
+        minimum=3,
+    )
+    target_bounds = _require_dict(
+        page_probe.get("targetBounds"), "M4 select target bounds"
+    )
+    bounds: dict[str, int] = {}
+    for field, maximum in (
+        ("left", M3_WIDTH - 1),
+        ("right", M3_WIDTH),
+        ("top", M3_HEIGHT - 1),
+        ("bottom", M3_HEIGHT),
+    ):
+        bounds[field] = _require_safe_integer(
+            target_bounds.get(field),
+            f"M4 select target {field}",
+            minimum=0,
+            maximum=maximum,
+        )
+    if bounds["right"] <= bounds["left"] or bounds["bottom"] <= bounds["top"]:
+        raise M0Error("M4 select target bounds are empty")
+    if target_x != (bounds["left"] + bounds["right"]) // 2 or target_y != (
+        bounds["top"] + bounds["bottom"]
+    ) // 2:
+        raise M0Error("M4 select target center does not match its bounds")
+
+    def require_trusted_select_event(
+        trace: object,
+        event_type: str,
+        description: str,
+    ) -> dict[str, Any]:
+        if not isinstance(trace, list):
+            raise M0Error(f"{description} must be an array")
+        for record in trace:
+            if (
+                isinstance(record, dict)
+                and record.get("type") == event_type
+                and record.get("trusted") is True
+                and record.get("targetId") == "select-target"
+                and record.get("clientX") == target_x
+                and record.get("clientY") == target_y
+            ):
+                return record
+        raise M0Error(
+            f"M4 select has no trusted {event_type} event at the opener"
+        )
+
+    opener_trace = page_probe.get("openerEventTrace")
+    for event_type in ("pointerdown", "mousedown", "pointerup", "mouseup", "click"):
+        require_trusted_select_event(
+            opener_trace, event_type, "M4 select opener event trace"
+        )
+
+    def require_select_commit_event(
+        trace_name: str,
+        event_type: str,
+    ) -> dict[str, Any]:
+        trace = page_probe.get(trace_name)
+        if not isinstance(trace, list) or len(trace) != 1:
+            raise M0Error(f"M4 select {trace_name} is not exactly one event")
+        event = _require_dict(trace[0], f"M4 select {trace_name} event")
+        if (
+            event.get("type") != event_type
+            or event.get("trusted") is not True
+            or event.get("targetId") != "select-target"
+            or event.get("value") != "two"
+            or event.get("selectedIndex") != 1
+        ):
+            raise M0Error(f"M4 select {trace_name} is not a trusted commit")
+        _require_safe_integer(
+            event.get("sequence"),
+            f"M4 select {trace_name} sequence",
+            minimum=1,
+        )
+        return event
+
+    input_event = require_select_commit_event("inputEventTrace", "input")
+    change_event = require_select_commit_event("changeEventTrace", "change")
+    if input_event["sequence"] >= change_event["sequence"]:
+        raise M0Error("M4 select change did not follow trusted input")
+
+    popup_option_scan = _require_dict(
+        result.get("popupOptionScan"), "M4 select popup option scan"
+    )
+    if popup_option_scan.get("rgba") != [250, 0, 250, 255]:
+        raise M0Error("M4 select popup scan color is not exact opaque magenta")
+    pixel_count = _require_safe_integer(
+        popup_option_scan.get("pixelCount"),
+        "M4 select popup scan pixel count",
+        minimum=4096,
+    )
+    scan: dict[str, int] = {"pixelCount": pixel_count}
+    for field, maximum in (
+        ("minX", M3_WIDTH - 1),
+        ("maxX", M3_WIDTH - 1),
+        ("minY", M3_HEIGHT - 1),
+        ("maxY", M3_HEIGHT - 1),
+        ("targetX", M3_WIDTH - 1),
+        ("targetY", M3_HEIGHT - 1),
+    ):
+        scan[field] = _require_safe_integer(
+            popup_option_scan.get(field),
+            f"M4 select popup scan {field}",
+            minimum=0,
+            maximum=maximum,
+        )
+    if (
+        scan["maxX"] < scan["minX"]
+        or scan["maxY"] < scan["minY"]
+        or scan["minY"] <= bounds["bottom"]
+        or scan["maxX"] - scan["minX"] + 1
+        < bounds["right"] - bounds["left"] - 8
+        or scan["maxY"] - scan["minY"] + 1 < 36
+    ):
+        raise M0Error("M4 select popup scan bounds are not a visible popup")
+    if (
+        scan["targetX"] != (scan["minX"] + scan["maxX"]) // 2
+        or scan["targetY"] != (scan["minY"] + scan["maxY"]) // 2
+    ):
+        raise M0Error("M4 select popup click target was not scan-derived")
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 select pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 select readiness pointer input"
+    )
+    if not _exact_json_value_equal(pointer_input, readiness_pointer):
+        raise M0Error("M4 select pointer evidence differs from readiness")
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 select pointer listeners were not enabled")
+    received_count = _require_safe_integer(
+        pointer_input.get("receivedCount"),
+        "M4 select received pointer count",
+        minimum=6,
+    )
+    trusted_count = _require_safe_integer(
+        pointer_input.get("trustedCount"),
+        "M4 select trusted pointer count",
+        minimum=6,
+    )
+    if trusted_count > received_count:
+        raise M0Error("M4 select trusted pointer count exceeds received count")
+    if _require_safe_integer(
+        pointer_input.get("queuedCount"),
+        "M4 select queued pointer count",
+        minimum=6,
+    ) != 6:
+        raise M0Error("M4 select pointer queue does not have two exact clicks")
+    queued_records = pointer_input.get("queuedRecords")
+    if not isinstance(queued_records, list) or len(queued_records) != 6:
+        raise M0Error("M4 select queued pointer trace is not six records")
+    expected_pointer_trace = (
+        ("move", target_x, target_y, -1, 0),
+        ("down", target_x, target_y, 0, 1),
+        ("up", target_x, target_y, 0, 0),
+        ("move", scan["targetX"], scan["targetY"], -1, 0),
+        ("down", scan["targetX"], scan["targetY"], 0, 1),
+        ("up", scan["targetX"], scan["targetY"], 0, 0),
+    )
+    for index, (event_type, x, y, button, buttons) in enumerate(
+        expected_pointer_trace
+    ):
+        record = _require_dict(
+            queued_records[index], f"M4 select pointer trace {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "x": x,
+            "y": y,
+            "button": button,
+            "buttons": buttons,
+            "trusted": True,
+            "queued": True,
+            "canvasFocused": True,
+            "sequence": index + 1,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 select pointer trace {index} {field} mismatch"
+                )
+        _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 select pointer trace {index} frame ID",
+            minimum=1,
+        )
+    last_queued = _require_dict(
+        pointer_input.get("lastQueued"), "M4 select last queued pointer"
+    )
+    if not _exact_json_value_equal(last_queued, queued_records[-1]):
+        raise M0Error("M4 select last queued pointer differs from trace")
+    popup_open_pointer = _require_dict(
+        result.get("popupOpenPointer"), "M4 select popup-open pointer"
+    )
+    if not _exact_json_value_equal(popup_open_pointer, queued_records[2]):
+        raise M0Error("M4 select popup-open pointer is not the opener release")
+    option_pointer = _require_dict(
+        result.get("optionPointer"), "M4 select option pointer"
+    )
+    if not _exact_json_value_equal(option_pointer, queued_records[-1]):
+        raise M0Error("M4 select option pointer is not the option release")
+    if frame_id <= _require_safe_integer(
+        option_pointer.get("frameIdBefore"),
+        "M4 select option pointer frame ID",
+        minimum=1,
+    ):
+        raise M0Error("M4 select has no compositor frame after option input")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 select shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 select shutdown field {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 select shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 select shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 select logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 select {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 select logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    pointer_logs = [
+        line for line in host_logs if line.startswith("m4:pointer:")
+    ]
+    expected_pointer_logs = ["m4:pointer:listeners-attached"] + [
+        f"m4:pointer:{event_type}:queued"
+        for event_type in ("move", "down", "up", "move", "down", "up")
+    ]
+    if pointer_logs != expected_pointer_logs:
+        raise M0Error("M4 select pointer lifecycle logs are not exact")
+    if not any("shutdown:complete" in line for line in host_logs):
+        raise M0Error("M4 select logs are missing clean shutdown")
 
 
 def validate_m4_selection_result(

@@ -5,6 +5,7 @@
 const HOST_PROTOCOL = 1;
 const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
+const M4_SELECT_CASE = "ozone_select_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
@@ -15,6 +16,7 @@ const M4_COPY_PASTE_CASE = "ozone_copy_paste_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
+const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
 const M4_PRINTABLE_KEY_FIXTURE =
@@ -40,6 +42,8 @@ const M4_PASTE_DOM_KEY = "v";
 const M4_COPY_PASTE_SOURCE_VALUE = "COPY";
 const M4_COPY_PASTE_DECOY_VALUE = "DECOY";
 const M4_CURSOR_TYPE_HAND = 2;
+const M4_SELECT_OPTION_RGBA = Object.freeze([250, 0, 250, 255]);
+const M4_SELECT_MINIMUM_POPUP_PIXELS = 4096;
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -197,6 +201,78 @@ function hasM4PointerLinkHover(pageProbe, x, y) {
     record?.type === "pointermove" && record?.trusted === true &&
     record?.targetId === "m4-link" && record?.clientX === x &&
     record?.clientY === y);
+}
+
+function hasM4SelectOpenerTrace(pageProbe, x, y) {
+  const trace = pageProbe?.openerEventTrace;
+  if (!Array.isArray(trace)) {
+    return false;
+  }
+  return ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].every(
+      (type) => trace.some((record) =>
+        record?.type === type && record?.trusted === true &&
+        record?.targetId === "select-target" && record?.clientX === x &&
+        record?.clientY === y));
+}
+
+function scanM4SelectPopupOption(canvas, selectBounds) {
+  if (!(canvas instanceof HTMLCanvasElement) || !selectBounds) {
+    throw new Error("M4 select popup scan requires a canvas and select bounds");
+  }
+  for (const field of ["left", "top", "right", "bottom"]) {
+    if (!Number.isSafeInteger(selectBounds[field])) {
+      throw new Error("M4 select bounds are invalid");
+    }
+  }
+  const context = globalThis.ChromiumWasmHostBridge?.context ??
+      canvas.getContext("2d", {alpha: false});
+  if (!context || typeof context.getImageData !== "function") {
+    throw new Error("M4 select popup scan has no 2D canvas context");
+  }
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageData.data;
+  let pixelCount = 0;
+  let minX = canvas.width;
+  let minY = canvas.height;
+  let maxX = -1;
+  let maxY = -1;
+  const [red, green, blue, alpha] = M4_SELECT_OPTION_RGBA;
+  for (let y = 0; y < canvas.height; ++y) {
+    for (let x = 0; x < canvas.width; ++x) {
+      const offset = (y * canvas.width + x) * 4;
+      if (pixels[offset] !== red || pixels[offset + 1] !== green ||
+          pixels[offset + 2] !== blue || pixels[offset + 3] !== alpha) {
+        continue;
+      }
+      ++pixelCount;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
+  if (
+    pixelCount < M4_SELECT_MINIMUM_POPUP_PIXELS ||
+    width < selectBounds.right - selectBounds.left - 8 || height < 36 ||
+    minY <= selectBounds.bottom || minX > selectBounds.left + 8 ||
+    maxX < selectBounds.right - 8
+  ) {
+    return null;
+  }
+  return {
+    rgba: Array.from(M4_SELECT_OPTION_RGBA),
+    pixelCount,
+    minX,
+    minY,
+    maxX,
+    maxY,
+    targetX: Math.floor((minX + maxX) / 2),
+    // The fixture has exactly three options. The midpoint of the rendered
+    // option stack is the second option and is derived from actual pixels.
+    targetY: Math.floor((minY + maxY) / 2),
+  };
 }
 
 function isM4CopyPasteShortcutCode(code) {
@@ -4069,6 +4145,271 @@ async function runM4OzonePointerSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneSelectSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let readiness = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_SELECT_CASE) {
+      throw new Error("M4 select case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 select result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_SELECT_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 select base readiness timeout: " + JSON.stringify(readiness));
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 select target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 select target y", 0, DEFAULT_HEIGHT - 1);
+    const targetBounds = readiness.pageProbe.targetBounds;
+    if (!targetBounds || typeof targetBounds !== "object") {
+      throw new Error("M4 select fixture has no target bounds");
+    }
+    for (const field of ["left", "top", "right", "bottom"]) {
+      checkInteger(
+        Number(targetBounds[field]), `M4 select target ${field}`,
+        0, field === "left" || field === "right"
+          ? DEFAULT_WIDTH : DEFAULT_HEIGHT);
+    }
+    if (targetBounds.right <= targetBounds.left ||
+        targetBounds.bottom <= targetBounds.top) {
+      throw new Error("M4 select fixture target bounds are empty");
+    }
+    const pointerListeners = host.enableM4PointerInput();
+    window.__chromiumWasmM4SelectState = {
+      state: "awaiting-dom-select-open",
+      targetX,
+      targetY,
+      targetBounds: clone(targetBounds),
+      pointerListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas native select opener input";
+
+    let popupOptionScan = null;
+    let popupOpenPointer = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer?.lastQueued;
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer?.queuedCount >= 3 && lastQueued?.type === "up" &&
+        lastQueued?.button === 0 && lastQueued?.x === targetX &&
+        lastQueued?.y === targetY && lastQueued?.trusted === true &&
+        lastQueued?.queued === true && pageProbe?.selectValue === "one" &&
+        pageProbe?.selectedIndex === 0 &&
+        hasM4SelectOpenerTrace(pageProbe, targetX, targetY) &&
+        readiness.frame?.id > lastQueued.frameIdBefore
+      ) {
+        const candidate = scanM4SelectPopupOption(canvas, targetBounds);
+        if (candidate) {
+          popupOptionScan = candidate;
+          popupOpenPointer = clone(lastQueued);
+          break;
+        }
+      }
+      await delay(50);
+    }
+    if (!popupOptionScan || !popupOpenPointer) {
+      throw new Error(
+        "M4 native select popup was not rendered: " +
+        JSON.stringify(readiness));
+    }
+    checkInteger(
+      popupOptionScan.targetX, "M4 select option target x", 0,
+      DEFAULT_WIDTH - 1);
+    checkInteger(
+      popupOptionScan.targetY, "M4 select option target y", 0,
+      DEFAULT_HEIGHT - 1);
+    window.__chromiumWasmM4SelectState = {
+      state: "awaiting-dom-select-option",
+      targetX,
+      targetY,
+      targetBounds: clone(targetBounds),
+      popupOpenPointer: clone(popupOpenPointer),
+      popupOptionScan: clone(popupOptionScan),
+      optionTargetX: popupOptionScan.targetX,
+      optionTargetY: popupOptionScan.targetY,
+    };
+    statusElement.textContent =
+      "M4 native select popup rendered; awaiting trusted option input";
+
+    let optionPointer = null;
+    let popupClosed = false;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer?.lastQueued;
+      const pageProbe = readiness.pageProbe;
+      const inputEvent = pageProbe?.inputEventTrace?.[0];
+      const changeEvent = pageProbe?.changeEventTrace?.[0];
+      if (
+        pointer?.queuedCount === 6 && lastQueued?.type === "up" &&
+        lastQueued?.button === 0 &&
+        lastQueued?.x === popupOptionScan.targetX &&
+        lastQueued?.y === popupOptionScan.targetY &&
+        lastQueued?.trusted === true && lastQueued?.queued === true &&
+        pageProbe?.selectValue === "two" && pageProbe?.selectedIndex === 1 &&
+        pageProbe?.inputEventTrace?.length === 1 &&
+        pageProbe?.changeEventTrace?.length === 1 &&
+        inputEvent?.trusted === true && inputEvent?.value === "two" &&
+        inputEvent?.selectedIndex === 1 && changeEvent?.trusted === true &&
+        changeEvent?.value === "two" && changeEvent?.selectedIndex === 1 &&
+        inputEvent?.sequence < changeEvent?.sequence &&
+        pageProbe?.resultText === "SELECTED:two" &&
+        readiness.frame?.id > lastQueued.frameIdBefore &&
+        scanM4SelectPopupOption(canvas, targetBounds) === null
+      ) {
+        optionPointer = clone(lastQueued);
+        popupClosed = true;
+        break;
+      }
+      await delay(50);
+    }
+    if (!optionPointer || !popupClosed) {
+      throw new Error(
+        "M4 native select option was not committed: " +
+        JSON.stringify(readiness));
+    }
+    const pointer = readiness.pointerInput;
+    const pageProbe = readiness.pageProbe;
+    const inputEvent = pageProbe.inputEventTrace[0];
+    const changeEvent = pageProbe.changeEventTrace[0];
+    window.__chromiumWasmM4SelectState = {
+      state: "input-delivered",
+      targetX,
+      targetY,
+      targetBounds: clone(targetBounds),
+      popupOpenPointer: clone(popupOpenPointer),
+      popupOptionScan: clone(popupOptionScan),
+      optionPointer: clone(optionPointer),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      popupOpened:
+        hasM4SelectOpenerTrace(pageProbe, targetX, targetY) &&
+        popupOptionScan.pixelCount >= M4_SELECT_MINIMUM_POPUP_PIXELS &&
+        popupOptionScan.minY > targetBounds.bottom,
+      optionCommitted:
+        pointer.queuedCount === 6 && pageProbe.selectValue === "two" &&
+        pageProbe.selectedIndex === 1 && inputEvent.trusted === true &&
+        changeEvent.trusted === true && inputEvent.sequence < changeEvent.sequence,
+      popupClosed,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_SELECT_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      popupOpenPointer,
+      popupOptionScan,
+      optionPointer,
+      popupClosed,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_SELECT_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: null,
+      popupOpenPointer: null,
+      popupOptionScan: null,
+      optionPointer: null,
+      popupClosed: false,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneSelectionSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -7831,6 +8172,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_CASE) {
     return runM4OzonePointerSmokeFromQuery();
+  }
+  if (selectedCase === M4_SELECT_CASE) {
+    return runM4OzoneSelectSmokeFromQuery();
   }
   if (selectedCase === M4_SELECTION_CASE) {
     return runM4OzoneSelectionSmokeFromQuery();
