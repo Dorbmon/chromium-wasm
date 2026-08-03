@@ -159,6 +159,10 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
   }
 
   const gfx::Point root_location = gfx::ToFlooredPoint(screen_location);
+  // Keep PlatformScreen's cursor state in sync with every accepted host
+  // pointer record, including records outside a Wasm window or during capture.
+  // Aura consults this state while dispatching normal mouse and drag events.
+  window_manager_->SetCursorScreenPoint(root_location);
   WasmWindow* target = window_manager_->GetPointerTarget(root_location);
   if (!target) {
     return false;
@@ -195,6 +199,7 @@ bool WasmPlatformEventSource::DispatchMouseWheelEvent(
   }
 
   const gfx::Point root_location = gfx::ToFlooredPoint(screen_location);
+  window_manager_->SetCursorScreenPoint(root_location);
   WasmWindow* target = window_manager_->GetPointerTarget(root_location);
   if (!target) {
     return false;

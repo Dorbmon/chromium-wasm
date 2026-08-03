@@ -102,6 +102,7 @@ class M4OzonePointerContractTest(unittest.TestCase):
             "PlatformEventSource::ShouldIgnoreNativePlatformEvents()",
             "std::isfinite(screen_location.x())",
             "std::isfinite(screen_location.y())",
+            "window_manager_->SetCursorScreenPoint(root_location)",
             "window_manager_->GetPointerTarget(root_location)",
             "location.Offset(-target->GetBoundsInPixels().x()",
             "Event::DispatcherApi(&event).set_target(target)",
@@ -112,6 +113,28 @@ class M4OzonePointerContractTest(unittest.TestCase):
         self.assertLess(
             dispatch.index("Event::DispatcherApi(&event).set_target(target)"),
             dispatch.index("PlatformEventSource::DispatchEvent(&event)"),
+        )
+        self.assertLess(
+            dispatch.index("window_manager_->SetCursorScreenPoint(root_location)"),
+            dispatch.index("window_manager_->GetPointerTarget(root_location)"),
+        )
+
+    def test_platform_screen_reads_the_shared_host_cursor_position(self) -> None:
+        manager_header = source("ui/ozone/platform/wasm/wasm_window_manager.h")
+        manager = source("ui/ozone/platform/wasm/wasm_window_manager.cc")
+        screen = source("ui/ozone/platform/wasm/wasm_screen.cc")
+
+        for marker in (
+            "void SetCursorScreenPoint(const gfx::Point& point);",
+            "gfx::Point GetCursorScreenPoint() const;",
+            "gfx::Point cursor_screen_point_;",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, manager_header)
+        self.assertIn("cursor_screen_point_ = point;", manager)
+        self.assertIn("return window_manager_->GetCursorScreenPoint();", screen)
+        self.assertNotIn(
+            "Host cursor position is unsupported by the M4 pointer slice", screen
         )
 
     def test_window_is_an_event_target_that_delegates_to_aura(self) -> None:

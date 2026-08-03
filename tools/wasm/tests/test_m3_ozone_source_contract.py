@@ -167,7 +167,7 @@ class M3OzoneSourceContractTest(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 self.assertIn(message, window)
-        self.assertIn(
+        self.assertNotIn(
             "Host cursor position is unsupported by the M4 pointer slice",
             screen,
         )

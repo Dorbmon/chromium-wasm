@@ -33,6 +33,12 @@ class WasmWindowManager {
       const gfx::Point& point);
   WasmWindow* GetWindowAtScreenPoint(const gfx::Point& point);
 
+  // The host delivers pointer coordinates in the single display's screen
+  // coordinate space. Keep the latest accepted coordinate here so both event
+  // routing and PlatformScreen observe the same cursor position.
+  void SetCursorScreenPoint(const gfx::Point& point);
+  gfx::Point GetCursorScreenPoint() const;
+
   void SetPointerFocusedWindow(WasmWindow* window);
   WasmWindow* GetPointerFocusedWindow();
   void SetKeyboardFocusedWindow(WasmWindow* window);
@@ -49,6 +55,7 @@ class WasmWindowManager {
   raw_ptr<WasmWindow> pointer_focused_window_ = nullptr;
   raw_ptr<WasmWindow> keyboard_focused_window_ = nullptr;
   raw_ptr<WasmWindow> pointer_capture_window_ = nullptr;
+  gfx::Point cursor_screen_point_;
   base::ThreadChecker thread_checker_;
 };
 

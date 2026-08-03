@@ -71,6 +71,16 @@ WasmWindowManager::GetAcceleratedWidgetAtScreenPoint(
   return window ? window->widget() : gfx::kNullAcceleratedWidget;
 }
 
+void WasmWindowManager::SetCursorScreenPoint(const gfx::Point& point) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  cursor_screen_point_ = point;
+}
+
+gfx::Point WasmWindowManager::GetCursorScreenPoint() const {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  return cursor_screen_point_;
+}
+
 void WasmWindowManager::SetPointerFocusedWindow(WasmWindow* window) {
   DCHECK(thread_checker_.CalledOnValidThread());
   DCHECK(!window || windows_.Lookup(window->widget()) == window);

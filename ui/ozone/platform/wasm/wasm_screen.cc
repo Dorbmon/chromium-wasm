@@ -5,7 +5,6 @@
 #include "ui/ozone/platform/wasm/wasm_screen.h"
 
 #include "base/check.h"
-#include "base/notimplemented.h"
 #include "base/time/time.h"
 #include "ui/display/display.h"
 #include "ui/gfx/geometry/point.h"
@@ -53,9 +52,7 @@ display::Display WasmScreen::GetDisplayForAcceleratedWidget(
 }
 
 gfx::Point WasmScreen::GetCursorScreenPoint() const {
-  NOTIMPLEMENTED_LOG_ONCE()
-      << "Host cursor position is unsupported by the M4 pointer slice";
-  return gfx::Point();
+  return window_manager_->GetCursorScreenPoint();
 }
 
 gfx::AcceleratedWidget WasmScreen::GetAcceleratedWidgetAtScreenPoint(
