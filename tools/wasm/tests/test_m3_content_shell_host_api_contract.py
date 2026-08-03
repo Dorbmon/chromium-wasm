@@ -48,9 +48,12 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
             "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8",
             build,
         )
+        # Array arguments used by the IME ABI share the same post-malloc,
+        # growth-safe heap view as existing string arguments.
+        self.assertIn("const heap = this.#module.HEAPU8;", host)
+        self.assertIn("heap.set(encoded, pointer);", host)
         self.assertIn(
-            "this.#module.HEAPU8.set(encoded, pointer)",
-            host,
+            'argumentType !== "string" && argumentType !== "array"', host
         )
         self.assertIn(
             "Fetch HEAPU8 after malloc because memory growth invalidates",

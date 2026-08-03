@@ -114,7 +114,9 @@ class M4OzonePrintableKeyContractTest(unittest.TestCase):
             handler.index("event.preventDefault()"),
         )
         for forbidden in (
-            "chromium_wasm_host_text",
+            # The separate IME ABI is `chromium_wasm_host_text_input`; keep
+            # rejecting the old generic text-insertion export instead.
+            "chromium_wasm_host_text(",
             "chromium_wasm_host_insert_text",
             "Input.insertText",
         ):

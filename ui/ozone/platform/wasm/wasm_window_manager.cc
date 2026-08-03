@@ -93,6 +93,13 @@ WasmWindow* WasmWindowManager::GetKeyboardFocusedWindow() {
   return keyboard_focused_window_;
 }
 
+bool WasmWindowManager::IsKeyboardFocusedWidget(
+    gfx::AcceleratedWidget widget) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  WasmWindow* window = GetKeyboardFocusedWindow();
+  return window && window->widget() == widget && window->IsVisible();
+}
+
 void WasmWindowManager::SetPointerCapture(WasmWindow* window) {
   DCHECK(thread_checker_.CalledOnValidThread());
   CHECK(window);

@@ -196,6 +196,32 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  chromium_wasm_report_ozone_text_input_delivery__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_ozone_text_input_delivery__proxy: 'sync',
+  chromium_wasm_report_ozone_text_input_delivery: (
+      action, sessionId, sequence, accepted) => {
+    if (!Number.isSafeInteger(action) || action < 1 || action > 3 ||
+        !Number.isSafeInteger(sessionId) || sessionId < 1 ||
+        !Number.isSafeInteger(sequence) || sequence < 1 ||
+        (accepted !== 0 && accepted !== 1)) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportOzoneTextInputDelivery !== 'function') {
+      return 0;
+    }
+    bridge.reportOzoneTextInputDelivery({
+      protocol: ChromiumWasmHostBridge.version,
+      action,
+      sessionId,
+      sequence,
+      accepted: accepted === 1,
+    });
+    return 1;
+  },
+
   chromium_wasm_report_navigation__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_navigation__proxy: 'sync',
   chromium_wasm_report_navigation: () => {

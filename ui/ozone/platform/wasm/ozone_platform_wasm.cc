@@ -103,7 +103,9 @@ class OzonePlatformWasmImpl final : public OzonePlatform {
   std::unique_ptr<InputMethod> CreateInputMethod(
       ImeKeyEventDispatcher* ime_key_event_dispatcher,
       gfx::AcceleratedWidget widget) override {
-    return std::make_unique<WasmInputMethod>(ime_key_event_dispatcher);
+    CHECK(window_manager_);
+    return std::make_unique<WasmInputMethod>(ime_key_event_dispatcher, widget,
+                                             window_manager_.get());
   }
 
   bool IsWindowCompositingSupported() const override {

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -20,6 +21,8 @@
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -34,6 +37,7 @@
 #include "content/public/common/isolated_world_ids.h"
 #include "content/shell/browser/shell.h"
 #include "emscripten/emscripten.h"
+#include "emscripten/heap.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/window.h"
@@ -49,6 +53,7 @@
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/system_input_injector.h"
+#include "ui/ozone/platform/wasm/wasm_input_method.h"
 #include "ui/platform_window/platform_window.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -63,6 +68,9 @@ constexpr int kMaximumCanvasDimension = 16384;
 // linear-memory ceiling to Content, V8, and browser services.
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
+constexpr size_t kMaximumM4TextInputUtf16Units = 64 * 1024;
+constexpr size_t kMaximumM4TextInputUtf8Bytes =
+    kMaximumM4TextInputUtf16Units * 3;
 constexpr std::string_view kM4NavigationDomCode = "ArrowDown";
 constexpr std::string_view kM4PrintableDomCode = "KeyA";
 
@@ -84,12 +92,107 @@ extern "C" int chromium_wasm_report_readiness(
 extern "C" int chromium_wasm_report_navigation();
 extern "C" int chromium_wasm_report_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_fatal(const char* message);
+extern "C" int chromium_wasm_report_ozone_text_input_delivery(
+    int action,
+    int session_id,
+    int sequence,
+    int accepted);
 
 void ReportFatal(std::string_view message) {
   const std::string terminated_message(message);
   if (chromium_wasm_report_fatal(terminated_message.c_str()) != 1) {
     LOG(ERROR) << "Unable to deliver M3 host failure: " << message;
   }
+}
+
+void ReportTextInputDelivery(const ui::WasmTextInputRecord& record,
+                             bool accepted) {
+  if (chromium_wasm_report_ozone_text_input_delivery(
+          static_cast<int>(record.action), record.session_id, record.sequence,
+          accepted ? 1 : 0) != 1) {
+    ReportFatal("host rejected M4 Ozone text-input delivery report");
+  }
+}
+
+std::optional<ui::WasmTextInputAction> ParseWasmTextInputAction(int action) {
+  switch (action) {
+    case static_cast<int>(ui::WasmTextInputAction::kSetComposition):
+      return ui::WasmTextInputAction::kSetComposition;
+    case static_cast<int>(ui::WasmTextInputAction::kConfirmComposition):
+      return ui::WasmTextInputAction::kConfirmComposition;
+    case static_cast<int>(ui::WasmTextInputAction::kClearComposition):
+      return ui::WasmTextInputAction::kClearComposition;
+  }
+  return std::nullopt;
+}
+
+bool CopyM4TextInputRecord(int action,
+                           int session_id,
+                           int sequence,
+                           const uint8_t* text_utf8,
+                           int text_utf8_bytes,
+                           int selection_start,
+                           int selection_end,
+                           ui::WasmTextInputRecord* record) {
+  CHECK(record);
+  const std::optional<ui::WasmTextInputAction> parsed_action =
+      ParseWasmTextInputAction(action);
+  if (!parsed_action || session_id <= 0 || sequence <= 0 ||
+      text_utf8_bytes < 0 || selection_start < 0 ||
+      selection_end < selection_start) {
+    return false;
+  }
+
+  const size_t text_bytes = static_cast<size_t>(text_utf8_bytes);
+  if (text_bytes > kMaximumM4TextInputUtf8Bytes) {
+    return false;
+  }
+  if (text_bytes != 0) {
+    if (!text_utf8) {
+      return false;
+    }
+    const uintptr_t start = reinterpret_cast<uintptr_t>(text_utf8);
+    const size_t heap_size = emscripten_get_heap_size();
+    if (start > heap_size || text_bytes > heap_size - start) {
+      return false;
+    }
+  }
+
+  std::string utf8;
+  if (text_bytes != 0) {
+    utf8.assign(reinterpret_cast<const char*>(text_utf8), text_bytes);
+  }
+  if (!base::IsStringUTF8AllowingNoncharacters(utf8)) {
+    return false;
+  }
+  std::u16string text = base::UTF8ToUTF16(utf8);
+  if (text.size() > kMaximumM4TextInputUtf16Units) {
+    return false;
+  }
+
+  const size_t start = static_cast<size_t>(selection_start);
+  const size_t end = static_cast<size_t>(selection_end);
+  switch (*parsed_action) {
+    case ui::WasmTextInputAction::kSetComposition:
+      // RenderWidgetHostViewAura currently honors composition.selection.end()
+      // but not selection.start(). Keep this first route intentionally
+      // collapsed at the candidate end rather than silently losing a range.
+      if (text.empty() || start != end || end != text.size()) {
+        return false;
+      }
+      break;
+    case ui::WasmTextInputAction::kConfirmComposition:
+    case ui::WasmTextInputAction::kClearComposition:
+      if (!text.empty() || start != 0 || end != 0) {
+        return false;
+      }
+      break;
+  }
+
+  *record = {*parsed_action, static_cast<uint32_t>(session_id),
+             static_cast<uint32_t>(sequence), std::move(text),
+             gfx::Range(start, end)};
+  return true;
 }
 
 class WasmHostObserver final : public WebContentsObserver {
@@ -401,6 +504,29 @@ void DispatchDomKeyOnUiThread(ui::DomCode physical_key, bool down) {
                                  /*suppress_auto_repeat=*/true);
 }
 
+void DispatchM4TextInputOnUiThread(ui::WasmTextInputRecord record) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  Shell* shell = GetSingleShell();
+  if (!shell || !shell->window()) {
+    ReportTextInputDelivery(record, /*accepted=*/false);
+    return;
+  }
+
+  aura::WindowTreeHostPlatform* host =
+      aura::WindowTreeHostPlatform::GetHostForWindow(shell->window());
+  if (!host) {
+    ReportTextInputDelivery(record, /*accepted=*/false);
+    return;
+  }
+
+  // The platform-specific registry resolves only this Aura/Ozone widget's
+  // InputMethod. Generic SystemInputInjector is intentionally reserved for
+  // native pointer, wheel, and physical-key events.
+  const bool accepted = ui::DispatchWasmTextInput(host->GetAcceleratedWidget(),
+                                                  record);
+  ReportTextInputDelivery(record, accepted);
+}
+
 void LoadUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   Shell* shell = GetSingleShell();
@@ -424,6 +550,26 @@ void DeactivateHostWindowOnUiThread() {
       aura::WindowTreeHostPlatform::GetHostForWindow(root_window);
   if (!focus_client || !host || !host->platform_window()) {
     ReportFatal("M4 host focus loss has no Aura/Ozone window path");
+    return;
+  }
+
+  // Clear any active Wasm composition before focus/activation callbacks can
+  // detach its TextInputClient. The opaque Ozone boundary keeps Content Shell
+  // independent of the concrete Wasm PlatformWindow implementation.
+  ui::CancelWasmTextInputForWidget(host->GetAcceleratedWidget());
+
+  // Composition cancellation can synchronously close the Content Shell
+  // window. Do not retain Aura or PlatformWindow pointers across it.
+  shell = GetSingleShell();
+  if (!shell || !shell->window()) {
+    ReportFatal("M4 host composition cancellation closed Content Shell");
+    return;
+  }
+  root_window = shell->window();
+  focus_client = aura::client::GetFocusClient(root_window);
+  host = aura::WindowTreeHostPlatform::GetHostForWindow(root_window);
+  if (!focus_client || !host || !host->platform_window()) {
+    ReportFatal("M4 host focus loss has no surviving Aura/Ozone window path");
     return;
   }
 
@@ -597,6 +743,28 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_url(const char* data_url) {
   }
   return content::PostHostCommand(
              base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_text_input(
+    int action,
+    int session_id,
+    int sequence,
+    const uint8_t* text_utf8,
+    int text_utf8_bytes,
+    int selection_start,
+    int selection_end) {
+  ui::WasmTextInputRecord record;
+  if (!content::CopyM4TextInputRecord(
+          action, session_id, sequence, text_utf8, text_utf8_bytes,
+          selection_start, selection_end, &record)) {
+    return 0;
+  }
+  // |record| owns its UTF-16 copy before this task hops off the proxying host
+  // call. It never retains a JavaScript heap view or a Wasm pointer.
+  return content::PostHostCommand(base::BindOnce(
+             &content::DispatchM4TextInputOnUiThread, std::move(record)))
              ? 1
              : 0;
 }

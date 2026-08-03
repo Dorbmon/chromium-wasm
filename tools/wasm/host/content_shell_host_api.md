@@ -41,15 +41,16 @@ before the CLICKED paint. This legacy M3 click path remains an M3 regression
 control; it is not the M4 input path.
 
 M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, the narrowly scoped
-`enableM4KeyboardInput()`, `enableM4FocusInput()`, and the pre-routing
-`enableM4ImeProxyInput()` diagnostic contract after initialization. They attach
-host-canvas or host-owned-proxy listeners, not a replacement HTML browser UI.
-Primary mouse pointer input, pixel wheel input, the bounded raw-key paths, and
-host focus loss cross the public Ozone input-injector boundary. Generic text
-entry, IME delivery, modifiers, repeat, touch, pen, non-primary buttons,
-cursor control, focus regain without a pointer press, and richer multi-window
-behavior remain outside this first M4 input slice. Returning success while
-dropping an event is a contract failure.
+`enableM4KeyboardInput()`, `enableM4FocusInput()`, and the bounded native
+composition contract `enableM4ImeProxyInput()` after initialization. They
+attach host-canvas or host-owned-proxy listeners, not a replacement HTML
+browser UI. Primary mouse pointer input, pixel wheel input, the bounded raw-key
+paths, host focus loss, and the limited composition route cross normal Ozone
+boundaries. Generic text entry, arbitrary selection/replacement, deletion,
+paste, modifiers, repeat, touch, pen, non-primary buttons, cursor control,
+focus regain without a pointer press, and richer multi-window behavior remain
+outside this first M4 input slice. Returning success while dropping an event is
+a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -68,15 +69,22 @@ int chromium_wasm_host_click(int x, int y, int button);
 int chromium_wasm_host_pointer(int type, int x, int y, int button);
 int chromium_wasm_host_wheel(int x, int y, int delta_x, int delta_y);
 int chromium_wasm_host_key(const char* code, int down);
+int chromium_wasm_host_text_input(int action, int session_id, int sequence,
+                                  const uint8_t* text_utf8,
+                                  int text_utf8_bytes, int selection_start,
+                                  int selection_end);
 int chromium_wasm_host_deactivate(void);
 int chromium_wasm_host_shutdown(void);
 ```
 
 Each returns `1` only after accepting and queueing the operation on Chromium's
-UI task runner. Any other value fails the gate. In particular, `1` from either
-M4 input export means **queued**, not that Ozone, Aura, or Blink has delivered
-the event. End-to-end evidence must come from the inner-page probe and a later
-compositor frame. For tests, equivalent functions may be supplied on
+UI task runner. Any other value fails the gate. In particular, `1` from an M4
+input export means **queued**, not that Ozone, Aura, or Blink has delivered the
+event. `chromium_wasm_host_text_input` additionally means that the UTF-8 bytes
+were copied and validated before its UI-task hop; it is not a native
+`TextInputClient` acknowledgement. End-to-end evidence must come from the
+inner-page probe, a matching delivery acknowledgement for text input, and a
+later compositor frame. For tests, equivalent functions may be supplied on
 `Module.chromiumWasmHostCommands`, keyed by the full C function name.
 `chromium_wasm_host_load_url` must copy the URL before returning. The host
 releases its temporary UTF-8 allocation immediately after the call. Runtime
@@ -92,7 +100,7 @@ shell delegate to finish, then requires Emscripten's `onExit` after it has
 requested termination of every running and prewarmed pthread worker. Both
 exit statuses must be zero and equal.
 
-### M4 pointer, wheel, raw-key, and focus-loss ABI
+### M4 pointer, wheel, raw-key, focus-loss, and IME ABI
 
 `chromium_wasm_host_pointer` accepts only primary mouse input: `type` is `0`
 for move, `1` for down, or `2` for up, and `button` must be `0`. The host
@@ -172,36 +180,70 @@ events, and a newer compositor frame. This proves the bounded direct-layout
 path through Ozone/Aura and Chromium text input; it does not provide generic
 text entry or IME support.
 
-The distinct M4 IME-proxy smoke establishes the host half of the future generic
-text path without falsely claiming text delivery. A queued pointer event alone
-does not arm the proxy: its focus is delayed until the Ozone-owned
-`WasmInputMethod` reports a fresh focused `TextInputClient` that is editable
-and supports inline composition. The host also requires a fresh active Ozone
-keyboard-target report. It then consumes a one-shot canvas-to-exact-proxy focus
-transfer token, preserving the existing Aura/Ozone target only for that
-expected transition. A non-editable click therefore cannot steal DOM focus.
+#### Bounded IME composition route
 
-Proxy blur always invalidates its browser-owned IME session. A blur back to the
-canvas preserves Aura/Ozone activation but clears the candidate and requires a
-new pointer click plus a new native editable acknowledgement. A blur to any
-other target follows normal pointer/key cleanup and host deactivation. The
-proxy accepts only trusted `compositionstart`, `compositionupdate`,
-`beforeinput`, and matching `input` events for a bounded, well-formed UTF-16
-`insertCompositionText` transaction. `beforeinput` creates one immutable
-diagnostic transaction and `input` confirms it; neither event calls a runtime
-text export or modifies inner Blink.
+A queued pointer event alone does not arm the proxy: its focus is delayed until
+the Ozone-owned `WasmInputMethod` reports a fresh focused `TextInputClient`
+that is editable and supports inline composition. The host also requires a
+fresh active Ozone keyboard-target report. It then consumes a one-shot
+canvas-to-exact-proxy focus-transfer token, preserving the existing Aura/Ozone
+target only for that expected transition. A non-editable click therefore cannot
+steal DOM focus.
 
-The current browser smoke drives `Input.imeSetComposition` only against the
-outer proxy and proves a one-code-point candidate with UTF-16 range and
-selection `[0, 2]`. It requires the native active keyboard target plus the
-focused/editable/inline-composition `TextInputClient` report, zero inner
-`beforeinput`, `input`, and composition events, and an unchanged empty inner
-value. Static source contracts forbid a host text export or direct renderer
-shortcut in this capture-only slice. This is proxy-capture evidence, not
-physical OS-IME or generic-text compatibility evidence. Commit, cancellation,
-full surrounding-text synchronization, deletion, paste, dead keys, and all
-text delivery remain disabled until the Ozone-owned Wasm `InputMethod` consumes
-the confirmed transactions through `TextInputClient`.
+The host accepts only trusted `compositionstart`, `compositionupdate`,
+`beforeinput`, and matching `input` events for one bounded, well-formed UTF-16
+`insertCompositionText` transaction. It creates the native record only after
+the matching outer `beforeinput`. `compositionend` has no text authority.
+Blink emits this terminal through its scoped event queue and may therefore
+report it untrusted even when its source transaction was genuine. The host
+accepts it only as a zero-authority lifecycle acknowledgement: it may confirm
+the exact private candidate, but only after the same session has already
+established that candidate through trusted source events. It cannot create,
+replace, alter, or clear a candidate. Cancellation instead requires a trusted
+empty `compositionupdate`/`beforeinput`/`input` transaction; its final terminal
+is observation-only after ClearCompositionText was queued. The proxy text is
+never copied into diagnostics: diagnostics retain only its UTF-16-unit,
+UTF-8-byte, and code-point counts.
+
+`action`, `session_id`, and `sequence` are positive signed 32-bit values.
+`sequence` must strictly increase for the target Ozone widget; terminal actions
+must name the active session and current focused client. Selection offsets are
+UTF-16 code units. This initial route deliberately supports only a collapsed
+candidate-end selection, because the underlying Aura renderer path does not yet
+preserve an arbitrary composition selection range.
+
+| Action | Text and selection contract | Ozone-owned operation |
+| --- | --- | --- |
+| `1` (`set-composition`) | Nonempty, well-formed UTF-8; at most 64 Ki UTF-16 units and 192 KiB; selection is `[N, N]`, where `N` is the decoded UTF-16 length. | `TextInputClient::SetCompositionText` |
+| `2` (`confirm-composition`) | No text (`text_utf8_bytes == 0`) and selection `[0, 0]`; session must match the active composition. | `TextInputClient::ConfirmCompositionText(false)` |
+| `3` (`clear-composition`) | No text (`text_utf8_bytes == 0`) and selection `[0, 0]`; session must match the active composition. | `TextInputClient::ClearCompositionText` |
+
+The C ABI rejects malformed action, ID, range, pointer, size, or UTF-8 records
+synchronously with `0`. For a nonempty payload, it verifies that the Wasm
+memory range is live, copies the bytes before posting, validates UTF-8 while
+allowing Unicode noncharacters, and converts to an owned UTF-16 record. A null
+text pointer is valid only for a zero-byte terminal record. The host must not
+retain a Wasm-memory view across this call or across possible memory growth.
+
+On its UI task, Content Shell resolves the exact Aura/Ozone accelerated widget
+and calls the opaque `DispatchWasmTextInput` boundary. `WasmInputMethod` then
+requires that widget to be visible and keyboard focused, and that its current
+client be editable and compose-inline capable. It invokes only the standard
+`TextInputClient` composition methods above; it neither uses
+`SystemInputInjector` nor injects a Blink/renderer event directly. Proxy blur,
+teardown, and host deactivation clear an active native candidate before their
+normal focus transitions. This is a bounded composition path, not generic text
+or physical-OS-IME compatibility.
+
+The host records the queue entry before calling the C export and waits for a
+matching runtime-to-host delivery report. `accepted: true` in that report means
+the Ozone `WasmInputMethod` accepted the record and issued the corresponding
+`TextInputClient` call. It does not by itself prove that Blink emitted the
+expected DOM events or painted; the smoke must still prove the inner
+composition/preedit and final commit (or clear) plus a later frame. `accepted:
+false` means no native text operation was issued for that record and invalidates
+the host transaction. Unknown, duplicate, or mismatched acknowledgements are
+fatal host-contract errors.
 
 The M4 focus-loss smoke holds one trusted raw `ArrowDown` down event, uses a
 trusted DevTools mouse click on a real host-page focus-sink button, and requires
@@ -243,6 +285,14 @@ bridge.reportOzoneTextInputState({
   focusedClientPresent: true,
   editable: true,
   canComposeInline: true,
+});
+
+bridge.reportOzoneTextInputDelivery({
+  protocol: 1,
+  action: 1,
+  sessionId: 7,
+  sequence: 11,
+  accepted: true,
 });
 
 bridge.reportNavigation({
@@ -288,6 +338,12 @@ focused `TextInputClient` or its text-input type. The report contains only
 booleans; it never exposes client identity, text, selection, or composition
 data. The IME proxy gate uses a report newer than its trusted pointer press,
 not a page-probe guess or a queued host command, before transferring DOM focus.
+
+After every routed text-input record, Content Shell sends
+`reportOzoneTextInputDelivery`. It contains only the protocol version, action,
+session ID, sequence, and boolean native acceptance result; it never returns
+the candidate text, selection, client identity, or renderer state. The host
+matches it exactly once to its already queued request.
 
 The page probe must be reported again as its timer count advances; readiness
 requires a probe with at least three ticks rather than treating initial script

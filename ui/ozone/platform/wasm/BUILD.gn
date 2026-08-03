@@ -2,7 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-visibility = [ "//ui/ozone/*" ]
+visibility = [
+  "//content/shell:*",
+  "//ui/ozone/*",
+]
 
 config("wasm_host_bridge") {
   ldflags =

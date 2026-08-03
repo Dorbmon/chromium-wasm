@@ -446,7 +446,13 @@ def m4_ime_bridge_smoke_url(
     *,
     module_name: str = "content_shell_wasm",
     timeout_seconds: float = 90.0,
+    terminal_mode: str = "commit",
 ) -> str:
+    if terminal_mode not in ("commit", "cancel"):
+        raise M0Error(
+            "M4 IME bridge terminal mode must be 'commit' or 'cancel', got "
+            f"{terminal_mode!r}"
+        )
     host, port = server.server_address[:2]
     query = urlencode(
         {
@@ -457,6 +463,7 @@ def m4_ime_bridge_smoke_url(
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
+            "ime_terminal": terminal_mode,
             "token": token,
             "timeout_ms": max(
                 1000, min(180000, int(timeout_seconds * 1000))
@@ -2099,15 +2106,25 @@ def validate_m4_ime_bridge_result(
     result: dict[str, Any],
     *,
     expected_versions: dict[str, str],
+    terminal_mode: str = "commit",
 ) -> None:
-    """Validate trusted proxy preedit after native editable acknowledgement.
+    """Validate one trusted proxy composition reaches the Blink editor.
 
-    This is deliberately a host-contract gate, not a generic-text success
-    claim. It proves that an Ozone-owned InputMethod observed a focused,
-    editable TextInputClient before the host moved DOM focus to its proxy. The
-    subsequent text-routing gate will consume the confirmed record through
-    that client and prove inner-page composition/commit delivery.
+    The outer textarea is solely the browser-owned IME capture surface. This
+    gate requires its bounded, trusted records to be acknowledged by the
+    Ozone-owned InputMethod and then observes the resulting native Blink
+    composition and terminal action in the inner editor. ``terminal_mode`` is
+    either ``commit`` or ``cancel``. It intentionally exposes only text
+    summaries in the result; the candidate string itself stays private to the
+    host bridge.
     """
+
+    if terminal_mode not in ("commit", "cancel"):
+        raise M0Error(
+            "M4 IME bridge terminal mode must be 'commit' or 'cancel', got "
+            f"{terminal_mode!r}"
+        )
+    is_cancellation = terminal_mode == "cancel"
 
     expected = {
         "protocol": M3_PROTOCOL,
@@ -2117,6 +2134,7 @@ def validate_m4_ime_bridge_result(
         "sharedArrayBuffer": True,
         "canvasFocused": False,
         "proxyFocused": True,
+        "terminalMode": terminal_mode,
         "failedChecks": [],
         "error": None,
     }
@@ -2174,6 +2192,45 @@ def validate_m4_ime_bridge_result(
     page_probe = _require_dict(
         readiness.get("pageProbe"), "M4 IME bridge page probe"
     )
+    expected_text_summary = {
+        "utf16Length": 2,
+        "utf8Bytes": 4,
+        "codePointCount": 1,
+    }
+    empty_text_summary = {
+        "utf16Length": 0,
+        "utf8Bytes": 0,
+        "codePointCount": 0,
+    }
+    terminal_text_summary = (
+        empty_text_summary if is_cancellation else expected_text_summary
+    )
+    terminal_value_matches_expected = not is_cancellation
+    terminal_selection = 0 if is_cancellation else 2
+    # Both terminal paths have the same inner lifecycle cardinality. An
+    # empty ``Input.imeSetComposition`` produces a second trusted
+    # update/beforeinput/input triplet before its observed compositionend.
+    terminal_event_count = 2
+    terminal_accepted_count = 7 if is_cancellation else 8
+    terminal_derived_count = 0 if is_cancellation else 1
+    terminal_observed_clear_count = 1 if is_cancellation else 0
+    terminal_native_queued_count = 2 if is_cancellation else 3
+    terminal_set_delivery_count = 1 if is_cancellation else 2
+    terminal_confirm_delivery_count = 0 if is_cancellation else 1
+    terminal_clear_delivery_count = 1 if is_cancellation else 0
+    terminal_native_action = 3 if is_cancellation else 2
+    terminal_native_action_name = (
+        "clear-composition" if is_cancellation else "confirm-composition"
+    )
+    # The native terminal must be bound to the outer source record that
+    # authorizes it: trusted empty input is record 7 for cancellation, while
+    # the constrained compositionend acknowledgement is record 8 for commit.
+    terminal_native_sequence = 7 if is_cancellation else 8
+    terminal_result_text = (
+        "INNER EDITOR COMPOSITION ENDED"
+        if is_cancellation
+        else "INNER EDITOR COMMITTED"
+    )
     expected_probe = {
         "fontReady": True,
         "protocol": M3_PROTOCOL,
@@ -2183,10 +2240,10 @@ def validate_m4_ime_bridge_result(
         "activationCount": 1,
         "clickTrusted": True,
         "focusTrusted": True,
-        "value": "",
-        "selectionStart": 0,
-        "selectionEnd": 0,
-        "resultText": "WAITING FOR PREEDIT BRIDGE",
+        "valueMatchesExpected": terminal_value_matches_expected,
+        "selectionStart": terminal_selection,
+        "selectionEnd": terminal_selection,
+        "resultText": terminal_result_text,
     }
     for field, expected_value in expected_probe.items():
         actual_value = page_probe.get(field)
@@ -2198,6 +2255,9 @@ def validate_m4_ime_bridge_result(
                 f"M4 IME bridge page probe {field} mismatch: expected "
                 f"{expected_value!r}, got {actual_value!r}"
             )
+
+    if page_probe.get("value") != terminal_text_summary:
+        raise M0Error("M4 IME bridge inner value summary is invalid")
     _require_safe_integer(
         page_probe.get("focusCount"),
         "M4 IME bridge inner focus count",
@@ -2218,18 +2278,174 @@ def validate_m4_ime_bridge_result(
     text_events = _require_dict(
         page_probe.get("textInputEvents"), "M4 IME bridge inner text events"
     )
-    for field in (
-        "beforeinputCount",
-        "inputCount",
-        "compositionstartCount",
-        "compositionupdateCount",
-        "compositionendCount",
-    ):
-        if _require_safe_integer(
+    exact_text_event_counts = {
+        "compositionstartCount": 1,
+        "compositionupdateCount": terminal_event_count,
+        "beforeinputCount": terminal_event_count,
+        "inputCount": terminal_event_count,
+        "compositionendCount": 1,
+    }
+    for field, expected_count in exact_text_event_counts.items():
+        actual_count = _require_safe_integer(
             text_events.get(field), f"M4 IME bridge inner {field}", minimum=0
-        ) != 0:
+        )
+        if actual_count != expected_count:
             raise M0Error(
-                f"M4 IME bridge must not mutate inner Blink {field}"
+                f"M4 IME bridge inner {field} must be exactly "
+                f"{expected_count}"
+            )
+
+    def trace_record(
+        event_type: str,
+        data: dict[str, int] | None,
+        data_matches_expected: bool,
+        value: dict[str, int],
+        selection_start: int,
+        selection_end: int,
+        trusted: bool,
+    ) -> dict[str, Any]:
+        is_text_input = event_type in ("beforeinput", "input")
+        return {
+            "type": event_type,
+            "data": data,
+            "dataMatchesExpected": data_matches_expected,
+            "trusted": trusted,
+            "inputType": "insertCompositionText" if is_text_input else None,
+            "isComposing": is_text_input,
+            "value": value,
+            "selectionStart": selection_start,
+            "selectionEnd": selection_end,
+        }
+
+    # Chromium marks the source composition transaction trusted, but dispatches
+    # its terminal compositionend through the scoped event queue as untrusted.
+    # Bind both sides of that boundary in the inner Blink trace.
+    candidate_trace = [
+        trace_record(
+            "compositionstart",
+            empty_text_summary,
+            False,
+            empty_text_summary,
+            0,
+            0,
+            True,
+        ),
+        trace_record(
+            "compositionupdate",
+            expected_text_summary,
+            True,
+            empty_text_summary,
+            0,
+            0,
+            True,
+        ),
+        trace_record(
+            "beforeinput",
+            expected_text_summary,
+            True,
+            empty_text_summary,
+            0,
+            0,
+            True,
+        ),
+        trace_record(
+            "input",
+            expected_text_summary,
+            True,
+            expected_text_summary,
+            2,
+            2,
+            True,
+        ),
+    ]
+    if is_cancellation:
+        expected_text_trace = candidate_trace + [
+            trace_record(
+                "compositionupdate",
+                empty_text_summary,
+                False,
+                expected_text_summary,
+                0,
+                2,
+                True,
+            ),
+            trace_record(
+                "beforeinput",
+                empty_text_summary,
+                False,
+                expected_text_summary,
+                0,
+                2,
+                True,
+            ),
+            trace_record(
+                "input", None, False, empty_text_summary, 0, 0, True
+            ),
+            trace_record(
+                "compositionend",
+                empty_text_summary,
+                False,
+                empty_text_summary,
+                0,
+                0,
+                False,
+            ),
+        ]
+    else:
+        expected_text_trace = candidate_trace + [
+            trace_record(
+                "compositionupdate",
+                expected_text_summary,
+                True,
+                expected_text_summary,
+                0,
+                2,
+                True,
+            ),
+            trace_record(
+                "beforeinput",
+                expected_text_summary,
+                True,
+                expected_text_summary,
+                0,
+                2,
+                True,
+            ),
+            trace_record(
+                "input",
+                expected_text_summary,
+                True,
+                expected_text_summary,
+                2,
+                2,
+                True,
+            ),
+            trace_record(
+                "compositionend",
+                expected_text_summary,
+                True,
+                expected_text_summary,
+                2,
+                2,
+                False,
+            ),
+        ]
+
+    text_trace = page_probe.get("textInputTrace")
+    if not isinstance(text_trace, list):
+        raise M0Error("M4 IME bridge inner text trace must be an array")
+    if len(text_trace) != len(expected_text_trace):
+        raise M0Error(
+            "M4 IME bridge inner text trace does not match event counts"
+        )
+    for index, expected_entry in enumerate(expected_text_trace):
+        entry = _require_dict(
+            text_trace[index], f"M4 IME bridge inner text trace {index}"
+        )
+        if entry != expected_entry:
+            raise M0Error(
+                "M4 IME bridge inner text trace record "
+                f"{index} does not match the {terminal_mode} lifecycle"
             )
 
     pointer_input = _require_dict(
@@ -2318,18 +2534,28 @@ def validate_m4_ime_bridge_result(
         "focused": True,
         "hostWindowActive": True,
         "sessionId": 1,
-        "receivedCount": 4,
-        "trustedCount": 4,
-        "acceptedCount": 4,
+        "receivedCount": 8,
+        "trustedCount": 7,
+        "acceptedCount": terminal_accepted_count,
+        "derivedTerminalCount": terminal_derived_count,
+        "observedClearTerminalCount": terminal_observed_clear_count,
         "compositionStartCount": 1,
-        "compositionUpdateCount": 1,
-        "compositionEndCount": 0,
-        "beforeinputCount": 1,
-        "inputCount": 1,
-        "compositionActive": True,
+        "compositionUpdateCount": 2,
+        "compositionEndCount": 1,
+        "beforeinputCount": 2,
+        "inputCount": 2,
+        "compositionActive": False,
+        "terminalCancellationPending": False,
         "pendingTransaction": False,
         "activationPending": False,
         "nativeTextInputReady": True,
+        "nativeQueuedCount": terminal_native_queued_count,
+        "nativeSetDeliveryCount": terminal_set_delivery_count,
+        "nativeConfirmDeliveryCount": terminal_confirm_delivery_count,
+        "nativeClearDeliveryCount": terminal_clear_delivery_count,
+        "nativePendingDelivery": False,
+        "nativeCompositionActive": False,
+        "nativeTerminalAction": None,
         "failure": None,
     }
     for field, expected_value in expected_proxy.items():
@@ -2348,7 +2574,7 @@ def validate_m4_ime_bridge_result(
     if _require_safe_integer(
         ime_proxy.get("blurCount"), "M4 IME bridge proxy blur count", minimum=0
     ) != 0:
-        raise M0Error("M4 IME bridge proxy blurred during preedit")
+        raise M0Error("M4 IME bridge proxy blurred during composition")
     transaction = _require_dict(
         ime_proxy.get("lastConfirmedTransaction"),
         "M4 IME bridge confirmed transaction",
@@ -2370,14 +2596,39 @@ def validate_m4_ime_bridge_result(
     _require_safe_integer(
         transaction.get("sequence"), "M4 IME bridge transaction sequence", minimum=1
     )
+    last_native_delivery = _require_dict(
+        ime_proxy.get("lastNativeDelivery"),
+        "M4 IME bridge last native delivery",
+    )
+    expected_last_native_delivery = {
+        "action": terminal_native_action,
+        "actionName": terminal_native_action_name,
+        "sessionId": 1,
+        "sequence": terminal_native_sequence,
+        "queued": True,
+        "deliveryAccepted": True,
+        "text": None,
+        "selection": {"start": 0, "end": 0},
+    }
+    for field, expected_value in expected_last_native_delivery.items():
+        actual_value = last_native_delivery.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 IME bridge last native delivery {field} mismatch: "
+                f"expected {expected_value!r}, got {actual_value!r}"
+            )
     proxy_text = _require_dict(
         ime_proxy.get("proxyText"), "M4 IME bridge proxy text summary"
     )
     if proxy_text != {
-        "utf16Length": 2,
-        "utf8Bytes": 4,
-        "codePointCount": 1,
-        "selection": {"start": 2, "end": 2},
+        **terminal_text_summary,
+        "selection": {
+            "start": terminal_selection,
+            "end": terminal_selection,
+        },
     }:
         raise M0Error("M4 IME bridge proxy range summary is invalid")
 
@@ -2403,7 +2654,7 @@ def validate_m4_ime_bridge_result(
     if "abort:" in combined_logs.lower():
         raise M0Error("M4 IME bridge logs contain a Wasm abort")
     host_logs = [str(line) for line in logs["host"]]
-    for marker in (
+    common_markers = (
         "m4:pointer:listeners-attached",
         "m4:focus:listeners-attached",
         "m4:ime-proxy:listeners-attached",
@@ -2413,10 +2664,26 @@ def validate_m4_ime_bridge_result(
         "m4:ime-proxy:native-editable-focus",
         "m4:ime-proxy:compositionstart:accepted",
         "m4:ime-proxy:compositionupdate:accepted",
-        "m4:ime-proxy:beforeinput:accepted-no-native-dispatch",
-        "m4:ime-proxy:input:confirmed-no-native-dispatch",
+        "m4:ime-proxy:beforeinput:native-set-queued",
+        "ozone:text-input-delivery:set-composition:accepted",
+        "m4:ime-proxy:input:confirmed-native-set",
         "shutdown:complete",
-    ):
+    )
+    terminal_markers = (
+        (
+            "m4:ime-proxy:compositionupdate:cancellation-pending",
+            "m4:ime-proxy:beforeinput:cancellation-pending",
+            "m4:ime-proxy:input:native-clear-queued",
+            "ozone:text-input-delivery:clear-composition:accepted",
+            "m4:ime-proxy:compositionend:clear-observed",
+        )
+        if is_cancellation
+        else (
+            "m4:ime-proxy:compositionend:native-confirm-queued",
+            "ozone:text-input-delivery:confirm-composition:accepted",
+        )
+    )
+    for marker in common_markers + terminal_markers:
         if not any(marker in line for line in host_logs):
             raise M0Error(
                 "M4 IME bridge logs are missing lifecycle marker "

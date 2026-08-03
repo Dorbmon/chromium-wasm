@@ -3,14 +3,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Focused validation tests for the M4 outer IME proxy preedit contract."""
+"""Focused validation tests for the M4 native Ozone IME bridge contract."""
 
 from __future__ import annotations
 
 import copy
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
+from urllib.parse import parse_qs, urlsplit
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -21,7 +23,53 @@ import m3_content_server
 import m4_cdp
 
 
-def passing_result() -> tuple[dict[str, object], dict[str, str]]:
+EXPECTED_TEXT_SUMMARY = {
+    "utf16Length": 2,
+    "utf8Bytes": 4,
+    "codePointCount": 1,
+}
+EMPTY_TEXT_SUMMARY = {
+    "utf16Length": 0,
+    "utf8Bytes": 0,
+    "codePointCount": 0,
+}
+
+
+def text_trace_record(
+    event_type: str,
+    *,
+    data: dict[str, int] | None,
+    data_matches_expected: bool,
+    value: dict[str, int],
+    selection_start: int,
+    selection_end: int,
+    trusted: bool,
+) -> dict[str, object]:
+    is_text_input = event_type in ("beforeinput", "input")
+    return {
+        "type": event_type,
+        "data": copy.deepcopy(data),
+        "dataMatchesExpected": data_matches_expected,
+        "trusted": trusted,
+        "inputType": "insertCompositionText" if is_text_input else None,
+        "isComposing": is_text_input,
+        "value": copy.deepcopy(value),
+        "selectionStart": selection_start,
+        "selectionEnd": selection_end,
+    }
+
+
+def passing_result(
+    terminal_mode: str = "commit",
+) -> tuple[dict[str, object], dict[str, str]]:
+    if terminal_mode not in ("commit", "cancel"):
+        raise ValueError(f"unsupported terminal mode: {terminal_mode!r}")
+    is_cancellation = terminal_mode == "cancel"
+    terminal_text_summary = (
+        EMPTY_TEXT_SUMMARY if is_cancellation else EXPECTED_TEXT_SUMMARY
+    )
+    terminal_selection = 0 if is_cancellation else 2
+    terminal_event_count = 2
     versions = {
         "chromium": "chromium-revision",
         "v8": "v8-revision",
@@ -51,12 +99,24 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
     }
     confirmed_transaction = {
         "sessionId": 1,
-        "sequence": 3,
+        "sequence": 3 if is_cancellation else 6,
         "opcode": "set-composition",
-        "text": {"utf16Length": 2, "utf8Bytes": 4, "codePointCount": 1},
+        "text": copy.deepcopy(EXPECTED_TEXT_SUMMARY),
         "rangeStart": 0,
         "rangeEnd": 2,
         "selection": {"start": 2, "end": 2},
+    }
+    last_native_delivery = {
+        "action": 3 if is_cancellation else 2,
+        "actionName": (
+            "clear-composition" if is_cancellation else "confirm-composition"
+        ),
+        "sessionId": 1,
+        "sequence": 7 if is_cancellation else 8,
+        "queued": True,
+        "deliveryAccepted": True,
+        "text": None,
+        "selection": {"start": 0, "end": 0},
     }
     ime_proxy_input = {
         "enabled": True,
@@ -64,29 +124,161 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         "focused": True,
         "hostWindowActive": True,
         "sessionId": 1,
-        "receivedCount": 4,
-        "trustedCount": 4,
-        "acceptedCount": 4,
+        "receivedCount": 8,
+        "trustedCount": 7,
+        "acceptedCount": 7 if is_cancellation else 8,
+        "derivedTerminalCount": 0 if is_cancellation else 1,
+        "observedClearTerminalCount": 1 if is_cancellation else 0,
         "focusCount": 1,
         "blurCount": 0,
         "compositionStartCount": 1,
-        "compositionUpdateCount": 1,
-        "compositionEndCount": 0,
-        "beforeinputCount": 1,
-        "inputCount": 1,
-        "compositionActive": True,
+        "compositionUpdateCount": 2,
+        "compositionEndCount": 1,
+        "beforeinputCount": 2,
+        "inputCount": 2,
+        "compositionActive": False,
+        "terminalCancellationPending": False,
         "pendingTransaction": False,
         "activationPending": False,
         "nativeTextInputReady": True,
+        "nativeQueuedCount": 2 if is_cancellation else 3,
+        "nativeSetDeliveryCount": 1 if is_cancellation else 2,
+        "nativeConfirmDeliveryCount": 0 if is_cancellation else 1,
+        "nativeClearDeliveryCount": 1 if is_cancellation else 0,
+        "nativePendingDelivery": False,
+        "nativeCompositionActive": False,
+        "nativeTerminalAction": None,
+        "lastNativeDelivery": last_native_delivery,
         "lastConfirmedTransaction": confirmed_transaction,
         "failure": None,
         "proxyText": {
-            "utf16Length": 2,
-            "utf8Bytes": 4,
-            "codePointCount": 1,
-            "selection": {"start": 2, "end": 2},
+            **terminal_text_summary,
+            "selection": {
+                "start": terminal_selection,
+                "end": terminal_selection,
+            },
         },
     }
+    text_trace = [
+        text_trace_record(
+            "compositionstart",
+            data=EMPTY_TEXT_SUMMARY,
+            data_matches_expected=False,
+            value=EMPTY_TEXT_SUMMARY,
+            selection_start=0,
+            selection_end=0,
+            trusted=True,
+        ),
+        text_trace_record(
+            "compositionupdate",
+            data=EXPECTED_TEXT_SUMMARY,
+            data_matches_expected=True,
+            value=EMPTY_TEXT_SUMMARY,
+            selection_start=0,
+            selection_end=0,
+            trusted=True,
+        ),
+        text_trace_record(
+            "beforeinput",
+            data=EXPECTED_TEXT_SUMMARY,
+            data_matches_expected=True,
+            value=EMPTY_TEXT_SUMMARY,
+            selection_start=0,
+            selection_end=0,
+            trusted=True,
+        ),
+        text_trace_record(
+            "input",
+            data=EXPECTED_TEXT_SUMMARY,
+            data_matches_expected=True,
+            value=EXPECTED_TEXT_SUMMARY,
+            selection_start=2,
+            selection_end=2,
+            trusted=True,
+        ),
+    ]
+    if is_cancellation:
+        text_trace.extend(
+            (
+                text_trace_record(
+                    "compositionupdate",
+                    data=EMPTY_TEXT_SUMMARY,
+                    data_matches_expected=False,
+                    value=EXPECTED_TEXT_SUMMARY,
+                    selection_start=0,
+                    selection_end=2,
+                    trusted=True,
+                ),
+                text_trace_record(
+                    "beforeinput",
+                    data=EMPTY_TEXT_SUMMARY,
+                    data_matches_expected=False,
+                    value=EXPECTED_TEXT_SUMMARY,
+                    selection_start=0,
+                    selection_end=2,
+                    trusted=True,
+                ),
+                text_trace_record(
+                    "input",
+                    data=None,
+                    data_matches_expected=False,
+                    value=EMPTY_TEXT_SUMMARY,
+                    selection_start=0,
+                    selection_end=0,
+                    trusted=True,
+                ),
+                text_trace_record(
+                    "compositionend",
+                    data=EMPTY_TEXT_SUMMARY,
+                    data_matches_expected=False,
+                    value=EMPTY_TEXT_SUMMARY,
+                    selection_start=0,
+                    selection_end=0,
+                    trusted=False,
+                ),
+            )
+        )
+    else:
+        text_trace.extend(
+            (
+                text_trace_record(
+                    "compositionupdate",
+                    data=EXPECTED_TEXT_SUMMARY,
+                    data_matches_expected=True,
+                    value=EXPECTED_TEXT_SUMMARY,
+                    selection_start=0,
+                    selection_end=2,
+                    trusted=True,
+                ),
+                text_trace_record(
+                    "beforeinput",
+                    data=EXPECTED_TEXT_SUMMARY,
+                    data_matches_expected=True,
+                    value=EXPECTED_TEXT_SUMMARY,
+                    selection_start=0,
+                    selection_end=2,
+                    trusted=True,
+                ),
+                text_trace_record(
+                    "input",
+                    data=EXPECTED_TEXT_SUMMARY,
+                    data_matches_expected=True,
+                    value=EXPECTED_TEXT_SUMMARY,
+                    selection_start=2,
+                    selection_end=2,
+                    trusted=True,
+                ),
+                text_trace_record(
+                    "compositionend",
+                    data=EXPECTED_TEXT_SUMMARY,
+                    data_matches_expected=True,
+                    value=EXPECTED_TEXT_SUMMARY,
+                    selection_start=2,
+                    selection_end=2,
+                    trusted=False,
+                ),
+            )
+        )
     page_probe = {
         "fontReady": True,
         "protocol": 1,
@@ -100,17 +292,23 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         "clickTrusted": True,
         "focusCount": 1,
         "focusTrusted": True,
-        "value": "",
-        "selectionStart": 0,
-        "selectionEnd": 0,
-        "resultText": "WAITING FOR PREEDIT BRIDGE",
+        "value": copy.deepcopy(terminal_text_summary),
+        "valueMatchesExpected": not is_cancellation,
+        "selectionStart": terminal_selection,
+        "selectionEnd": terminal_selection,
+        "resultText": (
+            "INNER EDITOR COMPOSITION ENDED"
+            if is_cancellation
+            else "INNER EDITOR COMMITTED"
+        ),
         "textInputEvents": {
-            "beforeinputCount": 0,
-            "inputCount": 0,
-            "compositionstartCount": 0,
-            "compositionupdateCount": 0,
-            "compositionendCount": 0,
+            "beforeinputCount": terminal_event_count,
+            "inputCount": terminal_event_count,
+            "compositionstartCount": 1,
+            "compositionupdateCount": terminal_event_count,
+            "compositionendCount": 1,
         },
+        "textInputTrace": text_trace,
     }
     result: dict[str, object] = {
         "protocol": 1,
@@ -120,6 +318,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         "sharedArrayBuffer": True,
         "canvasFocused": False,
         "proxyFocused": True,
+        "terminalMode": terminal_mode,
         "versions": versions,
         "readiness": {
             "baseReady": True,
@@ -177,8 +376,23 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "m4:ime-proxy:native-editable-focus",
                 "m4:ime-proxy:compositionstart:accepted",
                 "m4:ime-proxy:compositionupdate:accepted",
-                "m4:ime-proxy:beforeinput:accepted-no-native-dispatch",
-                "m4:ime-proxy:input:confirmed-no-native-dispatch",
+                "m4:ime-proxy:beforeinput:native-set-queued",
+                "ozone:text-input-delivery:set-composition:accepted",
+                "m4:ime-proxy:input:confirmed-native-set",
+                *(
+                    [
+                        "m4:ime-proxy:compositionupdate:cancellation-pending",
+                        "m4:ime-proxy:beforeinput:cancellation-pending",
+                        "m4:ime-proxy:input:native-clear-queued",
+                        "ozone:text-input-delivery:clear-composition:accepted",
+                        "m4:ime-proxy:compositionend:clear-observed",
+                    ]
+                    if is_cancellation
+                    else [
+                        "m4:ime-proxy:compositionend:native-confirm-queued",
+                        "ozone:text-input-delivery:confirm-composition:accepted",
+                    ]
+                ),
                 "shutdown:complete",
             ],
             "stdout": [],
@@ -192,20 +406,37 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
 
 class M4ImeBridgeResultValidationTest(unittest.TestCase):
     def assert_valid(
-        self, result: dict[str, object], versions: dict[str, str]
+        self,
+        result: dict[str, object],
+        versions: dict[str, str],
+        *,
+        terminal_mode: str = "commit",
     ) -> None:
         self.assertIsNone(
             m3_content_server.validate_m4_ime_bridge_result(
-                result, expected_versions=versions
+                result,
+                expected_versions=versions,
+                terminal_mode=terminal_mode,
             )
         )
 
-    def test_complete_proxy_preedit_contract_is_accepted(self) -> None:
+    def test_complete_native_composition_commit_contract_is_accepted(self) -> None:
         result, versions = passing_result()
 
         self.assert_valid(result, versions)
 
-    def test_inner_blink_edit_is_rejected_before_native_bridge_exists(self) -> None:
+    def test_complete_native_composition_cancel_contract_is_accepted(self) -> None:
+        result, versions = passing_result("cancel")
+
+        self.assert_valid(result, versions, terminal_mode="cancel")
+
+    def test_terminal_mode_must_match_the_requested_contract(self) -> None:
+        result, versions = passing_result("cancel")
+
+        with self.assertRaisesRegex(M0Error, "terminalMode"):
+            self.assert_valid(result, versions)
+
+    def test_missing_inner_blink_input_is_rejected(self) -> None:
         result, versions = passing_result()
         readiness = result["readiness"]
         assert isinstance(readiness, dict)
@@ -213,10 +444,60 @@ class M4ImeBridgeResultValidationTest(unittest.TestCase):
         assert isinstance(page_probe, dict)
         text_events = page_probe["textInputEvents"]
         assert isinstance(text_events, dict)
-        text_events["inputCount"] = 1
+        text_events["inputCount"] = 0
 
-        with self.assertRaisesRegex(M0Error, "must not mutate inner Blink"):
+        with self.assertRaisesRegex(M0Error, "inner inputCount"):
             self.assert_valid(result, versions)
+
+    def test_wrong_inner_blink_value_is_rejected(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        page_probe["valueMatchesExpected"] = False
+
+        with self.assertRaisesRegex(M0Error, "valueMatchesExpected"):
+            self.assert_valid(result, versions)
+
+    def test_bad_inner_composition_trace_is_rejected(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        composition_end = text_trace[-1]
+        assert isinstance(composition_end, dict)
+        composition_end["dataMatchesExpected"] = False
+
+        with self.assertRaisesRegex(M0Error, "text trace record 7"):
+            self.assert_valid(result, versions)
+
+    def test_inner_trace_binds_trusted_sources_to_untrusted_terminal(self) -> None:
+        for terminal_mode in ("commit", "cancel"):
+            for index, trusted in ((0, False), (7, True)):
+                with self.subTest(
+                    terminal_mode=terminal_mode, index=index, trusted=trusted
+                ):
+                    result, versions = passing_result(terminal_mode)
+                    readiness = result["readiness"]
+                    assert isinstance(readiness, dict)
+                    page_probe = readiness["pageProbe"]
+                    assert isinstance(page_probe, dict)
+                    text_trace = page_probe["textInputTrace"]
+                    assert isinstance(text_trace, list)
+                    record = text_trace[index]
+                    assert isinstance(record, dict)
+                    record["trusted"] = trusted
+
+                    with self.assertRaisesRegex(
+                        M0Error, f"text trace record {index}"
+                    ):
+                        self.assert_valid(
+                            result, versions, terminal_mode=terminal_mode
+                        )
 
     def test_missing_native_editable_acknowledgement_is_rejected(self) -> None:
         result, versions = passing_result()
@@ -253,11 +534,135 @@ class M4ImeBridgeResultValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "transaction rangeEnd mismatch"):
             self.assert_valid(result, versions)
 
+    def test_unaccepted_native_confirmation_is_rejected(self) -> None:
+        result, versions = passing_result()
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        proxy["nativeConfirmDeliveryCount"] = 0
+        delivery = proxy["lastNativeDelivery"]
+        assert isinstance(delivery, dict)
+        delivery["deliveryAccepted"] = False
+
+        with self.assertRaisesRegex(M0Error, "nativeConfirmDeliveryCount"):
+            self.assert_valid(result, versions)
+
+    def test_commit_terminal_delivery_binds_to_composition_end_sequence(
+        self,
+    ) -> None:
+        result, versions = passing_result()
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        delivery = proxy["lastNativeDelivery"]
+        assert isinstance(delivery, dict)
+        delivery["sequence"] = 7
+
+        with self.assertRaisesRegex(M0Error, "last native delivery sequence"):
+            self.assert_valid(result, versions)
+
+    def test_pending_native_delivery_is_rejected(self) -> None:
+        result, versions = passing_result()
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        proxy["nativePendingDelivery"] = True
+
+        with self.assertRaisesRegex(M0Error, "nativePendingDelivery"):
+            self.assert_valid(result, versions)
+
+    def test_derived_terminal_count_must_be_exactly_one(self) -> None:
+        result, versions = passing_result()
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        proxy["derivedTerminalCount"] = 2
+
+        with self.assertRaisesRegex(M0Error, "derivedTerminalCount"):
+            self.assert_valid(result, versions)
+
+    def test_cancel_requires_observed_clear_terminal_record(self) -> None:
+        result, versions = passing_result("cancel")
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        proxy["observedClearTerminalCount"] = 0
+
+        with self.assertRaisesRegex(M0Error, "observedClearTerminalCount"):
+            self.assert_valid(result, versions, terminal_mode="cancel")
+
+    def test_cancel_requires_clear_native_delivery(self) -> None:
+        result, versions = passing_result("cancel")
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        proxy["nativeClearDeliveryCount"] = 0
+
+        with self.assertRaisesRegex(M0Error, "nativeClearDeliveryCount"):
+            self.assert_valid(result, versions, terminal_mode="cancel")
+
+    def test_cancel_terminal_delivery_binds_to_empty_input_sequence(
+        self,
+    ) -> None:
+        result, versions = passing_result("cancel")
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        delivery = proxy["lastNativeDelivery"]
+        assert isinstance(delivery, dict)
+        delivery["sequence"] = 4
+
+        with self.assertRaisesRegex(M0Error, "last native delivery sequence"):
+            self.assert_valid(result, versions, terminal_mode="cancel")
+
+    def test_cancel_disallows_a_derived_terminal_record(self) -> None:
+        result, versions = passing_result("cancel")
+        proxy = result["imeProxyInput"]
+        assert isinstance(proxy, dict)
+        proxy["derivedTerminalCount"] = 1
+
+        with self.assertRaisesRegex(M0Error, "derivedTerminalCount"):
+            self.assert_valid(result, versions, terminal_mode="cancel")
+
+    def test_cancel_requires_empty_inner_editor_value(self) -> None:
+        result, versions = passing_result("cancel")
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        page_probe["value"] = copy.deepcopy(EXPECTED_TEXT_SUMMARY)
+
+        with self.assertRaisesRegex(M0Error, "inner value summary"):
+            self.assert_valid(result, versions, terminal_mode="cancel")
+
+    def test_cancel_requires_the_empty_update_before_clear(self) -> None:
+        result, versions = passing_result("cancel")
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        cancellation_update = text_trace[4]
+        assert isinstance(cancellation_update, dict)
+        cancellation_update["data"] = copy.deepcopy(EXPECTED_TEXT_SUMMARY)
+
+        with self.assertRaisesRegex(M0Error, "text trace record 4"):
+            self.assert_valid(result, versions, terminal_mode="cancel")
+
+    def test_cancel_requires_null_clear_input_data(self) -> None:
+        result, versions = passing_result("cancel")
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        cancellation_input = text_trace[6]
+        assert isinstance(cancellation_input, dict)
+        cancellation_input["data"] = copy.deepcopy(EMPTY_TEXT_SUMMARY)
+
+        with self.assertRaisesRegex(M0Error, "text trace record 6"):
+            self.assert_valid(result, versions, terminal_mode="cancel")
+
     def test_latched_proxy_failure_is_rejected(self) -> None:
         result, versions = passing_result()
         proxy = result["imeProxyInput"]
         assert isinstance(proxy, dict)
-        proxy["failure"] = "UNTRUSTED_DOM_EVENT"
+        proxy["failure"] = "NATIVE_TEXT_INPUT_DELIVERY_REJECTED"
 
         with self.assertRaisesRegex(M0Error, "proxy failure mismatch"):
             self.assert_valid(result, versions)
@@ -269,10 +674,49 @@ class M4ImeBridgeResultValidationTest(unittest.TestCase):
         readiness["imeProxyInput"] = copy.deepcopy(result["imeProxyInput"])
         readiness_proxy = readiness["imeProxyInput"]
         assert isinstance(readiness_proxy, dict)
-        readiness_proxy["acceptedCount"] = 3
+        readiness_proxy["acceptedCount"] = 7
 
         with self.assertRaisesRegex(M0Error, "proxy evidence differs"):
             self.assert_valid(result, versions)
+
+
+class M4ImeBridgeSmokeUrlTest(unittest.TestCase):
+    def test_terminal_mode_is_forwarded_to_the_host_query(self) -> None:
+        server = SimpleNamespace(server_address=("127.0.0.1", 9222))
+        versions = {
+            "chromium": "chromium-revision",
+            "v8": "v8-revision",
+            "emscripten": "emscripten-revision",
+            "port": "port-revision",
+        }
+
+        url = m3_content_server.m4_ime_bridge_smoke_url(
+            server,  # type: ignore[arg-type]
+            "token",
+            versions,
+            terminal_mode="cancel",
+        )
+
+        self.assertEqual(
+            parse_qs(urlsplit(url).query).get("ime_terminal"), ["cancel"]
+        )
+
+    def test_invalid_terminal_mode_is_rejected(self) -> None:
+        server = SimpleNamespace(server_address=("127.0.0.1", 9222))
+        versions = {
+            "chromium": "chromium-revision",
+            "v8": "v8-revision",
+            "emscripten": "emscripten-revision",
+            "port": "port-revision",
+        }
+
+        with self.assertRaisesRegex(M0Error, "terminal mode"):
+            m3_content_server.m4_ime_bridge_smoke_url(
+                server,  # type: ignore[arg-type]
+                "token",
+                versions,
+                terminal_mode="invalid",
+            )
 
 
 class RecordingDevToolsClient:
@@ -303,6 +747,41 @@ class M4ImeBridgeDevToolsClientTest(unittest.TestCase):
                         "text": "🙂",
                         "selectionStart": 2,
                         "selectionEnd": 2,
+                        "replacementStart": 0,
+                        "replacementEnd": 0,
+                    },
+                ),
+            ],
+        )
+
+    def test_commit_uses_insert_text_after_the_outer_preedit(self) -> None:
+        recording = RecordingDevToolsClient()
+        client = object.__new__(m4_cdp.DevToolsClient)
+        client.call = recording.call  # type: ignore[method-assign]
+
+        client.dispatch_ime_commit()
+
+        self.assertEqual(
+            recording.calls,
+            [("Input.insertText", {"text": "🙂"})],
+        )
+
+    def test_cancel_uses_an_empty_ime_set_composition(self) -> None:
+        recording = RecordingDevToolsClient()
+        client = object.__new__(m4_cdp.DevToolsClient)
+        client.call = recording.call  # type: ignore[method-assign]
+
+        client.dispatch_ime_cancel()
+
+        self.assertEqual(
+            recording.calls,
+            [
+                (
+                    "Input.imeSetComposition",
+                    {
+                        "text": "",
+                        "selectionStart": 0,
+                        "selectionEnd": 0,
                         "replacementStart": 0,
                         "replacementEnd": 0,
                     },

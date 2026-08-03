@@ -312,9 +312,18 @@ def main() -> int:
         default="pointer",
         help="trusted DOM input path to drive",
     )
+    parser.add_argument(
+        "--ime-terminal",
+        choices=("commit", "cancel"),
+        default="commit",
+        help="M4 IME terminal action when --input=ime-bridge",
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=120.0)
     parser.add_argument("--verbose-server", action="store_true")
     args = parser.parse_args()
+
+    if args.input != "ime-bridge" and args.ime_terminal != "commit":
+        parser.error("--ime-terminal requires --input=ime-bridge")
 
     if args.input == "pointer":
         case = M4_CASE
@@ -346,9 +355,15 @@ def main() -> int:
         case = M4_IME_BRIDGE_CASE
         state_expression = "window.__chromiumWasmM4ImeBridgeState || null"
         expected_state = "awaiting-dom-ime-bridge-activation"
+        terminal_driver = (
+            "Input.insertText" if args.ime_terminal == "commit"
+            else "Input.imeSetComposition(empty)"
+        )
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent + "
-            "Input.imeSetComposition on the outer proxy only"
+            "Input.imeSetComposition followed by " + terminal_driver +
+            "; the terminal is bound to its trusted candidate before Ozone "
+            "delivers the composition to Blink"
         )
     else:
         case = M4_FOCUS_CASE
@@ -469,6 +484,7 @@ def main() -> int:
                 versions,
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+                terminal_mode=args.ime_terminal,
             )
         else:
             url = m4_focus_smoke_url(
@@ -589,6 +605,21 @@ def main() -> int:
             )
             stage = "dispatch_trusted_outer_ime_preedit"
             client.dispatch_ime_preedit()
+            stage = f"wait_for_ime_bridge_{args.ime_terminal}"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-ime-terminal",
+            )
+            stage = f"dispatch_outer_ime_{args.ime_terminal}"
+            if args.ime_terminal == "commit":
+                client.dispatch_ime_commit()
+            else:
+                client.dispatch_ime_cancel()
         else:
             stage = "dispatch_trusted_dom_focus_activation"
             client.dispatch_primary_click(click_x, click_y)
@@ -638,7 +669,11 @@ def main() -> int:
             )
             input_key = "keyboardInput"
         elif args.input == "ime-bridge":
-            validate_m4_ime_bridge_result(result, expected_versions=versions)
+            validate_m4_ime_bridge_result(
+                result,
+                expected_versions=versions,
+                terminal_mode=args.ime_terminal,
+            )
             input_key = "imeProxyInput"
         else:
             validate_m4_focus_result(result, expected_versions=versions)

@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Chromium Wasm M4 Ozone IME proxy fixture</title>
+<title>Chromium Wasm M4 Ozone IME composition fixture</title>
 <style>
   @font-face {
     font-family: Ahem;
@@ -47,15 +47,16 @@
   }
 </style>
 <main>
-  <p>M4 OZONE IME PROXY PREEDIT</p>
+  <p>M4 OZONE IME COMPOSITION</p>
   <label for="editable-target">CLICK TO ARM INNER EDITOR</label>
   <input id="editable-target" type="text" autocomplete="off" spellcheck="false">
-  <p id="result">WAITING FOR PREEDIT BRIDGE</p>
+  <p id="result">WAITING FOR COMPOSITION BRIDGE</p>
 </main>
 <script>
   (() => {
     const target = document.querySelector("#editable-target");
     const result = document.querySelector("#result");
+    const expectedText = "\u{1f642}";
     let activationCount = 0;
     let clickTrusted = false;
     let focusCount = 0;
@@ -68,6 +69,7 @@
       compositionupdateCount: 0,
       compositionendCount: 0,
     };
+    const textInputTrace = [];
     let fontReady = !document.fonts;
     Promise.resolve(document.fonts?.ready).then(() => {
       fontReady = true;
@@ -83,18 +85,45 @@
       focusCount += 1;
       focusTrusted = event.isTrusted;
     });
-    target.addEventListener("beforeinput", () => {
-      textInputEvents.beforeinputCount += 1;
-    });
-    target.addEventListener("input", () => {
-      textInputEvents.inputCount += 1;
-      result.textContent = "INNER EDITOR CHANGED";
+    function textSummary(value) {
+      return {
+        utf16Length: value.length,
+        utf8Bytes: new TextEncoder().encode(value).byteLength,
+        codePointCount: Array.from(value).length,
+      };
+    }
+
+    function recordTextEvent(event) {
+      textInputEvents[event.type + "Count"] += 1;
+      textInputTrace.push({
+        type: event.type,
+        data: typeof event.data === "string" ? textSummary(event.data) : null,
+        dataMatchesExpected: event.data === expectedText,
+        trusted: event.isTrusted === true,
+        inputType: typeof event.inputType === "string" ? event.inputType : null,
+        isComposing: event.isComposing === true,
+        value: textSummary(target.value),
+        selectionStart: target.selectionStart,
+        selectionEnd: target.selectionEnd,
+      });
+    }
+
+    target.addEventListener("beforeinput", recordTextEvent);
+    target.addEventListener("input", (event) => {
+      recordTextEvent(event);
+      result.textContent = "INNER EDITOR COMPOSING";
     });
     for (const eventType of [
       "compositionstart", "compositionupdate", "compositionend",
     ]) {
-      target.addEventListener(eventType, () => {
-        textInputEvents[eventType + "Count"] += 1;
+      target.addEventListener(eventType, (event) => {
+        recordTextEvent(event);
+        if (eventType === "compositionend") {
+          result.textContent = event.data === expectedText &&
+              target.value === expectedText
+            ? "INNER EDITOR COMMITTED"
+            : "INNER EDITOR COMPOSITION ENDED";
+        }
       });
     }
 
@@ -127,10 +156,12 @@
         clickTrusted,
         focusCount,
         focusTrusted,
-        value: target.value,
+        value: textSummary(target.value),
+        valueMatchesExpected: target.value === expectedText,
         selectionStart: target.selectionStart,
         selectionEnd: target.selectionEnd,
         resultText: result.textContent,
+        textInputTrace,
       });
     };
   })();

@@ -440,6 +440,7 @@ static_library("content_shell_lib") {
       "//services/test/echo:lib",
       "//services/test/echo/public/mojom",
     ]
+    deps += [ "//ui/ozone/platform/wasm:wasm" ]
   }
 
   if (is_fuchsia) {

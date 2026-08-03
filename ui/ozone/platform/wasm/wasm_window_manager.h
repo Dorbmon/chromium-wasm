@@ -37,6 +37,7 @@ class WasmWindowManager {
   WasmWindow* GetPointerFocusedWindow();
   void SetKeyboardFocusedWindow(WasmWindow* window);
   WasmWindow* GetKeyboardFocusedWindow();
+  bool IsKeyboardFocusedWidget(gfx::AcceleratedWidget widget);
   void SetPointerCapture(WasmWindow* window);
   void ReleasePointerCapture(WasmWindow* window);
   bool HasPointerCapture(WasmWindow* window);

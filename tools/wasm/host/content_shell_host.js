@@ -33,6 +33,13 @@ const POST_INPUT_REDRAW_WIDTH = DEFAULT_WIDTH - 1;
 const WASM_PAGE_BYTES = 64 * 1024;
 const MAXIMUM_WHEEL_DELTA = 0x7fffffff;
 const MAXIMUM_IME_PROXY_TEXT_UNITS = 64 * 1024;
+const MAXIMUM_IME_PROXY_TEXT_BYTES = MAXIMUM_IME_PROXY_TEXT_UNITS * 3;
+const M4_IME_TEXT_ACTION = Object.freeze({
+  setComposition: 1,
+  confirmComposition: 2,
+  clearComposition: 3,
+});
+const UTF8_ENCODER = new TextEncoder();
 
 let activeHost = null;
 const pendingBridgeReports = [];
@@ -69,9 +76,21 @@ function isWellFormedUtf16(value) {
 function imeProxyTextSummary(value) {
   return {
     utf16Length: value.length,
-    utf8Bytes: new TextEncoder().encode(value).byteLength,
+    utf8Bytes: UTF8_ENCODER.encode(value).byteLength,
     codePointCount: Array.from(value).length,
   };
+}
+
+// The IME smoke deliberately verifies the non-BMP candidate by shape rather
+// than placing user-entered text in host diagnostics.
+function isM4ImeSmokeTextSummary(value) {
+  return value?.utf16Length === 2 &&
+      value?.utf8Bytes === 4 && value?.codePointCount === 1;
+}
+
+function isEmptyM4ImeTextSummary(value) {
+  return value?.utf16Length === 0 &&
+      value?.utf8Bytes === 0 && value?.codePointCount === 0;
 }
 
 function asReport(value, description) {
@@ -118,6 +137,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportOzoneTextInputState(report) {
     deliverBridgeReport("_reportOzoneTextInputState", [report]);
+  },
+  reportOzoneTextInputDelivery(report) {
+    deliverBridgeReport("_reportOzoneTextInputDelivery", [report]);
   },
   reportFatal(message) {
     deliverBridgeReport("_reportFatal", [message]);
@@ -277,6 +299,11 @@ export class ChromiumWasmM3Host {
   #imeProxyPendingTransaction = null;
   #imeProxyLastConfirmedTransaction = null;
   #imeProxyLastConfirmedText = null;
+  #imeProxyTerminalCancellationPending = false;
+  #imeProxyExpectedTerminalAction = null;
+  #imeProxyNativeRequests = [];
+  #imeProxyNativeComposition = null;
+  #imeProxyNativeTerminalAction = null;
   #imeProxyFailure = null;
   #imeProxyActivationRequest = null;
   #imeProxyExpectedFocusTransfer = null;
@@ -286,7 +313,10 @@ export class ChromiumWasmM3Host {
   constructor(
     canvas,
     versions,
-    {fixture = "chromium-wasm-m3-static-v1", imeProxy = null} = {},
+    {
+      fixture = "chromium-wasm-m3-static-v1",
+      imeProxy = null,
+    } = {},
   ) {
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("M3 host requires a canvas");
@@ -573,6 +603,136 @@ export class ChromiumWasmM3Host {
     return {start, end};
   }
 
+  #imeProxyActionName(action) {
+    switch (action) {
+      case M4_IME_TEXT_ACTION.setComposition:
+        return "set-composition";
+      case M4_IME_TEXT_ACTION.confirmComposition:
+        return "confirm-composition";
+      case M4_IME_TEXT_ACTION.clearComposition:
+        return "clear-composition";
+      default:
+        return null;
+    }
+  }
+
+  #recordM4ImeProxyNativeRequest(request) {
+    if (this.#imeProxyNativeRequests.length >= 64) {
+      const completed = this.#imeProxyNativeRequests.findIndex(
+        (candidate) => candidate.deliveryAccepted !== null);
+      if (completed < 0) {
+        return false;
+      }
+      this.#imeProxyNativeRequests.splice(completed, 1);
+    }
+    this.#imeProxyNativeRequests.push(request);
+    return true;
+  }
+
+  #queueM4ImeProxyTextInput(action, sessionId, sequence, text, selection) {
+    const actionName = this.#imeProxyActionName(action);
+    if (
+      actionName === null || !Number.isSafeInteger(sessionId) ||
+      sessionId < 1 || sessionId > 0x7fffffff ||
+      !Number.isSafeInteger(sequence) || sequence < 1 ||
+      sequence > 0x7fffffff || typeof text !== "string" ||
+      !isWellFormedUtf16(text) || !selection ||
+      !Number.isSafeInteger(selection.start) ||
+      !Number.isSafeInteger(selection.end) || selection.start < 0 ||
+      selection.end < selection.start || selection.end > text.length
+    ) {
+      return null;
+    }
+    const utf8 = UTF8_ENCODER.encode(text);
+    if (utf8.byteLength > MAXIMUM_IME_PROXY_TEXT_BYTES) {
+      return null;
+    }
+    if (
+      action === M4_IME_TEXT_ACTION.setComposition &&
+      (text.length === 0 || selection.start !== selection.end ||
+        selection.end !== text.length)
+    ) {
+      return null;
+    }
+    if (
+      action !== M4_IME_TEXT_ACTION.setComposition &&
+      (text.length !== 0 || selection.start !== 0 || selection.end !== 0)
+    ) {
+      return null;
+    }
+
+    const request = {
+      action,
+      actionName,
+      sessionId,
+      sequence,
+      queued: true,
+      deliveryAccepted: null,
+      text: action === M4_IME_TEXT_ACTION.setComposition
+        ? imeProxyTextSummary(text)
+        : null,
+      selection: {start: selection.start, end: selection.end},
+    };
+    if (!this.#recordM4ImeProxyNativeRequest(request)) {
+      return null;
+    }
+    try {
+      const result = this.#callExport(
+        "chromium_wasm_host_text_input",
+        "number",
+        ["number", "number", "number", "array", "number", "number", "number"],
+        [
+          action,
+          sessionId,
+          sequence,
+          utf8,
+          utf8.byteLength,
+          selection.start,
+          selection.end,
+        ],
+      );
+      request.queued = result === 1;
+      if (!request.queued) {
+        request.deliveryAccepted = false;
+        request.reason = "QUEUE_REJECTED";
+        return null;
+      }
+      return request;
+    } catch (error) {
+      request.queued = false;
+      request.deliveryAccepted = false;
+      request.reason = `EXPORT_ERROR:${String(error)}`;
+      return null;
+    }
+  }
+
+  #queueM4ImeProxyClear(reason) {
+    const composition = this.#imeProxyNativeComposition;
+    if (
+      !composition || this.#imeProxyNativeTerminalAction !== null ||
+      this.#lifecycle !== "running"
+    ) {
+      return;
+    }
+    const sequence = ++this.#imeProxySequence;
+    const request = this.#queueM4ImeProxyTextInput(
+      M4_IME_TEXT_ACTION.clearComposition,
+      composition.sessionId,
+      sequence,
+      "",
+      {start: 0, end: 0},
+    );
+    if (!request) {
+      if (this.#imeProxyFailure === null) {
+        this.#imeProxyFailure = "NATIVE_CLEAR_QUEUE_REJECTED";
+      }
+      this.#recordHost(`m4:ime-proxy:${reason}:native-clear-rejected`);
+      return;
+    }
+    this.#imeProxyNativeTerminalAction = request;
+    this.#recordHost(`m4:ime-proxy:${reason}:native-clear-queued`);
+  }
+
   #imeProxyInputStatus() {
     const eventCount = (type) => this.#imeProxyRecords.filter(
       (record) => record.type === type).length;
@@ -580,6 +740,19 @@ export class ChromiumWasmM3Host {
       (record) => record.trusted === true).length;
     const acceptedCount = this.#imeProxyRecords.filter(
       (record) => record.accepted === true).length;
+    const derivedTerminalCount = this.#imeProxyRecords.filter(
+      (record) => record.terminalDerivedFromTrustedTransaction === true).length;
+    const observedClearTerminalCount = this.#imeProxyRecords.filter(
+      (record) => record.terminalObservedAfterClear === true).length;
+    const nativeRequests = this.#imeProxyNativeRequests.filter(
+      (record) => record.sessionId === this.#imeProxySessionId);
+    const nativeDeliveryCount = (action) => nativeRequests.filter(
+      (record) => record.action === action &&
+        record.deliveryAccepted === true).length;
+    const nativePendingDelivery = nativeRequests.some(
+      (record) => record.queued === true && record.deliveryAccepted === null);
+    const lastNativeDelivery = nativeRequests.findLast(
+      (record) => record.deliveryAccepted !== null);
     const proxyText = this.#imeProxy ? {
       ...imeProxyTextSummary(this.#imeProxy.value),
       selection: this.#imeProxySelection(),
@@ -593,6 +766,8 @@ export class ChromiumWasmM3Host {
       receivedCount: this.#imeProxyRecords.length,
       trustedCount,
       acceptedCount,
+      derivedTerminalCount,
+      observedClearTerminalCount,
       focusCount: this.#imeProxyFocusCount,
       blurCount: this.#imeProxyBlurCount,
       compositionStartCount: eventCount("compositionstart"),
@@ -601,9 +776,24 @@ export class ChromiumWasmM3Host {
       beforeinputCount: eventCount("beforeinput"),
       inputCount: eventCount("input"),
       compositionActive: this.#imeProxyCompositionActive,
+      terminalCancellationPending: this.#imeProxyTerminalCancellationPending,
       pendingTransaction: this.#imeProxyPendingTransaction !== null,
       activationPending: this.#imeProxyActivationRequest !== null,
       nativeTextInputReady: this.#hasM4EditableTextInputAcknowledgement(),
+      nativeQueuedCount: nativeRequests.filter(
+        (record) => record.queued === true).length,
+      nativeSetDeliveryCount: nativeDeliveryCount(
+        M4_IME_TEXT_ACTION.setComposition),
+      nativeConfirmDeliveryCount: nativeDeliveryCount(
+        M4_IME_TEXT_ACTION.confirmComposition),
+      nativeClearDeliveryCount: nativeDeliveryCount(
+        M4_IME_TEXT_ACTION.clearComposition),
+      nativePendingDelivery,
+      nativeCompositionActive: this.#imeProxyNativeComposition !== null,
+      nativeTerminalAction: this.#imeProxyNativeTerminalAction
+        ? this.#imeProxyNativeTerminalAction.actionName
+        : null,
+      lastNativeDelivery: lastNativeDelivery ? clone(lastNativeDelivery) : null,
       lastConfirmedTransaction: this.#imeProxyLastConfirmedTransaction
         ? clone(this.#imeProxyLastConfirmedTransaction)
         : null,
@@ -623,20 +813,31 @@ export class ChromiumWasmM3Host {
     this.#imeProxyPendingTransaction = null;
     this.#imeProxyLastConfirmedTransaction = null;
     this.#imeProxyLastConfirmedText = null;
+    this.#imeProxyTerminalCancellationPending = false;
+    this.#imeProxyExpectedTerminalAction = null;
+    this.#imeProxyNativeComposition = null;
+    this.#imeProxyNativeTerminalAction = null;
     this.#imeProxyFailure = null;
     this.#imeProxy.value = "";
     this.#imeProxy.setSelectionRange(0, 0);
   }
 
-  #clearM4ImeProxyState(reason) {
+  #clearM4ImeProxyState(reason, {queueNativeClear = true} = {}) {
     if (!this.#imeProxy || !this.#imeProxyInputEnabled) {
       return;
+    }
+    if (queueNativeClear) {
+      this.#queueM4ImeProxyClear(reason);
     }
     this.#imeProxyCompositionActive = false;
     this.#imeProxyLastCompositionText = null;
     this.#imeProxyPendingTransaction = null;
     this.#imeProxyLastConfirmedTransaction = null;
     this.#imeProxyLastConfirmedText = null;
+    this.#imeProxyTerminalCancellationPending = false;
+    this.#imeProxyExpectedTerminalAction = null;
+    this.#imeProxyNativeComposition = null;
+    this.#imeProxyNativeTerminalAction = null;
     this.#imeProxy.value = "";
     this.#imeProxy.setSelectionRange(0, 0);
     this.#recordHost(`m4:ime-proxy:${reason}:cleared`);
@@ -673,11 +874,7 @@ export class ChromiumWasmM3Host {
     return record;
   }
 
-  #validateM4ImeProxyEvent(record) {
-    if (!record.trusted) {
-      this.#rejectM4ImeProxyRecord(record, "UNTRUSTED_DOM_EVENT");
-      return false;
-    }
+  #validateM4ImeProxyContext(record) {
     if (!record.proxyFocused) {
       this.#rejectM4ImeProxyRecord(record, "PROXY_NOT_FOCUSED");
       return false;
@@ -701,6 +898,22 @@ export class ChromiumWasmM3Host {
     return true;
   }
 
+  #validateM4ImeProxyEvent(record) {
+    if (!record.trusted) {
+      this.#rejectM4ImeProxyRecord(record, "UNTRUSTED_DOM_EVENT");
+      return false;
+    }
+    return this.#validateM4ImeProxyContext(record);
+  }
+
+  #validateM4ImeProxyTerminal(record) {
+    // Blink intentionally dispatches compositionend through its scoped event
+    // queue, which does not mark the DOM event trusted. A terminal has no
+    // authority to introduce text: the caller below additionally requires the
+    // exact private candidate created by prior trusted source events.
+    return this.#validateM4ImeProxyContext(record);
+  }
+
   #handleM4ImeProxyCompositionStart(event) {
     const record = this.#makeImeProxyRecord("compositionstart", event);
     if (!this.#validateM4ImeProxyEvent(record)) {
@@ -711,6 +924,7 @@ export class ChromiumWasmM3Host {
       return;
     }
     this.#imeProxyCompositionActive = true;
+    this.#imeProxyTerminalCancellationPending = false;
     record.accepted = true;
     this.#recordImeProxy(record);
     this.#recordHost("m4:ime-proxy:compositionstart:accepted");
@@ -726,6 +940,21 @@ export class ChromiumWasmM3Host {
       this.#rejectM4ImeProxyRecord(record, "COMPOSITION_UPDATE_WITHOUT_START");
       return;
     }
+    if (data === "") {
+      if (!this.#imeProxyNativeComposition ||
+          this.#imeProxyPendingTransaction !== null ||
+          this.#imeProxyLastConfirmedText !==
+            this.#imeProxyNativeComposition.text) {
+        this.#rejectM4ImeProxyRecord(
+          record, "CANCELLATION_UPDATE_WITHOUT_CONFIRMED_COMPOSITION");
+        return;
+      }
+      this.#imeProxyTerminalCancellationPending = true;
+      record.accepted = true;
+      this.#recordImeProxy(record);
+      this.#recordHost("m4:ime-proxy:compositionupdate:cancellation-pending");
+      return;
+    }
     if (
       data === null || data.length === 0 ||
       data.length > MAXIMUM_IME_PROXY_TEXT_UNITS ||
@@ -736,6 +965,7 @@ export class ChromiumWasmM3Host {
     }
     // Keep the exact browser-produced UTF-16 candidate private for the later
     // Ozone InputMethod bridge. Diagnostics expose only its bounded summary.
+    this.#imeProxyTerminalCancellationPending = false;
     this.#imeProxyLastCompositionText = data;
     record.accepted = true;
     this.#recordImeProxy(record);
@@ -761,6 +991,20 @@ export class ChromiumWasmM3Host {
       this.#rejectM4ImeProxyRecord(record, "BEFOREINPUT_WITHOUT_COMPOSITION");
       return;
     }
+    if ((data === "" || data === null) &&
+        this.#imeProxyTerminalCancellationPending) {
+      if (!this.#imeProxyNativeComposition ||
+          this.#imeProxyPendingTransaction !== null ||
+          this.#imeProxyNativeTerminalAction !== null) {
+        this.#rejectM4ImeProxyRecord(
+          record, "CANCELLATION_BEFOREINPUT_WITHOUT_COMPOSITION");
+        return;
+      }
+      record.accepted = true;
+      this.#recordImeProxy(record);
+      this.#recordHost("m4:ime-proxy:beforeinput:cancellation-pending");
+      return;
+    }
     if (this.#imeProxyPendingTransaction !== null) {
       this.#rejectM4ImeProxyRecord(record, "PENDING_TRANSACTION_EXISTS");
       return;
@@ -773,19 +1017,36 @@ export class ChromiumWasmM3Host {
       this.#rejectM4ImeProxyRecord(record, "COMPOSITION_TEXT_MISMATCH");
       return;
     }
-    this.#imeProxyPendingTransaction = {
+    const transaction = {
       sessionId: this.#imeProxySessionId,
       sequence: record.sequence,
       opcode: "set-composition",
       text: data,
       textSummary: summary,
     };
+    const request = this.#queueM4ImeProxyTextInput(
+      M4_IME_TEXT_ACTION.setComposition,
+      transaction.sessionId,
+      transaction.sequence,
+      transaction.text,
+      {start: transaction.text.length, end: transaction.text.length},
+    );
+    if (!request) {
+      this.#rejectM4ImeProxyRecord(record, "NATIVE_SET_QUEUE_REJECTED");
+      return;
+    }
+    this.#imeProxyPendingTransaction = transaction;
+    this.#imeProxyNativeComposition = {
+      sessionId: transaction.sessionId,
+      sequence: transaction.sequence,
+      text: transaction.text,
+      textSummary: transaction.textSummary,
+    };
+    this.#imeProxyNativeTerminalAction = null;
+    record.nativeQueued = true;
     record.accepted = true;
     this.#recordImeProxy(record);
-    // This contract intentionally emits no C++ call yet. A later
-    // WasmInputMethod consumes this immutable transaction through
-    // TextInputClient, instead of accepting host text in Blink directly.
-    this.#recordHost("m4:ime-proxy:beforeinput:accepted-no-native-dispatch");
+    this.#recordHost("m4:ime-proxy:beforeinput:native-set-queued");
   }
 
   #handleM4ImeProxyInput(event) {
@@ -803,6 +1064,42 @@ export class ChromiumWasmM3Host {
     }
     if (event.isComposing !== true) {
       this.#rejectM4ImeProxyRecord(record, "COMPOSITION_FLAG_MISMATCH");
+      return;
+    }
+    if (this.#imeProxyTerminalCancellationPending) {
+      const composition = this.#imeProxyNativeComposition;
+      if (
+        (data !== null && data !== "") || !composition || !this.#imeProxy ||
+        this.#imeProxyPendingTransaction !== null ||
+        this.#imeProxyNativeTerminalAction !== null ||
+        this.#imeProxy.value !== "" || !selection ||
+        selection.start !== 0 || selection.end !== 0
+      ) {
+        this.#rejectM4ImeProxyRecord(
+          record, "CANCELLATION_INPUT_TRANSACTION_MISMATCH");
+        return;
+      }
+      const request = this.#queueM4ImeProxyTextInput(
+        M4_IME_TEXT_ACTION.clearComposition,
+        composition.sessionId,
+        record.sequence,
+        "",
+        {start: 0, end: 0},
+      );
+      if (!request) {
+        this.#rejectM4ImeProxyRecord(record, "NATIVE_CLEAR_QUEUE_REJECTED");
+        return;
+      }
+      this.#imeProxyNativeTerminalAction = request;
+      this.#imeProxyExpectedTerminalAction =
+        M4_IME_TEXT_ACTION.clearComposition;
+      this.#imeProxyCompositionActive = false;
+      this.#imeProxyTerminalCancellationPending = false;
+      this.#imeProxyLastCompositionText = null;
+      record.nativeQueued = true;
+      record.accepted = true;
+      this.#recordImeProxy(record);
+      this.#recordHost("m4:ime-proxy:input:native-clear-queued");
       return;
     }
     if (!pending || pending.sessionId !== this.#imeProxySessionId) {
@@ -830,18 +1127,68 @@ export class ChromiumWasmM3Host {
     };
     record.accepted = true;
     this.#recordImeProxy(record);
-    this.#recordHost("m4:ime-proxy:input:confirmed-no-native-dispatch");
+    this.#recordHost("m4:ime-proxy:input:confirmed-native-set");
   }
 
   #handleM4ImeProxyCompositionEnd(event) {
     const record = this.#makeImeProxyRecord("compositionend", event);
-    if (!this.#validateM4ImeProxyEvent(record)) {
+    if (!this.#validateM4ImeProxyTerminal(record)) {
       return;
     }
-    // Commit and cancellation are intentionally deferred until the C++ bridge
-    // can issue a matching standard TextInputClient transaction. Do not claim
-    // success for a browser-only proxy composition end.
-    this.#rejectM4ImeProxyRecord(record, "COMPOSITION_END_NOT_ROUTED");
+    const data = typeof event.data === "string" ? event.data : null;
+    if (
+      this.#imeProxyExpectedTerminalAction ===
+        M4_IME_TEXT_ACTION.clearComposition &&
+      data === ""
+    ) {
+      // Empty source records already queued ClearCompositionText. Blink's
+      // following terminal event is an observation only and cannot issue a
+      // second native action.
+      this.#imeProxyExpectedTerminalAction = null;
+      record.terminalObservedAfterClear = true;
+      this.#recordImeProxy(record);
+      this.#recordHost("m4:ime-proxy:compositionend:clear-observed");
+      return;
+    }
+    const composition = this.#imeProxyNativeComposition;
+    if (!this.#imeProxyCompositionActive) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_END_WITHOUT_START");
+      return;
+    }
+    if (this.#imeProxyPendingTransaction !== null) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_END_WITH_PENDING_INPUT");
+      return;
+    }
+    if (!composition || composition.sessionId !== this.#imeProxySessionId ||
+        this.#imeProxyNativeTerminalAction !== null ||
+        this.#imeProxyLastConfirmedText !== composition.text) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_END_TRANSACTION_MISMATCH");
+      return;
+    }
+    if (data !== composition.text) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_END_TRANSACTION_MISMATCH");
+      return;
+    }
+    record.terminalDerivedFromTrustedTransaction = !record.trusted;
+    const request = this.#queueM4ImeProxyTextInput(
+      M4_IME_TEXT_ACTION.confirmComposition,
+      composition.sessionId,
+      record.sequence,
+      "",
+      {start: 0, end: 0},
+    );
+    if (!request) {
+      this.#rejectM4ImeProxyRecord(record, "NATIVE_CONFIRM_QUEUE_REJECTED");
+      return;
+    }
+    this.#imeProxyNativeTerminalAction = request;
+    this.#imeProxyCompositionActive = false;
+    this.#imeProxyTerminalCancellationPending = false;
+    this.#imeProxyLastCompositionText = null;
+    record.nativeQueued = true;
+    record.accepted = true;
+    this.#recordImeProxy(record);
+    this.#recordHost("m4:ime-proxy:compositionend:native-confirm-queued");
   }
 
   #disableM4ImeProxyInput() {
@@ -871,6 +1218,11 @@ export class ChromiumWasmM3Host {
     this.#imeProxyPendingTransaction = null;
     this.#imeProxyLastConfirmedTransaction = null;
     this.#imeProxyLastConfirmedText = null;
+    this.#imeProxyTerminalCancellationPending = false;
+    this.#imeProxyExpectedTerminalAction = null;
+    this.#imeProxyNativeRequests = [];
+    this.#imeProxyNativeComposition = null;
+    this.#imeProxyNativeTerminalAction = null;
     this.#imeProxyFailure = null;
     this.#imeProxyFocusCount = 0;
     this.#imeProxyBlurCount = 0;
@@ -1766,7 +2118,10 @@ export class ChromiumWasmM3Host {
     if (typeof direct !== "function") {
       throw new Error(`required runtime export is missing: ${name}`);
     }
-    if (!argumentTypes.includes("string")) {
+    if (
+      !argumentTypes.includes("string") &&
+      !argumentTypes.includes("array")
+    ) {
       return direct(...args);
     }
     if (
@@ -1775,22 +2130,37 @@ export class ChromiumWasmM3Host {
       !this.#module.HEAPU8
     ) {
       throw new Error(
-        `runtime export ${name} needs ccall or malloc/string support`);
+        `runtime export ${name} needs ccall or malloc string/array support`);
     }
     const allocated = [];
     try {
       const converted = args.map((value, index) => {
-        if (argumentTypes[index] !== "string") {
+        const argumentType = argumentTypes[index];
+        if (argumentType !== "string" && argumentType !== "array") {
           return value;
         }
-        const encoded = new TextEncoder().encode(`${value}\0`);
+        const encoded = argumentType === "string"
+          ? UTF8_ENCODER.encode(`${value}\0`)
+          : value instanceof Uint8Array
+            ? value
+            : null;
+        if (encoded === null) {
+          throw new Error(`runtime export ${name} needs a Uint8Array argument`);
+        }
+        if (encoded.byteLength === 0) {
+          return 0;
+        }
         const pointer = this.#module._malloc(encoded.length);
         if (!pointer) {
           throw new Error(`allocation failed while calling ${name}`);
         }
         allocated.push(pointer);
         // Fetch HEAPU8 after malloc because memory growth invalidates old views.
-        this.#module.HEAPU8.set(encoded, pointer);
+        const heap = this.#module.HEAPU8;
+        if (!(heap instanceof Uint8Array) || pointer + encoded.length > heap.length) {
+          throw new Error(`runtime heap changed while calling ${name}`);
+        }
+        heap.set(encoded, pointer);
         return pointer;
       });
       return direct(...converted);
@@ -2342,12 +2712,63 @@ export class ChromiumWasmM3Host {
         document.activeElement === this.#imeProxy &&
         !this.#hasM4EditableTextInputAcknowledgement()
       ) {
-        this.#clearM4ImeProxyState("native-text-input-lost");
+        // WasmInputMethod clears its active composition before publishing this
+        // noneditable/focus-loss state. Reset the host mirror only: a second
+        // ClearCompositionText would be correctly rejected by the now-empty
+        // native state and would turn a normal focus change into a failure.
+        this.#clearM4ImeProxyState("native-text-input-lost", {
+          queueNativeClear: false,
+        });
         this.#canvas.focus({preventScroll: true});
       }
     } catch (error) {
       this._reportFatal(
         `invalid Ozone text-input state report: ${String(error)}`);
+    }
+  }
+
+  _reportOzoneTextInputDelivery(value) {
+    try {
+      const report = asReport(value, "Ozone text-input delivery report");
+      const actionName = this.#imeProxyActionName(report.action);
+      if (
+        report.protocol !== HOST_PROTOCOL || actionName === null ||
+        !Number.isSafeInteger(report.sessionId) || report.sessionId < 1 ||
+        !Number.isSafeInteger(report.sequence) || report.sequence < 1 ||
+        typeof report.accepted !== "boolean"
+      ) {
+        throw new Error("Ozone text-input delivery report is invalid");
+      }
+      const request = this.#imeProxyNativeRequests.find(
+        (candidate) => candidate.action === report.action &&
+          candidate.sessionId === report.sessionId &&
+          candidate.sequence === report.sequence);
+      if (!request || request.queued !== true ||
+          request.deliveryAccepted !== null) {
+        throw new Error("Ozone text-input delivery does not match a queue");
+      }
+      request.deliveryAccepted = report.accepted;
+      this.#recordHost(
+        `ozone:text-input-delivery:${actionName}:` +
+        (report.accepted ? "accepted" : "rejected"));
+      if (!report.accepted) {
+        if (this.#imeProxyFailure === null &&
+            request.sessionId === this.#imeProxySessionId) {
+          this.#imeProxyFailure = "NATIVE_TEXT_INPUT_DELIVERY_REJECTED";
+        }
+        return;
+      }
+      if (
+        request.sessionId === this.#imeProxySessionId &&
+        this.#imeProxyNativeTerminalAction?.sequence === request.sequence &&
+        request.action !== M4_IME_TEXT_ACTION.setComposition
+      ) {
+        this.#imeProxyNativeComposition = null;
+        this.#imeProxyNativeTerminalAction = null;
+      }
+    } catch (error) {
+      this._reportFatal(
+        `invalid Ozone text-input delivery report: ${String(error)}`);
     }
   }
 
@@ -3776,6 +4197,7 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
   const canvas = document.querySelector("#browser-canvas");
   const imeProxy = document.querySelector("#m4-ime-proxy");
   const token = parameters.get("token") || "";
+  const terminalMode = parameters.get("ime_terminal") || "commit";
   const timeoutMs = Math.max(
     1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
   let host = null;
@@ -3787,6 +4209,9 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
     }
     if (!token) {
       throw new Error("missing M4 IME bridge result token");
+    }
+    if (terminalMode !== "commit" && terminalMode !== "cancel") {
+      throw new Error("M4 IME bridge terminal mode is invalid");
     }
     if (!(imeProxy instanceof HTMLTextAreaElement)) {
       throw new Error("M4 IME bridge proxy textarea is unavailable");
@@ -3852,7 +4277,8 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
         pageProbe?.focusCount >= 1 &&
         pageProbe?.focusTrusted === true &&
         pageProbe?.activeElementId === "editable-target" &&
-        pageProbe?.value === "" &&
+        isEmptyM4ImeTextSummary(pageProbe?.value) &&
+        pageProbe?.valueMatchesExpected === false &&
         pageProbe?.selectionStart === 0 &&
         pageProbe?.selectionEnd === 0 &&
         proxy?.sessionId === 1 &&
@@ -3886,7 +4312,8 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
       pageAfterActivation?.focusCount < 1 ||
       pageAfterActivation?.focusTrusted !== true ||
       pageAfterActivation?.activeElementId !== "editable-target" ||
-      pageAfterActivation?.value !== "" ||
+      !isEmptyM4ImeTextSummary(pageAfterActivation?.value) ||
+      pageAfterActivation?.valueMatchesExpected !== false ||
       pageAfterActivation?.selectionStart !== 0 ||
       pageAfterActivation?.selectionEnd !== 0 ||
       proxyAfterActivation?.sessionId !== 1 ||
@@ -3937,30 +4364,35 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
         proxy?.focused === true &&
         proxy?.activationPending === false &&
         proxy?.nativeTextInputReady === true &&
+        proxy?.nativeQueuedCount === 1 &&
+        proxy?.nativeSetDeliveryCount === 1 &&
+        proxy?.nativeConfirmDeliveryCount === 0 &&
+        proxy?.nativeClearDeliveryCount === 0 &&
+        proxy?.nativePendingDelivery === false &&
+        proxy?.nativeCompositionActive === true &&
+        proxy?.nativeTerminalAction === null &&
         transaction?.sessionId === 1 &&
         transaction?.opcode === "set-composition" &&
         transaction?.rangeStart === 0 &&
         transaction?.rangeEnd === 2 &&
         transaction?.selection?.start === 2 &&
         transaction?.selection?.end === 2 &&
-        transaction?.text?.utf16Length === 2 &&
-        transaction?.text?.utf8Bytes === 4 &&
-        transaction?.text?.codePointCount === 1 &&
-        proxyText?.utf16Length === 2 &&
-        proxyText?.utf8Bytes === 4 &&
-        proxyText?.codePointCount === 1 &&
+        isM4ImeSmokeTextSummary(transaction?.text) &&
+        isM4ImeSmokeTextSummary(proxyText) &&
         selection?.start === 2 &&
         selection?.end === 2 &&
         pageProbe?.activeElementId === "editable-target" &&
-        pageProbe?.value === "" &&
-        pageProbe?.selectionStart === 0 &&
-        pageProbe?.selectionEnd === 0 &&
-        pageProbe?.textInputEvents?.beforeinputCount === 0 &&
-        pageProbe?.textInputEvents?.inputCount === 0 &&
-        pageProbe?.textInputEvents?.compositionstartCount === 0 &&
-        pageProbe?.textInputEvents?.compositionupdateCount === 0 &&
+        isM4ImeSmokeTextSummary(pageProbe?.value) &&
+        pageProbe?.valueMatchesExpected === true &&
+        pageProbe?.selectionStart === 2 &&
+        pageProbe?.selectionEnd === 2 &&
+        pageProbe?.textInputEvents?.beforeinputCount >= 1 &&
+        pageProbe?.textInputEvents?.inputCount >= 1 &&
+        pageProbe?.textInputEvents?.compositionstartCount === 1 &&
+        pageProbe?.textInputEvents?.compositionupdateCount >= 1 &&
         pageProbe?.textInputEvents?.compositionendCount === 0 &&
-        pageProbe?.resultText === "WAITING FOR PREEDIT BRIDGE"
+        pageProbe?.textInputTrace?.[0]?.type === "compositionstart" &&
+        pageProbe?.resultText === "INNER EDITOR COMPOSING"
       ) {
         break;
       }
@@ -3986,44 +4418,224 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
       imeProxyInput?.focused !== true ||
       imeProxyInput?.activationPending !== false ||
       imeProxyInput?.nativeTextInputReady !== true ||
+      imeProxyInput?.nativeQueuedCount !== 1 ||
+      imeProxyInput?.nativeSetDeliveryCount !== 1 ||
+      imeProxyInput?.nativeConfirmDeliveryCount !== 0 ||
+      imeProxyInput?.nativeClearDeliveryCount !== 0 ||
+      imeProxyInput?.nativePendingDelivery !== false ||
+      imeProxyInput?.nativeCompositionActive !== true ||
+      imeProxyInput?.nativeTerminalAction !== null ||
       transaction?.sessionId !== 1 ||
       transaction?.opcode !== "set-composition" ||
       transaction?.rangeStart !== 0 ||
       transaction?.rangeEnd !== 2 ||
       transaction?.selection?.start !== 2 ||
       transaction?.selection?.end !== 2 ||
-      transaction?.text?.utf16Length !== 2 ||
-      transaction?.text?.utf8Bytes !== 4 ||
-      transaction?.text?.codePointCount !== 1 ||
-      proxyText?.utf16Length !== 2 ||
-      proxyText?.utf8Bytes !== 4 ||
-      proxyText?.codePointCount !== 1 ||
+      !isM4ImeSmokeTextSummary(transaction?.text) ||
+      !isM4ImeSmokeTextSummary(proxyText) ||
       proxyText?.selection?.start !== 2 ||
       proxyText?.selection?.end !== 2 ||
       pageProbe?.activeElementId !== "editable-target" ||
-      pageProbe?.value !== "" ||
-      pageProbe?.selectionStart !== 0 ||
-      pageProbe?.selectionEnd !== 0 ||
-      pageProbe?.textInputEvents?.beforeinputCount !== 0 ||
-      pageProbe?.textInputEvents?.inputCount !== 0 ||
-      pageProbe?.textInputEvents?.compositionstartCount !== 0 ||
-      pageProbe?.textInputEvents?.compositionupdateCount !== 0 ||
+      !isM4ImeSmokeTextSummary(pageProbe?.value) ||
+      pageProbe?.valueMatchesExpected !== true ||
+      pageProbe?.selectionStart !== 2 ||
+      pageProbe?.selectionEnd !== 2 ||
+      pageProbe?.textInputEvents?.beforeinputCount < 1 ||
+      pageProbe?.textInputEvents?.inputCount < 1 ||
+      pageProbe?.textInputEvents?.compositionstartCount !== 1 ||
+      pageProbe?.textInputEvents?.compositionupdateCount < 1 ||
       pageProbe?.textInputEvents?.compositionendCount !== 0 ||
-      pageProbe?.resultText !== "WAITING FOR PREEDIT BRIDGE"
+      pageProbe?.textInputTrace?.[0]?.type !== "compositionstart" ||
+      pageProbe?.resultText !== "INNER EDITOR COMPOSING"
     ) {
       throw new Error(
         "M4 IME bridge preedit timeout: " + JSON.stringify(readiness));
+    }
+    const isCancellation = terminalMode === "cancel";
+    const terminalActionName = isCancellation
+      ? "clear-composition"
+      : "confirm-composition";
+    const terminalResultText = isCancellation
+      ? "INNER EDITOR COMPOSITION ENDED"
+      : "INNER EDITOR COMMITTED";
+    const terminalSelection = isCancellation ? 0 : 2;
+    const terminalTextMatches = isCancellation
+      ? isEmptyM4ImeTextSummary
+      : isM4ImeSmokeTextSummary;
+    // Both terminal modes produce a second update/beforeinput/input group in
+    // the inner editor. For cancellation, Blink reports the final |input|
+    // event's data as null rather than the empty string; the trace check below
+    // binds that browser behavior before accepting the clear result.
+    const terminalEventCount = 2;
+    const terminalDerivedCount = isCancellation ? 0 : 1;
+    const terminalObservedClearCount = isCancellation ? 1 : 0;
+    const terminalAcceptedCount = isCancellation ? 7 : 8;
+    const terminalNativeQueuedCount = isCancellation ? 2 : 3;
+    const terminalSetDeliveryCount = isCancellation ? 1 : 2;
+    const terminalConfirmDeliveryCount = isCancellation ? 0 : 1;
+    const terminalClearDeliveryCount = isCancellation ? 1 : 0;
+    const terminalNativeSequence = isCancellation ? 7 : 8;
+    const terminalValueMatchesExpected = !isCancellation;
+    const matchesConfirmedTransaction = (proxy) => {
+      const candidate = proxy?.lastConfirmedTransaction;
+      return candidate?.sessionId === 1 &&
+          candidate?.opcode === "set-composition" &&
+          candidate?.rangeStart === 0 && candidate?.rangeEnd === 2 &&
+          candidate?.selection?.start === 2 && candidate?.selection?.end === 2 &&
+          isM4ImeSmokeTextSummary(candidate?.text);
+    };
+    const matchesTerminalProxy = (proxy) => {
+      const proxyCandidate = proxy?.proxyText;
+      return proxy?.receivedCount === 8 && proxy?.trustedCount === 7 &&
+          proxy?.acceptedCount === terminalAcceptedCount &&
+          proxy?.derivedTerminalCount === terminalDerivedCount &&
+          proxy?.observedClearTerminalCount === terminalObservedClearCount &&
+          proxy?.compositionStartCount === 1 &&
+          proxy?.compositionUpdateCount === 2 &&
+          proxy?.compositionEndCount === 1 && proxy?.beforeinputCount === 2 &&
+          proxy?.inputCount === 2 && proxy?.compositionActive === false &&
+          proxy?.terminalCancellationPending === false &&
+          proxy?.pendingTransaction === false && proxy?.failure === null &&
+          proxy?.focused === true && proxy?.activationPending === false &&
+          proxy?.nativeTextInputReady === true &&
+          terminalTextMatches(proxyCandidate) &&
+          proxyCandidate?.selection?.start === terminalSelection &&
+          proxyCandidate?.selection?.end === terminalSelection &&
+          matchesConfirmedTransaction(proxy);
+    };
+    const matchesTerminalDelivery = (proxy) =>
+      proxy?.nativeQueuedCount === terminalNativeQueuedCount &&
+      proxy?.nativeSetDeliveryCount === terminalSetDeliveryCount &&
+      proxy?.nativeConfirmDeliveryCount === terminalConfirmDeliveryCount &&
+      proxy?.nativeClearDeliveryCount === terminalClearDeliveryCount &&
+      proxy?.nativePendingDelivery === false &&
+      proxy?.nativeCompositionActive === false &&
+      proxy?.nativeTerminalAction === null &&
+      proxy?.lastNativeDelivery?.actionName === terminalActionName &&
+      proxy?.lastNativeDelivery?.sequence === terminalNativeSequence &&
+      proxy?.lastNativeDelivery?.deliveryAccepted === true;
+    const matchesTerminalBlinkTrace = (page) => {
+      const trace = page?.textInputTrace;
+      const expectedTypes = [
+        "compositionstart", "compositionupdate", "beforeinput", "input",
+        "compositionupdate", "beforeinput", "input", "compositionend",
+      ];
+      if (!Array.isArray(trace) || trace.length !== expectedTypes.length ||
+          !trace.every((record, index) =>
+            record?.type === expectedTypes[index])) {
+        return false;
+      }
+      // Chromium's direct composition-end dispatch deliberately preserves the
+      // scoped queue's untrusted terminal. Every source event that carries
+      // composition state must still be a native trusted Blink event.
+      if (!trace.slice(0, -1).every((record) => record?.trusted === true) ||
+          trace.at(-1)?.trusted !== false) {
+        return false;
+      }
+      const start = trace[0];
+      const candidateUpdate = trace[1];
+      const candidateBeforeInput = trace[2];
+      const candidateInput = trace[3];
+      if (!isEmptyM4ImeTextSummary(start?.data) ||
+          start?.dataMatchesExpected !== false ||
+          !isM4ImeSmokeTextSummary(candidateUpdate?.data) ||
+          candidateUpdate?.dataMatchesExpected !== true ||
+          !isM4ImeSmokeTextSummary(candidateBeforeInput?.data) ||
+          candidateBeforeInput?.inputType !== "insertCompositionText" ||
+          candidateBeforeInput?.isComposing !== true ||
+          candidateBeforeInput?.dataMatchesExpected !== true ||
+          !isM4ImeSmokeTextSummary(candidateInput?.data) ||
+          candidateInput?.inputType !== "insertCompositionText" ||
+          candidateInput?.isComposing !== true ||
+          candidateInput?.dataMatchesExpected !== true) {
+        return false;
+      }
+      const terminalUpdate = trace[4];
+      const terminalBeforeInput = trace[5];
+      const terminalInput = trace[6];
+      const terminalEnd = trace[7];
+      if (!isCancellation) {
+        return [terminalUpdate, terminalBeforeInput, terminalInput, terminalEnd]
+            .every((record) => isM4ImeSmokeTextSummary(record?.data) &&
+              record?.dataMatchesExpected === true) &&
+            terminalBeforeInput?.inputType === "insertCompositionText" &&
+            terminalBeforeInput?.isComposing === true &&
+            terminalInput?.inputType === "insertCompositionText" &&
+            terminalInput?.isComposing === true;
+      }
+      return isEmptyM4ImeTextSummary(terminalUpdate?.data) &&
+          terminalUpdate?.dataMatchesExpected === false &&
+          isEmptyM4ImeTextSummary(terminalBeforeInput?.data) &&
+          terminalBeforeInput?.inputType === "insertCompositionText" &&
+          terminalBeforeInput?.isComposing === true &&
+          terminalBeforeInput?.dataMatchesExpected === false &&
+          terminalInput?.data === null &&
+          terminalInput?.inputType === "insertCompositionText" &&
+          terminalInput?.isComposing === true &&
+          terminalInput?.dataMatchesExpected === false &&
+          isEmptyM4ImeTextSummary(terminalEnd?.data) &&
+          terminalEnd?.dataMatchesExpected === false;
+    };
+    const matchesTerminalBlink = (page) =>
+      page?.activeElementId === "editable-target" &&
+      terminalTextMatches(page?.value) &&
+      page?.valueMatchesExpected === terminalValueMatchesExpected &&
+      page?.selectionStart === terminalSelection &&
+      page?.selectionEnd === terminalSelection &&
+      page?.textInputEvents?.beforeinputCount === terminalEventCount &&
+      page?.textInputEvents?.inputCount === terminalEventCount &&
+      page?.textInputEvents?.compositionstartCount === 1 &&
+      page?.textInputEvents?.compositionupdateCount === terminalEventCount &&
+      page?.textInputEvents?.compositionendCount === 1 &&
+      matchesTerminalBlinkTrace(page) &&
+      page?.resultText === terminalResultText;
+    window.__chromiumWasmM4ImeBridgeState = {
+      state: "awaiting-dom-ime-terminal",
+      terminalMode,
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      imeProxy: clone(imeProxyInput),
+    };
+    statusElement.textContent =
+      "M4 preedit reached Blink; ready for outer IME " + terminalMode;
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (
+        matchesTerminalProxy(readiness.imeProxyInput) &&
+        matchesTerminalDelivery(readiness.imeProxyInput) &&
+        matchesTerminalBlink(readiness.pageProbe)
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const terminalReadiness = readiness;
+    const terminalImeProxyInput = terminalReadiness?.imeProxyInput;
+    const terminalPageProbe = terminalReadiness?.pageProbe;
+    if (
+      !terminalReadiness || !matchesTerminalProxy(terminalImeProxyInput) ||
+      !matchesTerminalDelivery(terminalImeProxyInput) ||
+      !matchesTerminalBlink(terminalPageProbe)
+    ) {
+      throw new Error(
+        "M4 IME bridge " + terminalMode + " timeout: " +
+        JSON.stringify(terminalReadiness));
     }
     const focusSnapshot = {
       canvasFocused: document.activeElement === canvas,
       proxyFocused: document.activeElement === imeProxy,
     };
     window.__chromiumWasmM4ImeBridgeState = {
-      state: "preedit-captured-no-native-dispatch",
+      state: isCancellation
+        ? "native-composition-cancelled"
+        : "native-composition-committed",
+      terminalMode,
       targetX,
       targetY,
       pointer: clone(pointer),
-      imeProxy: clone(imeProxyInput),
+      imeProxy: clone(terminalImeProxyInput),
     };
     const shutdownTimeoutMs = Math.max(
       1000, Math.min(60000, deadline - performance.now()));
@@ -4032,43 +4644,22 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
     const checks = {
       crossOriginIsolated,
       sharedArrayBuffer: typeof SharedArrayBuffer === "function",
-      baseReady: readiness.baseReady === true,
+      baseReady: terminalReadiness.baseReady === true,
       proxyFocus:
         focusSnapshot.canvasFocused === false &&
         focusSnapshot.proxyFocused === true &&
-        imeProxyInput.focused === true &&
-        imeProxyInput.hostWindowActive === true &&
-        imeProxyInput.activationPending === false &&
-        imeProxyInput.nativeTextInputReady === true &&
+        terminalImeProxyInput.focused === true &&
+        terminalImeProxyInput.hostWindowActive === true &&
+        terminalImeProxyInput.activationPending === false &&
+        terminalImeProxyInput.nativeTextInputReady === true &&
         ozoneFocusAfterActivation.keyboardTargetPresent === true &&
         ozoneFocusAfterActivation.active === true &&
         ozoneTextInputAfterActivation.focusedClientPresent === true &&
         ozoneTextInputAfterActivation.editable === true &&
         ozoneTextInputAfterActivation.canComposeInline === true,
-      proxyPreedit:
-        imeProxyInput.receivedCount === 4 &&
-        imeProxyInput.trustedCount === 4 &&
-        imeProxyInput.acceptedCount === 4 &&
-        imeProxyInput.compositionStartCount === 1 &&
-        imeProxyInput.compositionUpdateCount === 1 &&
-        imeProxyInput.beforeinputCount === 1 &&
-        imeProxyInput.inputCount === 1 &&
-        imeProxyInput.pendingTransaction === false &&
-        imeProxyInput.failure === null &&
-        transaction.rangeStart === 0 && transaction.rangeEnd === 2 &&
-        transaction.selection.start === 2 && transaction.selection.end === 2 &&
-        proxyText.utf16Length === 2 && proxyText.utf8Bytes === 4,
-      innerBlinkUnchanged:
-        pageProbe.value === "" &&
-        pageProbe.selectionStart === 0 && pageProbe.selectionEnd === 0 &&
-        pageProbe.textInputEvents.beforeinputCount === 0 &&
-        pageProbe.textInputEvents.inputCount === 0 &&
-        pageProbe.textInputEvents.compositionstartCount === 0 &&
-        pageProbe.textInputEvents.compositionupdateCount === 0 &&
-        pageProbe.textInputEvents.compositionendCount === 0,
-      preRouteOnly: pageProbe.value === "" &&
-        pageProbe.textInputEvents.beforeinputCount === 0 &&
-        pageProbe.textInputEvents.inputCount === 0,
+      proxyComposition: matchesTerminalProxy(terminalImeProxyInput),
+      nativeDelivery: matchesTerminalDelivery(terminalImeProxyInput),
+      innerBlinkComposition: matchesTerminalBlink(terminalPageProbe),
       shutdown:
         shutdown.ok === true && shutdown.complete === true &&
         shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
@@ -4085,11 +4676,12 @@ async function runM4OzoneImeBridgeSmokeFromQuery() {
       sharedArrayBuffer: typeof SharedArrayBuffer === "function",
       canvasFocused: focusSnapshot.canvasFocused,
       proxyFocused: focusSnapshot.proxyFocused,
+      terminalMode,
       versions,
-      readiness,
+      readiness: terminalReadiness,
       pointerInput: pointer,
-      focusInput: readiness.focusInput,
-      imeProxyInput,
+      focusInput: terminalReadiness.focusInput,
+      imeProxyInput: terminalImeProxyInput,
       logs,
       shutdown,
       failedChecks,
