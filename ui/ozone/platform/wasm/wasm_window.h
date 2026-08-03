@@ -20,7 +20,8 @@ namespace ui {
 class WasmWindowManager;
 
 // M3 supplies the minimum single-canvas window lifecycle Aura needs. M4 adds
-// host-pointer dispatch while keyboard, IME, and cursor integration remain off.
+// host pointer, wheel, and raw navigation-key dispatch; full keyboard, IME,
+// and cursor integration remain off.
 class WasmWindow final : public PlatformWindow,
                          public PlatformEventDispatcher,
                          public EventTarget {

@@ -35,6 +35,8 @@ class WasmWindowManager {
 
   void SetPointerFocusedWindow(WasmWindow* window);
   WasmWindow* GetPointerFocusedWindow();
+  void SetKeyboardFocusedWindow(WasmWindow* window);
+  WasmWindow* GetKeyboardFocusedWindow();
   void SetPointerCapture(WasmWindow* window);
   void ReleasePointerCapture(WasmWindow* window);
   bool HasPointerCapture(WasmWindow* window);
@@ -44,6 +46,7 @@ class WasmWindowManager {
   std::vector<raw_ptr<WasmWindow>> stacking_order_;
   base::IDMap<WasmWindow*> windows_;
   raw_ptr<WasmWindow> pointer_focused_window_ = nullptr;
+  raw_ptr<WasmWindow> keyboard_focused_window_ = nullptr;
   raw_ptr<WasmWindow> pointer_capture_window_ = nullptr;
   base::ThreadChecker thread_checker_;
 };

@@ -10,6 +10,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "ui/events/event_constants.h"
+#include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/platform/platform_event_source.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -20,7 +21,7 @@ namespace ui {
 class SystemInputInjector;
 class WasmWindowManager;
 
-// Translates host pointer records into normal Ozone native events. Records are
+// Translates host input records into normal Ozone native events. Records are
 // delivered on Chromium's UI sequence; the JavaScript main thread only queues
 // them through the Content host bridge.
 class WasmPlatformEventSource final : public PlatformEventSource {
@@ -42,6 +43,11 @@ class WasmPlatformEventSource final : public PlatformEventSource {
                                const gfx::Vector2d& offset,
                                EventFlags flags,
                                int source_device_id);
+
+  bool DispatchKeyEvent(EventType type,
+                        DomCode physical_key,
+                        EventFlags flags,
+                        int source_device_id);
 
  private:
   raw_ptr<WasmWindowManager> window_manager_;

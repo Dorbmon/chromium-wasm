@@ -39,6 +39,7 @@
 #include "ui/aura/window_tree_host.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
@@ -59,6 +60,7 @@ constexpr int kMaximumCanvasDimension = 16384;
 // linear-memory ceiling to Content, V8, and browser services.
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
+constexpr std::string_view kM4NavigationDomCode = "ArrowDown";
 
 enum class DomPointerEventType {
   kMove = 0,
@@ -375,6 +377,21 @@ void DispatchDomWheelOnUiThread(const gfx::Point& location,
   input_injector->InjectMouseWheel(-dom_delta.x(), -dom_delta.y());
 }
 
+void DispatchDomKeyOnUiThread(ui::DomCode physical_key, bool down) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  ui::SystemInputInjector* input_injector =
+      GetWasmHostState().GetInputInjectorOnUiThread();
+  if (!input_injector) {
+    ReportFatal("M4 host raw key event has no Ozone input injector");
+    return;
+  }
+
+  // The host accepts only an explicit trusted DOM keydown/keyup pair. The
+  // Wasm injector does not synthesize repeats between those records.
+  input_injector->InjectKeyEvent(physical_key, down,
+                                 /*suppress_auto_repeat=*/true);
+}
+
 void LoadUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   Shell* shell = GetSingleShell();
@@ -490,6 +507,28 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_wheel(int x,
   return content::PostHostCommand(base::BindOnce(
              &content::DispatchDomWheelOnUiThread, gfx::Point(x, y),
              gfx::Vector2d(delta_x, delta_y)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_key(const char* code, int down) {
+  if (!code || (down != 0 && down != 1)) {
+    return 0;
+  }
+  const size_t length =
+      strnlen(code, content::kM4NavigationDomCode.size() + 1);
+  if (length != content::kM4NavigationDomCode.size() ||
+      std::string_view(code, length) != content::kM4NavigationDomCode) {
+    return 0;
+  }
+  const ui::DomCode physical_key =
+      ui::KeycodeConverter::CodeStringToDomCode(content::kM4NavigationDomCode);
+  if (physical_key != ui::DomCode::ARROW_DOWN) {
+    return 0;
+  }
+  return content::PostHostCommand(base::BindOnce(
+             &content::DispatchDomKeyOnUiThread, physical_key,
+             down == 1))
              ? 1
              : 0;
 }

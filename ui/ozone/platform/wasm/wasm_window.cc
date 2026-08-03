@@ -48,6 +48,9 @@ void WasmWindow::Show(bool inactive) {
 
 void WasmWindow::Hide() {
   visible_ = false;
+  if (manager_->GetKeyboardFocusedWindow() == this) {
+    manager_->SetKeyboardFocusedWindow(nullptr);
+  }
   ReleaseCapture();
 }
 
@@ -178,6 +181,7 @@ PlatformWindowState WasmWindow::GetPlatformWindowState() const {
 }
 
 void WasmWindow::Activate() {
+  manager_->SetKeyboardFocusedWindow(this);
   if (activation_state_ == ActivationState::kActive) {
     return;
   }
@@ -188,6 +192,9 @@ void WasmWindow::Activate() {
 void WasmWindow::Deactivate() {
   if (activation_state_ == ActivationState::kInactive) {
     return;
+  }
+  if (manager_->GetKeyboardFocusedWindow() == this) {
+    manager_->SetKeyboardFocusedWindow(nullptr);
   }
   activation_state_ = ActivationState::kInactive;
   delegate_->OnActivationChanged(false);

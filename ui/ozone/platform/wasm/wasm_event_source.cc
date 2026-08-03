@@ -11,6 +11,8 @@
 #include "base/notimplemented.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/keycodes/dom/dom_code.h"
+#include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/ozone/public/system_input_injector.h"
 #include "ui/gfx/geometry/point.h"
@@ -85,10 +87,22 @@ class WasmSystemInputInjector final : public SystemInputInjector {
 
   void InjectKeyEvent(DomCode physical_key,
                       bool down,
-                      bool suppress_auto_repeat) override {
-    NOTIMPLEMENTED_LOG_ONCE()
-        << "ozone_wasm keyboard injection is not implemented by the first M4 "
-           "pointer slice";
+                      bool /*suppress_auto_repeat*/) override {
+    // The first keyboard slice transports one non-printable navigation key.
+    // The host rejects DOM repeats, and this injector has no local repeat
+    // timer, so duplicate state changes must not manufacture repeat events.
+    if (physical_key != DomCode::ARROW_DOWN) {
+      NOTIMPLEMENTED_LOG_ONCE()
+          << "ozone_wasm M4 raw-key input supports ArrowDown only";
+      return;
+    }
+    if (arrow_down_ == down) {
+      return;
+    }
+    arrow_down_ = down;
+    event_source_->DispatchKeyEvent(
+        down ? EventType::kKeyPressed : EventType::kKeyReleased,
+        physical_key, EF_NONE, device_id_);
   }
 
  private:
@@ -96,6 +110,7 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   gfx::PointF location_;
   EventFlags button_flags_ = EF_NONE;
   int device_id_ = ED_UNKNOWN_DEVICE;
+  bool arrow_down_ = false;
 };
 
 }  // namespace
@@ -127,6 +142,12 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
   WasmWindow* target = window_manager_->GetPointerTarget(root_location);
   if (!target) {
     return false;
+  }
+
+  if (type == EventType::kMousePressed &&
+      (changed_button_flags & EF_LEFT_MOUSE_BUTTON)) {
+    // Pointer hover follows hit testing, but keyboard focus follows activation.
+    target->Activate();
   }
 
   gfx::Point location = root_location;
@@ -164,6 +185,36 @@ bool WasmPlatformEventSource::DispatchMouseWheelEvent(
                   -target->GetBoundsInPixels().y());
   MouseWheelEvent event(offset, location, root_location, EventTimeForNow(),
                         flags, EF_NONE);
+  event.set_source_device_id(source_device_id);
+  Event::DispatcherApi(&event).set_target(target);
+  PlatformEventSource::DispatchEvent(&event);
+  return true;
+}
+
+bool WasmPlatformEventSource::DispatchKeyEvent(EventType type,
+                                               DomCode physical_key,
+                                               EventFlags flags,
+                                               int source_device_id) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  if (PlatformEventSource::ShouldIgnoreNativePlatformEvents() ||
+      (type != EventType::kKeyPressed && type != EventType::kKeyReleased) ||
+      physical_key != DomCode::ARROW_DOWN) {
+    return false;
+  }
+
+  WasmWindow* target = window_manager_->GetKeyboardFocusedWindow();
+  if (!target || !target->IsVisible()) {
+    return false;
+  }
+
+  DomKey dom_key;
+  KeyboardCode key_code;
+  if (!DomCodeToNonPrintableDomKey(physical_key, &dom_key, &key_code)) {
+    return false;
+  }
+
+  KeyEvent event(type, key_code, physical_key, flags, dom_key,
+                 EventTimeForNow());
   event.set_source_device_id(source_device_id);
   Event::DispatcherApi(&event).set_target(target);
   PlatformEventSource::DispatchEvent(&event);

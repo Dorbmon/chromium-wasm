@@ -40,6 +40,9 @@ void WasmWindowManager::RemoveWindow(gfx::AcceleratedWidget widget,
   if (pointer_focused_window_ == window) {
     pointer_focused_window_ = nullptr;
   }
+  if (keyboard_focused_window_ == window) {
+    keyboard_focused_window_ = nullptr;
+  }
   windows_.Remove(widget);
 }
 
@@ -77,6 +80,17 @@ void WasmWindowManager::SetPointerFocusedWindow(WasmWindow* window) {
 WasmWindow* WasmWindowManager::GetPointerFocusedWindow() {
   DCHECK(thread_checker_.CalledOnValidThread());
   return pointer_focused_window_;
+}
+
+void WasmWindowManager::SetKeyboardFocusedWindow(WasmWindow* window) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK(!window || windows_.Lookup(window->widget()) == window);
+  keyboard_focused_window_ = window;
+}
+
+WasmWindow* WasmWindowManager::GetKeyboardFocusedWindow() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  return keyboard_focused_window_;
 }
 
 void WasmWindowManager::SetPointerCapture(WasmWindow* window) {
