@@ -1,0 +1,137 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 Ozone IME proxy fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  body {
+    min-height: 900px;
+    margin: 0;
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    width: 520px;
+    margin: 72px 0 0 96px;
+    padding: 28px;
+    border: 4px solid #163a63;
+    background: #ffffff;
+  }
+
+  label {
+    display: block;
+    margin-top: 22px;
+  }
+
+  #editable-target {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 18px;
+    border: 3px solid #0f5b94;
+    background: #d8f0ff;
+    color: #062b4d;
+    font: inherit;
+    outline: none;
+  }
+
+  #editable-target:focus {
+    border-color: #ff8a00;
+    box-shadow: 0 0 0 4px #ffcf75;
+  }
+</style>
+<main>
+  <p>M4 OZONE IME PROXY PREEDIT</p>
+  <label for="editable-target">CLICK TO ARM INNER EDITOR</label>
+  <input id="editable-target" type="text" autocomplete="off" spellcheck="false">
+  <p id="result">WAITING FOR PREEDIT BRIDGE</p>
+</main>
+<script>
+  (() => {
+    const target = document.querySelector("#editable-target");
+    const result = document.querySelector("#result");
+    let activationCount = 0;
+    let clickTrusted = false;
+    let focusCount = 0;
+    let focusTrusted = false;
+    let targetCenter = null;
+    const textInputEvents = {
+      beforeinputCount: 0,
+      inputCount: 0,
+      compositionstartCount: 0,
+      compositionupdateCount: 0,
+      compositionendCount: 0,
+    };
+    let fontReady = !document.fonts;
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    let timerTicks = 0;
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    target.addEventListener("click", (event) => {
+      activationCount += 1;
+      clickTrusted = event.isTrusted;
+    });
+    target.addEventListener("focus", (event) => {
+      focusCount += 1;
+      focusTrusted = event.isTrusted;
+    });
+    target.addEventListener("beforeinput", () => {
+      textInputEvents.beforeinputCount += 1;
+    });
+    target.addEventListener("input", () => {
+      textInputEvents.inputCount += 1;
+      result.textContent = "INNER EDITOR CHANGED";
+    });
+    for (const eventType of [
+      "compositionstart", "compositionupdate", "compositionend",
+    ]) {
+      target.addEventListener(eventType, () => {
+        textInputEvents[eventType + "Count"] += 1;
+      });
+    }
+
+    function captureTargetCenter() {
+      if (targetCenter) {
+        return targetCenter;
+      }
+      const rect = target.getBoundingClientRect();
+      targetCenter = {
+        x: Math.floor(rect.left + rect.width / 2),
+        y: Math.floor(rect.top + rect.height / 2),
+      };
+      return targetCenter;
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      const center = captureTargetCenter();
+      return JSON.stringify({
+        protocol: 1,
+        timerTicks,
+        fixture: "chromium-wasm-m4-ozone-ime-bridge-v1",
+        fontReady,
+        textInputEvents,
+        ready: document.readyState === "complete" && fontReady &&
+            center.x >= 0 && center.y >= 0,
+        targetCenterX: center.x,
+        targetCenterY: center.y,
+        activeElementId: document.activeElement?.id || null,
+        activationCount,
+        clickTrusted,
+        focusCount,
+        focusTrusted,
+        value: target.value,
+        selectionStart: target.selectionStart,
+        selectionEnd: target.selectionEnd,
+        resultText: result.textContent,
+      });
+    };
+  })();
+</script>

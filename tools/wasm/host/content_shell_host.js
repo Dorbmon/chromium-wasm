@@ -9,12 +9,14 @@ const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
+const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
 const M4_PRINTABLE_KEY_FIXTURE =
   "chromium-wasm-m4-ozone-printable-key-v1";
 const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
+const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
 const M4_PRINTABLE_KEY_DOM_KEY = "a";
@@ -30,6 +32,7 @@ const DEFAULT_HEIGHT = 600;
 const POST_INPUT_REDRAW_WIDTH = DEFAULT_WIDTH - 1;
 const WASM_PAGE_BYTES = 64 * 1024;
 const MAXIMUM_WHEEL_DELTA = 0x7fffffff;
+const MAXIMUM_IME_PROXY_TEXT_UNITS = 64 * 1024;
 
 let activeHost = null;
 const pendingBridgeReports = [];
@@ -43,6 +46,32 @@ function expectedM4KeyboardKey(code) {
     default:
       return null;
   }
+}
+
+function isWellFormedUtf16(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) {
+        return false;
+      }
+      index += 1;
+      continue;
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function imeProxyTextSummary(value) {
+  return {
+    utf16Length: value.length,
+    utf8Bytes: new TextEncoder().encode(value).byteLength,
+    codePointCount: Array.from(value).length,
+  };
 }
 
 function asReport(value, description) {
@@ -86,6 +115,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportOzoneFocusState(report) {
     deliverBridgeReport("_reportOzoneFocusState", [report]);
+  },
+  reportOzoneTextInputState(report) {
+    deliverBridgeReport("_reportOzoneTextInputState", [report]);
   },
   reportFatal(message) {
     deliverBridgeReport("_reportFatal", [message]);
@@ -169,6 +201,7 @@ function checkInteger(value, description, minimum, maximum) {
 
 export class ChromiumWasmM3Host {
   #canvas;
+  #imeProxy;
   #fixture;
   #module = null;
   #lifecycle = "new";
@@ -179,6 +212,8 @@ export class ChromiumWasmM3Host {
   #pageProbe = {};
   #ozoneFocusState = null;
   #ozoneFocusReportSequence = 0;
+  #ozoneTextInputState = null;
+  #ozoneTextInputReportSequence = 0;
   #frame = null;
   #inputPostedAtFrameId = null;
   #interactionObservedAtFrameId = null;
@@ -232,11 +267,26 @@ export class ChromiumWasmM3Host {
   #focusRecords = [];
   #lastQueuedFocusLoss = null;
   #hostWindowActive = false;
+  #imeProxyInputEnabled = false;
+  #imeProxyListeners = [];
+  #imeProxySequence = 0;
+  #imeProxyRecords = [];
+  #imeProxySessionId = 0;
+  #imeProxyCompositionActive = false;
+  #imeProxyLastCompositionText = null;
+  #imeProxyPendingTransaction = null;
+  #imeProxyLastConfirmedTransaction = null;
+  #imeProxyLastConfirmedText = null;
+  #imeProxyFailure = null;
+  #imeProxyActivationRequest = null;
+  #imeProxyExpectedFocusTransfer = null;
+  #imeProxyFocusCount = 0;
+  #imeProxyBlurCount = 0;
 
   constructor(
     canvas,
     versions,
-    {fixture = "chromium-wasm-m3-static-v1"} = {},
+    {fixture = "chromium-wasm-m3-static-v1", imeProxy = null} = {},
   ) {
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("M3 host requires a canvas");
@@ -245,6 +295,10 @@ export class ChromiumWasmM3Host {
       throw new Error("only one M3 host instance may be active");
     }
     this.#canvas = canvas;
+    if (imeProxy !== null && !(imeProxy instanceof HTMLTextAreaElement)) {
+      throw new Error("M4 IME proxy must be a textarea when supplied");
+    }
+    this.#imeProxy = imeProxy;
     if (typeof fixture !== "string" || fixture.length === 0) {
       throw new Error("host fixture identifier must be a nonempty string");
     }
@@ -307,6 +361,7 @@ export class ChromiumWasmM3Host {
     this.#stopHeartbeat();
     this.#disableM4PointerInput();
     this.#disableM4KeyboardInput();
+    this.#disableM4ImeProxyInput();
     this.#disableM4FocusInput();
     this.#disableM4WheelInput();
     removeEventListener("error", this.#errorHandler);
@@ -396,6 +451,474 @@ export class ChromiumWasmM3Host {
         ? clone(this.#lastQueuedKeyUp)
         : null,
     };
+  }
+
+  #hasM4EditableTextInputAcknowledgement() {
+    const state = this.#ozoneTextInputState;
+    return state !== null && state.focusedClientPresent === true &&
+      state.editable === true && state.canComposeInline === true;
+  }
+
+  #consumeM4ExpectedProxyFocusTransfer(target) {
+    const transfer = this.#imeProxyExpectedFocusTransfer;
+    if (!transfer || target !== this.#imeProxy) {
+      return false;
+    }
+    this.#imeProxyExpectedFocusTransfer = null;
+    return true;
+  }
+
+  #cancelM4ImeProxyActivation(reason) {
+    if (
+      this.#imeProxyActivationRequest === null &&
+      this.#imeProxyExpectedFocusTransfer === null
+    ) {
+      return;
+    }
+    this.#imeProxyActivationRequest = null;
+    this.#imeProxyExpectedFocusTransfer = null;
+    this.#recordHost(`m4:ime-proxy:${reason}:activation-cancelled`);
+  }
+
+  #armM4ImeProxyActivation(record) {
+    if (!this.#imeProxyInputEnabled || !this.#imeProxy) {
+      return;
+    }
+    if (!record.trusted || !record.queued || !this.#hostWindowActive) {
+      this.#recordHost("m4:ime-proxy:pointer-arm-rejected");
+      return;
+    }
+    this.#cancelM4ImeProxyActivation("pointer-rearm");
+    this.#clearM4ImeProxyState("pointer-rearm");
+    this.#imeProxyFailure = null;
+    this.#imeProxyActivationRequest = {
+      pointerDownSequence: record.sequence,
+      pointerUpQueued: false,
+      ozoneFocusReportSequenceBefore: this.#ozoneFocusReportSequence,
+      ozoneTextInputReportSequenceBefore: this.#ozoneTextInputReportSequence,
+    };
+    this.#recordHost("m4:ime-proxy:pointer-arm-awaiting-native-editable");
+  }
+
+  #markM4ImeProxyPointerUp(record) {
+    const request = this.#imeProxyActivationRequest;
+    if (!request || !record.trusted || !record.queued) {
+      return;
+    }
+    request.pointerUpQueued = true;
+    request.pointerUpSequence = record.sequence;
+    this.#recordHost("m4:ime-proxy:pointer-up-awaiting-native-editable");
+    this.#maybeActivateM4ImeProxy();
+  }
+
+  #maybeActivateM4ImeProxy() {
+    const request = this.#imeProxyActivationRequest;
+    const focusState = this.#ozoneFocusState;
+    const textInputState = this.#ozoneTextInputState;
+    if (
+      !request || !request.pointerUpQueued || !this.#imeProxyInputEnabled ||
+      !this.#imeProxy || !this.#hostWindowActive ||
+      document.activeElement !== this.#canvas ||
+      !focusState ||
+      focusState.sequence <= request.ozoneFocusReportSequenceBefore ||
+      focusState.keyboardTargetPresent !== true || focusState.active !== true ||
+      !textInputState ||
+      textInputState.sequence <= request.ozoneTextInputReportSequenceBefore ||
+      !this.#hasM4EditableTextInputAcknowledgement()
+    ) {
+      return false;
+    }
+
+    this.#imeProxyActivationRequest = null;
+    this.#resetM4ImeProxySession();
+    this.#imeProxyExpectedFocusTransfer = {
+      sessionId: this.#imeProxySessionId,
+      pointerDownSequence: request.pointerDownSequence,
+      pointerUpSequence: request.pointerUpSequence,
+    };
+    this.#imeProxy.focus({preventScroll: true});
+    if (document.activeElement !== this.#imeProxy) {
+      this.#imeProxyExpectedFocusTransfer = null;
+      this.#imeProxyFailure = "PROXY_FOCUS_FAILED";
+      this.#recordHost("m4:ime-proxy:native-editable-focus-failed");
+      this.#deactivateM4HostWindow("ime-proxy-focus-failed");
+      return false;
+    }
+    this.#recordHost("m4:ime-proxy:native-editable-focus");
+    return true;
+  }
+
+  #recordImeProxy(record) {
+    this.#imeProxyRecords.push(record);
+    if (this.#imeProxyRecords.length > 64) {
+      this.#imeProxyRecords.shift();
+    }
+  }
+
+  #imeProxySelection() {
+    if (!this.#imeProxy) {
+      return null;
+    }
+    const start = this.#imeProxy.selectionStart;
+    const end = this.#imeProxy.selectionEnd;
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start < 0 ||
+      end < start ||
+      end > this.#imeProxy.value.length
+    ) {
+      return null;
+    }
+    return {start, end};
+  }
+
+  #imeProxyInputStatus() {
+    const eventCount = (type) => this.#imeProxyRecords.filter(
+      (record) => record.type === type).length;
+    const trustedCount = this.#imeProxyRecords.filter(
+      (record) => record.trusted === true).length;
+    const acceptedCount = this.#imeProxyRecords.filter(
+      (record) => record.accepted === true).length;
+    const proxyText = this.#imeProxy ? {
+      ...imeProxyTextSummary(this.#imeProxy.value),
+      selection: this.#imeProxySelection(),
+    } : null;
+    return {
+      enabled: this.#imeProxyInputEnabled,
+      present: this.#imeProxy !== null,
+      focused: document.activeElement === this.#imeProxy,
+      hostWindowActive: this.#hostWindowActive,
+      sessionId: this.#imeProxySessionId,
+      receivedCount: this.#imeProxyRecords.length,
+      trustedCount,
+      acceptedCount,
+      focusCount: this.#imeProxyFocusCount,
+      blurCount: this.#imeProxyBlurCount,
+      compositionStartCount: eventCount("compositionstart"),
+      compositionUpdateCount: eventCount("compositionupdate"),
+      compositionEndCount: eventCount("compositionend"),
+      beforeinputCount: eventCount("beforeinput"),
+      inputCount: eventCount("input"),
+      compositionActive: this.#imeProxyCompositionActive,
+      pendingTransaction: this.#imeProxyPendingTransaction !== null,
+      activationPending: this.#imeProxyActivationRequest !== null,
+      nativeTextInputReady: this.#hasM4EditableTextInputAcknowledgement(),
+      lastConfirmedTransaction: this.#imeProxyLastConfirmedTransaction
+        ? clone(this.#imeProxyLastConfirmedTransaction)
+        : null,
+      failure: this.#imeProxyFailure,
+      proxyText,
+    };
+  }
+
+  #resetM4ImeProxySession() {
+    if (!this.#imeProxy) {
+      return;
+    }
+    this.#imeProxySessionId += 1;
+    this.#imeProxyRecords = [];
+    this.#imeProxyCompositionActive = false;
+    this.#imeProxyLastCompositionText = null;
+    this.#imeProxyPendingTransaction = null;
+    this.#imeProxyLastConfirmedTransaction = null;
+    this.#imeProxyLastConfirmedText = null;
+    this.#imeProxyFailure = null;
+    this.#imeProxy.value = "";
+    this.#imeProxy.setSelectionRange(0, 0);
+  }
+
+  #clearM4ImeProxyState(reason) {
+    if (!this.#imeProxy || !this.#imeProxyInputEnabled) {
+      return;
+    }
+    this.#imeProxyCompositionActive = false;
+    this.#imeProxyLastCompositionText = null;
+    this.#imeProxyPendingTransaction = null;
+    this.#imeProxyLastConfirmedTransaction = null;
+    this.#imeProxyLastConfirmedText = null;
+    this.#imeProxy.value = "";
+    this.#imeProxy.setSelectionRange(0, 0);
+    this.#recordHost(`m4:ime-proxy:${reason}:cleared`);
+  }
+
+  #rejectM4ImeProxyRecord(record, reason) {
+    record.reason = reason;
+    if (this.#imeProxyFailure === null) {
+      this.#imeProxyFailure = reason;
+    }
+    this.#recordImeProxy(record);
+    this.#recordHost(`m4:ime-proxy:${record.type}:rejected:${reason}`);
+  }
+
+  #makeImeProxyRecord(type, event) {
+    const record = {
+      sequence: ++this.#imeProxySequence,
+      sessionId: this.#imeProxySessionId,
+      type,
+      trusted: event.isTrusted === true,
+      accepted: false,
+      proxyFocused: document.activeElement === this.#imeProxy,
+      hostWindowActive: this.#hostWindowActive,
+    };
+    if (typeof event.inputType === "string") {
+      record.inputType = event.inputType;
+    }
+    if (typeof event.isComposing === "boolean") {
+      record.isComposing = event.isComposing;
+    }
+    if (typeof event.data === "string") {
+      record.text = imeProxyTextSummary(event.data);
+    }
+    return record;
+  }
+
+  #validateM4ImeProxyEvent(record) {
+    if (!record.trusted) {
+      this.#rejectM4ImeProxyRecord(record, "UNTRUSTED_DOM_EVENT");
+      return false;
+    }
+    if (!record.proxyFocused) {
+      this.#rejectM4ImeProxyRecord(record, "PROXY_NOT_FOCUSED");
+      return false;
+    }
+    if (!record.hostWindowActive) {
+      this.#rejectM4ImeProxyRecord(record, "OZONE_WINDOW_INACTIVE");
+      return false;
+    }
+    if (!this.#hasM4EditableTextInputAcknowledgement()) {
+      this.#rejectM4ImeProxyRecord(record, "NATIVE_TEXT_INPUT_NOT_EDITABLE");
+      return false;
+    }
+    if (record.sessionId <= 0) {
+      this.#rejectM4ImeProxyRecord(record, "NO_ACTIVE_SESSION");
+      return false;
+    }
+    if (this.#imeProxyFailure !== null) {
+      this.#rejectM4ImeProxyRecord(record, "SESSION_FAILED");
+      return false;
+    }
+    return true;
+  }
+
+  #handleM4ImeProxyCompositionStart(event) {
+    const record = this.#makeImeProxyRecord("compositionstart", event);
+    if (!this.#validateM4ImeProxyEvent(record)) {
+      return;
+    }
+    if (this.#imeProxyCompositionActive) {
+      this.#rejectM4ImeProxyRecord(record, "DUPLICATE_COMPOSITION_START");
+      return;
+    }
+    this.#imeProxyCompositionActive = true;
+    record.accepted = true;
+    this.#recordImeProxy(record);
+    this.#recordHost("m4:ime-proxy:compositionstart:accepted");
+  }
+
+  #handleM4ImeProxyCompositionUpdate(event) {
+    const record = this.#makeImeProxyRecord("compositionupdate", event);
+    if (!this.#validateM4ImeProxyEvent(record)) {
+      return;
+    }
+    const data = typeof event.data === "string" ? event.data : null;
+    if (!this.#imeProxyCompositionActive) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_UPDATE_WITHOUT_START");
+      return;
+    }
+    if (
+      data === null || data.length === 0 ||
+      data.length > MAXIMUM_IME_PROXY_TEXT_UNITS ||
+      !isWellFormedUtf16(data)
+    ) {
+      this.#rejectM4ImeProxyRecord(record, "INVALID_COMPOSITION_TEXT");
+      return;
+    }
+    // Keep the exact browser-produced UTF-16 candidate private for the later
+    // Ozone InputMethod bridge. Diagnostics expose only its bounded summary.
+    this.#imeProxyLastCompositionText = data;
+    record.accepted = true;
+    this.#recordImeProxy(record);
+    this.#recordHost("m4:ime-proxy:compositionupdate:accepted");
+  }
+
+  #handleM4ImeProxyBeforeInput(event) {
+    const record = this.#makeImeProxyRecord("beforeinput", event);
+    if (!this.#validateM4ImeProxyEvent(record)) {
+      return;
+    }
+    const data = typeof event.data === "string" ? event.data : null;
+    const summary = data === null ? null : imeProxyTextSummary(data);
+    if (event.inputType !== "insertCompositionText") {
+      this.#rejectM4ImeProxyRecord(record, "UNSUPPORTED_INPUT_TYPE");
+      return;
+    }
+    if (event.isComposing !== true) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_FLAG_MISMATCH");
+      return;
+    }
+    if (!this.#imeProxyCompositionActive) {
+      this.#rejectM4ImeProxyRecord(record, "BEFOREINPUT_WITHOUT_COMPOSITION");
+      return;
+    }
+    if (this.#imeProxyPendingTransaction !== null) {
+      this.#rejectM4ImeProxyRecord(record, "PENDING_TRANSACTION_EXISTS");
+      return;
+    }
+    if (
+      data === null || data.length === 0 ||
+      data.length > MAXIMUM_IME_PROXY_TEXT_UNITS ||
+      !isWellFormedUtf16(data) || data !== this.#imeProxyLastCompositionText
+    ) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_TEXT_MISMATCH");
+      return;
+    }
+    this.#imeProxyPendingTransaction = {
+      sessionId: this.#imeProxySessionId,
+      sequence: record.sequence,
+      opcode: "set-composition",
+      text: data,
+      textSummary: summary,
+    };
+    record.accepted = true;
+    this.#recordImeProxy(record);
+    // This contract intentionally emits no C++ call yet. A later
+    // WasmInputMethod consumes this immutable transaction through
+    // TextInputClient, instead of accepting host text in Blink directly.
+    this.#recordHost("m4:ime-proxy:beforeinput:accepted-no-native-dispatch");
+  }
+
+  #handleM4ImeProxyInput(event) {
+    const record = this.#makeImeProxyRecord("input", event);
+    if (!this.#validateM4ImeProxyEvent(record)) {
+      return;
+    }
+    const data = typeof event.data === "string" ? event.data : null;
+    const summary = data === null ? null : imeProxyTextSummary(data);
+    const pending = this.#imeProxyPendingTransaction;
+    const selection = this.#imeProxySelection();
+    if (event.inputType !== "insertCompositionText") {
+      this.#rejectM4ImeProxyRecord(record, "UNSUPPORTED_INPUT_TYPE");
+      return;
+    }
+    if (event.isComposing !== true) {
+      this.#rejectM4ImeProxyRecord(record, "COMPOSITION_FLAG_MISMATCH");
+      return;
+    }
+    if (!pending || pending.sessionId !== this.#imeProxySessionId) {
+      this.#rejectM4ImeProxyRecord(record, "INPUT_WITHOUT_PENDING_TRANSACTION");
+      return;
+    }
+    if (
+      data === null || data !== pending.text || !this.#imeProxy ||
+      this.#imeProxy.value !== data ||
+      !selection || selection.start !== data.length || selection.end !== data.length
+    ) {
+      this.#rejectM4ImeProxyRecord(record, "INPUT_TRANSACTION_MISMATCH");
+      return;
+    }
+    this.#imeProxyPendingTransaction = null;
+    this.#imeProxyLastConfirmedText = pending.text;
+    this.#imeProxyLastConfirmedTransaction = {
+      sessionId: pending.sessionId,
+      sequence: pending.sequence,
+      opcode: pending.opcode,
+      text: pending.textSummary,
+      rangeStart: 0,
+      rangeEnd: data.length,
+      selection,
+    };
+    record.accepted = true;
+    this.#recordImeProxy(record);
+    this.#recordHost("m4:ime-proxy:input:confirmed-no-native-dispatch");
+  }
+
+  #handleM4ImeProxyCompositionEnd(event) {
+    const record = this.#makeImeProxyRecord("compositionend", event);
+    if (!this.#validateM4ImeProxyEvent(record)) {
+      return;
+    }
+    // Commit and cancellation are intentionally deferred until the C++ bridge
+    // can issue a matching standard TextInputClient transaction. Do not claim
+    // success for a browser-only proxy composition end.
+    this.#rejectM4ImeProxyRecord(record, "COMPOSITION_END_NOT_ROUTED");
+  }
+
+  #disableM4ImeProxyInput() {
+    for (const {target, type, listener} of this.#imeProxyListeners) {
+      target.removeEventListener(type, listener);
+    }
+    this.#imeProxyListeners = [];
+    this.#cancelM4ImeProxyActivation("teardown");
+    this.#clearM4ImeProxyState("teardown");
+    this.#imeProxyInputEnabled = false;
+  }
+
+  enableM4ImeProxyInput() {
+    this.#requireRunning("enableM4ImeProxyInput");
+    if (!this.#imeProxy) {
+      throw new Error("M4 IME proxy is unavailable");
+    }
+    if (this.#imeProxyInputEnabled) {
+      return this.#imeProxyInputStatus();
+    }
+    this.#imeProxyInputEnabled = true;
+    this.#imeProxySessionId = 0;
+    this.#imeProxySequence = 0;
+    this.#imeProxyRecords = [];
+    this.#imeProxyCompositionActive = false;
+    this.#imeProxyLastCompositionText = null;
+    this.#imeProxyPendingTransaction = null;
+    this.#imeProxyLastConfirmedTransaction = null;
+    this.#imeProxyLastConfirmedText = null;
+    this.#imeProxyFailure = null;
+    this.#imeProxyFocusCount = 0;
+    this.#imeProxyBlurCount = 0;
+    this.#imeProxyActivationRequest = null;
+    this.#imeProxyExpectedFocusTransfer = null;
+    this.#imeProxy.value = "";
+    this.#imeProxy.setSelectionRange(0, 0);
+    for (const [type, handler] of [
+      ["compositionstart", (event) => this.#handleM4ImeProxyCompositionStart(event)],
+      ["compositionupdate", (event) => this.#handleM4ImeProxyCompositionUpdate(event)],
+      ["compositionend", (event) => this.#handleM4ImeProxyCompositionEnd(event)],
+      ["beforeinput", (event) => this.#handleM4ImeProxyBeforeInput(event)],
+      ["input", (event) => this.#handleM4ImeProxyInput(event)],
+    ]) {
+      this.#imeProxy.addEventListener(type, handler);
+      this.#imeProxyListeners.push({target: this.#imeProxy, type, listener: handler});
+    }
+    const focusListener = () => {
+      this.#imeProxyFocusCount += 1;
+      this.#recordHost("m4:ime-proxy:focus");
+    };
+    this.#imeProxy.addEventListener("focus", focusListener);
+    this.#imeProxyListeners.push({
+      target: this.#imeProxy,
+      type: "focus",
+      listener: focusListener,
+    });
+    const blurListener = (event) => {
+      this.#imeProxyBlurCount += 1;
+      // Returning to the canvas must invalidate the browser-owned DOM IME
+      // session even though Aura/Ozone remains active. The next click earns a
+      // new native editable acknowledgement and a new proxy session.
+      this.#cancelM4ImeProxyActivation("blur");
+      this.#clearM4ImeProxyState("blur");
+      if (event.relatedTarget === this.#canvas) {
+        this.#recordHost("m4:ime-proxy:blur:canvas-return");
+        return;
+      }
+      this.#deactivateM4HostWindow("ime-proxy-blur", event);
+    };
+    this.#imeProxy.addEventListener("blur", blurListener);
+    this.#imeProxyListeners.push({
+      target: this.#imeProxy,
+      type: "blur",
+      listener: blurListener,
+    });
+    this.#recordHost("m4:ime-proxy:listeners-attached");
+    return this.#imeProxyInputStatus();
   }
 
   #recordFocus(record) {
@@ -605,6 +1128,9 @@ export class ChromiumWasmM3Host {
           });
           this.#recordHost("m4:focus:pointer-activation");
         }
+        if (type === "down") {
+          this.#armM4ImeProxyActivation(record);
+        }
       }
     } catch (error) {
       record.reason = `EXPORT_ERROR:${String(error)}`;
@@ -615,6 +1141,9 @@ export class ChromiumWasmM3Host {
         this.#activeM4PointerId = null;
         this.#lastM4PointerPoint = null;
       }
+    }
+    if (type === "up" && record.queued) {
+      this.#markM4ImeProxyPointerUp(record);
     }
     this.#recordPointer(record);
     this.#recordHost(
@@ -1075,8 +1604,18 @@ export class ChromiumWasmM3Host {
       relatedTargetId,
     };
 
+    if (this.#consumeM4ExpectedProxyFocusTransfer(relatedTarget)) {
+      record.internalTransfer = true;
+      record.reason = "EXPECTED_PROXY_FOCUS_TRANSFER";
+      this.#recordFocus(record);
+      this.#recordHost(`m4:focus:${reason}:expected-proxy-transfer`);
+      return;
+    }
+
     // Releases must run while ozone_wasm still has its keyboard target. The
     // UI task queue preserves this ordering before the later deactivation.
+    this.#cancelM4ImeProxyActivation(reason);
+    this.#clearM4ImeProxyState(reason);
     this.#cancelActiveM4Pointer(reason);
     this.#releaseM4KeyboardKeys(reason, event);
     if (!this.#focusInputEnabled) {
@@ -1542,6 +2081,9 @@ export class ChromiumWasmM3Host {
       ozoneFocusState: this.#ozoneFocusState
         ? clone(this.#ozoneFocusState)
         : null,
+      ozoneTextInputState: this.#ozoneTextInputState
+        ? clone(this.#ozoneTextInputState)
+        : null,
       frame: this.#frame ? clone(this.#frame) : null,
       inputPostedAtFrameId: this.#inputPostedAtFrameId,
       interactionObservedAtFrameId: this.#interactionObservedAtFrameId,
@@ -1551,6 +2093,7 @@ export class ChromiumWasmM3Host {
       wheelInput: this.#wheelInputStatus(),
       keyboardInput: this.#keyboardInputStatus(),
       focusInput: this.#focusInputStatus(),
+      imeProxyInput: this.#imeProxyInputStatus(),
     };
   }
 
@@ -1762,9 +2305,49 @@ export class ChromiumWasmM3Host {
         (report.keyboardTargetPresent ? "keyboard-target-present" :
           "keyboard-target-absent") + ":" +
         (report.active ? "active" : "inactive"));
+      this.#maybeActivateM4ImeProxy();
     } catch (error) {
       this._reportFatal(
         `invalid Ozone focus-state report: ${String(error)}`);
+    }
+  }
+
+  _reportOzoneTextInputState(value) {
+    try {
+      const report = asReport(value, "Ozone text-input state report");
+      if (
+        report.protocol !== HOST_PROTOCOL ||
+        typeof report.focusedClientPresent !== "boolean" ||
+        typeof report.editable !== "boolean" ||
+        typeof report.canComposeInline !== "boolean" ||
+        (report.editable === true && report.focusedClientPresent !== true) ||
+        (report.canComposeInline === true && report.editable !== true)
+      ) {
+        throw new Error("Ozone text-input state report is invalid");
+      }
+      this.#ozoneTextInputState = {
+        sequence: ++this.#ozoneTextInputReportSequence,
+        focusedClientPresent: report.focusedClientPresent,
+        editable: report.editable,
+        canComposeInline: report.canComposeInline,
+      };
+      this.#recordHost(
+        "ozone:text-input:" +
+        (report.focusedClientPresent ? "client-present" : "client-absent") +
+        ":" + (report.editable ? "editable" : "noneditable") +
+        ":" + (report.canComposeInline ? "inline" : "no-inline"));
+      this.#maybeActivateM4ImeProxy();
+      if (
+        this.#imeProxyInputEnabled &&
+        document.activeElement === this.#imeProxy &&
+        !this.#hasM4EditableTextInputAcknowledgement()
+      ) {
+        this.#clearM4ImeProxyState("native-text-input-lost");
+        this.#canvas.focus({preventScroll: true});
+      }
+    } catch (error) {
+      this._reportFatal(
+        `invalid Ozone text-input state report: ${String(error)}`);
     }
   }
 
@@ -3179,6 +3762,382 @@ async function runM4OzonePrintableKeySmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneImeBridgeSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const imeProxy = document.querySelector("#m4-ime-proxy");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_IME_BRIDGE_CASE) {
+      throw new Error("M4 IME bridge case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 IME bridge result token");
+    }
+    if (!(imeProxy instanceof HTMLTextAreaElement)) {
+      throw new Error("M4 IME bridge proxy textarea is unavailable");
+    }
+    host = new ChromiumWasmM3Host(canvas, versions, {
+      fixture: M4_IME_BRIDGE_FIXTURE,
+      imeProxy,
+    });
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 IME bridge base readiness timeout: " +
+        JSON.stringify(readiness));
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 IME bridge target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 IME bridge target y", 0, DEFAULT_HEIGHT - 1);
+    const pointerListeners = host.enableM4PointerInput();
+    const focusListeners = host.enableM4FocusInput();
+    const imeProxyListeners = host.enableM4ImeProxyInput();
+    window.__chromiumWasmM4ImeBridgeState = {
+      state: "awaiting-dom-ime-bridge-activation",
+      targetX,
+      targetY,
+      pointerListeners,
+      focusListeners,
+      imeProxyListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted Ozone click and IME proxy preedit";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const pageProbe = readiness.pageProbe;
+      const proxy = readiness.imeProxyInput;
+      const ozoneFocusState = readiness.ozoneFocusState;
+      const ozoneTextInputState = readiness.ozoneTextInputState;
+      if (
+        pointer.queuedCount >= 2 &&
+        pointer.lastQueued?.type === "up" &&
+        pageProbe?.activationCount === 1 &&
+        pageProbe?.clickTrusted === true &&
+        pageProbe?.focusCount >= 1 &&
+        pageProbe?.focusTrusted === true &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.value === "" &&
+        pageProbe?.selectionStart === 0 &&
+        pageProbe?.selectionEnd === 0 &&
+        proxy?.sessionId === 1 &&
+        proxy?.focused === true &&
+        proxy?.focusCount >= 1 &&
+        proxy?.hostWindowActive === true &&
+        proxy?.activationPending === false &&
+        proxy?.nativeTextInputReady === true &&
+        proxy?.failure === null &&
+        ozoneFocusState?.keyboardTargetPresent === true &&
+        ozoneFocusState?.active === true &&
+        ozoneTextInputState?.focusedClientPresent === true &&
+        ozoneTextInputState?.editable === true &&
+        ozoneTextInputState?.canComposeInline === true
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const pageAfterActivation = readiness?.pageProbe;
+    const proxyAfterActivation = readiness?.imeProxyInput;
+    const ozoneFocusAfterActivation = readiness?.ozoneFocusState;
+    const ozoneTextInputAfterActivation = readiness?.ozoneTextInputState;
+    if (
+      !readiness ||
+      pointer?.queuedCount < 2 ||
+      pointer?.lastQueued?.type !== "up" ||
+      pageAfterActivation?.activationCount !== 1 ||
+      pageAfterActivation?.clickTrusted !== true ||
+      pageAfterActivation?.focusCount < 1 ||
+      pageAfterActivation?.focusTrusted !== true ||
+      pageAfterActivation?.activeElementId !== "editable-target" ||
+      pageAfterActivation?.value !== "" ||
+      pageAfterActivation?.selectionStart !== 0 ||
+      pageAfterActivation?.selectionEnd !== 0 ||
+      proxyAfterActivation?.sessionId !== 1 ||
+      proxyAfterActivation?.focused !== true ||
+      proxyAfterActivation?.focusCount < 1 ||
+      proxyAfterActivation?.hostWindowActive !== true ||
+      proxyAfterActivation?.activationPending !== false ||
+      proxyAfterActivation?.nativeTextInputReady !== true ||
+      ozoneFocusAfterActivation?.keyboardTargetPresent !== true ||
+      ozoneFocusAfterActivation?.active !== true ||
+      ozoneTextInputAfterActivation?.focusedClientPresent !== true ||
+      ozoneTextInputAfterActivation?.editable !== true ||
+      ozoneTextInputAfterActivation?.canComposeInline !== true ||
+      proxyAfterActivation?.failure !== null
+    ) {
+      throw new Error(
+        "M4 IME bridge activation timeout: " + JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4ImeBridgeState = {
+      state: "awaiting-dom-ime-preedit",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      imeProxy: clone(proxyAfterActivation),
+    };
+    statusElement.textContent =
+      "M4 ready for trusted outer IME composition preedit";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const proxy = readiness.imeProxyInput;
+      const pageProbe = readiness.pageProbe;
+      const transaction = proxy?.lastConfirmedTransaction;
+      const proxyText = proxy?.proxyText;
+      const selection = proxyText?.selection;
+      if (
+        proxy?.receivedCount === 4 &&
+        proxy?.trustedCount === 4 &&
+        proxy?.acceptedCount === 4 &&
+        proxy?.compositionStartCount === 1 &&
+        proxy?.compositionUpdateCount === 1 &&
+        proxy?.compositionEndCount === 0 &&
+        proxy?.beforeinputCount === 1 &&
+        proxy?.inputCount === 1 &&
+        proxy?.compositionActive === true &&
+        proxy?.pendingTransaction === false &&
+        proxy?.failure === null &&
+        proxy?.focused === true &&
+        proxy?.activationPending === false &&
+        proxy?.nativeTextInputReady === true &&
+        transaction?.sessionId === 1 &&
+        transaction?.opcode === "set-composition" &&
+        transaction?.rangeStart === 0 &&
+        transaction?.rangeEnd === 2 &&
+        transaction?.selection?.start === 2 &&
+        transaction?.selection?.end === 2 &&
+        transaction?.text?.utf16Length === 2 &&
+        transaction?.text?.utf8Bytes === 4 &&
+        transaction?.text?.codePointCount === 1 &&
+        proxyText?.utf16Length === 2 &&
+        proxyText?.utf8Bytes === 4 &&
+        proxyText?.codePointCount === 1 &&
+        selection?.start === 2 &&
+        selection?.end === 2 &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.value === "" &&
+        pageProbe?.selectionStart === 0 &&
+        pageProbe?.selectionEnd === 0 &&
+        pageProbe?.textInputEvents?.beforeinputCount === 0 &&
+        pageProbe?.textInputEvents?.inputCount === 0 &&
+        pageProbe?.textInputEvents?.compositionstartCount === 0 &&
+        pageProbe?.textInputEvents?.compositionupdateCount === 0 &&
+        pageProbe?.textInputEvents?.compositionendCount === 0 &&
+        pageProbe?.resultText === "WAITING FOR PREEDIT BRIDGE"
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const imeProxyInput = readiness?.imeProxyInput;
+    const pageProbe = readiness?.pageProbe;
+    const transaction = imeProxyInput?.lastConfirmedTransaction;
+    const proxyText = imeProxyInput?.proxyText;
+    if (
+      !readiness ||
+      imeProxyInput?.receivedCount !== 4 ||
+      imeProxyInput?.trustedCount !== 4 ||
+      imeProxyInput?.acceptedCount !== 4 ||
+      imeProxyInput?.compositionStartCount !== 1 ||
+      imeProxyInput?.compositionUpdateCount !== 1 ||
+      imeProxyInput?.compositionEndCount !== 0 ||
+      imeProxyInput?.beforeinputCount !== 1 ||
+      imeProxyInput?.inputCount !== 1 ||
+      imeProxyInput?.compositionActive !== true ||
+      imeProxyInput?.pendingTransaction !== false ||
+      imeProxyInput?.failure !== null ||
+      imeProxyInput?.focused !== true ||
+      imeProxyInput?.activationPending !== false ||
+      imeProxyInput?.nativeTextInputReady !== true ||
+      transaction?.sessionId !== 1 ||
+      transaction?.opcode !== "set-composition" ||
+      transaction?.rangeStart !== 0 ||
+      transaction?.rangeEnd !== 2 ||
+      transaction?.selection?.start !== 2 ||
+      transaction?.selection?.end !== 2 ||
+      transaction?.text?.utf16Length !== 2 ||
+      transaction?.text?.utf8Bytes !== 4 ||
+      transaction?.text?.codePointCount !== 1 ||
+      proxyText?.utf16Length !== 2 ||
+      proxyText?.utf8Bytes !== 4 ||
+      proxyText?.codePointCount !== 1 ||
+      proxyText?.selection?.start !== 2 ||
+      proxyText?.selection?.end !== 2 ||
+      pageProbe?.activeElementId !== "editable-target" ||
+      pageProbe?.value !== "" ||
+      pageProbe?.selectionStart !== 0 ||
+      pageProbe?.selectionEnd !== 0 ||
+      pageProbe?.textInputEvents?.beforeinputCount !== 0 ||
+      pageProbe?.textInputEvents?.inputCount !== 0 ||
+      pageProbe?.textInputEvents?.compositionstartCount !== 0 ||
+      pageProbe?.textInputEvents?.compositionupdateCount !== 0 ||
+      pageProbe?.textInputEvents?.compositionendCount !== 0 ||
+      pageProbe?.resultText !== "WAITING FOR PREEDIT BRIDGE"
+    ) {
+      throw new Error(
+        "M4 IME bridge preedit timeout: " + JSON.stringify(readiness));
+    }
+    const focusSnapshot = {
+      canvasFocused: document.activeElement === canvas,
+      proxyFocused: document.activeElement === imeProxy,
+    };
+    window.__chromiumWasmM4ImeBridgeState = {
+      state: "preedit-captured-no-native-dispatch",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      imeProxy: clone(imeProxyInput),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      baseReady: readiness.baseReady === true,
+      proxyFocus:
+        focusSnapshot.canvasFocused === false &&
+        focusSnapshot.proxyFocused === true &&
+        imeProxyInput.focused === true &&
+        imeProxyInput.hostWindowActive === true &&
+        imeProxyInput.activationPending === false &&
+        imeProxyInput.nativeTextInputReady === true &&
+        ozoneFocusAfterActivation.keyboardTargetPresent === true &&
+        ozoneFocusAfterActivation.active === true &&
+        ozoneTextInputAfterActivation.focusedClientPresent === true &&
+        ozoneTextInputAfterActivation.editable === true &&
+        ozoneTextInputAfterActivation.canComposeInline === true,
+      proxyPreedit:
+        imeProxyInput.receivedCount === 4 &&
+        imeProxyInput.trustedCount === 4 &&
+        imeProxyInput.acceptedCount === 4 &&
+        imeProxyInput.compositionStartCount === 1 &&
+        imeProxyInput.compositionUpdateCount === 1 &&
+        imeProxyInput.beforeinputCount === 1 &&
+        imeProxyInput.inputCount === 1 &&
+        imeProxyInput.pendingTransaction === false &&
+        imeProxyInput.failure === null &&
+        transaction.rangeStart === 0 && transaction.rangeEnd === 2 &&
+        transaction.selection.start === 2 && transaction.selection.end === 2 &&
+        proxyText.utf16Length === 2 && proxyText.utf8Bytes === 4,
+      innerBlinkUnchanged:
+        pageProbe.value === "" &&
+        pageProbe.selectionStart === 0 && pageProbe.selectionEnd === 0 &&
+        pageProbe.textInputEvents.beforeinputCount === 0 &&
+        pageProbe.textInputEvents.inputCount === 0 &&
+        pageProbe.textInputEvents.compositionstartCount === 0 &&
+        pageProbe.textInputEvents.compositionupdateCount === 0 &&
+        pageProbe.textInputEvents.compositionendCount === 0,
+      preRouteOnly: pageProbe.value === "" &&
+        pageProbe.textInputEvents.beforeinputCount === 0 &&
+        pageProbe.textInputEvents.inputCount === 0,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_IME_BRIDGE_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: focusSnapshot.canvasFocused,
+      proxyFocused: focusSnapshot.proxyFocused,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      focusInput: readiness.focusInput,
+      imeProxyInput,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_IME_BRIDGE_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      proxyFocused: document.activeElement === imeProxy,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      focusInput: null,
+      imeProxyInput: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.focusInput = result.readiness.focusInput;
+        result.imeProxyInput = result.readiness.imeProxyInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneFocusSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -3603,6 +4562,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_PRINTABLE_KEY_CASE) {
     return runM4OzonePrintableKeySmokeFromQuery();
+  }
+  if (selectedCase === M4_IME_BRIDGE_CASE) {
+    return runM4OzoneImeBridgeSmokeFromQuery();
   }
   if (selectedCase === M4_FOCUS_CASE) {
     return runM4OzoneFocusSmokeFromQuery();

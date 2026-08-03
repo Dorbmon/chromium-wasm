@@ -35,17 +35,20 @@ from m3_content_server import (
     M4_WHEEL_CASE,
     M4_KEYBOARD_CASE,
     M4_PRINTABLE_KEY_CASE,
+    M4_IME_BRIDGE_CASE,
     create_m3_server,
     m4_focus_smoke_url,
     m4_smoke_url,
     m4_wheel_smoke_url,
     m4_keyboard_smoke_url,
     m4_printable_key_smoke_url,
+    m4_ime_bridge_smoke_url,
     validate_m4_result,
     validate_m4_focus_result,
     validate_m4_wheel_result,
     validate_m4_keyboard_result,
     validate_m4_printable_key_result,
+    validate_m4_ime_bridge_result,
 )
 from m4_cdp import DevToolsClient, unused_loopback_port, wait_for_page_client
 from run_browser_smoke import (
@@ -298,7 +301,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--input",
-        choices=("pointer", "wheel", "keyboard", "printable-key", "focus"),
+        choices=(
+            "pointer",
+            "wheel",
+            "keyboard",
+            "printable-key",
+            "ime-bridge",
+            "focus",
+        ),
         default="pointer",
         help="trusted DOM input path to drive",
     )
@@ -331,6 +341,14 @@ def main() -> int:
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent + "
             "Input.dispatchKeyEvent:rawKeyDown/keyUp without text"
+        )
+    elif args.input == "ime-bridge":
+        case = M4_IME_BRIDGE_CASE
+        state_expression = "window.__chromiumWasmM4ImeBridgeState || null"
+        expected_state = "awaiting-dom-ime-bridge-activation"
+        input_driver = (
+            "Chrome DevTools Input.dispatchMouseEvent + "
+            "Input.imeSetComposition on the outer proxy only"
         )
     else:
         case = M4_FOCUS_CASE
@@ -444,6 +462,14 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
             )
+        elif args.input == "ime-bridge":
+            url = m4_ime_bridge_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
         else:
             url = m4_focus_smoke_url(
                 server,
@@ -548,6 +574,21 @@ def main() -> int:
             )
             stage = "dispatch_trusted_dom_printable_key"
             client.dispatch_key_a()
+        elif args.input == "ime-bridge":
+            stage = "dispatch_trusted_dom_ime_bridge_activation"
+            client.dispatch_primary_click(click_x, click_y)
+            stage = "wait_for_ime_bridge_preedit"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-ime-preedit",
+            )
+            stage = "dispatch_trusted_outer_ime_preedit"
+            client.dispatch_ime_preedit()
         else:
             stage = "dispatch_trusted_dom_focus_activation"
             client.dispatch_primary_click(click_x, click_y)
@@ -596,6 +637,9 @@ def main() -> int:
                 result, expected_versions=versions
             )
             input_key = "keyboardInput"
+        elif args.input == "ime-bridge":
+            validate_m4_ime_bridge_result(result, expected_versions=versions)
+            input_key = "imeProxyInput"
         else:
             validate_m4_focus_result(result, expected_versions=versions)
             input_key = "focusInput"

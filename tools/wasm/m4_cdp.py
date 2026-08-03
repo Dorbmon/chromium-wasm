@@ -266,6 +266,25 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_ime_preedit(self) -> None:
+        """Drive the outer host textarea's preedit path only.
+
+        This intentionally avoids Input.insertText: the M4 IME bridge gate
+        proves browser-generated proxy composition capture before a native
+        Wasm InputMethod is allowed to deliver text into inner Blink.
+        """
+
+        self.call(
+            "Input.imeSetComposition",
+            {
+                "text": "🙂",
+                "selectionStart": 2,
+                "selectionEnd": 2,
+                "replacementStart": 0,
+                "replacementEnd": 0,
+            },
+        )
+
 
 def wait_for_page_client(
     port: int, expected_url_prefix: str, deadline: float

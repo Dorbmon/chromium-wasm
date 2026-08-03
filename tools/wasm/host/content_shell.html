@@ -45,6 +45,28 @@
       padding: 8px 12px;
     }
 
+    /*
+     * The browser's platform IME needs a real, focusable editing element.
+     * Keep this owned proxy out of the loader UI without using `hidden`,
+     * display:none, visibility:hidden, disabled, readonly, or inert: each of
+     * those may prevent focus or suppress composition events.  It is never a
+     * mirror of the Chromium page; M4 currently records a bounded preedit
+     * contract only, and a later Ozone InputMethod bridge owns delivery.
+     */
+    #m4-ime-proxy {
+      position: fixed;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      border: 0;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      overflow: hidden;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
     aside {
       min-width: 0;
       padding: 12px;
@@ -102,6 +124,14 @@
     <button id="m4-focus-sink" type="button" hidden>
       Move host focus
     </button>
+    <textarea
+      id="m4-ime-proxy"
+      tabindex="-1"
+      aria-label="Chromium Wasm IME proxy"
+      autocomplete="off"
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"></textarea>
     <aside aria-label="Content Shell loader diagnostics">
       <h1>Chromium Wasm Content Shell</h1>
       <dl id="versions"></dl>

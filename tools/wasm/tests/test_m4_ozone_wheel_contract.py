@@ -202,7 +202,9 @@ class M4OzoneWheelContractTest(unittest.TestCase):
                 self.assertIn(marker, cdp_wheel)
 
         for marker in (
-            'choices=("pointer", "wheel", "keyboard", "printable-key", "focus")',
+            '"printable-key",',
+            '"ime-bridge",',
+            '"focus",',
             "M4_WHEEL_CASE",
             '"awaiting-dom-wheel"',
             "m4_wheel_smoke_url(",

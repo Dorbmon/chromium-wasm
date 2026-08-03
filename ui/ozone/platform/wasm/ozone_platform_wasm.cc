@@ -9,7 +9,6 @@
 #include "base/check.h"
 #include "base/logging.h"
 #include "ui/base/cursor/cursor_factory.h"
-#include "ui/base/ime/input_method_minimal.h"
 #include "ui/display/types/native_display_delegate.h"
 #include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
 #include "ui/events/ozone/layout/stub/stub_keyboard_layout_engine.h"
@@ -18,6 +17,7 @@
 #include "ui/ozone/common/stub_client_native_pixmap_factory.h"
 #include "ui/ozone/common/stub_overlay_manager.h"
 #include "ui/ozone/platform/wasm/wasm_event_source.h"
+#include "ui/ozone/platform/wasm/wasm_input_method.h"
 #include "ui/ozone/platform/wasm/wasm_screen.h"
 #include "ui/ozone/platform/wasm/wasm_surface_factory.h"
 #include "ui/ozone/platform/wasm/wasm_window.h"
@@ -103,7 +103,7 @@ class OzonePlatformWasmImpl final : public OzonePlatform {
   std::unique_ptr<InputMethod> CreateInputMethod(
       ImeKeyEventDispatcher* ime_key_event_dispatcher,
       gfx::AcceleratedWidget widget) override {
-    return std::make_unique<InputMethodMinimal>(ime_key_event_dispatcher);
+    return std::make_unique<WasmInputMethod>(ime_key_event_dispatcher);
   }
 
   bool IsWindowCompositingSupported() const override {

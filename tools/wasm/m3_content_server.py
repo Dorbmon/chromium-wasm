@@ -30,6 +30,7 @@ M4_WHEEL_CASE = "ozone_wheel_m4"
 M4_KEYBOARD_CASE = "ozone_keyboard_m4"
 M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4"
 M4_FOCUS_CASE = "ozone_focus_m4"
+M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4"
 M3_PROTOCOL = 1
 M3_WIDTH = 800
 M3_HEIGHT = 600
@@ -55,6 +56,7 @@ M4_PRINTABLE_KEY_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_printable_key_page.html"
 )
 M4_FOCUS_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_focus_page.html"
+M4_IME_BRIDGE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_ime_bridge_page.html"
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -191,6 +193,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             "/__m3__/m4-keyboard-fixture.html": M4_KEYBOARD_FIXTURE,
             "/__m3__/m4-printable-key-fixture.html": M4_PRINTABLE_KEY_FIXTURE,
             "/__m3__/m4-focus-fixture.html": M4_FOCUS_FIXTURE,
+            "/__m3__/m4-ime-bridge-fixture.html": M4_IME_BRIDGE_FIXTURE,
             "/__m3__/Ahem.woff2": M3_AHEM_FONT,
             "/__m3__/screenshot-contract.json": M3_SCREENSHOT_CONTRACT,
         }
@@ -244,6 +247,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_WHEEL_CASE,
                 M4_KEYBOARD_CASE,
                 M4_PRINTABLE_KEY_CASE,
+                M4_IME_BRIDGE_CASE,
                 M4_FOCUS_CASE,
             )
         ):
@@ -422,6 +426,34 @@ def m4_printable_key_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-printable-key-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_ime_bridge_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_IME_BRIDGE_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-ime-bridge-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -2059,6 +2091,335 @@ def validate_m4_printable_key_result(
         if not any(marker in line for line in host_logs):
             raise M0Error(
                 "M4 printable-key logs are missing lifecycle marker "
+                f"{marker!r}"
+            )
+
+
+def validate_m4_ime_bridge_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate trusted proxy preedit after native editable acknowledgement.
+
+    This is deliberately a host-contract gate, not a generic-text success
+    claim. It proves that an Ozone-owned InputMethod observed a focused,
+    editable TextInputClient before the host moved DOM focus to its proxy. The
+    subsequent text-routing gate will consume the confirmed record through
+    that client and prove inner-page composition/commit delivery.
+    """
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_IME_BRIDGE_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": False,
+        "proxyFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 IME bridge result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 IME bridge versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 IME bridge version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    readiness = _require_dict(result.get("readiness"), "M4 IME bridge readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(
+                f"M4 IME bridge readiness field {field} is not true"
+            )
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 IME bridge readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 IME bridge heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M4 IME bridge heartbeat was not anchored to data navigation"
+        )
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 IME bridge heartbeat elapsed time",
+        minimum=0,
+    )
+    frame = _require_dict(readiness.get("frame"), "M4 IME bridge frame")
+    _require_safe_integer(frame.get("id"), "M4 IME bridge frame ID", minimum=1)
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error("M4 IME bridge frame dimensions do not match the canvas")
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 IME bridge page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-ime-bridge-v1",
+        "ready": True,
+        "activeElementId": "editable-target",
+        "activationCount": 1,
+        "clickTrusted": True,
+        "focusTrusted": True,
+        "value": "",
+        "selectionStart": 0,
+        "selectionEnd": 0,
+        "resultText": "WAITING FOR PREEDIT BRIDGE",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 IME bridge page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        page_probe.get("focusCount"),
+        "M4 IME bridge inner focus count",
+        minimum=1,
+    )
+    _require_safe_integer(
+        page_probe.get("targetCenterX"),
+        "M4 IME bridge target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    _require_safe_integer(
+        page_probe.get("targetCenterY"),
+        "M4 IME bridge target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    text_events = _require_dict(
+        page_probe.get("textInputEvents"), "M4 IME bridge inner text events"
+    )
+    for field in (
+        "beforeinputCount",
+        "inputCount",
+        "compositionstartCount",
+        "compositionupdateCount",
+        "compositionendCount",
+    ):
+        if _require_safe_integer(
+            text_events.get(field), f"M4 IME bridge inner {field}", minimum=0
+        ) != 0:
+            raise M0Error(
+                f"M4 IME bridge must not mutate inner Blink {field}"
+            )
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 IME bridge pointer input"
+    )
+    if pointer_input != readiness.get("pointerInput"):
+        raise M0Error(
+            "M4 IME bridge pointer evidence differs from readiness evidence"
+        )
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 IME bridge pointer listeners were not enabled")
+    for field in ("receivedCount", "trustedCount", "queuedCount"):
+        _require_safe_integer(
+            pointer_input.get(field),
+            f"M4 IME bridge pointer {field}",
+            minimum=2,
+        )
+    last_pointer = _require_dict(
+        pointer_input.get("lastQueued"), "M4 IME bridge last queued pointer"
+    )
+    for field, expected_value in {
+        "type": "up",
+        "trusted": True,
+        "queued": True,
+    }.items():
+        if last_pointer.get(field) != expected_value:
+            raise M0Error(
+                f"M4 IME bridge queued pointer {field} mismatch: expected "
+                f"{expected_value!r}, got {last_pointer.get(field)!r}"
+            )
+
+    focus_input = _require_dict(
+        result.get("focusInput"), "M4 IME bridge focus input"
+    )
+    if focus_input != readiness.get("focusInput"):
+        raise M0Error(
+            "M4 IME bridge focus evidence differs from readiness evidence"
+        )
+    if (
+        focus_input.get("enabled") is not True
+        or focus_input.get("hostWindowActive") is not True
+    ):
+        raise M0Error("M4 IME bridge proxy focus deactivated Aura/Ozone")
+
+    ozone_focus = _require_dict(
+        readiness.get("ozoneFocusState"), "M4 IME bridge Ozone focus state"
+    )
+    if (
+        ozone_focus.get("keyboardTargetPresent") is not True
+        or ozone_focus.get("active") is not True
+    ):
+        raise M0Error("M4 IME bridge proxy focus lost Ozone's keyboard target")
+    _require_safe_integer(
+        ozone_focus.get("sequence"), "M4 IME bridge Ozone focus sequence", minimum=1
+    )
+
+    ozone_text_input = _require_dict(
+        readiness.get("ozoneTextInputState"),
+        "M4 IME bridge Ozone text-input state",
+    )
+    for field in ("focusedClientPresent", "editable", "canComposeInline"):
+        if ozone_text_input.get(field) is not True:
+            raise M0Error(
+                f"M4 IME bridge native text-input acknowledgement {field} "
+                "is not true"
+            )
+    _require_safe_integer(
+        ozone_text_input.get("sequence"),
+        "M4 IME bridge Ozone text-input sequence",
+        minimum=1,
+    )
+
+    ime_proxy = _require_dict(
+        result.get("imeProxyInput"), "M4 IME bridge proxy input"
+    )
+    readiness_proxy = _require_dict(
+        readiness.get("imeProxyInput"), "M4 IME bridge readiness proxy input"
+    )
+    if ime_proxy != readiness_proxy:
+        raise M0Error(
+            "M4 IME bridge proxy evidence differs from readiness evidence"
+        )
+    expected_proxy = {
+        "enabled": True,
+        "present": True,
+        "focused": True,
+        "hostWindowActive": True,
+        "sessionId": 1,
+        "receivedCount": 4,
+        "trustedCount": 4,
+        "acceptedCount": 4,
+        "compositionStartCount": 1,
+        "compositionUpdateCount": 1,
+        "compositionEndCount": 0,
+        "beforeinputCount": 1,
+        "inputCount": 1,
+        "compositionActive": True,
+        "pendingTransaction": False,
+        "activationPending": False,
+        "nativeTextInputReady": True,
+        "failure": None,
+    }
+    for field, expected_value in expected_proxy.items():
+        actual_value = ime_proxy.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 IME bridge proxy {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        ime_proxy.get("focusCount"), "M4 IME bridge proxy focus count", minimum=1
+    )
+    if _require_safe_integer(
+        ime_proxy.get("blurCount"), "M4 IME bridge proxy blur count", minimum=0
+    ) != 0:
+        raise M0Error("M4 IME bridge proxy blurred during preedit")
+    transaction = _require_dict(
+        ime_proxy.get("lastConfirmedTransaction"),
+        "M4 IME bridge confirmed transaction",
+    )
+    expected_transaction = {
+        "sessionId": 1,
+        "opcode": "set-composition",
+        "rangeStart": 0,
+        "rangeEnd": 2,
+        "selection": {"start": 2, "end": 2},
+        "text": {"utf16Length": 2, "utf8Bytes": 4, "codePointCount": 1},
+    }
+    for field, expected_value in expected_transaction.items():
+        if transaction.get(field) != expected_value:
+            raise M0Error(
+                f"M4 IME bridge transaction {field} mismatch: expected "
+                f"{expected_value!r}, got {transaction.get(field)!r}"
+            )
+    _require_safe_integer(
+        transaction.get("sequence"), "M4 IME bridge transaction sequence", minimum=1
+    )
+    proxy_text = _require_dict(
+        ime_proxy.get("proxyText"), "M4 IME bridge proxy text summary"
+    )
+    if proxy_text != {
+        "utf16Length": 2,
+        "utf8Bytes": 4,
+        "codePointCount": 1,
+        "selection": {"start": 2, "end": 2},
+    }:
+        raise M0Error("M4 IME bridge proxy range summary is invalid")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 IME bridge shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 IME bridge shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 IME bridge shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 IME bridge shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 IME bridge logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 IME bridge {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 IME bridge logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    for marker in (
+        "m4:pointer:listeners-attached",
+        "m4:focus:listeners-attached",
+        "m4:ime-proxy:listeners-attached",
+        "m4:ime-proxy:pointer-arm-awaiting-native-editable",
+        "ozone:text-input:client-present:editable:inline",
+        "m4:focus:canvas-blur:expected-proxy-transfer",
+        "m4:ime-proxy:native-editable-focus",
+        "m4:ime-proxy:compositionstart:accepted",
+        "m4:ime-proxy:compositionupdate:accepted",
+        "m4:ime-proxy:beforeinput:accepted-no-native-dispatch",
+        "m4:ime-proxy:input:confirmed-no-native-dispatch",
+        "shutdown:complete",
+    ):
+        if not any(marker in line for line in host_logs):
+            raise M0Error(
+                "M4 IME bridge logs are missing lifecycle marker "
                 f"{marker!r}"
             )
 

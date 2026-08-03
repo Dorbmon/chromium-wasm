@@ -165,7 +165,7 @@ class M4OzonePrintableKeyContractTest(unittest.TestCase):
         key_a = section(
             cdp,
             "def dispatch_key_a(self) -> None:",
-            "\n\ndef wait_for_page_client",
+            "\n\n    def dispatch_ime_preedit(self) -> None:",
         )
         for marker in (
             '"type": "rawKeyDown"',

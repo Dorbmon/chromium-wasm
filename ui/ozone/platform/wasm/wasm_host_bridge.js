@@ -170,6 +170,32 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  chromium_wasm_report_ozone_text_input_state__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_ozone_text_input_state__proxy: 'sync',
+  chromium_wasm_report_ozone_text_input_state: (
+      focusedClientPresent, editable, canComposeInline) => {
+    if ((focusedClientPresent !== 0 && focusedClientPresent !== 1) ||
+        (editable !== 0 && editable !== 1) ||
+        (canComposeInline !== 0 && canComposeInline !== 1) ||
+        (canComposeInline === 1 && editable !== 1) ||
+        (editable === 1 && focusedClientPresent !== 1)) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportOzoneTextInputState !== 'function') {
+      return 0;
+    }
+    bridge.reportOzoneTextInputState({
+      protocol: ChromiumWasmHostBridge.version,
+      focusedClientPresent: focusedClientPresent === 1,
+      editable: editable === 1,
+      canComposeInline: canComposeInline === 1,
+    });
+    return 1;
+  },
+
   chromium_wasm_report_navigation__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_navigation__proxy: 'sync',
   chromium_wasm_report_navigation: () => {

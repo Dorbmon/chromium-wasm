@@ -278,13 +278,15 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         cdp_key = section(
             cdp,
             "def dispatch_arrow_down(self) -> None:",
-            "\n\ndef wait_for_page_client",
+            "\n\n    def dispatch_key_a(self) -> None:",
         )
         self.assertIn("self.dispatch_arrow_down_down()", cdp_key)
         self.assertIn('"type": "keyUp"', cdp_key)
 
         for marker in (
-            'choices=("pointer", "wheel", "keyboard", "printable-key", "focus")',
+            '"printable-key",',
+            '"ime-bridge",',
+            '"focus",',
             "M4_KEYBOARD_CASE",
             '"awaiting-dom-keyboard-activation"',
             '"awaiting-dom-key"',

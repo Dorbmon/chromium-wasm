@@ -196,7 +196,9 @@ class M4OzoneFocusContractTest(unittest.TestCase):
         self.assertNotIn('"text":', cdp_key_down)
 
         for marker in (
-            'choices=("pointer", "wheel", "keyboard", "printable-key", "focus")',
+            '"printable-key",',
+            '"ime-bridge",',
+            '"focus",',
             "M4_FOCUS_CASE",
             "m4_focus_smoke_url(",
             "awaiting-dom-focus-key-down",

@@ -41,14 +41,15 @@ before the CLICKED paint. This legacy M3 click path remains an M3 regression
 control; it is not the M4 input path.
 
 M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, the narrowly scoped
-`enableM4KeyboardInput()`, and `enableM4FocusInput()` for the diagnostic
-harness after initialization. They attach host-canvas listeners, not a
-replacement HTML browser UI. Primary mouse pointer input, pixel wheel input,
-the one raw non-printable `ArrowDown` key pair, and host focus loss cross the
-public Ozone input-injector boundary. Text entry, modifiers, repeat, IME,
-touch, pen, non-primary buttons, cursor control, focus regain without a
-pointer press, and richer multi-window behavior remain outside this first M4
-input slice. Returning success while dropping an event is a contract failure.
+`enableM4KeyboardInput()`, `enableM4FocusInput()`, and the pre-routing
+`enableM4ImeProxyInput()` diagnostic contract after initialization. They attach
+host-canvas or host-owned-proxy listeners, not a replacement HTML browser UI.
+Primary mouse pointer input, pixel wheel input, the bounded raw-key paths, and
+host focus loss cross the public Ozone input-injector boundary. Generic text
+entry, IME delivery, modifiers, repeat, touch, pen, non-primary buttons,
+cursor control, focus regain without a pointer press, and richer multi-window
+behavior remain outside this first M4 input slice. Returning success while
+dropping an event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -171,6 +172,37 @@ events, and a newer compositor frame. This proves the bounded direct-layout
 path through Ozone/Aura and Chromium text input; it does not provide generic
 text entry or IME support.
 
+The distinct M4 IME-proxy smoke establishes the host half of the future generic
+text path without falsely claiming text delivery. A queued pointer event alone
+does not arm the proxy: its focus is delayed until the Ozone-owned
+`WasmInputMethod` reports a fresh focused `TextInputClient` that is editable
+and supports inline composition. The host also requires a fresh active Ozone
+keyboard-target report. It then consumes a one-shot canvas-to-exact-proxy focus
+transfer token, preserving the existing Aura/Ozone target only for that
+expected transition. A non-editable click therefore cannot steal DOM focus.
+
+Proxy blur always invalidates its browser-owned IME session. A blur back to the
+canvas preserves Aura/Ozone activation but clears the candidate and requires a
+new pointer click plus a new native editable acknowledgement. A blur to any
+other target follows normal pointer/key cleanup and host deactivation. The
+proxy accepts only trusted `compositionstart`, `compositionupdate`,
+`beforeinput`, and matching `input` events for a bounded, well-formed UTF-16
+`insertCompositionText` transaction. `beforeinput` creates one immutable
+diagnostic transaction and `input` confirms it; neither event calls a runtime
+text export or modifies inner Blink.
+
+The current browser smoke drives `Input.imeSetComposition` only against the
+outer proxy and proves a one-code-point candidate with UTF-16 range and
+selection `[0, 2]`. It requires the native active keyboard target plus the
+focused/editable/inline-composition `TextInputClient` report, zero inner
+`beforeinput`, `input`, and composition events, and an unchanged empty inner
+value. Static source contracts forbid a host text export or direct renderer
+shortcut in this capture-only slice. This is proxy-capture evidence, not
+physical OS-IME or generic-text compatibility evidence. Commit, cancellation,
+full surrounding-text synchronization, deletion, paste, dead keys, and all
+text delivery remain disabled until the Ozone-owned Wasm `InputMethod` consumes
+the confirmed transactions through `TextInputClient`.
+
 The M4 focus-loss smoke holds one trusted raw `ArrowDown` down event, uses a
 trusted DevTools mouse click on a real host-page focus-sink button, and requires
 the canvas blur record, generated matching key-up, cleared Ozone keyboard
@@ -204,6 +236,13 @@ bridge.reportOzoneFocusState({
   protocol: 1,
   keyboardTargetPresent: false,
   active: false,
+});
+
+bridge.reportOzoneTextInputState({
+  protocol: 1,
+  focusedClientPresent: true,
+  editable: true,
+  canComposeInline: true,
 });
 
 bridge.reportNavigation({
@@ -243,6 +282,12 @@ ozone_wasm sends `reportOzoneFocusState` after each activation transition.
 Its values come from the UI-thread `WasmWindowManager` and platform activation
 state, rather than host-page bookkeeping. The M4 focus-loss smoke requires a
 fresh false/false report after the trusted focus-sink click.
+
+`WasmInputMethod` sends `reportOzoneTextInputState` whenever Aura changes the
+focused `TextInputClient` or its text-input type. The report contains only
+booleans; it never exposes client identity, text, selection, or composition
+data. The IME proxy gate uses a report newer than its trusted pointer press,
+not a page-probe guess or a queued host command, before transferring DOM focus.
 
 The page probe must be reported again as its timer count advances; readiness
 requires a probe with at least three ticks rather than treating initial script
