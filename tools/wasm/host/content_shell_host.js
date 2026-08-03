@@ -4,6 +4,8 @@
 
 const HOST_PROTOCOL = 1;
 const M3_CASE = "content_shell_m3";
+const M4_CASE = "ozone_pointer_m4";
+const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -140,6 +142,7 @@ function checkInteger(value, description, minimum, maximum) {
 
 export class ChromiumWasmM3Host {
   #canvas;
+  #fixture;
   #module = null;
   #lifecycle = "new";
   #runtimeInitialized = false;
@@ -172,8 +175,19 @@ export class ChromiumWasmM3Host {
   #animationFrameHandle;
   #errorHandler;
   #rejectionHandler;
+  #pointerInputEnabled = false;
+  #pointerListeners = [];
+  #pointerSequence = 0;
+  #pointerRecords = [];
+  #lastQueuedPointer = null;
+  #activeM4PointerId = null;
+  #lastM4PointerPoint = null;
 
-  constructor(canvas, versions) {
+  constructor(
+    canvas,
+    versions,
+    {fixture = "chromium-wasm-m3-static-v1"} = {},
+  ) {
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("M3 host requires a canvas");
     }
@@ -181,6 +195,10 @@ export class ChromiumWasmM3Host {
       throw new Error("only one M3 host instance may be active");
     }
     this.#canvas = canvas;
+    if (typeof fixture !== "string" || fixture.length === 0) {
+      throw new Error("host fixture identifier must be a nonempty string");
+    }
+    this.#fixture = fixture;
     this.#versions = Object.freeze({
       chromium: normalizeVersion(versions.chromium),
       v8: normalizeVersion(versions.v8),
@@ -237,6 +255,7 @@ export class ChromiumWasmM3Host {
 
   #releaseHost() {
     this.#stopHeartbeat();
+    this.#disableM4PointerInput();
     removeEventListener("error", this.#errorHandler);
     removeEventListener("unhandledrejection", this.#rejectionHandler);
     if (activeHost === this) {
@@ -252,6 +271,273 @@ export class ChromiumWasmM3Host {
     this.#heartbeatStartAnimationFrameTicks = this.#animationFrameTicks;
     this.#maximumTimerGapMs = 0;
     this.#lastTimerTime = now;
+  }
+
+  #recordPointer(record) {
+    this.#pointerRecords.push(record);
+    if (this.#pointerRecords.length > 32) {
+      this.#pointerRecords.shift();
+    }
+  }
+
+  #pointerInputStatus() {
+    const queuedCount = this.#pointerRecords.filter(
+      (record) => record.queued === true).length;
+    const trustedCount = this.#pointerRecords.filter(
+      (record) => record.trusted === true).length;
+    return {
+      enabled: this.#pointerInputEnabled,
+      receivedCount: this.#pointerRecords.length,
+      trustedCount,
+      queuedCount,
+      lastQueued: this.#lastQueuedPointer
+        ? clone(this.#lastQueuedPointer)
+        : null,
+    };
+  }
+
+  #canvasPointForPointerEvent(event) {
+    const rect = this.#canvas.getBoundingClientRect();
+    const contentWidth = this.#canvas.clientWidth;
+    const contentHeight = this.#canvas.clientHeight;
+    if (
+      !Number.isFinite(event.clientX) ||
+      !Number.isFinite(event.clientY) ||
+      !Number.isFinite(rect.left) ||
+      !Number.isFinite(rect.top) ||
+      !Number.isFinite(contentWidth) ||
+      !Number.isFinite(contentHeight) ||
+      contentWidth <= 0 ||
+      contentHeight <= 0
+    ) {
+      return null;
+    }
+    const cssX = event.clientX - rect.left - this.#canvas.clientLeft;
+    const cssY = event.clientY - rect.top - this.#canvas.clientTop;
+    if (
+      cssX < 0 ||
+      cssY < 0 ||
+      cssX >= contentWidth ||
+      cssY >= contentHeight
+    ) {
+      return null;
+    }
+    const x = Math.floor((cssX * this.#canvas.width) / contentWidth);
+    const y = Math.floor((cssY * this.#canvas.height) / contentHeight);
+    if (
+      !Number.isSafeInteger(x) ||
+      !Number.isSafeInteger(y) ||
+      x < 0 || y < 0 || x >= this.#canvas.width || y >= this.#canvas.height
+    ) {
+      return null;
+    }
+    return {x, y};
+  }
+
+  #releaseM4PointerCapture(pointerId) {
+    if (
+      typeof this.#canvas.hasPointerCapture !== "function" ||
+      typeof this.#canvas.releasePointerCapture !== "function"
+    ) {
+      return;
+    }
+    try {
+      if (this.#canvas.hasPointerCapture(pointerId)) {
+        this.#canvas.releasePointerCapture(pointerId);
+      }
+    } catch (error) {
+      this.#recordHost("m4:pointer:capture-release-failed");
+    }
+  }
+
+  #cancelActiveM4Pointer(reason) {
+    const pointerId = this.#activeM4PointerId;
+    const point = this.#lastM4PointerPoint;
+    if (pointerId === null) {
+      return;
+    }
+    this.#activeM4PointerId = null;
+    this.#lastM4PointerPoint = null;
+    this.#releaseM4PointerCapture(pointerId);
+    if (this.#lifecycle !== "running" || !point) {
+      this.#recordHost(`m4:pointer:${reason}:release-skipped`);
+      return;
+    }
+    try {
+      const result = this.#callExport(
+        "chromium_wasm_host_pointer",
+        "number",
+        ["number", "number", "number", "number"],
+        [2, point.x, point.y, 0],
+      );
+      this.#recordHost(
+        `m4:pointer:${reason}:${result === 1 ? "release-queued" : "rejected"}`);
+    } catch (error) {
+      this.#recordHost(`m4:pointer:${reason}:release-failed`);
+    }
+  }
+
+  #handleM4PointerEvent(type, event) {
+    if (this.#lifecycle !== "running") {
+      return;
+    }
+    const pointerId = Number(event.pointerId);
+    const record = {
+      sequence: ++this.#pointerSequence,
+      type,
+      pointerId,
+      trusted: event.isTrusted === true,
+      queued: false,
+      frameIdBefore: this.#frame?.id ?? 0,
+      canvasFocused: document.activeElement === this.#canvas,
+    };
+    if (!record.trusted) {
+      record.reason = "UNTRUSTED_DOM_EVENT";
+      this.#recordPointer(record);
+      this.#recordHost(`m4:pointer:${type}:untrusted`);
+      return;
+    }
+    if (
+      event.pointerType !== "mouse" ||
+      event.isPrimary !== true ||
+      !Number.isSafeInteger(pointerId)
+    ) {
+      record.reason = "UNSUPPORTED_POINTER";
+      this.#recordPointer(record);
+      this.#recordHost(`m4:pointer:${type}:unsupported-pointer`);
+      return;
+    }
+    if ((type === "down" || type === "up") && event.button !== 0) {
+      record.reason = "UNSUPPORTED_BUTTON";
+      this.#recordPointer(record);
+      this.#recordHost(`m4:pointer:${type}:unsupported-button`);
+      return;
+    }
+    const captured = this.#activeM4PointerId === pointerId;
+    let point = this.#canvasPointForPointerEvent(event);
+    if (!point && (type === "up" || type === "cancel") && captured) {
+      point = this.#lastM4PointerPoint;
+      record.usedCapturedPoint = point !== null;
+    }
+    if (!point) {
+      record.reason = "OUTSIDE_CANVAS";
+      this.#recordPointer(record);
+      this.#recordHost(`m4:pointer:${type}:outside-canvas`);
+      return;
+    }
+    if (type === "down") {
+      this.#canvas.focus({preventScroll: true});
+      if (typeof this.#canvas.setPointerCapture !== "function") {
+        record.reason = "HOST_CAPTURE_UNSUPPORTED";
+        this.#recordPointer(record);
+        this.#recordHost(`m4:pointer:${type}:capture-unsupported`);
+        return;
+      }
+      try {
+        this.#canvas.setPointerCapture(pointerId);
+      } catch (error) {
+        record.reason = "HOST_CAPTURE_FAILED";
+        this.#recordPointer(record);
+        this.#recordHost(`m4:pointer:${type}:capture-failed`);
+        return;
+      }
+      this.#activeM4PointerId = pointerId;
+      this.#lastM4PointerPoint = point;
+    } else if (captured) {
+      this.#lastM4PointerPoint = point;
+    }
+    try {
+      const eventType = {move: 0, down: 1, up: 2, cancel: 2}[type];
+      const result = this.#callExport(
+        "chromium_wasm_host_pointer",
+        "number",
+        ["number", "number", "number", "number"],
+        [eventType, point.x, point.y, 0],
+      );
+      record.x = point.x;
+      record.y = point.y;
+      record.queued = result === 1;
+      record.canvasFocused = document.activeElement === this.#canvas;
+      if (!record.queued) {
+        record.reason = "QUEUE_REJECTED";
+      } else {
+        this.#lastQueuedPointer = record;
+      }
+    } catch (error) {
+      record.reason = `EXPORT_ERROR:${String(error)}`;
+    }
+    if (type === "up" || type === "cancel") {
+      this.#releaseM4PointerCapture(pointerId);
+      if (this.#activeM4PointerId === pointerId) {
+        this.#activeM4PointerId = null;
+        this.#lastM4PointerPoint = null;
+      }
+    }
+    this.#recordPointer(record);
+    this.#recordHost(
+      `m4:pointer:${type}:${record.queued ? "queued" : "rejected"}`);
+  }
+
+  #disableM4PointerInput() {
+    for (const {target, type, listener} of this.#pointerListeners) {
+      target.removeEventListener(type, listener);
+    }
+    this.#cancelActiveM4Pointer("teardown");
+    this.#pointerListeners = [];
+    this.#pointerInputEnabled = false;
+  }
+
+  enableM4PointerInput() {
+    this.#requireRunning("enableM4PointerInput");
+    if (this.#pointerInputEnabled) {
+      return this.#pointerInputStatus();
+    }
+    for (const [domType, type] of [
+      ["pointermove", "move"],
+      ["pointerdown", "down"],
+      ["pointerup", "up"],
+      ["pointercancel", "cancel"],
+    ]) {
+      const listener = (event) => this.#handleM4PointerEvent(type, event);
+      this.#canvas.addEventListener(domType, listener);
+      this.#pointerListeners.push({
+        target: this.#canvas,
+        type: domType,
+        listener,
+      });
+    }
+    const lostCaptureListener = (event) => {
+      if (this.#activeM4PointerId === Number(event.pointerId)) {
+        this.#handleM4PointerEvent("cancel", event);
+      }
+    };
+    this.#canvas.addEventListener("lostpointercapture", lostCaptureListener);
+    this.#pointerListeners.push({
+      target: this.#canvas,
+      type: "lostpointercapture",
+      listener: lostCaptureListener,
+    });
+    const cancelOnBlur = () => this.#cancelActiveM4Pointer("blur");
+    addEventListener("blur", cancelOnBlur);
+    this.#pointerListeners.push({
+      target: window,
+      type: "blur",
+      listener: cancelOnBlur,
+    });
+    this.#pointerInputEnabled = true;
+    this.#recordHost("m4:pointer:listeners-attached");
+    const cancelWhenHidden = () => {
+      if (document.visibilityState !== "visible") {
+        this.#cancelActiveM4Pointer("visibility-loss");
+      }
+    };
+    document.addEventListener("visibilitychange", cancelWhenHidden);
+    this.#pointerListeners.push({
+      target: document,
+      type: "visibilitychange",
+      listener: cancelWhenHidden,
+    });
+    return this.#pointerInputStatus();
   }
 
   #heartbeat() {
@@ -638,6 +924,7 @@ export class ChromiumWasmM3Host {
       interactionObservedAtFrameId: this.#interactionObservedAtFrameId,
       fatalErrors: clone(this.#fatalErrors),
       heartbeat,
+      pointerInput: this.#pointerInputStatus(),
     };
   }
 
@@ -807,7 +1094,7 @@ export class ChromiumWasmM3Host {
       const report = asReport(value, "page probe");
       if (
         report.protocol !== HOST_PROTOCOL ||
-        report.fixture !== "chromium-wasm-m3-static-v1"
+        report.fixture !== this.#fixture
       ) {
         throw new Error("page probe identity mismatch");
       }
@@ -1158,4 +1445,190 @@ export async function runM3SmokeFromQuery() {
     2);
   await postResult(token, result);
   return result;
+}
+
+async function runM4OzonePointerSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_CASE) {
+      throw new Error("M4 case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 result token");
+    }
+    host = new ChromiumWasmM3Host(canvas, versions, {fixture: M4_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        `M4 base readiness timeout: ${JSON.stringify(readiness)}`);
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 target y", 0, DEFAULT_HEIGHT - 1);
+    const listeners = host.enableM4PointerInput();
+    window.__chromiumWasmM4State = {
+      state: "awaiting-dom-pointer",
+      targetX,
+      targetY,
+      listeners,
+    };
+    statusElement.textContent = "M4 ready for trusted canvas pointer input";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer.lastQueued;
+      if (
+        pointer.queuedCount >= 2 &&
+        lastQueued?.type === "up" &&
+        readiness.pageProbe.activationCount === 1 &&
+        readiness.pageProbe.clickTrusted === true &&
+        readiness.pageProbe.resultText === "ACTIVATED" &&
+        readiness.frame?.id > lastQueued.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const lastQueued = pointer?.lastQueued;
+    if (
+      !readiness ||
+      pointer?.queuedCount < 2 ||
+      lastQueued?.type !== "up" ||
+      readiness.pageProbe.activationCount !== 1 ||
+      readiness.pageProbe.clickTrusted !== true ||
+      readiness.pageProbe.resultText !== "ACTIVATED" ||
+      !(readiness.frame?.id > lastQueued.frameIdBefore)
+    ) {
+      throw new Error(
+        `M4 trusted Ozone pointer timeout: ${JSON.stringify(readiness)}`);
+    }
+    window.__chromiumWasmM4State = {
+      state: "input-delivered",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      trustedDomInput:
+        pointer.trustedCount >= 2 && pointer.queuedCount >= 2,
+      ozoneDelivered:
+        readiness.pageProbe.activationCount === 1 &&
+        readiness.pageProbe.clickTrusted === true &&
+        readiness.pageProbe.resultText === "ACTIVATED" &&
+        readiness.frame.id > lastQueued.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : `failed checks: ${failedChecks.join(", ")}`,
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += `; diagnostics: ${String(diagnosticError)}`;
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+      } catch (diagnosticError) {
+        result.error += `; readiness diagnostics: ${String(diagnosticError)}`;
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
+export async function runContentShellSmokeFromQuery() {
+  const selectedCase = new URLSearchParams(location.search).get("case");
+  if (selectedCase === M3_CASE) {
+    return runM3SmokeFromQuery();
+  }
+  if (selectedCase === M4_CASE) {
+    return runM4OzonePointerSmokeFromQuery();
+  }
+  throw new Error("unknown Content Shell Wasm smoke case");
 }

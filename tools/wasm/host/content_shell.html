@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chromium Wasm M3 Content Shell</title>
+  <title>Chromium Wasm Content Shell</title>
   <style>
     :root {
       color-scheme: dark;
@@ -91,16 +91,16 @@
       height="600"
       tabindex="0"
       aria-label="Chromium Content Shell output"></canvas>
-    <aside aria-label="M3 loader diagnostics">
-      <h1>Chromium Wasm M3 Content Shell</h1>
+    <aside aria-label="Content Shell loader diagnostics">
+      <h1>Chromium Wasm Content Shell</h1>
       <dl id="versions"></dl>
-      <pre id="smoke-status">Starting deterministic M3 gate…</pre>
+      <pre id="smoke-status">Starting Content Shell…</pre>
     </aside>
   </main>
   <script type="module">
-    import {runM3SmokeFromQuery} from "/__m3__/content_shell_host.js";
+    import {runContentShellSmokeFromQuery} from "/__m3__/content_shell_host.js";
 
-    runM3SmokeFromQuery().catch((error) => {
+    runContentShellSmokeFromQuery().catch((error) => {
       document.querySelector("#smoke-root").dataset.state = "fail";
       document.querySelector("#smoke-status").textContent =
         `HOST FAILURE: ${String(error)}`;

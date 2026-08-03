@@ -17,6 +17,7 @@
 #include "ui/ozone/common/bitmap_cursor_factory.h"
 #include "ui/ozone/common/stub_client_native_pixmap_factory.h"
 #include "ui/ozone/common/stub_overlay_manager.h"
+#include "ui/ozone/platform/wasm/wasm_event_source.h"
 #include "ui/ozone/platform/wasm/wasm_screen.h"
 #include "ui/ozone/platform/wasm/wasm_surface_factory.h"
 #include "ui/ozone/platform/wasm/wasm_window.h"
@@ -31,20 +32,6 @@
 namespace ui {
 
 namespace {
-
-// M3 has no host input path yet, but Aura requires a platform event source
-// while bootstrapping. Input becomes an actual event source at the M4 gate.
-class WasmBootstrapPlatformEventSource final : public PlatformEventSource {
- public:
-  WasmBootstrapPlatformEventSource() = default;
-
-  WasmBootstrapPlatformEventSource(
-      const WasmBootstrapPlatformEventSource&) = delete;
-  WasmBootstrapPlatformEventSource& operator=(
-      const WasmBootstrapPlatformEventSource&) = delete;
-
-  ~WasmBootstrapPlatformEventSource() override = default;
-};
 
 class OzonePlatformWasmImpl final : public OzonePlatform {
  public:
@@ -81,7 +68,11 @@ class OzonePlatformWasmImpl final : public OzonePlatform {
   }
 
   std::unique_ptr<SystemInputInjector> CreateSystemInputInjector() override {
-    return nullptr;
+    if (!platform_event_source_) {
+      LOG(ERROR) << "ozone_wasm has no owned platform event source";
+      return nullptr;
+    }
+    return CreateWasmSystemInputInjector(platform_event_source_.get());
   }
 
   std::unique_ptr<PlatformWindow> CreatePlatformWindow(
@@ -141,9 +132,17 @@ class OzonePlatformWasmImpl final : public OzonePlatform {
     if (!surface_factory_) {
       surface_factory_ = std::make_unique<WasmSurfaceFactory>();
     }
-    if (!PlatformEventSource::GetInstance()) {
+    PlatformEventSource* existing_event_source =
+        PlatformEventSource::GetInstance();
+    if (existing_event_source &&
+        existing_event_source != platform_event_source_.get()) {
+      LOG(ERROR) << "ozone_wasm requires exclusive ownership of the UI "
+                    "PlatformEventSource";
+      return false;
+    }
+    if (!platform_event_source_) {
       platform_event_source_ =
-          std::make_unique<WasmBootstrapPlatformEventSource>();
+          std::make_unique<WasmPlatformEventSource>(window_manager_.get());
     }
 
     keyboard_layout_engine_ = std::make_unique<StubKeyboardLayoutEngine>();
@@ -169,7 +168,7 @@ class OzonePlatformWasmImpl final : public OzonePlatform {
   std::unique_ptr<KeyboardLayoutEngine> keyboard_layout_engine_;
   std::unique_ptr<WasmWindowManager> window_manager_;
   std::unique_ptr<WasmSurfaceFactory> surface_factory_;
-  std::unique_ptr<PlatformEventSource> platform_event_source_;
+  std::unique_ptr<WasmPlatformEventSource> platform_event_source_;
   std::unique_ptr<CursorFactory> cursor_factory_;
   std::unique_ptr<InputController> input_controller_;
   std::unique_ptr<GpuPlatformSupportHost> gpu_platform_support_host_;

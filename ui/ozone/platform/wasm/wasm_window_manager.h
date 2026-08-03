@@ -5,7 +5,10 @@
 #ifndef UI_OZONE_PLATFORM_WASM_WASM_WINDOW_MANAGER_H_
 #define UI_OZONE_PLATFORM_WASM_WASM_WINDOW_MANAGER_H_
 
+#include <vector>
+
 #include "base/containers/id_map.h"
+#include "base/memory/raw_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/native_ui_types.h"
@@ -28,9 +31,20 @@ class WasmWindowManager {
   WasmWindow* GetWindow(gfx::AcceleratedWidget widget);
   gfx::AcceleratedWidget GetAcceleratedWidgetAtScreenPoint(
       const gfx::Point& point);
+  WasmWindow* GetWindowAtScreenPoint(const gfx::Point& point);
+
+  void SetPointerFocusedWindow(WasmWindow* window);
+  WasmWindow* GetPointerFocusedWindow();
+  void SetPointerCapture(WasmWindow* window);
+  void ReleasePointerCapture(WasmWindow* window);
+  bool HasPointerCapture(WasmWindow* window);
+  WasmWindow* GetPointerTarget(const gfx::Point& point);
 
  private:
+  std::vector<raw_ptr<WasmWindow>> stacking_order_;
   base::IDMap<WasmWindow*> windows_;
+  raw_ptr<WasmWindow> pointer_focused_window_ = nullptr;
+  raw_ptr<WasmWindow> pointer_capture_window_ = nullptr;
   base::ThreadChecker thread_checker_;
 };
 

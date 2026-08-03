@@ -36,11 +36,14 @@
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/ozone/public/ozone_platform.h"
+#include "ui/ozone/public/system_input_injector.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -54,6 +57,12 @@ constexpr int kMaximumCanvasDimension = 16384;
 // linear-memory ceiling to Content, V8, and browser services.
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
+
+enum class DomPointerEventType {
+  kMove = 0,
+  kDown = 1,
+  kUp = 2,
+};
 
 extern "C" int chromium_wasm_report_readiness(
     int shell_ready,
@@ -147,8 +156,10 @@ class WasmHostObserver final : public WebContentsObserver {
 
     probe_in_flight_ = true;
     frame->ExecuteJavaScriptForTests(
-        u"window.__chromiumWasmM3Probe ? "
-        u"window.__chromiumWasmM3Probe() : ''",
+        u"window.__chromiumWasmM4Probe ? "
+        u"window.__chromiumWasmM4Probe() : "
+        u"(window.__chromiumWasmM3Probe ? "
+        u"window.__chromiumWasmM3Probe() : '')",
         base::BindOnce(&WasmHostObserver::OnPageProbe,
                        weak_ptr_factory_.GetWeakPtr(),
                        navigation_generation_),
@@ -204,12 +215,24 @@ class WasmHostState {
     return gfx::Rect(viewport_size_).Contains(point);
   }
 
+  void SetInputInjector(
+      std::unique_ptr<ui::SystemInputInjector> input_injector) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    input_injector_ = std::move(input_injector);
+  }
+
+  ui::SystemInputInjector* GetInputInjectorOnUiThread() {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    return input_injector_.get();
+  }
+
   std::unique_ptr<WasmHostObserver> observer;
 
  private:
   base::Lock lock_;
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_
       GUARDED_BY(lock_);
+  std::unique_ptr<ui::SystemInputInjector> input_injector_;
   gfx::Size viewport_size_;
 };
 
@@ -286,6 +309,48 @@ void ClickOnUiThread(const gfx::Point& location) {
   widget->ForwardMouseEvent(mouse_up);
 }
 
+void DispatchDomPointerOnUiThread(DomPointerEventType type,
+                                  const gfx::Point& location) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  if (!state.ContainsViewportPointOnUiThread(location)) {
+    ReportFatal("M4 host pointer event is outside the accepted viewport");
+    return;
+  }
+
+  if (type == DomPointerEventType::kDown) {
+    Shell* shell = GetSingleShell();
+    if (!shell) {
+      return;
+    }
+    // The host canvas owns DOM focus. Give the in-process WebContents its
+    // normal browser focus before Aura dispatches the trusted pointer press.
+    shell->web_contents()->Focus();
+  }
+
+  ui::SystemInputInjector* input_injector =
+      state.GetInputInjectorOnUiThread();
+  if (!input_injector) {
+    ReportFatal("M4 host pointer event has no Ozone input injector");
+    return;
+  }
+
+  input_injector->MoveCursorTo(gfx::PointF(location));
+  switch (type) {
+    case DomPointerEventType::kMove:
+      return;
+    case DomPointerEventType::kDown:
+      input_injector->InjectMouseButton(ui::EF_LEFT_MOUSE_BUTTON,
+                                        /*down=*/true);
+      return;
+    case DomPointerEventType::kUp:
+      input_injector->InjectMouseButton(ui::EF_LEFT_MOUSE_BUTTON,
+                                        /*down=*/false);
+      return;
+  }
+  NOTREACHED();
+}
+
 void LoadUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   Shell* shell = GetSingleShell();
@@ -313,6 +378,13 @@ void InitializeWasmHostApi() {
   state.SetViewportSizeOnUiThread(
       window->GetHost()->GetBoundsInPixels().size());
   state.SetTaskRunner(base::SingleThreadTaskRunner::GetCurrentDefault());
+  std::unique_ptr<ui::SystemInputInjector> input_injector =
+      ui::OzonePlatform::GetInstance()->CreateSystemInputInjector();
+  if (!input_injector) {
+    ReportFatal("ozone_wasm did not create the M4 input injector");
+    return;
+  }
+  state.SetInputInjector(std::move(input_injector));
   state.observer = std::make_unique<WasmHostObserver>(shell->web_contents());
   if (chromium_wasm_report_readiness(
           /*shell_ready=*/1, /*surface_ready=*/-1,
@@ -325,6 +397,7 @@ void ShutdownWasmHostApi() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
   state.observer.reset();
+  state.SetInputInjector(nullptr);
   state.SetTaskRunner(nullptr);
 }
 
@@ -360,6 +433,23 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_click(int x,
   }
   return content::PostHostCommand(
              base::BindOnce(&content::ClickOnUiThread, gfx::Point(x, y)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_pointer(int type,
+                                                    int x,
+                                                    int y,
+                                                    int button) {
+  if (type < static_cast<int>(content::DomPointerEventType::kMove) ||
+      type > static_cast<int>(content::DomPointerEventType::kUp) ||
+      button != 0 || x < 0 || y < 0) {
+    return 0;
+  }
+  const auto event_type = static_cast<content::DomPointerEventType>(type);
+  return content::PostHostCommand(base::BindOnce(
+             &content::DispatchDomPointerOnUiThread, event_type,
+             gfx::Point(x, y)))
              ? 1
              : 0;
 }

@@ -4,6 +4,7 @@
 
 #include "content/shell/browser/shell_platform_delegate.h"
 
+#include "build/build_config.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/shell/browser/shell.h"
@@ -64,6 +65,12 @@ void ShellPlatformDelegate::SetContents(Shell* shell) {
     parent->AddChild(content);
 
   content->Show();
+#if BUILDFLAG(IS_WASM)
+  // The host page owns presentation, but Ozone still needs a visible platform
+  // window to select this Aura host as the target of injected pointer events.
+  // Other Aura platforms arrange native visibility through their shell loop.
+  platform_->aura->ShowWindow();
+#endif
 }
 
 void ShellPlatformDelegate::ResizeWebContent(Shell* shell,

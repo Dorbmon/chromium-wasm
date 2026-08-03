@@ -5,10 +5,14 @@
 #include "ui/ozone/platform/wasm/wasm_window.h"
 
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/notimplemented.h"
 #include "ui/base/cursor/platform_cursor.h"
 #include "ui/display/screen.h"
 #include "ui/display/types/display_constants.h"
+#include "ui/events/event.h"
+#include "ui/events/ozone/events_ozone.h"
+#include "ui/events/platform/platform_event_source.h"
 #include "ui/ozone/platform/wasm/wasm_window_manager.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
@@ -22,10 +26,16 @@ WasmWindow::WasmWindow(PlatformWindowDelegate* delegate,
   CHECK(manager_);
   CHECK(!bounds_.IsEmpty());
   widget_ = manager_->AddWindow(this);
+  CHECK(PlatformEventSource::GetInstance());
+  PlatformEventSource::GetInstance()->AddPlatformEventDispatcher(this);
   delegate_->OnAcceleratedWidgetAvailable(widget_);
 }
 
 WasmWindow::~WasmWindow() {
+  ReleaseCapture();
+  if (PlatformEventSource::GetInstance()) {
+    PlatformEventSource::GetInstance()->RemovePlatformEventDispatcher(this);
+  }
   manager_->RemoveWindow(widget_, this);
 }
 
@@ -38,6 +48,7 @@ void WasmWindow::Show(bool inactive) {
 
 void WasmWindow::Hide() {
   visible_ = false;
+  ReleaseCapture();
 }
 
 void WasmWindow::Close() {
@@ -72,15 +83,20 @@ void WasmWindow::SetTitle(const std::u16string& title) {
       << "ozone_wasm M3 has no host-native title surface";
 }
 
-void WasmWindow::SetCapture() {
-  NOTIMPLEMENTED_LOG_ONCE()
-      << "Host pointer capture is unsupported until the M4 input gate";
+void WasmWindow::OnPointerCaptureLost() {
+  delegate_->OnLostCapture();
 }
 
-void WasmWindow::ReleaseCapture() {}
+void WasmWindow::SetCapture() {
+  manager_->SetPointerCapture(this);
+}
+
+void WasmWindow::ReleaseCapture() {
+  manager_->ReleasePointerCapture(this);
+}
 
 bool WasmWindow::HasCapture() const {
-  return false;
+  return manager_->HasPointerCapture(const_cast<WasmWindow*>(this));
 }
 
 void WasmWindow::SetFullscreen(bool fullscreen, int64_t target_display_id) {
@@ -190,17 +206,17 @@ bool WasmWindow::ShouldUseNativeFrame() const {
 
 void WasmWindow::SetCursor(scoped_refptr<PlatformCursor> cursor) {
   NOTIMPLEMENTED_LOG_ONCE()
-      << "Host cursor updates are unsupported until the M4 input gate";
+      << "Host cursor updates are unsupported by the M4 pointer slice";
 }
 
 void WasmWindow::MoveCursorTo(const gfx::Point& location) {
   NOTIMPLEMENTED_LOG_ONCE()
-      << "Host cursor movement is unsupported until the M4 input gate";
+      << "Host cursor movement is unsupported by the M4 pointer slice";
 }
 
 void WasmWindow::ConfineCursorToBounds(const gfx::Rect& bounds) {
   NOTIMPLEMENTED_LOG_ONCE()
-      << "Host cursor confinement is unsupported until the M4 input gate";
+      << "Host cursor confinement is unsupported by the M4 pointer slice";
 }
 
 void WasmWindow::SetRestoredBoundsInDIP(const gfx::Rect& bounds) {
@@ -218,6 +234,41 @@ void WasmWindow::SetWindowIcons(const gfx::ImageSkia& window_icon,
 }
 
 void WasmWindow::SizeConstraintsChanged() {}
+
+bool WasmWindow::CanDispatchEvent(const PlatformEvent& event) {
+  return event && CanAcceptEvent(*event);
+}
+
+uint32_t WasmWindow::DispatchEvent(const PlatformEvent& event) {
+  return event ? DispatchEventToDelegate(event) : POST_DISPATCH_NONE;
+}
+
+bool WasmWindow::CanAcceptEvent(const Event& event) {
+  return event.target() == this;
+}
+
+EventTarget* WasmWindow::GetParentTarget() {
+  return nullptr;
+}
+
+std::unique_ptr<EventTargetIterator> WasmWindow::GetChildIterator() const {
+  return nullptr;
+}
+
+EventTargeter* WasmWindow::GetEventTargeter() {
+  return nullptr;
+}
+
+uint32_t WasmWindow::DispatchEventToDelegate(const PlatformEvent& event) {
+  const EventResult result = DispatchEventFromNativeUiEvent(
+      event, base::BindOnce(&PlatformWindowDelegate::DispatchEvent,
+                            base::Unretained(delegate_)));
+  if (result == ER_UNHANDLED) {
+    return POST_DISPATCH_NONE;
+  }
+  return (result & ER_SKIPPED) ? POST_DISPATCH_PERFORM_DEFAULT
+                               : POST_DISPATCH_STOP_PROPAGATION;
+}
 
 void WasmWindow::ZoomWindowBounds() {
   const gfx::Rect display_bounds =

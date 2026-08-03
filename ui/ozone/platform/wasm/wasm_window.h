@@ -9,6 +9,8 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "ui/events/event_target.h"
+#include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/platform_window/platform_window.h"
@@ -17,9 +19,11 @@ namespace ui {
 
 class WasmWindowManager;
 
-// M3 supplies the minimum single-canvas window lifecycle Aura needs. Host
-// cursor, capture, and event semantics are intentionally deferred to M4.
-class WasmWindow final : public PlatformWindow {
+// M3 supplies the minimum single-canvas window lifecycle Aura needs. M4 adds
+// host-pointer dispatch while keyboard, IME, and cursor integration remain off.
+class WasmWindow final : public PlatformWindow,
+                         public PlatformEventDispatcher,
+                         public EventTarget {
  public:
   WasmWindow(PlatformWindowDelegate* delegate,
              WasmWindowManager* manager,
@@ -62,6 +66,18 @@ class WasmWindow final : public PlatformWindow {
                       const gfx::ImageSkia& app_icon) override;
   void SizeConstraintsChanged() override;
 
+  // PlatformEventDispatcher:
+  bool CanDispatchEvent(const PlatformEvent& event) override;
+  uint32_t DispatchEvent(const PlatformEvent& event) override;
+
+  // EventTarget:
+  void OnPointerCaptureLost();
+
+  bool CanAcceptEvent(const Event& event) override;
+  EventTarget* GetParentTarget() override;
+  std::unique_ptr<EventTargetIterator> GetChildIterator() const override;
+  EventTargeter* GetEventTargeter() override;
+
   gfx::AcceleratedWidget widget() const { return widget_; }
 
  private:
@@ -75,6 +91,7 @@ class WasmWindow final : public PlatformWindow {
   void RestoreWindowBounds();
   void UpdateBounds(const gfx::Rect& bounds);
   void UpdateWindowState(PlatformWindowState new_window_state);
+  uint32_t DispatchEventToDelegate(const PlatformEvent& event);
 
   raw_ptr<PlatformWindowDelegate> delegate_;
   raw_ptr<WasmWindowManager> manager_;

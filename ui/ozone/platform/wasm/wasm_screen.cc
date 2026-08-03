@@ -54,7 +54,7 @@ display::Display WasmScreen::GetDisplayForAcceleratedWidget(
 
 gfx::Point WasmScreen::GetCursorScreenPoint() const {
   NOTIMPLEMENTED_LOG_ONCE()
-      << "Host cursor position is unsupported until the M4 input gate";
+      << "Host cursor position is unsupported by the M4 pointer slice";
   return gfx::Point();
 }
 
