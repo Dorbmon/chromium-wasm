@@ -121,16 +121,19 @@ converts the sign exactly once before `SystemInputInjector::InjectMouseWheel`,
 whose Chromium convention is positive for left and up. This keeps Blink's
 observed DOM wheel delta in the original right/down convention.
 
-`chromium_wasm_host_key` accepts only the bounded DOM code string
-`"ArrowDown"` and `down == 0` or `1`. The host accepts only a trusted,
-cancelable canvas `keydown`/`keyup` pair after a queued primary-pointer
-press has activated the Wasm window. It rejects modifier, repeat, composition,
-dead-key, process-key, unsupported-code, duplicate-down, and unmatched-up
-records explicitly. A successful export means the record was queued on the UI
-task runner; it does not mean Blink has received it. The host cancels its held
-key state on canvas or window blur, visibility loss, teardown, and shutdown,
-queuing a matching release when Chromium is still running. It prevents the
-outer canvas event's default action only after queue acceptance.
+`chromium_wasm_host_key` accepts only the bounded DOM code strings
+`"ArrowDown"` and `"KeyA"`, with `down == 0` or `1`. The `"KeyA"` slice
+also requires the unmodified DOM key `"a"`; it is a fixed-US physical-layout
+experiment, not a host text, composition, or IME API. The host accepts only a
+trusted, cancelable canvas `keydown`/`keyup` pair after a queued
+primary-pointer press has activated the Wasm window. It rejects modifier,
+repeat, composition, dead-key, process-key, unsupported-code, mismatched key,
+duplicate-down, and unmatched-up records explicitly. A successful export means
+the record was queued on the UI task runner; it does not mean Blink has received
+it. The host cancels its held key state on canvas or window blur, visibility
+loss, teardown, and shutdown, queuing a matching release when Chromium is still
+running. It prevents the outer canvas event's default action only after queue
+acceptance.
 
 `chromium_wasm_host_deactivate` accepts no arguments and is one-way: it is
 queued only when the host canvas, host window, or document visibility loses
@@ -158,6 +161,15 @@ events and normal document scrolling, verifies no text, beforeinput, input, or
 composition side effects, and requires a newer compositor frame after the key
 down. These checks, rather than an export return value, establish
 Ozone/Aura/Blink delivery.
+
+The M4 printable-key smoke clicks a real initially empty Blink text input and
+drives one trusted DevTools `KeyA` `rawKeyDown`/`keyUp` pair without a DevTools
+text payload. It requires trusted inner key events, exactly one trusted
+`beforeinput` and `input` pair with `inputType == "insertText"` and data
+`"a"`, a collapsed selection after the inserted character, no composition
+events, and a newer compositor frame. This proves the bounded direct-layout
+path through Ozone/Aura and Chromium text input; it does not provide generic
+text entry or IME support.
 
 The M4 focus-loss smoke holds one trusted raw `ArrowDown` down event, uses a
 trusted DevTools mouse click on a real host-page focus-sink button, and requires

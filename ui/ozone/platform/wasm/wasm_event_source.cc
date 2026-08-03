@@ -12,7 +12,9 @@
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/keycodes/dom/dom_code.h"
-#include "ui/events/keycodes/keyboard_code_conversion.h"
+#include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/events/ozone/layout/keyboard_layout_engine.h"
+#include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/ozone/public/system_input_injector.h"
 #include "ui/gfx/geometry/point.h"
@@ -26,6 +28,10 @@ namespace {
 bool IsSupportedMouseButton(EventFlags button) {
   return button == EF_LEFT_MOUSE_BUTTON || button == EF_MIDDLE_MOUSE_BUTTON ||
          button == EF_RIGHT_MOUSE_BUTTON;
+}
+
+bool IsSupportedM4DomCode(DomCode dom_code) {
+  return dom_code == DomCode::ARROW_DOWN || dom_code == DomCode::US_A;
 }
 
 class WasmSystemInputInjector final : public SystemInputInjector {
@@ -88,18 +94,21 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   void InjectKeyEvent(DomCode physical_key,
                       bool down,
                       bool /*suppress_auto_repeat*/) override {
-    // The first keyboard slice transports one non-printable navigation key.
-    // The host rejects DOM repeats, and this injector has no local repeat
-    // timer, so duplicate state changes must not manufacture repeat events.
-    if (physical_key != DomCode::ARROW_DOWN) {
+    // The host accepts explicit trusted DOM keydown/keyup pairs and rejects
+    // repeats, so duplicate state changes must not manufacture repeat events.
+    // The bounded printable slice maps through the Ozone keyboard layout
+    // engine below; it does not pass host-synthesized text into Blink.
+    if (!IsSupportedM4DomCode(physical_key)) {
       NOTIMPLEMENTED_LOG_ONCE()
-          << "ozone_wasm M4 raw-key input supports ArrowDown only";
+          << "ozone_wasm M4 raw-key input supports ArrowDown and KeyA only";
       return;
     }
-    if (arrow_down_ == down) {
+    bool& key_down =
+        physical_key == DomCode::ARROW_DOWN ? arrow_down_ : key_a_;
+    if (key_down == down) {
       return;
     }
-    arrow_down_ = down;
+    key_down = down;
     event_source_->DispatchKeyEvent(
         down ? EventType::kKeyPressed : EventType::kKeyReleased,
         physical_key, EF_NONE, device_id_);
@@ -111,6 +120,7 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   EventFlags button_flags_ = EF_NONE;
   int device_id_ = ED_UNKNOWN_DEVICE;
   bool arrow_down_ = false;
+  bool key_a_ = false;
 };
 
 }  // namespace
@@ -198,7 +208,7 @@ bool WasmPlatformEventSource::DispatchKeyEvent(EventType type,
   DCHECK(thread_checker_.CalledOnValidThread());
   if (PlatformEventSource::ShouldIgnoreNativePlatformEvents() ||
       (type != EventType::kKeyPressed && type != EventType::kKeyReleased) ||
-      physical_key != DomCode::ARROW_DOWN) {
+      !IsSupportedM4DomCode(physical_key)) {
     return false;
   }
 
@@ -209,7 +219,10 @@ bool WasmPlatformEventSource::DispatchKeyEvent(EventType type,
 
   DomKey dom_key;
   KeyboardCode key_code;
-  if (!DomCodeToNonPrintableDomKey(physical_key, &dom_key, &key_code)) {
+  KeyboardLayoutEngine* layout_engine =
+      KeyboardLayoutEngineManager::GetKeyboardLayoutEngine();
+  if (!layout_engine ||
+      !layout_engine->Lookup(physical_key, flags, &dom_key, &key_code)) {
     return false;
   }
 

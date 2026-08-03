@@ -64,7 +64,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "manager_->SetKeyboardFocusedWindow(nullptr);", deactivate
         )
 
-    def test_injector_and_event_source_normalize_raw_arrow_down(self) -> None:
+    def test_injector_and_event_source_normalize_bounded_raw_keys(self) -> None:
         event_source = source("ui/ozone/platform/wasm/wasm_event_source.cc")
         header = source("ui/ozone/platform/wasm/wasm_event_source.h")
 
@@ -77,9 +77,12 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             " private:",
         )
         for marker in (
-            "physical_key != DomCode::ARROW_DOWN",
-            "arrow_down_ == down",
-            "arrow_down_ = down;",
+            "IsSupportedM4DomCode(physical_key)",
+            "DomCode::ARROW_DOWN",
+            "arrow_down_",
+            "key_a_",
+            "key_down == down",
+            "key_down = down;",
             "EventType::kKeyPressed",
             "EventType::kKeyReleased",
             "event_source_->DispatchKeyEvent(",
@@ -87,6 +90,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, injector)
+        self.assertIn("DomCode::US_A", event_source)
         self.assertNotIn("KeyEvent event", injector)
 
         dispatch = section(
@@ -99,10 +103,11 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "PlatformEventSource::ShouldIgnoreNativePlatformEvents()",
             "EventType::kKeyPressed",
             "EventType::kKeyReleased",
-            "physical_key != DomCode::ARROW_DOWN",
+            "IsSupportedM4DomCode(physical_key)",
             "window_manager_->GetKeyboardFocusedWindow()",
             "target->IsVisible()",
-            "DomCodeToNonPrintableDomKey",
+            "KeyboardLayoutEngineManager::GetKeyboardLayoutEngine",
+            "layout_engine->Lookup",
             "KeyEvent event(type, key_code, physical_key, flags, dom_key,",
             "event.set_source_device_id(source_device_id)",
             "Event::DispatcherApi(&event).set_target(target)",
@@ -152,15 +157,18 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         for marker in (
             "!code || (down != 0 && down != 1)",
             "strnlen(code, content::kM4NavigationDomCode.size() + 1)",
-            "std::string_view(code, length)",
+            "std::string_view code_string(code, length)",
             "ui::KeycodeConverter::CodeStringToDomCode",
-            "ui::DomCode::ARROW_DOWN",
+            "content::IsSupportedM4DomCode(physical_key)",
             "PostHostCommand",
             "DispatchDomKeyOnUiThread",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, key_export)
         self.assertIn("kM4NavigationDomCode", api)
+        self.assertIn("kM4PrintableDomCode", api)
+        self.assertIn("ui::DomCode::ARROW_DOWN", api)
+        self.assertIn("ui::DomCode::US_A", api)
 
     def test_host_rejects_unsafe_keyboard_events_before_preventing_default(
         self,
@@ -182,7 +190,8 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "record.isComposing",
             'record.key === "Dead"',
             'record.key === "Process"',
-            "record.code !== M4_KEYBOARD_DOM_CODE",
+            "expectedM4KeyboardKey(record.code)",
+            "record.key !== expectedKey",
             "DUPLICATE_DOWN",
             "UNMATCHED_UP",
             "chromium_wasm_host_key",
@@ -275,7 +284,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         self.assertIn('"type": "keyUp"', cdp_key)
 
         for marker in (
-            'choices=("pointer", "wheel", "keyboard", "focus")',
+            'choices=("pointer", "wheel", "keyboard", "printable-key", "focus")',
             "M4_KEYBOARD_CASE",
             '"awaiting-dom-keyboard-activation"',
             '"awaiting-dom-key"',

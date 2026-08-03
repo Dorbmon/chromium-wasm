@@ -7,12 +7,17 @@ const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
+const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
+const M4_PRINTABLE_KEY_FIXTURE =
+  "chromium-wasm-m4-ozone-printable-key-v1";
 const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
+const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
+const M4_PRINTABLE_KEY_DOM_KEY = "a";
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -28,6 +33,17 @@ const MAXIMUM_WHEEL_DELTA = 0x7fffffff;
 
 let activeHost = null;
 const pendingBridgeReports = [];
+
+function expectedM4KeyboardKey(code) {
+  switch (code) {
+    case M4_KEYBOARD_DOM_CODE:
+      return M4_KEYBOARD_DOM_CODE;
+    case M4_PRINTABLE_KEY_DOM_CODE:
+      return M4_PRINTABLE_KEY_DOM_KEY;
+    default:
+      return null;
+  }
+}
 
 function asReport(value, description) {
   let report = value;
@@ -837,7 +853,7 @@ export class ChromiumWasmM3Host {
         sequence: ++this.#keyboardSequence,
         type: "up",
         code,
-        key: code === M4_KEYBOARD_DOM_CODE ? M4_KEYBOARD_DOM_CODE : "",
+        key: expectedM4KeyboardKey(code) ?? "",
         trusted: false,
         queued: false,
         generated: true,
@@ -956,10 +972,17 @@ export class ChromiumWasmM3Host {
       this.#recordHost("m4:keyboard:" + type + ":unsupported-composition");
       return;
     }
-    if (record.code !== M4_KEYBOARD_DOM_CODE) {
+    const expectedKey = expectedM4KeyboardKey(record.code);
+    if (expectedKey === null) {
       record.reason = "UNSUPPORTED_DOM_CODE";
       this.#recordKeyboard(record);
       this.#recordHost("m4:keyboard:" + type + ":unsupported-code");
+      return;
+    }
+    if (record.key !== expectedKey) {
+      record.reason = "UNSUPPORTED_DOM_KEY";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":unsupported-key");
       return;
     }
     if (type === "down" && this.#keyboardCodesDown.has(record.code)) {
@@ -2778,6 +2801,384 @@ async function runM4OzoneKeyboardSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzonePrintableKeySmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_PRINTABLE_KEY_CASE) {
+      throw new Error("M4 printable-key case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 printable-key result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_PRINTABLE_KEY_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 printable-key base readiness timeout: " +
+        JSON.stringify(readiness));
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 printable-key target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 printable-key target y", 0, DEFAULT_HEIGHT - 1);
+    const pointerListeners = host.enableM4PointerInput();
+    const keyboardListeners = host.enableM4KeyboardInput();
+    const focusListeners = host.enableM4FocusInput();
+    window.__chromiumWasmM4PrintableKeyState = {
+      state: "awaiting-dom-printable-key-activation",
+      targetX,
+      targetY,
+      pointerListeners,
+      keyboardListeners,
+      focusListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas click and raw KeyA input";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer.lastQueued;
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer.queuedCount >= 2 &&
+        lastQueued?.type === "up" &&
+        pageProbe?.activationCount === 1 &&
+        pageProbe?.clickTrusted === true &&
+        pageProbe?.focusCount >= 1 &&
+        pageProbe?.focusTrusted === true &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.value === "" &&
+        pageProbe?.selectionStart === 0 &&
+        pageProbe?.selectionEnd === 0 &&
+        readiness.frame?.id > lastQueued.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const lastQueuedPointer = pointer?.lastQueued;
+    const pageAfterActivation = readiness?.pageProbe;
+    if (
+      !readiness ||
+      pointer?.queuedCount < 2 ||
+      lastQueuedPointer?.type !== "up" ||
+      pageAfterActivation?.activationCount !== 1 ||
+      pageAfterActivation?.clickTrusted !== true ||
+      pageAfterActivation?.focusCount < 1 ||
+      pageAfterActivation?.focusTrusted !== true ||
+      pageAfterActivation?.activeElementId !== "editable-target" ||
+      pageAfterActivation?.value !== "" ||
+      pageAfterActivation?.selectionStart !== 0 ||
+      pageAfterActivation?.selectionEnd !== 0 ||
+      !(readiness.frame?.id > lastQueuedPointer.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone printable-key activation timeout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4PrintableKeyState = {
+      state: "awaiting-dom-printable-key",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(readiness.keyboardInput),
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas raw KeyA input";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const keyDown = keyboard.lastQueuedDown;
+      const keyUp = keyboard.lastQueuedUp;
+      const pageProbe = readiness.pageProbe;
+      const keyEvents = pageProbe?.keyEvents;
+      const textInputEvents = pageProbe?.textInputEvents;
+      if (
+        keyboard.receivedCount === 2 &&
+        keyboard.trustedCount === 2 &&
+        keyboard.queuedCount === 2 &&
+        keyboard.pressedCodes.length === 0 &&
+        keyDown?.type === "down" &&
+        keyDown?.code === M4_PRINTABLE_KEY_DOM_CODE &&
+        keyDown?.key === M4_PRINTABLE_KEY_DOM_KEY &&
+        keyDown?.defaultPrevented === true &&
+        keyUp?.type === "up" &&
+        keyUp?.code === M4_PRINTABLE_KEY_DOM_CODE &&
+        keyUp?.key === M4_PRINTABLE_KEY_DOM_KEY &&
+        keyUp?.defaultPrevented === true &&
+        keyEvents?.keydownCount === 1 &&
+        keyEvents?.keyupCount === 1 &&
+        keyEvents?.keydownTrusted === true &&
+        keyEvents?.keyupTrusted === true &&
+        keyEvents?.keydownCode === M4_PRINTABLE_KEY_DOM_CODE &&
+        keyEvents?.keyupCode === M4_PRINTABLE_KEY_DOM_CODE &&
+        keyEvents?.keydownKey === M4_PRINTABLE_KEY_DOM_KEY &&
+        keyEvents?.keyupKey === M4_PRINTABLE_KEY_DOM_KEY &&
+        keyEvents?.keydownRepeat === false &&
+        keyEvents?.keyupRepeat === false &&
+        keyEvents?.keydownComposing === false &&
+        keyEvents?.keyupComposing === false &&
+        keyEvents?.keydownDefaultPrevented === false &&
+        keyEvents?.keyupDefaultPrevented === false &&
+        keyEvents?.keydownTargetId === "editable-target" &&
+        keyEvents?.keyupTargetId === "editable-target" &&
+        textInputEvents?.beforeinputCount === 1 &&
+        textInputEvents?.inputCount === 1 &&
+        textInputEvents?.beforeinputTrusted === true &&
+        textInputEvents?.inputTrusted === true &&
+        textInputEvents?.beforeinputInputType === "insertText" &&
+        textInputEvents?.inputInputType === "insertText" &&
+        textInputEvents?.beforeinputData === M4_PRINTABLE_KEY_DOM_KEY &&
+        textInputEvents?.inputData === M4_PRINTABLE_KEY_DOM_KEY &&
+        textInputEvents?.beforeinputTargetId === "editable-target" &&
+        textInputEvents?.inputTargetId === "editable-target" &&
+        textInputEvents?.compositionstartCount === 0 &&
+        textInputEvents?.compositionupdateCount === 0 &&
+        textInputEvents?.compositionendCount === 0 &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.value === M4_PRINTABLE_KEY_DOM_KEY &&
+        pageProbe?.selectionStart === 1 &&
+        pageProbe?.selectionEnd === 1 &&
+        pageProbe?.resultText === "TEXT INPUT RECEIVED" &&
+        readiness.frame?.id > keyDown.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const keyboard = readiness?.keyboardInput;
+    const lastQueuedDown = keyboard?.lastQueuedDown;
+    const lastQueuedUp = keyboard?.lastQueuedUp;
+    const pageProbe = readiness?.pageProbe;
+    const keyEvents = pageProbe?.keyEvents;
+    const textInputEvents = pageProbe?.textInputEvents;
+    if (
+      !readiness ||
+      keyboard?.receivedCount !== 2 ||
+      keyboard?.trustedCount !== 2 ||
+      keyboard?.queuedCount !== 2 ||
+      keyboard?.pressedCodes?.length !== 0 ||
+      lastQueuedDown?.type !== "down" ||
+      lastQueuedDown?.code !== M4_PRINTABLE_KEY_DOM_CODE ||
+      lastQueuedDown?.key !== M4_PRINTABLE_KEY_DOM_KEY ||
+      lastQueuedDown?.defaultPrevented !== true ||
+      lastQueuedUp?.type !== "up" ||
+      lastQueuedUp?.code !== M4_PRINTABLE_KEY_DOM_CODE ||
+      lastQueuedUp?.key !== M4_PRINTABLE_KEY_DOM_KEY ||
+      lastQueuedUp?.defaultPrevented !== true ||
+      keyEvents?.keydownCount !== 1 ||
+      keyEvents?.keyupCount !== 1 ||
+      keyEvents?.keydownTrusted !== true ||
+      keyEvents?.keyupTrusted !== true ||
+      keyEvents?.keydownCode !== M4_PRINTABLE_KEY_DOM_CODE ||
+      keyEvents?.keyupCode !== M4_PRINTABLE_KEY_DOM_CODE ||
+      keyEvents?.keydownKey !== M4_PRINTABLE_KEY_DOM_KEY ||
+      keyEvents?.keyupKey !== M4_PRINTABLE_KEY_DOM_KEY ||
+      keyEvents?.keydownRepeat !== false ||
+      keyEvents?.keyupRepeat !== false ||
+      keyEvents?.keydownComposing !== false ||
+      keyEvents?.keyupComposing !== false ||
+      keyEvents?.keydownDefaultPrevented !== false ||
+      keyEvents?.keyupDefaultPrevented !== false ||
+      keyEvents?.keydownTargetId !== "editable-target" ||
+      keyEvents?.keyupTargetId !== "editable-target" ||
+      textInputEvents?.beforeinputCount !== 1 ||
+      textInputEvents?.inputCount !== 1 ||
+      textInputEvents?.beforeinputTrusted !== true ||
+      textInputEvents?.inputTrusted !== true ||
+      textInputEvents?.beforeinputInputType !== "insertText" ||
+      textInputEvents?.inputInputType !== "insertText" ||
+      textInputEvents?.beforeinputData !== M4_PRINTABLE_KEY_DOM_KEY ||
+      textInputEvents?.inputData !== M4_PRINTABLE_KEY_DOM_KEY ||
+      textInputEvents?.beforeinputTargetId !== "editable-target" ||
+      textInputEvents?.inputTargetId !== "editable-target" ||
+      textInputEvents?.compositionstartCount !== 0 ||
+      textInputEvents?.compositionupdateCount !== 0 ||
+      textInputEvents?.compositionendCount !== 0 ||
+      pageProbe?.activeElementId !== "editable-target" ||
+      pageProbe?.value !== M4_PRINTABLE_KEY_DOM_KEY ||
+      pageProbe?.selectionStart !== 1 ||
+      pageProbe?.selectionEnd !== 1 ||
+      pageProbe?.resultText !== "TEXT INPUT RECEIVED" ||
+      !(readiness.frame?.id > lastQueuedDown.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone printable-key timeout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4PrintableKeyState = {
+      state: "input-delivered",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(keyboard),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      pointerActivation:
+        pointer.trustedCount >= 2 &&
+        pointer.queuedCount >= 2 &&
+        lastQueuedPointer.trusted === true &&
+        lastQueuedPointer.queued === true,
+      trustedDomInput:
+        keyboard.receivedCount === 2 &&
+        keyboard.trustedCount === 2 &&
+        keyboard.queuedCount === 2 &&
+        lastQueuedDown.trusted === true &&
+        lastQueuedDown.queued === true &&
+        lastQueuedDown.defaultPrevented === true &&
+        lastQueuedUp.trusted === true &&
+        lastQueuedUp.queued === true &&
+        lastQueuedUp.defaultPrevented === true,
+      ozoneDelivered:
+        pageProbe.activationCount === 1 &&
+        pageProbe.clickTrusted === true &&
+        pageProbe.focusCount >= 1 &&
+        pageProbe.focusTrusted === true &&
+        pageProbe.activeElementId === "editable-target" &&
+        keyEvents.keydownCount === 1 &&
+        keyEvents.keyupCount === 1 &&
+        keyEvents.keydownTrusted === true &&
+        keyEvents.keyupTrusted === true &&
+        keyEvents.keydownCode === M4_PRINTABLE_KEY_DOM_CODE &&
+        keyEvents.keyupCode === M4_PRINTABLE_KEY_DOM_CODE &&
+        keyEvents.keydownKey === M4_PRINTABLE_KEY_DOM_KEY &&
+        keyEvents.keyupKey === M4_PRINTABLE_KEY_DOM_KEY &&
+        keyEvents.keydownRepeat === false &&
+        keyEvents.keyupRepeat === false &&
+        keyEvents.keydownComposing === false &&
+        keyEvents.keyupComposing === false &&
+        keyEvents.keydownDefaultPrevented === false &&
+        keyEvents.keyupDefaultPrevented === false &&
+        keyEvents.keydownTargetId === "editable-target" &&
+        keyEvents.keyupTargetId === "editable-target" &&
+        textInputEvents.beforeinputCount === 1 &&
+        textInputEvents.inputCount === 1 &&
+        textInputEvents.beforeinputTrusted === true &&
+        textInputEvents.inputTrusted === true &&
+        textInputEvents.beforeinputInputType === "insertText" &&
+        textInputEvents.inputInputType === "insertText" &&
+        textInputEvents.beforeinputData === M4_PRINTABLE_KEY_DOM_KEY &&
+        textInputEvents.inputData === M4_PRINTABLE_KEY_DOM_KEY &&
+        textInputEvents.beforeinputTargetId === "editable-target" &&
+        textInputEvents.inputTargetId === "editable-target" &&
+        textInputEvents.compositionstartCount === 0 &&
+        textInputEvents.compositionupdateCount === 0 &&
+        textInputEvents.compositionendCount === 0 &&
+        pageProbe.value === M4_PRINTABLE_KEY_DOM_KEY &&
+        pageProbe.selectionStart === 1 &&
+        pageProbe.selectionEnd === 1 &&
+        pageProbe.resultText === "TEXT INPUT RECEIVED" &&
+        readiness.frame.id > lastQueuedDown.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_PRINTABLE_KEY_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      keyboardInput: keyboard,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_PRINTABLE_KEY_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      keyboardInput: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.keyboardInput = result.readiness.keyboardInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneFocusSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -3199,6 +3600,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_KEYBOARD_CASE) {
     return runM4OzoneKeyboardSmokeFromQuery();
+  }
+  if (selectedCase === M4_PRINTABLE_KEY_CASE) {
+    return runM4OzonePrintableKeySmokeFromQuery();
   }
   if (selectedCase === M4_FOCUS_CASE) {
     return runM4OzoneFocusSmokeFromQuery();

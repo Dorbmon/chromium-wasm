@@ -64,6 +64,12 @@ constexpr int kMaximumCanvasDimension = 16384;
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr std::string_view kM4NavigationDomCode = "ArrowDown";
+constexpr std::string_view kM4PrintableDomCode = "KeyA";
+
+bool IsSupportedM4DomCode(ui::DomCode dom_code) {
+  return dom_code == ui::DomCode::ARROW_DOWN ||
+         dom_code == ui::DomCode::US_A;
+}
 
 enum class DomPointerEventType {
   kMove = 0,
@@ -560,13 +566,14 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_key(const char* code, int down) {
   }
   const size_t length =
       strnlen(code, content::kM4NavigationDomCode.size() + 1);
-  if (length != content::kM4NavigationDomCode.size() ||
-      std::string_view(code, length) != content::kM4NavigationDomCode) {
+  const std::string_view code_string(code, length);
+  if (code_string != content::kM4NavigationDomCode &&
+      code_string != content::kM4PrintableDomCode) {
     return 0;
   }
   const ui::DomCode physical_key =
-      ui::KeycodeConverter::CodeStringToDomCode(content::kM4NavigationDomCode);
-  if (physical_key != ui::DomCode::ARROW_DOWN) {
+      ui::KeycodeConverter::CodeStringToDomCode(code_string);
+  if (!content::IsSupportedM4DomCode(physical_key)) {
     return 0;
   }
   return content::PostHostCommand(base::BindOnce(

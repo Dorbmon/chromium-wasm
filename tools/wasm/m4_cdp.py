@@ -244,6 +244,28 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_key_a(self) -> None:
+        base = {
+            "code": "KeyA",
+            "key": "a",
+            "windowsVirtualKeyCode": 65,
+            "modifiers": 0,
+        }
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "rawKeyDown",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "keyUp",
+            },
+        )
+
 
 def wait_for_page_client(
     port: int, expected_url_prefix: str, deadline: float
