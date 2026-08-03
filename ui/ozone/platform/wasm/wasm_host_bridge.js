@@ -17,6 +17,14 @@ mergeInto(LibraryManager.library, {
       surfaceReady: false,
       firstVisuallyNonEmptyPaint: false,
     },
+    isExactCursorType(cursorType) {
+      // CSS has no exact analogue for directional panning, DnD decoration,
+      // or no-resize cursor families. The host may expose a diagnostic
+      // fallback, but C++ must not treat that visual approximation as success.
+      return !(
+        (cursorType >= 20 && cursorType <= 28) || cursorType >= 43
+      );
+    },
     bridge() {
       const bridge = globalThis['__chromiumWasmHostBridgeV1'];
       if (!bridge || bridge.protocol !== 1) {
@@ -168,6 +176,28 @@ mergeInto(LibraryManager.library, {
       active: active === 1,
     });
     return 1;
+  },
+
+  chromium_wasm_report_ozone_cursor__deps: ['$ChromiumWasmHostBridge'],
+  chromium_wasm_report_ozone_cursor__proxy: 'sync',
+  chromium_wasm_report_ozone_cursor: (cursorType) => {
+    // CursorType is a stable mojom enum. Do not accept an arbitrary host
+    // string: Wasm only transfers the native cursor type and the host owns the
+    // CSS mapping.
+    if (!Number.isSafeInteger(cursorType) || cursorType < -1 ||
+        cursorType > 53) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportOzoneCursor !== 'function') {
+      return 0;
+    }
+    const delivered = bridge.reportOzoneCursor({
+      protocol: ChromiumWasmHostBridge.version,
+      cursorType,
+    });
+    return delivered === true &&
+        ChromiumWasmHostBridge.isExactCursorType(cursorType) ? 1 : 0;
   },
 
   chromium_wasm_report_ozone_text_input_state__deps: [

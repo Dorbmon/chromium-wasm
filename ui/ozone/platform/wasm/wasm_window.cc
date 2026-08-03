@@ -4,6 +4,8 @@
 
 #include "ui/ozone/platform/wasm/wasm_window.h"
 
+#include <utility>
+
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -14,12 +16,14 @@
 #include "ui/events/event.h"
 #include "ui/events/ozone/events_ozone.h"
 #include "ui/events/platform/platform_event_source.h"
+#include "ui/ozone/common/bitmap_cursor.h"
 #include "ui/ozone/platform/wasm/wasm_window_manager.h"
 #include "ui/platform_window/platform_window_delegate.h"
 
 extern "C" int chromium_wasm_report_ozone_focus_state(
     int keyboard_target_present,
     int active);
+extern "C" int chromium_wasm_report_ozone_cursor(int cursor_type);
 
 namespace ui {
 
@@ -238,8 +242,25 @@ bool WasmWindow::ShouldUseNativeFrame() const {
 }
 
 void WasmWindow::SetCursor(scoped_refptr<PlatformCursor> cursor) {
-  NOTIMPLEMENTED_LOG_ONCE()
-      << "Host cursor updates are unsupported by the M4 pointer slice";
+  CHECK(cursor);
+  // ozone_wasm owns BitmapCursorFactory, so every PlatformCursor reaching
+  // this boundary is a BitmapCursor. Keep the bridge scalar-only: standard
+  // CSS cursor shapes do not need to share bitmap lifetime with JavaScript.
+  const auto bitmap_cursor =
+      BitmapCursor::FromPlatformCursor(std::move(cursor));
+  const int cursor_type = static_cast<int>(bitmap_cursor->type());
+  if (last_reported_cursor_type_ == cursor_type) {
+    return;
+  }
+  if (bitmap_cursor->type() == mojom::CursorType::kCustom) {
+    LOG(WARNING) << "ozone_wasm host cannot present raster custom cursors";
+  }
+  if (chromium_wasm_report_ozone_cursor(cursor_type) != 1) {
+    LOG(ERROR) << "host cannot exactly represent ozone_wasm cursor type "
+               << cursor_type;
+    return;
+  }
+  last_reported_cursor_type_ = cursor_type;
 }
 
 void WasmWindow::MoveCursorTo(const gfx::Point& location) {

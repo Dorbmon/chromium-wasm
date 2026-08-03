@@ -1115,6 +1115,17 @@ def validate_m4_result(
     _require_safe_integer(
         page_probe.get("timerTicks"), "M4 inner page timer ticks", minimum=3
     )
+    pointer_move_trace = page_probe.get("pointerMoveTrace")
+    if not isinstance(pointer_move_trace, list) or not any(
+        isinstance(record, dict)
+        and record.get("type") == "pointermove"
+        and record.get("trusted") is True
+        and record.get("targetId") == "m4-link"
+        and record.get("clientX") == target_x
+        and record.get("clientY") == target_y
+        for record in pointer_move_trace
+    ):
+        raise M0Error("M4 inner pointer hover did not reach the link")
     pointer_events = _require_dict(
         page_probe.get("pointerEvents"), "M4 inner pointer events"
     )
@@ -1131,6 +1142,25 @@ def validate_m4_result(
             f"M4 inner {event_name} count",
             minimum=1,
         )
+
+    cursor = _require_dict(readiness.get("ozoneCursor"), "M4 Ozone cursor")
+    result_cursor = _require_dict(result.get("cursor"), "M4 result cursor")
+    if result_cursor != cursor:
+        raise M0Error("M4 cursor evidence differs from readiness evidence")
+    cursor_sequence = _require_safe_integer(
+        cursor.get("sequence"), "M4 Ozone cursor sequence", minimum=1
+    )
+    cursor_sequence_before_input = _require_safe_integer(
+        result.get("cursorReportSequenceBeforeInput"),
+        "M4 Ozone cursor sequence before input",
+        minimum=0,
+    )
+    if cursor_sequence <= cursor_sequence_before_input:
+        raise M0Error("M4 Ozone cursor did not update after trusted hover")
+    if cursor.get("cursorType") != 2:
+        raise M0Error("M4 Ozone cursor type is not the Blink hand cursor")
+    if cursor.get("cssCursor") != "pointer" or cursor.get("exact") is not True:
+        raise M0Error("M4 host canvas cursor is not an exact pointer mapping")
 
     pointer_input = _require_dict(
         result.get("pointerInput"), "M4 pointer input"
@@ -1226,6 +1256,7 @@ def validate_m4_result(
         "m4:pointer:listeners-attached",
         "m4:pointer:down:queued",
         "m4:pointer:up:queued",
+        "ozone:cursor:2:pointer:exact",
         "shutdown:complete",
     ):
         if not any(marker in line for line in host_logs):

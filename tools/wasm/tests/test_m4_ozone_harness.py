@@ -84,6 +84,15 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "targetCenterX": 285,
                 "targetCenterY": 229,
                 "timerTicks": 3,
+                "pointerMoveTrace": [
+                    {
+                        "type": "pointermove",
+                        "trusted": True,
+                        "targetId": "m4-link",
+                        "clientX": 285,
+                        "clientY": 229,
+                    }
+                ],
                 "pointerEvents": {
                     "mousemove": 3,
                     "mousedown": 1,
@@ -93,9 +102,22 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                     "pointerup": 1,
                 },
             },
+            "ozoneCursor": {
+                "sequence": 1,
+                "cursorType": 2,
+                "cssCursor": "pointer",
+                "exact": True,
+            },
             "pointerInput": pointer_input,
         },
         "pointerInput": pointer_input,
+        "cursor": {
+            "sequence": 1,
+            "cursorType": 2,
+            "cssCursor": "pointer",
+            "exact": True,
+        },
+        "cursorReportSequenceBeforeInput": 0,
         "shutdown": {
             "ok": True,
             "accepted": True,
@@ -109,6 +131,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "m4:pointer:move:queued",
                 "m4:pointer:down:queued",
                 "m4:pointer:up:queued",
+                "ozone:cursor:2:pointer:exact",
                 "shutdown:complete",
             ],
             "stdout": [],
@@ -197,6 +220,31 @@ class M4ResultValidationTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             M0Error, "pointer x does not match the fixture target"
+        ):
+            m3_content_server.validate_m4_result(
+                result, expected_versions=versions
+            )
+
+    def test_nonexact_or_stale_cursor_report_is_rejected(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        cursor = readiness["ozoneCursor"]
+        assert isinstance(cursor, dict)
+        cursor["exact"] = False
+        result_cursor = result["cursor"]
+        assert isinstance(result_cursor, dict)
+        result_cursor["exact"] = False
+
+        with self.assertRaisesRegex(M0Error, "exact pointer mapping"):
+            m3_content_server.validate_m4_result(
+                result, expected_versions=versions
+            )
+
+        result, versions = passing_result()
+        result["cursorReportSequenceBeforeInput"] = 1
+        with self.assertRaisesRegex(
+            M0Error, "did not update after trusted hover"
         ):
             m3_content_server.validate_m4_result(
                 result, expected_versions=versions

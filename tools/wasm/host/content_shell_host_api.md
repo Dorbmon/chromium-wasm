@@ -50,9 +50,10 @@ boundaries. A primary-mouse drag can use the same pointer path to make a native
 Blink selection; it is not a host selection command. Generic text entry,
 programmatic or arbitrary selection/replacement, deletion, generic paste,
 modifiers, repeat, touch, pen, non-primary buttons other than the bounded
-middle-click primary-paste route, cursor control, focus regain without a
-pointer press, and richer multi-window behavior remain outside this first M4
-input slice. Returning success while dropping an event is a contract failure.
+middle-click primary-paste route, cursor warping/confinement, focus regain
+without a pointer press, and richer multi-window behavior remain outside this
+first M4 input slice. Returning success while dropping an event is a contract
+failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -180,7 +181,17 @@ through public `OzonePlatform`, then route through the Wasm
 primary pointer press activates the Ozone window; raw key records target that
 keyboard-focused window rather than hover or wheel hit testing. The M4 pointer
 smoke proves trusted inner mouse and pointer events, trusted link activation,
-and a newer compositor frame after the queued release. The M4 wheel smoke
+and a newer compositor frame after the queued release. The same trusted hover
+now reaches Aura's `CursorClient`, `WindowTreeHost`, and `WasmWindow`, whose
+versioned host report applies the corresponding standard CSS cursor to the
+outer canvas. It proves Blink's `cursor: pointer` becomes the native hand
+cursor and then `canvas.style.cursor == "pointer"`; this CSS update does not
+need a compositor redraw. Exact CSS-compatible standard cursor shapes are
+scalar type mappings, and the native call succeeds only after the host accepts
+the CSS value. Directional panning, DnD decoration, no-resize, and
+custom bitmap/hotspot cursors expose a diagnostic fallback but explicitly
+report unsupported rather than being silently treated as rendered; cursor
+movement/confinement remain unsupported. The M4 wheel smoke
 proves a trusted inner pixel-mode wheel event with the expected DOM delta,
 inner scrolling while the outer page remains unscrolled, and a newer compositor
 frame. The M4 raw-key smoke clicks a real focusable page element, drives one

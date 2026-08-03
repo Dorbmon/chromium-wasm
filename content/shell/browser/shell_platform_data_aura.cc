@@ -5,11 +5,14 @@
 #include "content/shell/browser/shell_platform_data_aura.h"
 
 #include <memory>
+#include <utility>
 
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "build/build_config.h"
+#include "ui/aura/client/cursor_client.h"
 #include "ui/aura/client/cursor_shape_client.h"
 #include "ui/aura/client/default_capture_client.h"
 #include "ui/aura/env.h"
@@ -24,9 +27,16 @@
 #include "ui/aura/test/test_window_parenting_client.h"  // nogncheck
 #endif
 #include "ui/aura/window.h"
+#include "ui/aura/window_event_dispatcher.h"
+#include "ui/aura/window_tree_host.h"
+#include "ui/base/cursor/cursor.h"
+#include "ui/base/cursor/cursor_size.h"
+#include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/platform_window/platform_window_init_properties.h"
 #include "ui/wm/core/cursor_loader.h"
+#include "ui/wm/core/cursor_manager.h"
 #include "ui/wm/core/default_activation_client.h"
+#include "ui/wm/core/native_cursor_manager.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/aura/screen_ozone.h"
@@ -179,6 +189,99 @@ class ShellWindowParentingClient
  private:
   raw_ptr<aura::Window> root_window_;
 };
+
+// The Wasm Ozone platform supplies the native cursor via PlatformWindow. Aura
+// still needs a CursorClient to turn Blink's cursor updates into those
+// PlatformWindow calls. Keep the state transitions in CursorManager and use
+// CursorLoader to create the platform cursor that WasmWindow consumes.
+class ShellNativeCursorManager final : public wm::NativeCursorManager {
+ public:
+  explicit ShellNativeCursorManager(aura::WindowTreeHost* host) : host_(host) {
+    CHECK(host_);
+    aura::client::SetCursorShapeClient(&cursor_loader_);
+  }
+
+  ShellNativeCursorManager(const ShellNativeCursorManager&) = delete;
+  ShellNativeCursorManager& operator=(const ShellNativeCursorManager&) =
+      delete;
+
+  ~ShellNativeCursorManager() override {
+    aura::client::SetCursorShapeClient(nullptr);
+  }
+
+ private:
+  // wm::NativeCursorManager:
+  void SetDisplay(const display::Display& display,
+                  wm::NativeCursorManagerDelegate* delegate) override {
+    if (cursor_loader_.SetDisplay(display)) {
+      SetCursor(delegate->GetCursor(), delegate);
+    }
+  }
+
+  void SetCursor(gfx::NativeCursor cursor,
+                 wm::NativeCursorManagerDelegate* delegate) override {
+    cursor_loader_.SetPlatformCursor(&cursor);
+    delegate->CommitCursor(cursor);
+    if (delegate->IsCursorVisible()) {
+      host_->SetCursor(cursor);
+    }
+  }
+
+  void SetVisibility(bool visible,
+                     wm::NativeCursorManagerDelegate* delegate) override {
+    delegate->CommitVisibility(visible);
+    if (visible) {
+      SetCursor(delegate->GetCursor(), delegate);
+    } else {
+      gfx::NativeCursor invisible_cursor(ui::mojom::CursorType::kNone);
+      cursor_loader_.SetPlatformCursor(&invisible_cursor);
+      host_->SetCursor(invisible_cursor);
+    }
+    host_->OnCursorVisibilityChanged(visible);
+  }
+
+  void SetCursorSize(ui::CursorSize cursor_size,
+                     wm::NativeCursorManagerDelegate* delegate) override {
+    cursor_loader_.SetSize(cursor_size);
+    delegate->CommitCursorSize(cursor_size);
+    // The browser canvas supports standard CSS cursor shapes, but does not
+    // yet expose OS accessibility cursor-size controls. Preserve Chromium's
+    // state while making the unimplemented host visual explicit.
+    LOG(WARNING)
+        << "ozone_wasm host cursor size customization is unsupported";
+    SetCursor(delegate->GetCursor(), delegate);
+  }
+
+  void SetLargeCursorSizeInDip(
+      int large_cursor_size_in_dip,
+      wm::NativeCursorManagerDelegate* delegate) override {
+    cursor_loader_.SetLargeCursorSizeInDip(large_cursor_size_in_dip);
+    delegate->CommitLargeCursorSizeInDip(large_cursor_size_in_dip);
+    LOG(WARNING)
+        << "ozone_wasm host large cursor customization is unsupported";
+    SetCursor(delegate->GetCursor(), delegate);
+  }
+
+  void SetMouseEventsEnabled(
+      bool enabled,
+      wm::NativeCursorManagerDelegate* delegate) override {
+    delegate->CommitMouseEventsEnabled(enabled);
+    SetVisibility(delegate->IsCursorVisible(), delegate);
+    host_->dispatcher()->OnMouseEventsEnableStateChanged(enabled);
+  }
+
+  void SetCursorColor(SkColor color,
+                      wm::NativeCursorManagerDelegate* delegate) override {
+    cursor_loader_.SetColor(color);
+    delegate->CommitCursorColor(color);
+    LOG(WARNING)
+        << "ozone_wasm host cursor color customization is unsupported";
+    SetCursor(delegate->GetCursor(), delegate);
+  }
+
+  raw_ptr<aura::WindowTreeHost> host_;
+  wm::CursorLoader cursor_loader_;
+};
 #endif
 
 }
@@ -220,15 +323,28 @@ ShellPlatformDataAura::ShellPlatformDataAura(const gfx::Size& initial_size) {
       std::make_unique<aura::test::TestWindowParentingClient>(host_->window());
 #endif
 
+#if BUILDFLAG(IS_WASM)
+  auto native_cursor_manager =
+      std::make_unique<ShellNativeCursorManager>(host_.get());
+  cursor_manager_ =
+      std::make_unique<wm::CursorManager>(std::move(native_cursor_manager));
+  aura::client::SetCursorClient(host_->window(), cursor_manager_.get());
+#else
   // TODO(https://crbug.com/1336055): this is needed for
   // mouse_cursor_overlay_controller_browsertest.cc on cast_shell_linux as
   // currently, when is_castos = true, the views toolkit isn't used.
   cursor_shape_client_ = std::make_unique<wm::CursorLoader>();
   aura::client::SetCursorShapeClient(cursor_shape_client_.get());
+#endif
 }
 
 ShellPlatformDataAura::~ShellPlatformDataAura() {
+#if BUILDFLAG(IS_WASM)
+  aura::client::SetCursorClient(host_->window(), nullptr);
+  cursor_manager_.reset();
+#else
   aura::client::SetCursorShapeClient(nullptr);
+#endif
 }
 
 void ShellPlatformDataAura::ShowWindow() {

@@ -31,6 +31,7 @@
     border: 3px solid #0f5b94;
     background: #d8f0ff;
     color: #062b4d;
+    cursor: pointer;
     text-decoration: none;
   }
 
@@ -62,6 +63,7 @@
       pointerdown: 0,
       pointerup: 0,
     };
+    const pointerMoveTrace = [];
     let fontReady = !document.fonts;
     Promise.resolve(document.fonts?.ready).then(() => {
       fontReady = true;
@@ -74,6 +76,16 @@
         pointerEvents[type] += 1;
       });
     }
+
+    link.addEventListener("pointermove", (event) => {
+      pointerMoveTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+    });
 
     link.addEventListener("click", (event) => {
       event.preventDefault();
@@ -91,6 +103,7 @@
         fixture: "chromium-wasm-m4-ozone-pointer-v1",
         fontReady,
         pointerEvents,
+        pointerMoveTrace,
         ready: document.readyState === "complete" && fontReady &&
             rect.width > 0,
         targetCenterX: Math.floor(rect.left + rect.width / 2),

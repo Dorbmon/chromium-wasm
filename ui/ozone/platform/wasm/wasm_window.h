@@ -21,7 +21,8 @@ class WasmWindowManager;
 
 // M3 supplies the minimum single-canvas window lifecycle Aura needs. M4 adds
 // host pointer, wheel, and raw navigation-key dispatch; full keyboard, IME,
-// and cursor integration remain off.
+// and a host-canvas cursor bridge; full keyboard and IME integration remain
+// off.
 class WasmWindow final : public PlatformWindow,
                          public PlatformEventDispatcher,
                          public EventTarget {
@@ -100,6 +101,7 @@ class WasmWindow final : public PlatformWindow,
   gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;
   bool visible_ = false;
   std::optional<gfx::Rect> restored_bounds_;
+  std::optional<int> last_reported_cursor_type_;
   PlatformWindowState window_state_ = PlatformWindowState::kUnknown;
   ActivationState activation_state_ = ActivationState::kUnknown;
   base::WeakPtrFactory<WasmWindow> weak_ptr_factory_{this};

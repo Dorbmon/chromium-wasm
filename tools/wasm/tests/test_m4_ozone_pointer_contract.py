@@ -232,6 +232,76 @@ class M4OzonePointerContractTest(unittest.TestCase):
             pointer_target.index("GetWindowAtScreenPoint(point)"),
         )
 
+    def test_cursor_reaches_the_host_canvas_through_aura_and_ozone(self) -> None:
+        shell = source("content/shell/browser/shell_platform_data_aura.cc")
+        window = source("ui/ozone/platform/wasm/wasm_window.cc")
+        bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")
+        host = source("tools/wasm/host/content_shell_host.js")
+        fixture = source("tools/wasm/testdata/m4_ozone_input_page.html")
+
+        for marker in (
+            "class ShellNativeCursorManager final",
+            "wm::CursorManager",
+            "aura::client::SetCursorClient(host_->window(), cursor_manager_.get())",
+            "cursor_loader_.SetPlatformCursor(&cursor)",
+            "host_->SetCursor(cursor)",
+            "aura::client::SetCursorClient(host_->window(), nullptr)",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, shell)
+
+        cursor_setter = section(
+            window,
+            "void WasmWindow::SetCursor",
+            "void WasmWindow::MoveCursorTo",
+        )
+        for marker in (
+            "BitmapCursor::FromPlatformCursor",
+            "chromium_wasm_report_ozone_cursor(cursor_type)",
+            "last_reported_cursor_type_",
+            "host cannot present raster custom cursors",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, cursor_setter)
+        self.assertNotIn(
+            "Host cursor updates are unsupported by the M4 pointer slice",
+            cursor_setter,
+        )
+
+        for marker in (
+            "chromium_wasm_report_ozone_cursor__proxy: 'sync'",
+            "cursorType < -1",
+            "cursorType > 53",
+            "isExactCursorType(cursorType)",
+            "cursorType >= 20 && cursorType <= 28",
+            "cursorType >= 43",
+            "const delivered = bridge.reportOzoneCursor({",
+            "return delivered === true &&",
+            "ChromiumWasmHostBridge.isExactCursorType(cursorType) ? 1 : 0;",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, bridge)
+
+        for marker in (
+            "function ozoneCursorDescriptor(cursorType)",
+            'return {cssCursor: "pointer", exact: true};',
+            "reportOzoneCursor(report)",
+            "_reportOzoneCursor(value)",
+            "this.#canvas.style.cursor = descriptor.cssCursor;",
+            "return true;",
+            "return false;",
+            "ozoneCursor: this.#ozoneCursor",
+            "M4_CURSOR_TYPE_HAND",
+            "hasM4PointerLinkHover",
+            "cursorDelivered",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, host)
+
+        self.assertIn("cursor: pointer;", fixture)
+        self.assertIn("pointerMoveTrace", fixture)
+        self.assertIn('targetId: event.target?.id || null', fixture)
+
     def test_host_pointer_abi_uses_public_ozone_not_the_m3_renderer_hook(
         self,
     ) -> None:

@@ -19,6 +19,12 @@ class WindowParentingClient;
 }  // namespace client
 }  // namespace aura
 
+#if BUILDFLAG(IS_WASM)
+namespace wm {
+class CursorManager;
+}
+#endif
+
 #if BUILDFLAG(IS_OZONE)
 namespace aura {
 class ScreenOzone;
@@ -54,7 +60,11 @@ class ShellPlatformDataAura {
   std::unique_ptr<aura::client::FocusClient> focus_client_;
   std::unique_ptr<aura::client::DefaultCaptureClient> capture_client_;
   std::unique_ptr<aura::client::WindowParentingClient> window_parenting_client_;
+#if BUILDFLAG(IS_WASM)
+  std::unique_ptr<wm::CursorManager> cursor_manager_;
+#else
   std::unique_ptr<aura::client::CursorShapeClient> cursor_shape_client_;
+#endif
 };
 
 }  // namespace content

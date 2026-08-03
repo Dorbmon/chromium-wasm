@@ -152,14 +152,13 @@ class M3OzoneSourceContractTest(unittest.TestCase):
             factory,
         )
 
-    def test_window_cursor_and_host_decorations_are_explicitly_unsupported(
+    def test_window_cursor_controls_and_host_decorations_are_explicitly_scoped(
         self,
     ) -> None:
         window = source("ui/ozone/platform/wasm/wasm_window.cc")
         screen = source("ui/ozone/platform/wasm/wasm_screen.cc")
 
         for message in (
-            "Host cursor updates are unsupported by the M4 pointer slice",
             "Host cursor movement is unsupported by the M4 pointer slice",
             "Host cursor confinement is unsupported by the M4 pointer slice",
             "ozone_wasm M3 has no host-native title surface",
@@ -167,6 +166,12 @@ class M3OzoneSourceContractTest(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 self.assertIn(message, window)
+        self.assertIn("chromium_wasm_report_ozone_cursor", window)
+        self.assertIn("BitmapCursor::FromPlatformCursor", window)
+        self.assertIn("host cannot present raster custom cursors", window)
+        self.assertNotIn(
+            "Host cursor updates are unsupported by the M4 pointer slice", window
+        )
         self.assertNotIn(
             "Host cursor position is unsupported by the M4 pointer slice",
             screen,

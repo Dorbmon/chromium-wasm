@@ -39,6 +39,7 @@ const M4_PASTE_DOM_CODE = "KeyV";
 const M4_PASTE_DOM_KEY = "v";
 const M4_COPY_PASTE_SOURCE_VALUE = "COPY";
 const M4_COPY_PASTE_DECOY_VALUE = "DECOY";
+const M4_CURSOR_TYPE_HAND = 2;
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -80,6 +81,122 @@ function expectedM4KeyboardKey(code) {
     default:
       return null;
   }
+}
+
+function ozoneCursorDescriptor(cursorType) {
+  // Values intentionally mirror ui::mojom::CursorType. The C++ bridge only
+  // sends this scalar; JavaScript owns the browser-native CSS representation.
+  switch (cursorType) {
+    case -1:  // kNull
+    case 0:   // kPointer
+      return {cssCursor: "default", exact: true};
+    case 1:   // kCross
+      return {cssCursor: "crosshair", exact: true};
+    case 2:   // kHand
+      return {cssCursor: "pointer", exact: true};
+    case 3:   // kIBeam
+      return {cssCursor: "text", exact: true};
+    case 4:   // kWait
+      return {cssCursor: "wait", exact: true};
+    case 5:   // kHelp
+      return {cssCursor: "help", exact: true};
+    case 6:
+      return {cssCursor: "e-resize", exact: true};
+    case 7:
+      return {cssCursor: "n-resize", exact: true};
+    case 8:
+      return {cssCursor: "ne-resize", exact: true};
+    case 9:
+      return {cssCursor: "nw-resize", exact: true};
+    case 10:
+      return {cssCursor: "s-resize", exact: true};
+    case 11:
+      return {cssCursor: "se-resize", exact: true};
+    case 12:
+      return {cssCursor: "sw-resize", exact: true};
+    case 13:
+      return {cssCursor: "w-resize", exact: true};
+    case 14:
+      return {cssCursor: "ns-resize", exact: true};
+    case 15:
+      return {cssCursor: "ew-resize", exact: true};
+    case 16:
+      return {cssCursor: "nesw-resize", exact: true};
+    case 17:
+      return {cssCursor: "nwse-resize", exact: true};
+    case 18:
+      return {cssCursor: "col-resize", exact: true};
+    case 19:
+      return {cssCursor: "row-resize", exact: true};
+    case 20:  // kMiddlePanning
+    case 21:  // kEastPanning
+    case 22:  // kNorthPanning
+    case 23:  // kNorthEastPanning
+    case 24:  // kNorthWestPanning
+    case 25:  // kSouthPanning
+    case 26:  // kSouthEastPanning
+    case 27:  // kSouthWestPanning
+    case 28:  // kWestPanning
+    case 43:  // kMiddlePanningVertical
+    case 44:  // kMiddlePanningHorizontal
+      return {cssCursor: "all-scroll", exact: false};
+    case 29:
+      return {cssCursor: "move", exact: true};
+    case 30:
+      return {cssCursor: "vertical-text", exact: true};
+    case 31:
+      return {cssCursor: "cell", exact: true};
+    case 32:
+      return {cssCursor: "context-menu", exact: true};
+    case 33:
+      return {cssCursor: "alias", exact: true};
+    case 34:
+      return {cssCursor: "progress", exact: true};
+    case 35:
+      return {cssCursor: "no-drop", exact: true};
+    case 36:
+      return {cssCursor: "copy", exact: true};
+    case 37:
+      return {cssCursor: "none", exact: true};
+    case 38:
+      return {cssCursor: "not-allowed", exact: true};
+    case 39:
+      return {cssCursor: "zoom-in", exact: true};
+    case 40:
+      return {cssCursor: "zoom-out", exact: true};
+    case 41:
+      return {cssCursor: "grab", exact: true};
+    case 42:
+      return {cssCursor: "grabbing", exact: true};
+    case 45:  // kCustom
+      // A custom Blink cursor includes a bitmap and hotspot. The scalar bridge
+      // cannot preserve that data, so make the fallback visible in diagnostics
+      // instead of claiming that the custom image was rendered.
+      return {cssCursor: "default", exact: false};
+    case 46:  // kDndNone
+      return {cssCursor: "no-drop", exact: false};
+    case 47:  // kDndMove
+      return {cssCursor: "move", exact: false};
+    case 48:  // kDndCopy
+      return {cssCursor: "copy", exact: false};
+    case 49:  // kDndLink
+      return {cssCursor: "alias", exact: false};
+    case 50:  // kEastWestNoResize
+    case 51:  // kNorthSouthNoResize
+    case 52:  // kNorthEastSouthWestNoResize
+    case 53:  // kNorthWestSouthEastNoResize
+      return {cssCursor: "not-allowed", exact: false};
+    default:
+      return null;
+  }
+}
+
+function hasM4PointerLinkHover(pageProbe, x, y) {
+  const trace = pageProbe?.pointerMoveTrace;
+  return Array.isArray(trace) && trace.some((record) =>
+    record?.type === "pointermove" && record?.trusted === true &&
+    record?.targetId === "m4-link" && record?.clientX === x &&
+    record?.clientY === y);
 }
 
 function isM4CopyPasteShortcutCode(code) {
@@ -578,7 +695,7 @@ function asReport(value, description) {
 
 function deliverBridgeReport(method, args) {
   if (activeHost) {
-    activeHost[method](...args);
+    return activeHost[method](...args);
   } else {
     pendingBridgeReports.push({method, args});
   }
@@ -602,6 +719,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportOzoneFocusState(report) {
     deliverBridgeReport("_reportOzoneFocusState", [report]);
+  },
+  reportOzoneCursor(report) {
+    return deliverBridgeReport("_reportOzoneCursor", [report]);
   },
   reportOzoneTextInputState(report) {
     deliverBridgeReport("_reportOzoneTextInputState", [report]);
@@ -702,6 +822,8 @@ export class ChromiumWasmM3Host {
   #pageProbe = {};
   #ozoneFocusState = null;
   #ozoneFocusReportSequence = 0;
+  #ozoneCursor = null;
+  #ozoneCursorReportSequence = 0;
   #ozoneTextInputState = null;
   #ozoneTextInputReportSequence = 0;
   #frame = null;
@@ -3052,6 +3174,7 @@ export class ChromiumWasmM3Host {
       ozoneFocusState: this.#ozoneFocusState
         ? clone(this.#ozoneFocusState)
         : null,
+      ozoneCursor: this.#ozoneCursor ? clone(this.#ozoneCursor) : null,
       ozoneTextInputState: this.#ozoneTextInputState
         ? clone(this.#ozoneTextInputState)
         : null,
@@ -3280,6 +3403,39 @@ export class ChromiumWasmM3Host {
     } catch (error) {
       this._reportFatal(
         `invalid Ozone focus-state report: ${String(error)}`);
+    }
+  }
+
+  _reportOzoneCursor(value) {
+    try {
+      const report = asReport(value, "Ozone cursor report");
+      if (
+        report.protocol !== HOST_PROTOCOL ||
+        !Number.isSafeInteger(report.cursorType)
+      ) {
+        throw new Error("Ozone cursor report is invalid");
+      }
+      const descriptor = ozoneCursorDescriptor(report.cursorType);
+      if (!descriptor) {
+        throw new Error("Ozone cursor type is unsupported");
+      }
+      this.#canvas.style.cursor = descriptor.cssCursor;
+      if (this.#canvas.style.cursor !== descriptor.cssCursor) {
+        throw new Error("host canvas rejected the Ozone cursor style");
+      }
+      this.#ozoneCursor = {
+        sequence: ++this.#ozoneCursorReportSequence,
+        cursorType: report.cursorType,
+        cssCursor: descriptor.cssCursor,
+        exact: descriptor.exact,
+      };
+      this.#recordHost(
+        "ozone:cursor:" + report.cursorType + ":" +
+        descriptor.cssCursor + (descriptor.exact ? ":exact" : ":fallback"));
+      return true;
+    } catch (error) {
+      this._reportFatal(`invalid Ozone cursor report: ${String(error)}`);
+      return false;
     }
   }
 
@@ -3760,12 +3916,16 @@ async function runM4OzonePointerSmokeFromQuery() {
     const targetY = Number(readiness.pageProbe.targetCenterY);
     checkInteger(targetX, "M4 target x", 0, DEFAULT_WIDTH - 1);
     checkInteger(targetY, "M4 target y", 0, DEFAULT_HEIGHT - 1);
+    const cursorReportSequenceBeforeInput =
+      Number.isSafeInteger(readiness.ozoneCursor?.sequence)
+        ? readiness.ozoneCursor.sequence : 0;
     const listeners = host.enableM4PointerInput();
     const focusListeners = host.enableM4FocusInput();
     window.__chromiumWasmM4State = {
       state: "awaiting-dom-pointer",
       targetX,
       targetY,
+      cursorReportSequenceBeforeInput,
       listeners,
       focusListeners,
     };
@@ -3775,13 +3935,19 @@ async function runM4OzonePointerSmokeFromQuery() {
       readiness = await host.readiness();
       const pointer = readiness.pointerInput;
       const lastQueued = pointer.lastQueued;
+      const cursor = readiness.ozoneCursor;
       if (
         pointer.queuedCount >= 2 &&
         lastQueued?.type === "up" &&
         readiness.pageProbe.activationCount === 1 &&
         readiness.pageProbe.clickTrusted === true &&
         readiness.pageProbe.resultText === "ACTIVATED" &&
-        readiness.frame?.id > lastQueued.frameIdBefore
+        readiness.frame?.id > lastQueued.frameIdBefore &&
+        hasM4PointerLinkHover(readiness.pageProbe, targetX, targetY) &&
+        cursor?.sequence > cursorReportSequenceBeforeInput &&
+        cursor?.cursorType === M4_CURSOR_TYPE_HAND &&
+        cursor?.cssCursor === "pointer" && cursor?.exact === true &&
+        canvas.style.cursor === "pointer"
       ) {
         break;
       }
@@ -3789,6 +3955,7 @@ async function runM4OzonePointerSmokeFromQuery() {
     }
     const pointer = readiness?.pointerInput;
     const lastQueued = pointer?.lastQueued;
+    const cursor = readiness?.ozoneCursor;
     if (
       !readiness ||
       pointer?.queuedCount < 2 ||
@@ -3796,7 +3963,12 @@ async function runM4OzonePointerSmokeFromQuery() {
       readiness.pageProbe.activationCount !== 1 ||
       readiness.pageProbe.clickTrusted !== true ||
       readiness.pageProbe.resultText !== "ACTIVATED" ||
-      !(readiness.frame?.id > lastQueued.frameIdBefore)
+      !(readiness.frame?.id > lastQueued.frameIdBefore) ||
+      !hasM4PointerLinkHover(readiness.pageProbe, targetX, targetY) ||
+      !(cursor?.sequence > cursorReportSequenceBeforeInput) ||
+      cursor?.cursorType !== M4_CURSOR_TYPE_HAND ||
+      cursor?.cssCursor !== "pointer" || cursor?.exact !== true ||
+      canvas.style.cursor !== "pointer"
     ) {
       throw new Error(
         `M4 trusted Ozone pointer timeout: ${JSON.stringify(readiness)}`);
@@ -3806,6 +3978,8 @@ async function runM4OzonePointerSmokeFromQuery() {
       targetX,
       targetY,
       pointer: clone(pointer),
+      cursor: clone(cursor),
+      cursorReportSequenceBeforeInput,
     };
     const shutdownTimeoutMs = Math.max(
       1000, Math.min(60000, deadline - performance.now()));
@@ -3823,6 +3997,12 @@ async function runM4OzonePointerSmokeFromQuery() {
         readiness.pageProbe.clickTrusted === true &&
         readiness.pageProbe.resultText === "ACTIVATED" &&
         readiness.frame.id > lastQueued.frameIdBefore,
+      cursorDelivered:
+        hasM4PointerLinkHover(readiness.pageProbe, targetX, targetY) &&
+        cursor.sequence > cursorReportSequenceBeforeInput &&
+        cursor.cursorType === M4_CURSOR_TYPE_HAND &&
+        cursor.cssCursor === "pointer" && cursor.exact === true &&
+        canvas.style.cursor === "pointer",
       shutdown:
         shutdown.ok === true && shutdown.complete === true &&
         shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
@@ -3841,6 +4021,8 @@ async function runM4OzonePointerSmokeFromQuery() {
       versions,
       readiness,
       pointerInput: pointer,
+      cursor: clone(cursor),
+      cursorReportSequenceBeforeInput,
       logs,
       shutdown,
       failedChecks,
@@ -3858,6 +4040,8 @@ async function runM4OzonePointerSmokeFromQuery() {
       versions,
       readiness: null,
       pointerInput: null,
+      cursor: null,
+      cursorReportSequenceBeforeInput: null,
       logs: null,
       shutdown: null,
       failedChecks: ["exception"],
@@ -3872,6 +4056,7 @@ async function runM4OzonePointerSmokeFromQuery() {
       try {
         result.readiness = await host.readiness();
         result.pointerInput = result.readiness.pointerInput;
+        result.cursor = result.readiness.ozoneCursor;
       } catch (diagnosticError) {
         result.error += `; readiness diagnostics: ${String(diagnosticError)}`;
       }
