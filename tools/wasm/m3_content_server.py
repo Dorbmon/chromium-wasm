@@ -29,6 +29,7 @@ M4_CASE = "ozone_pointer_m4"
 M4_WHEEL_CASE = "ozone_wheel_m4"
 M4_KEYBOARD_CASE = "ozone_keyboard_m4"
 M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4"
+M4_BACKSPACE_CASE = "ozone_backspace_m4"
 M4_FOCUS_CASE = "ozone_focus_m4"
 M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4"
 M3_PROTOCOL = 1
@@ -55,6 +56,7 @@ M4_KEYBOARD_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_keyboard_page.html"
 M4_PRINTABLE_KEY_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_printable_key_page.html"
 )
+M4_BACKSPACE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_backspace_page.html"
 M4_FOCUS_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_focus_page.html"
 M4_IME_BRIDGE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_ime_bridge_page.html"
 
@@ -192,6 +194,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             "/__m3__/m4-wheel-fixture.html": M4_WHEEL_FIXTURE,
             "/__m3__/m4-keyboard-fixture.html": M4_KEYBOARD_FIXTURE,
             "/__m3__/m4-printable-key-fixture.html": M4_PRINTABLE_KEY_FIXTURE,
+            "/__m3__/m4-backspace-fixture.html": M4_BACKSPACE_FIXTURE,
             "/__m3__/m4-focus-fixture.html": M4_FOCUS_FIXTURE,
             "/__m3__/m4-ime-bridge-fixture.html": M4_IME_BRIDGE_FIXTURE,
             "/__m3__/Ahem.woff2": M3_AHEM_FONT,
@@ -247,6 +250,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_WHEEL_CASE,
                 M4_KEYBOARD_CASE,
                 M4_PRINTABLE_KEY_CASE,
+                M4_BACKSPACE_CASE,
                 M4_IME_BRIDGE_CASE,
                 M4_FOCUS_CASE,
             )
@@ -439,6 +443,34 @@ def m4_printable_key_smoke_url(
     return f"http://{host}:{port}/__m3__/?{query}"
 
 
+def m4_backspace_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_BACKSPACE_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-backspace-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
 def m4_ime_bridge_smoke_url(
     server: M3HTTPServer,
     token: str,
@@ -549,6 +581,26 @@ def _require_safe_integer(
     if maximum is not None and value > maximum:
         raise M0Error(f"{description} must be at most {maximum}")
     return value
+
+
+def _exact_json_value_equal(actual: object, expected: object) -> bool:
+    """Compare JSON-shaped values without Python's bool/int coercion."""
+
+    if type(actual) is not type(expected):
+        return False
+    if type(actual) is dict:
+        if set(actual) != set(expected):
+            return False
+        return all(
+            _exact_json_value_equal(actual[key], expected[key])
+            for key in actual
+        )
+    if type(actual) is list:
+        return len(actual) == len(expected) and all(
+            _exact_json_value_equal(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected)
+        )
+    return actual == expected
 
 
 def _require_linear_memory_bytes(value: object, description: str) -> int:
@@ -2098,6 +2150,467 @@ def validate_m4_printable_key_result(
         if not any(marker in line for line in host_logs):
             raise M0Error(
                 "M4 printable-key logs are missing lifecycle marker "
+                f"{marker!r}"
+            )
+
+
+def validate_m4_backspace_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate a fixed-US KeyA insert followed by physical Backspace.
+
+    The outer driver may queue only raw physical-key records. The exact
+    trusted Blink trace below proves that normal text editing, rather than a
+    DevTools text command or the composition bridge, inserted and then
+    deleted the character.
+    """
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_BACKSPACE_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 backspace result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 backspace versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 backspace version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    readiness = _require_dict(result.get("readiness"), "M4 backspace readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 backspace readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 backspace readiness reported fatal errors")
+    heartbeat = _require_dict(readiness.get("heartbeat"), "M4 backspace heartbeat")
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M4 backspace heartbeat was not anchored to data navigation"
+        )
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 backspace heartbeat elapsed time",
+        minimum=0,
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 backspace frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 backspace frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 backspace frame timestamp", minimum=0
+    )
+    for field, expected_value in {
+        "width": M3_WIDTH,
+        "height": M3_HEIGHT,
+    }.items():
+        actual_value = frame.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                "M4 backspace frame dimensions do not match the canvas"
+            )
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 backspace page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-backspace-v1",
+        "ready": True,
+        "activeElementId": "editable-target",
+        "activationCount": 1,
+        "clickTrusted": True,
+        "focusTrusted": True,
+        "value": "",
+        "selectionStart": 0,
+        "selectionEnd": 0,
+        "resultText": "TEXT INSERTED THEN DELETED",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 backspace page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        page_probe.get("focusCount"), "M4 backspace focus count", minimum=1
+    )
+    target_x = _require_safe_integer(
+        page_probe.get("targetCenterX"),
+        "M4 backspace target x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    target_y = _require_safe_integer(
+        page_probe.get("targetCenterY"),
+        "M4 backspace target y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    _require_safe_integer(
+        page_probe.get("timerTicks"),
+        "M4 backspace inner page timer ticks",
+        minimum=3,
+    )
+
+    key_event_trace = page_probe.get("keyEventTrace")
+    if not isinstance(key_event_trace, list) or len(key_event_trace) != 4:
+        raise M0Error("M4 backspace inner key trace is not exactly four events")
+    expected_key_trace = (
+        ("keydown", "KeyA", "a"),
+        ("keyup", "KeyA", "a"),
+        ("keydown", "Backspace", "Backspace"),
+        ("keyup", "Backspace", "Backspace"),
+    )
+    for index, (event_type, code, key) in enumerate(expected_key_trace):
+        record = _require_dict(
+            key_event_trace[index], f"M4 backspace inner key trace {index}"
+        )
+        expected_record = {
+            "type": event_type,
+            "trusted": True,
+            "code": code,
+            "key": key,
+            "repeat": False,
+            "isComposing": False,
+            "defaultPrevented": False,
+            "targetId": "editable-target",
+        }
+        for field, expected_value in expected_record.items():
+            actual_value = record.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 backspace inner key trace {index} {field} mismatch: "
+                    f"expected {expected_value!r}, got {actual_value!r}"
+                )
+
+    text_input_trace = page_probe.get("textInputTrace")
+    if not isinstance(text_input_trace, list) or len(text_input_trace) != 4:
+        raise M0Error("M4 backspace text trace is not exactly four events")
+    expected_text_trace = (
+        ("beforeinput", "insertText", "a"),
+        ("input", "insertText", "a"),
+        ("beforeinput", "deleteContentBackward", None),
+        ("input", "deleteContentBackward", None),
+    )
+    for index, (event_type, input_type, data) in enumerate(expected_text_trace):
+        record = _require_dict(
+            text_input_trace[index], f"M4 backspace text trace {index}"
+        )
+        expected_record = {
+            "type": event_type,
+            "trusted": True,
+            "inputType": input_type,
+            "data": data,
+            "isComposing": False,
+            "targetId": "editable-target",
+        }
+        for field, expected_value in expected_record.items():
+            actual_value = record.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 backspace text trace {index} {field} mismatch: "
+                    f"expected {expected_value!r}, got {actual_value!r}"
+                )
+
+    composition_counts = _require_dict(
+        page_probe.get("compositionEventCounts"),
+        "M4 backspace composition event counts",
+    )
+    for event_type in (
+        "compositionstart",
+        "compositionupdate",
+        "compositionend",
+    ):
+        if _require_safe_integer(
+            composition_counts.get(event_type),
+            f"M4 backspace {event_type} count",
+            minimum=0,
+        ) != 0:
+            raise M0Error(f"M4 backspace {event_type} count is not zero")
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 backspace pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 backspace readiness pointer input"
+    )
+    if not _exact_json_value_equal(pointer_input, readiness_pointer):
+        raise M0Error(
+            "M4 backspace pointer evidence differs from readiness evidence"
+        )
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 backspace pointer listeners were not enabled")
+    pointer_received = _require_safe_integer(
+        pointer_input.get("receivedCount"),
+        "M4 backspace pointer receivedCount",
+        minimum=2,
+    )
+    pointer_trusted = _require_safe_integer(
+        pointer_input.get("trustedCount"),
+        "M4 backspace pointer trustedCount",
+        minimum=2,
+    )
+    pointer_queued = _require_safe_integer(
+        pointer_input.get("queuedCount"),
+        "M4 backspace pointer queuedCount",
+        minimum=2,
+    )
+    if pointer_trusted > pointer_received:
+        raise M0Error(
+            "M4 backspace trusted pointer count exceeds received pointer "
+            "records"
+        )
+    if pointer_queued > pointer_trusted:
+        raise M0Error(
+            "M4 backspace queued pointer count exceeds trusted pointer "
+            "records"
+        )
+    last_pointer = _require_dict(
+        pointer_input.get("lastQueued"), "M4 backspace last queued pointer"
+    )
+    for field, expected_value in {
+        "type": "up",
+        "trusted": True,
+        "queued": True,
+        "canvasFocused": True,
+    }.items():
+        actual_value = last_pointer.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 backspace queued pointer {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        last_pointer.get("sequence"),
+        "M4 backspace queued pointer sequence",
+        minimum=1,
+    )
+    if _require_safe_integer(
+        last_pointer.get("x"),
+        "M4 backspace queued pointer x",
+        minimum=0,
+        maximum=M3_WIDTH - 1,
+    ) != target_x:
+        raise M0Error("M4 backspace pointer x does not match the fixture target")
+    if _require_safe_integer(
+        last_pointer.get("y"),
+        "M4 backspace queued pointer y",
+        minimum=0,
+        maximum=M3_HEIGHT - 1,
+    ) != target_y:
+        raise M0Error("M4 backspace pointer y does not match the fixture target")
+    _require_safe_integer(
+        last_pointer.get("frameIdBefore"),
+        "M4 backspace pointer frame ID",
+        minimum=1,
+    )
+
+    keyboard_input = _require_dict(
+        result.get("keyboardInput"), "M4 backspace keyboard input"
+    )
+    readiness_keyboard = _require_dict(
+        readiness.get("keyboardInput"), "M4 backspace readiness keyboard input"
+    )
+    if not _exact_json_value_equal(keyboard_input, readiness_keyboard):
+        raise M0Error(
+            "M4 backspace keyboard evidence differs from readiness evidence"
+        )
+    if keyboard_input.get("enabled") is not True:
+        raise M0Error("M4 backspace keyboard listeners were not enabled")
+    if keyboard_input.get("activated") is not True:
+        raise M0Error("M4 backspace input was not activated by pointer input")
+    if keyboard_input.get("pressedCodes") != []:
+        raise M0Error("M4 backspace key state was not released")
+    for field in ("receivedCount", "trustedCount", "queuedCount"):
+        count = _require_safe_integer(
+            keyboard_input.get(field),
+            f"M4 backspace keyboard {field}",
+            minimum=4,
+        )
+        if count != 4:
+            raise M0Error(
+                f"M4 backspace keyboard {field} is not exactly four"
+            )
+
+    queued_records = keyboard_input.get("queuedRecords")
+    if not isinstance(queued_records, list) or len(queued_records) != 4:
+        raise M0Error("M4 backspace queued key trace is not exactly four records")
+    expected_queue = (
+        ("down", "KeyA", "a"),
+        ("up", "KeyA", "a"),
+        ("down", "Backspace", "Backspace"),
+        ("up", "Backspace", "Backspace"),
+    )
+    previous_sequence = 0
+    backspace_down_frame_id = 0
+    for index, (event_type, code, key) in enumerate(expected_queue):
+        record = _require_dict(
+            queued_records[index], f"M4 backspace queued key trace {index}"
+        )
+        expected_record = {
+            "type": event_type,
+            "code": code,
+            "key": key,
+            "trusted": True,
+            "queued": True,
+            "repeat": False,
+            "isComposing": False,
+            "canvasFocused": True,
+            "pointerActivated": True,
+            "defaultPrevented": True,
+        }
+        for field, expected_value in expected_record.items():
+            actual_value = record.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 backspace queued key trace {index} {field} mismatch: "
+                    f"expected {expected_value!r}, got {actual_value!r}"
+                )
+        expected_modifiers = {
+            "alt": False,
+            "control": False,
+            "meta": False,
+            "shift": False,
+        }
+        modifiers = record.get("modifiers")
+        if type(modifiers) is not dict:
+            raise M0Error(
+                f"M4 backspace queued key trace {index} modifiers are not "
+                "all false"
+            )
+        for field, expected_value in expected_modifiers.items():
+            actual_value = modifiers.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 backspace queued key trace {index} modifiers are not "
+                    "all false"
+                )
+        if set(modifiers) != set(expected_modifiers):
+            raise M0Error(
+                f"M4 backspace queued key trace {index} modifiers are not "
+                "all false"
+            )
+        sequence = _require_safe_integer(
+            record.get("sequence"),
+            f"M4 backspace queued key trace {index} sequence",
+            minimum=previous_sequence + 1,
+        )
+        if sequence <= previous_sequence:
+            raise M0Error(
+                "M4 backspace queued key trace sequence is not strictly "
+                "increasing"
+            )
+        previous_sequence = sequence
+        record_frame_id = _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 backspace queued key trace {index} frame ID",
+            minimum=1,
+        )
+        if index == 2:
+            backspace_down_frame_id = record_frame_id
+
+    if keyboard_input.get("lastQueuedDown") != queued_records[2]:
+        raise M0Error("M4 backspace last queued key down is not Backspace")
+    if keyboard_input.get("lastQueuedUp") != queued_records[3]:
+        raise M0Error("M4 backspace last queued key up is not Backspace")
+    if frame_id <= backspace_down_frame_id:
+        raise M0Error(
+            "M4 backspace result has no compositor frame after Backspace"
+        )
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 backspace shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 backspace shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 backspace shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 backspace shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 backspace logs")
+    for stream in ("host", "stdout", "stderr"):
+        entries = logs.get(stream)
+        if type(entries) is not list:
+            raise M0Error(f"M4 backspace {stream} log must be an array")
+        for index, entry in enumerate(entries):
+            if type(entry) is not str:
+                raise M0Error(
+                    f"M4 backspace {stream} log entry {index} must be a "
+                    "string"
+                )
+    combined_logs = "\n".join(
+        line
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 backspace logs contain a Wasm abort")
+    host_logs = logs["host"]
+    for marker in (
+        "m4:pointer:listeners-attached",
+        "m4:keyboard:listeners-attached",
+        "m4:pointer:down:queued",
+        "m4:pointer:up:queued",
+        "m4:keyboard:pointer-activation",
+        "m4:keyboard:down:queued",
+        "m4:keyboard:up:queued",
+        "shutdown:complete",
+    ):
+        if not any(marker in line for line in host_logs):
+            raise M0Error(
+                "M4 backspace logs are missing lifecycle marker "
                 f"{marker!r}"
             )
 

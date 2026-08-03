@@ -130,11 +130,14 @@ converts the sign exactly once before `SystemInputInjector::InjectMouseWheel`,
 whose Chromium convention is positive for left and up. This keeps Blink's
 observed DOM wheel delta in the original right/down convention.
 
-`chromium_wasm_host_key` accepts only the bounded DOM code strings
-`"ArrowDown"` and `"KeyA"`, with `down == 0` or `1`. The `"KeyA"` slice
-also requires the unmodified DOM key `"a"`; it is a fixed-US physical-layout
-experiment, not a host text, composition, or IME API. The host accepts only a
-trusted, cancelable canvas `keydown`/`keyup` pair after a queued
+`chromium_wasm_host_key` accepts exactly the bounded DOM code strings
+`"ArrowDown"`, `"KeyA"`, and `"Backspace"`, with `down == 0` or `1`.
+This physical-key ABI has no text payload. The `"KeyA"` and `"Backspace"`
+slices also require the unmodified DOM keys `"a"` and `"Backspace"`,
+respectively. `"KeyA"` is a fixed-US physical-layout experiment and
+`"Backspace"` is one fixed backward-edit key; neither is a host text,
+composition, IME, generic editing, or generic keyboard API. The host accepts
+only a trusted, cancelable canvas `keydown`/`keyup` pair after a queued
 primary-pointer press has activated the Wasm window. It rejects modifier,
 repeat, composition, dead-key, process-key, unsupported-code, mismatched key,
 duplicate-down, and unmatched-up records explicitly. A successful export means
@@ -179,6 +182,19 @@ text payload. It requires trusted inner key events, exactly one trusted
 events, and a newer compositor frame. This proves the bounded direct-layout
 path through Ozone/Aura and Chromium text input; it does not provide generic
 text entry or IME support.
+
+The separate M4 Backspace smoke clicks a real initially empty Blink text input,
+then drives a trusted `KeyA` `rawKeyDown`/`keyUp` pair followed by a trusted
+`Backspace` `rawKeyDown`/`keyUp` pair. It sends raw physical-key records only,
+with no DevTools text payload. The proof requires the exact trusted inner
+four-key trace, then exactly four trusted editing events: `beforeinput` and
+`input` with `inputType == "insertText"` and data `"a"`, followed by
+`beforeinput` and `input` with `inputType == "deleteContentBackward"` and
+`data == null`. It also requires no composition events, an empty final value,
+a collapsed final selection at `[0, 0]`, and a compositor frame newer than the
+Backspace down record. This proves one bounded physical insert-then-delete
+path through Ozone/Aura/Blink; it does not make the key ABI a text-injection or
+generic-editing interface.
 
 #### Bounded IME composition route
 

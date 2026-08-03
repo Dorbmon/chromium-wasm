@@ -71,12 +71,16 @@ constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr size_t kMaximumM4TextInputUtf16Units = 64 * 1024;
 constexpr size_t kMaximumM4TextInputUtf8Bytes =
     kMaximumM4TextInputUtf16Units * 3;
+// This remains a bounded physical-key ABI. Backspace is one editing key, not
+// a generic keyboard or text-insertion path.
 constexpr std::string_view kM4NavigationDomCode = "ArrowDown";
 constexpr std::string_view kM4PrintableDomCode = "KeyA";
+constexpr std::string_view kM4BackspaceDomCode = "Backspace";
 
 bool IsSupportedM4DomCode(ui::DomCode dom_code) {
   return dom_code == ui::DomCode::ARROW_DOWN ||
-         dom_code == ui::DomCode::US_A;
+         dom_code == ui::DomCode::US_A ||
+         dom_code == ui::DomCode::BACKSPACE;
 }
 
 enum class DomPointerEventType {
@@ -714,7 +718,8 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_key(const char* code, int down) {
       strnlen(code, content::kM4NavigationDomCode.size() + 1);
   const std::string_view code_string(code, length);
   if (code_string != content::kM4NavigationDomCode &&
-      code_string != content::kM4PrintableDomCode) {
+      code_string != content::kM4PrintableDomCode &&
+      code_string != content::kM4BackspaceDomCode) {
     return 0;
   }
   const ui::DomCode physical_key =

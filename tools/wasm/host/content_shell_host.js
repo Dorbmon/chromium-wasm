@@ -8,6 +8,7 @@ const M4_CASE = "ozone_pointer_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
+const M4_BACKSPACE_CASE = "ozone_backspace_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
@@ -15,11 +16,14 @@ const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
 const M4_PRINTABLE_KEY_FIXTURE =
   "chromium-wasm-m4-ozone-printable-key-v1";
+const M4_BACKSPACE_FIXTURE = "chromium-wasm-m4-ozone-backspace-v1";
 const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
 const M4_PRINTABLE_KEY_DOM_KEY = "a";
+const M4_BACKSPACE_DOM_CODE = "Backspace";
+const M4_BACKSPACE_DOM_KEY = "Backspace";
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -50,9 +54,70 @@ function expectedM4KeyboardKey(code) {
       return M4_KEYBOARD_DOM_CODE;
     case M4_PRINTABLE_KEY_DOM_CODE:
       return M4_PRINTABLE_KEY_DOM_KEY;
+    case M4_BACKSPACE_DOM_CODE:
+      return M4_BACKSPACE_DOM_KEY;
     default:
       return null;
   }
+}
+
+function matchesM4BackspaceOuterKeyRecord(record, type, code, key) {
+  const modifiers = record?.modifiers;
+  return record?.type === type &&
+    record?.code === code &&
+    record?.key === key &&
+    record?.trusted === true &&
+    record?.queued === true &&
+    record?.repeat === false &&
+    record?.isComposing === false &&
+    record?.canvasFocused === true &&
+    record?.pointerActivated === true &&
+    record?.defaultPrevented === true &&
+    modifiers?.alt === false && modifiers?.control === false &&
+    modifiers?.meta === false && modifiers?.shift === false &&
+    Number.isSafeInteger(record?.frameIdBefore) && record.frameIdBefore >= 1;
+}
+
+function matchesM4BackspaceInnerKeyRecord(record, type, code, key) {
+  return record?.type === type &&
+    record?.trusted === true &&
+    record?.code === code &&
+    record?.key === key &&
+    record?.repeat === false &&
+    record?.isComposing === false &&
+    record?.defaultPrevented === false &&
+    record?.targetId === "editable-target";
+}
+
+function matchesM4BackspaceTextRecord(record, type, inputType, data) {
+  return record?.type === type &&
+    record?.trusted === true &&
+    record?.inputType === inputType &&
+    record?.data === data &&
+    record?.isComposing === false &&
+    record?.targetId === "editable-target";
+}
+
+function matchesM4BackspaceKeyPrefix(records, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, code, key], index) =>
+          matchesM4BackspaceOuterKeyRecord(records[index], type, code, key));
+}
+
+function matchesM4BackspaceInnerKeyTrace(records, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, code, key], index) =>
+          matchesM4BackspaceInnerKeyRecord(records[index], type, code, key));
+}
+
+function matchesM4BackspaceTextTrace(records, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, inputType, data], index) =>
+          matchesM4BackspaceTextRecord(
+              records[index], type, inputType, data));
 }
 
 function isWellFormedUtf16(value) {
@@ -473,6 +538,8 @@ export class ChromiumWasmM3Host {
       receivedCount: this.#keyboardRecords.length,
       trustedCount,
       queuedCount,
+      queuedRecords: this.#keyboardRecords.filter(
+        (record) => record.queued === true).map((record) => clone(record)),
       pressedCodes: Array.from(this.#keyboardCodesDown).sort(),
       lastQueuedDown: this.#lastQueuedKeyDown
         ? clone(this.#lastQueuedKeyDown)
@@ -4183,6 +4250,434 @@ async function runM4OzonePrintableKeySmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneBackspaceSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+      1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  const keyAQueue = [
+    ["down", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+    ["up", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+  ];
+  const fullKeyQueue = [
+    ...keyAQueue,
+    ["down", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+    ["up", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+  ];
+  const keyATextTrace = [
+    ["beforeinput", "insertText", M4_PRINTABLE_KEY_DOM_KEY],
+    ["input", "insertText", M4_PRINTABLE_KEY_DOM_KEY],
+  ];
+  const fullTextTrace = [
+    ...keyATextTrace,
+    ["beforeinput", "deleteContentBackward", null],
+    ["input", "deleteContentBackward", null],
+  ];
+  let host = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_BACKSPACE_CASE) {
+      throw new Error("M4 backspace case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 backspace result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_BACKSPACE_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+          "M4 backspace base readiness timeout: " + JSON.stringify(readiness));
+    }
+    const targetX = Number(readiness.pageProbe.targetCenterX);
+    const targetY = Number(readiness.pageProbe.targetCenterY);
+    checkInteger(targetX, "M4 backspace target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 backspace target y", 0, DEFAULT_HEIGHT - 1);
+    const pointerListeners = host.enableM4PointerInput();
+    const keyboardListeners = host.enableM4KeyboardInput();
+    const focusListeners = host.enableM4FocusInput();
+    window.__chromiumWasmM4BackspaceState = {
+      state: "awaiting-dom-backspace-activation",
+      targetX,
+      targetY,
+      pointerListeners,
+      keyboardListeners,
+      focusListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas click, raw KeyA, then Backspace";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer.lastQueued;
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer.queuedCount >= 2 &&
+        lastQueued?.type === "up" &&
+        pageProbe?.activationCount === 1 &&
+        pageProbe?.clickTrusted === true &&
+        pageProbe?.focusCount >= 1 &&
+        pageProbe?.focusTrusted === true &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.value === "" &&
+        pageProbe?.selectionStart === 0 &&
+        pageProbe?.selectionEnd === 0 &&
+        readiness.frame?.id > lastQueued.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const lastQueuedPointer = pointer?.lastQueued;
+    const pageAfterActivation = readiness?.pageProbe;
+    if (
+      !readiness ||
+      pointer?.queuedCount < 2 ||
+      lastQueuedPointer?.type !== "up" ||
+      pageAfterActivation?.activationCount !== 1 ||
+      pageAfterActivation?.clickTrusted !== true ||
+      pageAfterActivation?.focusCount < 1 ||
+      pageAfterActivation?.focusTrusted !== true ||
+      pageAfterActivation?.activeElementId !== "editable-target" ||
+      pageAfterActivation?.value !== "" ||
+      pageAfterActivation?.selectionStart !== 0 ||
+      pageAfterActivation?.selectionEnd !== 0 ||
+      !(readiness.frame?.id > lastQueuedPointer.frameIdBefore)
+    ) {
+      throw new Error(
+          "M4 trusted Ozone backspace activation timeout: " +
+          JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4BackspaceState = {
+      state: "awaiting-dom-backspace-key-a",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(readiness.keyboardInput),
+    };
+    statusElement.textContent = "M4 ready for trusted canvas raw KeyA input";
+
+    // The runner must wait for this first normal Blink edit before it sends
+    // Backspace. That makes the final deletion proof depend on the physical
+    // Ozone/Aura KeyA route rather than a pre-populated or DevTools-inserted
+    // field value.
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const pageProbe = readiness.pageProbe;
+      const queuedRecords = keyboard?.queuedRecords;
+      const keyTrace = pageProbe?.keyEventTrace;
+      const textTrace = pageProbe?.textInputTrace;
+      const compositionCounts = pageProbe?.compositionEventCounts;
+      const keyADown = queuedRecords?.[0];
+      if (
+        keyboard?.receivedCount === 2 &&
+        keyboard?.trustedCount === 2 &&
+        keyboard?.queuedCount === 2 &&
+        keyboard?.pressedCodes?.length === 0 &&
+        matchesM4BackspaceKeyPrefix(queuedRecords, keyAQueue) &&
+        matchesM4BackspaceInnerKeyTrace(keyTrace, [
+          ["keydown", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+          ["keyup", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+        ]) &&
+        matchesM4BackspaceTextTrace(textTrace, keyATextTrace) &&
+        compositionCounts?.compositionstart === 0 &&
+        compositionCounts?.compositionupdate === 0 &&
+        compositionCounts?.compositionend === 0 &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.value === M4_PRINTABLE_KEY_DOM_KEY &&
+        pageProbe?.selectionStart === 1 &&
+        pageProbe?.selectionEnd === 1 &&
+        readiness.frame?.id > keyADown?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const keyboardAfterKeyA = readiness?.keyboardInput;
+    const pageAfterKeyA = readiness?.pageProbe;
+    const keyAQueuedRecords = keyboardAfterKeyA?.queuedRecords;
+    if (
+      !readiness ||
+      keyboardAfterKeyA?.receivedCount !== 2 ||
+      keyboardAfterKeyA?.trustedCount !== 2 ||
+      keyboardAfterKeyA?.queuedCount !== 2 ||
+      keyboardAfterKeyA?.pressedCodes?.length !== 0 ||
+      !matchesM4BackspaceKeyPrefix(keyAQueuedRecords, keyAQueue) ||
+      !matchesM4BackspaceInnerKeyTrace(pageAfterKeyA?.keyEventTrace, [
+        ["keydown", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+        ["keyup", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+      ]) ||
+      !matchesM4BackspaceTextTrace(
+          pageAfterKeyA?.textInputTrace, keyATextTrace) ||
+      pageAfterKeyA?.compositionEventCounts?.compositionstart !== 0 ||
+      pageAfterKeyA?.compositionEventCounts?.compositionupdate !== 0 ||
+      pageAfterKeyA?.compositionEventCounts?.compositionend !== 0 ||
+      pageAfterKeyA?.activeElementId !== "editable-target" ||
+      pageAfterKeyA?.value !== M4_PRINTABLE_KEY_DOM_KEY ||
+      pageAfterKeyA?.selectionStart !== 1 ||
+      pageAfterKeyA?.selectionEnd !== 1 ||
+      !(readiness.frame?.id > keyAQueuedRecords?.[0]?.frameIdBefore)
+    ) {
+      throw new Error(
+          "M4 trusted Ozone KeyA insert timeout before Backspace: " +
+          JSON.stringify(readiness));
+    }
+    const keyAProof = {
+      outerTraceExact: matchesM4BackspaceKeyPrefix(
+          keyAQueuedRecords, keyAQueue),
+      innerTraceExact: matchesM4BackspaceInnerKeyTrace(
+          pageAfterKeyA?.keyEventTrace, [
+            ["keydown", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+            ["keyup", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+          ]),
+      textTraceExact: matchesM4BackspaceTextTrace(
+          pageAfterKeyA?.textInputTrace, keyATextTrace),
+      noComposition:
+        pageAfterKeyA?.compositionEventCounts?.compositionstart === 0 &&
+        pageAfterKeyA?.compositionEventCounts?.compositionupdate === 0 &&
+        pageAfterKeyA?.compositionEventCounts?.compositionend === 0,
+      value: pageAfterKeyA?.value,
+      selectionStart: pageAfterKeyA?.selectionStart,
+      selectionEnd: pageAfterKeyA?.selectionEnd,
+      frameAfterKeyADown:
+        readiness.frame?.id > keyAQueuedRecords?.[0]?.frameIdBefore,
+    };
+    window.__chromiumWasmM4BackspaceState = {
+      state: "awaiting-dom-backspace",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(keyboardAfterKeyA),
+      keyAProof,
+    };
+    statusElement.textContent = "M4 ready for trusted canvas raw Backspace input";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const pageProbe = readiness.pageProbe;
+      const queuedRecords = keyboard?.queuedRecords;
+      const keyTrace = pageProbe?.keyEventTrace;
+      const textTrace = pageProbe?.textInputTrace;
+      const compositionCounts = pageProbe?.compositionEventCounts;
+      const backspaceDown = queuedRecords?.[2];
+      if (
+        keyboard?.receivedCount === 4 &&
+        keyboard?.trustedCount === 4 &&
+        keyboard?.queuedCount === 4 &&
+        keyboard?.pressedCodes?.length === 0 &&
+        matchesM4BackspaceKeyPrefix(queuedRecords, fullKeyQueue) &&
+        matchesM4BackspaceOuterKeyRecord(
+            keyboard?.lastQueuedDown, "down", M4_BACKSPACE_DOM_CODE,
+            M4_BACKSPACE_DOM_KEY) &&
+        keyboard?.lastQueuedDown?.sequence === backspaceDown?.sequence &&
+        matchesM4BackspaceOuterKeyRecord(
+            keyboard?.lastQueuedUp, "up", M4_BACKSPACE_DOM_CODE,
+            M4_BACKSPACE_DOM_KEY) &&
+        keyboard?.lastQueuedUp?.sequence === queuedRecords?.[3]?.sequence &&
+        matchesM4BackspaceInnerKeyTrace(keyTrace, [
+          ["keydown", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+          ["keyup", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+          ["keydown", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+          ["keyup", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+        ]) &&
+        matchesM4BackspaceTextTrace(textTrace, fullTextTrace) &&
+        compositionCounts?.compositionstart === 0 &&
+        compositionCounts?.compositionupdate === 0 &&
+        compositionCounts?.compositionend === 0 &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.value === "" &&
+        pageProbe?.selectionStart === 0 &&
+        pageProbe?.selectionEnd === 0 &&
+        pageProbe?.resultText === "TEXT INSERTED THEN DELETED" &&
+        readiness.frame?.id > backspaceDown?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const keyboard = readiness?.keyboardInput;
+    const queuedRecords = keyboard?.queuedRecords;
+    const pageProbe = readiness?.pageProbe;
+    const backspaceDown = queuedRecords?.[2];
+    if (
+      !readiness ||
+      keyboard?.receivedCount !== 4 ||
+      keyboard?.trustedCount !== 4 ||
+      keyboard?.queuedCount !== 4 ||
+      keyboard?.pressedCodes?.length !== 0 ||
+      !matchesM4BackspaceKeyPrefix(queuedRecords, fullKeyQueue) ||
+      !matchesM4BackspaceOuterKeyRecord(
+          keyboard?.lastQueuedDown, "down", M4_BACKSPACE_DOM_CODE,
+          M4_BACKSPACE_DOM_KEY) ||
+      keyboard?.lastQueuedDown?.sequence !== backspaceDown?.sequence ||
+      !matchesM4BackspaceOuterKeyRecord(
+          keyboard?.lastQueuedUp, "up", M4_BACKSPACE_DOM_CODE,
+          M4_BACKSPACE_DOM_KEY) ||
+      keyboard?.lastQueuedUp?.sequence !== queuedRecords?.[3]?.sequence ||
+      !matchesM4BackspaceInnerKeyTrace(pageProbe?.keyEventTrace, [
+        ["keydown", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+        ["keyup", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+        ["keydown", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+        ["keyup", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+      ]) ||
+      !matchesM4BackspaceTextTrace(pageProbe?.textInputTrace, fullTextTrace) ||
+      pageProbe?.compositionEventCounts?.compositionstart !== 0 ||
+      pageProbe?.compositionEventCounts?.compositionupdate !== 0 ||
+      pageProbe?.compositionEventCounts?.compositionend !== 0 ||
+      pageProbe?.activeElementId !== "editable-target" ||
+      pageProbe?.value !== "" ||
+      pageProbe?.selectionStart !== 0 ||
+      pageProbe?.selectionEnd !== 0 ||
+      pageProbe?.resultText !== "TEXT INSERTED THEN DELETED" ||
+      !(readiness.frame?.id > backspaceDown?.frameIdBefore)
+    ) {
+      throw new Error(
+          "M4 trusted Ozone Backspace timeout: " + JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4BackspaceState = {
+      state: "input-delivered",
+      targetX,
+      targetY,
+      pointer: clone(pointer),
+      keyboard: clone(keyboard),
+    };
+    const shutdownTimeoutMs = Math.max(
+        1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      pointerActivation:
+        pointer.trustedCount >= 2 &&
+        pointer.queuedCount >= 2 &&
+        lastQueuedPointer.trusted === true &&
+        lastQueuedPointer.queued === true,
+      trustedDomInput:
+        keyboard.receivedCount === 4 &&
+        keyboard.trustedCount === 4 &&
+        keyboard.queuedCount === 4 &&
+        matchesM4BackspaceKeyPrefix(queuedRecords, fullKeyQueue),
+      ozoneDelivered:
+        pageProbe.activationCount === 1 &&
+        pageProbe.clickTrusted === true &&
+        pageProbe.focusCount >= 1 &&
+        pageProbe.focusTrusted === true &&
+        pageProbe.activeElementId === "editable-target" &&
+        matchesM4BackspaceInnerKeyTrace(pageProbe.keyEventTrace, [
+          ["keydown", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+          ["keyup", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+          ["keydown", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+          ["keyup", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY],
+        ]) &&
+        matchesM4BackspaceTextTrace(pageProbe.textInputTrace, fullTextTrace) &&
+        pageProbe.compositionEventCounts.compositionstart === 0 &&
+        pageProbe.compositionEventCounts.compositionupdate === 0 &&
+        pageProbe.compositionEventCounts.compositionend === 0 &&
+        pageProbe.value === "" &&
+        pageProbe.selectionStart === 0 &&
+        pageProbe.selectionEnd === 0 &&
+        pageProbe.resultText === "TEXT INSERTED THEN DELETED" &&
+        readiness.frame.id > backspaceDown.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_BACKSPACE_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      keyboardInput: keyboard,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_BACKSPACE_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      keyboardInput: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.keyboardInput = result.readiness.keyboardInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneImeBridgeSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -5154,6 +5649,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_PRINTABLE_KEY_CASE) {
     return runM4OzonePrintableKeySmokeFromQuery();
+  }
+  if (selectedCase === M4_BACKSPACE_CASE) {
+    return runM4OzoneBackspaceSmokeFromQuery();
   }
   if (selectedCase === M4_IME_BRIDGE_CASE) {
     return runM4OzoneImeBridgeSmokeFromQuery();

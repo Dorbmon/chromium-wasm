@@ -3,10 +3,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Static contracts for the first raw navigation-key Ozone/Aura slice."""
+"""Static contracts for bounded raw Ozone/Aura key input."""
 
 from __future__ import annotations
 
+import re
 import unittest
 
 from tools.wasm.tests.m3_source_contract_test_support import source
@@ -79,10 +80,13 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         for marker in (
             "IsSupportedM4DomCode(physical_key)",
             "DomCode::ARROW_DOWN",
+            "DomCode::US_A",
+            "DomCode::BACKSPACE",
             "arrow_down_",
             "key_a_",
-            "key_down == down",
-            "key_down = down;",
+            "backspace_",
+            "*key_down == down",
+            "*key_down = down;",
             "EventType::kKeyPressed",
             "EventType::kKeyReleased",
             "event_source_->DispatchKeyEvent(",
@@ -91,6 +95,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, injector)
         self.assertIn("DomCode::US_A", event_source)
+        self.assertIn("DomCode::BACKSPACE", event_source)
         self.assertNotIn("KeyEvent event", injector)
 
         dispatch = section(
@@ -130,6 +135,16 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
     def test_key_abi_is_bounded_and_only_queues_through_ozone(self) -> None:
         api = source("content/shell/browser/wasm_host_api.cc")
 
+        abi_whitelist = section(
+            api,
+            "bool IsSupportedM4DomCode(ui::DomCode dom_code)",
+            "enum class DomPointerEventType",
+        )
+        self.assertEqual(
+            re.findall(r"ui::DomCode::([A-Z_]+)", abi_whitelist),
+            ["ARROW_DOWN", "US_A", "BACKSPACE"],
+        )
+
         dispatch = section(
             api, "void DispatchDomKeyOnUiThread", "void LoadUrlOnUiThread"
         )
@@ -158,6 +173,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "!code || (down != 0 && down != 1)",
             "strnlen(code, content::kM4NavigationDomCode.size() + 1)",
             "std::string_view code_string(code, length)",
+            "code_string != content::kM4BackspaceDomCode",
             "ui::KeycodeConverter::CodeStringToDomCode",
             "content::IsSupportedM4DomCode(physical_key)",
             "PostHostCommand",
@@ -167,8 +183,83 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
                 self.assertIn(marker, key_export)
         self.assertIn("kM4NavigationDomCode", api)
         self.assertIn("kM4PrintableDomCode", api)
+        self.assertIn("kM4BackspaceDomCode", api)
         self.assertIn("ui::DomCode::ARROW_DOWN", api)
         self.assertIn("ui::DomCode::US_A", api)
+        self.assertIn("ui::DomCode::BACKSPACE", api)
+
+    def test_backspace_proof_is_a_raw_key_insert_then_delete_sequence(
+        self,
+    ) -> None:
+        cdp = source("tools/wasm/m4_cdp.py")
+        host = source("tools/wasm/host/content_shell_host.js")
+        server = source("tools/wasm/m3_content_server.py")
+
+        key_a = section(
+            cdp,
+            "def dispatch_key_a(self) -> None:",
+            "\n\n    def dispatch_backspace(self) -> None:",
+        )
+        backspace = section(
+            cdp,
+            "def dispatch_backspace(self) -> None:",
+            "\n\n    def dispatch_ime_preedit(self) -> None:",
+        )
+        for raw_key_method, code, key, virtual_key in (
+            (key_a, "KeyA", "a", "65"),
+            (backspace, "Backspace", "Backspace", "8"),
+        ):
+            with self.subTest(code=code):
+                for marker in (
+                    '"type": "rawKeyDown"',
+                    '"type": "keyUp"',
+                    f'"code": "{code}"',
+                    f'"key": "{key}"',
+                    f'"windowsVirtualKeyCode": {virtual_key}',
+                    '"modifiers": 0',
+                ):
+                    self.assertIn(marker, raw_key_method)
+                self.assertNotIn('"text":', raw_key_method)
+                self.assertNotIn("Input.insertText", raw_key_method)
+
+        smoke = section(
+            host,
+            "async function runM4OzoneBackspaceSmokeFromQuery()",
+            "async function runM4OzoneImeBridgeSmokeFromQuery()",
+        )
+        for marker in (
+            "const fullKeyQueue = [",
+            '"down", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY',
+            '"down", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY',
+            '"beforeinput", "deleteContentBackward", null',
+            '"input", "deleteContentBackward", null',
+            "pageAfterKeyA?.value !== M4_PRINTABLE_KEY_DOM_KEY",
+            "pageProbe?.value !== \"\"",
+            "pageProbe?.selectionStart !== 0",
+            "pageProbe?.selectionEnd !== 0",
+            'pageProbe?.resultText !== "TEXT INSERTED THEN DELETED"',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, smoke)
+        self.assertNotIn("Input.insertText", smoke)
+
+        validator = section(
+            server,
+            "def validate_m4_backspace_result(",
+            "\n\ndef validate_m4_ime_bridge_result(",
+        )
+        for marker in (
+            '("beforeinput", "insertText", "a")',
+            '("input", "insertText", "a")',
+            '("beforeinput", "deleteContentBackward", None)',
+            '("input", "deleteContentBackward", None)',
+            '"value": "",',
+            '"selectionStart": 0,',
+            '"selectionEnd": 0,',
+            '"TEXT INSERTED THEN DELETED"',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, validator)
 
     def test_host_rejects_unsafe_keyboard_events_before_preventing_default(
         self,

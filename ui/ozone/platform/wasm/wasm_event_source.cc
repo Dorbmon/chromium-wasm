@@ -31,7 +31,8 @@ bool IsSupportedMouseButton(EventFlags button) {
 }
 
 bool IsSupportedM4DomCode(DomCode dom_code) {
-  return dom_code == DomCode::ARROW_DOWN || dom_code == DomCode::US_A;
+  return dom_code == DomCode::ARROW_DOWN || dom_code == DomCode::US_A ||
+         dom_code == DomCode::BACKSPACE;
 }
 
 class WasmSystemInputInjector final : public SystemInputInjector {
@@ -97,18 +98,26 @@ class WasmSystemInputInjector final : public SystemInputInjector {
     // The host accepts explicit trusted DOM keydown/keyup pairs and rejects
     // repeats, so duplicate state changes must not manufacture repeat events.
     // The bounded printable slice maps through the Ozone keyboard layout
-    // engine below; it does not pass host-synthesized text into Blink.
+    // engine below; one Backspace edit key does not make this generic
+    // keyboard or host-synthesized text input to Blink.
     if (!IsSupportedM4DomCode(physical_key)) {
       NOTIMPLEMENTED_LOG_ONCE()
-          << "ozone_wasm M4 raw-key input supports ArrowDown and KeyA only";
+          << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, and one "
+             "Backspace edit key only";
       return;
     }
-    bool& key_down =
-        physical_key == DomCode::ARROW_DOWN ? arrow_down_ : key_a_;
-    if (key_down == down) {
+    bool* key_down = &backspace_;
+    if (physical_key == DomCode::ARROW_DOWN) {
+      key_down = &arrow_down_;
+    } else if (physical_key == DomCode::US_A) {
+      key_down = &key_a_;
+    } else {
+      DCHECK_EQ(physical_key, DomCode::BACKSPACE);
+    }
+    if (*key_down == down) {
       return;
     }
-    key_down = down;
+    *key_down = down;
     event_source_->DispatchKeyEvent(
         down ? EventType::kKeyPressed : EventType::kKeyReleased,
         physical_key, EF_NONE, device_id_);
@@ -121,6 +130,7 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   int device_id_ = ED_UNKNOWN_DEVICE;
   bool arrow_down_ = false;
   bool key_a_ = false;
+  bool backspace_ = false;
 };
 
 }  // namespace

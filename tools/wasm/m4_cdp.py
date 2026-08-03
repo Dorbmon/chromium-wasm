@@ -266,6 +266,30 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_backspace(self) -> None:
+        """Drive one physical Backspace key pair without a text payload."""
+
+        base = {
+            "code": "Backspace",
+            "key": "Backspace",
+            "windowsVirtualKeyCode": 8,
+            "modifiers": 0,
+        }
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "rawKeyDown",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "keyUp",
+            },
+        )
+
     def dispatch_ime_preedit(self) -> None:
         """Drive one outer host textarea composition candidate."""
 
