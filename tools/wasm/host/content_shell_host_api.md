@@ -46,11 +46,12 @@ composition contract `enableM4ImeProxyInput()` after initialization. They
 attach host-canvas or host-owned-proxy listeners, not a replacement HTML
 browser UI. Primary mouse pointer input, pixel wheel input, the bounded raw-key
 paths, host focus loss, and the limited composition route cross normal Ozone
-boundaries. Generic text entry, arbitrary selection/replacement, deletion,
-paste, modifiers, repeat, touch, pen, non-primary buttons, cursor control,
-focus regain without a pointer press, and richer multi-window behavior remain
-outside this first M4 input slice. Returning success while dropping an event is
-a contract failure.
+boundaries. A primary-mouse drag can use the same pointer path to make a native
+Blink selection; it is not a host selection command. Generic text entry,
+programmatic or arbitrary selection/replacement, deletion, paste, modifiers,
+repeat, touch, pen, non-primary buttons, cursor control, focus regain without
+a pointer press, and richer multi-window behavior remain outside this first M4
+input slice. Returning success while dropping an event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -195,6 +196,18 @@ a collapsed final selection at `[0, 0]`, and a compositor frame newer than the
 Backspace down record. This proves one bounded physical insert-then-delete
 path through Ozone/Aura/Blink; it does not make the key ABI a text-injection or
 generic-editing interface.
+
+The separate M4 selection smoke begins with a static `value="WASM"` native
+text input. An external driver clicks the input and then sends one trusted
+primary-mouse drag through the host canvas, Ozone, Aura, and Blink. It proves
+the exact queued outer pointer sequence, trusted inner mouse/pointer delivery,
+a noncollapsed trusted selection event, unchanged input value, selection
+`[0, 4]`, selected text `"WASM"`, and a `none` or `forward` native selection
+direction (Chrome reports `none` for this mouse gesture), with no composition
+or text-input events and a compositor frame newer than the drag release. It
+also requires the initial activation click to leave Blink's native selection
+collapsed. It does not expose a script-driven selection API or general
+selection semantics.
 
 #### Bounded IME composition route
 

@@ -9,6 +9,7 @@ const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
 const M4_BACKSPACE_CASE = "ozone_backspace_m4";
+const M4_SELECTION_CASE = "ozone_selection_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
@@ -17,6 +18,7 @@ const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
 const M4_PRINTABLE_KEY_FIXTURE =
   "chromium-wasm-m4-ozone-printable-key-v1";
 const M4_BACKSPACE_FIXTURE = "chromium-wasm-m4-ozone-backspace-v1";
+const M4_SELECTION_FIXTURE = "chromium-wasm-m4-ozone-selection-v1";
 const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
@@ -118,6 +120,103 @@ function matchesM4BackspaceTextTrace(records, expectedRecords) {
         ([type, inputType, data], index) =>
           matchesM4BackspaceTextRecord(
               records[index], type, inputType, data));
+}
+
+function matchesM4SelectionQueuedPointerRecord(record, type, x, y) {
+  return record?.type === type &&
+    record?.trusted === true &&
+    record?.queued === true &&
+    Number.isSafeInteger(record?.sequence) && record.sequence >= 1 &&
+    Number.isSafeInteger(record?.x) && record.x === x &&
+    Number.isSafeInteger(record?.y) && record.y === y &&
+    Number.isSafeInteger(record?.frameIdBefore) && record.frameIdBefore >= 1;
+}
+
+function matchesM4SelectionQueuedPointerTrace(records, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, x, y], index) =>
+          matchesM4SelectionQueuedPointerRecord(records[index], type, x, y) &&
+          records[index].sequence === index + 1);
+}
+
+function matchesM4SelectionInnerEvent(
+    record, prefix, type, x, y, button, buttons) {
+  return record?.type === `${prefix}${type}` &&
+    record?.trusted === true &&
+    record?.button === button &&
+    record?.buttons === buttons &&
+    record?.clientX === x &&
+    record?.clientY === y &&
+    record?.targetId === "editable-target" &&
+    record?.defaultPrevented === false;
+}
+
+function matchesM4SelectionInnerTrace(records, prefix, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(
+        ([type, x, y, button, buttons], index) =>
+          matchesM4SelectionInnerEvent(
+              records[index], prefix, type, x, y, button, buttons));
+}
+
+function hasM4SelectionSilentTextInputEvents(events) {
+  return events?.beforeinputCount === 0 && events?.inputCount === 0 &&
+    events?.compositionstartCount === 0 &&
+    events?.compositionupdateCount === 0 &&
+    events?.compositionendCount === 0;
+}
+
+function hasM4SelectionBasePageEvidence(pageProbe) {
+  return pageProbe?.activeElementId === "editable-target" &&
+    Number.isSafeInteger(pageProbe?.activationCount) &&
+    pageProbe.activationCount >= 1 && pageProbe?.clickTrusted === true &&
+    pageProbe?.focusCount >= 1 && pageProbe?.focusTrusted === true &&
+    pageProbe?.value === "WASM" &&
+    hasM4SelectionSilentTextInputEvents(pageProbe?.textInputEvents);
+}
+
+function hasM4SelectionBaseActivationEvidence(pageProbe) {
+  return hasM4SelectionBasePageEvidence(pageProbe) &&
+    pageProbe.activationCount === 1;
+}
+
+function hasM4SelectionCollapsedNativeSelection(pageProbe) {
+  return Number.isSafeInteger(pageProbe?.selectionStart) &&
+    Number.isSafeInteger(pageProbe?.selectionEnd) &&
+    pageProbe.selectionStart === pageProbe.selectionEnd &&
+    pageProbe?.selectionDirection === "none" &&
+    pageProbe?.selectedText === "";
+}
+
+function hasM4SelectionActivationEvidence(pageProbe) {
+  return hasM4SelectionBaseActivationEvidence(pageProbe) &&
+    hasM4SelectionCollapsedNativeSelection(pageProbe);
+}
+
+function hasM4SelectionForwardOrNeutralDirection(pageProbe) {
+  return pageProbe?.selectionDirection === "none" ||
+    pageProbe?.selectionDirection === "forward";
+}
+
+function hasM4SelectionFinalPageEvidence(pageProbe, innerTraces) {
+  const selectionActivity = pageProbe?.selectionActivity;
+  return hasM4SelectionBasePageEvidence(pageProbe) &&
+    pageProbe?.selectionStart === 0 && pageProbe?.selectionEnd === 4 &&
+    hasM4SelectionForwardOrNeutralDirection(pageProbe) &&
+    pageProbe?.selectedText === "WASM" &&
+    pageProbe?.resultText === "TEXT SELECTED" &&
+    selectionActivity?.count >= 1 && selectionActivity?.trusted === true &&
+    selectionActivity?.nonCollapsed === true &&
+    selectionActivity?.trustedNonCollapsed === true &&
+    selectionActivity?.selectCount >= 1 &&
+    selectionActivity?.selectTrusted === true &&
+    selectionActivity?.selectionChangeCount >= 1 &&
+    selectionActivity?.selectionChangeTrusted === true &&
+    matchesM4SelectionInnerTrace(
+        pageProbe?.mouseEventTrace, "mouse", innerTraces.mouse) &&
+    matchesM4SelectionInnerTrace(
+        pageProbe?.pointerEventTrace, "pointer", innerTraces.pointer);
 }
 
 function isWellFormedUtf16(value) {
@@ -493,6 +592,8 @@ export class ChromiumWasmM3Host {
       receivedCount: this.#pointerRecords.length,
       trustedCount,
       queuedCount,
+      queuedRecords: this.#pointerRecords.filter(
+        (record) => record.queued === true).map((record) => clone(record)),
       lastQueued: this.#lastQueuedPointer
         ? clone(this.#lastQueuedPointer)
         : null,
@@ -3350,6 +3451,338 @@ async function runM4OzonePointerSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneSelectionSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let result;
+  let activationProof = null;
+
+  try {
+    if (parameters.get("case") !== M4_SELECTION_CASE) {
+      throw new Error("M4 selection case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 selection result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_SELECTION_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    let readiness = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+          "M4 selection base readiness timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    const targetX = Number(readiness.pageProbe.targetX);
+    const targetY = Number(readiness.pageProbe.targetY);
+    const drag = {
+      startX: Number(readiness.pageProbe.dragStartX),
+      startY: Number(readiness.pageProbe.dragStartY),
+      middleX: Number(readiness.pageProbe.dragMiddleX),
+      middleY: Number(readiness.pageProbe.dragMiddleY),
+      endX: Number(readiness.pageProbe.dragEndX),
+      endY: Number(readiness.pageProbe.dragEndY),
+    };
+    checkInteger(targetX, "M4 selection target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(targetY, "M4 selection target y", 0, DEFAULT_HEIGHT - 1);
+    checkInteger(
+        drag.startX, "M4 selection drag start x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(
+        drag.startY, "M4 selection drag start y", 0, DEFAULT_HEIGHT - 1);
+    checkInteger(
+        drag.middleX, "M4 selection drag middle x", 0,
+        DEFAULT_WIDTH - 1);
+    checkInteger(
+        drag.middleY, "M4 selection drag middle y", 0,
+        DEFAULT_HEIGHT - 1);
+    checkInteger(
+        drag.endX, "M4 selection drag end x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(
+        drag.endY, "M4 selection drag end y", 0, DEFAULT_HEIGHT - 1);
+    if (!(drag.startX < drag.middleX && drag.middleX < drag.endX &&
+          drag.startY === drag.middleY && drag.middleY === drag.endY)) {
+      throw new Error("M4 selection drag geometry is not strictly forward");
+    }
+
+    const clickOuterTrace = [
+      ["move", targetX, targetY],
+      ["down", targetX, targetY],
+      ["up", targetX, targetY],
+    ];
+    const outerTrace = [
+      ...clickOuterTrace,
+      ["move", drag.startX, drag.startY],
+      ["down", drag.startX, drag.startY],
+      ["move", drag.middleX, drag.middleY],
+      ["move", drag.endX, drag.endY],
+      ["up", drag.endX, drag.endY],
+    ];
+    const mouseInnerTrace = [
+      ["move", targetX, targetY, 0, 0],
+      ["move", targetX, targetY, 0, 0],
+      ["down", targetX, targetY, 0, 1],
+      ["move", targetX, targetY, 0, 1],
+      ["up", targetX, targetY, 0, 0],
+      ["move", drag.startX, drag.startY, 0, 0],
+      ["down", drag.startX, drag.startY, 0, 1],
+      ["move", drag.middleX, drag.middleY, 0, 1],
+      ["move", drag.endX, drag.endY, 0, 1],
+      ["up", drag.endX, drag.endY, 0, 0],
+    ];
+    const pointerInnerTrace = [
+      ["move", targetX, targetY, -1, 0],
+      ["move", targetX, targetY, -1, 0],
+      ["down", targetX, targetY, 0, 1],
+      ["move", targetX, targetY, -1, 1],
+      ["up", targetX, targetY, 0, 0],
+      ["move", drag.startX, drag.startY, -1, 0],
+      ["down", drag.startX, drag.startY, 0, 1],
+      ["move", drag.middleX, drag.middleY, -1, 1],
+      ["move", drag.endX, drag.endY, -1, 1],
+      ["up", drag.endX, drag.endY, 0, 0],
+    ];
+    const innerTraces = {
+      mouse: mouseInnerTrace,
+      pointer: pointerInnerTrace,
+    };
+    const pointerListeners = host.enableM4PointerInput();
+    window.__chromiumWasmM4SelectionState = {
+      state: "awaiting-dom-selection-activation",
+      targetX,
+      targetY,
+      pointerListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas click before text selection drag";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const queuedRecords = pointer?.queuedRecords;
+      const clickRelease = queuedRecords?.[clickOuterTrace.length - 1];
+      if (
+        pointer?.receivedCount === clickOuterTrace.length &&
+        pointer?.trustedCount === clickOuterTrace.length &&
+        pointer?.queuedCount === clickOuterTrace.length &&
+        matchesM4SelectionQueuedPointerTrace(queuedRecords, clickOuterTrace) &&
+        hasM4SelectionActivationEvidence(readiness.pageProbe) &&
+        readiness.frame?.id > clickRelease?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const activationPointer = readiness?.pointerInput;
+    const activationQueuedRecords = activationPointer?.queuedRecords;
+    const activationRelease =
+      activationQueuedRecords?.[clickOuterTrace.length - 1];
+    const activationPageProbe = readiness?.pageProbe;
+    activationProof = Object.freeze({
+      outerTraceExact:
+        activationPointer?.receivedCount === clickOuterTrace.length &&
+        activationPointer?.trustedCount === clickOuterTrace.length &&
+        activationPointer?.queuedCount === clickOuterTrace.length &&
+        matchesM4SelectionQueuedPointerTrace(
+            activationQueuedRecords, clickOuterTrace),
+      activationEvidence: hasM4SelectionActivationEvidence(
+          activationPageProbe),
+      selectionCollapsed: Number.isSafeInteger(
+          activationPageProbe?.selectionStart) &&
+        Number.isSafeInteger(activationPageProbe?.selectionEnd) &&
+        activationPageProbe.selectionStart === activationPageProbe.selectionEnd,
+      selectionStart: activationPageProbe?.selectionStart,
+      selectionEnd: activationPageProbe?.selectionEnd,
+      selectionDirectionNone:
+        activationPageProbe?.selectionDirection === "none",
+      selectionDirection: activationPageProbe?.selectionDirection,
+      selectedTextEmpty: activationPageProbe?.selectedText === "",
+      selectedText: activationPageProbe?.selectedText,
+      frameAfterActivation:
+        readiness?.frame?.id > activationRelease?.frameIdBefore,
+    });
+    const activationReady =
+      activationProof.outerTraceExact &&
+      activationProof.activationEvidence &&
+      activationProof.selectionCollapsed &&
+      activationProof.selectionDirectionNone &&
+      activationProof.selectedTextEmpty &&
+      activationProof.frameAfterActivation;
+    if (!activationReady) {
+      throw new Error(
+          "M4 trusted Ozone selection activation timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4SelectionState = {
+      state: "awaiting-dom-selection-drag",
+      targetX,
+      targetY,
+      dragStartX: drag.startX,
+      dragStartY: drag.startY,
+      dragMiddleX: drag.middleX,
+      dragMiddleY: drag.middleY,
+      dragEndX: drag.endX,
+      dragEndY: drag.endY,
+      pointer: clone(activationPointer),
+      activationProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas text selection drag";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const queuedRecords = pointer?.queuedRecords;
+      const dragRelease = queuedRecords?.[outerTrace.length - 1];
+      if (
+        pointer?.receivedCount === outerTrace.length &&
+        pointer?.trustedCount === outerTrace.length &&
+        pointer?.queuedCount === outerTrace.length &&
+        matchesM4SelectionQueuedPointerTrace(queuedRecords, outerTrace) &&
+        hasM4SelectionFinalPageEvidence(readiness.pageProbe, innerTraces) &&
+        readiness.frame?.id > dragRelease?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const queuedRecords = pointer?.queuedRecords;
+    const dragRelease = queuedRecords?.[outerTrace.length - 1];
+    const pageProbe = readiness?.pageProbe;
+    const selectionProof =
+      pointer?.receivedCount === outerTrace.length &&
+      pointer?.trustedCount === outerTrace.length &&
+      pointer?.queuedCount === outerTrace.length &&
+      matchesM4SelectionQueuedPointerTrace(queuedRecords, outerTrace) &&
+      hasM4SelectionFinalPageEvidence(pageProbe, innerTraces) &&
+      readiness?.frame?.id > dragRelease?.frameIdBefore;
+    if (!selectionProof) {
+      throw new Error(
+          "M4 trusted Ozone selection drag timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4SelectionState = {
+      state: "input-delivered",
+      targetX,
+      targetY,
+      dragStartX: drag.startX,
+      dragStartY: drag.startY,
+      dragMiddleX: drag.middleX,
+      dragMiddleY: drag.middleY,
+      dragEndX: drag.endX,
+      dragEndY: drag.endY,
+      pointer: clone(pointer),
+      activationProof,
+    };
+    const shutdownTimeoutMs = Math.max(
+        1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      pointerClickFocus: activationReady,
+      trustedDomInput: selectionProof,
+      ozoneDelivered: hasM4SelectionFinalPageEvidence(pageProbe, innerTraces) &&
+        readiness.frame.id > dragRelease.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_SELECTION_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      activationProof: clone(activationProof),
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : `failed checks: ${failedChecks.join(", ")}`,
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_SELECTION_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      activationProof: activationProof ? clone(activationProof) : null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneWheelSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -5640,6 +6073,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_CASE) {
     return runM4OzonePointerSmokeFromQuery();
+  }
+  if (selectedCase === M4_SELECTION_CASE) {
+    return runM4OzoneSelectionSmokeFromQuery();
   }
   if (selectedCase === M4_WHEEL_CASE) {
     return runM4OzoneWheelSmokeFromQuery();

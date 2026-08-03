@@ -1,0 +1,302 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 Ozone selection fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  body {
+    min-height: 900px;
+    margin: 0;
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    width: 520px;
+    margin: 72px 0 0 96px;
+    padding: 28px;
+    border: 4px solid #163a63;
+    background: #ffffff;
+  }
+
+  label {
+    display: block;
+    margin-top: 22px;
+  }
+
+  #editable-target {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 18px;
+    border: 3px solid #0f5b94;
+    background: #d8f0ff;
+    color: #062b4d;
+    font: 20px/20px Ahem, sans-serif;
+    letter-spacing: 0;
+    outline: none;
+  }
+
+  #editable-target:focus {
+    border-color: #ff8a00;
+    box-shadow: 0 0 0 4px #ffcf75;
+  }
+
+  #result[data-text-selected="true"] {
+    color: #08763b;
+  }
+</style>
+<main>
+  <p id="title">M4 OZONE TEXT SELECTION</p>
+  <label for="editable-target">CLICK, THEN DRAG LEFT TO RIGHT</label>
+  <input id="editable-target" type="text" value="WASM" autocomplete="off" spellcheck="false">
+  <p id="result" data-text-selected="false">WAITING FOR TEXT SELECTION</p>
+</main>
+<script>
+  (() => {
+    const MARKUP_VALUE = "WASM";
+    const VIEWPORT_WIDTH = 800;
+    const VIEWPORT_HEIGHT = 600;
+    const target = document.querySelector("#editable-target");
+    const result = document.querySelector("#result");
+    const mouseEventTrace = [];
+    const pointerEventTrace = [];
+    const textInputEvents = {
+      beforeinputCount: 0,
+      inputCount: 0,
+      compositionstartCount: 0,
+      compositionupdateCount: 0,
+      compositionendCount: 0,
+    };
+    const selectionActivity = {
+      count: 0,
+      trusted: false,
+      nonCollapsed: false,
+      trustedNonCollapsed: false,
+      selectCount: 0,
+      selectTrusted: false,
+      selectionChangeCount: 0,
+      selectionChangeTrusted: false,
+    };
+    let activationCount = 0;
+    let clickTrusted = false;
+    let focusCount = 0;
+    let focusTrusted = false;
+    let fontReady = !document.fonts;
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    let timerTicks = 0;
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    function tracePointerEvent(event) {
+      return {
+        type: event.type,
+        trusted: event.isTrusted === true,
+        button: event.button,
+        buttons: event.buttons,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+      };
+    }
+
+    for (const eventType of ["mousedown", "mousemove", "mouseup"]) {
+      target.addEventListener(eventType, (event) => {
+        mouseEventTrace.push(tracePointerEvent(event));
+      });
+    }
+    for (const eventType of ["pointerdown", "pointermove", "pointerup"]) {
+      target.addEventListener(eventType, (event) => {
+        pointerEventTrace.push(tracePointerEvent(event));
+      });
+    }
+    for (const eventType of [
+      "beforeinput", "input", "compositionstart", "compositionupdate",
+      "compositionend",
+    ]) {
+      target.addEventListener(eventType, () => {
+        textInputEvents[eventType + "Count"] += 1;
+      });
+    }
+
+    target.addEventListener("click", (event) => {
+      activationCount += 1;
+      clickTrusted = clickTrusted || event.isTrusted === true;
+    });
+    target.addEventListener("focus", (event) => {
+      focusCount += 1;
+      focusTrusted = focusTrusted || event.isTrusted === true;
+    });
+
+    function selectedText() {
+      const selectionStart = target.selectionStart;
+      const selectionEnd = target.selectionEnd;
+      if (
+        !Number.isSafeInteger(selectionStart) ||
+        !Number.isSafeInteger(selectionEnd) ||
+        selectionStart < 0 || selectionEnd < selectionStart
+      ) {
+        return null;
+      }
+      return target.value.slice(selectionStart, selectionEnd);
+    }
+
+    function updateSelectionResult() {
+      if (
+        target.value === MARKUP_VALUE &&
+        target.selectionStart === 0 &&
+        target.selectionEnd === MARKUP_VALUE.length &&
+        selectedText() === MARKUP_VALUE
+      ) {
+        result.dataset.textSelected = "true";
+        result.textContent = "TEXT SELECTED";
+      }
+    }
+
+    function recordSelectionActivity(event, kind) {
+      const nonCollapsed =
+        Number.isSafeInteger(target.selectionStart) &&
+        Number.isSafeInteger(target.selectionEnd) &&
+        target.selectionStart < target.selectionEnd;
+      const trusted = event.isTrusted === true;
+      selectionActivity.count += 1;
+      selectionActivity.trusted = selectionActivity.trusted || trusted;
+      selectionActivity.nonCollapsed =
+        selectionActivity.nonCollapsed || nonCollapsed;
+      selectionActivity.trustedNonCollapsed =
+        selectionActivity.trustedNonCollapsed || trusted && nonCollapsed;
+      if (kind === "select") {
+        selectionActivity.selectCount += 1;
+        selectionActivity.selectTrusted =
+          selectionActivity.selectTrusted || trusted;
+      } else {
+        selectionActivity.selectionChangeCount += 1;
+        selectionActivity.selectionChangeTrusted =
+          selectionActivity.selectionChangeTrusted || trusted;
+      }
+      updateSelectionResult();
+    }
+
+    target.addEventListener("select", (event) => {
+      recordSelectionActivity(event, "select");
+    });
+    document.addEventListener("selectionchange", (event) => {
+      recordSelectionActivity(event, "selectionchange");
+    });
+
+    function viewportCoordinate(value, maximum) {
+      const coordinate = Math.floor(value);
+      return Number.isSafeInteger(coordinate) && coordinate >= 0 &&
+          coordinate <= maximum ? coordinate : null;
+    }
+
+    function captureGeometry() {
+      const rect = target.getBoundingClientRect();
+      const style = getComputedStyle(target);
+      const borderLeft = Number.parseFloat(style.borderLeftWidth);
+      const borderRight = Number.parseFloat(style.borderRightWidth);
+      const paddingLeft = Number.parseFloat(style.paddingLeft);
+      const paddingRight = Number.parseFloat(style.paddingRight);
+      if (
+        !Number.isFinite(rect.left) || !Number.isFinite(rect.right) ||
+        !Number.isFinite(rect.top) || !Number.isFinite(rect.width) ||
+        !Number.isFinite(rect.height) || !Number.isFinite(borderLeft) ||
+        !Number.isFinite(borderRight) || !Number.isFinite(paddingLeft) ||
+        !Number.isFinite(paddingRight) || rect.width <= 0 || rect.height <= 0
+      ) {
+        return {
+          targetX: null,
+          targetY: null,
+          dragStartX: null,
+          dragStartY: null,
+          dragMiddleX: null,
+          dragMiddleY: null,
+          dragEndX: null,
+          dragEndY: null,
+          ready: false,
+        };
+      }
+      const textLeft = rect.left + borderLeft + paddingLeft;
+      const textRight = rect.right - borderRight - paddingRight;
+      const y = rect.top + rect.height / 2;
+      const targetX = viewportCoordinate(
+          rect.left + rect.width / 2, VIEWPORT_WIDTH - 1);
+      const targetY = viewportCoordinate(y, VIEWPORT_HEIGHT - 1);
+      const dragStartX = viewportCoordinate(textLeft + 1, VIEWPORT_WIDTH - 1);
+      const dragStartY = viewportCoordinate(y, VIEWPORT_HEIGHT - 1);
+      const dragMiddleX = viewportCoordinate(
+          textLeft + (textRight - textLeft) / 2, VIEWPORT_WIDTH - 1);
+      const dragMiddleY = viewportCoordinate(y, VIEWPORT_HEIGHT - 1);
+      const dragEndX = viewportCoordinate(textRight - 1, VIEWPORT_WIDTH - 1);
+      const dragEndY = viewportCoordinate(y, VIEWPORT_HEIGHT - 1);
+      const coordinates = [
+        targetX,
+        targetY,
+        dragStartX,
+        dragStartY,
+        dragMiddleX,
+        dragMiddleY,
+        dragEndX,
+        dragEndY,
+      ];
+      const isStrictForwardDrag =
+        dragStartX < dragMiddleX && dragMiddleX < dragEndX &&
+        dragStartY === dragMiddleY && dragMiddleY === dragEndY;
+      return {
+        targetX,
+        targetY,
+        dragStartX,
+        dragStartY,
+        dragMiddleX,
+        dragMiddleY,
+        dragEndX,
+        dragEndY,
+        ready: coordinates.every(Number.isSafeInteger) && textRight > textLeft &&
+          isStrictForwardDrag,
+      };
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      const geometry = captureGeometry();
+      const selectionStart = target.selectionStart;
+      const selectionEnd = target.selectionEnd;
+      return JSON.stringify({
+        protocol: 1,
+        timerTicks,
+        fixture: "chromium-wasm-m4-ozone-selection-v1",
+        fontReady,
+        mouseEventTrace,
+        pointerEventTrace,
+        textInputEvents,
+        selectionActivity,
+        ready: document.readyState === "complete" && fontReady && geometry.ready,
+        targetX: geometry.targetX,
+        targetY: geometry.targetY,
+        dragStartX: geometry.dragStartX,
+        dragStartY: geometry.dragStartY,
+        dragMiddleX: geometry.dragMiddleX,
+        dragMiddleY: geometry.dragMiddleY,
+        dragEndX: geometry.dragEndX,
+        dragEndY: geometry.dragEndY,
+        activeElementId: document.activeElement?.id || null,
+        activationCount,
+        clickTrusted,
+        focusCount,
+        focusTrusted,
+        value: target.value,
+        selectionStart,
+        selectionEnd,
+        selectionDirection: target.selectionDirection,
+        selectedText: selectedText(),
+        resultText: result.textContent,
+      });
+    };
+  })();
+</script>

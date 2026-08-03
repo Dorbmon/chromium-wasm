@@ -12,7 +12,7 @@ namespace ui {
 // TODO(huangdarwin): Use an #ifdef per platform for kSelection and kDrag.
 enum class ClipboardBuffer {
   kCopyPaste,
-  kSelection,  // Only supported on systems running X11.
+  kSelection,  // Only supported on platforms with a primary selection buffer.
   kDrag,       // Only supported on Mac OS X.
   kMaxValue = kDrag
 };

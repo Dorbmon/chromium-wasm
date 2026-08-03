@@ -26,6 +26,7 @@ from m0_common import M0Error, REPO_ROOT
 
 M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
+M4_SELECTION_CASE = "ozone_selection_m4"
 M4_WHEEL_CASE = "ozone_wheel_m4"
 M4_KEYBOARD_CASE = "ozone_keyboard_m4"
 M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4"
@@ -51,6 +52,7 @@ M3_SCREENSHOT_CONTRACT = (
     M3_TESTDATA_DIR / "m3_content_screenshot_contract.json"
 )
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
+M4_SELECTION_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_selection_page.html"
 M4_WHEEL_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_wheel_page.html"
 M4_KEYBOARD_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_keyboard_page.html"
 M4_PRINTABLE_KEY_FIXTURE = (
@@ -191,6 +193,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M3_TESTDATA_DIR / "m3_content_page.html"
             ),
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
+            "/__m3__/m4-selection-fixture.html": M4_SELECTION_FIXTURE,
             "/__m3__/m4-wheel-fixture.html": M4_WHEEL_FIXTURE,
             "/__m3__/m4-keyboard-fixture.html": M4_KEYBOARD_FIXTURE,
             "/__m3__/m4-printable-key-fixture.html": M4_PRINTABLE_KEY_FIXTURE,
@@ -247,6 +250,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             or result.get("case") not in (
                 M3_CASE,
                 M4_CASE,
+                M4_SELECTION_CASE,
                 M4_WHEEL_CASE,
                 M4_KEYBOARD_CASE,
                 M4_PRINTABLE_KEY_CASE,
@@ -346,6 +350,34 @@ def m4_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_selection_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_SELECTION_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-selection-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -1132,6 +1164,503 @@ def validate_m4_result(
     ):
         if not any(marker in line for line in host_logs):
             raise M0Error(f"M4 logs are missing lifecycle marker {marker!r}")
+
+
+def validate_m4_selection_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate a bounded trusted pointer drag selects static Blink text.
+
+    This deliberately validates a complete outer DOM/Ozone pointer trace, the
+    corresponding inner Blink mouse and pointer traces, and the final native
+    editor selection.  The fixture must not manufacture the selection through
+    DOM mutation or a host text command.
+    """
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_SELECTION_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 selection result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(
+        result.get("versions"), "M4 selection versions"
+    )
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 selection version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    activation_proof = _require_dict(
+        result.get("activationProof"), "M4 selection activation proof"
+    )
+    for field in (
+        "outerTraceExact",
+        "activationEvidence",
+        "selectionCollapsed",
+        "selectionDirectionNone",
+        "selectedTextEmpty",
+        "frameAfterActivation",
+    ):
+        if activation_proof.get(field) is not True:
+            raise M0Error(
+                f"M4 selection activation proof {field} is not true"
+            )
+    activation_selection_start = _require_safe_integer(
+        activation_proof.get("selectionStart"),
+        "M4 selection activation selection start",
+        minimum=0,
+        maximum=4,
+    )
+    activation_selection_end = _require_safe_integer(
+        activation_proof.get("selectionEnd"),
+        "M4 selection activation selection end",
+        minimum=0,
+        maximum=4,
+    )
+    if activation_selection_start != activation_selection_end:
+        raise M0Error(
+            "M4 selection activation proof selection is not collapsed"
+        )
+    if activation_proof.get("selectionDirection") != "none":
+        raise M0Error(
+            "M4 selection activation proof selection direction is not 'none'"
+        )
+    if activation_proof.get("selectedText") != "":
+        raise M0Error(
+            "M4 selection activation proof selected text is not empty"
+        )
+
+    readiness = _require_dict(
+        result.get("readiness"), "M4 selection readiness"
+    )
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(
+                f"M4 selection readiness field {field} is not true"
+            )
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 selection readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 selection heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M4 selection heartbeat was not anchored to data navigation"
+        )
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 selection heartbeat elapsed time",
+        minimum=0,
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 selection frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 selection frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 selection frame timestamp", minimum=0
+    )
+    for field, expected_value in {
+        "width": M3_WIDTH,
+        "height": M3_HEIGHT,
+    }.items():
+        actual_value = frame.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                "M4 selection frame dimensions do not match the canvas"
+            )
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 selection page probe"
+    )
+    expected_probe = {
+        "fontReady": True,
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-selection-v1",
+        "ready": True,
+        "activeElementId": "editable-target",
+        "clickTrusted": True,
+        "focusTrusted": True,
+        "value": "WASM",
+        "selectionStart": 0,
+        "selectionEnd": 4,
+        "selectedText": "WASM",
+        "resultText": "TEXT SELECTED",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 selection page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    if page_probe.get("selectionDirection") not in (
+        "none",
+        "forward",
+    ):
+        raise M0Error("M4 selection page probe selection direction is invalid")
+    _require_safe_integer(
+        page_probe.get("activationCount"),
+        "M4 selection activation count",
+        minimum=1,
+    )
+    _require_safe_integer(
+        page_probe.get("focusCount"),
+        "M4 selection focus count",
+        minimum=1,
+    )
+    _require_safe_integer(
+        page_probe.get("timerTicks"),
+        "M4 selection inner page timer ticks",
+        minimum=3,
+    )
+
+    coordinates: dict[str, int] = {}
+    for field in (
+        "targetX",
+        "targetY",
+        "dragStartX",
+        "dragStartY",
+        "dragMiddleX",
+        "dragMiddleY",
+        "dragEndX",
+        "dragEndY",
+    ):
+        maximum = M3_WIDTH - 1 if field.endswith("X") else M3_HEIGHT - 1
+        coordinates[field] = _require_safe_integer(
+            page_probe.get(field),
+            f"M4 selection {field}",
+            minimum=0,
+            maximum=maximum,
+        )
+
+    selection_activity = _require_dict(
+        page_probe.get("selectionActivity"),
+        "M4 selection activity",
+    )
+    _require_safe_integer(
+        selection_activity.get("count"),
+        "M4 selection activity count",
+        minimum=1,
+    )
+    _require_safe_integer(
+        selection_activity.get("selectCount"),
+        "M4 selection select count",
+        minimum=1,
+    )
+    _require_safe_integer(
+        selection_activity.get("selectionChangeCount"),
+        "M4 selection selectionchange count",
+        minimum=1,
+    )
+    for field in (
+        "trusted",
+        "nonCollapsed",
+        "trustedNonCollapsed",
+        "selectTrusted",
+        "selectionChangeTrusted",
+    ):
+        if selection_activity.get(field) is not True:
+            raise M0Error(f"M4 selection activity {field} is not true")
+
+    text_input_events = _require_dict(
+        page_probe.get("textInputEvents"),
+        "M4 selection text input events",
+    )
+    for field in (
+        "beforeinputCount",
+        "inputCount",
+        "compositionstartCount",
+        "compositionupdateCount",
+        "compositionendCount",
+    ):
+        if _require_safe_integer(
+            text_input_events.get(field),
+            f"M4 selection {field}",
+            minimum=0,
+        ) != 0:
+            raise M0Error(
+                "M4 selection unexpectedly received text or composition "
+                f"input: {field}"
+            )
+
+    target_x = coordinates["targetX"]
+    target_y = coordinates["targetY"]
+    drag_start_x = coordinates["dragStartX"]
+    drag_start_y = coordinates["dragStartY"]
+    drag_middle_x = coordinates["dragMiddleX"]
+    drag_middle_y = coordinates["dragMiddleY"]
+    drag_end_x = coordinates["dragEndX"]
+    drag_end_y = coordinates["dragEndY"]
+    if not (
+        drag_start_x < drag_middle_x < drag_end_x
+        and drag_start_y == drag_middle_y == drag_end_y
+    ):
+        raise M0Error("M4 selection drag geometry is not strictly forward")
+    expected_outer_trace = (
+        ("move", target_x, target_y),
+        ("down", target_x, target_y),
+        ("up", target_x, target_y),
+        ("move", drag_start_x, drag_start_y),
+        ("down", drag_start_x, drag_start_y),
+        ("move", drag_middle_x, drag_middle_y),
+        ("move", drag_end_x, drag_end_y),
+        ("up", drag_end_x, drag_end_y),
+    )
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 selection pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"),
+        "M4 selection readiness pointer input",
+    )
+    if not _exact_json_value_equal(pointer_input, readiness_pointer):
+        raise M0Error(
+            "M4 selection pointer evidence differs from readiness evidence"
+        )
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 selection pointer listeners were not enabled")
+    for field in ("receivedCount", "trustedCount", "queuedCount"):
+        if _require_safe_integer(
+            pointer_input.get(field),
+            f"M4 selection pointer {field}",
+            minimum=0,
+        ) != len(expected_outer_trace):
+            raise M0Error(
+                f"M4 selection pointer {field} is not exactly "
+                f"{len(expected_outer_trace)}"
+            )
+    queued_records = pointer_input.get("queuedRecords")
+    if not isinstance(queued_records, list) or len(queued_records) != len(
+        expected_outer_trace
+    ):
+        raise M0Error(
+            "M4 selection queued pointer trace is not exactly eight records"
+        )
+    previous_sequence = 0
+    drag_up_frame_id = 0
+    for index, (event_type, expected_x, expected_y) in enumerate(
+        expected_outer_trace
+    ):
+        record = _require_dict(
+            queued_records[index],
+            f"M4 selection queued pointer trace {index}",
+        )
+        expected_record = {
+            "type": event_type,
+            "trusted": True,
+            "queued": True,
+            "canvasFocused": True,
+        }
+        for field, expected_value in expected_record.items():
+            actual_value = record.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 selection queued pointer trace {index} {field} "
+                    f"mismatch: expected {expected_value!r}, got "
+                    f"{actual_value!r}"
+                )
+        actual_x = _require_safe_integer(
+            record.get("x"),
+            f"M4 selection queued pointer trace {index} x",
+            minimum=0,
+            maximum=M3_WIDTH - 1,
+        )
+        actual_y = _require_safe_integer(
+            record.get("y"),
+            f"M4 selection queued pointer trace {index} y",
+            minimum=0,
+            maximum=M3_HEIGHT - 1,
+        )
+        if actual_x != expected_x or actual_y != expected_y:
+            raise M0Error(
+                f"M4 selection queued pointer trace {index} does not match "
+                "the fixture coordinates"
+            )
+        sequence = _require_safe_integer(
+            record.get("sequence"),
+            f"M4 selection queued pointer trace {index} sequence",
+            minimum=previous_sequence + 1,
+        )
+        if sequence != index + 1 or sequence <= previous_sequence:
+            raise M0Error(
+                "M4 selection queued pointer trace sequence is not exact"
+            )
+        previous_sequence = sequence
+        record_frame_id = _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 selection queued pointer trace {index} frame ID",
+            minimum=1,
+        )
+        if index == len(expected_outer_trace) - 1:
+            drag_up_frame_id = record_frame_id
+    last_queued = _require_dict(
+        pointer_input.get("lastQueued"), "M4 selection last queued pointer"
+    )
+    if not _exact_json_value_equal(last_queued, queued_records[-1]):
+        raise M0Error(
+            "M4 selection last queued pointer does not match the drag release"
+        )
+    if frame_id <= drag_up_frame_id:
+        raise M0Error("M4 selection result has no compositor frame after drag")
+
+    expected_inner_trace = (
+        ("move", target_x, target_y, -1, 0),
+        ("move", target_x, target_y, -1, 0),
+        ("down", target_x, target_y, 0, 1),
+        ("move", target_x, target_y, -1, 1),
+        ("up", target_x, target_y, 0, 0),
+        ("move", drag_start_x, drag_start_y, -1, 0),
+        ("down", drag_start_x, drag_start_y, 0, 1),
+        ("move", drag_middle_x, drag_middle_y, -1, 1),
+        ("move", drag_end_x, drag_end_y, -1, 1),
+        ("up", drag_end_x, drag_end_y, 0, 0),
+    )
+
+    def require_inner_trace(
+        field: str,
+        prefix: str,
+    ) -> None:
+        trace = page_probe.get(field)
+        if not isinstance(trace, list) or len(trace) != len(
+            expected_inner_trace
+        ):
+            raise M0Error(
+                f"M4 selection {prefix} trace is not exactly "
+                f"{len(expected_inner_trace)} events"
+            )
+        for index, (kind, x, y, pointer_button, buttons) in enumerate(
+            expected_inner_trace
+        ):
+            record = _require_dict(
+                trace[index], f"M4 selection {prefix} trace {index}"
+            )
+            expected_record = {
+                "type": prefix + kind,
+                "trusted": True,
+                # Blink's MouseEvent::button() reports the primary button for
+                # mousemove, whereas PointerEvent::button is -1 for a move.
+                "button": 0 if prefix == "mouse" and kind == "move"
+                else pointer_button,
+                "buttons": buttons,
+                "clientX": x,
+                "clientY": y,
+                "targetId": "editable-target",
+                "defaultPrevented": False,
+            }
+            for record_field, expected_value in expected_record.items():
+                actual_value = record.get(record_field)
+                if (
+                    type(actual_value) is not type(expected_value)
+                    or actual_value != expected_value
+                ):
+                    raise M0Error(
+                        f"M4 selection {prefix} trace {index} "
+                        f"{record_field} mismatch: expected "
+                        f"{expected_value!r}, got {actual_value!r}"
+                    )
+
+    require_inner_trace("mouseEventTrace", "mouse")
+    require_inner_trace("pointerEventTrace", "pointer")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 selection shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 selection shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 selection shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 selection shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 selection logs")
+    for stream in ("host", "stdout", "stderr"):
+        entries = logs.get(stream)
+        if type(entries) is not list:
+            raise M0Error(f"M4 selection {stream} log must be an array")
+        for index, entry in enumerate(entries):
+            if type(entry) is not str:
+                raise M0Error(
+                    f"M4 selection {stream} log entry {index} must be a "
+                    "string"
+                )
+    combined_logs = "\n".join(
+        line
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 selection logs contain a Wasm abort")
+    host_logs = logs["host"]
+    pointer_logs = [
+        line for line in host_logs if line.startswith("m4:pointer:")
+    ]
+    expected_pointer_logs = [
+        "m4:pointer:listeners-attached",
+        "m4:pointer:move:queued",
+        "m4:pointer:down:queued",
+        "m4:pointer:up:queued",
+        "m4:pointer:move:queued",
+        "m4:pointer:down:queued",
+        "m4:pointer:move:queued",
+        "m4:pointer:move:queued",
+        "m4:pointer:up:queued",
+    ]
+    if pointer_logs != expected_pointer_logs:
+        raise M0Error("M4 selection pointer lifecycle logs are not exact")
+    shutdown_index = next(
+        (
+            index
+            for index, line in enumerate(host_logs)
+            if line == "shutdown:complete"
+        ),
+        None,
+    )
+    if shutdown_index is None:
+        raise M0Error("M4 selection logs are missing lifecycle marker "
+                      "'shutdown:complete'")
+    if any(
+        line.startswith("m4:pointer:")
+        for line in host_logs[shutdown_index + 1 :]
+    ):
+        raise M0Error("M4 selection pointer lifecycle continued after shutdown")
 
 
 def validate_m4_wheel_result(

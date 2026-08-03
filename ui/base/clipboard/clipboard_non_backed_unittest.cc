@@ -15,6 +15,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard_data.h"
 #include "ui/base/clipboard/custom_data_helper.h"
@@ -54,8 +55,12 @@ class ClipboardNonBackedTestBase : public testing::Test {
   void SetUp() override {
 #if BUILDFLAG(IS_OZONE)
     base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+#if BUILDFLAG(IS_WASM)
+    command_line->AppendSwitchASCII(::switches::kOzonePlatform, "wasm");
+#else
     command_line->AppendSwitchASCII(::switches::kOzonePlatform,
                                     switches::kHeadless);
+#endif
     ui::OzonePlatform::PreSandboxStartup();
 #endif  // BUILDFLAG(IS_OZONE)
 
@@ -420,6 +425,11 @@ TEST_F(ClipboardNonBackedTest, ClipboardBufferTypes) {
       {ui::ClipboardBuffer::kSelection, u"kSelection"},
       {ui::ClipboardBuffer::kDrag, u"kDrag"},
   };
+
+#if BUILDFLAG(IS_WASM)
+  ASSERT_TRUE(ui::Clipboard::IsSupportedClipboardBuffer(
+      ui::ClipboardBuffer::kSelection));
+#endif
 
   // Check basic write/read ops into each buffer type.
   for (const auto& [buffer, paste_text] : clipboard_buffers) {

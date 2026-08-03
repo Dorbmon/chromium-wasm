@@ -194,6 +194,58 @@ class DevToolsClient:
             {**base, "type": "mouseReleased", "clickCount": 1},
         )
 
+    def dispatch_primary_drag(
+        self,
+        start_x: float,
+        start_y: float,
+        middle_x: float,
+        middle_y: float,
+        end_x: float,
+        end_y: float,
+    ) -> None:
+        """Drive one physical primary-button drag without text input.
+
+        Each movement remains an ordinary DevTools mouse event.  The two
+        held-button moves deliberately make the drag path observable through
+        the host's captured pointer route rather than treating the end point
+        as a click or using a DOM selection command.
+        """
+
+        start = {
+            "x": start_x,
+            "y": start_y,
+            "button": "left",
+            "pointerType": "mouse",
+        }
+        self.call("Input.dispatchMouseEvent", {**start, "type": "mouseMoved"})
+        self.call(
+            "Input.dispatchMouseEvent",
+            {**start, "type": "mousePressed", "clickCount": 1},
+        )
+        for x, y in ((middle_x, middle_y), (end_x, end_y)):
+            self.call(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": "mouseMoved",
+                    "x": x,
+                    "y": y,
+                    "button": "left",
+                    "buttons": 1,
+                    "pointerType": "mouse",
+                },
+            )
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseReleased",
+                "x": end_x,
+                "y": end_y,
+                "button": "left",
+                "clickCount": 1,
+                "pointerType": "mouse",
+            },
+        )
+
     def dispatch_mouse_wheel(
         self,
         x: float,
