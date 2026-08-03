@@ -6,15 +6,21 @@
 #define UI_OZONE_PLATFORM_WASM_WASM_SCREEN_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
 #include "ui/display/display_list.h"
 #include "ui/ozone/public/platform_screen.h"
+
+namespace gfx {
+class Size;
+}  // namespace gfx
 
 namespace ui {
 
 class WasmWindowManager;
 
-// The M3 host exposes one fixed-density canvas-backed display. Dynamic display
-// configuration and host input arrive with the M4 Ozone gate.
+// The host exposes one 1x canvas-backed display. M4 updates its primary-display
+// geometry from the host resize transaction; multi-display and DPR changes
+// remain unsupported.
 class WasmScreen final : public PlatformScreen {
  public:
   explicit WasmScreen(WasmWindowManager* window_manager);
@@ -23,6 +29,10 @@ class WasmScreen final : public PlatformScreen {
   WasmScreen& operator=(const WasmScreen&) = delete;
 
   ~WasmScreen() override;
+
+  // Updates the sole 1x display from the Content Shell host resize path. This
+  // is UI-sequence-only and returns false while no Ozone screen is live.
+  static bool UpdatePrimaryDisplayForHostResize(const gfx::Size& size);
 
   // PlatformScreen:
   const std::vector<display::Display>& GetAllDisplays() const override;
@@ -43,8 +53,11 @@ class WasmScreen final : public PlatformScreen {
   bool IsHeadless() const override;
 
  private:
+  static WasmScreen* instance_;
+
   raw_ptr<WasmWindowManager> window_manager_;
   display::DisplayList display_list_;
+  SEQUENCE_CHECKER(sequence_checker_);
 };
 
 }  // namespace ui

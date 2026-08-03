@@ -54,6 +54,7 @@
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/system_input_injector.h"
 #include "ui/ozone/platform/wasm/wasm_input_method.h"
+#include "ui/ozone/platform/wasm/wasm_screen.h"
 #include "ui/platform_window/platform_window.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -438,12 +439,30 @@ void ResizeOnUiThread(const gfx::Size& size) {
     return;
   }
 
+  // Updating DisplayList notifies Aura synchronously. Do not retain the
+  // Content Shell or Aura pointers across it.
+  if (!ui::WasmScreen::UpdatePrimaryDisplayForHostResize(size)) {
+    ReportFatal("M4 host resize has no live ozone_wasm screen");
+    return;
+  }
+
+  shell = GetSingleShell();
+  if (!shell) {
+    return;
+  }
   aura::Window* window = shell->window();
   if (!window || !window->GetHost()) {
     ReportFatal("M3 Content Shell has no Aura host window");
     return;
   }
   window->GetHost()->SetBoundsInPixels(gfx::Rect(size));
+
+  // Bounds observers may synchronously destroy the Aura host or its Shell.
+  // Reacquire the sole shell before continuing the resize transaction.
+  shell = GetSingleShell();
+  if (!shell) {
+    return;
+  }
   shell->ResizeWebContentForTests(size);
   GetWasmHostState().SetViewportSizeOnUiThread(size);
 }

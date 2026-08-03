@@ -6,6 +6,7 @@ const HOST_PROTOCOL = 1;
 const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
 const M4_SELECT_CASE = "ozone_select_m4";
+const M4_RESIZE_CASE = "ozone_resize_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
@@ -17,6 +18,7 @@ const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
+const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
 const M4_PRINTABLE_KEY_FIXTURE =
@@ -44,6 +46,8 @@ const M4_COPY_PASTE_DECOY_VALUE = "DECOY";
 const M4_CURSOR_TYPE_HAND = 2;
 const M4_SELECT_OPTION_RGBA = Object.freeze([250, 0, 250, 255]);
 const M4_SELECT_MINIMUM_POPUP_PIXELS = 4096;
+const M4_RESIZE_NARROW_WIDTH = 640;
+const M4_RESIZE_NARROW_HEIGHT = 480;
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -273,6 +277,59 @@ function scanM4SelectPopupOption(canvas, selectBounds) {
     // option stack is the second option and is derived from actual pixels.
     targetY: Math.floor((minY + maxY) / 2),
   };
+}
+
+function isM4ResizeCardRect(rect) {
+  return rect &&
+    ["left", "top", "width", "height"].every((field) =>
+      Number.isSafeInteger(rect[field])) &&
+    rect.width > 0 && rect.height > 0;
+}
+
+function hasM4ResizeGeometry(geometry, width, height, layoutMode) {
+  if (!geometry || typeof geometry !== "object") {
+    return false;
+  }
+  const expectedGridWidth = width - 64;
+  if (
+    geometry.innerWidth !== width || geometry.innerHeight !== height ||
+    geometry.documentClientWidth !== width ||
+    geometry.documentClientHeight !== height ||
+    geometry.screenWidth !== width || geometry.screenHeight !== height ||
+    geometry.screenAvailWidth !== width ||
+    geometry.screenAvailHeight !== height || geometry.devicePixelRatio !== 1 ||
+    geometry.narrowMedia !== (layoutMode === "narrow") ||
+    geometry.layoutMode !== layoutMode || geometry.gridWidth !== expectedGridWidth
+  ) {
+    return false;
+  }
+  const first = geometry.firstCard;
+  const second = geometry.secondCard;
+  if (!isM4ResizeCardRect(first) || !isM4ResizeCardRect(second) ||
+      first.left !== 32 || second.left < first.left ||
+      first.height !== 120 || second.height !== 120) {
+    return false;
+  }
+  if (layoutMode === "wide") {
+    return geometry.gridColumns === 2 && first.top === second.top &&
+      first.width === second.width &&
+      first.width * 2 + 16 === expectedGridWidth &&
+      second.left === first.left + first.width + 16;
+  }
+  return geometry.gridColumns === 1 && second.left === first.left &&
+    first.width === expectedGridWidth && second.width === expectedGridWidth &&
+    second.top === first.top + first.height + 16;
+}
+
+function hasM4ResizeEvent(event, sequence, width, height, layoutMode) {
+  return event?.sequence === sequence && event?.type === "resize" &&
+    event?.trusted === true &&
+    hasM4ResizeGeometry(event?.geometry, width, height, layoutMode);
+}
+
+function hasM4ResizeCall(call, width, height) {
+  return call?.ok === true && call?.width === width &&
+    call?.height === height && call?.devicePixelRatio === 1;
 }
 
 function isM4CopyPasteShortcutCode(code) {
@@ -4410,6 +4467,300 @@ async function runM4OzoneSelectSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneResizeSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let readiness = null;
+  let resizeProof = null;
+  let resizeCalls = [];
+  let resizeEvents = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_RESIZE_CASE) {
+      throw new Error("M4 resize case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 resize result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_RESIZE_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    const initialResize = await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    resizeCalls.push(clone(initialResize));
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 resize base readiness timeout: " + JSON.stringify(readiness));
+    }
+    const initialGeometry = clone(readiness.pageProbe?.currentGeometry);
+    if (!hasM4ResizeGeometry(
+        initialGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, "wide")) {
+      throw new Error(
+        "M4 resize fixture has no initial 800x600 wide geometry: " +
+        JSON.stringify(initialGeometry));
+    }
+    if (
+      !Number.isSafeInteger(readiness.frame?.id) || readiness.frame.id < 1 ||
+      readiness.frame.width !== DEFAULT_WIDTH ||
+      readiness.frame.height !== DEFAULT_HEIGHT
+    ) {
+      throw new Error("M4 resize initial compositor frame is invalid");
+    }
+    const initialFrame = clone(readiness.frame);
+    window.__chromiumWasmM4ResizeState = {
+      state: "host-resize-running",
+      initialGeometry: clone(initialGeometry),
+      initialFrame: clone(initialFrame),
+    };
+    statusElement.textContent =
+      "M4 running browser-native 800x600 to 640x480 resize";
+
+    const narrowResize = await host.resize(
+      M4_RESIZE_NARROW_WIDTH, M4_RESIZE_NARROW_HEIGHT, 1);
+    resizeCalls.push(clone(narrowResize));
+    let narrowGeometry = null;
+    let narrowFrame = null;
+    let narrowEvent = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const candidateGeometry = readiness.pageProbe?.currentGeometry;
+      const candidateEvents = readiness.pageProbe?.resizeEvents;
+      if (
+        readiness.frame?.id > initialFrame.id &&
+        readiness.frame?.width === M4_RESIZE_NARROW_WIDTH &&
+        readiness.frame?.height === M4_RESIZE_NARROW_HEIGHT &&
+        hasM4ResizeGeometry(
+            candidateGeometry, M4_RESIZE_NARROW_WIDTH,
+            M4_RESIZE_NARROW_HEIGHT, "narrow") &&
+        Array.isArray(candidateEvents) && candidateEvents.length === 1 &&
+        hasM4ResizeEvent(
+            candidateEvents[0], 1, M4_RESIZE_NARROW_WIDTH,
+            M4_RESIZE_NARROW_HEIGHT, "narrow")
+      ) {
+        narrowGeometry = clone(candidateGeometry);
+        narrowFrame = clone(readiness.frame);
+        narrowEvent = clone(candidateEvents[0]);
+        break;
+      }
+      await delay(50);
+    }
+    if (!narrowGeometry || !narrowFrame || !narrowEvent) {
+      throw new Error(
+        "M4 resize did not reach the native 640x480 narrow layout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4ResizeState = {
+      state: "host-resize-running",
+      initialGeometry: clone(initialGeometry),
+      initialFrame: clone(initialFrame),
+      narrowGeometry: clone(narrowGeometry),
+      narrowFrame: clone(narrowFrame),
+      narrowEvent: clone(narrowEvent),
+    };
+    statusElement.textContent =
+      "M4 observed native 640x480 reflow; restoring 800x600";
+
+    const restoredResize = await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    resizeCalls.push(clone(restoredResize));
+    let restoredGeometry = null;
+    let restoredFrame = null;
+    let restoredEvent = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const candidateGeometry = readiness.pageProbe?.currentGeometry;
+      const candidateEvents = readiness.pageProbe?.resizeEvents;
+      if (
+        readiness.frame?.id > narrowFrame.id &&
+        readiness.frame?.width === DEFAULT_WIDTH &&
+        readiness.frame?.height === DEFAULT_HEIGHT &&
+        hasM4ResizeGeometry(
+            candidateGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, "wide") &&
+        Array.isArray(candidateEvents) && candidateEvents.length === 2 &&
+        hasM4ResizeEvent(
+            candidateEvents[0], 1, M4_RESIZE_NARROW_WIDTH,
+            M4_RESIZE_NARROW_HEIGHT, "narrow") &&
+        hasM4ResizeEvent(
+            candidateEvents[1], 2, DEFAULT_WIDTH, DEFAULT_HEIGHT, "wide")
+      ) {
+        restoredGeometry = clone(candidateGeometry);
+        restoredFrame = clone(readiness.frame);
+        restoredEvent = clone(candidateEvents[1]);
+        resizeEvents = clone(candidateEvents);
+        break;
+      }
+      await delay(50);
+    }
+    if (!restoredGeometry || !restoredFrame || !restoredEvent ||
+        !resizeEvents) {
+      throw new Error(
+        "M4 resize did not restore the native 800x600 wide layout: " +
+        JSON.stringify(readiness));
+    }
+    resizeProof = {
+      initial: {
+        resize: clone(initialResize),
+        frame: clone(initialFrame),
+        geometry: clone(initialGeometry),
+      },
+      narrow: {
+        resize: clone(narrowResize),
+        frame: clone(narrowFrame),
+        geometry: clone(narrowGeometry),
+        event: clone(narrowEvent),
+      },
+      restored: {
+        resize: clone(restoredResize),
+        frame: clone(restoredFrame),
+        geometry: clone(restoredGeometry),
+        event: clone(restoredEvent),
+      },
+    };
+    window.__chromiumWasmM4ResizeState = {
+      state: "resize-delivered",
+      resizeProof: clone(resizeProof),
+      resizeEvents: clone(resizeEvents),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const hostResizeLogs = logs.host.filter((line) =>
+      line.startsWith("resize:"));
+    const expectedResizeLogs = [
+      `resize:${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}@1`,
+      `resize:${M4_RESIZE_NARROW_WIDTH}x${M4_RESIZE_NARROW_HEIGHT}@1`,
+      `resize:${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}@1`,
+    ];
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      exactResizeCalls:
+        resizeCalls.length === 3 &&
+        hasM4ResizeCall(resizeCalls[0], DEFAULT_WIDTH, DEFAULT_HEIGHT) &&
+        hasM4ResizeCall(
+            resizeCalls[1], M4_RESIZE_NARROW_WIDTH,
+            M4_RESIZE_NARROW_HEIGHT) &&
+        hasM4ResizeCall(resizeCalls[2], DEFAULT_WIDTH, DEFAULT_HEIGHT),
+      initialGeometry: hasM4ResizeGeometry(
+          initialGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, "wide"),
+      narrowGeometry: hasM4ResizeGeometry(
+          narrowGeometry, M4_RESIZE_NARROW_WIDTH,
+          M4_RESIZE_NARROW_HEIGHT, "narrow"),
+      restoredGeometry: hasM4ResizeGeometry(
+          restoredGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, "wide"),
+      trustedResizeEvents:
+        Array.isArray(resizeEvents) && resizeEvents.length === 2 &&
+        hasM4ResizeEvent(
+            resizeEvents[0], 1, M4_RESIZE_NARROW_WIDTH,
+            M4_RESIZE_NARROW_HEIGHT, "narrow") &&
+        hasM4ResizeEvent(
+            resizeEvents[1], 2, DEFAULT_WIDTH, DEFAULT_HEIGHT, "wide"),
+      frameTransitions:
+        initialFrame.id < narrowFrame.id && narrowFrame.id < restoredFrame.id &&
+        initialFrame.width === DEFAULT_WIDTH &&
+        initialFrame.height === DEFAULT_HEIGHT &&
+        narrowFrame.width === M4_RESIZE_NARROW_WIDTH &&
+        narrowFrame.height === M4_RESIZE_NARROW_HEIGHT &&
+        restoredFrame.width === DEFAULT_WIDTH &&
+        restoredFrame.height === DEFAULT_HEIGHT,
+      hostResizeLogs: JSON.stringify(hostResizeLogs) ===
+        JSON.stringify(expectedResizeLogs),
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_RESIZE_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      resizeCalls,
+      resizeProof,
+      resizeEvents,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_RESIZE_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      resizeCalls,
+      resizeProof,
+      resizeEvents,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " +
+          String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneSelectionSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -8175,6 +8526,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_SELECT_CASE) {
     return runM4OzoneSelectSmokeFromQuery();
+  }
+  if (selectedCase === M4_RESIZE_CASE) {
+    return runM4OzoneResizeSmokeFromQuery();
   }
   if (selectedCase === M4_SELECTION_CASE) {
     return runM4OzoneSelectionSmokeFromQuery();

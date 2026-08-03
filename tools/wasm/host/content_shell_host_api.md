@@ -94,10 +94,16 @@ releases its temporary UTF-8 allocation immediately after the call. Runtime
 exports sequence-hop to Chromium's application thread and must not block the
 browser JavaScript main thread.
 
-M3 resize accepts dimensions in `[1, 16384]`, at most 128 MiB total for the
-Skia raster backing plus its RGBA presentation copy, and device-pixel ratio 1.
-The runner proves an actual 640×480 frame before restoring the 800×600
-acceptance surface. `shutdown()` does not
+The bounded resize API accepts dimensions in `[1, 16384]`, at most 128 MiB
+total for the Skia raster backing plus its RGBA presentation copy, and only
+device-pixel ratio 1. An M4 resize first updates ozone_wasm's single primary
+display and work area at that same scale, notifying normal display observers,
+then resizes Aura, Blink, and the software surface. The dedicated smoke drives
+800×600 → 640×480 → 800×600 through this API alone and requires trusted native
+`resize` events, matching `window`/`screen` geometry, a CSS two-column →
+one-column → two-column reflow, and newer compositor frames. DPR changes,
+multi-display topology, and popup coordinate scaling remain explicitly
+unsupported. `shutdown()` does not
 resolve when the task is merely posted: it waits for `ContentMain` and the
 shell delegate to finish, then requires Emscripten's `onExit` after it has
 requested termination of every running and prewarmed pthread worker. Both

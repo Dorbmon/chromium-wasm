@@ -32,6 +32,7 @@ from m0_common import (
 from m3_content_server import (
     M4_CASE,
     M4_SELECT_CASE,
+    M4_RESIZE_CASE,
     M4_SELECTION_CASE,
     M4_PRIMARY_PASTE_CASE,
     M4_COPY_PASTE_CASE,
@@ -45,6 +46,7 @@ from m3_content_server import (
     m4_focus_smoke_url,
     m4_smoke_url,
     m4_select_smoke_url,
+    m4_resize_smoke_url,
     m4_selection_smoke_url,
     m4_primary_paste_smoke_url,
     m4_copy_paste_smoke_url,
@@ -55,6 +57,7 @@ from m3_content_server import (
     m4_ime_bridge_smoke_url,
     validate_m4_result,
     validate_m4_select_result,
+    validate_m4_resize_result,
     validate_m4_selection_result,
     validate_m4_primary_paste_result,
     validate_m4_copy_paste_result,
@@ -413,6 +416,7 @@ def main() -> int:
         choices=(
             "pointer",
             "select",
+            "resize",
             "selection",
             "primary-paste",
             "copy-paste",
@@ -451,6 +455,14 @@ def main() -> int:
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent two primary clicks; "
             "the second target is derived from native popup canvas pixels"
+        )
+    elif args.input == "resize":
+        case = M4_RESIZE_CASE
+        state_expression = None
+        expected_state = None
+        input_driver = (
+            "host.resize 800x600 -> 640x480 -> 800x600 at DPR 1; "
+            "no Chrome DevTools input"
         )
     elif args.input == "selection":
         case = M4_SELECTION_CASE
@@ -618,6 +630,14 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
             )
+        elif args.input == "resize":
+            url = m4_resize_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
         elif args.input == "selection":
             url = m4_selection_smoke_url(
                 server,
@@ -736,6 +756,33 @@ def main() -> int:
         time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
         if browser.poll() is not None:
             raise M0Error("host browser exited during M4 startup")
+
+        if args.input == "resize":
+            # This case drives only the normal host resize API from the Wasm
+            # harness. It deliberately neither connects to DevTools nor sends
+            # any outer-browser input event.
+            stage = "wait_for_host_resize_result"
+            result = wait_for_result(
+                browser, browser_stderr, result_queue, deadline
+            )
+            stage = "validate_runtime_contract"
+            validate_m4_resize_result(result, expected_versions=versions)
+            print(
+                f"{SENTINEL}:BROWSER_RESULT "
+                + json.dumps(
+                    {
+                        "resizeProof": result["resizeProof"],
+                        "readiness": result["readiness"],
+                        "shutdown": result["shutdown"],
+                        "versions": result["versions"],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+            print(f"{SENTINEL}:PASS", flush=True)
+            return 0
 
         expected_url_prefix = url.split("?", 1)[0]
         client = wait_for_page_client(debug_port, expected_url_prefix, deadline)

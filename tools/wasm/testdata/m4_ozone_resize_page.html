@@ -1,0 +1,148 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 resize fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  html,
+  body {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    box-sizing: border-box;
+    min-height: 100vh;
+    padding: 32px;
+  }
+
+  #responsive-grid {
+    display: grid;
+    box-sizing: border-box;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .resize-card {
+    box-sizing: border-box;
+    height: 120px;
+    padding: 16px;
+    border: 4px solid #163a63;
+    background: #fff;
+  }
+
+  @media (max-width: 700px) {
+    #responsive-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
+<main>
+  <p>M4 NATIVE RESIZE</p>
+  <section id="responsive-grid" aria-label="Responsive resize grid">
+    <article id="resize-first-card" class="resize-card">FIRST</article>
+    <article id="resize-second-card" class="resize-card">SECOND</article>
+  </section>
+</main>
+<script>
+  (() => {
+    const grid = document.querySelector("#responsive-grid");
+    const firstCard = document.querySelector("#resize-first-card");
+    const secondCard = document.querySelector("#resize-second-card");
+    const resizeEvents = [];
+    let fontReady = !document.fonts;
+    let resizeCaptureArmed = false;
+    let timerTicks = 0;
+    let eventSequence = 0;
+
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    requestAnimationFrame(() => {
+      resizeCaptureArmed = true;
+    });
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    function roundedRect(element) {
+      const rect = element.getBoundingClientRect();
+      return {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    }
+
+    function geometry() {
+      const first = roundedRect(firstCard);
+      const second = roundedRect(secondCard);
+      const gridRect = roundedRect(grid);
+      const narrowMedia = matchMedia("(max-width: 700px)").matches;
+      const gridColumns = first.top === second.top ? 2 : 1;
+      return {
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        documentClientWidth: document.documentElement.clientWidth,
+        documentClientHeight: document.documentElement.clientHeight,
+        screenWidth: window.screen.width,
+        screenHeight: window.screen.height,
+        screenAvailWidth: window.screen.availWidth,
+        screenAvailHeight: window.screen.availHeight,
+        devicePixelRatio: window.devicePixelRatio,
+        narrowMedia,
+        layoutMode: gridColumns === 1 ? "narrow" : "wide",
+        gridColumns,
+        gridWidth: gridRect.width,
+        firstCard: first,
+        secondCard: second,
+      };
+    }
+
+    window.addEventListener("resize", (event) => {
+      if (!resizeCaptureArmed) {
+        return;
+      }
+      resizeEvents.push({
+        sequence: ++eventSequence,
+        type: event.type,
+        trusted: event.isTrusted === true,
+        geometry: geometry(),
+      });
+    });
+
+    window.__chromiumWasmM4Probe = () => {
+      const currentGeometry = geometry();
+      return JSON.stringify({
+        protocol: 1,
+        fixture: "chromium-wasm-m4-ozone-resize-v1",
+        fontReady,
+        resizeCaptureArmed,
+        timerTicks,
+        ready: document.readyState === "complete" && fontReady &&
+            resizeCaptureArmed && currentGeometry.innerWidth === 800 &&
+            currentGeometry.innerHeight === 600 &&
+            currentGeometry.screenWidth === 800 &&
+            currentGeometry.screenHeight === 600 &&
+            currentGeometry.screenAvailWidth === 800 &&
+            currentGeometry.screenAvailHeight === 600 &&
+            currentGeometry.devicePixelRatio === 1 &&
+            currentGeometry.layoutMode === "wide" &&
+            currentGeometry.gridColumns === 2,
+        currentGeometry,
+        resizeEvents,
+      });
+    };
+  })();
+</script>

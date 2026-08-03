@@ -27,6 +27,7 @@ from m0_common import M0Error, REPO_ROOT
 M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
 M4_SELECT_CASE = "ozone_select_m4"
+M4_RESIZE_CASE = "ozone_resize_m4"
 M4_SELECTION_CASE = "ozone_selection_m4"
 M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4"
 M4_COPY_PASTE_CASE = "ozone_copy_paste_m4"
@@ -39,6 +40,8 @@ M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4"
 M3_PROTOCOL = 1
 M3_WIDTH = 800
 M3_HEIGHT = 600
+M4_RESIZE_NARROW_WIDTH = 640
+M4_RESIZE_NARROW_HEIGHT = 480
 M3_MINIMUM_RUNTIME_MS = 3000
 M3_MINIMUM_TIMER_TICKS = 60
 M3_MINIMUM_ANIMATION_FRAMES = 30
@@ -56,6 +59,7 @@ M3_SCREENSHOT_CONTRACT = (
 )
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
 M4_SELECT_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_select_page.html"
+M4_RESIZE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_resize_page.html"
 M4_SELECTION_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_selection_page.html"
 M4_PRIMARY_PASTE_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_primary_paste_page.html"
@@ -202,6 +206,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             ),
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
             "/__m3__/m4-select-fixture.html": M4_SELECT_FIXTURE,
+            "/__m3__/m4-resize-fixture.html": M4_RESIZE_FIXTURE,
             "/__m3__/m4-selection-fixture.html": M4_SELECTION_FIXTURE,
             "/__m3__/m4-primary-paste-fixture.html": M4_PRIMARY_PASTE_FIXTURE,
             "/__m3__/m4-copy-paste-fixture.html": M4_COPY_PASTE_FIXTURE,
@@ -262,6 +267,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M3_CASE,
                 M4_CASE,
                 M4_SELECT_CASE,
+                M4_RESIZE_CASE,
                 M4_SELECTION_CASE,
                 M4_PRIMARY_PASTE_CASE,
                 M4_COPY_PASTE_CASE,
@@ -392,6 +398,34 @@ def m4_select_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-select-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_resize_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_RESIZE_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-resize-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -1642,6 +1676,403 @@ def validate_m4_select_result(
         raise M0Error("M4 select pointer lifecycle logs are not exact")
     if not any("shutdown:complete" in line for line in host_logs):
         raise M0Error("M4 select logs are missing clean shutdown")
+
+
+def validate_m4_resize_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate the native 1x display, viewport, and CSS resize sequence."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_RESIZE_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 resize result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 resize versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 resize version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    def require_geometry(
+        value: object,
+        description: str,
+        *,
+        width: int,
+        height: int,
+        layout_mode: str,
+    ) -> dict[str, Any]:
+        geometry = _require_dict(value, description)
+        expected_geometry = {
+            "innerWidth": width,
+            "innerHeight": height,
+            "documentClientWidth": width,
+            "documentClientHeight": height,
+            "screenWidth": width,
+            "screenHeight": height,
+            "screenAvailWidth": width,
+            "screenAvailHeight": height,
+            "narrowMedia": layout_mode == "narrow",
+            "layoutMode": layout_mode,
+            "gridColumns": 1 if layout_mode == "narrow" else 2,
+            "gridWidth": width - 64,
+        }
+        for field, expected_value in expected_geometry.items():
+            actual_value = geometry.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"{description} {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+        if _require_number(
+            geometry.get("devicePixelRatio"),
+            f"{description} device pixel ratio",
+        ) != 1:
+            raise M0Error(f"{description} device pixel ratio is not 1")
+
+        first = _require_dict(geometry.get("firstCard"), f"{description} first card")
+        second = _require_dict(
+            geometry.get("secondCard"), f"{description} second card"
+        )
+
+        def require_card(
+            card: dict[str, Any], card_description: str
+        ) -> dict[str, int]:
+            parsed: dict[str, int] = {}
+            for field, maximum in (
+                ("left", width - 1),
+                ("top", height - 1),
+                ("width", width),
+                ("height", height),
+            ):
+                parsed[field] = _require_safe_integer(
+                    card.get(field), f"{card_description} {field}", minimum=0,
+                    maximum=maximum,
+                )
+            if parsed["width"] <= 0 or parsed["height"] <= 0:
+                raise M0Error(f"{card_description} has empty bounds")
+            if (
+                parsed["left"] + parsed["width"] > width
+                or parsed["top"] + parsed["height"] > height
+            ):
+                raise M0Error(f"{card_description} exceeds the viewport")
+            return parsed
+
+        first_rect = require_card(first, f"{description} first card")
+        second_rect = require_card(second, f"{description} second card")
+        if (
+            first_rect["left"] != 32
+            or first_rect["height"] != 120
+            or second_rect["height"] != 120
+        ):
+            raise M0Error(f"{description} card CSS geometry is invalid")
+        if layout_mode == "wide":
+            if (
+                first_rect["top"] != second_rect["top"]
+                or first_rect["width"] != second_rect["width"]
+                or first_rect["width"] * 2 + 16 != width - 64
+                or second_rect["left"]
+                != first_rect["left"] + first_rect["width"] + 16
+            ):
+                raise M0Error(
+                    f"{description} did not retain the two-column CSS layout"
+                )
+        elif layout_mode == "narrow":
+            if (
+                second_rect["left"] != first_rect["left"]
+                or first_rect["width"] != width - 64
+                or second_rect["width"] != width - 64
+                or second_rect["top"]
+                != first_rect["top"] + first_rect["height"] + 16
+            ):
+                raise M0Error(
+                    f"{description} did not reflow to the one-column CSS layout"
+                )
+        else:
+            raise M0Error(f"{description} has unknown layout mode")
+        return geometry
+
+    def require_frame(
+        value: object,
+        description: str,
+        *,
+        width: int,
+        height: int,
+    ) -> dict[str, Any]:
+        frame = _require_dict(value, description)
+        _require_safe_integer(frame.get("id"), f"{description} ID", minimum=1)
+        _require_number(
+            frame.get("timestampMs"), f"{description} timestamp", minimum=0
+        )
+        for field, expected_value in {"width": width, "height": height}.items():
+            actual_value = frame.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"{description} {field} does not match the native surface"
+                )
+        return frame
+
+    def require_resize_call(
+        value: object, description: str, *, width: int, height: int
+    ) -> dict[str, Any]:
+        call = _require_dict(value, description)
+        expected_call = {
+            "ok": True,
+            "width": width,
+            "height": height,
+            "devicePixelRatio": 1,
+        }
+        for field, expected_value in expected_call.items():
+            actual_value = call.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"{description} {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+        return call
+
+    def require_resize_event(
+        value: object,
+        description: str,
+        *,
+        sequence: int,
+        width: int,
+        height: int,
+        layout_mode: str,
+    ) -> dict[str, Any]:
+        event = _require_dict(value, description)
+        if (
+            event.get("sequence") != sequence
+            or event.get("type") != "resize"
+            or event.get("trusted") is not True
+        ):
+            raise M0Error(f"{description} is not a trusted native resize")
+        require_geometry(
+            event.get("geometry"), f"{description} geometry", width=width,
+            height=height, layout_mode=layout_mode,
+        )
+        return event
+
+    readiness = _require_dict(result.get("readiness"), "M4 resize readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 resize readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 resize readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 resize heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error("M4 resize heartbeat was not anchored to navigation")
+    _require_number(
+        heartbeat.get("elapsedMs"), "M4 resize heartbeat elapsed time", minimum=0
+    )
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 resize page probe"
+    )
+    for field, expected_value in {
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-resize-v1",
+        "fontReady": True,
+        "resizeCaptureArmed": True,
+        "ready": True,
+    }.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 resize page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        page_probe.get("timerTicks"), "M4 resize inner page timer ticks", minimum=3
+    )
+    final_geometry = require_geometry(
+        page_probe.get("currentGeometry"), "M4 resize final page geometry",
+        width=M3_WIDTH, height=M3_HEIGHT, layout_mode="wide",
+    )
+    final_frame = require_frame(
+        readiness.get("frame"), "M4 resize final frame", width=M3_WIDTH,
+        height=M3_HEIGHT,
+    )
+
+    resize_calls = result.get("resizeCalls")
+    if not isinstance(resize_calls, list) or len(resize_calls) != 3:
+        raise M0Error("M4 resize calls are not the exact three-call sequence")
+    initial_call = require_resize_call(
+        resize_calls[0], "M4 resize initial call", width=M3_WIDTH,
+        height=M3_HEIGHT,
+    )
+    narrow_call = require_resize_call(
+        resize_calls[1], "M4 resize narrow call",
+        width=M4_RESIZE_NARROW_WIDTH, height=M4_RESIZE_NARROW_HEIGHT,
+    )
+    restored_call = require_resize_call(
+        resize_calls[2], "M4 resize restored call", width=M3_WIDTH,
+        height=M3_HEIGHT,
+    )
+
+    resize_events = result.get("resizeEvents")
+    page_resize_events = page_probe.get("resizeEvents")
+    if (
+        not isinstance(resize_events, list)
+        or len(resize_events) != 2
+        or not _exact_json_value_equal(resize_events, page_resize_events)
+    ):
+        raise M0Error("M4 resize events differ from the native page trace")
+    narrow_event = require_resize_event(
+        resize_events[0], "M4 resize narrow event", sequence=1,
+        width=M4_RESIZE_NARROW_WIDTH, height=M4_RESIZE_NARROW_HEIGHT,
+        layout_mode="narrow",
+    )
+    restored_event = require_resize_event(
+        resize_events[1], "M4 resize restored event", sequence=2,
+        width=M3_WIDTH, height=M3_HEIGHT, layout_mode="wide",
+    )
+
+    resize_proof = _require_dict(
+        result.get("resizeProof"), "M4 resize proof"
+    )
+    initial_proof = _require_dict(
+        resize_proof.get("initial"), "M4 resize initial proof"
+    )
+    narrow_proof = _require_dict(
+        resize_proof.get("narrow"), "M4 resize narrow proof"
+    )
+    restored_proof = _require_dict(
+        resize_proof.get("restored"), "M4 resize restored proof"
+    )
+    if not _exact_json_value_equal(initial_proof.get("resize"), initial_call):
+        raise M0Error("M4 resize initial proof does not retain its host call")
+    if not _exact_json_value_equal(narrow_proof.get("resize"), narrow_call):
+        raise M0Error("M4 resize narrow proof does not retain its host call")
+    if not _exact_json_value_equal(restored_proof.get("resize"), restored_call):
+        raise M0Error("M4 resize restored proof does not retain its host call")
+
+    initial_frame = require_frame(
+        initial_proof.get("frame"), "M4 resize initial proof frame",
+        width=M3_WIDTH, height=M3_HEIGHT,
+    )
+    narrow_frame = require_frame(
+        narrow_proof.get("frame"), "M4 resize narrow proof frame",
+        width=M4_RESIZE_NARROW_WIDTH, height=M4_RESIZE_NARROW_HEIGHT,
+    )
+    restored_frame = require_frame(
+        restored_proof.get("frame"), "M4 resize restored proof frame",
+        width=M3_WIDTH, height=M3_HEIGHT,
+    )
+    if not (
+        initial_frame["id"] < narrow_frame["id"] < restored_frame["id"]
+    ):
+        raise M0Error("M4 resize compositor frame IDs did not increase")
+    if not _exact_json_value_equal(final_frame, restored_frame):
+        raise M0Error("M4 resize final frame differs from the restored proof")
+
+    initial_geometry = require_geometry(
+        initial_proof.get("geometry"), "M4 resize initial proof geometry",
+        width=M3_WIDTH, height=M3_HEIGHT, layout_mode="wide",
+    )
+    narrow_geometry = require_geometry(
+        narrow_proof.get("geometry"), "M4 resize narrow proof geometry",
+        width=M4_RESIZE_NARROW_WIDTH, height=M4_RESIZE_NARROW_HEIGHT,
+        layout_mode="narrow",
+    )
+    restored_geometry = require_geometry(
+        restored_proof.get("geometry"), "M4 resize restored proof geometry",
+        width=M3_WIDTH, height=M3_HEIGHT, layout_mode="wide",
+    )
+    if not _exact_json_value_equal(final_geometry, restored_geometry):
+        raise M0Error(
+            "M4 resize final page geometry differs from the restored proof"
+        )
+    if not _exact_json_value_equal(narrow_proof.get("event"), narrow_event):
+        raise M0Error("M4 resize narrow proof differs from its native event")
+    if not _exact_json_value_equal(
+        restored_proof.get("event"), restored_event
+    ):
+        raise M0Error("M4 resize restored proof differs from its native event")
+    if not _exact_json_value_equal(
+        narrow_event.get("geometry"), narrow_geometry
+    ):
+        raise M0Error("M4 resize narrow event geometry is not retained")
+    if not _exact_json_value_equal(
+        restored_event.get("geometry"), restored_geometry
+    ):
+        raise M0Error("M4 resize restored event geometry is not retained")
+    if not _exact_json_value_equal(initial_geometry, initial_proof.get("geometry")):
+        raise M0Error("M4 resize initial geometry proof is inconsistent")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 resize shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 resize shutdown field {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 resize shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 resize shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 resize logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 resize {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 resize logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    resize_logs = [line for line in host_logs if line.startswith("resize:")]
+    expected_resize_logs = [
+        f"resize:{M3_WIDTH}x{M3_HEIGHT}@1",
+        f"resize:{M4_RESIZE_NARROW_WIDTH}x{M4_RESIZE_NARROW_HEIGHT}@1",
+        f"resize:{M3_WIDTH}x{M3_HEIGHT}@1",
+    ]
+    if resize_logs != expected_resize_logs:
+        raise M0Error("M4 resize host resize lifecycle is not exact")
+    if not any("shutdown:complete" in line for line in host_logs):
+        raise M0Error("M4 resize logs are missing clean shutdown")
 
 
 def validate_m4_selection_result(
