@@ -200,13 +200,14 @@ for left and up. This keeps Blink's observed DOM wheel delta in the original
 right/down convention at every supported DPR.
 
 `chromium_wasm_host_key` accepts exactly the bounded DOM code strings
-`"ArrowDown"`, `"KeyA"`, `"Backspace"`, `"ControlLeft"`, `"KeyC"`, and
-`"KeyV"`, with `down == 0` or `1`. This physical-key ABI has no text payload.
-The `"KeyA"` and `"Backspace"` slices require the unmodified DOM keys `"a"`
-and `"Backspace"`, respectively. `"KeyA"` is a fixed-US physical-layout
-experiment and `"Backspace"` is one fixed backward-edit key. `"KeyC"` and
-`"KeyV"` are admitted only as a paired `ControlLeft` chord; Alt, Meta, Shift,
-other Control combinations, and generic modifier handling remain unsupported.
+`"ArrowDown"`, `"KeyA"`, `"KeyB"`, `"Backspace"`, `"ControlLeft"`,
+`"KeyC"`, and `"KeyV"`, with `down == 0` or `1`. This physical-key ABI has
+no text payload. The `"KeyA"`, `"KeyB"`, and `"Backspace"` slices require the
+unmodified DOM keys `"a"`, `"b"`, and `"Backspace"`, respectively. `"KeyA"`
+and `"KeyB"` are fixed-US physical-layout experiments and `"Backspace"` is
+one fixed backward-edit key. `"KeyC"` and `"KeyV"` are admitted only as a
+paired `ControlLeft` chord; Alt, Meta, Shift, other Control combinations, and
+generic modifier handling remain unsupported.
 None of these keys is a host text, composition, IME, generic editing, or generic
 keyboard API. The ABI rejects unpaired or duplicate Control, `KeyC`, and
 `KeyV` transitions before queueing. The host accepts only a trusted,
@@ -272,13 +273,13 @@ Chrome/Views menus, dialogs, tooltips, arbitrary transient surfaces, or a
 general popup protocol.
 
 The M4 printable-key smoke clicks a real initially empty Blink text input and
-drives one trusted DevTools `KeyA` `rawKeyDown`/`keyUp` pair without a DevTools
-text payload. It requires trusted inner key events, exactly one trusted
-`beforeinput` and `input` pair with `inputType == "insertText"` and data
-`"a"`, a collapsed selection after the inserted character, no composition
-events, and a newer compositor frame. This proves the bounded direct-layout
-path through Ozone/Aura and Chromium text input; it does not provide generic
-text entry or IME support.
+drives trusted DevTools `KeyA` then `KeyB` `rawKeyDown`/`keyUp` pairs without a
+DevTools text payload. It requires the exact trusted inner four-key trace,
+then two trusted `beforeinput` and `input` pairs with `inputType ==
+"insertText"` and data `"a"` then `"b"`, final value `"ab"`, a collapsed
+selection at `[2, 2]`, no composition events, and a newer compositor frame.
+This proves the bounded direct-layout path through Ozone/Aura and Chromium
+text input; it does not provide generic text entry or IME support.
 
 The separate M4 Backspace smoke clicks a real initially empty Blink text input,
 then drives a trusted `KeyA` `rawKeyDown`/`keyUp` pair followed by a trusted

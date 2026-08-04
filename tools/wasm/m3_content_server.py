@@ -5971,8 +5971,7 @@ def validate_m4_printable_key_result(
     *,
     expected_versions: dict[str, str],
 ) -> None:
-    """Validate one trusted US KeyA through Ozone, Aura, and direct text
-    editing in Blink."""
+    """Validate trusted US KeyA then KeyB through Ozone, Aura, and Blink."""
 
     expected = {
         "protocol": M3_PROTOCOL,
@@ -6055,15 +6054,15 @@ def validate_m4_printable_key_result(
     expected_probe = {
         "fontReady": True,
         "protocol": M3_PROTOCOL,
-        "fixture": "chromium-wasm-m4-ozone-printable-key-v1",
+        "fixture": "chromium-wasm-m4-ozone-printable-key-v2",
         "ready": True,
         "activeElementId": "editable-target",
         "activationCount": 1,
         "clickTrusted": True,
         "focusTrusted": True,
-        "value": "a",
-        "selectionStart": 1,
-        "selectionEnd": 1,
+        "value": "ab",
+        "selectionStart": 2,
+        "selectionEnd": 2,
         "resultText": "TEXT INPUT RECEIVED",
     }
     for field, expected_value in expected_probe.items():
@@ -6074,6 +6073,29 @@ def validate_m4_printable_key_result(
         ):
             raise M0Error(
                 f"M4 printable-key page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    key_a_proof = _require_dict(
+        result.get("keyAProof"), "M4 printable-key KeyA-stage proof"
+    )
+    expected_key_a_proof = {
+        "outerTraceExact": True,
+        "innerTraceExact": True,
+        "textTraceExact": True,
+        "noComposition": True,
+        "value": "a",
+        "selectionStart": 1,
+        "selectionEnd": 1,
+        "frameAfterKeyADown": True,
+    }
+    for field, expected_value in expected_key_a_proof.items():
+        actual_value = key_a_proof.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 printable-key KeyA-stage proof {field} mismatch: expected "
                 f"{expected_value!r}, got {actual_value!r}"
             )
     _require_safe_integer(
@@ -6104,50 +6126,47 @@ def validate_m4_printable_key_result(
     )
     for field in ("keydownCount", "keyupCount"):
         if _require_safe_integer(
-            key_events.get(field), f"M4 printable-key inner {field}", minimum=1
-        ) != 1:
-            raise M0Error(f"M4 printable-key inner {field} is not exactly one")
-    for event_name in ("keydown", "keyup"):
-        expected_event = {
-            f"{event_name}Trusted": True,
-            f"{event_name}Code": "KeyA",
-            f"{event_name}Key": "a",
-            f"{event_name}Repeat": False,
-            f"{event_name}Composing": False,
-            f"{event_name}DefaultPrevented": False,
-            f"{event_name}TargetId": "editable-target",
+            key_events.get(field), f"M4 printable-key inner {field}", minimum=2
+        ) != 2:
+            raise M0Error(f"M4 printable-key inner {field} is not exactly two")
+
+    expected_key_trace = [
+        {
+            "type": event_type,
+            "trusted": True,
+            "code": code,
+            "key": key,
+            "repeat": False,
+            "isComposing": False,
+            "defaultPrevented": False,
+            "targetId": "editable-target",
         }
-        for field, expected_value in expected_event.items():
-            actual_value = key_events.get(field)
-            if (
-                type(actual_value) is not type(expected_value)
-                or actual_value != expected_value
-            ):
-                raise M0Error(
-                    f"M4 printable-key inner {field} mismatch: expected "
-                    f"{expected_value!r}, got {actual_value!r}"
-                )
+        for event_type, code, key in (
+            ("keydown", "KeyA", "a"),
+            ("keyup", "KeyA", "a"),
+            ("keydown", "KeyB", "b"),
+            ("keyup", "KeyB", "b"),
+        )
+    ]
+    key_trace = page_probe.get("keyEventTrace")
+    if key_trace != expected_key_trace:
+        raise M0Error(
+            "M4 printable-key inner keyEventTrace is not the exact "
+            "trusted KeyA-down/up then KeyB-down/up sequence"
+        )
 
     text_input_events = _require_dict(
         page_probe.get("textInputEvents"),
         "M4 printable-key text input events",
     )
-    expected_text_events = {
-        "beforeinputCount": 1,
-        "inputCount": 1,
-        "beforeinputTrusted": True,
-        "inputTrusted": True,
-        "beforeinputInputType": "insertText",
-        "inputInputType": "insertText",
-        "beforeinputData": "a",
-        "inputData": "a",
-        "beforeinputTargetId": "editable-target",
-        "inputTargetId": "editable-target",
+    expected_text_counts = {
+        "beforeinputCount": 2,
+        "inputCount": 2,
         "compositionstartCount": 0,
         "compositionupdateCount": 0,
         "compositionendCount": 0,
     }
-    for field, expected_value in expected_text_events.items():
+    for field, expected_value in expected_text_counts.items():
         actual_value = text_input_events.get(field)
         if (
             type(actual_value) is not type(expected_value)
@@ -6157,6 +6176,28 @@ def validate_m4_printable_key_result(
                 f"M4 printable-key {field} mismatch: expected "
                 f"{expected_value!r}, got {actual_value!r}"
             )
+    expected_text_trace = [
+        {
+            "type": event_type,
+            "trusted": True,
+            "inputType": "insertText",
+            "data": data,
+            "isComposing": False,
+            "targetId": "editable-target",
+        }
+        for event_type, data in (
+            ("beforeinput", "a"),
+            ("input", "a"),
+            ("beforeinput", "b"),
+            ("input", "b"),
+        )
+    ]
+    text_trace = page_probe.get("textInputTrace")
+    if text_trace != expected_text_trace:
+        raise M0Error(
+            "M4 printable-key inner textInputTrace is not the exact "
+            "two trusted insertText pairs for a then b"
+        )
 
     pointer_input = _require_dict(
         result.get("pointerInput"), "M4 printable-key pointer input"
@@ -6239,21 +6280,25 @@ def validate_m4_printable_key_result(
         count = _require_safe_integer(
             keyboard_input.get(field),
             f"M4 printable-key keyboard {field}",
-            minimum=2,
+            minimum=4,
         )
-        if count != 2:
+        if count != 4:
             raise M0Error(
-                f"M4 printable-key keyboard {field} is not exactly two"
+                f"M4 printable-key keyboard {field} is not exactly four"
             )
 
     def require_key_record(
-        value: object, description: str, expected_type: str
+        value: object,
+        description: str,
+        expected_type: str,
+        expected_code: str,
+        expected_key: str,
     ) -> int:
         record = _require_dict(value, description)
         expected_record = {
             "type": expected_type,
-            "code": "KeyA",
-            "key": "a",
+            "code": expected_code,
+            "key": expected_key,
             "trusted": True,
             "queued": True,
             "repeat": False,
@@ -6285,17 +6330,42 @@ def validate_m4_printable_key_result(
             minimum=1,
         )
 
-    key_down_frame_id = require_key_record(
+    queued_records = keyboard_input.get("queuedRecords")
+    if not isinstance(queued_records, list) or len(queued_records) != 4:
+        raise M0Error(
+            "M4 printable-key queued records are not exactly the four "
+            "trusted raw key transitions"
+        )
+    expected_outer_trace = (
+        ("down", "KeyA", "a"),
+        ("up", "KeyA", "a"),
+        ("down", "KeyB", "b"),
+        ("up", "KeyB", "b"),
+    )
+    queued_frame_ids = []
+    for index, (event_type, code, key) in enumerate(expected_outer_trace):
+        queued_frame_ids.append(
+            require_key_record(
+                queued_records[index],
+                f"M4 printable-key queued record {index}",
+                event_type,
+                code,
+                key,
+            )
+        )
+    last_down = _require_dict(
         keyboard_input.get("lastQueuedDown"),
         "M4 printable-key last queued key down",
-        "down",
     )
-    require_key_record(
+    last_up = _require_dict(
         keyboard_input.get("lastQueuedUp"),
         "M4 printable-key last queued key up",
-        "up",
     )
-    if frame_id <= key_down_frame_id:
+    if last_down != queued_records[2] or last_up != queued_records[3]:
+        raise M0Error(
+            "M4 printable-key last queued records do not identify KeyB"
+        )
+    if frame_id <= queued_frame_ids[2]:
         raise M0Error(
             "M4 printable-key result has no compositor frame after text input"
         )
@@ -6340,6 +6410,12 @@ def validate_m4_printable_key_result(
             raise M0Error(
                 "M4 printable-key logs are missing lifecycle marker "
                 f"{marker!r}"
+            )
+    for marker in ("m4:keyboard:down:queued", "m4:keyboard:up:queued"):
+        if sum(marker in line for line in host_logs) != 2:
+            raise M0Error(
+                "M4 printable-key logs do not contain exactly two "
+                f"{marker!r} records"
             )
 
 

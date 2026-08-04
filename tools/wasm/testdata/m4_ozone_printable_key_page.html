@@ -52,9 +52,9 @@
 </style>
 <main>
   <p id="title">M4 OZONE PRINTABLE KEY INPUT</p>
-  <label for="editable-target">CLICK, THEN PRESS A</label>
+  <label for="editable-target">CLICK, THEN PRESS A AND B</label>
   <input id="editable-target" type="text" autocomplete="off" spellcheck="false">
-  <p id="result" data-text-delivered="false">WAITING FOR KEY A</p>
+  <p id="result" data-text-delivered="false">WAITING FOR KEY A THEN B</p>
 </main>
 <script>
   (() => {
@@ -68,36 +68,16 @@
     const keyEvents = {
       keydownCount: 0,
       keyupCount: 0,
-      keydownTrusted: false,
-      keyupTrusted: false,
-      keydownCode: null,
-      keyupCode: null,
-      keydownKey: null,
-      keyupKey: null,
-      keydownRepeat: null,
-      keyupRepeat: null,
-      keydownComposing: null,
-      keyupComposing: null,
-      keydownDefaultPrevented: null,
-      keyupDefaultPrevented: null,
-      keydownTargetId: null,
-      keyupTargetId: null,
     };
+    const keyEventTrace = [];
     const textInputEvents = {
       beforeinputCount: 0,
       inputCount: 0,
-      beforeinputTrusted: false,
-      inputTrusted: false,
-      beforeinputInputType: null,
-      inputInputType: null,
-      beforeinputData: null,
-      inputData: null,
-      beforeinputTargetId: null,
-      inputTargetId: null,
       compositionstartCount: 0,
       compositionupdateCount: 0,
       compositionendCount: 0,
     };
+    const textInputTrace = [];
     let fontReady = !document.fonts;
     Promise.resolve(document.fonts?.ready).then(() => {
       fontReady = true;
@@ -114,48 +94,49 @@
       focusTrusted = event.isTrusted;
     });
 
-    document.addEventListener("keydown", (event) => {
-      if (event.code !== "KeyA") {
+    function recordKeyEvent(event) {
+      if (event.code !== "KeyA" && event.code !== "KeyB") {
         return;
       }
-      keyEvents.keydownCount += 1;
-      keyEvents.keydownTrusted = event.isTrusted;
-      keyEvents.keydownCode = event.code;
-      keyEvents.keydownKey = event.key;
-      keyEvents.keydownRepeat = event.repeat;
-      keyEvents.keydownComposing = event.isComposing;
-      keyEvents.keydownDefaultPrevented = event.defaultPrevented;
-      keyEvents.keydownTargetId = event.target?.id || null;
-    });
-    document.addEventListener("keyup", (event) => {
-      if (event.code !== "KeyA") {
-        return;
-      }
-      keyEvents.keyupCount += 1;
-      keyEvents.keyupTrusted = event.isTrusted;
-      keyEvents.keyupCode = event.code;
-      keyEvents.keyupKey = event.key;
-      keyEvents.keyupRepeat = event.repeat;
-      keyEvents.keyupComposing = event.isComposing;
-      keyEvents.keyupDefaultPrevented = event.defaultPrevented;
-      keyEvents.keyupTargetId = event.target?.id || null;
-    });
-    target.addEventListener("beforeinput", (event) => {
-      textInputEvents.beforeinputCount += 1;
-      textInputEvents.beforeinputTrusted = event.isTrusted;
-      textInputEvents.beforeinputInputType = event.inputType;
-      textInputEvents.beforeinputData = event.data;
-      textInputEvents.beforeinputTargetId = event.target?.id || null;
-    });
+      keyEvents[event.type + "Count"] += 1;
+      keyEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        code: event.code,
+        key: event.key,
+        repeat: event.repeat === true,
+        isComposing: event.isComposing === true,
+        defaultPrevented: event.defaultPrevented === true,
+        targetId: event.target?.id || null,
+      });
+    }
+    document.addEventListener("keydown", recordKeyEvent);
+    document.addEventListener("keyup", recordKeyEvent);
+
+    function recordTextInputEvent(event) {
+      textInputEvents[event.type + "Count"] += 1;
+      textInputTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        inputType: event.inputType,
+        data: event.data,
+        isComposing: event.isComposing === true,
+        targetId: event.target?.id || null,
+      });
+    }
+    target.addEventListener("beforeinput", recordTextInputEvent);
     target.addEventListener("input", (event) => {
-      textInputEvents.inputCount += 1;
-      textInputEvents.inputTrusted = event.isTrusted;
-      textInputEvents.inputInputType = event.inputType;
-      textInputEvents.inputData = event.data;
-      textInputEvents.inputTargetId = event.target?.id || null;
-      result.dataset.textDelivered = "true";
-      result.textContent = event.isTrusted ? "TEXT INPUT RECEIVED" :
-        "UNTRUSTED TEXT INPUT";
+      recordTextInputEvent(event);
+      if (!event.isTrusted) {
+        result.dataset.textDelivered = "false";
+        result.textContent = "UNTRUSTED TEXT INPUT";
+      } else if (target.value === "ab") {
+        result.dataset.textDelivered = "true";
+        result.textContent = "TEXT INPUT RECEIVED";
+      } else {
+        result.dataset.textDelivered = "false";
+        result.textContent = "TEXT INPUT PARTIAL";
+      }
     });
     for (const eventType of [
       "compositionstart", "compositionupdate", "compositionend",
@@ -182,10 +163,12 @@
       return JSON.stringify({
         protocol: 1,
         timerTicks,
-        fixture: "chromium-wasm-m4-ozone-printable-key-v1",
+        fixture: "chromium-wasm-m4-ozone-printable-key-v2",
         fontReady,
         keyEvents,
+        keyEventTrace,
         textInputEvents,
+        textInputTrace,
         ready: document.readyState === "complete" && fontReady &&
             center.x >= 0 && center.y >= 0,
         targetCenterX: center.x,

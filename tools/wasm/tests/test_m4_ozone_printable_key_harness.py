@@ -21,11 +21,17 @@ import m3_content_server
 import m4_cdp
 
 
-def key_record(event_type: str, frame_id: int) -> dict[str, object]:
+def key_record(
+    event_type: str,
+    code: str,
+    key: str,
+    sequence: int,
+    frame_id: int,
+) -> dict[str, object]:
     return {
         "type": event_type,
-        "code": "KeyA",
-        "key": "a",
+        "code": code,
+        "key": key,
         "trusted": True,
         "queued": True,
         "repeat": False,
@@ -36,11 +42,37 @@ def key_record(event_type: str, frame_id: int) -> dict[str, object]:
             "meta": False,
             "shift": False,
         },
-        "sequence": 3 if event_type == "down" else 4,
+        "sequence": sequence,
         "frameIdBefore": frame_id,
         "canvasFocused": True,
         "pointerActivated": True,
         "defaultPrevented": True,
+    }
+
+
+def inner_key_record(
+    event_type: str, code: str, key: str
+) -> dict[str, object]:
+    return {
+        "type": event_type,
+        "trusted": True,
+        "code": code,
+        "key": key,
+        "repeat": False,
+        "isComposing": False,
+        "defaultPrevented": False,
+        "targetId": "editable-target",
+    }
+
+
+def text_input_record(event_type: str, data: str) -> dict[str, object]:
+    return {
+        "type": event_type,
+        "trusted": True,
+        "inputType": "insertText",
+        "data": data,
+        "isComposing": False,
+        "targetId": "editable-target",
     }
 
 
@@ -67,20 +99,27 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
             "frameIdBefore": 6,
         },
     }
+    queued_records = [
+        key_record("down", "KeyA", "a", 1, 7),
+        key_record("up", "KeyA", "a", 2, 7),
+        key_record("down", "KeyB", "b", 3, 8),
+        key_record("up", "KeyB", "b", 4, 8),
+    ]
     keyboard_input = {
         "enabled": True,
         "activated": True,
-        "receivedCount": 2,
-        "trustedCount": 2,
-        "queuedCount": 2,
+        "receivedCount": 4,
+        "trustedCount": 4,
+        "queuedCount": 4,
+        "queuedRecords": queued_records,
         "pressedCodes": [],
-        "lastQueuedDown": key_record("down", 7),
-        "lastQueuedUp": key_record("up", 7),
+        "lastQueuedDown": copy.deepcopy(queued_records[2]),
+        "lastQueuedUp": copy.deepcopy(queued_records[3]),
     }
     page_probe = {
         "fontReady": True,
         "protocol": 1,
-        "fixture": "chromium-wasm-m4-ozone-printable-key-v1",
+        "fixture": "chromium-wasm-m4-ozone-printable-key-v2",
         "ready": True,
         "targetCenterX": 388,
         "targetCenterY": 215,
@@ -90,39 +129,29 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         "clickTrusted": True,
         "focusCount": 1,
         "focusTrusted": True,
-        "value": "a",
-        "selectionStart": 1,
-        "selectionEnd": 1,
+        "value": "ab",
+        "selectionStart": 2,
+        "selectionEnd": 2,
         "resultText": "TEXT INPUT RECEIVED",
         "keyEvents": {
-            "keydownCount": 1,
-            "keyupCount": 1,
-            "keydownTrusted": True,
-            "keyupTrusted": True,
-            "keydownCode": "KeyA",
-            "keyupCode": "KeyA",
-            "keydownKey": "a",
-            "keyupKey": "a",
-            "keydownRepeat": False,
-            "keyupRepeat": False,
-            "keydownComposing": False,
-            "keyupComposing": False,
-            "keydownDefaultPrevented": False,
-            "keyupDefaultPrevented": False,
-            "keydownTargetId": "editable-target",
-            "keyupTargetId": "editable-target",
+            "keydownCount": 2,
+            "keyupCount": 2,
         },
+        "keyEventTrace": [
+            inner_key_record("keydown", "KeyA", "a"),
+            inner_key_record("keyup", "KeyA", "a"),
+            inner_key_record("keydown", "KeyB", "b"),
+            inner_key_record("keyup", "KeyB", "b"),
+        ],
+        "textInputTrace": [
+            text_input_record("beforeinput", "a"),
+            text_input_record("input", "a"),
+            text_input_record("beforeinput", "b"),
+            text_input_record("input", "b"),
+        ],
         "textInputEvents": {
-            "beforeinputCount": 1,
-            "inputCount": 1,
-            "beforeinputTrusted": True,
-            "inputTrusted": True,
-            "beforeinputInputType": "insertText",
-            "inputInputType": "insertText",
-            "beforeinputData": "a",
-            "inputData": "a",
-            "beforeinputTargetId": "editable-target",
-            "inputTargetId": "editable-target",
+            "beforeinputCount": 2,
+            "inputCount": 2,
             "compositionstartCount": 0,
             "compositionupdateCount": 0,
             "compositionendCount": 0,
@@ -150,7 +179,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "elapsedMs": 1200,
             },
             "frame": {
-                "id": 8,
+                "id": 9,
                 "timestampMs": 1180,
                 "width": 800,
                 "height": 600,
@@ -161,6 +190,16 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         },
         "pointerInput": pointer_input,
         "keyboardInput": keyboard_input,
+        "keyAProof": {
+            "outerTraceExact": True,
+            "innerTraceExact": True,
+            "textTraceExact": True,
+            "noComposition": True,
+            "value": "a",
+            "selectionStart": 1,
+            "selectionEnd": 1,
+            "frameAfterKeyADown": True,
+        },
         "shutdown": {
             "ok": True,
             "accepted": True,
@@ -175,6 +214,8 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "m4:pointer:down:queued",
                 "m4:keyboard:pointer-activation",
                 "m4:pointer:up:queued",
+                "m4:keyboard:down:queued",
+                "m4:keyboard:up:queued",
                 "m4:keyboard:down:queued",
                 "m4:keyboard:up:queued",
                 "shutdown:complete",
@@ -209,46 +250,59 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         assert isinstance(readiness, dict)
         page_probe = readiness["pageProbe"]
         assert isinstance(page_probe, dict)
-        key_events = page_probe["keyEvents"]
-        assert isinstance(key_events, dict)
-        key_events["keydownTrusted"] = False
+        key_trace = page_probe["keyEventTrace"]
+        assert isinstance(key_trace, list)
+        key_b_down = key_trace[2]
+        assert isinstance(key_b_down, dict)
+        key_b_down["trusted"] = False
 
-        with self.assertRaisesRegex(M0Error, "keydownTrusted mismatch"):
+        with self.assertRaisesRegex(M0Error, "inner keyEventTrace"):
             self.assert_valid(result, versions)
 
-    def test_untrusted_outer_key_event_is_rejected(self) -> None:
+    def test_outer_key_trace_requires_key_a_then_key_b(self) -> None:
         result, versions = passing_result()
         keyboard = result["keyboardInput"]
         assert isinstance(keyboard, dict)
-        key_down = keyboard["lastQueuedDown"]
-        assert isinstance(key_down, dict)
-        key_down["trusted"] = False
+        records = keyboard["queuedRecords"]
+        assert isinstance(records, list)
+        key_b_down = records[2]
+        assert isinstance(key_b_down, dict)
+        key_b_down["code"] = "KeyA"
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        readiness["keyboardInput"] = copy.deepcopy(keyboard)
 
-        with self.assertRaisesRegex(M0Error, "trusted mismatch"):
+        with self.assertRaisesRegex(M0Error, "queued record 2 code mismatch"):
             self.assert_valid(result, versions)
 
-    def test_non_printable_code_is_rejected(self) -> None:
-        result, versions = passing_result()
-        keyboard = result["keyboardInput"]
-        assert isinstance(keyboard, dict)
-        key_down = keyboard["lastQueuedDown"]
-        assert isinstance(key_down, dict)
-        key_down["code"] = "ArrowDown"
-
-        with self.assertRaisesRegex(M0Error, "code mismatch"):
-            self.assert_valid(result, versions)
-
-    def test_wrong_inner_text_data_is_rejected(self) -> None:
+    def test_inner_key_trace_requires_key_a_then_key_b(self) -> None:
         result, versions = passing_result()
         readiness = result["readiness"]
         assert isinstance(readiness, dict)
         page_probe = readiness["pageProbe"]
         assert isinstance(page_probe, dict)
-        text_events = page_probe["textInputEvents"]
-        assert isinstance(text_events, dict)
-        text_events["inputData"] = "b"
+        key_trace = page_probe["keyEventTrace"]
+        assert isinstance(key_trace, list)
+        key_b_up = key_trace[3]
+        assert isinstance(key_b_up, dict)
+        key_b_up["key"] = "a"
 
-        with self.assertRaisesRegex(M0Error, "inputData mismatch"):
+        with self.assertRaisesRegex(M0Error, "inner keyEventTrace"):
+            self.assert_valid(result, versions)
+
+    def test_two_trusted_insert_text_pairs_are_required(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        second_input = text_trace[3]
+        assert isinstance(second_input, dict)
+        second_input["data"] = "a"
+
+        with self.assertRaisesRegex(M0Error, "inner textInputTrace"):
             self.assert_valid(result, versions)
 
     def test_untrusted_beforeinput_is_rejected(self) -> None:
@@ -257,33 +311,79 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         assert isinstance(readiness, dict)
         page_probe = readiness["pageProbe"]
         assert isinstance(page_probe, dict)
-        text_events = page_probe["textInputEvents"]
-        assert isinstance(text_events, dict)
-        text_events["beforeinputTrusted"] = False
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        first_beforeinput = text_trace[0]
+        assert isinstance(first_beforeinput, dict)
+        first_beforeinput["trusted"] = False
 
-        with self.assertRaisesRegex(M0Error, "beforeinputTrusted mismatch"):
+        with self.assertRaisesRegex(M0Error, "inner textInputTrace"):
             self.assert_valid(result, versions)
 
-    def test_missing_input_event_is_rejected(self) -> None:
+    def test_text_input_trace_requires_explicit_non_composing_state(
+        self,
+    ) -> None:
         result, versions = passing_result()
         readiness = result["readiness"]
         assert isinstance(readiness, dict)
         page_probe = readiness["pageProbe"]
         assert isinstance(page_probe, dict)
-        text_events = page_probe["textInputEvents"]
-        assert isinstance(text_events, dict)
-        text_events["inputCount"] = 0
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        second_beforeinput = text_trace[2]
+        assert isinstance(second_beforeinput, dict)
+        second_beforeinput["isComposing"] = True
 
-        with self.assertRaisesRegex(M0Error, "inputCount mismatch"):
+        with self.assertRaisesRegex(M0Error, "inner textInputTrace"):
             self.assert_valid(result, versions)
 
-    def test_wrong_value_or_selection_is_rejected(self) -> None:
         result, versions = passing_result()
         readiness = result["readiness"]
         assert isinstance(readiness, dict)
         page_probe = readiness["pageProbe"]
         assert isinstance(page_probe, dict)
-        page_probe["value"] = ""
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        first_input = text_trace[1]
+        assert isinstance(first_input, dict)
+        first_input.pop("isComposing")
+
+        with self.assertRaisesRegex(M0Error, "inner textInputTrace"):
+            self.assert_valid(result, versions)
+
+    def test_key_a_stage_proof_is_required_and_exact(self) -> None:
+        result, versions = passing_result()
+        result.pop("keyAProof")
+
+        with self.assertRaisesRegex(M0Error, "KeyA-stage proof"):
+            self.assert_valid(result, versions)
+
+        for field, invalid_value in (
+            ("outerTraceExact", False),
+            ("innerTraceExact", False),
+            ("textTraceExact", False),
+            ("noComposition", False),
+            ("value", "ab"),
+            ("selectionStart", 2),
+            ("selectionEnd", 2),
+            ("frameAfterKeyADown", False),
+        ):
+            with self.subTest(field=field):
+                result, versions = passing_result()
+                key_a_proof = result["keyAProof"]
+                assert isinstance(key_a_proof, dict)
+                key_a_proof[field] = invalid_value
+
+                with self.assertRaisesRegex(M0Error, "KeyA-stage proof"):
+                    self.assert_valid(result, versions)
+
+    def test_final_value_and_selection_require_both_characters(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        page_probe["value"] = "a"
 
         with self.assertRaisesRegex(M0Error, "value mismatch"):
             self.assert_valid(result, versions)
@@ -293,7 +393,7 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         assert isinstance(readiness, dict)
         page_probe = readiness["pageProbe"]
         assert isinstance(page_probe, dict)
-        page_probe["selectionEnd"] = 0
+        page_probe["selectionEnd"] = 1
 
         with self.assertRaisesRegex(M0Error, "selectionEnd mismatch"):
             self.assert_valid(result, versions)
@@ -304,9 +404,9 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         assert isinstance(readiness, dict)
         page_probe = readiness["pageProbe"]
         assert isinstance(page_probe, dict)
-        text_events = page_probe["textInputEvents"]
-        assert isinstance(text_events, dict)
-        text_events["compositionstartCount"] = 1
+        composition = page_probe["textInputEvents"]
+        assert isinstance(composition, dict)
+        composition["compositionstartCount"] = 1
 
         with self.assertRaisesRegex(
             M0Error, "compositionstartCount mismatch"
@@ -325,12 +425,12 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         result, versions = passing_result()
         keyboard = result["keyboardInput"]
         assert isinstance(keyboard, dict)
-        keyboard["pressedCodes"] = ["KeyA"]
+        keyboard["pressedCodes"] = ["KeyB"]
 
         with self.assertRaisesRegex(M0Error, "key state was not released"):
             self.assert_valid(result, versions)
 
-    def test_extra_accepted_keyboard_record_is_rejected(self) -> None:
+    def test_four_accepted_keyboard_records_are_required(self) -> None:
         result, versions = passing_result()
         keyboard = result["keyboardInput"]
         assert isinstance(keyboard, dict)
@@ -340,7 +440,7 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         readiness["keyboardInput"] = copy.deepcopy(keyboard)
 
         with self.assertRaisesRegex(
-            M0Error, "keyboard receivedCount is not exactly two"
+            M0Error, "keyboard receivedCount must be at least 4"
         ):
             self.assert_valid(result, versions)
 
@@ -350,7 +450,7 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         assert isinstance(readiness, dict)
         frame = readiness["frame"]
         assert isinstance(frame, dict)
-        frame["id"] = 7
+        frame["id"] = 8
 
         with self.assertRaisesRegex(M0Error, "no compositor frame"):
             self.assert_valid(result, versions)
@@ -362,7 +462,7 @@ class M4PrintableKeyResultValidationTest(unittest.TestCase):
         readiness["keyboardInput"] = copy.deepcopy(result["keyboardInput"])
         readiness_keyboard = readiness["keyboardInput"]
         assert isinstance(readiness_keyboard, dict)
-        readiness_keyboard["queuedCount"] = 1
+        readiness_keyboard["queuedCount"] = 3
 
         with self.assertRaisesRegex(
             M0Error, "keyboard evidence differs from readiness evidence"
@@ -382,12 +482,13 @@ class RecordingDevToolsClient:
 
 
 class M4PrintableKeyDevToolsClientTest(unittest.TestCase):
-    def test_raw_key_a_uses_key_down_and_key_up_without_text(self) -> None:
+    def test_raw_key_a_and_b_use_key_down_and_key_up_without_text(self) -> None:
         recording = RecordingDevToolsClient()
         client = object.__new__(m4_cdp.DevToolsClient)
         client.call = recording.call  # type: ignore[method-assign]
 
         client.dispatch_key_a()
+        client.dispatch_key_b()
 
         self.assertEqual(
             recording.calls,
@@ -409,6 +510,26 @@ class M4PrintableKeyDevToolsClientTest(unittest.TestCase):
                         "code": "KeyA",
                         "key": "a",
                         "windowsVirtualKeyCode": 65,
+                        "modifiers": 0,
+                    },
+                ),
+                (
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "rawKeyDown",
+                        "code": "KeyB",
+                        "key": "b",
+                        "windowsVirtualKeyCode": 66,
+                        "modifiers": 0,
+                    },
+                ),
+                (
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "keyUp",
+                        "code": "KeyB",
+                        "key": "b",
+                        "windowsVirtualKeyCode": 66,
                         "modifiers": 0,
                     },
                 ),

@@ -395,10 +395,36 @@ class DevToolsClient:
         )
 
     def dispatch_key_a(self) -> None:
+        """Drive one raw physical KeyA pair without a text payload."""
+
         base = {
             "code": "KeyA",
             "key": "a",
             "windowsVirtualKeyCode": 65,
+            "modifiers": 0,
+        }
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "rawKeyDown",
+            },
+        )
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **base,
+                "type": "keyUp",
+            },
+        )
+
+    def dispatch_key_b(self) -> None:
+        """Drive one raw physical KeyB pair without a text payload."""
+
+        base = {
+            "code": "KeyB",
+            "key": "b",
+            "windowsVirtualKeyCode": 66,
             "modifiers": 0,
         }
         self.call(

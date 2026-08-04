@@ -73,11 +73,12 @@ constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr size_t kMaximumM4TextInputUtf16Units = 64 * 1024;
 constexpr size_t kMaximumM4TextInputUtf8Bytes =
     kMaximumM4TextInputUtf16Units * 3;
-// This remains a bounded physical-key ABI. Backspace and the explicit
-// Ctrl+C/Ctrl+V chord are editing experiments, not a generic keyboard or
-// text-insertion path.
+// This remains a bounded physical-key ABI. Fixed-US KeyA/KeyB, Backspace, and
+// the explicit Ctrl+C/Ctrl+V chord are editing experiments, not a generic
+// keyboard or text-insertion path.
 constexpr std::string_view kM4NavigationDomCode = "ArrowDown";
-constexpr std::string_view kM4PrintableDomCode = "KeyA";
+constexpr std::string_view kM4PrintableKeyADomCode = "KeyA";
+constexpr std::string_view kM4PrintableKeyBDomCode = "KeyB";
 constexpr std::string_view kM4BackspaceDomCode = "Backspace";
 constexpr std::string_view kM4ControlLeftDomCode = "ControlLeft";
 constexpr std::string_view kM4CopyDomCode = "KeyC";
@@ -86,7 +87,7 @@ constexpr size_t kMaximumM4DomCodeLength = kM4ControlLeftDomCode.size();
 
 bool IsSupportedM4DomCode(ui::DomCode dom_code) {
   return dom_code == ui::DomCode::ARROW_DOWN ||
-         dom_code == ui::DomCode::US_A ||
+         dom_code == ui::DomCode::US_A || dom_code == ui::DomCode::US_B ||
          dom_code == ui::DomCode::BACKSPACE ||
          dom_code == ui::DomCode::CONTROL_LEFT ||
          dom_code == ui::DomCode::US_C || dom_code == ui::DomCode::US_V;
@@ -333,6 +334,7 @@ class WasmHostState {
     task_runner_ = std::move(task_runner);
     m4_arrow_down_ = false;
     m4_key_a_ = false;
+    m4_key_b_ = false;
     m4_backspace_ = false;
     m4_control_left_down_ = false;
     m4_copy_down_ = false;
@@ -395,6 +397,8 @@ class WasmHostState {
       key_down = m4_arrow_down_;
     } else if (physical_key == ui::DomCode::US_A) {
       key_down = m4_key_a_;
+    } else if (physical_key == ui::DomCode::US_B) {
+      key_down = m4_key_b_;
     } else if (physical_key == ui::DomCode::BACKSPACE) {
       key_down = m4_backspace_;
     } else if (physical_key == ui::DomCode::CONTROL_LEFT) {
@@ -431,6 +435,8 @@ class WasmHostState {
       m4_arrow_down_ = down;
     } else if (physical_key == ui::DomCode::US_A) {
       m4_key_a_ = down;
+    } else if (physical_key == ui::DomCode::US_B) {
+      m4_key_b_ = down;
     } else if (physical_key == ui::DomCode::BACKSPACE) {
       m4_backspace_ = down;
     } else if (physical_key == ui::DomCode::CONTROL_LEFT) {
@@ -447,6 +453,7 @@ class WasmHostState {
       GUARDED_BY(lock_);
   bool m4_arrow_down_ GUARDED_BY(lock_) = false;
   bool m4_key_a_ GUARDED_BY(lock_) = false;
+  bool m4_key_b_ GUARDED_BY(lock_) = false;
   bool m4_backspace_ GUARDED_BY(lock_) = false;
   bool m4_control_left_down_ GUARDED_BY(lock_) = false;
   bool m4_copy_down_ GUARDED_BY(lock_) = false;
@@ -877,7 +884,8 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_key(const char* code, int down) {
       strnlen(code, content::kMaximumM4DomCodeLength + 1);
   const std::string_view code_string(code, length);
   if (code_string != content::kM4NavigationDomCode &&
-      code_string != content::kM4PrintableDomCode &&
+      code_string != content::kM4PrintableKeyADomCode &&
+      code_string != content::kM4PrintableKeyBDomCode &&
       code_string != content::kM4BackspaceDomCode &&
       code_string != content::kM4ControlLeftDomCode &&
       code_string != content::kM4CopyDomCode &&

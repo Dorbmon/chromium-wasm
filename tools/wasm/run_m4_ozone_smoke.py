@@ -563,8 +563,8 @@ def main() -> int:
         state_expression = "window.__chromiumWasmM4PrintableKeyState || null"
         expected_state = "awaiting-dom-printable-key-activation"
         input_driver = (
-            "Chrome DevTools Input.dispatchMouseEvent + "
-            "Input.dispatchKeyEvent:rawKeyDown/keyUp without text"
+            "Chrome DevTools Input.dispatchMouseEvent + raw KeyA then KeyB "
+            "Input.dispatchKeyEvent down/up pairs without text"
         )
     elif args.input == "backspace":
         case = M4_BACKSPACE_CASE
@@ -1439,8 +1439,20 @@ def main() -> int:
                 state_expression,
                 "awaiting-dom-printable-key",
             )
-            stage = "dispatch_trusted_dom_printable_key"
+            stage = "dispatch_trusted_dom_printable_key_a"
             client.dispatch_key_a()
+            stage = "wait_for_printable_key_b"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-printable-key-b",
+            )
+            stage = "dispatch_trusted_dom_printable_key_b"
+            client.dispatch_key_b()
         elif args.input == "backspace":
             stage = "dispatch_trusted_dom_backspace_activation"
             client.dispatch_primary_click(click_x, click_y)

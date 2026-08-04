@@ -33,7 +33,7 @@ bool IsSupportedMouseButton(EventFlags button) {
 
 bool IsSupportedM4DomCode(DomCode dom_code) {
   return dom_code == DomCode::ARROW_DOWN || dom_code == DomCode::US_A ||
-         dom_code == DomCode::BACKSPACE ||
+         dom_code == DomCode::US_B || dom_code == DomCode::BACKSPACE ||
          dom_code == DomCode::CONTROL_LEFT || dom_code == DomCode::US_C ||
          dom_code == DomCode::US_V;
 }
@@ -111,7 +111,7 @@ class WasmSystemInputInjector final : public SystemInputInjector {
     // this generic keyboard or host-synthesized text input to Blink.
     if (!IsSupportedM4DomCode(physical_key)) {
       NOTIMPLEMENTED_LOG_ONCE()
-          << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, "
+          << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, KeyB, "
              "Backspace, and Ctrl+C/Ctrl+V only";
       return;
     }
@@ -120,6 +120,8 @@ class WasmSystemInputInjector final : public SystemInputInjector {
       key_down = &arrow_down_;
     } else if (physical_key == DomCode::US_A) {
       key_down = &key_a_;
+    } else if (physical_key == DomCode::US_B) {
+      key_down = &key_b_;
     } else if (physical_key == DomCode::CONTROL_LEFT) {
       key_down = &control_left_;
     } else if (physical_key == DomCode::US_C) {
@@ -165,6 +167,7 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   int device_id_ = ED_UNKNOWN_DEVICE;
   bool arrow_down_ = false;
   bool key_a_ = false;
+  bool key_b_ = false;
   bool backspace_ = false;
   bool control_left_ = false;
   bool key_c_ = false;

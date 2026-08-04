@@ -81,12 +81,14 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "IsSupportedM4DomCode(physical_key)",
             "DomCode::ARROW_DOWN",
             "DomCode::US_A",
+            "DomCode::US_B",
             "DomCode::BACKSPACE",
             "DomCode::CONTROL_LEFT",
             "DomCode::US_C",
             "DomCode::US_V",
             "arrow_down_",
             "key_a_",
+            "key_b_",
             "backspace_",
             "control_left_",
             "key_c_",
@@ -103,6 +105,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, injector)
         self.assertIn("DomCode::US_A", event_source)
+        self.assertIn("DomCode::US_B", event_source)
         self.assertIn("DomCode::BACKSPACE", event_source)
         self.assertNotIn("KeyEvent event", injector)
 
@@ -153,6 +156,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             [
                 "ARROW_DOWN",
                 "US_A",
+                "US_B",
                 "BACKSPACE",
                 "CONTROL_LEFT",
                 "US_C",
@@ -200,13 +204,15 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, key_export)
         self.assertIn("kM4NavigationDomCode", api)
-        self.assertIn("kM4PrintableDomCode", api)
+        self.assertIn("kM4PrintableKeyADomCode", api)
+        self.assertIn("kM4PrintableKeyBDomCode", api)
         self.assertIn("kM4BackspaceDomCode", api)
         self.assertIn("kM4ControlLeftDomCode", api)
         self.assertIn("kM4CopyDomCode", api)
         self.assertIn("kM4PasteDomCode", api)
         self.assertIn("ui::DomCode::ARROW_DOWN", api)
         self.assertIn("ui::DomCode::US_A", api)
+        self.assertIn("ui::DomCode::US_B", api)
         self.assertIn("ui::DomCode::BACKSPACE", api)
         self.assertIn("ui::DomCode::CONTROL_LEFT", api)
         self.assertIn("ui::DomCode::US_C", api)
