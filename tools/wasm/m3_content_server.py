@@ -4679,7 +4679,7 @@ def validate_m4_keyboard_result(
     expected_probe = {
         "fontReady": True,
         "protocol": M3_PROTOCOL,
-        "fixture": "chromium-wasm-m4-ozone-keyboard-v1",
+        "fixture": "chromium-wasm-m4-ozone-keyboard-v2",
         "ready": True,
         "activeElementId": "keyboard-target",
         "activationCount": 1,
@@ -4727,30 +4727,69 @@ def validate_m4_keyboard_result(
     key_events = _require_dict(
         page_probe.get("keyEvents"), "M4 inner key events"
     )
-    for field in ("keydownCount", "keyupCount"):
-        if _require_safe_integer(
-            key_events.get(field), f"M4 inner {field}", minimum=1
-        ) != 1:
-            raise M0Error(f"M4 inner {field} is not exactly one")
-    for event_name in ("keydown", "keyup"):
-        expected_event = {
-            f"{event_name}Trusted": True,
-            f"{event_name}Code": "ArrowDown",
-            f"{event_name}Key": "ArrowDown",
-            f"{event_name}Repeat": False,
-            f"{event_name}Composing": False,
-            f"{event_name}DefaultPrevented": False,
-            f"{event_name}TargetId": "keyboard-target",
+    if _require_safe_integer(
+        key_events.get("keydownCount"), "M4 inner keydownCount", minimum=1
+    ) != 2:
+        raise M0Error("M4 inner keydownCount is not exactly two")
+    if _require_safe_integer(
+        key_events.get("keyupCount"), "M4 inner keyupCount", minimum=1
+    ) != 1:
+        raise M0Error("M4 inner keyupCount is not exactly one")
+    expected_summary = {
+        "keydownTrusted": True,
+        "keyupTrusted": True,
+        "keydownCode": "ArrowDown",
+        "keyupCode": "ArrowDown",
+        "keydownKey": "ArrowDown",
+        "keyupKey": "ArrowDown",
+        "keydownRepeat": True,
+        "keyupRepeat": False,
+        "keydownComposing": False,
+        "keyupComposing": False,
+        "keydownDefaultPrevented": False,
+        "keyupDefaultPrevented": False,
+        "keydownTargetId": "keyboard-target",
+        "keyupTargetId": "keyboard-target",
+    }
+    for field, expected_value in expected_summary.items():
+        actual_value = key_events.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 inner {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    inner_trace = key_events.get("trace")
+    expected_inner_trace = (
+        ("keydown", False),
+        ("keydown", True),
+        ("keyup", False),
+    )
+    if not isinstance(inner_trace, list) or len(inner_trace) != len(
+        expected_inner_trace
+    ):
+        raise M0Error("M4 inner key trace does not contain down/repeat/up")
+    for index, (event_type, repeat) in enumerate(expected_inner_trace):
+        record = _require_dict(
+            inner_trace[index], f"M4 inner key trace {index}"
+        )
+        expected_record = {
+            "type": event_type,
+            "trusted": True,
+            "code": "ArrowDown",
+            "key": "ArrowDown",
+            "repeat": repeat,
+            "isComposing": False,
+            "defaultPrevented": False,
+            "targetId": "keyboard-target",
         }
-        for field, expected_value in expected_event.items():
-            actual_value = key_events.get(field)
-            if (
-                type(actual_value) is not type(expected_value)
-                or actual_value != expected_value
-            ):
+        for field, expected_value in expected_record.items():
+            if record.get(field) != expected_value:
                 raise M0Error(
-                    f"M4 inner {field} mismatch: expected "
-                    f"{expected_value!r}, got {actual_value!r}"
+                    f"M4 inner key trace {index} {field} mismatch: expected "
+                    f"{expected_value!r}, got {record.get(field)!r}"
                 )
     text_input_events = _require_dict(
         page_probe.get("textInputEvents"),
@@ -4866,17 +4905,17 @@ def validate_m4_keyboard_result(
     keyboard_received = _require_safe_integer(
         keyboard_input.get("receivedCount"),
         "M4 received keyboard count",
-        minimum=2,
+        minimum=3,
     )
     keyboard_trusted = _require_safe_integer(
         keyboard_input.get("trustedCount"),
         "M4 trusted DOM keyboard count",
-        minimum=2,
+        minimum=3,
     )
     keyboard_queued = _require_safe_integer(
         keyboard_input.get("queuedCount"),
         "M4 queued host keyboard count",
-        minimum=2,
+        minimum=3,
     )
     if (
         keyboard_trusted > keyboard_received
@@ -4887,7 +4926,10 @@ def validate_m4_keyboard_result(
         )
 
     def require_key_record(
-        value: object, description: str, expected_type: str
+        value: object,
+        description: str,
+        expected_type: str,
+        expected_repeat: bool,
     ) -> int:
         record = _require_dict(value, description)
         expected_record = {
@@ -4896,7 +4938,7 @@ def validate_m4_keyboard_result(
             "key": "ArrowDown",
             "trusted": True,
             "queued": True,
-            "repeat": False,
+            "repeat": expected_repeat,
             "isComposing": False,
             "canvasFocused": True,
             "pointerActivated": True,
@@ -4928,16 +4970,49 @@ def validate_m4_keyboard_result(
             minimum=1,
         )
 
+    queued_records = keyboard_input.get("queuedRecords")
+    expected_queued_trace = (
+        ("down", False),
+        ("down", True),
+        ("up", False),
+    )
+    if not isinstance(queued_records, list) or len(queued_records) != len(
+        expected_queued_trace
+    ):
+        raise M0Error("M4 keyboard trace does not contain down/repeat/up")
+    queued_frame_ids = []
+    for index, (event_type, repeat) in enumerate(expected_queued_trace):
+        record = _require_dict(
+            queued_records[index], f"M4 queued key trace {index}"
+        )
+        queued_frame_ids.append(
+            require_key_record(
+                record,
+                f"M4 queued key trace {index}",
+                event_type,
+                repeat,
+            )
+        )
+        if _require_safe_integer(
+            record.get("sequence"),
+            f"M4 queued key trace {index} sequence",
+            minimum=1,
+        ) != index + 1:
+            raise M0Error("M4 keyboard trace sequence is not contiguous")
     key_down_frame_id = require_key_record(
         keyboard_input.get("lastQueuedDown"),
         "M4 last queued key down",
         "down",
+        True,
     )
     require_key_record(
         keyboard_input.get("lastQueuedUp"),
         "M4 last queued key up",
         "up",
+        False,
     )
+    if key_down_frame_id != queued_frame_ids[1]:
+        raise M0Error("M4 keyboard repeat frame does not match queued trace")
     if frame_id <= key_down_frame_id:
         raise M0Error(
             "M4 keyboard result has no compositor frame after raw key input"
@@ -4974,6 +5049,7 @@ def validate_m4_keyboard_result(
         "m4:pointer:up:queued",
         "m4:keyboard:pointer-activation",
         "m4:keyboard:down:queued",
+        "m4:keyboard:repeat:queued",
         "m4:keyboard:up:queued",
         "shutdown:complete",
     ):

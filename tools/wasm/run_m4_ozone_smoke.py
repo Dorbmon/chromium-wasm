@@ -515,7 +515,7 @@ def main() -> int:
         expected_state = "awaiting-dom-keyboard-activation"
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent + "
-            "Input.dispatchKeyEvent:rawKeyDown/keyUp"
+            "Input.dispatchKeyEvent:rawKeyDown/autoRepeat/keyUp"
         )
     elif args.input == "printable-key":
         case = M4_PRINTABLE_KEY_CASE

@@ -63,9 +63,9 @@ class M4OzoneCopyPasteContractTest(unittest.TestCase):
             "  void SetViewportSizeOnUiThread",
         )
         for marker in (
-            "IsM4KeyTransitionAllowedLocked(physical_key, down)",
+            "IsM4KeyTransitionAllowedLocked(physical_key, down, auto_repeat)",
             "task_runner_->PostTask(FROM_HERE, std::move(command))",
-            "RecordM4KeyTransitionLocked(physical_key, down)",
+            "RecordM4KeyTransitionLocked(physical_key, down, auto_repeat)",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, queue_admission)
@@ -81,7 +81,8 @@ class M4OzoneCopyPasteContractTest(unittest.TestCase):
             "m4_control_left_down_",
             "m4_copy_down_",
             "m4_paste_down_",
-            "key_down != down && (!down || m4_control_left_down_)",
+            "if (key_down == down)",
+            "return !down || m4_control_left_down_;",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, transition_admission)

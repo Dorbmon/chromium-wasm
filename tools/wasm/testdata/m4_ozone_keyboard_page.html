@@ -84,6 +84,7 @@
       keyupDefaultPrevented: null,
       keydownTargetId: null,
       keyupTargetId: null,
+      trace: [],
     };
     const textInputEvents = {
       beforeinputCount: 0,
@@ -120,6 +121,16 @@
       keyEvents.keydownComposing = event.isComposing;
       keyEvents.keydownDefaultPrevented = event.defaultPrevented;
       keyEvents.keydownTargetId = event.target?.id || null;
+      keyEvents.trace.push({
+        type: "keydown",
+        trusted: event.isTrusted,
+        code: event.code,
+        key: event.key,
+        repeat: event.repeat,
+        isComposing: event.isComposing,
+        defaultPrevented: event.defaultPrevented,
+        targetId: event.target?.id || null,
+      });
       result.dataset.keyDelivered = "true";
       result.textContent = event.isTrusted ? "ARROW DOWN RECEIVED" :
         "UNTRUSTED KEY";
@@ -136,6 +147,16 @@
       keyEvents.keyupComposing = event.isComposing;
       keyEvents.keyupDefaultPrevented = event.defaultPrevented;
       keyEvents.keyupTargetId = event.target?.id || null;
+      keyEvents.trace.push({
+        type: "keyup",
+        trusted: event.isTrusted,
+        code: event.code,
+        key: event.key,
+        repeat: event.repeat,
+        isComposing: event.isComposing,
+        defaultPrevented: event.defaultPrevented,
+        targetId: event.target?.id || null,
+      });
     });
     document.addEventListener("beforeinput", () => {
       textInputEvents.beforeinputCount += 1;
@@ -168,7 +189,7 @@
       return JSON.stringify({
         protocol: 1,
         timerTicks,
-        fixture: "chromium-wasm-m4-ozone-keyboard-v1",
+        fixture: "chromium-wasm-m4-ozone-keyboard-v2",
         fontReady,
         keyEvents,
         textInputEvents,

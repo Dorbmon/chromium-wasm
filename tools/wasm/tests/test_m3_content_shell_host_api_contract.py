@@ -72,6 +72,7 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
             "chromium_wasm_host_resize",
             "chromium_wasm_host_load_url",
             "chromium_wasm_host_click",
+            "chromium_wasm_host_arrow_down_repeat",
             "chromium_wasm_host_deactivate",
             "chromium_wasm_host_shutdown",
         ):

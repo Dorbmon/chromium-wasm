@@ -45,15 +45,16 @@ M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, the narrowly scoped
 composition contract `enableM4ImeProxyInput()` after initialization. They
 attach host-canvas or host-owned-proxy listeners, not a replacement HTML
 browser UI. Primary, bounded middle, and bounded secondary mouse pointer input,
-pixel wheel input, the bounded raw-key paths, host focus loss, and the limited
-composition route cross normal Ozone boundaries. A primary-mouse drag can use
-the same pointer path to make a native Blink selection; it is not a host
-selection command. Generic text entry, programmatic or arbitrary
-selection/replacement, deletion, generic paste, modifiers, repeat, touch, pen,
-non-primary buttons outside the bounded middle-click primary-paste and
-secondary context-menu routes, cursor warping/confinement, focus regain without
-a pointer press, and richer multi-window behavior remain outside this first M4
-input slice. Returning success while dropping an event is a contract failure.
+pixel wheel input, the bounded raw-key paths, one explicit trusted ArrowDown
+repeat, host focus loss, and the limited composition route cross normal Ozone
+boundaries. A primary-mouse drag can use the same pointer path to make a native
+Blink selection; it is not a host selection command. Generic text entry,
+programmatic or arbitrary selection/replacement, deletion, generic paste,
+modifiers, generic repeat, touch, pen, non-primary buttons outside the bounded
+middle-click primary-paste and secondary context-menu routes, cursor
+warping/confinement, focus regain without a pointer press, and richer
+multi-window behavior remain outside this first M4 input slice. Returning
+success while dropping an event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -72,6 +73,7 @@ int chromium_wasm_host_click(int x, int y, int button);
 int chromium_wasm_host_pointer(int type, int x, int y, int button);
 int chromium_wasm_host_wheel(int x, int y, int delta_x, int delta_y);
 int chromium_wasm_host_key(const char* code, int down);
+int chromium_wasm_host_arrow_down_repeat(void);
 int chromium_wasm_host_text_input(int action, int session_id, int sequence,
                                   const uint8_t* text_utf8,
                                   int text_utf8_bytes, int selection_start,
@@ -165,14 +167,19 @@ None of these keys is a host text, composition, IME, generic editing, or generic
 keyboard API. The ABI rejects unpaired or duplicate Control, `KeyC`, and
 `KeyV` transitions before queueing. The host accepts only a trusted,
 cancelable canvas `keydown`/`keyup` pair after a queued primary-pointer press
-has activated the Wasm window. It rejects modifier, repeat, composition,
-dead-key, process-key, unsupported-code, mismatched key, duplicate-down, and
-unmatched-up records explicitly. A successful export means the record was
-queued on the UI task runner; it does not mean Blink has received it. The host
-cancels its held key state on canvas or window blur, visibility loss, teardown,
-and shutdown, releasing chord keys before `ControlLeft` when Chromium is still
-running. It prevents the outer canvas event's default action only after queue
-acceptance.
+has activated the Wasm window. It rejects modifier, composition, dead-key,
+process-key, unsupported-code, mismatched key, duplicate-down, and unmatched-up
+records explicitly. `chromium_wasm_host_arrow_down_repeat` is the only repeat
+escape hatch: the host calls it only for a trusted, cancelable `ArrowDown`
+`keydown` with `KeyboardEvent.repeat == true` while that same ArrowDown is
+already held. It posts exactly one Ozone `kKeyPressed` record with
+`EF_IS_REPEAT`; it neither starts nor requests a repeat timer. Repeat-before-
+down, keyup repeats, and repeats of every other supported key remain rejected.
+A successful export means the record was queued on the UI task runner; it does
+not mean Blink has received it. The host cancels its held key state on canvas or
+window blur, visibility loss, teardown, and shutdown, releasing chord keys
+before `ControlLeft` when Chromium is still running. It prevents the outer
+canvas event's default action only after queue acceptance.
 
 `chromium_wasm_host_deactivate` accepts no arguments and is one-way: it is
 queued only when the host canvas, host window, or document visibility loses
@@ -204,12 +211,12 @@ report unsupported rather than being silently treated as rendered; cursor
 movement/confinement remain unsupported. The M4 wheel smoke
 proves a trusted inner pixel-mode wheel event with the expected DOM delta,
 inner scrolling while the outer page remains unscrolled, and a newer compositor
-frame. The M4 raw-key smoke clicks a real focusable page element, drives one
-trusted DevTools `rawKeyDown`/`keyUp` pair, proves trusted inner ArrowDown
-events and normal document scrolling, verifies no text, beforeinput, input, or
-composition side effects, and requires a newer compositor frame after the key
-down. These checks, rather than an export return value, establish
-Ozone/Aura/Blink delivery.
+frame. The M4 raw-key smoke clicks a real focusable page element, drives
+trusted DevTools `rawKeyDown`, `rawKeyDown(autoRepeat)`, and `keyUp` records,
+proves the exact trusted inner ArrowDown repeat sequence and normal document
+scrolling, verifies no text, beforeinput, input, or composition side effects,
+and requires a newer compositor frame after the repeat record. These checks,
+rather than an export return value, establish Ozone/Aura/Blink delivery.
 
 The M4 native-select smoke makes two trusted primary-pointer clicks. The first
 opens Blink's internal Aura popup for a real HTML `<select>`; the host finds

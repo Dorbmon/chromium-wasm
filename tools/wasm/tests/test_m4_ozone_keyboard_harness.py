@@ -21,14 +21,20 @@ import m3_content_server
 import m4_cdp
 
 
-def key_record(event_type: str, frame_id: int) -> dict[str, object]:
+def key_record(
+    event_type: str,
+    frame_id: int,
+    *,
+    repeat: bool,
+    sequence: int,
+) -> dict[str, object]:
     return {
         "type": event_type,
         "code": "ArrowDown",
         "key": "ArrowDown",
         "trusted": True,
         "queued": True,
-        "repeat": False,
+        "repeat": repeat,
         "isComposing": False,
         "modifiers": {
             "alt": False,
@@ -36,7 +42,7 @@ def key_record(event_type: str, frame_id: int) -> dict[str, object]:
             "meta": False,
             "shift": False,
         },
-        "sequence": 3 if event_type == "down" else 4,
+        "sequence": sequence,
         "frameIdBefore": frame_id,
         "canvasFocused": True,
         "pointerActivated": True,
@@ -70,12 +76,17 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
     keyboard_input = {
         "enabled": True,
         "activated": True,
-        "receivedCount": 2,
-        "trustedCount": 2,
-        "queuedCount": 2,
+        "receivedCount": 3,
+        "trustedCount": 3,
+        "queuedCount": 3,
         "pressedCodes": [],
-        "lastQueuedDown": key_record("down", 7),
-        "lastQueuedUp": key_record("up", 7),
+        "queuedRecords": [
+            key_record("down", 7, repeat=False, sequence=1),
+            key_record("down", 7, repeat=True, sequence=2),
+            key_record("up", 7, repeat=False, sequence=3),
+        ],
+        "lastQueuedDown": key_record("down", 7, repeat=True, sequence=2),
+        "lastQueuedUp": key_record("up", 7, repeat=False, sequence=3),
     }
     result: dict[str, object] = {
         "protocol": 1,
@@ -107,7 +118,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
             "pageProbe": {
                 "fontReady": True,
                 "protocol": 1,
-                "fixture": "chromium-wasm-m4-ozone-keyboard-v1",
+                "fixture": "chromium-wasm-m4-ozone-keyboard-v2",
                 "ready": True,
                 "targetCenterX": 285,
                 "targetCenterY": 229,
@@ -120,7 +131,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "scrollTop": 40,
                 "resultText": "ARROW DOWN RECEIVED",
                 "keyEvents": {
-                    "keydownCount": 1,
+                    "keydownCount": 2,
                     "keyupCount": 1,
                     "keydownTrusted": True,
                     "keyupTrusted": True,
@@ -128,7 +139,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                     "keyupCode": "ArrowDown",
                     "keydownKey": "ArrowDown",
                     "keyupKey": "ArrowDown",
-                    "keydownRepeat": False,
+                    "keydownRepeat": True,
                     "keyupRepeat": False,
                     "keydownComposing": False,
                     "keyupComposing": False,
@@ -136,6 +147,38 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                     "keyupDefaultPrevented": False,
                     "keydownTargetId": "keyboard-target",
                     "keyupTargetId": "keyboard-target",
+                    "trace": [
+                        {
+                            "type": "keydown",
+                            "trusted": True,
+                            "code": "ArrowDown",
+                            "key": "ArrowDown",
+                            "repeat": False,
+                            "isComposing": False,
+                            "defaultPrevented": False,
+                            "targetId": "keyboard-target",
+                        },
+                        {
+                            "type": "keydown",
+                            "trusted": True,
+                            "code": "ArrowDown",
+                            "key": "ArrowDown",
+                            "repeat": True,
+                            "isComposing": False,
+                            "defaultPrevented": False,
+                            "targetId": "keyboard-target",
+                        },
+                        {
+                            "type": "keyup",
+                            "trusted": True,
+                            "code": "ArrowDown",
+                            "key": "ArrowDown",
+                            "repeat": False,
+                            "isComposing": False,
+                            "defaultPrevented": False,
+                            "targetId": "keyboard-target",
+                        },
+                    ],
                 },
                 "textInputEvents": {
                     "beforeinputCount": 0,
@@ -165,6 +208,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "m4:keyboard:pointer-activation",
                 "m4:pointer:up:queued",
                 "m4:keyboard:down:queued",
+                "m4:keyboard:repeat:queued",
                 "m4:keyboard:up:queued",
                 "shutdown:complete",
             ],
@@ -203,6 +247,34 @@ class M4KeyboardResultValidationTest(unittest.TestCase):
         key_events["keydownTrusted"] = False
 
         with self.assertRaisesRegex(M0Error, "keydownTrusted mismatch"):
+            self.assert_valid(result, versions)
+
+    def test_missing_inner_repeat_flag_is_rejected(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        key_events = page_probe["keyEvents"]
+        assert isinstance(key_events, dict)
+        trace = key_events["trace"]
+        assert isinstance(trace, list)
+        repeated = trace[1]
+        assert isinstance(repeated, dict)
+        repeated["repeat"] = False
+
+        with self.assertRaisesRegex(M0Error, "key trace 1 repeat mismatch"):
+            self.assert_valid(result, versions)
+
+    def test_missing_outer_repeat_record_is_rejected(self) -> None:
+        result, versions = passing_result()
+        keyboard = result["keyboardInput"]
+        assert isinstance(keyboard, dict)
+        trace = keyboard["queuedRecords"]
+        assert isinstance(trace, list)
+        trace.pop(1)
+
+        with self.assertRaisesRegex(M0Error, "does not contain down/repeat/up"):
             self.assert_valid(result, versions)
 
     def test_untrusted_outer_key_event_is_rejected(self) -> None:
@@ -328,7 +400,9 @@ class RecordingDevToolsClient:
 
 
 class M4KeyboardDevToolsClientTest(unittest.TestCase):
-    def test_raw_arrow_down_uses_key_down_and_key_up_without_text(self) -> None:
+    def test_raw_arrow_down_uses_key_down_repeat_and_key_up_without_text(
+        self,
+    ) -> None:
         recording = RecordingDevToolsClient()
         client = object.__new__(m4_cdp.DevToolsClient)
         client.call = recording.call  # type: ignore[method-assign]
@@ -346,6 +420,17 @@ class M4KeyboardDevToolsClientTest(unittest.TestCase):
                         "key": "ArrowDown",
                         "windowsVirtualKeyCode": 40,
                         "modifiers": 0,
+                    },
+                ),
+                (
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "rawKeyDown",
+                        "code": "ArrowDown",
+                        "key": "ArrowDown",
+                        "windowsVirtualKeyCode": 40,
+                        "modifiers": 0,
+                        "autoRepeat": True,
                     },
                 ),
                 (

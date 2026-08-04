@@ -23,7 +23,7 @@ const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
 const M4_CONTEXT_MENU_FIXTURE =
   "chromium-wasm-m4-ozone-context-menu-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
-const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
+const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v2";
 const M4_PRINTABLE_KEY_FIXTURE =
   "chromium-wasm-m4-ozone-printable-key-v1";
 const M4_BACKSPACE_FIXTURE = "chromium-wasm-m4-ozone-backspace-v1";
@@ -778,6 +778,49 @@ function matchesM4CopyPasteQueuedKeyTrace(
           matchesM4CopyPasteQueuedKeyRecord(
               records[index], type, code, key, control) &&
           records[index].sequence === sequenceStart + index);
+}
+
+function matchesM4ArrowDownQueuedKeyRecord(record, type, repeat) {
+  const modifiers = record?.modifiers;
+  return record?.type === type && record?.code === M4_KEYBOARD_DOM_CODE &&
+    record?.key === "ArrowDown" && record?.trusted === true &&
+    record?.queued === true && record?.repeat === repeat &&
+    record?.isComposing === false && record?.canvasFocused === true &&
+    record?.pointerActivated === true && record?.defaultPrevented === true &&
+    modifiers?.alt === false && modifiers?.control === false &&
+    modifiers?.meta === false && modifiers?.shift === false &&
+    Number.isSafeInteger(record?.frameIdBefore) && record.frameIdBefore >= 1;
+}
+
+function hasM4ArrowDownRepeatQueuedTrace(records) {
+  const expected = [
+    ["down", false],
+    ["down", true],
+    ["up", false],
+  ];
+  return Array.isArray(records) && records.length === expected.length &&
+    expected.every(([type, repeat], index) =>
+      matchesM4ArrowDownQueuedKeyRecord(records[index], type, repeat) &&
+      records[index].sequence === index + 1);
+}
+
+function matchesM4ArrowDownInnerKeyRecord(record, type, repeat) {
+  return record?.type === type && record?.trusted === true &&
+    record?.code === M4_KEYBOARD_DOM_CODE && record?.key === "ArrowDown" &&
+    record?.repeat === repeat && record?.isComposing === false &&
+    record?.defaultPrevented === false &&
+    record?.targetId === "keyboard-target";
+}
+
+function hasM4ArrowDownRepeatInnerTrace(records) {
+  const expected = [
+    ["keydown", false],
+    ["keydown", true],
+    ["keyup", false],
+  ];
+  return Array.isArray(records) && records.length === expected.length &&
+    expected.every(([type, repeat], index) =>
+      matchesM4ArrowDownInnerKeyRecord(records[index], type, repeat));
 }
 
 function hasM4CopyPasteBareShortcutRejection(keyboard) {
@@ -2920,12 +2963,6 @@ export class ChromiumWasmM3Host {
       this.#recordHost("m4:keyboard:" + type + ":unsupported-modifiers");
       return;
     }
-    if (record.repeat) {
-      record.reason = "UNSUPPORTED_REPEAT";
-      this.#recordKeyboard(record);
-      this.#recordHost("m4:keyboard:" + type + ":unsupported-repeat");
-      return;
-    }
     if (
       record.isComposing ||
       record.key === "Dead" ||
@@ -2949,7 +2986,21 @@ export class ChromiumWasmM3Host {
       this.#recordHost("m4:keyboard:" + type + ":unsupported-key");
       return;
     }
-    if (type === "down" && this.#keyboardCodesDown.has(record.code)) {
+    // A supplied ArrowDown repeat remains a physical DOM key record. It is
+    // the only repeat admitted by this bounded navigation experiment and is
+    // forwarded through a fixed-purpose C ABI rather than synthesized by the
+    // host. All other repeated, unmatched, or keyup records are rejected.
+    const arrowDownRepeat = type === "down" && record.repeat &&
+      record.code === M4_KEYBOARD_DOM_CODE &&
+      this.#keyboardCodesDown.has(record.code);
+    if (record.repeat && !arrowDownRepeat) {
+      record.reason = "UNSUPPORTED_REPEAT";
+      this.#recordKeyboard(record);
+      this.#recordHost("m4:keyboard:" + type + ":unsupported-repeat");
+      return;
+    }
+    if (type === "down" && this.#keyboardCodesDown.has(record.code) &&
+        !arrowDownRepeat) {
       record.reason = "DUPLICATE_DOWN";
       this.#recordKeyboard(record);
       this.#recordHost("m4:keyboard:down:duplicate");
@@ -2962,16 +3013,21 @@ export class ChromiumWasmM3Host {
       return;
     }
     try {
-      const result = this.#callExport(
-        "chromium_wasm_host_key",
-        "number",
-        ["string", "number"],
-        [record.code, type === "down" ? 1 : 0],
-      );
+      const result = arrowDownRepeat
+        ? this.#callExport(
+          "chromium_wasm_host_arrow_down_repeat", "number", [], [])
+        : this.#callExport(
+          "chromium_wasm_host_key",
+          "number",
+          ["string", "number"],
+          [record.code, type === "down" ? 1 : 0],
+        );
       record.queued = result === 1;
       if (record.queued) {
         if (type === "down") {
-          this.#keyboardCodesDown.add(record.code);
+          if (!arrowDownRepeat) {
+            this.#keyboardCodesDown.add(record.code);
+          }
           this.#lastQueuedKeyDown = record;
         } else {
           this.#keyboardCodesDown.delete(record.code);
@@ -2987,7 +3043,7 @@ export class ChromiumWasmM3Host {
     }
     this.#recordKeyboard(record);
     this.#recordHost(
-      "m4:keyboard:" + type + ":" +
+      "m4:keyboard:" + (arrowDownRepeat ? "repeat" : type) + ":" +
       (record.queued ? "queued" : "rejected"));
   }
 
@@ -7357,39 +7413,31 @@ async function runM4OzoneKeyboardSmokeFromQuery() {
       keyboard: clone(readiness.keyboardInput),
     };
     statusElement.textContent =
-      "M4 ready for trusted canvas raw ArrowDown input";
+      "M4 ready for trusted canvas raw ArrowDown repeat input";
 
     while (performance.now() < deadline) {
       readiness = await host.readiness();
       const keyboard = readiness.keyboardInput;
       const keyDown = keyboard.lastQueuedDown;
       const keyUp = keyboard.lastQueuedUp;
+      const queuedTrace = keyboard.queuedRecords;
       const pageProbe = readiness.pageProbe;
       const keyEvents = pageProbe?.keyEvents;
+      const innerTrace = keyEvents?.trace;
       const textInputEvents = pageProbe?.textInputEvents;
       if (
-        keyboard.queuedCount >= 2 &&
+        keyboard.queuedCount >= 3 &&
         keyboard.pressedCodes.length === 0 &&
         keyDown?.type === "down" &&
+        keyDown?.repeat === true &&
         keyDown?.defaultPrevented === true &&
         keyUp?.type === "up" &&
+        keyUp?.repeat === false &&
         keyUp?.defaultPrevented === true &&
-        keyEvents?.keydownCount === 1 &&
+        hasM4ArrowDownRepeatQueuedTrace(queuedTrace) &&
+        keyEvents?.keydownCount === 2 &&
         keyEvents?.keyupCount === 1 &&
-        keyEvents?.keydownTrusted === true &&
-        keyEvents?.keyupTrusted === true &&
-        keyEvents?.keydownCode === M4_KEYBOARD_DOM_CODE &&
-        keyEvents?.keyupCode === M4_KEYBOARD_DOM_CODE &&
-        keyEvents?.keydownKey === "ArrowDown" &&
-        keyEvents?.keyupKey === "ArrowDown" &&
-        keyEvents?.keydownRepeat === false &&
-        keyEvents?.keyupRepeat === false &&
-        keyEvents?.keydownComposing === false &&
-        keyEvents?.keyupComposing === false &&
-        keyEvents?.keydownDefaultPrevented === false &&
-        keyEvents?.keyupDefaultPrevented === false &&
-        keyEvents?.keydownTargetId === "keyboard-target" &&
-        keyEvents?.keyupTargetId === "keyboard-target" &&
+        hasM4ArrowDownRepeatInnerTrace(innerTrace) &&
         textInputEvents?.beforeinputCount === 0 &&
         textInputEvents?.inputCount === 0 &&
         textInputEvents?.compositionstartCount === 0 &&
@@ -7407,33 +7455,25 @@ async function runM4OzoneKeyboardSmokeFromQuery() {
     const keyboard = readiness?.keyboardInput;
     const lastQueuedDown = keyboard?.lastQueuedDown;
     const lastQueuedUp = keyboard?.lastQueuedUp;
+    const queuedTrace = keyboard?.queuedRecords;
     const pageProbe = readiness?.pageProbe;
     const keyEvents = pageProbe?.keyEvents;
+    const innerTrace = keyEvents?.trace;
     const textInputEvents = pageProbe?.textInputEvents;
     if (
       !readiness ||
-      keyboard?.queuedCount < 2 ||
+      keyboard?.queuedCount < 3 ||
       keyboard?.pressedCodes?.length !== 0 ||
       lastQueuedDown?.type !== "down" ||
+      lastQueuedDown?.repeat !== true ||
       lastQueuedDown?.defaultPrevented !== true ||
       lastQueuedUp?.type !== "up" ||
+      lastQueuedUp?.repeat !== false ||
       lastQueuedUp?.defaultPrevented !== true ||
-      keyEvents?.keydownCount !== 1 ||
+      !hasM4ArrowDownRepeatQueuedTrace(queuedTrace) ||
+      keyEvents?.keydownCount !== 2 ||
       keyEvents?.keyupCount !== 1 ||
-      keyEvents?.keydownTrusted !== true ||
-      keyEvents?.keyupTrusted !== true ||
-      keyEvents?.keydownCode !== M4_KEYBOARD_DOM_CODE ||
-      keyEvents?.keyupCode !== M4_KEYBOARD_DOM_CODE ||
-      keyEvents?.keydownKey !== "ArrowDown" ||
-      keyEvents?.keyupKey !== "ArrowDown" ||
-      keyEvents?.keydownRepeat !== false ||
-      keyEvents?.keyupRepeat !== false ||
-      keyEvents?.keydownComposing !== false ||
-      keyEvents?.keyupComposing !== false ||
-      keyEvents?.keydownDefaultPrevented !== false ||
-      keyEvents?.keyupDefaultPrevented !== false ||
-      keyEvents?.keydownTargetId !== "keyboard-target" ||
-      keyEvents?.keyupTargetId !== "keyboard-target" ||
+      !hasM4ArrowDownRepeatInnerTrace(innerTrace) ||
       textInputEvents?.beforeinputCount !== 0 ||
       textInputEvents?.inputCount !== 0 ||
       textInputEvents?.compositionstartCount !== 0 ||
@@ -7469,13 +7509,15 @@ async function runM4OzoneKeyboardSmokeFromQuery() {
         lastQueuedPointer.trusted === true &&
         lastQueuedPointer.queued === true,
       trustedDomInput:
-        keyboard.trustedCount >= 2 &&
-        keyboard.queuedCount >= 2 &&
+        keyboard.trustedCount >= 3 &&
+        keyboard.queuedCount >= 3 &&
         lastQueuedDown.trusted === true &&
         lastQueuedDown.queued === true &&
+        lastQueuedDown.repeat === true &&
         lastQueuedDown.defaultPrevented === true &&
         lastQueuedUp.trusted === true &&
         lastQueuedUp.queued === true &&
+        lastQueuedUp.repeat === false &&
         lastQueuedUp.defaultPrevented === true,
       ozoneDelivered:
         pageProbe.activationCount === 1 &&
@@ -7483,22 +7525,10 @@ async function runM4OzoneKeyboardSmokeFromQuery() {
         pageProbe.focusCount >= 1 &&
         pageProbe.focusTrusted === true &&
         pageProbe.activeElementId === "keyboard-target" &&
-        keyEvents.keydownCount === 1 &&
+        hasM4ArrowDownRepeatQueuedTrace(queuedTrace) &&
+        keyEvents.keydownCount === 2 &&
         keyEvents.keyupCount === 1 &&
-        keyEvents.keydownTrusted === true &&
-        keyEvents.keyupTrusted === true &&
-        keyEvents.keydownCode === M4_KEYBOARD_DOM_CODE &&
-        keyEvents.keyupCode === M4_KEYBOARD_DOM_CODE &&
-        keyEvents.keydownKey === "ArrowDown" &&
-        keyEvents.keyupKey === "ArrowDown" &&
-        keyEvents.keydownRepeat === false &&
-        keyEvents.keyupRepeat === false &&
-        keyEvents.keydownComposing === false &&
-        keyEvents.keyupComposing === false &&
-        keyEvents.keydownDefaultPrevented === false &&
-        keyEvents.keyupDefaultPrevented === false &&
-        keyEvents.keydownTargetId === "keyboard-target" &&
-        keyEvents.keyupTargetId === "keyboard-target" &&
+        hasM4ArrowDownRepeatInnerTrace(innerTrace) &&
         textInputEvents.beforeinputCount === 0 &&
         textInputEvents.inputCount === 0 &&
         textInputEvents.compositionstartCount === 0 &&

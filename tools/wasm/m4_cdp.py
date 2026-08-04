@@ -351,8 +351,22 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_arrow_down_repeat(self) -> None:
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                "type": "rawKeyDown",
+                "code": "ArrowDown",
+                "key": "ArrowDown",
+                "windowsVirtualKeyCode": 40,
+                "modifiers": 0,
+                "autoRepeat": True,
+            },
+        )
+
     def dispatch_arrow_down(self) -> None:
         self.dispatch_arrow_down_down()
+        self.dispatch_arrow_down_repeat()
         base = {
             "code": "ArrowDown",
             "key": "ArrowDown",

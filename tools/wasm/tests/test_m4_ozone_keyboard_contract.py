@@ -98,6 +98,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "EventType::kKeyReleased",
             "event_source_->DispatchKeyEvent(",
             "EF_NONE",
+            "EF_IS_REPEAT",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, injector)
@@ -165,7 +166,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         for marker in (
             "GetInputInjectorOnUiThread",
             "input_injector->InjectKeyEvent(physical_key, down,",
-            "suppress_auto_repeat=*/true",
+            "suppress_auto_repeat=*/!auto_repeat",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, dispatch)
@@ -210,6 +211,34 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         self.assertIn("ui::DomCode::CONTROL_LEFT", api)
         self.assertIn("ui::DomCode::US_C", api)
         self.assertIn("ui::DomCode::US_V", api)
+
+        repeat_export = section(
+            api,
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_arrow_down_repeat",
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_url",
+        )
+        for marker in (
+            "ui::DomCode::ARROW_DOWN",
+            "/*down=*/true",
+            "/*auto_repeat=*/true",
+            "PostM4KeyCommand",
+            "DispatchDomKeyOnUiThread",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, repeat_export)
+        state = section(
+            api,
+            "class WasmHostState",
+            "WasmHostState& GetWasmHostState",
+        )
+        for marker in (
+            "m4_arrow_down_",
+            "bool auto_repeat",
+            "physical_key == ui::DomCode::ARROW_DOWN",
+            "RecordM4KeyTransitionLocked",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, state)
 
     def test_backspace_proof_is_a_raw_key_insert_then_delete_sequence(
         self,
@@ -301,6 +330,8 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "!record.pointerActivated",
             "record.modifiers.alt",
             "record.repeat",
+            "arrowDownRepeat",
+            "chromium_wasm_host_arrow_down_repeat",
             "record.isComposing",
             'record.key === "Dead"',
             'record.key === "Process"',
@@ -320,6 +351,8 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             handler.index("record.queued = result === 1"),
             handler.index("event.preventDefault()"),
         )
+        self.assertIn("!arrowDownRepeat", handler)
+        self.assertIn("UNSUPPORTED_REPEAT", handler)
 
         release = section(
             host,
@@ -402,7 +435,21 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "\n\n    def dispatch_key_a(self) -> None:",
         )
         self.assertIn("self.dispatch_arrow_down_down()", cdp_key)
+        self.assertIn("self.dispatch_arrow_down_repeat()", cdp_key)
         self.assertIn('"type": "keyUp"', cdp_key)
+
+        cdp_repeat = section(
+            cdp,
+            "def dispatch_arrow_down_repeat(self) -> None:",
+            "\n\n    def dispatch_arrow_down(self) -> None:",
+        )
+        for marker in (
+            '"type": "rawKeyDown"',
+            '"code": "ArrowDown"',
+            '"autoRepeat": True',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, cdp_repeat)
 
         for marker in (
             '"printable-key",',
@@ -441,6 +488,8 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
             "window.__chromiumWasmM4KeyboardState",
             "ARROW DOWN RECEIVED",
             "textInputEvents",
+            "hasM4ArrowDownRepeatQueuedTrace",
+            "hasM4ArrowDownRepeatInnerTrace",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, smoke)

@@ -96,12 +96,13 @@ class WasmSystemInputInjector final : public SystemInputInjector {
 
   void InjectKeyEvent(DomCode physical_key,
                       bool down,
-                      bool /*suppress_auto_repeat*/) override {
-    // The host accepts explicit trusted DOM keydown/keyup pairs and rejects
-    // repeats, so duplicate state changes must not manufacture repeat events.
-    // The bounded printable slice maps through the Ozone keyboard layout
-    // engine below. Backspace plus Ctrl+C/Ctrl+V do not make this generic
-    // keyboard or host-synthesized text input to Blink.
+                      bool suppress_auto_repeat) override {
+    // The host accepts explicit trusted DOM keydown/keyup records. A
+    // duplicate ArrowDown keydown with auto-repeat suppression disabled is
+    // one already-observed DOM repeat, not a request to start a platform
+    // repeat timer. The bounded printable slice maps through the Ozone
+    // keyboard layout engine below. Backspace plus Ctrl+C/Ctrl+V do not make
+    // this generic keyboard or host-synthesized text input to Blink.
     if (!IsSupportedM4DomCode(physical_key)) {
       NOTIMPLEMENTED_LOG_ONCE()
           << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, "
@@ -123,6 +124,11 @@ class WasmSystemInputInjector final : public SystemInputInjector {
       DCHECK_EQ(physical_key, DomCode::BACKSPACE);
     }
     if (*key_down == down) {
+      if (down && !suppress_auto_repeat &&
+          physical_key == DomCode::ARROW_DOWN) {
+        event_source_->DispatchKeyEvent(EventType::kKeyPressed, physical_key,
+                                        EF_IS_REPEAT, device_id_);
+      }
       return;
     }
     if (down &&

@@ -330,6 +330,9 @@ class WasmHostState {
       scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
     base::AutoLock lock(lock_);
     task_runner_ = std::move(task_runner);
+    m4_arrow_down_ = false;
+    m4_key_a_ = false;
+    m4_backspace_ = false;
     m4_control_left_down_ = false;
     m4_copy_down_ = false;
     m4_paste_down_ = false;
@@ -337,17 +340,19 @@ class WasmHostState {
 
   bool PostM4KeyCommand(ui::DomCode physical_key,
                         bool down,
+                        bool auto_repeat,
                         base::OnceClosure command) {
     base::AutoLock lock(lock_);
-    // Track successfully posted chord transitions at the ABI boundary. This
-    // keeps a direct caller from receiving queue success for a KeyC/KeyV
-    // record that the Ozone injector would otherwise drop as unpaired.
-    if (!IsM4KeyTransitionAllowedLocked(physical_key, down) ||
+    // Track successfully posted physical-key transitions at the ABI boundary.
+    // This keeps a direct caller from receiving queue success for a duplicate
+    // record that the Ozone injector would otherwise drop. The sole repeat
+    // record is a trusted ArrowDown keydown that follows its initial press.
+    if (!IsM4KeyTransitionAllowedLocked(physical_key, down, auto_repeat) ||
         !task_runner_ ||
         !task_runner_->PostTask(FROM_HERE, std::move(command))) {
       return false;
     }
-    RecordM4KeyTransitionLocked(physical_key, down);
+    RecordM4KeyTransitionLocked(physical_key, down, auto_repeat);
     return true;
   }
 
@@ -377,24 +382,57 @@ class WasmHostState {
 
  private:
   bool IsM4KeyTransitionAllowedLocked(ui::DomCode physical_key,
-                                      bool down) const
+                                      bool down,
+                                      bool auto_repeat) const
       EXCLUSIVE_LOCKS_REQUIRED(lock_) {
+    if (auto_repeat) {
+      return down && physical_key == ui::DomCode::ARROW_DOWN &&
+             m4_arrow_down_;
+    }
+    bool key_down = false;
+    if (physical_key == ui::DomCode::ARROW_DOWN) {
+      key_down = m4_arrow_down_;
+    } else if (physical_key == ui::DomCode::US_A) {
+      key_down = m4_key_a_;
+    } else if (physical_key == ui::DomCode::BACKSPACE) {
+      key_down = m4_backspace_;
+    } else if (physical_key == ui::DomCode::CONTROL_LEFT) {
+      key_down = m4_control_left_down_;
+    } else if (physical_key == ui::DomCode::US_C) {
+      key_down = m4_copy_down_;
+    } else {
+      DCHECK_EQ(physical_key, ui::DomCode::US_V);
+      key_down = m4_paste_down_;
+    }
+    if (key_down == down) {
+      return false;
+    }
     if (physical_key == ui::DomCode::CONTROL_LEFT) {
-      return m4_control_left_down_ != down;
+      return true;
     }
     if (physical_key != ui::DomCode::US_C &&
         physical_key != ui::DomCode::US_V) {
       return true;
     }
-    const bool key_down = physical_key == ui::DomCode::US_C
-                              ? m4_copy_down_
-                              : m4_paste_down_;
-    return key_down != down && (!down || m4_control_left_down_);
+    return !down || m4_control_left_down_;
   }
 
-  void RecordM4KeyTransitionLocked(ui::DomCode physical_key, bool down)
+  void RecordM4KeyTransitionLocked(ui::DomCode physical_key,
+                                   bool down,
+                                   bool auto_repeat)
       EXCLUSIVE_LOCKS_REQUIRED(lock_) {
-    if (physical_key == ui::DomCode::CONTROL_LEFT) {
+    if (auto_repeat) {
+      DCHECK_EQ(physical_key, ui::DomCode::ARROW_DOWN);
+      DCHECK(down);
+      return;
+    }
+    if (physical_key == ui::DomCode::ARROW_DOWN) {
+      m4_arrow_down_ = down;
+    } else if (physical_key == ui::DomCode::US_A) {
+      m4_key_a_ = down;
+    } else if (physical_key == ui::DomCode::BACKSPACE) {
+      m4_backspace_ = down;
+    } else if (physical_key == ui::DomCode::CONTROL_LEFT) {
       m4_control_left_down_ = down;
     } else if (physical_key == ui::DomCode::US_C) {
       m4_copy_down_ = down;
@@ -406,6 +444,9 @@ class WasmHostState {
   base::Lock lock_;
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_
       GUARDED_BY(lock_);
+  bool m4_arrow_down_ GUARDED_BY(lock_) = false;
+  bool m4_key_a_ GUARDED_BY(lock_) = false;
+  bool m4_backspace_ GUARDED_BY(lock_) = false;
   bool m4_control_left_down_ GUARDED_BY(lock_) = false;
   bool m4_copy_down_ GUARDED_BY(lock_) = false;
   bool m4_paste_down_ GUARDED_BY(lock_) = false;
@@ -567,7 +608,9 @@ void DispatchDomWheelOnUiThread(const gfx::Point& location,
   input_injector->InjectMouseWheel(-dom_delta.x(), -dom_delta.y());
 }
 
-void DispatchDomKeyOnUiThread(ui::DomCode physical_key, bool down) {
+void DispatchDomKeyOnUiThread(ui::DomCode physical_key,
+                              bool down,
+                              bool auto_repeat) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   ui::SystemInputInjector* input_injector =
       GetWasmHostState().GetInputInjectorOnUiThread();
@@ -576,10 +619,13 @@ void DispatchDomKeyOnUiThread(ui::DomCode physical_key, bool down) {
     return;
   }
 
-  // The host accepts only an explicit trusted DOM keydown/keyup pair. The
-  // Wasm injector does not synthesize repeats between those records.
+  // The host submits explicit trusted DOM records. SystemInputInjector has no
+  // separate repeat field: an accepted ArrowDown repeat is represented by a
+  // supplied duplicate keydown with auto-repeat suppression disabled. The
+  // Wasm injector dispatches that one record with EF_IS_REPEAT; it never owns
+  // or schedules an independent repeat timer.
   input_injector->InjectKeyEvent(physical_key, down,
-                                 /*suppress_auto_repeat=*/true);
+                                 /*suppress_auto_repeat=*/!auto_repeat);
 }
 
 void DispatchM4TextInputOnUiThread(ui::WasmTextInputRecord record) {
@@ -809,9 +855,19 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_key(const char* code, int down) {
     return 0;
   }
   return content::GetWasmHostState().PostM4KeyCommand(
-             physical_key, down == 1,
+             physical_key, down == 1, /*auto_repeat=*/false,
              base::BindOnce(&content::DispatchDomKeyOnUiThread, physical_key,
-                            down == 1))
+                            down == 1, /*auto_repeat=*/false))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_arrow_down_repeat() {
+  return content::GetWasmHostState().PostM4KeyCommand(
+             ui::DomCode::ARROW_DOWN, /*down=*/true, /*auto_repeat=*/true,
+             base::BindOnce(&content::DispatchDomKeyOnUiThread,
+                            ui::DomCode::ARROW_DOWN, /*down=*/true,
+                            /*auto_repeat=*/true))
              ? 1
              : 0;
 }
