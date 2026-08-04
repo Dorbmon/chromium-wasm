@@ -460,6 +460,211 @@ try {
             )
         return json.loads(result.stdout)
 
+    def _exercise_cancel_stream(self) -> dict[str, object]:
+        node = node_executable()
+        assert node is not None
+        program = r'''
+import fs from "node:fs";
+import http2 from "node:http2";
+
+const [httpsURL, rootCertificate] = process.argv.slice(1);
+const target = new URL(httpsURL);
+const authority = `a.test:${target.port}`;
+const session = http2.connect(`https://127.0.0.1:${target.port}`, {
+  ca: fs.readFileSync(rootCertificate),
+  servername: "a.test",
+});
+
+function get(path) {
+  return new Promise((resolve, reject) => {
+    const request = session.request({
+      ":authority": authority,
+      ":method": "GET",
+      ":path": path,
+    });
+    const chunks = [];
+    let headers = null;
+    request.once("response", (value) => { headers = value; });
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => resolve({
+      body: Buffer.concat(chunks).toString("utf8"),
+      headers,
+    }));
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+try {
+  const cancelled = await new Promise((resolve, reject) => {
+    const request = session.request({
+      ":authority": authority,
+      ":method": "GET",
+      ":path": "/m5/cancel-stream",
+    });
+    let firstChunk = "";
+    let responseStatus = null;
+    let sentCancel = false;
+    const timeout = setTimeout(() => reject(new Error("cancel stream timeout")),
+        5000);
+    request.once("response", (headers) => {
+      responseStatus = headers[":status"];
+    });
+    request.on("data", (chunk) => {
+      firstChunk += chunk.toString("utf8");
+      if (!sentCancel) {
+        sentCancel = true;
+        request.close(http2.constants.NGHTTP2_CANCEL);
+      }
+    });
+    request.once("close", () => {
+      clearTimeout(timeout);
+      resolve({firstChunk, responseStatus, sentCancel});
+    });
+    request.once("error", reject);
+    request.end();
+  });
+  const proof = await get("/m5/cancel-proof");
+  process.stdout.write(JSON.stringify({
+    ...cancelled,
+    proofBody: proof.body,
+    proofStatus: proof.headers[":status"],
+  }));
+} finally {
+  session.close();
+}
+'''
+        result = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                program,
+                self.metadata["httpsUrl"],
+                str(ROOT_CERTIFICATE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            self.fail(
+                "cancel-stream H2 client failed: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        return json.loads(result.stdout)
+
+    def _exercise_cancel_stream_session_mismatch(self) -> dict[str, object]:
+        node = node_executable()
+        assert node is not None
+        program = r'''
+import fs from "node:fs";
+import http2 from "node:http2";
+
+const [httpsURL, rootCertificate] = process.argv.slice(1);
+const target = new URL(httpsURL);
+const authority = `a.test:${target.port}`;
+const sessionOptions = {
+  ca: fs.readFileSync(rootCertificate),
+  servername: "a.test",
+};
+
+function createSession() {
+  return http2.connect(`https://127.0.0.1:${target.port}`, sessionOptions);
+}
+
+function get(session, path) {
+  return new Promise((resolve, reject) => {
+    const request = session.request({
+      ":authority": authority,
+      ":method": "GET",
+      ":path": path,
+    });
+    const chunks = [];
+    let headers = null;
+    request.once("response", (value) => { headers = value; });
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => resolve({
+      body: Buffer.concat(chunks).toString("utf8"),
+      headers,
+    }));
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+const primary = createSession();
+const secondary = createSession();
+try {
+  const request = primary.request({
+    ":authority": authority,
+    ":method": "GET",
+    ":path": "/m5/cancel-stream",
+  });
+  let firstChunk = "";
+  const firstChunkReady = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("first chunk timeout")),
+        5000);
+    request.once("response", (headers) => {
+      if (headers[":status"] !== 200) {
+        reject(new Error(`unexpected cancel status ${headers[":status"]}`));
+      }
+    });
+    request.once("data", (chunk) => {
+      firstChunk += chunk.toString("utf8");
+      clearTimeout(timeout);
+      resolve();
+    });
+    request.once("error", reject);
+  });
+  const closed = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("cancel close timeout")),
+        5000);
+    request.once("close", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+  request.end();
+  await firstChunkReady;
+  const mismatch = await get(secondary, "/m5/cancel-proof");
+  request.close(http2.constants.NGHTTP2_CANCEL);
+  await closed;
+  const proof = await get(primary, "/m5/cancel-proof");
+  process.stdout.write(JSON.stringify({
+    firstChunk,
+    mismatchBody: mismatch.body,
+    mismatchStatus: mismatch.headers[":status"],
+    proofBody: proof.body,
+    proofStatus: proof.headers[":status"],
+  }));
+} finally {
+  primary.close();
+  secondary.close();
+}
+'''
+        result = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                program,
+                self.metadata["httpsUrl"],
+                str(ROOT_CERTIFICATE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            self.fail(
+                "cancel-stream session-mismatch H2 client failed: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        return json.loads(result.stdout)
+
     def test_source_is_es_module_and_keeps_key_out_of_output_contract(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn('import http2 from "node:http2"', source)
@@ -498,6 +703,18 @@ try {
         self.assertIn("activeMixedContentCspAllowed", source)
         self.assertIn('activeMixedContentErrorName !== "TypeError"', source)
         self.assertIn("h2-mixed-content-proof", source)
+        self.assertIn("CANCEL_STREAM_FIRST_CHUNK", source)
+        self.assertIn("CANCEL_STREAM_PROOF_BODY", source)
+        self.assertIn('requestPath === "/m5/cancel-stream"', source)
+        self.assertIn('requestPath === "/m5/cancel-proof"', source)
+        self.assertIn("AbortController", source)
+        self.assertIn("await reader.read()", source)
+        self.assertIn("NGHTTP2_CANCEL", source)
+        self.assertIn("isCancelStreamProofSession", source)
+        self.assertIn("stream.session === context.cancelStreamSession", source)
+        self.assertIn("cancelStreamProofSessionMismatches", source)
+        self.assertIn("h2-cancel-stream-cancel-reset", source)
+        self.assertIn("h2-cancel-stream-proof", source)
         self.assertIn(
             "mixed-content-target-post-control-wisp-connect", source
         )
@@ -975,6 +1192,78 @@ try {
         self.assertEqual(status["cacheConditionalRequests"], 0)
         self.assertEqual(status["cacheNotModified304s"], 0)
         self.assertEqual(status["cacheUnexpectedRequests"], 0)
+
+    def test_h2_cancel_stream_requires_an_exact_cancel_reset_before_proof(
+        self,
+    ) -> None:
+        evidence = self._exercise_cancel_stream()
+
+        self.assertEqual(evidence["responseStatus"], 200)
+        self.assertEqual(evidence["firstChunk"], "M5_CANCEL_STREAM_FIRST_CHUNK")
+        self.assertTrue(evidence["sentCancel"])
+        self.assertEqual(evidence["proofStatus"], 200)
+        self.assertEqual(evidence["proofBody"], "M5_CANCEL_STREAM_PROOF")
+
+        status = self._status()
+        self.assertEqual(status["cancelStreamPhase"], "cancel-observed")
+        self.assertEqual(status["cancelStreamRequests"], 1)
+        self.assertEqual(status["cancelStreamFirstChunks"], 1)
+        self.assertEqual(status["cancelStreamCancelResets"], 1)
+        self.assertEqual(status["cancelStreamUnexpectedResets"], 0)
+        self.assertEqual(status["cancelStreamProofs"], 1)
+        self.assertEqual(status["cancelStreamProofSessionMismatches"], 0)
+        self.assertEqual(status["cancelStreamProofTimeouts"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(events.count("h2-cancel-stream-start"), 1)
+        self.assertEqual(events.count("h2-cancel-stream-cancel-reset"), 1)
+        self.assertEqual(events.count("h2-cancel-stream-proof"), 1)
+        self.assertLess(
+            events.index("h2-cancel-stream-start"),
+            events.index("h2-cancel-stream-cancel-reset"),
+        )
+        self.assertLess(
+            events.index("h2-cancel-stream-cancel-reset"),
+            events.index("h2-cancel-stream-proof"),
+        )
+
+    def test_h2_cancel_stream_rejects_a_proof_from_another_session(self) -> None:
+        evidence = self._exercise_cancel_stream_session_mismatch()
+
+        self.assertEqual(evidence["firstChunk"], "M5_CANCEL_STREAM_FIRST_CHUNK")
+        self.assertEqual(evidence["mismatchStatus"], 409)
+        self.assertEqual(
+            evidence["mismatchBody"], "M5_CANCEL_STREAM_PROOF_REJECTED"
+        )
+        self.assertEqual(evidence["proofStatus"], 200)
+        self.assertEqual(evidence["proofBody"], "M5_CANCEL_STREAM_PROOF")
+
+        status = self._status()
+        self.assertEqual(status["cancelStreamPhase"], "cancel-observed")
+        self.assertEqual(status["cancelStreamRequests"], 1)
+        self.assertEqual(status["cancelStreamFirstChunks"], 1)
+        self.assertEqual(status["cancelStreamCancelResets"], 1)
+        self.assertEqual(status["cancelStreamUnexpectedResets"], 0)
+        self.assertEqual(status["cancelStreamProofSessionMismatches"], 1)
+        self.assertEqual(status["cancelStreamProofs"], 1)
+        self.assertEqual(status["cancelStreamProofTimeouts"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(
+            events.count("h2-cancel-stream-proof-session-mismatch"), 1
+        )
+        self.assertEqual(events.count("h2-cancel-stream-cancel-reset"), 1)
+        self.assertEqual(events.count("h2-cancel-stream-proof"), 1)
+        self.assertLess(
+            events.index("h2-cancel-stream-proof-session-mismatch"),
+            events.index("h2-cancel-stream-cancel-reset"),
+        )
 
     def test_tls_failure_endpoint_is_trusted_but_rejects_a_test_name(self) -> None:
         parsed = urlsplit(self.metadata["tlsFailureUrl"])

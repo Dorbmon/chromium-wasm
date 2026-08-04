@@ -672,6 +672,11 @@ def validate_m5_result(
         "redirected": True,
         "cacheStored": True,
         "cacheRevalidated": True,
+        "cancelStreamStarted": True,
+        "cancelStreamReceivedFirstChunk": True,
+        "cancelStreamAborted": True,
+        "cancelStreamErrorName": "AbortError",
+        "cancelStreamProof": True,
         "cspConnectSrcBlocked": True,
         "phase": "https-fixture",
         "activeMixedContentBlocked": True,
@@ -827,6 +832,8 @@ def validate_relay_transcript(
         raise M0Error("relay transcript did not report readiness")
     if status.get("plaintextHttpControlPhase") != "post-control":
         raise M0Error("relay plaintext HTTP control phase did not reach post-control")
+    if status.get("cancelStreamPhase") != "cancel-observed":
+        raise M0Error("relay cancel stream phase did not observe an HTTP/2 CANCEL")
     for field in (
         "wispSessions",
         "rejectedDestinations",
@@ -840,6 +847,13 @@ def validate_relay_transcript(
         "cacheConditionalRequests",
         "cacheNotModified304s",
         "cacheUnexpectedRequests",
+        "cancelStreamRequests",
+        "cancelStreamFirstChunks",
+        "cancelStreamCancelResets",
+        "cancelStreamProofs",
+        "cancelStreamProofSessionMismatches",
+        "cancelStreamProofTimeouts",
+        "cancelStreamUnexpectedResets",
         "cspConnectSrcProofs",
         "cspConnectSrcTargetTcpConnections",
         "cspConnectSrcTargetRequests",
@@ -877,6 +891,13 @@ def validate_relay_transcript(
         ("cacheConditionalRequests", 1),
         ("cacheNotModified304s", 1),
         ("cacheUnexpectedRequests", 0),
+        ("cancelStreamRequests", 1),
+        ("cancelStreamFirstChunks", 1),
+        ("cancelStreamCancelResets", 1),
+        ("cancelStreamProofs", 1),
+        ("cancelStreamProofSessionMismatches", 0),
+        ("cancelStreamProofTimeouts", 0),
+        ("cancelStreamUnexpectedResets", 0),
         ("cspConnectSrcProofs", 1),
         ("cspConnectSrcTargetTcpConnections", 0),
         ("cspConnectSrcTargetRequests", 0),
@@ -984,6 +1005,9 @@ def validate_relay_transcript(
         "h2-cache-revalidate-304",
         "h2-csp-connect-src-proof",
         "h2-mixed-content-proof",
+        "h2-cancel-stream-start",
+        "h2-cancel-stream-cancel-reset",
+        "h2-cancel-stream-proof",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
@@ -1016,9 +1040,22 @@ def validate_relay_transcript(
         "h1-plaintext-http-control-proof",
         "plaintext-http-control-phase-complete",
         "h2-mixed-content-proof",
+        "h2-cancel-stream-start",
+        "h2-cancel-stream-cancel-reset",
+        "h2-cancel-stream-proof",
     ):
         if event_names.count(event) != 1:
             raise M0Error(f"relay transcript must contain exactly one {event!r}")
+    cancel_reset_entry = next(
+        entry
+        for entry in transcript
+        if isinstance(entry, dict)
+        and entry.get("event") == "h2-cancel-stream-cancel-reset"
+    )
+    if cancel_reset_entry.get("rstCode") != 8:
+        raise M0Error(
+            "relay cancel stream reset did not report NGHTTP2_CANCEL (8)"
+        )
     if not (
         event_names.index("plaintext-http-control-tcp-connect")
         < event_names.index("h1-plaintext-http-control")
@@ -1033,11 +1070,27 @@ def validate_relay_transcript(
     if not (
         event_names.index(csp_proof_event)
         < event_names.index("h2-mixed-content-proof")
+        < event_names.index("h2-cancel-stream-start")
+        < event_names.index("h2-cancel-stream-cancel-reset")
+        < event_names.index("h2-cancel-stream-proof")
         < event_names.index("h1-cors")
     ):
         raise M0Error(
-            "relay active mixed-content proof is not between CSP and CORS"
+            "relay cancellation proof events are not between active mixed-content "
+            "proof and CORS"
         )
+    for event in (
+        "h2-cancel-stream-rejected",
+        "h2-cancel-stream-unexpected-reset",
+        "h2-cancel-stream-proof-rejected",
+        "h2-cancel-stream-proof-session-mismatch",
+        "h2-cancel-stream-proof-timeout",
+    ):
+        if event in events:
+            raise M0Error(
+                "relay transcript unexpectedly contains cancellation failure "
+                f"event {event!r}"
+            )
     for event in (
         "csp-connect-src-target-tcp-connect",
         "h1-csp-connect-src-target-request",

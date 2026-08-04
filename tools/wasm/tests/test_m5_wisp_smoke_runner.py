@@ -133,6 +133,11 @@ def passing_result() -> dict[str, object]:
                 "redirected": True,
                 "cacheStored": True,
                 "cacheRevalidated": True,
+                "cancelStreamStarted": True,
+                "cancelStreamReceivedFirstChunk": True,
+                "cancelStreamAborted": True,
+                "cancelStreamErrorName": "AbortError",
+                "cancelStreamProof": True,
                 "cspConnectSrcBlocked": True,
                 "phase": "https-fixture",
                 "activeMixedContentBlocked": True,
@@ -200,6 +205,14 @@ def passing_relay_status() -> dict[str, object]:
         "cacheConditionalRequests": 1,
         "cacheNotModified304s": 1,
         "cacheUnexpectedRequests": 0,
+        "cancelStreamCancelResets": 1,
+        "cancelStreamFirstChunks": 1,
+        "cancelStreamPhase": "cancel-observed",
+        "cancelStreamProofs": 1,
+        "cancelStreamProofSessionMismatches": 0,
+        "cancelStreamProofTimeouts": 0,
+        "cancelStreamRequests": 1,
+        "cancelStreamUnexpectedResets": 0,
         "cspConnectSrcProofs": 1,
         "cspConnectSrcTargetTcpConnections": 0,
         "cspConnectSrcTargetRequests": 0,
@@ -240,9 +253,16 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 13, "event": "h2-cache-revalidate-304"},
             {"sequence": 14, "event": "h2-csp-connect-src-proof"},
             {"sequence": 15, "event": "h2-mixed-content-proof"},
-            {"sequence": 16, "event": "h1-cors"},
-            {"sequence": 17, "event": "h1-wss-echo"},
-            {"sequence": 18, "event": "tls-failure-tcp-connect"},
+            {"sequence": 16, "event": "h2-cancel-stream-start"},
+            {
+                "sequence": 17,
+                "event": "h2-cancel-stream-cancel-reset",
+                "rstCode": 8,
+            },
+            {"sequence": 18, "event": "h2-cancel-stream-proof"},
+            {"sequence": 19, "event": "h1-cors"},
+            {"sequence": 20, "event": "h1-wss-echo"},
+            {"sequence": 21, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -510,6 +530,10 @@ class M5ResultValidationTest(unittest.TestCase):
             "redirected",
             "cacheStored",
             "cacheRevalidated",
+            "cancelStreamStarted",
+            "cancelStreamReceivedFirstChunk",
+            "cancelStreamAborted",
+            "cancelStreamProof",
             "cspConnectSrcBlocked",
             "activeMixedContentBlocked",
             "activeMixedContentCspAllowed",
@@ -522,6 +546,20 @@ class M5ResultValidationTest(unittest.TestCase):
                 assert isinstance(page_probe, dict)
                 page_probe[field] = False
                 with self.assertRaisesRegex(M0Error, field):
+                    validate_passing_result(result)
+
+    def test_rejects_invalid_cancel_stream_page_evidence(self) -> None:
+        for invalid_value in ("", "TypeError", None):
+            with self.subTest(
+                field="cancelStreamErrorName", invalid_value=invalid_value
+            ):
+                result = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                page_probe = readiness["pageProbe"]
+                assert isinstance(page_probe, dict)
+                page_probe["cancelStreamErrorName"] = invalid_value
+                with self.assertRaisesRegex(M0Error, "cancelStreamErrorName"):
                     validate_passing_result(result)
 
     def test_rejects_invalid_plaintext_control_evidence(self) -> None:
@@ -946,12 +984,14 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             (
                 "h2-csp-connect-src-proof",
                 "h2-mixed-content-proof",
-                "active mixed-content proof is not between CSP and CORS",
+                "cancellation proof events are not between active mixed-content "
+                "proof and CORS",
             ),
             (
                 "h2-mixed-content-proof",
                 "h1-cors",
-                "active mixed-content proof is not between CSP and CORS",
+                "cancellation proof events are not between active mixed-content "
+                "proof and CORS",
             ),
         ):
             with self.subTest(first_event=first_event, second_event=second_event):
@@ -990,6 +1030,143 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
                     {"sequence": len(transcript) + 1, "event": event_name}
                 )
                 with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+    def test_rejects_invalid_cancel_stream_evidence(self) -> None:
+        relay_ready = parsed_relay_ready()
+
+        status = passing_relay_status()
+        status["cancelStreamPhase"] = "streaming"
+        with self.assertRaisesRegex(M0Error, "cancel stream phase"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for field, actual_value in (
+            ("cancelStreamRequests", 0),
+            ("cancelStreamRequests", 2),
+            ("cancelStreamFirstChunks", 0),
+            ("cancelStreamFirstChunks", 2),
+            ("cancelStreamCancelResets", 0),
+            ("cancelStreamCancelResets", 2),
+            ("cancelStreamProofs", 0),
+            ("cancelStreamProofs", 2),
+            ("cancelStreamProofSessionMismatches", 1),
+            ("cancelStreamProofTimeouts", 1),
+            ("cancelStreamUnexpectedResets", 1),
+        ):
+            with self.subTest(field=field, actual_value=actual_value):
+                status = passing_relay_status()
+                status[field] = actual_value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for invalid_rst_code in (None, 0, 7, "8"):
+            with self.subTest(invalid_rst_code=invalid_rst_code):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                reset_entry = next(
+                    entry
+                    for entry in transcript
+                    if entry.get("event") == "h2-cancel-stream-cancel-reset"
+                )
+                reset_entry["rstCode"] = invalid_rst_code
+                with self.assertRaisesRegex(M0Error, "NGHTTP2_CANCEL"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-cancel-stream-start",
+            "h2-cancel-stream-cancel-reset",
+            "h2-cancel-stream-proof",
+        ):
+            with self.subTest(missing_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-cancel-stream-start",
+            "h2-cancel-stream-cancel-reset",
+            "h2-cancel-stream-proof",
+        ):
+            with self.subTest(duplicate_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for first_event, second_event in (
+            ("h2-mixed-content-proof", "h2-cancel-stream-start"),
+            ("h2-cancel-stream-start", "h2-cancel-stream-cancel-reset"),
+            ("h2-cancel-stream-cancel-reset", "h2-cancel-stream-proof"),
+            ("h2-cancel-stream-proof", "h1-cors"),
+        ):
+            with self.subTest(first_event=first_event, second_event=second_event):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                first_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == first_event
+                )
+                second_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == second_event
+                )
+                transcript[first_index], transcript[second_index] = (
+                    transcript[second_index],
+                    transcript[first_index],
+                )
+                with self.assertRaisesRegex(
+                    M0Error,
+                    "cancellation proof events are not between active mixed-content "
+                    "proof and CORS",
+                ):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-cancel-stream-rejected",
+            "h2-cancel-stream-unexpected-reset",
+            "h2-cancel-stream-proof-rejected",
+            "h2-cancel-stream-proof-session-mismatch",
+            "h2-cancel-stream-proof-timeout",
+        ):
+            with self.subTest(forbidden_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(
+                    M0Error, "cancellation failure event"
+                ):
                     run_m5_wisp_smoke.validate_relay_transcript(
                         status, relay_ready=relay_ready
                     )

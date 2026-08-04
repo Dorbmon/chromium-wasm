@@ -30,6 +30,8 @@ const REDIRECT_COOKIE_NAME = "m5_redirect";
 const CACHE_REVALIDATE_ETAG = '"m5-cache-revalidate-v1"';
 const CACHE_REVALIDATE_BODY = "M5_CACHE_REVALIDATE_OK";
 const CACHE_REVALIDATE_CACHE_CONTROL = "private, max-age=60, must-revalidate";
+const CANCEL_STREAM_FIRST_CHUNK = "M5_CANCEL_STREAM_FIRST_CHUNK";
+const CANCEL_STREAM_PROOF_BODY = "M5_CANCEL_STREAM_PROOF";
 
 const WISP_PACKET_TYPES = Object.freeze({
   CONNECT: 0x01,
@@ -70,6 +72,7 @@ const MAX_TRANSCRIPT_ENTRIES = 256;
 const MAX_TEST_COUNTER = 16;
 const RELAY_HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 const DESTINATION_IDLE_TIMEOUT_MS = 30 * 1000;
+const CANCEL_STREAM_PROOF_TIMEOUT_MS = 5 * 1000;
 
 const REPOSITORY_ROOT = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -633,6 +636,15 @@ function statusSnapshot(context) {
     cacheNotModified304s: context.stats.cacheNotModified304s,
     cacheStore200s: context.stats.cacheStore200s,
     cacheUnexpectedRequests: context.stats.cacheUnexpectedRequests,
+    cancelStreamCancelResets: context.stats.cancelStreamCancelResets,
+    cancelStreamFirstChunks: context.stats.cancelStreamFirstChunks,
+    cancelStreamPhase: context.cancelStreamPhase,
+    cancelStreamProofs: context.stats.cancelStreamProofs,
+    cancelStreamProofSessionMismatches:
+      context.stats.cancelStreamProofSessionMismatches,
+    cancelStreamProofTimeouts: context.stats.cancelStreamProofTimeouts,
+    cancelStreamRequests: context.stats.cancelStreamRequests,
+    cancelStreamUnexpectedResets: context.stats.cancelStreamUnexpectedResets,
     cspConnectSrcProofs: context.stats.cspConnectSrcProofs,
     cspConnectSrcTargetRequests: context.stats.cspConnectSrcTargetRequests,
     cspConnectSrcTargetTcpConnections:
@@ -1059,6 +1071,76 @@ function h2Headers(extra = {}) {
   };
 }
 
+function respondToCancelStreamProof(stream, context, accepted) {
+  if (stream.destroyed || stream.closed) {
+    return;
+  }
+  const body = Buffer.from(accepted
+      ? CANCEL_STREAM_PROOF_BODY
+      : "M5_CANCEL_STREAM_PROOF_REJECTED");
+  try {
+    stream.respond(h2Headers({
+      ":status": accepted ? 200 : 409,
+      "content-length": String(body.length),
+      "content-type": "text/plain; charset=utf-8",
+      "x-m5-cancel-stream-proof": accepted ? "cancel-observed" : "rejected",
+    }));
+    stream.end(body);
+  } catch (_) {
+    // The fixture only owns its response while the peer keeps the proof
+    // stream alive. A cancelled proof cannot be made successful later.
+    return;
+  }
+  if (accepted) {
+    incrementBoundedCounter(context, "cancelStreamProofs");
+    context.transcript.add("h2-cancel-stream-proof");
+  } else {
+    context.transcript.add("h2-cancel-stream-proof-rejected");
+  }
+}
+
+function isCancelStreamProofSession(context, stream) {
+  return context.cancelStreamSession !== null &&
+      stream.session === context.cancelStreamSession;
+}
+
+function rejectCancelStreamProofSessionMismatch(stream, context) {
+  incrementBoundedCounter(context, "cancelStreamProofSessionMismatches");
+  context.transcript.add("h2-cancel-stream-proof-session-mismatch");
+  respondToCancelStreamProof(stream, context, false);
+}
+
+function resolvePendingCancelStreamProofs(context, accepted) {
+  for (const pending of [...context.cancelStreamPendingProofs]) {
+    context.cancelStreamPendingProofs.delete(pending);
+    clearTimeout(pending.timeout);
+    if (accepted && !isCancelStreamProofSession(context, pending.stream)) {
+      rejectCancelStreamProofSessionMismatch(pending.stream, context);
+      continue;
+    }
+    respondToCancelStreamProof(pending.stream, context, accepted);
+  }
+}
+
+function holdCancelStreamProof(context, stream) {
+  const pending = {stream, timeout: null};
+  context.cancelStreamPendingProofs.add(pending);
+  pending.timeout = setTimeout(() => {
+    if (!context.cancelStreamPendingProofs.delete(pending)) {
+      return;
+    }
+    incrementBoundedCounter(context, "cancelStreamProofTimeouts");
+    context.transcript.add("h2-cancel-stream-proof-timeout");
+    respondToCancelStreamProof(stream, context, false);
+  }, CANCEL_STREAM_PROOF_TIMEOUT_MS);
+  pending.timeout.unref?.();
+  stream.once("close", () => {
+    if (context.cancelStreamPendingProofs.delete(pending)) {
+      clearTimeout(pending.timeout);
+    }
+  });
+}
+
 function h2Page(context) {
   const h1CorsUrl = `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`;
   const cspConnectSrcTargetUrl =
@@ -1085,6 +1167,11 @@ function h2Page(context) {
       new URL("/m5/csp-connect-src-proof", location.href).href;
   const cspConnectSrcTargetURL = ${JSON.stringify(cspConnectSrcTargetUrl)};
   const h2ResourceURL = new URL("/m5/h2-resource", location.href).href;
+  const cancelStreamURL = new URL("/m5/cancel-stream", location.href).href;
+  const cancelStreamProofURL =
+      new URL("/m5/cancel-proof", location.href).href;
+  const cancelStreamFirstChunk =
+      ${JSON.stringify(CANCEL_STREAM_FIRST_CHUNK)};
   const mixedContentProofURL =
       new URL("/m5/mixed-content-proof", location.href).href;
   const mixedContentTargetURL = ${JSON.stringify(mixedContentTargetUrl)};
@@ -1100,6 +1187,11 @@ function h2Page(context) {
     altSvcH3Advertised: false,
     cacheStored: false,
     cacheRevalidated: false,
+    cancelStreamStarted: false,
+    cancelStreamReceivedFirstChunk: false,
+    cancelStreamAborted: false,
+    cancelStreamErrorName: "",
+    cancelStreamProof: false,
     activeMixedContentBlocked: false,
     activeMixedContentCspAllowed: false,
     activeMixedContentErrorName: "",
@@ -1216,6 +1308,55 @@ function h2Page(context) {
     };
   }
 
+  async function verifyCancelStream() {
+    const controller = new AbortController();
+    const response = await fetch(cancelStreamURL, {
+      cache: "no-store",
+      credentials: "omit",
+      signal: controller.signal,
+    });
+    if (!response.ok || !response.body) {
+      return {started: false, receivedFirstChunk: false, errorName: ""};
+    }
+    const reader = response.body.getReader();
+    let receivedChunk = "";
+    // A fetch body is a stream, so a browser is free to split the exact
+    // fixture payload across multiple reads. Accumulate it before aborting;
+    // any extra bytes make the equality check fail instead of masking an
+    // unexpected response body.
+    while (receivedChunk.length < cancelStreamFirstChunk.length) {
+      const next = await reader.read();
+      if (next.done) {
+        break;
+      }
+      receivedChunk += new TextDecoder().decode(next.value);
+    }
+    const receivedFirstChunk = receivedChunk === cancelStreamFirstChunk;
+    if (!receivedFirstChunk) {
+      try {
+        await reader.cancel();
+      } catch (_) {
+        // Preserve the failed first-chunk result below.
+      }
+      return {started: true, receivedFirstChunk: false, errorName: ""};
+    }
+
+    // Abort only after Blink has delivered the server's first response bytes.
+    // That requires Chromium to cancel an already-open HTTP/2 stream rather
+    // than treating this as a pre-connect request rejection.
+    controller.abort();
+    let errorName = "";
+    try {
+      // A second read proves the already-open response body itself entered
+      // the abort error state. A closed-stream promise alone would not
+      // distinguish that from a generic stream-finalization path.
+      await reader.read();
+    } catch (error) {
+      errorName = typeof error?.name === "string" ? error.name : "";
+    }
+    return {started: true, receivedFirstChunk: true, errorName};
+  }
+
   // The Content Shell observer accepts its deterministic probe through a
   // string-valued JavaScript execution callback. Keep the network work async,
   // but serialize this synchronous snapshot so each periodic observer probe
@@ -1230,6 +1371,11 @@ function h2Page(context) {
     h2Protocol: state.h2Protocol,
     cacheStored: state.cacheStored,
     cacheRevalidated: state.cacheRevalidated,
+    cancelStreamStarted: state.cancelStreamStarted,
+    cancelStreamReceivedFirstChunk: state.cancelStreamReceivedFirstChunk,
+    cancelStreamAborted: state.cancelStreamAborted,
+    cancelStreamErrorName: state.cancelStreamErrorName,
+    cancelStreamProof: state.cancelStreamProof,
     activeMixedContentBlocked: state.activeMixedContentBlocked,
     activeMixedContentCspAllowed: state.activeMixedContentCspAllowed,
     activeMixedContentErrorName: state.activeMixedContentErrorName,
@@ -1308,6 +1454,28 @@ function h2Page(context) {
       }
       state.activeMixedContentBlocked = true;
 
+      const cancelStreamResult = await verifyCancelStream();
+      state.cancelStreamStarted = cancelStreamResult.started;
+      state.cancelStreamReceivedFirstChunk =
+          cancelStreamResult.receivedFirstChunk;
+      state.cancelStreamErrorName = cancelStreamResult.errorName;
+      state.cancelStreamAborted = state.cancelStreamStarted &&
+          state.cancelStreamReceivedFirstChunk &&
+          state.cancelStreamErrorName === "AbortError";
+      if (!state.cancelStreamAborted) {
+        throw new Error("M5 cancel stream was not aborted by Blink");
+      }
+      const cancelProofResponse = await fetch(cancelStreamProofURL, {
+        cache: "no-store",
+        credentials: "omit",
+      });
+      if (!cancelProofResponse.ok ||
+          await cancelProofResponse.text() !==
+              ${JSON.stringify(CANCEL_STREAM_PROOF_BODY)}) {
+        throw new Error("M5 cancel stream proof failed");
+      }
+      state.cancelStreamProof = true;
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -1319,9 +1487,11 @@ function h2Page(context) {
       state.complete = state.h2Fetch && state.altSvcH3Advertised &&
           state.cacheStored && state.cacheRevalidated &&
           state.cspConnectSrcBlocked && state.activeMixedContentBlocked &&
+          state.cancelStreamStarted && state.cancelStreamReceivedFirstChunk &&
+          state.cancelStreamAborted && state.cancelStreamProof &&
           state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/CSP/mixed/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/CSP/mixed/cancel/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -1472,6 +1642,78 @@ function createH2Server(context, tlsMaterial) {
       }));
       stream.end(body);
       context.transcript.add("h2-mixed-content-proof");
+      return;
+    }
+    if (requestPath === "/m5/cancel-stream") {
+      incrementBoundedCounter(context, "cancelStreamRequests");
+      if (context.cancelStreamPhase !== "pre-cancel") {
+        const body = Buffer.from("M5_CANCEL_STREAM_REJECTED");
+        stream.respond(h2Headers({
+          ":status": 409,
+          "content-length": String(body.length),
+          "content-type": "text/plain; charset=utf-8",
+          "x-m5-cancel-stream": "duplicate",
+        }));
+        stream.end(body);
+        context.transcript.add("h2-cancel-stream-rejected");
+        return;
+      }
+
+      context.cancelStreamPhase = "streaming";
+      context.cancelStreamSession = stream.session;
+      const firstChunk = Buffer.from(CANCEL_STREAM_FIRST_CHUNK);
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-type": "text/plain; charset=utf-8",
+        "x-m5-cancel-stream": "streaming",
+      }));
+      stream.write(firstChunk);
+      incrementBoundedCounter(context, "cancelStreamFirstChunks");
+      context.transcript.add("h2-cancel-stream-start");
+
+      let resetObserved = false;
+      const observeReset = () => {
+        if (resetObserved || context.cancelStreamPhase !== "streaming") {
+          return;
+        }
+        resetObserved = true;
+        if (stream.rstCode === http2.constants.NGHTTP2_CANCEL) {
+          context.cancelStreamPhase = "cancel-observed";
+          incrementBoundedCounter(context, "cancelStreamCancelResets");
+          context.transcript.add("h2-cancel-stream-cancel-reset", {
+            rstCode: stream.rstCode,
+          });
+          resolvePendingCancelStreamProofs(context, true);
+          return;
+        }
+        context.cancelStreamPhase = "unexpected-reset";
+        incrementBoundedCounter(context, "cancelStreamUnexpectedResets");
+        context.transcript.add("h2-cancel-stream-unexpected-reset", {
+          rstCode: stream.rstCode,
+        });
+        resolvePendingCancelStreamProofs(context, false);
+      };
+      // Node reports peer-initiated RST_STREAM through `aborted`, then closes
+      // the stream. Listen to both so the state remains deterministic across
+      // supported Node versions while accepting only the HTTP/2 CANCEL code.
+      stream.once("aborted", observeReset);
+      stream.once("close", observeReset);
+      stream.once("error", observeReset);
+      return;
+    }
+    if (requestPath === "/m5/cancel-proof") {
+      if (!isCancelStreamProofSession(context, stream)) {
+        rejectCancelStreamProofSessionMismatch(stream, context);
+      } else if (context.cancelStreamPhase === "cancel-observed") {
+        respondToCancelStreamProof(stream, context, true);
+      } else if (context.cancelStreamPhase === "streaming") {
+        // The page can issue this proof immediately after AbortController
+        // settles. Hold one bounded request until Node has observed the
+        // corresponding HTTP/2 reset instead of relying on a timer in Blink.
+        holdCancelStreamProof(context, stream);
+      } else {
+        respondToCancelStreamProof(stream, context, false);
+      }
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -1874,6 +2116,9 @@ async function start(options) {
   const tlsFailureMaterial = fs.readFileSync(TLS_FAILURE_CERTIFICATE_PATH);
   const context = {
     allowedPorts: new Set(),
+    cancelStreamPendingProofs: new Set(),
+    cancelStreamPhase: "pre-cancel",
+    cancelStreamSession: null,
     cspConnectSrcTargetPort: 0,
     cspConnectSrcTargetSockets: new Set(),
     echoPeers: new Set(),
@@ -1892,6 +2137,13 @@ async function start(options) {
       cacheNotModified304s: 0,
       cacheStore200s: 0,
       cacheUnexpectedRequests: 0,
+      cancelStreamCancelResets: 0,
+      cancelStreamFirstChunks: 0,
+      cancelStreamProofs: 0,
+      cancelStreamProofSessionMismatches: 0,
+      cancelStreamProofTimeouts: 0,
+      cancelStreamRequests: 0,
+      cancelStreamUnexpectedResets: 0,
       corsRequests: 0,
       cspConnectSrcProofs: 0,
       cspConnectSrcTargetRequests: 0,
@@ -2007,6 +2259,10 @@ async function start(options) {
     for (const socket of context.plaintextHttpControlSockets) {
       socket.destroy();
     }
+    for (const pending of context.cancelStreamPendingProofs) {
+      clearTimeout(pending.timeout);
+    }
+    context.cancelStreamPendingProofs.clear();
     for (const session of context.h2Sessions) {
       session.close();
       // A headless outer browser can retain an idle H2 session after its Wasm

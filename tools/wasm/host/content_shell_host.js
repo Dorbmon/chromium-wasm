@@ -1383,6 +1383,11 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       typeof pageProbe?.activeMixedContentTargetUrl === "string" &&
       typeof pageProbe?.activeMixedContentErrorName === "string" &&
       typeof pageProbe?.activeMixedContentCspAllowed === "boolean" &&
+      typeof pageProbe?.cancelStreamStarted === "boolean" &&
+      typeof pageProbe?.cancelStreamReceivedFirstChunk === "boolean" &&
+      typeof pageProbe?.cancelStreamAborted === "boolean" &&
+      typeof pageProbe?.cancelStreamErrorName === "string" &&
+      typeof pageProbe?.cancelStreamProof === "boolean" &&
       typeof pageProbe?.corsFetch === "boolean" &&
       typeof pageProbe?.redirected === "boolean" &&
       typeof pageProbe?.webSocketEcho === "boolean" &&
@@ -1400,6 +1405,11 @@ function hasM5NetworkPageProbe(pageProbe) {
       pageProbe.activeMixedContentTargetUrl.length > 0 &&
       pageProbe?.activeMixedContentErrorName === "TypeError" &&
       pageProbe?.activeMixedContentCspAllowed === true &&
+      pageProbe?.cancelStreamStarted === true &&
+      pageProbe?.cancelStreamReceivedFirstChunk === true &&
+      pageProbe?.cancelStreamAborted === true &&
+      pageProbe?.cancelStreamErrorName === "AbortError" &&
+      pageProbe?.cancelStreamProof === true &&
       pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
       pageProbe?.altSvcH3Advertised === true;
 }
@@ -12413,6 +12423,12 @@ async function runM5WispNetworkSmokeFromQuery() {
         pageProbe.activeMixedContentTargetUrl.length > 0 &&
         pageProbe.activeMixedContentErrorName === "TypeError" &&
         pageProbe.activeMixedContentCspAllowed === true,
+      cancellation:
+        pageProbe.cancelStreamStarted === true &&
+        pageProbe.cancelStreamReceivedFirstChunk === true &&
+        pageProbe.cancelStreamAborted === true &&
+        pageProbe.cancelStreamErrorName === "AbortError" &&
+        pageProbe.cancelStreamProof === true,
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
       cors: pageProbe.corsFetch === true,
       webSocket: pageProbe.webSocketEcho === true,
