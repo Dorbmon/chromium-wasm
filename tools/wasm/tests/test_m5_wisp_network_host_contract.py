@@ -206,6 +206,62 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, host)
 
+    def test_m5_devtools_network_trace_is_in_process_bounded_and_required(
+        self,
+    ) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")
+        host_api = source("content/shell/browser/wasm_host_api.cc")
+        runner = source("tools/wasm/run_m5_wisp_smoke.py")
+        m5_smoke = host.split(
+            "async function runM5WispNetworkSmokeFromQuery() {", 1
+        )[1].split("\nasync function runM5PublicHttpsSmokeFromQuery()", 1)[0]
+        recorder = host_api.split(
+            "class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {",
+            1,
+        )[1].split("\nvoid ReportTextInputDelivery", 1)[0]
+
+        self.assertIn('#include "content/public/browser/devtools_agent_host.h"', host_api)
+        self.assertIn("DevToolsAgentHost::GetOrCreateFor(web_contents)", recorder)
+        self.assertIn("if (IsWasmM5NetworkTestModeEnabled())", host_api)
+        self.assertIn('R"({"id":1,"method":"Network.enable"})"', recorder)
+        for event in (
+            "Network.requestWillBeSent",
+            "Network.responseReceived",
+            "Network.loadingFinished",
+        ):
+            with self.subTest(event=event):
+                self.assertIn(event, recorder)
+        self.assertIn("request_id != request_id_", recorder)
+        self.assertIn("kM5NetworkRedirectPath", recorder)
+        self.assertIn("kM5NetworkDocumentPath", recorder)
+        self.assertIn("responseStatus", recorder)
+        self.assertIn("responseProtocol", recorder)
+        self.assertNotIn('report.Set("url"', recorder)
+        self.assertNotIn('report.Set("requestId"', recorder)
+        self.assertNotIn('report.Set("headers"', recorder)
+        self.assertNotIn('report.Set("cookies"', recorder)
+
+        self.assertIn("chromium_wasm_report_m5_devtools_network__proxy: 'sync'", bridge)
+        self.assertIn("bridge.reportM5DevToolsNetwork", bridge)
+        self.assertIn("reportM5DevToolsNetwork(report)", host)
+        self.assertIn("_reportM5DevToolsNetwork(value)", host)
+        self.assertIn("isM5DevToolsNetworkEnabled", host)
+        self.assertIn("hasM5DevToolsNetworkLog", host)
+        self.assertIn("m5:devtools-network:enabled", host)
+        self.assertIn("m5:devtools-network:complete", host)
+        self.assertLess(
+            m5_smoke.index("M5 DevTools Network.enable did not complete"),
+            m5_smoke.index("loadM5PlaintextHttpControlURL"),
+        )
+        self.assertIn("hasM5DevToolsNetworkLog(readiness.devtoolsNetwork)", m5_smoke)
+
+        self.assertIn("M5_DEVTOOLS_NETWORK_EVENT_ORDER", runner)
+        self.assertIn("M5 DevTools Network enable", runner)
+        self.assertIn("M5 DevTools Network log", runner)
+        self.assertIn("m5:devtools-network:enabled", runner)
+        self.assertIn("m5:devtools-network:complete", runner)
+
     def test_emscripten_bridge_cannot_relabel_m5_as_data_navigation(self) -> None:
         bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")
         m5_navigation = bridge.split(

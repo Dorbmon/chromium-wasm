@@ -17,7 +17,10 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
+#include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
@@ -31,6 +34,7 @@
 #include "base/timer/timer.h"
 #include "base/values.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -76,8 +80,12 @@ constexpr int kMaximumCanvasDimension = 16384;
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr size_t kMaximumM5PublicUrlBytes = 2048;
+constexpr size_t kMaximumM5DevToolsProtocolMessageBytes = 64 * 1024;
+constexpr size_t kMaximumM5DevToolsReportBytes = 4096;
 constexpr std::string_view kM5NetworkTestHostname = "a.test";
 constexpr std::string_view kM5NetworkTestPathPrefix = "/m5/";
+constexpr std::string_view kM5NetworkRedirectPath = "/m5/redirect-cookie";
+constexpr std::string_view kM5NetworkDocumentPath = "/m5/";
 constexpr std::string_view kM5PublicSpecialUseHostnameSuffixes[] = {
     ".localhost",
     ".local",
@@ -210,6 +218,7 @@ extern "C" int chromium_wasm_report_navigation();
 extern "C" int chromium_wasm_report_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_navigation();
 extern "C" int chromium_wasm_report_m5_navigation_error(int net_error);
+extern "C" int chromium_wasm_report_m5_devtools_network(const char* report);
 extern "C" int chromium_wasm_report_m5_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation();
 extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation_error(
@@ -237,6 +246,282 @@ void ReportFatal(std::string_view message) {
     LOG(ERROR) << "Unable to deliver M3 host failure: " << message;
   }
 }
+
+// The browser-facing DevTools sockets and pipe are intentionally unsupported
+// on Wasm: a browser page cannot safely expose a listening TCP endpoint, and
+// Emscripten has no inherited debugging file descriptors. This recorder uses
+// the same in-process DevToolsAgentHost protocol client that Chromium's
+// browser tests use. It is instantiated only by the dedicated controlled M5
+// executable and forwards a fixed, redacted event summary rather than raw CDP
+// frames, request IDs, URLs, headers, or cookies.
+class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
+ public:
+  M5DevToolsNetworkRecorder() = default;
+
+  M5DevToolsNetworkRecorder(const M5DevToolsNetworkRecorder&) = delete;
+  M5DevToolsNetworkRecorder& operator=(
+      const M5DevToolsNetworkRecorder&) = delete;
+
+  ~M5DevToolsNetworkRecorder() override { Detach(); }
+
+  bool Start(WebContents* web_contents) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (!web_contents || agent_host_ || state_ != State::kCreated) {
+      return false;
+    }
+
+    agent_host_ = DevToolsAgentHost::GetOrCreateFor(web_contents);
+    if (!agent_host_ || !agent_host_->AttachClient(this)) {
+      agent_host_ = nullptr;
+      return false;
+    }
+
+    state_ = State::kEnabling;
+    static constexpr char kEnableNetworkCommand[] =
+        R"({"id":1,"method":"Network.enable"})";
+    agent_host_->DispatchProtocolMessage(
+        this, base::byte_span_from_cstring(kEnableNetworkCommand));
+    return state_ != State::kFailed;
+  }
+
+ private:
+  enum class State {
+    kCreated,
+    kEnabling,
+    kEnabled,
+    kComplete,
+    kFailed,
+  };
+
+  void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
+                               base::span<const uint8_t> message) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (agent_host != agent_host_.get() || state_ == State::kFailed ||
+        state_ == State::kComplete) {
+      return;
+    }
+    if (message.size() > kMaximumM5DevToolsProtocolMessageBytes) {
+      Fail("received an oversized protocol message");
+      return;
+    }
+
+    const std::string_view message_text(
+        reinterpret_cast<const char*>(message.data()), message.size());
+    std::optional<base::Value> value = base::JSONReader::Read(
+        message_text, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    if (!value || !value->is_dict()) {
+      Fail("received a malformed protocol message");
+      return;
+    }
+    const base::DictValue& parsed = value->GetDict();
+    if (const std::optional<int> id = parsed.FindInt("id")) {
+      HandleCommandResponse(*id, parsed);
+      return;
+    }
+
+    const std::string* method = parsed.FindString("method");
+    const base::DictValue* params = parsed.FindDict("params");
+    if (!method || !params || state_ != State::kEnabled) {
+      return;
+    }
+    if (*method == "Network.requestWillBeSent") {
+      RecordRequest(*params);
+    } else if (*method == "Network.responseReceived") {
+      RecordResponse(*params);
+    } else if (*method == "Network.loadingFinished") {
+      RecordFinished(*params);
+    }
+  }
+
+  void AgentHostClosed(DevToolsAgentHost* agent_host) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (agent_host != agent_host_.get()) {
+      return;
+    }
+    agent_host_ = nullptr;
+    if (state_ != State::kComplete && state_ != State::kFailed) {
+      Fail("closed before the controlled network trace completed");
+    }
+  }
+
+  void HandleCommandResponse(int id, const base::DictValue& response) {
+    if (id != 1) {
+      return;
+    }
+    if (state_ != State::kEnabling || response.FindDict("error") ||
+        !response.FindDict("result")) {
+      Fail("Network.enable was rejected");
+      return;
+    }
+
+    state_ = State::kEnabled;
+    base::DictValue report;
+    report.Set("protocol", 1);
+    report.Set("state", "enabled");
+    report.Set("networkEnabled", true);
+    report.Set("events", base::ListValue());
+    if (!Report(std::move(report))) {
+      Fail("could not report Network.enable");
+    }
+  }
+
+  bool IsTargetDocumentRequest(const base::DictValue& params,
+                               std::string_view expected_path,
+                               std::string* request_id) {
+    const std::string* url = params.FindStringByDottedPath("request.url");
+    const std::string* resource_type = params.FindString("type");
+    const std::string* id = params.FindString("requestId");
+    if (!url || !resource_type || !id) {
+      return false;
+    }
+    const GURL request_url(*url);
+    if (!IsM5NetworkTestUrl(request_url) ||
+        request_url.path() != expected_path) {
+      return false;
+    }
+    if (*resource_type != "Document" || id->empty() ||
+        id->size() > 256) {
+      Fail("received an invalid controlled document request event");
+      return false;
+    }
+    *request_id = *id;
+    return true;
+  }
+
+  void RecordRequest(const base::DictValue& params) {
+    std::string request_id;
+    if (IsTargetDocumentRequest(params, kM5NetworkRedirectPath, &request_id)) {
+      if (redirect_request_seen_ || !request_id_.empty()) {
+        Fail("received a duplicate redirect request event");
+        return;
+      }
+      redirect_request_seen_ = true;
+      request_id_ = std::move(request_id);
+      AppendEvent("Network.requestWillBeSent:redirect");
+      return;
+    }
+
+    if (!IsTargetDocumentRequest(params, kM5NetworkDocumentPath, &request_id)) {
+      return;
+    }
+    if (!redirect_request_seen_ || final_request_seen_ ||
+        request_id != request_id_) {
+      Fail("final document request did not preserve the redirect request ID");
+      return;
+    }
+    final_request_seen_ = true;
+    AppendEvent("Network.requestWillBeSent:final");
+  }
+
+  void RecordResponse(const base::DictValue& params) {
+    if (!final_request_seen_) {
+      return;
+    }
+    const std::string* request_id = params.FindString("requestId");
+    if (!request_id || *request_id != request_id_) {
+      return;
+    }
+    const std::optional<int> status =
+        params.FindIntByDottedPath("response.status");
+    const std::string* protocol =
+        params.FindStringByDottedPath("response.protocol");
+    if (response_received_ || !status || !protocol || protocol->empty() ||
+        protocol->size() > 32) {
+      Fail("received an invalid final document response event");
+      return;
+    }
+    response_received_ = true;
+    response_status_ = *status;
+    response_protocol_ = *protocol;
+    AppendEvent("Network.responseReceived:final");
+  }
+
+  void RecordFinished(const base::DictValue& params) {
+    if (!response_received_) {
+      return;
+    }
+    const std::string* request_id = params.FindString("requestId");
+    if (!request_id || *request_id != request_id_) {
+      return;
+    }
+    if (loading_finished_) {
+      Fail("received a duplicate final document completion event");
+      return;
+    }
+    loading_finished_ = true;
+    AppendEvent("Network.loadingFinished:final");
+    MaybeReportComplete();
+  }
+
+  void AppendEvent(std::string_view event) {
+    if (events_.size() >= 4) {
+      Fail("recorded too many controlled document events");
+      return;
+    }
+    events_.Append(event);
+  }
+
+  void MaybeReportComplete() {
+    if (state_ != State::kEnabled || !redirect_request_seen_ ||
+        !final_request_seen_ || !response_received_ || !loading_finished_ ||
+        events_.size() != 4) {
+      return;
+    }
+
+    state_ = State::kComplete;
+    base::DictValue report;
+    report.Set("protocol", 1);
+    report.Set("state", "complete");
+    report.Set("networkEnabled", true);
+    report.Set("redirectRequest", redirect_request_seen_);
+    report.Set("finalRequest", final_request_seen_);
+    report.Set("responseReceived", response_received_);
+    report.Set("loadingFinished", loading_finished_);
+    report.Set("requestIdCorrelated", true);
+    report.Set("responseStatus", response_status_);
+    report.Set("responseProtocol", response_protocol_);
+    report.Set("events", std::move(events_));
+    if (!Report(std::move(report))) {
+      Fail("could not report the completed controlled network trace");
+    }
+  }
+
+  bool Report(base::DictValue report) {
+    const std::optional<std::string> serialized = base::WriteJson(report);
+    if (!serialized || serialized->empty() ||
+        serialized->size() > kMaximumM5DevToolsReportBytes) {
+      return false;
+    }
+    return chromium_wasm_report_m5_devtools_network(serialized->c_str()) == 1;
+  }
+
+  void Fail(std::string_view reason) {
+    if (state_ == State::kFailed) {
+      return;
+    }
+    state_ = State::kFailed;
+    ReportFatal("M5 DevTools Network recorder: " + std::string(reason));
+  }
+
+  void Detach() {
+    if (!agent_host_) {
+      return;
+    }
+    scoped_refptr<DevToolsAgentHost> agent_host = std::move(agent_host_);
+    agent_host->DetachClient(this);
+  }
+
+  State state_ = State::kCreated;
+  scoped_refptr<DevToolsAgentHost> agent_host_;
+  bool redirect_request_seen_ = false;
+  bool final_request_seen_ = false;
+  bool response_received_ = false;
+  bool loading_finished_ = false;
+  std::string request_id_;
+  int response_status_ = 0;
+  std::string response_protocol_;
+  base::ListValue events_;
+};
 
 void ReportTextInputDelivery(const ui::WasmTextInputRecord& record,
                              bool accepted) {
@@ -613,6 +898,7 @@ class WasmHostState {
   }
 
   std::unique_ptr<WasmHostObserver> observer;
+  std::unique_ptr<M5DevToolsNetworkRecorder> m5_devtools_network_recorder;
 
  private:
   bool IsM4KeyTransitionAllowedLocked(ui::DomCode physical_key,
@@ -1003,6 +1289,15 @@ void InitializeWasmHostApi() {
   }
   state.SetInputInjector(std::move(input_injector));
   state.observer = std::make_unique<WasmHostObserver>(shell->web_contents());
+  if (IsWasmM5NetworkTestModeEnabled()) {
+    state.m5_devtools_network_recorder =
+        std::make_unique<M5DevToolsNetworkRecorder>();
+    if (!state.m5_devtools_network_recorder->Start(shell->web_contents())) {
+      state.m5_devtools_network_recorder.reset();
+      ReportFatal("could not start the M5 DevTools Network recorder");
+      return;
+    }
+  }
   if (chromium_wasm_report_readiness(
           /*shell_ready=*/1, /*surface_ready=*/-1,
           /*first_visually_nonempty_paint=*/-1) != 1) {
@@ -1021,6 +1316,7 @@ void EnableWasmM5PublicNetworkTestModeForTesting() {
 void ShutdownWasmHostApi() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
+  state.m5_devtools_network_recorder.reset();
   state.observer.reset();
   state.SetInputInjector(nullptr);
   state.SetTaskRunner(nullptr);

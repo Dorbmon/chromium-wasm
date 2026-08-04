@@ -316,6 +316,23 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // The controlled M5 executable owns an in-process DevToolsAgentHost client.
+  // It reports a bounded, parsed Network-domain summary rather than exposing
+  // raw CDP frames to the page or opening an unsupported debugging socket.
+  chromium_wasm_report_m5_devtools_network__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_devtools_network__proxy: 'sync',
+  chromium_wasm_report_m5_devtools_network: (report) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportM5DevToolsNetwork !== 'function') {
+      return 0;
+    }
+    bridge.reportM5DevToolsNetwork(UTF8ToString(report));
+    return 1;
+  },
+
   // The opt-in public M5 lane is distinct from the controlled fixture: its
   // test-only C++ target supplies a canonical URL at runtime and reports the
   // resulting navigation metadata. The host compares that URL internally and

@@ -60,6 +60,12 @@ M5_HTTP1_CORS_PATH = "/m5/cors-resource"
 M5_TLS_NAME_MISMATCH_PATH = "/m5/tls-name-mismatch"
 M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control"
 M5_MIXED_CONTENT_TARGET_PATH = "/m5/mixed-content-target"
+M5_DEVTOOLS_NETWORK_EVENT_ORDER = (
+    "Network.requestWillBeSent:redirect",
+    "Network.requestWillBeSent:final",
+    "Network.responseReceived:final",
+    "Network.loadingFinished:final",
+)
 # The relay holds each post-ack response stage for this bounded interval. The
 # page must observe both elapsed time and its independent timer while Blink is
 # reading the response, rather than treating a fully buffered body as a slow
@@ -671,6 +677,37 @@ def validate_m5_result(
     navigation = _require_dict(readiness.get("navigation"), "M5 navigation")
     if navigation != {"committed": True, "scheme": "https"}:
         raise M0Error("M5 readiness did not commit the HTTPS navigation")
+    devtools_network_enabled = _require_dict(
+        result.get("devtoolsNetworkEnabled"), "M5 DevTools Network enable"
+    )
+    if devtools_network_enabled != {
+        "protocol": 1,
+        "state": "enabled",
+        "networkEnabled": True,
+        "events": [],
+    }:
+        raise M0Error("M5 DevTools Network.enable did not complete cleanly")
+    devtools_network = _require_dict(
+        readiness.get("devtoolsNetwork"), "M5 DevTools Network log"
+    )
+    expected_devtools_network = {
+        "protocol": 1,
+        "state": "complete",
+        "networkEnabled": True,
+        "redirectRequest": True,
+        "finalRequest": True,
+        "responseReceived": True,
+        "loadingFinished": True,
+        "requestIdCorrelated": True,
+        "responseStatus": 200,
+        "responseProtocol": "h2",
+        "events": list(M5_DEVTOOLS_NETWORK_EVENT_ORDER),
+    }
+    if devtools_network != expected_devtools_network:
+        raise M0Error(
+            "M5 DevTools Network log does not contain the bounded Chromium "
+            "CDP request/response/completion trace"
+        )
     heartbeat = _require_dict(readiness.get("heartbeat"), "M5 heartbeat")
     if heartbeat.get("anchor") != "m5-https-navigation-committed":
         raise M0Error("M5 heartbeat was not anchored to HTTPS navigation")
@@ -857,9 +894,11 @@ def validate_m5_result(
     host_logs = logs["host"]
     required_host_markers = (
         "initialize:wisp-configured",
+        "m5:devtools-network:enabled",
         "navigation:requested:m5-plaintext-http-control",
         "navigation:committed:m5-plaintext-http-control",
         "navigation:requested:m5-https",
+        "m5:devtools-network:complete",
         "navigation:requested:m5-https-tls-failure",
         "navigation:failed:m5-https:-200",
         "shutdown:complete",
@@ -871,9 +910,11 @@ def validate_m5_result(
         if host_logs.count(marker) != 1:
             raise M0Error(f"M5 host logs must contain exactly one {marker!r}")
     if not (
-        host_logs.index("navigation:requested:m5-plaintext-http-control")
+        host_logs.index("m5:devtools-network:enabled")
+        < host_logs.index("navigation:requested:m5-plaintext-http-control")
         < host_logs.index("navigation:committed:m5-plaintext-http-control")
         < host_logs.index("navigation:requested:m5-https")
+        < host_logs.index("m5:devtools-network:complete")
         < host_logs.index("navigation:requested:m5-https-tls-failure")
         < host_logs.index("navigation:failed:m5-https:-200")
         < host_logs.index("shutdown:complete")

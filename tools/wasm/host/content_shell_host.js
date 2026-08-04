@@ -71,6 +71,12 @@ const M5_NAVIGATION_PHASE = Object.freeze({
 // net::ERR_CERT_COMMON_NAME_INVALID. Keep the test evidence tied to
 // Chromium's native certificate verifier, not a JavaScript fetch failure.
 const M5_TLS_NAME_MISMATCH_NET_ERROR = -200;
+const M5_DEVTOOLS_NETWORK_EVENT_ORDER = Object.freeze([
+  "Network.requestWillBeSent:redirect",
+  "Network.requestWillBeSent:final",
+  "Network.responseReceived:final",
+  "Network.loadingFinished:final",
+]);
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
 const M4_PRINTABLE_KEY_DOM_KEY = "a";
@@ -1500,6 +1506,25 @@ function hasM5NetworkPageProbe(pageProbe) {
       pageProbe?.altSvcH3Advertised === true;
 }
 
+function isM5DevToolsNetworkEnabled(report) {
+  return report?.protocol === HOST_PROTOCOL &&
+      report?.state === "enabled" && report?.networkEnabled === true &&
+      Array.isArray(report?.events) && report.events.length === 0;
+}
+
+function hasM5DevToolsNetworkLog(report) {
+  return report?.protocol === HOST_PROTOCOL &&
+      report?.state === "complete" && report?.networkEnabled === true &&
+      report?.redirectRequest === true && report?.finalRequest === true &&
+      report?.responseReceived === true && report?.loadingFinished === true &&
+      report?.requestIdCorrelated === true &&
+      report?.responseStatus === 200 && report?.responseProtocol === "h2" &&
+      Array.isArray(report?.events) &&
+      report.events.length === M5_DEVTOOLS_NETWORK_EVENT_ORDER.length &&
+      report.events.every(
+        (event, index) => event === M5_DEVTOOLS_NETWORK_EVENT_ORDER[index]);
+}
+
 function snapshotM5SlowStreamHostHeartbeat(heartbeat) {
   if (heartbeat?.anchor !== "m5-https-navigation-committed" ||
       !Number.isFinite(heartbeat?.elapsedMs) || heartbeat.elapsedMs < 0 ||
@@ -1613,6 +1638,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportM5NavigationError(report) {
     deliverBridgeReport("_reportM5NavigationError", [report]);
+  },
+  reportM5DevToolsNetwork(report) {
+    deliverBridgeReport("_reportM5DevToolsNetwork", [report]);
   },
   reportM5PublicNavigation(report) {
     deliverBridgeReport("_reportM5PublicNavigation", [report]);
@@ -1982,6 +2010,7 @@ export class ChromiumWasmM3Host {
   #m5NetworkTestActive = false;
   #m5NetworkNavigationCount = 0;
   #m5NetworkPhase = M5_NAVIGATION_PHASE.NONE;
+  #m5DevToolsNetwork = null;
   #m5PublicNetworkTestActive = false;
   #m5PublicNavigationFinished = false;
   #m5PublicExpectedURL = null;
@@ -4724,6 +4753,9 @@ export class ChromiumWasmM3Host {
       pageReady: this.#pageProbe.ready === true,
       navigation: clone(this.#navigation),
       pageProbe: clone(this.#pageProbe),
+      devtoolsNetwork: this.#m5DevToolsNetwork
+        ? clone(this.#m5DevToolsNetwork)
+        : null,
       ozoneFocusState: this.#ozoneFocusState
         ? clone(this.#ozoneFocusState)
         : null,
@@ -5061,6 +5093,51 @@ export class ChromiumWasmM3Host {
     } catch (error) {
       this._reportFatal(
         `invalid M5 navigation failure report: ${String(error)}`);
+    }
+  }
+
+  _reportM5DevToolsNetwork(value) {
+    try {
+      const report = asReport(value, "M5 DevTools Network report");
+      if (this.#fixture !== M5_NETWORK_FIXTURE) {
+        throw new Error("M5 DevTools Network report is not fixture-scoped");
+      }
+      if (isM5DevToolsNetworkEnabled(report)) {
+        if (this.#m5DevToolsNetwork !== null) {
+          throw new Error("M5 DevTools Network enable report is duplicated");
+        }
+        this.#m5DevToolsNetwork = {
+          protocol: HOST_PROTOCOL,
+          state: "enabled",
+          networkEnabled: true,
+          events: [],
+        };
+        this.#recordHost("m5:devtools-network:enabled");
+        return;
+      }
+      if (!hasM5DevToolsNetworkLog(report) ||
+          this.#m5DevToolsNetwork?.state !== "enabled") {
+        throw new Error("M5 DevTools Network report is invalid or out of order");
+      }
+      // The recorder deliberately sends only this fixed summary. Preserve no
+      // raw protocol JSON, URLs, request IDs, response headers, or cookies in
+      // host diagnostics and artifacts.
+      this.#m5DevToolsNetwork = {
+        protocol: HOST_PROTOCOL,
+        state: "complete",
+        networkEnabled: true,
+        redirectRequest: true,
+        finalRequest: true,
+        responseReceived: true,
+        loadingFinished: true,
+        requestIdCorrelated: true,
+        responseStatus: 200,
+        responseProtocol: "h2",
+        events: [...M5_DEVTOOLS_NETWORK_EVENT_ORDER],
+      };
+      this.#recordHost("m5:devtools-network:complete");
+    } catch (error) {
+      this._reportFatal(`invalid M5 DevTools Network report: ${String(error)}`);
     }
   }
 
@@ -12617,6 +12694,7 @@ async function runM5WispNetworkSmokeFromQuery() {
   let navigationResult = null;
   let tlsFailureNavigationResult = null;
   let tlsFailureReadiness = null;
+  let devtoolsNetworkEnabled = null;
   let slowStreamHeartbeat = null;
   let slowStreamHeartbeatStart = null;
   let shutdown = null;
@@ -12664,6 +12742,22 @@ async function runM5WispNetworkSmokeFromQuery() {
       throw new Error("M5 runtime did not present the initial shell frame");
     }
 
+    // The controlled binary attaches its in-process DevToolsAgentHost client
+    // during startup. Do not issue even the plaintext transport control until
+    // Chromium has acknowledged Network.enable, otherwise an early navigation
+    // could evade the CDP evidence while still reaching the WISP relay.
+    while (performance.now() < deadline) {
+      const candidate = await host.readiness();
+      if (isM5DevToolsNetworkEnabled(candidate.devtoolsNetwork)) {
+        devtoolsNetworkEnabled = candidate.devtoolsNetwork;
+        break;
+      }
+      await delay(25);
+    }
+    if (!devtoolsNetworkEnabled) {
+      throw new Error("M5 DevTools Network.enable did not complete");
+    }
+
     plaintextHttpControlNavigationResult =
       await host.loadM5PlaintextHttpControlURL(plaintextHttpControlURL);
     while (performance.now() < deadline) {
@@ -12707,7 +12801,8 @@ async function runM5WispNetworkSmokeFromQuery() {
         slowStreamHeartbeatStart = snapshotM5SlowStreamHostHeartbeat(
             readiness.heartbeat);
       }
-      if (readiness.baseReady && hasM5NetworkPageProbe(readiness.pageProbe)) {
+      if (readiness.baseReady && hasM5NetworkPageProbe(readiness.pageProbe) &&
+          hasM5DevToolsNetworkLog(readiness.devtoolsNetwork)) {
         slowStreamHeartbeat = makeM5SlowStreamHostHeartbeat(
             slowStreamHeartbeatStart,
             snapshotM5SlowStreamHostHeartbeat(readiness.heartbeat));
@@ -12717,6 +12812,7 @@ async function runM5WispNetworkSmokeFromQuery() {
     }
     if (!readiness || !readiness.baseReady ||
         !hasM5NetworkPageProbe(readiness.pageProbe) ||
+        !hasM5DevToolsNetworkLog(readiness.devtoolsNetwork) ||
         !hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat)) {
       throw new Error(
           "M5 WISP HTTPS fixture did not complete: " +
@@ -12770,6 +12866,9 @@ async function runM5WispNetworkSmokeFromQuery() {
         navigationResult?.ok === true &&
         readiness.navigation?.committed === true &&
         readiness.navigation?.scheme === "https",
+      devtoolsNetwork:
+        isM5DevToolsNetworkEnabled(devtoolsNetworkEnabled) &&
+        hasM5DevToolsNetworkLog(readiness.devtoolsNetwork),
       tlsNameMismatch:
         tlsFailureNavigationResult?.ok === true &&
         tlsFailureReadiness.navigation?.committed === false &&
@@ -12857,6 +12956,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       plaintextHttpControlReadiness,
       navigationResult,
       readiness,
+      devtoolsNetworkEnabled,
       slowStreamHeartbeat,
       tlsFailureNavigationResult,
       tlsFailureReadiness,
@@ -12881,6 +12981,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       navigationResult,
       tlsFailureNavigationResult,
       readiness: null,
+      devtoolsNetworkEnabled,
       slowStreamHeartbeat,
       tlsFailureReadiness: null,
       logs: null,

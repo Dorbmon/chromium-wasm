@@ -79,6 +79,12 @@ def passing_result() -> dict[str, object]:
             "scheme": "https",
             "hostname": "a.test",
         },
+        "devtoolsNetworkEnabled": {
+            "protocol": 1,
+            "state": "enabled",
+            "networkEnabled": True,
+            "events": [],
+        },
         "tlsFailureNavigationResult": {
             "ok": True,
             "scheme": "https",
@@ -117,6 +123,24 @@ def passing_result() -> dict[str, object]:
             "pageReady": True,
             "fatalErrors": [],
             "navigation": {"committed": True, "scheme": "https"},
+            "devtoolsNetwork": {
+                "protocol": 1,
+                "state": "complete",
+                "networkEnabled": True,
+                "redirectRequest": True,
+                "finalRequest": True,
+                "responseReceived": True,
+                "loadingFinished": True,
+                "requestIdCorrelated": True,
+                "responseStatus": 200,
+                "responseProtocol": "h2",
+                "events": [
+                    "Network.requestWillBeSent:redirect",
+                    "Network.requestWillBeSent:final",
+                    "Network.responseReceived:final",
+                    "Network.loadingFinished:final",
+                ],
+            },
             "heartbeat": {
                 "anchor": "m5-https-navigation-committed",
                 "elapsedMs": 10,
@@ -187,9 +211,11 @@ def passing_result() -> dict[str, object]:
         "logs": {
             "host": [
                 "initialize:wisp-configured",
+                "m5:devtools-network:enabled",
                 "navigation:requested:m5-plaintext-http-control",
                 "navigation:committed:m5-plaintext-http-control",
                 "navigation:requested:m5-https",
+                "m5:devtools-network:complete",
                 "navigation:requested:m5-https-tls-failure",
                 "navigation:failed:m5-https:-200",
                 "shutdown:complete",
@@ -638,6 +664,43 @@ class RelayReadinessTest(unittest.TestCase):
 class M5ResultValidationTest(unittest.TestCase):
     def test_accepts_complete_chromium_network_evidence(self) -> None:
         validate_passing_result(passing_result())
+
+    def test_rejects_incomplete_or_unredacted_devtools_network_evidence(
+        self,
+    ) -> None:
+        for field, invalid_value in (
+            ("state", "enabled"),
+            ("networkEnabled", False),
+            ("redirectRequest", False),
+            ("finalRequest", False),
+            ("responseReceived", False),
+            ("loadingFinished", False),
+            ("requestIdCorrelated", False),
+            ("responseStatus", 302),
+            ("responseProtocol", "http/1.1"),
+            ("events", ["Network.requestWillBeSent:final"]),
+            ("url", "https://a.test:4443/m5/"),
+            ("requestId", "1.2"),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                result = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                devtools_network = readiness["devtoolsNetwork"]
+                assert isinstance(devtools_network, dict)
+                devtools_network[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, "DevTools Network"):
+                    validate_passing_result(result)
+
+        result = passing_result()
+        result["devtoolsNetworkEnabled"] = {
+            "protocol": 1,
+            "state": "complete",
+            "networkEnabled": True,
+            "events": [],
+        }
+        with self.assertRaisesRegex(M0Error, "Network.enable"):
+            validate_passing_result(result)
 
     def test_rejects_missing_page_network_evidence(self) -> None:
         for field in (
