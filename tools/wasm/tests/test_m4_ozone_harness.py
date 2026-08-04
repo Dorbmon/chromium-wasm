@@ -337,6 +337,24 @@ class M4CanvasGeometryTest(unittest.TestCase):
                     run_m4_ozone_smoke.canvas_click_position(state, geometry)
 
 
+class M4BrowserCommandTest(unittest.TestCase):
+    def test_runner_uses_a_viewport_that_contains_the_fixed_canvas(self) -> None:
+        command = run_m4_ozone_smoke.m4_browser_command(
+            Path("/browser"),
+            "/profile",
+            "http://127.0.0.1/",
+            no_sandbox=True,
+        )
+
+        self.assertIn("--window-size=1280,800", command)
+        self.assertLess(
+            command.index("--window-size=1280,800"),
+            command.index("--headless=new"),
+        )
+        self.assertIn("--no-sandbox", command)
+        self.assertEqual(command[-1], "http://127.0.0.1/")
+
+
 class RecordingDevToolsClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object] | None]] = []

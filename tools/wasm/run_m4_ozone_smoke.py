@@ -91,6 +91,17 @@ from run_content_shell_smoke import manifest_versions
 
 
 SENTINEL = "CHROMIUM_WASM_M4_OZONE"
+M4_BROWSER_WINDOW_SIZE = "1280,800"
+
+
+def m4_browser_command(
+    browser: Path, profile: str, url: str, *, no_sandbox: bool
+) -> list[str]:
+    """Launch M4 with a viewport that contains the full fixed test canvas."""
+
+    command = browser_command(browser, profile, url, no_sandbox=no_sandbox)
+    command[1:1] = [f"--window-size={M4_BROWSER_WINDOW_SIZE}"]
+    return command
 
 
 def write_failure_diagnostics(
@@ -907,7 +918,7 @@ def main() -> int:
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m4-")
         debug_port = unused_loopback_port()
         stage = "launch_browser"
-        command = browser_command(
+        command = m4_browser_command(
             browser_path,
             profile.name,
             url,
