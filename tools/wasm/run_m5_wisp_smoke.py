@@ -736,6 +736,14 @@ def validate_m5_result(
         "largeDownloadStarted": True,
         "largeDownloadContentDisposition": True,
         "largeDownloadComplete": True,
+        "reconnectStreamStarted": True,
+        "reconnectFirstChunkReceived": True,
+        "reconnectFirstChunkAck": True,
+        "reconnectDisconnectRequested": True,
+        "reconnectStreamFailed": True,
+        "reconnectStreamErrorName": "TypeError",
+        "reconnectRecovered": True,
+        "reconnectRecoveryProtocol": "h2",
         "cspConnectSrcBlocked": True,
         "phase": "https-fixture",
         "activeMixedContentBlocked": True,
@@ -940,7 +948,10 @@ def validate_relay_transcript(
         raise M0Error("relay slow stream phase did not complete")
     if status.get("largeDownloadPhase") != "complete":
         raise M0Error("relay large download phase did not complete")
+    if status.get("reconnectPhase") != "recovered":
+        raise M0Error("relay reconnect phase did not recover on a fresh session")
     for field in (
+        "activeWispSessions",
         "wispSessions",
         "rejectedDestinations",
         "udpPackets",
@@ -966,6 +977,14 @@ def validate_relay_transcript(
         "largeDownloadCompletions",
         "largeDownloadRequests",
         "largeDownloadUnexpectedCloses",
+        "reconnectDisconnectRequests",
+        "reconnectFirstChunkAcks",
+        "reconnectFirstChunks",
+        "reconnectRecoveryRequests",
+        "reconnectSessionMismatches",
+        "reconnectStreamRequests",
+        "reconnectUnexpectedCloses",
+        "reconnectUnexpectedRetries",
         "slowStreamRequests",
         "slowStreamFirstStages",
         "slowStreamSecondStages",
@@ -999,8 +1018,10 @@ def validate_relay_transcript(
         value = status.get(field)
         if type(value) is not int or value < 0:
             raise M0Error(f"relay transcript {field} is not a nonnegative int")
-    if status["wispSessions"] != 1:
-        raise M0Error("relay did not observe exactly one WISP session")
+    if status.get("activeWispSessions") != 1:
+        raise M0Error("relay does not retain exactly one recovered WISP session")
+    if status["wispSessions"] != 2:
+        raise M0Error("relay did not observe one WISP disconnect and fresh reconnect")
     if status["rejectedDestinations"] != 0:
         raise M0Error("relay rejected a destination during the M5 fixture")
     if status["udpPackets"] != 0:
@@ -1032,6 +1053,14 @@ def validate_relay_transcript(
         ("largeDownloadCompletions", 1),
         ("largeDownloadRequests", 1),
         ("largeDownloadUnexpectedCloses", 0),
+        ("reconnectDisconnectRequests", 1),
+        ("reconnectFirstChunkAcks", 1),
+        ("reconnectFirstChunks", 1),
+        ("reconnectRecoveryRequests", 1),
+        ("reconnectSessionMismatches", 0),
+        ("reconnectStreamRequests", 1),
+        ("reconnectUnexpectedCloses", 0),
+        ("reconnectUnexpectedRetries", 0),
         ("slowStreamRequests", 1),
         ("slowStreamFirstStages", 1),
         ("slowStreamSecondStages", 1),
@@ -1138,7 +1167,7 @@ def validate_relay_transcript(
         else:
             raise M0Error("relay observed a non-fixture WISP port")
     if (
-        h2_count < 1
+        h2_count < 2
         or h1_count < 2
         or plaintext_http_control_count < 1
         or tls_failure_count < 1
@@ -1148,12 +1177,13 @@ def validate_relay_transcript(
     transcript = status.get("transcript")
     if not isinstance(transcript, list) or not transcript:
         raise M0Error("relay transcript is missing")
-    event_names = [
-        entry.get("event") for entry in transcript if isinstance(entry, dict)
-    ]
+    event_entries = [entry for entry in transcript if isinstance(entry, dict)]
+    event_names = [entry.get("event") for entry in event_entries]
     events = set(event_names)
     for event in (
+        "wisp-connected",
         "wisp-ready",
+        "wisp-disconnected",
         "connect-open",
         "plaintext-http-control-tcp-connect",
         "h1-plaintext-http-control",
@@ -1184,6 +1214,14 @@ def validate_relay_transcript(
         "h2-slow-stream-proof",
         "h2-large-download-start",
         "h2-large-download-complete",
+        "h2-reconnect-stream-start",
+        "h2-reconnect-stream-first-chunk",
+        "h2-reconnect-first-chunk-ack",
+        "h2-reconnect-disconnect-requested",
+        "h2-reconnect-global-close",
+        "h2-reconnect-stream-disconnected",
+        "h2-reconnect-wisp-disconnected",
+        "h2-reconnect-recovery",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
@@ -1232,9 +1270,27 @@ def validate_relay_transcript(
         "h2-slow-stream-proof",
         "h2-large-download-start",
         "h2-large-download-complete",
+        "h2-reconnect-stream-start",
+        "h2-reconnect-stream-first-chunk",
+        "h2-reconnect-first-chunk-ack",
+        "h2-reconnect-disconnect-requested",
+        "h2-reconnect-global-close",
+        "h2-reconnect-stream-disconnected",
+        "h2-reconnect-wisp-disconnected",
+        "h2-reconnect-recovery",
     ):
         if event_names.count(event) != 1:
             raise M0Error(f"relay transcript must contain exactly one {event!r}")
+    for event, expected_count in (
+        ("wisp-connected", 2),
+        ("wisp-ready", 2),
+        ("wisp-disconnected", 1),
+    ):
+        if event_names.count(event) != expected_count:
+            raise M0Error(
+                f"relay transcript must contain exactly {expected_count} "
+                f"{event!r} events"
+            )
     cancel_reset_entry = next(
         entry
         for entry in transcript
@@ -1298,6 +1354,72 @@ def validate_relay_transcript(
             "and CORS"
         )
     if not (
+        event_names.index("h2-large-download-complete")
+        < event_names.index("h2-reconnect-stream-start")
+        < event_names.index("h2-reconnect-stream-first-chunk")
+        < event_names.index("h2-reconnect-first-chunk-ack")
+        < event_names.index("h2-reconnect-disconnect-requested")
+        < event_names.index("h2-reconnect-global-close")
+        < event_names.index("wisp-disconnected")
+        < event_names.index("h2-reconnect-wisp-disconnected")
+        < event_names.index("h2-reconnect-recovery")
+        < event_names.index("h1-cors")
+    ):
+        raise M0Error(
+            "relay reconnect events are not between the large download and CORS"
+        )
+    # Closing the WISP peer removes the H2 socket asynchronously. The old
+    # stream may therefore report its close before or after the explicit relay
+    # teardown marker, but it must be caused by the global close and finish
+    # before the page advances to its CORS check.
+    if not (
+        event_names.index("h2-reconnect-global-close")
+        < event_names.index("h2-reconnect-stream-disconnected")
+        < event_names.index("h1-cors")
+    ):
+        raise M0Error(
+            "relay reconnect stream did not terminate after the global close "
+            "and before CORS"
+        )
+    first_wisp_connected = event_names.index("wisp-connected")
+    second_wisp_connected = event_names.index(
+        "wisp-connected", first_wisp_connected + 1
+    )
+    first_wisp_ready = event_names.index("wisp-ready")
+    second_wisp_ready = event_names.index("wisp-ready", first_wisp_ready + 1)
+    if not (
+        event_names.index("wisp-disconnected")
+        < second_wisp_connected
+        < second_wisp_ready
+        < event_names.index("h2-reconnect-recovery")
+    ):
+        raise M0Error(
+            "relay reconnect recovery did not use a fresh WISP handshake"
+        )
+    recovery_connect_open = next(
+        (
+            index
+            for index, entry in enumerate(event_entries)
+            if index > second_wisp_ready and entry.get("event") == "connect-open"
+        ),
+        None,
+    )
+    if recovery_connect_open is None or not (
+        second_wisp_ready
+        < recovery_connect_open
+        < event_names.index("h2-reconnect-recovery")
+    ):
+        raise M0Error(
+            "relay reconnect recovery did not open a fresh TCP stream"
+        )
+    expected_recovery_destination = f"{M5_TEST_HOSTNAME}:{h2_port}"
+    if event_entries[recovery_connect_open].get("destination") != (
+        expected_recovery_destination
+    ):
+        raise M0Error(
+            "relay reconnect recovery did not open the original H2 destination"
+        )
+    if not (
         event_names.index("h2-cancel-stream-proof")
         < event_names.index("h2-slow-stream-start")
         < event_names.index("h2-slow-stream-first-stage")
@@ -1354,6 +1476,23 @@ def validate_relay_transcript(
         if event in events:
             raise M0Error(
                 "relay transcript unexpectedly contains large-download failure "
+                f"event {event!r}"
+            )
+    for event in (
+        "h2-reconnect-stream-rejected",
+        "h2-reconnect-stream-unexpected-close",
+        "h2-reconnect-first-chunk-ack-rejected",
+        "h2-reconnect-first-chunk-ack-session-mismatch",
+        "h2-reconnect-global-close-failed",
+        "h2-reconnect-relay-selection-failed",
+        "h2-reconnect-recovery-rejected",
+        "h2-reconnect-recovery-session-mismatch",
+        "h2-reconnect-recovery-timeout",
+        "h2-reconnect-recovery-unexpected-close",
+    ):
+        if event in events:
+            raise M0Error(
+                "relay transcript unexpectedly contains reconnect failure "
                 f"event {event!r}"
             )
     for event in (

@@ -63,6 +63,23 @@ const LARGE_DOWNLOAD_CHUNK_COUNT =
     LARGE_DOWNLOAD_BYTES / LARGE_DOWNLOAD_CHUNK_BYTES;
 const LARGE_DOWNLOAD_CONTENT_DISPOSITION =
     'attachment; filename="m5-large-download.bin"';
+// Reconnect coverage deliberately terminates an already-delivered H2 body.
+// The page must observe that partial stream fail, then make a separate
+// recovery request on a fresh WISP WebSocket and H2 session. Keeping one byte
+// unsent makes a clean EOF or a transparent replay an explicit test failure.
+const RECONNECT_STREAM_FIRST_CHUNK = "M5_WISP_RECONNECT_FIRST_CHUNK";
+const RECONNECT_STREAM_CONTENT_LENGTH =
+    Buffer.byteLength(RECONNECT_STREAM_FIRST_CHUNK) + 1;
+const RECONNECT_FIRST_CHUNK_ACK_BODY = "M5_WISP_RECONNECT_FIRST_CHUNK_ACK";
+const RECONNECT_RECOVERY_BODY = "M5_WISP_RECONNECT_RECOVERY";
+const RECONNECT_DISCONNECT_DELAY_MS = 100;
+// Give the WISP global CLOSE packet a bounded chance to reach the host
+// bridge before ending the RFC 6455 peer. This makes the transport's
+// connection-failure transition observable without retaining the relay.
+const RECONNECT_WEBSOCKET_CLOSE_DELAY_MS = 100;
+const RECONNECT_ACK_TIMEOUT_MS = 5000;
+const RECONNECT_RECOVERY_TIMEOUT_MS = 5000;
+const RECONNECT_STREAM_FAILURE_TIMEOUT_MS = 5000;
 
 const WISP_PACKET_TYPES = Object.freeze({
   CONNECT: 0x01,
@@ -714,6 +731,15 @@ function statusSnapshot(context) {
       context.stats.plaintextHttpControlTcpConnections,
     redirectCookieValidations: context.stats.redirectCookieValidations,
     redirectRequests: context.stats.redirectRequests,
+    reconnectDisconnectRequests: context.stats.reconnectDisconnectRequests,
+    reconnectFirstChunkAcks: context.stats.reconnectFirstChunkAcks,
+    reconnectFirstChunks: context.stats.reconnectFirstChunks,
+    reconnectPhase: context.reconnectPhase,
+    reconnectRecoveryRequests: context.stats.reconnectRecoveryRequests,
+    reconnectSessionMismatches: context.stats.reconnectSessionMismatches,
+    reconnectStreamRequests: context.stats.reconnectStreamRequests,
+    reconnectUnexpectedCloses: context.stats.reconnectUnexpectedCloses,
+    reconnectUnexpectedRetries: context.stats.reconnectUnexpectedRetries,
     rejectedDestinations: context.stats.rejectedDestinations,
     relayErrors: context.stats.relayErrors,
     requestedDestinations: context.stats.requestedDestinations.map(
@@ -1264,6 +1290,27 @@ function clearSlowStreamStageTimer(context) {
   }
 }
 
+function clearReconnectTimers(context) {
+  if (context.reconnectDisconnectTimer !== null) {
+    clearTimeout(context.reconnectDisconnectTimer);
+    context.reconnectDisconnectTimer = null;
+  }
+  if (context.reconnectWebSocketCloseTimer !== null) {
+    clearTimeout(context.reconnectWebSocketCloseTimer);
+    context.reconnectWebSocketCloseTimer = null;
+  }
+}
+
+function clearPendingReconnectRecovery(context) {
+  const pending = context.reconnectPendingRecovery;
+  if (pending === null) {
+    return null;
+  }
+  context.reconnectPendingRecovery = null;
+  clearTimeout(pending.timeout);
+  return pending;
+}
+
 function armSlowStreamStageAckTimeout(context, expectedPhases) {
   clearSlowStreamStageAckTimeout(context);
   context.slowStreamStageAckTimeout = setTimeout(() => {
@@ -1600,6 +1647,249 @@ function writeLargeDownload(context, stream) {
   pump();
 }
 
+function isReconnectStreamSession(context, stream) {
+  return context.reconnectStreamSession !== null &&
+      stream.session === context.reconnectStreamSession;
+}
+
+function respondToReconnectControl(stream, status, body, state) {
+  if (stream.destroyed || stream.closed) {
+    return false;
+  }
+  const responseBody = Buffer.from(body);
+  try {
+    stream.respond(h2Headers({
+      ":status": status,
+      "content-length": String(responseBody.length),
+      "content-type": "text/plain; charset=utf-8",
+      "x-m5-wisp-reconnect": state,
+    }));
+    stream.end(responseBody);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function rejectReconnectControl(stream, context, event) {
+  context.transcript.add(event);
+  respondToReconnectControl(stream, 409, "M5_WISP_RECONNECT_REJECTED",
+      "rejected");
+}
+
+function writeReconnectStream(context, stream) {
+  incrementBoundedCounter(context, "reconnectStreamRequests");
+  if (context.reconnectPhase !== "pre-reconnect") {
+    incrementBoundedCounter(context, "reconnectUnexpectedRetries");
+    rejectReconnectControl(stream, context, "h2-reconnect-stream-rejected");
+    return;
+  }
+
+  context.reconnectPhase = "streaming";
+  context.reconnectStreamSession = stream.session;
+  context.transcript.add("h2-reconnect-stream-start");
+  let closeObserved = false;
+  const observeClose = () => {
+    if (closeObserved) {
+      return;
+    }
+    closeObserved = true;
+    if (context.reconnectPhase === "disconnecting" ||
+        context.reconnectPhase === "disconnected" ||
+        context.reconnectPhase === "recovered") {
+      context.transcript.add("h2-reconnect-stream-disconnected");
+      return;
+    }
+    context.reconnectPhase = "unexpected-close";
+    incrementBoundedCounter(context, "reconnectUnexpectedCloses");
+    context.transcript.add("h2-reconnect-stream-unexpected-close");
+  };
+  stream.once("aborted", observeClose);
+  stream.once("close", observeClose);
+  stream.once("error", observeClose);
+  try {
+    stream.respond(h2Headers({
+      ":status": 200,
+      "content-length": String(RECONNECT_STREAM_CONTENT_LENGTH),
+      "content-type": "text/plain; charset=utf-8",
+      "x-m5-wisp-reconnect": "partial-stream",
+    }));
+    stream.write(RECONNECT_STREAM_FIRST_CHUNK);
+  } catch (_) {
+    observeClose();
+    return;
+  }
+  incrementBoundedCounter(context, "reconnectFirstChunks");
+  context.transcript.add("h2-reconnect-stream-first-chunk");
+}
+
+function scheduleReconnectDisconnect(context) {
+  clearReconnectTimers(context);
+  const disconnect = () => {
+    context.reconnectDisconnectTimer = null;
+    if (context.reconnectPhase !== "first-chunk-acknowledged") {
+      return;
+    }
+    const relays = [...context.relays].filter((relay) => !relay.closed);
+    if (relays.length !== 1) {
+      context.reconnectPhase = "unexpected-close";
+      incrementBoundedCounter(context, "reconnectUnexpectedCloses");
+      context.transcript.add("h2-reconnect-relay-selection-failed");
+      return;
+    }
+
+    context.reconnectPhase = "disconnecting";
+    incrementBoundedCounter(context, "reconnectDisconnectRequests");
+    context.transcript.add("h2-reconnect-disconnect-requested");
+    const relay = relays[0];
+    // Close the WISP connection explicitly before ending the WebSocket. A
+    // raw WebSocket close alone may leave a pooled H2 session waiting for a
+    // transport poll; the global WISP CLOSE maps that pending stream to a
+    // concrete failure and causes a later stream to make a new WebSocket.
+    const globalClose = relay.peer.sendBinary(wispClosePacket(
+        0, WISP_CLOSE_REASONS.NETWORK_ERROR));
+    if (!globalClose.accepted) {
+      context.reconnectPhase = "unexpected-close";
+      incrementBoundedCounter(context, "reconnectUnexpectedCloses");
+      context.transcript.add("h2-reconnect-global-close-failed");
+      relay.peer.destroy();
+      relay.close();
+      return;
+    }
+    context.transcript.add("h2-reconnect-global-close");
+    const closeWebSocket = () => {
+      if (!relay.closed) {
+        relay.peer.close(1012, "m5-reconnect");
+        // An upgraded socket is outside http.Server.close() ownership. Tear
+        // down the loopback peer after its bounded close-frame window so a
+        // non-cooperating client cannot retain the deliberately ended relay.
+        relay.peer.destroy();
+        relay.close();
+      }
+      if (context.reconnectPhase === "disconnecting") {
+        context.reconnectPhase = "disconnected";
+        context.transcript.add("h2-reconnect-wisp-disconnected");
+        resolvePendingReconnectRecovery(context);
+      }
+    };
+    context.reconnectWebSocketCloseTimer = setTimeout(() => {
+      context.reconnectWebSocketCloseTimer = null;
+      closeWebSocket();
+    }, RECONNECT_WEBSOCKET_CLOSE_DELAY_MS);
+    context.reconnectWebSocketCloseTimer.unref?.();
+  };
+  // The exact same-session ACK response is sent immediately after this timer
+  // is armed. The bounded delay leaves it a response window before ending the
+  // old connection and keeps a stalled peer from retaining the fixture.
+  context.reconnectDisconnectTimer = setTimeout(
+      disconnect, RECONNECT_DISCONNECT_DELAY_MS);
+  context.reconnectDisconnectTimer.unref?.();
+}
+
+function handleReconnectFirstChunkAck(stream, context) {
+  if (context.reconnectPhase !== "streaming" ||
+      !isReconnectStreamSession(context, stream)) {
+    if (context.reconnectStreamSession !== null &&
+        !isReconnectStreamSession(context, stream)) {
+      incrementBoundedCounter(context, "reconnectSessionMismatches");
+      rejectReconnectControl(
+          stream, context, "h2-reconnect-first-chunk-ack-session-mismatch");
+      return;
+    }
+    rejectReconnectControl(
+        stream, context, "h2-reconnect-first-chunk-ack-rejected");
+    return;
+  }
+  context.reconnectPhase = "first-chunk-acknowledged";
+  incrementBoundedCounter(context, "reconnectFirstChunkAcks");
+  context.transcript.add("h2-reconnect-first-chunk-ack");
+  scheduleReconnectDisconnect(context);
+  respondToReconnectControl(
+      stream, 200, RECONNECT_FIRST_CHUNK_ACK_BODY, "first-chunk-acknowledged");
+}
+
+function completeReconnectRecovery(stream, context) {
+  if (stream.destroyed || stream.closed) {
+    return false;
+  }
+  context.reconnectPhase = "recovered";
+  incrementBoundedCounter(context, "reconnectRecoveryRequests");
+  context.transcript.add("h2-reconnect-recovery");
+  return respondToReconnectControl(
+      stream, 200, RECONNECT_RECOVERY_BODY, "recovered");
+}
+
+function holdReconnectRecovery(stream, context) {
+  if (context.reconnectPendingRecovery !== null) {
+    rejectReconnectControl(
+        stream, context, "h2-reconnect-recovery-rejected");
+    return;
+  }
+  const pending = {stream, timeout: null};
+  context.reconnectPendingRecovery = pending;
+  pending.timeout = setTimeout(() => {
+    if (context.reconnectPendingRecovery !== pending) {
+      return;
+    }
+    context.reconnectPendingRecovery = null;
+    context.reconnectPhase = "unexpected-close";
+    incrementBoundedCounter(context, "reconnectUnexpectedCloses");
+    context.transcript.add("h2-reconnect-recovery-timeout");
+    rejectReconnectControl(
+        stream, context, "h2-reconnect-recovery-rejected");
+  }, RECONNECT_RECOVERY_TIMEOUT_MS);
+  pending.timeout.unref?.();
+  stream.once("close", () => {
+    if (context.reconnectPendingRecovery !== pending) {
+      return;
+    }
+    context.reconnectPendingRecovery = null;
+    clearTimeout(pending.timeout);
+    context.reconnectPhase = "unexpected-close";
+    incrementBoundedCounter(context, "reconnectUnexpectedCloses");
+    context.transcript.add("h2-reconnect-recovery-unexpected-close");
+  });
+}
+
+function resolvePendingReconnectRecovery(context) {
+  const pending = clearPendingReconnectRecovery(context);
+  if (pending === null) {
+    return;
+  }
+  if (context.reconnectPhase !== "disconnected") {
+    return;
+  }
+  if (!completeReconnectRecovery(pending.stream, context)) {
+    context.reconnectPhase = "unexpected-close";
+    incrementBoundedCounter(context, "reconnectUnexpectedCloses");
+    context.transcript.add("h2-reconnect-recovery-unexpected-close");
+  }
+}
+
+function handleReconnectRecovery(stream, context) {
+  if (context.reconnectStreamSession !== null &&
+      stream.session === context.reconnectStreamSession) {
+    incrementBoundedCounter(context, "reconnectSessionMismatches");
+    rejectReconnectControl(
+        stream, context, "h2-reconnect-recovery-session-mismatch");
+    return;
+  }
+  if (context.reconnectPhase === "disconnecting") {
+    // The browser may receive the global WISP CLOSE and create its fresh
+    // session before the fixture's bounded WebSocket teardown fires. Hold
+    // that fresh request until the old relay is conclusively gone instead of
+    // turning a valid reconnect race into a 409 response.
+    holdReconnectRecovery(stream, context);
+    return;
+  }
+  if (context.reconnectPhase !== "disconnected" ||
+      context.reconnectStreamSession === null) {
+    rejectReconnectControl(stream, context, "h2-reconnect-recovery-rejected");
+    return;
+  }
+  completeReconnectRecovery(stream, context);
+}
+
 function h2Page(context) {
   const h1CorsUrl = `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`;
   const cspConnectSrcTargetUrl =
@@ -1643,6 +1933,12 @@ function h2Page(context) {
   const slowStreamProofURL =
       new URL("/m5/slow-stream-proof", location.href).href;
   const largeDownloadURL = new URL("/m5/large-download", location.href).href;
+  const reconnectStreamURL =
+      new URL("/m5/reconnect-stream", location.href).href;
+  const reconnectFirstChunkAckURL =
+      new URL("/m5/reconnect-first-chunk-ack", location.href).href;
+  const reconnectRecoveryURL =
+      new URL("/m5/reconnect-recovery", location.href).href;
   const slowStreamStages = ${JSON.stringify(SLOW_STREAM_STAGES)};
   const slowStreamConsumerBurstBytes = ${SLOW_STREAM_CONSUMER_BURST_BYTES};
   const slowStreamConsumerBurstByte = ${SLOW_STREAM_CONSUMER_BURST_BYTE};
@@ -1650,6 +1946,8 @@ function h2Page(context) {
   const largeDownloadBytes = ${LARGE_DOWNLOAD_BYTES};
   const largeDownloadContentDisposition =
       ${JSON.stringify(LARGE_DOWNLOAD_CONTENT_DISPOSITION)};
+  const reconnectStreamFirstChunk =
+      ${JSON.stringify(RECONNECT_STREAM_FIRST_CHUNK)};
   const mixedContentProofURL =
       new URL("/m5/mixed-content-proof", location.href).href;
   const mixedContentTargetURL = ${JSON.stringify(mixedContentTargetUrl)};
@@ -1690,6 +1988,14 @@ function h2Page(context) {
     largeDownloadComplete: false,
     largeDownloadBytes: 0,
     largeDownloadReaderChunks: 0,
+    reconnectStreamStarted: false,
+    reconnectFirstChunkReceived: false,
+    reconnectFirstChunkAck: false,
+    reconnectDisconnectRequested: false,
+    reconnectStreamFailed: false,
+    reconnectStreamErrorName: "",
+    reconnectRecovered: false,
+    reconnectRecoveryProtocol: "",
     activeMixedContentBlocked: false,
     activeMixedContentCspAllowed: false,
     activeMixedContentErrorName: "",
@@ -2093,6 +2399,114 @@ function h2Page(context) {
     return result;
   }
 
+  async function verifyWispReconnect() {
+    const result = {
+      started: false,
+      firstChunkReceived: false,
+      firstChunkAck: false,
+      disconnectRequested: false,
+      streamFailed: false,
+      streamErrorName: "",
+      recovered: false,
+      recoveryProtocol: "",
+    };
+    const response = await fetch(reconnectStreamURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    result.started = response.ok && !!response.body &&
+        response.headers.get("content-length") ===
+            String(reconnectStreamFirstChunk.length + 1);
+    state.reconnectStreamStarted = result.started;
+    if (!result.started) {
+      return result;
+    }
+
+    const reader = response.body.getReader();
+    let received = "";
+    while (received.length < reconnectStreamFirstChunk.length) {
+      const next = await reader.read();
+      if (next.done) {
+        return result;
+      }
+      received += new TextDecoder().decode(next.value);
+    }
+    result.firstChunkReceived = received === reconnectStreamFirstChunk;
+    state.reconnectFirstChunkReceived = result.firstChunkReceived;
+    if (!result.firstChunkReceived) {
+      return result;
+    }
+
+    // The acknowledgement runs on the same H2 session as the partial body.
+    // Its exact response proves the fixture received it before the delayed
+    // global WISP close is armed; a bounded wait prevents a stalled transport
+    // from being mislabeled as a reconnect.
+    let ack = null;
+    try {
+      ack = await Promise.race([
+        fetch(reconnectFirstChunkAckURL, {
+          cache: "no-store",
+          credentials: "omit",
+        }),
+        new Promise((resolve) => setTimeout(
+            () => resolve(null), ${RECONNECT_ACK_TIMEOUT_MS})),
+      ]);
+    } catch (_) {
+      return result;
+    }
+    let ackBody = "";
+    try {
+      ackBody = ack ? await ack.text() : "";
+    } catch (_) {
+      return result;
+    }
+    result.firstChunkAck = ack?.ok === true && ackBody ===
+        ${JSON.stringify(RECONNECT_FIRST_CHUNK_ACK_BODY)};
+    state.reconnectFirstChunkAck = result.firstChunkAck;
+    if (!result.firstChunkAck) {
+      return result;
+    }
+
+    // The accepted same-session ACK arms the fixture's close only after
+    // Chromium has received the partial response.
+    result.disconnectRequested = true;
+    state.reconnectDisconnectRequested = true;
+
+    // Wait for the deliberately incomplete old body to fail before issuing
+    // recovery. A clean EOF or local abort is not a WISP transport failure.
+    const streamFailure = reader.read().then(
+        () => ({errorName: ""}),
+        (error) => ({
+          errorName: typeof error?.name === "string" ? error.name : "",
+        }));
+    const streamOutcome = await Promise.race([
+      streamFailure,
+      new Promise((resolve) => setTimeout(
+          () => resolve({errorName: ""}),
+          ${RECONNECT_STREAM_FAILURE_TIMEOUT_MS})),
+    ]);
+    result.streamErrorName = streamOutcome.errorName;
+    result.streamFailed = result.streamErrorName === "TypeError";
+    state.reconnectStreamErrorName = result.streamErrorName;
+    state.reconnectStreamFailed = result.streamFailed;
+    if (!result.streamFailed) {
+      return result;
+    }
+
+    const recovery = await fetch(reconnectRecoveryURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    const recoveryBody = await recovery.text();
+    result.recoveryProtocol = nextHopProtocol(reconnectRecoveryURL);
+    result.recovered = recovery.ok && recoveryBody ===
+        ${JSON.stringify(RECONNECT_RECOVERY_BODY)} &&
+        result.recoveryProtocol === "h2";
+    state.reconnectRecoveryProtocol = result.recoveryProtocol;
+    state.reconnectRecovered = result.recovered;
+    return result;
+  }
+
   // The Content Shell observer accepts its deterministic probe through a
   // string-valued JavaScript execution callback. Keep the network work async,
   // but serialize this synchronous snapshot so each periodic observer probe
@@ -2136,6 +2550,14 @@ function h2Page(context) {
     largeDownloadComplete: state.largeDownloadComplete,
     largeDownloadBytes: state.largeDownloadBytes,
     largeDownloadReaderChunks: state.largeDownloadReaderChunks,
+    reconnectStreamStarted: state.reconnectStreamStarted,
+    reconnectFirstChunkReceived: state.reconnectFirstChunkReceived,
+    reconnectFirstChunkAck: state.reconnectFirstChunkAck,
+    reconnectDisconnectRequested: state.reconnectDisconnectRequested,
+    reconnectStreamFailed: state.reconnectStreamFailed,
+    reconnectStreamErrorName: state.reconnectStreamErrorName,
+    reconnectRecovered: state.reconnectRecovered,
+    reconnectRecoveryProtocol: state.reconnectRecoveryProtocol,
     activeMixedContentBlocked: state.activeMixedContentBlocked,
     activeMixedContentCspAllowed: state.activeMixedContentCspAllowed,
     activeMixedContentErrorName: state.activeMixedContentErrorName,
@@ -2282,6 +2704,25 @@ function h2Page(context) {
         throw new Error("M5 large download stream failed");
       }
 
+      const reconnectResult = await verifyWispReconnect();
+      state.reconnectStreamStarted = reconnectResult.started;
+      state.reconnectFirstChunkReceived = reconnectResult.firstChunkReceived;
+      state.reconnectFirstChunkAck = reconnectResult.firstChunkAck;
+      state.reconnectDisconnectRequested = reconnectResult.disconnectRequested;
+      state.reconnectStreamFailed = reconnectResult.streamFailed;
+      state.reconnectStreamErrorName = reconnectResult.streamErrorName;
+      state.reconnectRecovered = reconnectResult.recovered;
+      state.reconnectRecoveryProtocol = reconnectResult.recoveryProtocol;
+      if (!state.reconnectStreamStarted ||
+          !state.reconnectFirstChunkReceived ||
+          !state.reconnectFirstChunkAck ||
+          !state.reconnectDisconnectRequested ||
+          !state.reconnectStreamFailed ||
+          !state.reconnectRecovered ||
+          state.reconnectRecoveryProtocol !== "h2") {
+        throw new Error("M5 WISP reconnect failed");
+      }
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -2306,9 +2747,16 @@ function h2Page(context) {
           state.largeDownloadComplete &&
           state.largeDownloadBytes === largeDownloadBytes &&
           state.largeDownloadReaderChunks >= 1 &&
+          state.reconnectStreamStarted &&
+          state.reconnectFirstChunkReceived &&
+          state.reconnectFirstChunkAck &&
+          state.reconnectDisconnectRequested &&
+          state.reconnectStreamFailed &&
+          state.reconnectRecovered &&
+          state.reconnectRecoveryProtocol === "h2" &&
           state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/download/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/download/reconnect/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -2595,6 +3043,18 @@ function createH2Server(context, tlsMaterial) {
     }
     if (requestPath === "/m5/large-download") {
       writeLargeDownload(context, stream);
+      return;
+    }
+    if (requestPath === "/m5/reconnect-stream") {
+      writeReconnectStream(context, stream);
+      return;
+    }
+    if (requestPath === "/m5/reconnect-first-chunk-ack") {
+      handleReconnectFirstChunkAck(stream, context);
+      return;
+    }
+    if (requestPath === "/m5/reconnect-recovery") {
+      handleReconnectRecovery(stream, context);
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -3001,6 +3461,11 @@ async function start(options) {
     cancelStreamPhase: "pre-cancel",
     cancelStreamSession: null,
     largeDownloadPhase: "pre-download",
+    reconnectPhase: "pre-reconnect",
+    reconnectDisconnectTimer: null,
+    reconnectPendingRecovery: null,
+    reconnectStreamSession: null,
+    reconnectWebSocketCloseTimer: null,
     slowStreamPhase: "pre-stream",
     slowStreamResponse: null,
     slowStreamSession: null,
@@ -3066,6 +3531,14 @@ async function start(options) {
       plaintextHttpControlProofs: 0,
       plaintextHttpControlRequests: 0,
       plaintextHttpControlTcpConnections: 0,
+      reconnectDisconnectRequests: 0,
+      reconnectFirstChunkAcks: 0,
+      reconnectFirstChunks: 0,
+      reconnectRecoveryRequests: 0,
+      reconnectSessionMismatches: 0,
+      reconnectStreamRequests: 0,
+      reconnectUnexpectedCloses: 0,
+      reconnectUnexpectedRetries: 0,
       redirectCookieValidations: 0,
       redirectRequests: 0,
       rejectedDestinations: 0,
@@ -3175,6 +3648,8 @@ async function start(options) {
     context.cancelStreamPendingProofs.clear();
     clearSlowStreamStageTimer(context);
     clearSlowStreamStageAckTimeout(context);
+    clearReconnectTimers(context);
+    clearPendingReconnectRecovery(context);
     for (const session of context.h2Sessions) {
       session.close();
       // A headless outer browser can retain an idle H2 session after its Wasm

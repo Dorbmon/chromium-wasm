@@ -158,6 +158,14 @@ def passing_result() -> dict[str, object]:
                 "largeDownloadComplete": True,
                 "largeDownloadBytes": 512 * 1024,
                 "largeDownloadReaderChunks": 32,
+                "reconnectStreamStarted": True,
+                "reconnectFirstChunkReceived": True,
+                "reconnectFirstChunkAck": True,
+                "reconnectDisconnectRequested": True,
+                "reconnectStreamFailed": True,
+                "reconnectStreamErrorName": "TypeError",
+                "reconnectRecovered": True,
+                "reconnectRecoveryProtocol": "h2",
                 "cspConnectSrcBlocked": True,
                 "phase": "https-fixture",
                 "activeMixedContentBlocked": True,
@@ -219,8 +227,8 @@ def passing_relay_status() -> dict[str, object]:
         "fixture": "chromium-wasm-m5-network-v1",
         "protocol": 1,
         "ready": True,
-        "activeWispSessions": 0,
-        "wispSessions": 1,
+        "activeWispSessions": 1,
+        "wispSessions": 2,
         "rejectedDestinations": 0,
         "udpPackets": 0,
         "relayErrors": 0,
@@ -247,6 +255,15 @@ def passing_relay_status() -> dict[str, object]:
         "largeDownloadCompletions": 1,
         "largeDownloadRequests": 1,
         "largeDownloadUnexpectedCloses": 0,
+        "reconnectPhase": "recovered",
+        "reconnectDisconnectRequests": 1,
+        "reconnectFirstChunkAcks": 1,
+        "reconnectFirstChunks": 1,
+        "reconnectRecoveryRequests": 1,
+        "reconnectSessionMismatches": 0,
+        "reconnectStreamRequests": 1,
+        "reconnectUnexpectedCloses": 0,
+        "reconnectUnexpectedRetries": 0,
         "slowStreamPhase": "complete",
         "slowStreamRequests": 1,
         "slowStreamFirstStages": 1,
@@ -282,69 +299,87 @@ def passing_relay_status() -> dict[str, object]:
         "requestedDestinations": [
             {"hostname": "a.test", "port": 4446},
             {"hostname": "a.test", "port": 4443},
+            {"hostname": "a.test", "port": 4443},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4445},
         ],
         "transcript": [
-            {"sequence": 1, "event": "wisp-ready"},
-            {"sequence": 2, "event": "connect-open"},
-            {"sequence": 3, "event": "plaintext-http-control-tcp-connect"},
-            {"sequence": 4, "event": "h1-plaintext-http-control"},
-            {"sequence": 5, "event": "h1-plaintext-http-control-proof"},
+            {"sequence": 1, "event": "wisp-connected"},
+            {"sequence": 2, "event": "wisp-ready"},
+            {"sequence": 3, "event": "connect-open"},
+            {"sequence": 4, "event": "plaintext-http-control-tcp-connect"},
+            {"sequence": 5, "event": "h1-plaintext-http-control"},
+            {"sequence": 6, "event": "h1-plaintext-http-control-proof"},
             {
-                "sequence": 6,
+                "sequence": 7,
                 "event": "plaintext-http-control-phase-complete",
             },
-            {"sequence": 7, "event": "h2-redirect"},
-            {"sequence": 8, "event": "h2-redirect-cookie"},
-            {"sequence": 9, "event": "h2-page"},
-            {"sequence": 10, "event": "h2-page-cookie"},
-            {"sequence": 11, "event": "h2-resource"},
-            {"sequence": 12, "event": "h2-cache-store-200"},
-            {"sequence": 13, "event": "h2-cache-revalidate-304"},
-            {"sequence": 14, "event": "h2-csp-connect-src-proof"},
-            {"sequence": 15, "event": "h2-mixed-content-proof"},
-            {"sequence": 16, "event": "h2-cancel-stream-start"},
+            {"sequence": 8, "event": "h2-redirect"},
+            {"sequence": 9, "event": "h2-redirect-cookie"},
+            {"sequence": 10, "event": "h2-page"},
+            {"sequence": 11, "event": "h2-page-cookie"},
+            {"sequence": 12, "event": "h2-resource"},
+            {"sequence": 13, "event": "h2-cache-store-200"},
+            {"sequence": 14, "event": "h2-cache-revalidate-304"},
+            {"sequence": 15, "event": "h2-csp-connect-src-proof"},
+            {"sequence": 16, "event": "h2-mixed-content-proof"},
+            {"sequence": 17, "event": "h2-cancel-stream-start"},
             {
-                "sequence": 17,
+                "sequence": 18,
                 "event": "h2-cancel-stream-cancel-reset",
                 "rstCode": 8,
             },
-            {"sequence": 18, "event": "h2-cancel-stream-proof"},
-            {"sequence": 19, "event": "h2-slow-stream-start"},
-            {"sequence": 20, "event": "h2-slow-stream-first-stage"},
+            {"sequence": 19, "event": "h2-cancel-stream-proof"},
+            {"sequence": 20, "event": "h2-slow-stream-start"},
+            {"sequence": 21, "event": "h2-slow-stream-first-stage"},
             {
-                "sequence": 21,
+                "sequence": 22,
                 "event": "h2-slow-stream-first-stage-ack",
             },
-            {"sequence": 22, "event": "h2-slow-stream-second-stage"},
+            {"sequence": 23, "event": "h2-slow-stream-second-stage"},
             {
-                "sequence": 23,
+                "sequence": 24,
                 "event": "h2-slow-stream-consumer-pause-ready",
             },
             {
-                "sequence": 24,
+                "sequence": 25,
                 "event": "h2-slow-stream-consumer-burst",
                 "bytes": 64 * 1024,
                 "backpressured": True,
             },
             {
-                "sequence": 25,
+                "sequence": 26,
                 "event": "h2-slow-stream-consumer-resume",
             },
             {
-                "sequence": 26,
+                "sequence": 27,
                 "event": "h2-slow-stream-second-stage-ack",
             },
-            {"sequence": 27, "event": "h2-slow-stream-third-stage"},
-            {"sequence": 28, "event": "h2-slow-stream-complete"},
-            {"sequence": 29, "event": "h2-slow-stream-proof"},
-            {"sequence": 30, "event": "h2-large-download-start"},
-            {"sequence": 31, "event": "h2-large-download-complete"},
-            {"sequence": 32, "event": "h1-cors"},
-            {"sequence": 33, "event": "h1-wss-echo"},
-            {"sequence": 34, "event": "tls-failure-tcp-connect"},
+            {"sequence": 28, "event": "h2-slow-stream-third-stage"},
+            {"sequence": 29, "event": "h2-slow-stream-complete"},
+            {"sequence": 30, "event": "h2-slow-stream-proof"},
+            {"sequence": 31, "event": "h2-large-download-start"},
+            {"sequence": 32, "event": "h2-large-download-complete"},
+            {"sequence": 33, "event": "h2-reconnect-stream-start"},
+            {"sequence": 34, "event": "h2-reconnect-stream-first-chunk"},
+            {"sequence": 35, "event": "h2-reconnect-first-chunk-ack"},
+            {"sequence": 36, "event": "h2-reconnect-disconnect-requested"},
+            {"sequence": 37, "event": "h2-reconnect-global-close"},
+            {"sequence": 38, "event": "wisp-disconnected"},
+            {"sequence": 39, "event": "h2-reconnect-stream-disconnected"},
+            {"sequence": 40, "event": "h2-reconnect-wisp-disconnected"},
+            {"sequence": 41, "event": "wisp-connected"},
+            {"sequence": 42, "event": "wisp-ready"},
+            {
+                "sequence": 43,
+                "event": "connect-open",
+                "destination": "a.test:4443",
+            },
+            {"sequence": 44, "event": "h2-reconnect-recovery"},
+            {"sequence": 45, "event": "h1-cors"},
+            {"sequence": 46, "event": "h1-wss-echo"},
+            {"sequence": 47, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -628,6 +663,12 @@ class M5ResultValidationTest(unittest.TestCase):
             "largeDownloadStarted",
             "largeDownloadContentDisposition",
             "largeDownloadComplete",
+            "reconnectStreamStarted",
+            "reconnectFirstChunkReceived",
+            "reconnectFirstChunkAck",
+            "reconnectDisconnectRequested",
+            "reconnectStreamFailed",
+            "reconnectRecovered",
             "cspConnectSrcBlocked",
             "activeMixedContentBlocked",
             "activeMixedContentCspAllowed",
@@ -734,6 +775,22 @@ class M5ResultValidationTest(unittest.TestCase):
                 assert isinstance(page_probe, dict)
                 page_probe["cancelStreamErrorName"] = invalid_value
                 with self.assertRaisesRegex(M0Error, "cancelStreamErrorName"):
+                    validate_passing_result(result)
+
+    def test_rejects_invalid_reconnect_page_evidence(self) -> None:
+        for invalid_value in ("", "AbortError", None, False):
+            with self.subTest(
+                field="reconnectStreamErrorName", invalid_value=invalid_value
+            ):
+                result = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                page_probe = readiness["pageProbe"]
+                assert isinstance(page_probe, dict)
+                page_probe["reconnectStreamErrorName"] = invalid_value
+                with self.assertRaisesRegex(
+                    M0Error, "reconnectStreamErrorName"
+                ):
                     validate_passing_result(result)
 
     def test_rejects_invalid_plaintext_control_evidence(self) -> None:
@@ -893,6 +950,28 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
         )
         run_m5_wisp_smoke.validate_relay_transcript(
             passing_relay_status(), relay_ready=relay_ready
+        )
+        # The peer teardown marker and the asynchronous H2 stream close can
+        # arrive in either order after the global WISP close.
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        stream_closed_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "h2-reconnect-stream-disconnected"
+        )
+        relay_closed_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "h2-reconnect-wisp-disconnected"
+        )
+        transcript[stream_closed_index], transcript[relay_closed_index] = (
+            transcript[relay_closed_index],
+            transcript[stream_closed_index],
+        )
+        run_m5_wisp_smoke.validate_relay_transcript(
+            status, relay_ready=relay_ready
         )
 
     def test_rejects_unexpected_destination_and_udp(self) -> None:
@@ -1658,6 +1737,198 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
                     {"sequence": len(transcript) + 1, "event": event_name}
                 )
                 with self.assertRaisesRegex(M0Error, "large-download failure"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+    def test_rejects_invalid_reconnect_evidence(self) -> None:
+        relay_ready = parsed_relay_ready()
+
+        status = passing_relay_status()
+        status["reconnectPhase"] = "disconnected"
+        with self.assertRaisesRegex(M0Error, "reconnect phase"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for field, actual_value, error in (
+            ("activeWispSessions", 0, "recovered WISP session"),
+            ("activeWispSessions", 2, "recovered WISP session"),
+            ("wispSessions", 1, "fresh reconnect"),
+            ("wispSessions", 3, "fresh reconnect"),
+            ("reconnectDisconnectRequests", 0, "reconnectDisconnectRequests"),
+            ("reconnectDisconnectRequests", 2, "reconnectDisconnectRequests"),
+            ("reconnectFirstChunkAcks", 0, "reconnectFirstChunkAcks"),
+            ("reconnectFirstChunkAcks", 2, "reconnectFirstChunkAcks"),
+            ("reconnectFirstChunks", 0, "reconnectFirstChunks"),
+            ("reconnectFirstChunks", 2, "reconnectFirstChunks"),
+            ("reconnectRecoveryRequests", 0, "reconnectRecoveryRequests"),
+            ("reconnectRecoveryRequests", 2, "reconnectRecoveryRequests"),
+            ("reconnectSessionMismatches", 1, "reconnectSessionMismatches"),
+            ("reconnectStreamRequests", 0, "reconnectStreamRequests"),
+            ("reconnectStreamRequests", 2, "reconnectStreamRequests"),
+            ("reconnectUnexpectedCloses", 1, "reconnectUnexpectedCloses"),
+            ("reconnectUnexpectedRetries", 1, "reconnectUnexpectedRetries"),
+        ):
+            with self.subTest(field=field, actual_value=actual_value):
+                status = passing_relay_status()
+                status[field] = actual_value
+                with self.assertRaisesRegex(M0Error, error):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        destinations = status["requestedDestinations"]
+        assert isinstance(destinations, list)
+        destinations.pop(2)
+        with self.assertRaisesRegex(
+            M0Error, "all fixed M5 destination streams"
+        ):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for event_name in (
+            "h2-reconnect-stream-start",
+            "h2-reconnect-stream-first-chunk",
+            "h2-reconnect-first-chunk-ack",
+            "h2-reconnect-disconnect-requested",
+            "h2-reconnect-global-close",
+            "h2-reconnect-stream-disconnected",
+            "h2-reconnect-wisp-disconnected",
+            "h2-reconnect-recovery",
+        ):
+            with self.subTest(missing_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-reconnect-stream-start",
+            "h2-reconnect-stream-first-chunk",
+            "h2-reconnect-first-chunk-ack",
+            "h2-reconnect-disconnect-requested",
+            "h2-reconnect-global-close",
+            "h2-reconnect-stream-disconnected",
+            "h2-reconnect-wisp-disconnected",
+            "h2-reconnect-recovery",
+        ):
+            with self.subTest(duplicate_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for first_event, second_event, error in (
+            (
+                "h2-reconnect-global-close",
+                "wisp-disconnected",
+                "relay reconnect events",
+            ),
+            (
+                "h2-reconnect-global-close",
+                "h2-reconnect-stream-disconnected",
+                "relay reconnect events",
+            ),
+            (
+                "h2-reconnect-wisp-disconnected",
+                "h2-reconnect-recovery",
+                "relay reconnect events",
+            ),
+        ):
+            with self.subTest(first_event=first_event, second_event=second_event):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                first_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == first_event
+                )
+                second_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == second_event
+                )
+                transcript[first_index], transcript[second_index] = (
+                    transcript[second_index],
+                    transcript[first_index],
+                )
+                with self.assertRaisesRegex(M0Error, error):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        transcript[:] = [
+            entry
+            for entry in transcript
+            if not (
+                entry.get("event") == "connect-open"
+                and entry.get("destination") == "a.test:4443"
+            )
+        ]
+        with self.assertRaisesRegex(M0Error, "fresh TCP stream"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        recovery_connect = next(
+            entry
+            for entry in transcript
+            if entry.get("event") == "connect-open"
+            and entry.get("destination") == "a.test:4443"
+        )
+        recovery_connect["destination"] = "a.test:4444"
+        with self.assertRaisesRegex(M0Error, "original H2 destination"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for event_name in (
+            "h2-reconnect-stream-rejected",
+            "h2-reconnect-stream-unexpected-close",
+            "h2-reconnect-first-chunk-ack-rejected",
+            "h2-reconnect-first-chunk-ack-session-mismatch",
+            "h2-reconnect-global-close-failed",
+            "h2-reconnect-relay-selection-failed",
+            "h2-reconnect-recovery-rejected",
+            "h2-reconnect-recovery-session-mismatch",
+            "h2-reconnect-recovery-timeout",
+            "h2-reconnect-recovery-unexpected-close",
+        ):
+            with self.subTest(forbidden_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {
+                        "sequence": len(transcript) + 1,
+                        "event": event_name,
+                    }
+                )
+                with self.assertRaisesRegex(M0Error, "reconnect failure"):
                     run_m5_wisp_smoke.validate_relay_transcript(
                         status, relay_ready=relay_ready
                     )

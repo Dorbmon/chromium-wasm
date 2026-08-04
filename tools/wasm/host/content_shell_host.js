@@ -1428,6 +1428,14 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       pageProbe.largeDownloadBytes >= 0 &&
       Number.isSafeInteger(pageProbe?.largeDownloadReaderChunks) &&
       pageProbe.largeDownloadReaderChunks >= 0 &&
+      typeof pageProbe?.reconnectStreamStarted === "boolean" &&
+      typeof pageProbe?.reconnectFirstChunkReceived === "boolean" &&
+      typeof pageProbe?.reconnectFirstChunkAck === "boolean" &&
+      typeof pageProbe?.reconnectDisconnectRequested === "boolean" &&
+      typeof pageProbe?.reconnectStreamFailed === "boolean" &&
+      typeof pageProbe?.reconnectStreamErrorName === "string" &&
+      typeof pageProbe?.reconnectRecovered === "boolean" &&
+      typeof pageProbe?.reconnectRecoveryProtocol === "string" &&
       typeof pageProbe?.corsFetch === "boolean" &&
       typeof pageProbe?.redirected === "boolean" &&
       typeof pageProbe?.webSocketEcho === "boolean" &&
@@ -1475,6 +1483,14 @@ function hasM5NetworkPageProbe(pageProbe) {
       pageProbe?.largeDownloadComplete === true &&
       pageProbe?.largeDownloadBytes === M5_LARGE_DOWNLOAD_BYTES &&
       pageProbe?.largeDownloadReaderChunks >= 1 &&
+      pageProbe?.reconnectStreamStarted === true &&
+      pageProbe?.reconnectFirstChunkReceived === true &&
+      pageProbe?.reconnectFirstChunkAck === true &&
+      pageProbe?.reconnectDisconnectRequested === true &&
+      pageProbe?.reconnectStreamFailed === true &&
+      pageProbe?.reconnectStreamErrorName === "TypeError" &&
+      pageProbe?.reconnectRecovered === true &&
+      pageProbe?.reconnectRecoveryProtocol === "h2" &&
       pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
       pageProbe?.altSvcH3Advertised === true;
 }
@@ -12588,6 +12604,15 @@ async function runM5WispNetworkSmokeFromQuery() {
         pageProbe.largeDownloadComplete === true &&
         pageProbe.largeDownloadBytes === M5_LARGE_DOWNLOAD_BYTES &&
         pageProbe.largeDownloadReaderChunks >= 1,
+      reconnect:
+        pageProbe.reconnectStreamStarted === true &&
+        pageProbe.reconnectFirstChunkReceived === true &&
+        pageProbe.reconnectFirstChunkAck === true &&
+        pageProbe.reconnectDisconnectRequested === true &&
+        pageProbe.reconnectStreamFailed === true &&
+        pageProbe.reconnectStreamErrorName === "TypeError" &&
+        pageProbe.reconnectRecovered === true &&
+        pageProbe.reconnectRecoveryProtocol === "h2",
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
       cors: pageProbe.corsFetch === true,
       webSocket: pageProbe.webSocketEcho === true,
