@@ -40,21 +40,45 @@
     outline-offset: 4px;
   }
 
+  #m4-navigation-target {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
   #result[data-activated="true"] {
     color: #08763b;
   }
 </style>
 <main>
   <p id="title">M4 OZONE POINTER INPUT</p>
-  <a id="m4-link" href="#m4-activated">ACTIVATE LINK</a>
+  <a
+      id="m4-link"
+      href="about:blank#m4-activated"
+      target="m4-navigation-target">ACTIVATE LINK</a>
+  <iframe
+      id="m4-navigation-target"
+      name="m4-navigation-target"
+      title="M4 native-link navigation target"
+      srcdoc="<!doctype html><title>M4 initial navigation target</title>"></iframe>
   <p id="result" data-activated="false">WAITING</p>
 </main>
 <script>
   (() => {
     const link = document.querySelector("#m4-link");
+    const navigationTarget = document.querySelector("#m4-navigation-target");
     const result = document.querySelector("#result");
     let activationCount = 0;
     let clickTrusted = false;
+    let clickDefaultPrevented = null;
+    let navigationFrameLoadCount = 0;
+    let navigationFrameLastLoadTrusted = false;
+    let navigationFrameLoadCountBeforeActivation = null;
     const pointerEvents = {
       mousemove: 0,
       mousedown: 0,
@@ -70,6 +94,11 @@
     });
     let timerTicks = 0;
     setInterval(() => { timerTicks += 1; }, 50);
+
+    navigationTarget.addEventListener("load", (event) => {
+      navigationFrameLoadCount += 1;
+      navigationFrameLastLoadTrusted = event.isTrusted === true;
+    });
 
     for (const type of Object.keys(pointerEvents)) {
       document.addEventListener(type, () => {
@@ -88,9 +117,10 @@
     });
 
     link.addEventListener("click", (event) => {
-      event.preventDefault();
       activationCount += 1;
-      clickTrusted = event.isTrusted;
+      clickTrusted = event.isTrusted === true;
+      clickDefaultPrevented = event.defaultPrevented === true;
+      navigationFrameLoadCountBeforeActivation = navigationFrameLoadCount;
       result.dataset.activated = "true";
       result.textContent = clickTrusted ? "ACTIVATED" : "UNTRUSTED";
     });
@@ -112,18 +142,21 @@
       return JSON.stringify({
         protocol: 1,
         timerTicks,
-        fixture: "chromium-wasm-m4-ozone-pointer-v1",
+        fixture: "chromium-wasm-m4-ozone-pointer-v2",
         fontReady,
         pointerEvents,
         pointerMoveTrace,
         ready: document.readyState === "complete" && fontReady &&
-            rect.width > 0,
+            navigationFrameLoadCount >= 1 && rect.width > 0,
         displayGeometry,
         targetCenterX: Math.floor(rect.left + rect.width / 2),
         targetCenterY: Math.floor(rect.top + rect.height / 2),
         activationCount,
         clickTrusted,
-        hash: location.hash,
+        clickDefaultPrevented,
+        navigationFrameLoadCount,
+        navigationFrameLastLoadTrusted,
+        navigationFrameLoadCountBeforeActivation,
         resultText: result.textContent,
       });
     };

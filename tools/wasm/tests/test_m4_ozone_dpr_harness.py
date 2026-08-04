@@ -86,11 +86,15 @@ def resize_call(device_scale_factor: int) -> dict[str, object]:
 def page_probe(device_scale_factor: int) -> dict[str, object]:
     return {
         "protocol": 1,
-        "fixture": "chromium-wasm-m4-ozone-pointer-v1",
+        "fixture": "chromium-wasm-m4-ozone-pointer-v2",
         "fontReady": True,
         "ready": True,
         "activationCount": 1,
         "clickTrusted": True,
+        "clickDefaultPrevented": False,
+        "navigationFrameLoadCount": 2,
+        "navigationFrameLastLoadTrusted": True,
+        "navigationFrameLoadCountBeforeActivation": 1,
         "resultText": "ACTIVATED",
         "targetCenterX": TARGET_CSS_X,
         "targetCenterY": TARGET_CSS_Y,
@@ -279,6 +283,34 @@ class M4DprResultValidationTest(unittest.TestCase):
         record["clientX"] = TARGET_BACKING_X
 
         with self.assertRaisesRegex(M0Error, "Blink CSS target"):
+            self.assert_valid(result, versions)
+
+    def test_native_link_navigation_must_survive_scaled_and_restored_dpr(
+        self,
+    ) -> None:
+        result, versions = passing_result()
+        proof = self.proof(result)
+        input_proof = proof["input"]
+        assert isinstance(input_proof, dict)
+        input_page_probe = input_proof["pageProbe"]
+        assert isinstance(input_page_probe, dict)
+        input_page_probe["clickDefaultPrevented"] = True
+
+        with self.assertRaisesRegex(
+            M0Error, "input page probe clickDefaultPrevented mismatch"
+        ):
+            self.assert_valid(result, versions)
+
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        final_page_probe = readiness["pageProbe"]
+        assert isinstance(final_page_probe, dict)
+        final_page_probe["navigationFrameLoadCountBeforeActivation"] = 2
+
+        with self.assertRaisesRegex(
+            M0Error, "final page probe navigation target did not load exactly once"
+        ):
             self.assert_valid(result, versions)
 
     def test_scaled_frame_must_use_the_physical_backing_dimensions(self) -> None:

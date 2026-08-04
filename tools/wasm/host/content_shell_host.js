@@ -20,10 +20,10 @@ const M4_COPY_PASTE_CASE = "ozone_copy_paste_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
-const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
+const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v2";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
 const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
-const M4_DPR_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
+const M4_DPR_FIXTURE = "chromium-wasm-m4-ozone-pointer-v2";
 const M4_CONTEXT_MENU_FIXTURE =
   "chromium-wasm-m4-ozone-context-menu-v1";
 const M4_TOOLTIP_FIXTURE = "chromium-wasm-m4-ozone-tooltip-v1";
@@ -243,6 +243,14 @@ function hasM4PointerLinkHover(pageProbe, x, y) {
     record?.type === "pointermove" && record?.trusted === true &&
     record?.targetId === "m4-link" && record?.clientX === x &&
     record?.clientY === y);
+}
+
+function hasM4NativeLinkNavigation(pageProbe) {
+  const loadCountBefore = pageProbe?.navigationFrameLoadCountBeforeActivation;
+  return pageProbe?.clickDefaultPrevented === false &&
+    Number.isSafeInteger(loadCountBefore) && loadCountBefore >= 1 &&
+    pageProbe?.navigationFrameLoadCount === loadCountBefore + 1 &&
+    pageProbe?.navigationFrameLastLoadTrusted === true;
 }
 
 function hasM4SelectOpenerTrace(pageProbe, x, y) {
@@ -4811,6 +4819,7 @@ async function runM4OzonePointerSmokeFromQuery() {
         lastQueued?.type === "up" &&
         readiness.pageProbe.activationCount === 1 &&
         readiness.pageProbe.clickTrusted === true &&
+        hasM4NativeLinkNavigation(readiness.pageProbe) &&
         readiness.pageProbe.resultText === "ACTIVATED" &&
         readiness.frame?.id > lastQueued.frameIdBefore &&
         hasM4PointerLinkHover(readiness.pageProbe, targetX, targetY) &&
@@ -4832,6 +4841,7 @@ async function runM4OzonePointerSmokeFromQuery() {
       lastQueued?.type !== "up" ||
       readiness.pageProbe.activationCount !== 1 ||
       readiness.pageProbe.clickTrusted !== true ||
+      !hasM4NativeLinkNavigation(readiness.pageProbe) ||
       readiness.pageProbe.resultText !== "ACTIVATED" ||
       !(readiness.frame?.id > lastQueued.frameIdBefore) ||
       !hasM4PointerLinkHover(readiness.pageProbe, targetX, targetY) ||
@@ -4867,6 +4877,8 @@ async function runM4OzonePointerSmokeFromQuery() {
         readiness.pageProbe.clickTrusted === true &&
         readiness.pageProbe.resultText === "ACTIVATED" &&
         readiness.frame.id > lastQueued.frameIdBefore,
+      nativeLinkActivation:
+        hasM4NativeLinkNavigation(readiness.pageProbe),
       cursorDelivered:
         hasM4PointerLinkHover(readiness.pageProbe, targetX, targetY) &&
         cursor.sequence > cursorReportSequenceBeforeInput &&
@@ -5091,6 +5103,7 @@ async function runM4OzoneDprSmokeFromQuery() {
         lastQueued.x === targetBackingX && lastQueued.y === targetBackingY &&
         readiness.pageProbe?.activationCount === 1 &&
         readiness.pageProbe?.clickTrusted === true &&
+        hasM4NativeLinkNavigation(readiness.pageProbe) &&
         readiness.pageProbe?.resultText === "ACTIVATED" &&
         readiness.frame?.id > lastQueued.frameIdBefore &&
         hasM4PointerLinkHover(
@@ -5109,6 +5122,7 @@ async function runM4OzoneDprSmokeFromQuery() {
       lastQueued.x !== targetBackingX || lastQueued.y !== targetBackingY ||
       inputPageProbe?.activationCount !== 1 ||
       inputPageProbe?.clickTrusted !== true ||
+      !hasM4NativeLinkNavigation(inputPageProbe) ||
       inputPageProbe?.resultText !== "ACTIVATED" ||
       !(inputFrame?.id > lastQueued.frameIdBefore) ||
       !hasM4PointerLinkHover(
@@ -5251,6 +5265,9 @@ async function runM4OzoneDprSmokeFromQuery() {
         inputPageProbe.resultText === "ACTIVATED" &&
         hasM4PointerLinkHover(
             inputPageProbe, logicalTargetX, logicalTargetY),
+      nativeLinkActivation:
+        hasM4NativeLinkNavigation(inputPageProbe) &&
+        hasM4NativeLinkNavigation(readiness.pageProbe),
       hostResizeLogs: JSON.stringify(hostResizeLogs) ===
         JSON.stringify(expectedResizeLogs),
       shutdown:

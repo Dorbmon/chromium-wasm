@@ -76,10 +76,14 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
             "pageProbe": {
                 "fontReady": True,
                 "protocol": 1,
-                "fixture": "chromium-wasm-m4-ozone-pointer-v1",
+                "fixture": "chromium-wasm-m4-ozone-pointer-v2",
                 "ready": True,
                 "activationCount": 1,
                 "clickTrusted": True,
+                "clickDefaultPrevented": False,
+                "navigationFrameLoadCount": 2,
+                "navigationFrameLastLoadTrusted": True,
+                "navigationFrameLoadCountBeforeActivation": 1,
                 "resultText": "ACTIVATED",
                 "targetCenterX": 285,
                 "targetCenterY": 229,
@@ -162,6 +166,33 @@ class M4ResultValidationTest(unittest.TestCase):
         page_probe["clickTrusted"] = False
 
         with self.assertRaisesRegex(M0Error, "clickTrusted mismatch"):
+            m3_content_server.validate_m4_result(
+                result, expected_versions=versions
+            )
+
+    def test_suppressed_or_missing_native_link_navigation_is_rejected(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        page_probe["clickDefaultPrevented"] = True
+
+        with self.assertRaisesRegex(M0Error, "clickDefaultPrevented mismatch"):
+            m3_content_server.validate_m4_result(
+                result, expected_versions=versions
+            )
+
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        page_probe["navigationFrameLoadCountBeforeActivation"] = 2
+
+        with self.assertRaisesRegex(
+            M0Error, "navigation target did not load exactly once"
+        ):
             m3_content_server.validate_m4_result(
                 result, expected_versions=versions
             )

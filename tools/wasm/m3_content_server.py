@@ -1217,6 +1217,30 @@ def validate_m3_result(
     return png_bytes
 
 
+def _require_m4_native_link_navigation(
+    page_probe: dict[str, Any], description: str
+) -> None:
+    """Require one target-frame load caused by the uncancelled link click."""
+
+    load_count_before = _require_safe_integer(
+        page_probe.get("navigationFrameLoadCountBeforeActivation"),
+        f"{description} navigation frame load count before activation",
+        minimum=1,
+    )
+    load_count = _require_safe_integer(
+        page_probe.get("navigationFrameLoadCount"),
+        f"{description} navigation frame load count",
+        minimum=2,
+    )
+    if load_count != load_count_before + 1:
+        raise M0Error(
+            f"{description} navigation target did not load exactly once "
+            "after link activation"
+        )
+    if page_probe.get("navigationFrameLastLoadTrusted") is not True:
+        raise M0Error(f"{description} navigation target load was not trusted")
+
+
 def validate_m4_result(
     result: dict[str, Any],
     *,
@@ -1285,10 +1309,11 @@ def validate_m4_result(
     expected_probe = {
         "fontReady": True,
         "protocol": M3_PROTOCOL,
-        "fixture": "chromium-wasm-m4-ozone-pointer-v1",
+        "fixture": "chromium-wasm-m4-ozone-pointer-v2",
         "ready": True,
         "activationCount": 1,
         "clickTrusted": True,
+        "clickDefaultPrevented": False,
         "resultText": "ACTIVATED",
     }
     for field, expected_value in expected_probe.items():
@@ -1301,6 +1326,7 @@ def validate_m4_result(
                 f"M4 page probe {field} mismatch: expected "
                 f"{expected_value!r}, got {actual_value!r}"
             )
+    _require_m4_native_link_navigation(page_probe, "M4 page probe")
     target_x = _require_safe_integer(
         page_probe.get("targetCenterX"),
         "M4 input target x",
@@ -2374,11 +2400,12 @@ def validate_m4_dpr_result(
     )
     for field, expected_value in {
         "protocol": M3_PROTOCOL,
-        "fixture": "chromium-wasm-m4-ozone-pointer-v1",
+        "fixture": "chromium-wasm-m4-ozone-pointer-v2",
         "fontReady": True,
         "ready": True,
         "activationCount": 1,
         "clickTrusted": True,
+        "clickDefaultPrevented": False,
         "resultText": "ACTIVATED",
     }.items():
         actual_value = final_page_probe.get(field)
@@ -2390,6 +2417,9 @@ def validate_m4_dpr_result(
                 f"M4 DPR final page probe {field} mismatch: expected "
                 f"{expected_value!r}, got {actual_value!r}"
             )
+    _require_m4_native_link_navigation(
+        final_page_probe, "M4 DPR final page probe"
+    )
     _require_safe_integer(
         final_page_probe.get("timerTicks"), "M4 DPR page timer ticks", minimum=3
     )
@@ -2514,12 +2544,24 @@ def validate_m4_dpr_result(
     input_page_probe = _require_dict(
         input_proof.get("pageProbe"), "M4 DPR input page probe"
     )
-    if (
-        input_page_probe.get("activationCount") != 1
-        or input_page_probe.get("clickTrusted") is not True
-        or input_page_probe.get("resultText") != "ACTIVATED"
-    ):
-        raise M0Error("M4 DPR input was not a trusted Blink activation")
+    for field, expected_value in {
+        "activationCount": 1,
+        "clickTrusted": True,
+        "clickDefaultPrevented": False,
+        "resultText": "ACTIVATED",
+    }.items():
+        actual_value = input_page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 DPR input page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_m4_native_link_navigation(
+        input_page_probe, "M4 DPR input page probe"
+    )
     require_geometry(
         input_page_probe.get("displayGeometry"), "M4 DPR input geometry",
         device_scale_factor=M4_DPR_SCALE,

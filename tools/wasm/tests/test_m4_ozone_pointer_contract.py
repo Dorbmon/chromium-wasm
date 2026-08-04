@@ -374,6 +374,10 @@ class M4OzonePointerContractTest(unittest.TestCase):
         self.assertIn("cursor: pointer;", fixture)
         self.assertIn("pointerMoveTrace", fixture)
         self.assertIn('targetId: event.target?.id || null', fixture)
+        self.assertIn('id="m4-navigation-target"', fixture)
+        self.assertIn('target="m4-navigation-target"', fixture)
+        self.assertIn("srcdoc=", fixture)
+        self.assertIn("record?.clientX === x", host)
 
     def test_host_pointer_abi_uses_public_ozone_not_the_m3_renderer_hook(
         self,
@@ -514,12 +518,26 @@ class M4OzonePointerContractTest(unittest.TestCase):
         for marker in (
             "__chromiumWasmM4Probe",
             "event.isTrusted",
+            "clickDefaultPrevented = event.defaultPrevented === true",
+            "clickDefaultPrevented,",
+            "navigationFrameLoadCountBeforeActivation",
+            "navigationFrameLastLoadTrusted",
             "fontReady",
             "timerTicks",
             "#m4-activated",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, fixture)
+        self.assertNotIn("event.preventDefault()", fixture)
+        self.assertNotIn("location.hash =", fixture)
+        self.assertNotIn("history.pushState", fixture)
+        self.assertIn("function hasM4NativeLinkNavigation", host)
+        for marker in (
+            "hasM4NativeLinkNavigation(readiness.pageProbe)",
+            "nativeLinkActivation",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, m4_runner)
         self.assertIn("client.dispatch_primary_click", runner)
         self.assertIn("Input.dispatchMouseEvent", cdp)
         self.assertNotIn("chromium_wasm_host_click", runner)
