@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+"""Focused contracts for the opt-in external/public M5 WISP smoke lane."""
+
+from __future__ import annotations
+
+import copy
+from collections import deque
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from urllib.parse import parse_qs, quote, quote_plus, urlsplit
+
+
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(TOOLS_DIR))
+
+from m0_common import M0Error
+import m3_content_server
+import run_m5_public_https_smoke as public_smoke
+from tools.wasm.tests.m3_source_contract_test_support import source
+
+
+VERSIONS = {
+    "chromium": "chromium-revision",
+    "v8": "v8-revision",
+    "emscripten": "emscripten-revision",
+    "port": "port-revision",
+}
+PUBLIC_ENDPOINT = "wss://relay.public.example.com/wisp/"
+PUBLIC_PROBE_URL = "https://probe.public.example.com/static/public-v1"
+
+
+class FakeServer:
+    server_address = ("127.0.0.1", 38123)
+
+
+def passing_result() -> dict[str, object]:
+    return {
+        "protocol": 1,
+        "case": "wisp_public_https_m5",
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "versions": copy.deepcopy(VERSIONS),
+        "initialFrame": {
+            "id": 1,
+            "width": 800,
+            "height": 600,
+            "timestampMs": 1,
+        },
+        "publicFrame": {
+            "id": 2,
+            "width": 800,
+            "height": 600,
+            "timestampMs": 2,
+        },
+        "navigationResult": {"ok": True, "scheme": "https"},
+        "readiness": {
+            "firstVisuallyNonEmptyPaint": True,
+            "fatalErrors": [],
+            "navigation": {
+                "committed": True,
+                "scheme": "https",
+                "responseCode": 200,
+                "connectionProtocol": "h2",
+            },
+            "heartbeat": {
+                "anchor": "m5-public-https-navigation-committed",
+                "timerDelta": 2,
+                "animationFrameDelta": 2,
+                "maxTimerGapMs": 25,
+            },
+        },
+        "logs": {
+            "host": [
+                "initialize:wisp-configured",
+                "navigation:requested:m5-public-https",
+                "navigation:committed:m5-public-https",
+                "shutdown:complete",
+            ],
+            "stdout": [],
+            "stderr": [],
+        },
+        "shutdown": {
+            "ok": True,
+            "complete": True,
+            "exitCode": 0,
+            "runtimeExitCode": 0,
+        },
+        "failedChecks": [],
+        "error": None,
+    }
+
+
+class PublicInputValidationTest(unittest.TestCase):
+    def test_external_wisp_endpoint_requires_public_wss_without_credentials(
+        self,
+    ) -> None:
+        self.assertEqual(
+            public_smoke.validate_public_wisp_endpoint(PUBLIC_ENDPOINT),
+            PUBLIC_ENDPOINT,
+        )
+        self.assertEqual(
+            public_smoke.validate_public_wisp_endpoint(
+                "wss://Relay.Public.Example.Com:443/wisp/"
+            ),
+            PUBLIC_ENDPOINT,
+        )
+        for endpoint in (
+            "ws://relay.public.example.com/wisp/",
+            "wss://localhost/wisp/",
+            "wss://127.0.0.1/wisp/",
+            "wss://127.1/wisp/",
+            "wss://0177.0.0.1/wisp/",
+            "wss://0x7f.0x0.0x0.0x1/wisp/",
+            "wss://[::1]/wisp/",
+            "wss://[malformed/wisp/",
+            "wss://relay.test/wisp/",
+            "wss://relay.local/wisp/",
+            "wss://relay.public.example.com/wisp",
+            "wss://user@relay.public.example.com/wisp/",
+            "wss://relay.public.example.com/wisp/?token=forbidden",
+            "wss://relay.public.example.com/wisp/#fragment",
+            "wss://relay.public.example.com:invalid/wisp/",
+        ):
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaises(M0Error):
+                    public_smoke.validate_public_wisp_endpoint(endpoint)
+
+    def test_public_probe_requires_https_on_port_443_without_userinfo(
+        self,
+    ) -> None:
+        self.assertEqual(
+            public_smoke.validate_public_probe_url(PUBLIC_PROBE_URL),
+            PUBLIC_PROBE_URL,
+        )
+        self.assertEqual(
+            public_smoke.validate_public_probe_url(
+                "https://probe.public.example.com:443/static/public-v1"
+            ),
+            "https://probe.public.example.com/static/public-v1",
+        )
+        for probe_url in (
+            "http://probe.public.example.com/static/public-v1",
+            "https://localhost/static/public-v1",
+            "https://127.0.0.1/static/public-v1",
+            "https://127.1/static/public-v1",
+            "https://0177.0.0.1/static/public-v1",
+            "https://0x7f.0x0.0x0.0x1/static/public-v1",
+            "https://[::1]/static/public-v1",
+            "https://[malformed/static/public-v1",
+            "https://probe.test/static/public-v1",
+            "https://probe.local/static/public-v1",
+            "https://user@probe.public.example.com/static/public-v1",
+            "https://probe.public.example.com/static/public-v1?cache=1",
+            "https://probe.public.example.com/static/public-v1#fragment",
+            "https://probe.public.example.com:444/static/public-v1",
+            "https://probe.public.example.com:invalid/static/public-v1",
+            "https://probe.public.example.com/static/../public-v1",
+            "https://probe.public.example.com/static/%2e%2e/public-v1",
+        ):
+            with self.subTest(probe_url=probe_url):
+                with self.assertRaises(M0Error):
+                    public_smoke.validate_public_probe_url(probe_url)
+
+    def test_public_host_policy_rejects_literals_and_local_only_names(self) -> None:
+        for hostname in (
+            "",
+            "localhost",
+            "service.localhost",
+            "service.local",
+            "probe.test",
+            "probe.example",
+            "probe.invalid",
+            "hiddenservice.onion",
+            "home.arpa",
+            "gateway.home.arpa",
+            "public.example.com.",
+            "127.0.0.1",
+            "127.1",
+            "0177.0.0.1",
+            "0x7f.0x0.0x0.0x1",
+            "::1",
+            "single-label",
+            "bad_label.public.example.com",
+        ):
+            with self.subTest(hostname=hostname):
+                self.assertFalse(public_smoke._is_public_dns_hostname(hostname))
+
+
+class PublicSmokeRunnerContractTest(unittest.TestCase):
+    def test_smoke_url_carries_runtime_only_inputs_to_the_local_host(self) -> None:
+        url = public_smoke.public_smoke_url(
+            FakeServer(),
+            "result-token",
+            VERSIONS,
+            public_wisp_endpoint=PUBLIC_ENDPOINT,
+            public_probe_url=PUBLIC_PROBE_URL,
+            expected_status=200,
+            expected_protocol="h2",
+            timeout_seconds=121.5,
+        )
+
+        parsed = urlsplit(url)
+        self.assertEqual(parsed.scheme, "http")
+        self.assertEqual(parsed.hostname, "127.0.0.1")
+        self.assertEqual(parsed.port, 38123)
+        query = parse_qs(parsed.query)
+        self.assertEqual(query["case"], [m3_content_server.M5_PUBLIC_HTTPS_CASE])
+        self.assertEqual(query["module"], [
+            "/__m3__/artifacts/content_shell_wasm_m5_public_test.js"
+        ])
+        self.assertEqual(query["wisp_endpoint"], [PUBLIC_ENDPOINT])
+        self.assertEqual(query["m5_public_url"], [PUBLIC_PROBE_URL])
+        self.assertEqual(query["m5_public_status"], ["200"])
+        self.assertEqual(query["m5_public_protocol"], ["h2"])
+        self.assertEqual(query["timeout_ms"], ["121500"])
+
+    def test_public_result_requires_redacted_h2_navigation_evidence(self) -> None:
+        result = passing_result()
+        public_smoke.validate_public_result(
+            result,
+            expected_versions=VERSIONS,
+            expected_status=200,
+            expected_protocol="h2",
+            public_wisp_endpoint=PUBLIC_ENDPOINT,
+            public_probe_url=PUBLIC_PROBE_URL,
+        )
+
+        invalid_protocol = passing_result()
+        invalid_protocol["readiness"]["navigation"]["connectionProtocol"] = "h3"  # type: ignore[index]
+        with self.assertRaises(M0Error):
+            public_smoke.validate_public_result(
+                invalid_protocol,
+                expected_versions=VERSIONS,
+                expected_status=200,
+                expected_protocol="h2",
+                public_wisp_endpoint=PUBLIC_ENDPOINT,
+                public_probe_url=PUBLIC_PROBE_URL,
+            )
+
+        stale_frame = passing_result()
+        stale_frame["publicFrame"]["id"] = 1  # type: ignore[index]
+        with self.assertRaises(M0Error):
+            public_smoke.validate_public_result(
+                stale_frame,
+                expected_versions=VERSIONS,
+                expected_status=200,
+                expected_protocol="h2",
+                public_wisp_endpoint=PUBLIC_ENDPOINT,
+                public_probe_url=PUBLIC_PROBE_URL,
+            )
+
+        leaked_endpoint = passing_result()
+        leaked_endpoint["logs"]["stderr"].append(PUBLIC_ENDPOINT)  # type: ignore[index]
+        with self.assertRaises(M0Error):
+            public_smoke.validate_public_result(
+                leaked_endpoint,
+                expected_versions=VERSIONS,
+                expected_status=200,
+                expected_protocol="h2",
+                public_wisp_endpoint=PUBLIC_ENDPOINT,
+                public_probe_url=PUBLIC_PROBE_URL,
+            )
+
+        escaped_probe = passing_result()
+        escaped_probe["logs"]["stdout"].append(quote(PUBLIC_PROBE_URL, safe=""))  # type: ignore[index]
+        with self.assertRaises(M0Error):
+            public_smoke.validate_public_result(
+                escaped_probe,
+                expected_versions=VERSIONS,
+                expected_status=200,
+                expected_protocol="h2",
+                public_wisp_endpoint=PUBLIC_ENDPOINT,
+                public_probe_url=PUBLIC_PROBE_URL,
+            )
+
+    def test_failure_diagnostics_redact_runtime_only_inputs(self) -> None:
+        endpoint_query_value = (
+            "wss://Relay.Public.Example.Com:443/wisp/"
+        )
+        probe_query_value = (
+            "https://Probe.Public.Example.Com:443/static/public-v1"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            diagnostic_path = public_smoke.write_failure_diagnostics(
+                Path(temporary),
+                stage="validate_runtime_contract",
+                error=M0Error(f"configured probe failed: {PUBLIC_PROBE_URL}"),
+                context={
+                    "endpoint": endpoint_query_value,
+                    "escaped_probe": quote_plus(PUBLIC_PROBE_URL),
+                },
+                browser_path=None,
+                browser_version=None,
+                browser=None,
+                browser_stderr=deque([
+                    f"endpoint={quote(PUBLIC_ENDPOINT, safe='')}"
+                ]),
+                result={
+                    "error": f"probe={PUBLIC_PROBE_URL}",
+                    "endpoint": PUBLIC_ENDPOINT,
+                },
+                public_wisp_endpoint=endpoint_query_value,
+                public_probe_url=probe_query_value,
+            )
+            serialized = diagnostic_path.read_text(encoding="utf-8")
+            for secret in (
+                PUBLIC_ENDPOINT,
+                PUBLIC_PROBE_URL,
+                endpoint_query_value,
+                probe_query_value,
+                quote(PUBLIC_ENDPOINT, safe=""),
+                quote(PUBLIC_PROBE_URL, safe=""),
+                quote_plus(PUBLIC_ENDPOINT),
+                quote_plus(PUBLIC_PROBE_URL),
+            ):
+                with self.subTest(secret=secret):
+                    self.assertNotIn(secret, serialized)
+            self.assertIn("<redacted>", serialized)
+
+    def test_public_case_is_an_explicit_result_server_case(self) -> None:
+        self.assertIn(
+            m3_content_server.M5_PUBLIC_HTTPS_CASE,
+            m3_content_server.M3_RESULT_CASES,
+        )
+        self.assertTrue(
+            m3_content_server.is_supported_result_case(
+                m3_content_server.M5_PUBLIC_HTTPS_CASE
+            )
+        )
+
+
+class PublicHttpsSourceContractTest(unittest.TestCase):
+    def test_public_target_is_test_only_and_never_uses_the_controlled_root(self) -> None:
+        build = source("content/shell/BUILD.gn")
+        target = build.split(
+            'executable("content_shell_wasm_m5_public_test") {', 1
+        )[1].split("\n  }\n} else {", 1)[0]
+        main = source("content/shell/app/shell_main.cc")
+
+        self.assertIn("testonly = true", target)
+        self.assertIn('CONTENT_SHELL_WASM_M5_PUBLIC_TEST=1', target)
+        self.assertNotIn("wasm_m5_test_trust", target)
+        self.assertNotIn("generate_wasm_m5_test_root_cert", target)
+        self.assertNotIn('"//net"', target)
+        normal_target = build.split(
+            'executable("content_shell_wasm") {', 1
+        )[1].split(
+            '\n  # This target exists solely for the controlled M5', 1
+        )[0]
+        controlled_target = build.split(
+            'executable("content_shell_wasm_m5_test") {', 1
+        )[1].split(
+            '\n  # This executable is intentionally distinct', 1
+        )[0]
+        self.assertNotIn("CONTENT_SHELL_WASM_M5_PUBLIC_TEST", normal_target)
+        self.assertNotIn(
+            "CONTENT_SHELL_WASM_M5_PUBLIC_TEST", controlled_target
+        )
+        public_mode = main.split(
+            "#elif defined(CONTENT_SHELL_WASM_M5_PUBLIC_TEST)", 1
+        )[1].split("#endif", 1)[0]
+        self.assertIn(
+            "EnableWasmM5PublicNetworkTestModeForTesting();", public_mode
+        )
+        self.assertNotIn("InstallWasmM5TestTrustRoot", public_mode)
+
+    def test_native_public_loader_has_a_bounded_exact_https_boundary(self) -> None:
+        api = source("content/shell/browser/wasm_host_api.cc")
+        predicate = api.split(
+            "bool IsM5PublicHttpsUrl(const GURL& candidate_url) {", 1
+        )[1].split("\n}\n\nbool IsObservedWasmHostUrl", 1)[0]
+        loader = api.split(
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_public_url(",
+            1,
+        )[1].split(
+            "\n}\n\nEMSCRIPTEN_KEEPALIVE int chromium_wasm_host_text_input",
+            1,
+        )[0]
+        finish = api.split(
+            "void DidFinishNavigation(NavigationHandle* navigation_handle) override {",
+            1,
+        )[1].split(
+            "void DocumentOnLoadCompletedInPrimaryMainFrame() override", 1
+        )[0]
+
+        self.assertIn("kMaximumM5PublicUrlBytes = 2048", api)
+        self.assertIn("IsWasmM5PublicNetworkTestModeEnabled()", predicate)
+        self.assertIn("SchemeIs(url::kHttpsScheme)", predicate)
+        self.assertIn("EffectiveIntPort() == 443", predicate)
+        self.assertIn("!candidate_url.has_username()", predicate)
+        self.assertIn("!candidate_url.has_query()", predicate)
+        self.assertIn("!candidate_url.HostIsIPAddress()", predicate)
+        self.assertIn("IsM5PublicDnsHostname(host)", predicate)
+        self.assertIn("strnlen(public_url", loader)
+        self.assertIn("IsM5PublicHttpsUrl(url)", loader)
+        self.assertIn("GetResponseHeaders()", finish)
+        self.assertIn("GetConnectionInfo()", finish)
+        self.assertIn("HttpConnectionInfoToString", finish)
+        self.assertIn("IsErrorPage()", finish)
+        self.assertIn(
+            "m5_public_navigation_handle_ == navigation_handle", finish
+        )
+        self.assertNotIn(
+            "m5_public_navigation_handle_ == navigation_handle ||",
+            finish,
+        )
+        self.assertIn(
+            "navigation_url.spec().size() > kMaximumM5PublicUrlBytes",
+            finish,
+        )
+
+    def test_public_host_reports_keep_the_url_out_of_results(self) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")
+        runner = source("tools/wasm/run_m5_public_https_smoke.py")
+
+        policy = host.split("function normalizeM5PublicHTTPSURL(value) {", 1)[
+            1
+        ].split("\nexport class ChromiumWasmM3Host", 1)[0]
+        report = host.split("_reportM5PublicNavigation(value) {", 1)[1].split(
+            "\n  _reportM5PublicNavigationError", 1
+        )[0]
+        stored_navigation = report.split("this.#navigation = {", 1)[1].split(
+            "\n      };", 1
+        )[0]
+
+        self.assertIn("isM5PublicHostname(parsed.hostname)", policy)
+        self.assertIn('parsed.protocol !== "https:"', policy)
+        self.assertIn("parsed.port", policy)
+        self.assertIn("parsed.username", policy)
+        self.assertIn("parsed.search", policy)
+        self.assertIn("reportM5PublicNavigation(report)", host)
+        self.assertIn("reportM5PublicNavigationError(report)", host)
+        self.assertIn("m5PublicRedactionVariants", host)
+        self.assertIn("redactM5PublicRuntimeValue", host)
+        self.assertIn("publicFrame", host)
+        self.assertIn("M5_PUBLIC_HTTPS_FIXTURE", host)
+        self.assertIn("m5PublicNavigationFinished", host)
+        self.assertIn("readiness.frame.id > initialFrame.id", host)
+        self.assertIn("await postResult(token, redactedResult)", host)
+        self.assertIn("chromium_wasm_report_m5_public_navigation", bridge)
+        self.assertIn("connectionProtocol", stored_navigation)
+        self.assertNotIn("url:", stored_navigation)
+        self.assertIn("--public-wisp-endpoint", runner)
+        self.assertIn("--public-probe-url", runner)
+        self.assertGreaterEqual(runner.count("required=True"), 4)
+        self.assertIn('"<redacted>"', runner)
+        self.assertNotIn("m5_wisp_test_server", runner)
+
+
+if __name__ == "__main__":
+    unittest.main()

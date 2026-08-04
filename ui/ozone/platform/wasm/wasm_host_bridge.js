@@ -316,6 +316,54 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // The opt-in public M5 lane is distinct from the controlled fixture: its
+  // test-only C++ target supplies a canonical URL at runtime and reports the
+  // resulting navigation metadata. The host compares that URL internally and
+  // never puts it into the result or diagnostics payload.
+  chromium_wasm_report_m5_public_navigation__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_public_navigation__proxy: 'sync',
+  chromium_wasm_report_m5_public_navigation: (
+      url, responseCode, protocol, protocolLength) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportM5PublicNavigation !== 'function' ||
+        !Number.isSafeInteger(protocolLength) || protocolLength < 0 ||
+        protocolLength > 128) {
+      return 0;
+    }
+    bridge.reportM5PublicNavigation({
+      protocol: ChromiumWasmHostBridge.version,
+      committed: true,
+      scheme: 'https',
+      url: UTF8ToString(url),
+      responseCode,
+      connectionProtocol: UTF8ToString(protocol, protocolLength),
+    });
+    return 1;
+  },
+
+  chromium_wasm_report_m5_public_navigation_error__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_public_navigation_error__proxy: 'sync',
+  chromium_wasm_report_m5_public_navigation_error: (url, netError) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportM5PublicNavigationError !== 'function') {
+      return 0;
+    }
+    bridge.reportM5PublicNavigationError({
+      protocol: ChromiumWasmHostBridge.version,
+      committed: false,
+      scheme: 'https',
+      url: UTF8ToString(url),
+      netError,
+    });
+    return 1;
+  },
+
   // The M5 active mixed-content proof first commits a single exact HTTP
   // control page. Keep its reports separate from both the HTTPS M5 fixture
   // and normal data: navigation so it cannot broaden the host boundary.

@@ -21,6 +21,7 @@ const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M5_NETWORK_CASE = "wisp_network_m5";
+const M5_PUBLIC_HTTPS_CASE = "wisp_public_https_m5";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v2";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
 const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
@@ -42,9 +43,11 @@ const M4_FOCUS_RETENTION_FIXTURE =
   "chromium-wasm-m4-ozone-focus-retention-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
+const M5_PUBLIC_HTTPS_FIXTURE = "chromium-wasm-m5-public-https-v1";
 const M5_NETWORK_TEST_HOSTNAME = "a.test";
 const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
 const M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control";
+const M5_PUBLIC_HTTPS_MAX_URL_BYTES = 2048;
 // The controlled M5 slow-stream fixture holds each acknowledged response
 // stage long enough to make a live Blink timer observation meaningful. Keep
 // these checks in the host contract as well as the Python runner so a stale
@@ -57,6 +60,8 @@ const M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS = 2;
 const M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS = 2;
 const M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES = 2;
 const M5_LARGE_DOWNLOAD_BYTES = 512 * 1024;
+const M5_PUBLIC_MIN_HEARTBEAT_TIMER_TICKS = 2;
+const M5_PUBLIC_MIN_HEARTBEAT_ANIMATION_FRAMES = 2;
 const M5_NAVIGATION_PHASE = Object.freeze({
   NONE: "none",
   PLAINTEXT_HTTP_CONTROL: "plaintext-http-control",
@@ -1609,6 +1614,12 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   reportM5NavigationError(report) {
     deliverBridgeReport("_reportM5NavigationError", [report]);
   },
+  reportM5PublicNavigation(report) {
+    deliverBridgeReport("_reportM5PublicNavigation", [report]);
+  },
+  reportM5PublicNavigationError(report) {
+    deliverBridgeReport("_reportM5PublicNavigationError", [report]);
+  },
   reportM5PageProbe(report) {
     deliverBridgeReport("_reportM5PageProbe", [report]);
   },
@@ -1868,6 +1879,101 @@ function normalizeM5PlaintextHttpControlURL(value) {
   return parsed.href;
 }
 
+function isM5PublicHostname(hostname) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!normalized || normalized === "localhost" ||
+      normalized.endsWith(".") || normalized.endsWith(".localhost") ||
+      normalized.endsWith(".local") || normalized.endsWith(".test") ||
+      normalized.endsWith(".example") || normalized.endsWith(".invalid") ||
+      normalized.endsWith(".onion") || normalized === "home.arpa" ||
+      normalized.endsWith(".home.arpa") || normalized.includes(":")) {
+    return false;
+  }
+  const labels = normalized.split(".");
+  if (labels.length < 2 || labels.some((label) =>
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))) {
+    return false;
+  }
+  // URL canonicalization turns IPv4 spellings into dotted decimal. Keep IP
+  // literals out of this lane so an external gateway owns only DNS-hostname
+  // policy and cannot be retargeted to a private address.
+  if (labels.length === 4 && labels.every((label) =>
+    /^\d{1,3}$/.test(label) && Number(label) <= 255)) {
+    return false;
+  }
+  return true;
+}
+
+// The public smoke target is a test-only binary and this function is only its
+// input boundary. It accepts one canonical HTTPS document URL from the
+// operator; no endpoint, URL, or credential is compiled into the artifact.
+// The configured WISP gateway must independently enforce the same public
+// hostname:443 destination policy.
+function normalizeM5PublicHTTPSURL(value) {
+  if (typeof value !== "string" || value.length === 0 ||
+      value.length > M5_PUBLIC_HTTPS_MAX_URL_BYTES) {
+    throw new Error("M5 public HTTPS URL must be a bounded nonempty string");
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (_) {
+    throw new Error("M5 public HTTPS URL is invalid");
+  }
+  if (parsed.protocol !== "https:" || parsed.port || parsed.username ||
+      parsed.password || parsed.search || parsed.hash ||
+      !isM5PublicHostname(parsed.hostname) ||
+      !parsed.pathname.startsWith("/")) {
+    throw new Error("M5 public HTTPS URL violates the public-probe policy");
+  }
+  return parsed.href;
+}
+
+function m5PublicRedactionVariants(values) {
+  const variants = new Set();
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0) {
+      continue;
+    }
+    variants.add(value);
+    variants.add(encodeURIComponent(value));
+    try {
+      const canonical = new URL(value).href;
+      variants.add(canonical);
+      variants.add(encodeURIComponent(canonical));
+    } catch (_) {
+      // The outer runner handles malformed inputs. Preserve its raw value in
+      // the redaction set even when it cannot be canonicalized here.
+    }
+  }
+  return [...variants].sort((left, right) => right.length - left.length);
+}
+
+function redactM5PublicRuntimeValue(value, variants) {
+  if (typeof value === "string") {
+    let redacted = value;
+    for (const variant of variants) {
+      redacted = redacted.split(variant).join("<redacted-url>");
+    }
+    // Defensive fallback for a browser- or runtime-canonicalized variant
+    // that differs from the query spelling. Public smoke results never need
+    // to expose any URL, including failure diagnostics.
+    return redacted
+      .replace(/\b(?:https?|wss):\/\/[^\s"'<>]*/gi, "<redacted-url>")
+      .replace(/\b(?:https?|wss)%3a%2f%2f[^\s"'<>]*/gi, "<redacted-url>");
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactM5PublicRuntimeValue(item, variants));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      redactM5PublicRuntimeValue(item, variants),
+    ]));
+  }
+  return value;
+}
+
 export class ChromiumWasmM3Host {
   #canvas;
   #imeProxy;
@@ -1876,6 +1982,9 @@ export class ChromiumWasmM3Host {
   #m5NetworkTestActive = false;
   #m5NetworkNavigationCount = 0;
   #m5NetworkPhase = M5_NAVIGATION_PHASE.NONE;
+  #m5PublicNetworkTestActive = false;
+  #m5PublicNavigationFinished = false;
+  #m5PublicExpectedURL = null;
   #module = null;
   #lifecycle = "new";
   #runtimeInitialized = false;
@@ -4397,6 +4506,46 @@ export class ChromiumWasmM3Host {
     });
   }
 
+  async loadM5PublicHTTPSURL(url) {
+    this.#requireRunning("loadM5PublicHTTPSURL");
+    if (!this.#wispConfigured) {
+      throw new Error("M5 public navigation requires a WISP configuration");
+    }
+    const publicURL = normalizeM5PublicHTTPSURL(url);
+    if (this.#m5PublicNetworkTestActive || this.#m5PublicNavigationFinished) {
+      throw new Error("M5 public navigation permits exactly one URL");
+    }
+    const previousNavigation = this.#navigation;
+    const previousPageProbe = this.#pageProbe;
+    this.#m5PublicNetworkTestActive = true;
+    this.#m5PublicExpectedURL = publicURL;
+    this.#navigation = {};
+    this.#pageProbe = {};
+    let result;
+    try {
+      result = this.#callExport(
+        "chromium_wasm_host_load_m5_public_url", "number", ["string"],
+        [publicURL]);
+    } catch (error) {
+      this.#m5PublicNetworkTestActive = false;
+      this.#m5PublicExpectedURL = null;
+      this.#navigation = previousNavigation;
+      this.#pageProbe = previousPageProbe;
+      throw error;
+    }
+    if (result !== 1) {
+      this.#m5PublicNetworkTestActive = false;
+      this.#m5PublicExpectedURL = null;
+      this.#navigation = previousNavigation;
+      this.#pageProbe = previousPageProbe;
+      throw new Error(
+        "runtime rejected M5 public HTTPS navigation with status " +
+        String(result));
+    }
+    this.#recordHost("navigation:requested:m5-public-https");
+    return {ok: true, scheme: "https"};
+  }
+
   #postM5TestNavigation({testURL, exportName, phase, scheme, requestedLog}) {
     const previousM5NetworkTestActive = this.#m5NetworkTestActive;
     const previousM5NetworkNavigationCount = this.#m5NetworkNavigationCount;
@@ -4813,6 +4962,76 @@ export class ChromiumWasmM3Host {
       this.#resetHeartbeatWindow("m5-https-navigation-committed");
     } catch (error) {
       this._reportFatal(`invalid M5 navigation report: ${String(error)}`);
+    }
+  }
+
+  _reportM5PublicNavigation(value) {
+    try {
+      const report = asReport(value, "M5 public navigation report");
+      if (
+        !this.#m5PublicNetworkTestActive ||
+        typeof this.#m5PublicExpectedURL !== "string" ||
+        report.protocol !== HOST_PROTOCOL ||
+        report.committed !== true ||
+        report.scheme !== "https" ||
+        normalizeM5PublicHTTPSURL(report.url) !== this.#m5PublicExpectedURL ||
+        !Number.isSafeInteger(report.responseCode) ||
+        report.responseCode < 100 || report.responseCode > 599 ||
+        (report.connectionProtocol !== "h2" &&
+         report.connectionProtocol !== "http/1.1")
+      ) {
+        throw new Error("M5 public navigation report identity mismatch");
+      }
+      this.#navigation = {
+        committed: true,
+        scheme: "https",
+        responseCode: report.responseCode,
+        connectionProtocol: report.connectionProtocol,
+      };
+      this.#m5PublicNetworkTestActive = false;
+      this.#m5PublicNavigationFinished = true;
+      this.#m5PublicExpectedURL = null;
+      this.#resetHeartbeatWindow("m5-public-https-navigation-committed");
+      this.#recordHost("navigation:committed:m5-public-https");
+    } catch (error) {
+      this.#m5PublicNetworkTestActive = false;
+      this.#m5PublicNavigationFinished = true;
+      this.#m5PublicExpectedURL = null;
+      this._reportFatal(
+        "invalid M5 public navigation report: " + String(error));
+    }
+  }
+
+  _reportM5PublicNavigationError(value) {
+    try {
+      const report = asReport(value, "M5 public navigation failure report");
+      if (
+        !this.#m5PublicNetworkTestActive ||
+        typeof this.#m5PublicExpectedURL !== "string" ||
+        report.protocol !== HOST_PROTOCOL ||
+        report.committed !== false ||
+        report.scheme !== "https" ||
+        normalizeM5PublicHTTPSURL(report.url) !== this.#m5PublicExpectedURL ||
+        !Number.isSafeInteger(report.netError) || report.netError === 0
+      ) {
+        throw new Error("M5 public navigation failure identity mismatch");
+      }
+      this.#navigation = {
+        committed: false,
+        scheme: "https",
+        netError: report.netError,
+      };
+      this.#m5PublicNetworkTestActive = false;
+      this.#m5PublicNavigationFinished = true;
+      this.#m5PublicExpectedURL = null;
+      this.#resetHeartbeatWindow("m5-public-https-navigation-failed");
+      this.#recordHost("navigation:failed:m5-public-https");
+    } catch (error) {
+      this.#m5PublicNetworkTestActive = false;
+      this.#m5PublicNavigationFinished = true;
+      this.#m5PublicExpectedURL = null;
+      this._reportFatal(
+        "invalid M5 public navigation failure report: " + String(error));
     }
   }
 
@@ -12691,6 +12910,238 @@ async function runM5WispNetworkSmokeFromQuery() {
   return result;
 }
 
+async function runM5PublicHttpsSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const relayEndpoint = parameters.get("wisp_endpoint");
+  const publicURL = parameters.get("m5_public_url");
+  const expectedStatusValue = Number(parameters.get("m5_public_status"));
+  const expectedProtocol = parameters.get("m5_public_protocol");
+  const publicRedactionVariants = m5PublicRedactionVariants([
+    relayEndpoint,
+    publicURL,
+  ]);
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let initialFrame = null;
+  let publicFrame = null;
+  let navigationResult = null;
+  let readiness = null;
+  let shutdown = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M5_PUBLIC_HTTPS_CASE) {
+      throw new Error("M5 public HTTPS case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M5 public HTTPS result token");
+    }
+    if (!relayEndpoint) {
+      throw new Error("missing M5 public WISP endpoint");
+    }
+    const testURL = normalizeM5PublicHTTPSURL(publicURL);
+    if (!Number.isSafeInteger(expectedStatusValue) ||
+        expectedStatusValue < 100 || expectedStatusValue > 599) {
+      throw new Error("M5 public HTTPS expected status is invalid");
+    }
+    if (expectedProtocol !== "h2" && expectedProtocol !== "http/1.1") {
+      throw new Error("M5 public HTTPS expected protocol is invalid");
+    }
+
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M5_PUBLIC_HTTPS_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+      wisp: {
+        version: WISP_CONFIGURATION_VERSION,
+        endpoint: relayEndpoint,
+        subprotocol: "wisp",
+      },
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    while (performance.now() < deadline) {
+      const candidate = await host.readiness();
+      if (Number.isSafeInteger(candidate.frame?.id) &&
+          candidate.frame.id >= 1 &&
+          candidate.frame.width === DEFAULT_WIDTH &&
+          candidate.frame.height === DEFAULT_HEIGHT) {
+        initialFrame = clone(candidate.frame);
+        break;
+      }
+      await delay(25);
+    }
+    if (!initialFrame) {
+      throw new Error(
+        "M5 public HTTPS runtime did not present the initial shell frame");
+    }
+
+    navigationResult = await host.loadM5PublicHTTPSURL(testURL);
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const heartbeat = readiness.heartbeat;
+      if (readiness.navigation?.committed === true &&
+          readiness.navigation?.scheme === "https" &&
+          readiness.navigation?.responseCode === expectedStatusValue &&
+          readiness.navigation?.connectionProtocol === expectedProtocol &&
+          readiness.firstVisuallyNonEmptyPaint === true &&
+          Number.isSafeInteger(readiness.frame?.id) &&
+          readiness.frame.id > initialFrame.id &&
+          readiness.frame?.width === DEFAULT_WIDTH &&
+          readiness.frame?.height === DEFAULT_HEIGHT &&
+          heartbeat?.anchor === "m5-public-https-navigation-committed" &&
+          heartbeat.timerDelta >= M5_PUBLIC_MIN_HEARTBEAT_TIMER_TICKS &&
+          heartbeat.animationFrameDelta >=
+            M5_PUBLIC_MIN_HEARTBEAT_ANIMATION_FRAMES &&
+          heartbeat.maxTimerGapMs <= MAXIMUM_TIMER_GAP_MS &&
+          readiness.fatalErrors?.length === 0) {
+        publicFrame = clone(readiness.frame);
+        break;
+      }
+      if (readiness.navigation?.committed === false &&
+          readiness.navigation?.scheme === "https") {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness || readiness.navigation?.committed !== true ||
+        readiness.navigation?.scheme !== "https" ||
+        readiness.navigation?.responseCode !== expectedStatusValue ||
+        readiness.navigation?.connectionProtocol !== expectedProtocol ||
+        readiness.firstVisuallyNonEmptyPaint !== true ||
+        !Number.isSafeInteger(publicFrame?.id) ||
+        publicFrame.id <= initialFrame.id ||
+        publicFrame.width !== DEFAULT_WIDTH ||
+        publicFrame.height !== DEFAULT_HEIGHT ||
+        readiness.heartbeat?.anchor !==
+          "m5-public-https-navigation-committed" ||
+        readiness.heartbeat?.timerDelta <
+          M5_PUBLIC_MIN_HEARTBEAT_TIMER_TICKS ||
+        readiness.heartbeat?.animationFrameDelta <
+          M5_PUBLIC_MIN_HEARTBEAT_ANIMATION_FRAMES ||
+        readiness.heartbeat?.maxTimerGapMs > MAXIMUM_TIMER_GAP_MS ||
+        readiness.fatalErrors?.length !== 0) {
+      throw new Error("M5 public HTTPS navigation did not complete");
+    }
+
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      initialFrame: initialFrame !== null,
+      postNavigationFrame:
+        publicFrame !== null && publicFrame.id > initialFrame.id &&
+        publicFrame.width === DEFAULT_WIDTH &&
+        publicFrame.height === DEFAULT_HEIGHT,
+      wispConfigured: logs.host.includes("initialize:wisp-configured"),
+      publicNavigation:
+        navigationResult?.ok === true &&
+        readiness.navigation?.committed === true &&
+        readiness.navigation?.scheme === "https" &&
+        readiness.navigation?.responseCode === expectedStatusValue &&
+        readiness.navigation?.connectionProtocol === expectedProtocol &&
+        readiness.fatalErrors?.length === 0,
+      hostResponsive:
+        readiness.heartbeat?.anchor ===
+          "m5-public-https-navigation-committed" &&
+        readiness.heartbeat?.timerDelta >=
+          M5_PUBLIC_MIN_HEARTBEAT_TIMER_TICKS &&
+        readiness.heartbeat?.animationFrameDelta >=
+          M5_PUBLIC_MIN_HEARTBEAT_ANIMATION_FRAMES &&
+        readiness.heartbeat?.maxTimerGapMs <= MAXIMUM_TIMER_GAP_MS,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M5_PUBLIC_HTTPS_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      initialFrame,
+      publicFrame,
+      navigationResult,
+      readiness,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M5_PUBLIC_HTTPS_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      initialFrame,
+      publicFrame,
+      navigationResult,
+      readiness: null,
+      logs: null,
+      shutdown,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " +
+          String(diagnosticError);
+      }
+      try {
+        if (shutdown === null) {
+          shutdown = await host.shutdown(1000);
+          result.shutdown = shutdown;
+        }
+      } catch (shutdownError) {
+        result.error += "; shutdown diagnostics: " + String(shutdownError);
+      }
+    }
+  }
+
+  const redactedResult = redactM5PublicRuntimeValue(
+      result, publicRedactionVariants);
+  root.dataset.state = redactedResult.status;
+  statusElement.textContent = JSON.stringify(redactedResult, null, 2);
+  await postResult(token, redactedResult);
+  return redactedResult;
+}
+
 export async function runContentShellSmokeFromQuery() {
   const selectedCase = new URLSearchParams(location.search).get("case");
   if (selectedCase === M3_CASE) {
@@ -12746,6 +13197,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M5_NETWORK_CASE) {
     return runM5WispNetworkSmokeFromQuery();
+  }
+  if (selectedCase === M5_PUBLIC_HTTPS_CASE) {
+    return runM5PublicHttpsSmokeFromQuery();
   }
   throw new Error("unknown Content Shell Wasm smoke case");
 }

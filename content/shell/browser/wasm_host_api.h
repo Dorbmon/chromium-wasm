@@ -17,6 +17,12 @@ void ShutdownWasmHostApi();
 // regular Content Shell keeps its data:-only navigation boundary.
 void EnableWasmM5NetworkTestModeForTesting();
 
+// Enables the separate external/public HTTPS smoke lane before ContentMain
+// creates the Network Service. Only content_shell_wasm_m5_public_test invokes
+// this test-only mode; it never installs a local test root or broadens the
+// regular Content Shell's data:-only navigation boundary.
+void EnableWasmM5PublicNetworkTestModeForTesting();
+
 }  // namespace content
 
 #endif  // CONTENT_SHELL_BROWSER_WASM_HOST_API_H_

@@ -918,6 +918,29 @@ if (is_android) {
       "//third_party/icu:icudata",
     ]
   }
+
+  # This executable is intentionally distinct from the controlled M5 fixture.
+  # It retains Chromium's Chrome Root Store and opens one opt-in, externally
+  # provisioned public HTTPS probe through WISP. The runner supplies neither a
+  # gateway endpoint nor a probe URL at build time, and neither is embedded in
+  # product artifacts.
+  executable("content_shell_wasm_m5_public_test") {
+    testonly = true
+    sources = [ "app/shell_main.cc" ]
+    inputs = [
+      "$root_out_dir/content_shell.pak",
+      "$root_out_dir/icudtl.dat",
+    ]
+    configs += [ ":content_shell_wasm_assets" ]
+    defines = [ "CONTENT_SHELL_WASM_M5_PUBLIC_TEST=1" ]
+    deps = [
+      ":content_shell_app",
+      ":content_shell_lib",
+      ":pak",
+      "//content/public/app",
+      "//third_party/icu:icudata",
+    ]
+  }
 } else {
   executable("content_shell") {
     testonly = true

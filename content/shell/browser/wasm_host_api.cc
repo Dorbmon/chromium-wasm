@@ -20,6 +20,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
@@ -40,6 +41,8 @@
 #include "emscripten/emscripten.h"
 #include "emscripten/heap.h"
 #include "net/base/net_errors.h"
+#include "net/http/http_connection_info.h"
+#include "net/http/http_response_headers.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/window.h"
@@ -72,8 +75,18 @@ constexpr int kMaximumCanvasDimension = 16384;
 // linear-memory ceiling to Content, V8, and browser services.
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
+constexpr size_t kMaximumM5PublicUrlBytes = 2048;
 constexpr std::string_view kM5NetworkTestHostname = "a.test";
 constexpr std::string_view kM5NetworkTestPathPrefix = "/m5/";
+constexpr std::string_view kM5PublicSpecialUseHostnameSuffixes[] = {
+    ".localhost",
+    ".local",
+    ".test",
+    ".example",
+    ".invalid",
+    ".onion",
+    ".home.arpa",
+};
 // The plaintext control is deliberately one exact test URL. It establishes
 // Chromium-to-WISP HTTP transport before the HTTPS fixture proves that an
 // active mixed-content fetch to the same listener is blocked.
@@ -118,8 +131,17 @@ std::atomic_bool& GetWasmM5NetworkTestMode() {
   return enabled;
 }
 
+std::atomic_bool& GetWasmM5PublicNetworkTestMode() {
+  static std::atomic_bool enabled(false);
+  return enabled;
+}
+
 bool IsWasmM5NetworkTestModeEnabled() {
   return GetWasmM5NetworkTestMode().load(std::memory_order_relaxed);
+}
+
+bool IsWasmM5PublicNetworkTestModeEnabled() {
+  return GetWasmM5PublicNetworkTestMode().load(std::memory_order_relaxed);
 }
 
 bool IsM5NetworkTestUrl(const GURL& candidate_url) {
@@ -142,10 +164,42 @@ bool IsM5PlaintextHttpControlUrl(const GURL& candidate_url) {
          candidate_url.path() == kM5PlaintextHttpControlPath;
 }
 
+bool IsM5PublicDnsHostname(std::string_view host) {
+  if (host.find('.') == std::string_view::npos || host.ends_with('.')) {
+    return false;
+  }
+  for (const std::string_view suffix : kM5PublicSpecialUseHostnameSuffixes) {
+    const std::string_view exact_name = suffix.substr(1);
+    if (base::EqualsCaseInsensitiveASCII(host, exact_name) ||
+        base::EndsWith(host, suffix, base::CompareCase::INSENSITIVE_ASCII)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// This test-only lane intentionally accepts a single canonical public HTTPS
+// URL from the external smoke runner. It is unavailable from the regular and
+// controlled-fixture binaries. The runner and host bind the exact URL before
+// navigation, while the separately provisioned WISP gateway owns the
+// destination allowlist. Do not treat this syntax check as a gateway policy.
+bool IsM5PublicHttpsUrl(const GURL& candidate_url) {
+  const std::string_view host = candidate_url.host();
+  return IsWasmM5PublicNetworkTestModeEnabled() &&
+         candidate_url.is_valid() &&
+         candidate_url.SchemeIs(url::kHttpsScheme) &&
+         candidate_url.EffectiveIntPort() == 443 &&
+         !candidate_url.has_username() && !candidate_url.has_password() &&
+         !candidate_url.has_query() && !candidate_url.has_ref() &&
+         !candidate_url.HostIsIPAddress() &&
+         IsM5PublicDnsHostname(host);
+}
+
 bool IsObservedWasmHostUrl(const GURL& candidate_url) {
   return candidate_url.SchemeIs(url::kDataScheme) ||
          IsM5NetworkTestUrl(candidate_url) ||
-         IsM5PlaintextHttpControlUrl(candidate_url);
+         IsM5PlaintextHttpControlUrl(candidate_url) ||
+         IsM5PublicHttpsUrl(candidate_url);
 }
 
 extern "C" int chromium_wasm_report_readiness(
@@ -162,6 +216,14 @@ extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation_error(
     int net_error);
 extern "C" int chromium_wasm_report_m5_plaintext_http_control_page_probe(
     const char* probe);
+extern "C" int chromium_wasm_report_m5_public_navigation(
+    const char* url,
+    int response_code,
+    const char* protocol,
+    int protocol_length);
+extern "C" int chromium_wasm_report_m5_public_navigation_error(
+    const char* url,
+    int net_error);
 extern "C" int chromium_wasm_report_fatal(const char* message);
 extern "C" int chromium_wasm_report_ozone_text_input_delivery(
     int action,
@@ -286,6 +348,17 @@ class WasmHostObserver final : public WebContentsObserver {
     probe_in_flight_ = false;
     weak_ptr_factory_.InvalidateWeakPtrs();
     ++navigation_generation_;
+    if (IsM5PublicHttpsUrl(navigation_handle->GetURL())) {
+      if (m5_public_navigation_finished_ || m5_public_navigation_handle_) {
+        ReportFatal("unexpected additional M5 public HTTPS navigation");
+        return;
+      }
+      // NavigationHandle is stable from DidStartNavigation through
+      // DidFinishNavigation. Retaining its identity, rather than one global
+      // boolean, keeps an overlapping main-frame navigation from being
+      // misclassified as the one allowed public probe.
+      m5_public_navigation_handle_ = navigation_handle;
+    }
   }
 
   void DidFinishNavigation(NavigationHandle* navigation_handle) override {
@@ -296,6 +369,29 @@ class WasmHostObserver final : public WebContentsObserver {
 
     const GURL& navigation_url = navigation_handle->GetURL();
     const net::Error net_error = navigation_handle->GetNetErrorCode();
+    const bool is_m5_public_navigation =
+        m5_public_navigation_handle_ == navigation_handle;
+    if (is_m5_public_navigation) {
+      m5_public_navigation_handle_ = nullptr;
+      m5_public_navigation_finished_ = true;
+      if (navigation_url.spec().size() > kMaximumM5PublicUrlBytes) {
+        ReportFatal("M5 public HTTPS navigation URL exceeded its bound");
+        return;
+      }
+    }
+    if (is_m5_public_navigation &&
+        (net_error != net::OK || !navigation_handle->HasCommitted() ||
+         navigation_handle->IsErrorPage())) {
+      const std::string url_spec(navigation_url.spec());
+      const int report_error =
+          net_error == net::OK ? net::ERR_FAILED : static_cast<int>(net_error);
+      if (chromium_wasm_report_m5_public_navigation_error(
+              url_spec.c_str(), report_error) != 1) {
+        ReportFatal("host rejected the failed M5 public HTTPS navigation "
+                    "report");
+      }
+      return;
+    }
     if (IsM5PlaintextHttpControlUrl(navigation_url) &&
         net_error != net::OK) {
       if (chromium_wasm_report_m5_plaintext_http_control_navigation_error(
@@ -323,6 +419,21 @@ class WasmHostObserver final : public WebContentsObserver {
       }
       return;
     }
+    if (is_m5_public_navigation) {
+      const std::string url_spec(navigation_url.spec());
+      const net::HttpResponseHeaders* headers =
+          navigation_handle->GetResponseHeaders();
+      const int response_code = headers ? headers->response_code() : 0;
+      const std::string_view protocol = net::HttpConnectionInfoToString(
+          navigation_handle->GetConnectionInfo());
+      if (chromium_wasm_report_m5_public_navigation(
+              url_spec.c_str(), response_code, protocol.data(),
+              static_cast<int>(protocol.size())) != 1) {
+        ReportFatal("host rejected the committed M5 public HTTPS navigation "
+                    "report");
+      }
+      return;
+    }
     if (IsM5PlaintextHttpControlUrl(navigation_url) &&
         chromium_wasm_report_m5_plaintext_http_control_navigation() != 1) {
       ReportFatal(
@@ -337,7 +448,13 @@ class WasmHostObserver final : public WebContentsObserver {
   }
 
   void DocumentOnLoadCompletedInPrimaryMainFrame() override {
-    if (!IsObservedWasmHostUrl(web_contents()->GetLastCommittedURL())) {
+    const GURL& committed_url = web_contents()->GetLastCommittedURL();
+    if (!IsObservedWasmHostUrl(committed_url)) {
+      return;
+    }
+    // A public page is not a deterministic fixture and therefore exposes no
+    // privileged page probe. Its navigation metadata is reported above.
+    if (m5_public_navigation_finished_) {
       return;
     }
     ProbePage();
@@ -359,6 +476,7 @@ class WasmHostObserver final : public WebContentsObserver {
   void WebContentsDestroyed() override {
     probe_timer_.Stop();
     probe_in_flight_ = false;
+    m5_public_navigation_handle_ = nullptr;
     weak_ptr_factory_.InvalidateWeakPtrs();
     Observe(nullptr);
   }
@@ -422,6 +540,8 @@ class WasmHostObserver final : public WebContentsObserver {
   }
 
   bool probe_in_flight_ = false;
+  raw_ptr<NavigationHandle> m5_public_navigation_handle_ = nullptr;
+  bool m5_public_navigation_finished_ = false;
   uint64_t navigation_generation_ = 0;
   base::RepeatingTimer probe_timer_;
   base::WeakPtrFactory<WasmHostObserver> weak_ptr_factory_{this};
@@ -894,6 +1014,10 @@ void EnableWasmM5NetworkTestModeForTesting() {
   GetWasmM5NetworkTestMode().store(true, std::memory_order_relaxed);
 }
 
+void EnableWasmM5PublicNetworkTestModeForTesting() {
+  GetWasmM5PublicNetworkTestMode().store(true, std::memory_order_relaxed);
+}
+
 void ShutdownWasmHostApi() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
@@ -1090,6 +1214,26 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_plaintext_http_control_url(
   }
   GURL url(std::string(test_url, length));
   if (!content::IsM5PlaintextHttpControlUrl(url)) {
+    return 0;
+  }
+  return content::PostHostCommand(
+             base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_public_url(
+    const char* public_url) {
+  if (!public_url || !content::IsWasmM5PublicNetworkTestModeEnabled()) {
+    return 0;
+  }
+  const size_t length =
+      strnlen(public_url, content::kMaximumM5PublicUrlBytes + 1);
+  if (length == 0 || length > content::kMaximumM5PublicUrlBytes) {
+    return 0;
+  }
+  GURL url(std::string(public_url, length));
+  if (!content::IsM5PublicHttpsUrl(url)) {
     return 0;
   }
   return content::PostHostCommand(

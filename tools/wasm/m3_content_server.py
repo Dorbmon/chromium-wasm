@@ -42,6 +42,7 @@ M4_FOCUS_CASE = "ozone_focus_m4"
 M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4"
 M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4"
 M5_WISP_CASE = "wisp_network_m5"
+M5_PUBLIC_HTTPS_CASE = "wisp_public_https_m5"
 M3_PROTOCOL = 1
 M3_RESULT_CASES = (
     M3_CASE,
@@ -62,6 +63,7 @@ M3_RESULT_CASES = (
     M4_FOCUS_CASE,
     M4_FOCUS_RETENTION_CASE,
     M5_WISP_CASE,
+    M5_PUBLIC_HTTPS_CASE,
 )
 M3_WIDTH = 800
 M3_HEIGHT = 600
