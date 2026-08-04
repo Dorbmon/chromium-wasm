@@ -106,6 +106,9 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         self,
     ) -> None:
         host = source("tools/wasm/host/content_shell_host.js")
+        m5_smoke = host.split(
+            "async function runM5WispNetworkSmokeFromQuery() {", 1
+        )[1].split("\nexport async function runContentShellSmokeFromQuery()", 1)[0]
 
         self.assertIn("reportM5Navigation(report)", host)
         self.assertIn("reportM5NavigationError(report)", host)
@@ -134,6 +137,8 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         )
         self.assertIn("hasM5NetworkPageProbe(readiness.pageProbe)", host)
         self.assertIn("runM5WispNetworkSmokeFromQuery", host)
+        self.assertIn("let slowStreamHeartbeat = null;", m5_smoke)
+        self.assertIn("let slowStreamHeartbeatStart = null;", m5_smoke)
         self.assertIn('"m5_plaintext_http_control_url"', host)
         self.assertIn('parameters.get("m5_tls_failure_url")', host)
         self.assertIn("plaintextHttpControlReadiness.navigation?.scheme === \"http\"", host)
@@ -155,6 +160,30 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
             "pageProbe?.cancelStreamAborted === true",
             "pageProbe?.cancelStreamErrorName === \"AbortError\"",
             "pageProbe?.cancelStreamProof === true",
+            "pageProbe?.slowStreamStarted === true",
+            "pageProbe?.slowStreamFirstStage === true",
+            "pageProbe?.slowStreamSecondStage === true",
+            "pageProbe?.slowStreamThirdStage === true",
+            "pageProbe?.slowStreamComplete === true",
+            "pageProbe?.slowStreamProof === true",
+            "pageProbe?.slowStreamConsumerPauseStarted === true",
+            "pageProbe?.slowStreamConsumerBurstRead === true",
+            "pageProbe?.slowStreamConsumerResume === true",
+            "Number.isSafeInteger(pageProbe?.slowStreamElapsedMs)",
+            "Number.isSafeInteger(pageProbe?.slowStreamFirstToSecondStageDelayMs)",
+            "Number.isSafeInteger(pageProbe?.slowStreamSecondToThirdStageDelayMs)",
+            "Number.isSafeInteger(pageProbe?.slowStreamConsumerPauseElapsedMs)",
+            "Number.isSafeInteger(pageProbe?.slowStreamConsumerPauseTimerTicks)",
+            "Number.isSafeInteger(pageProbe?.slowStreamTimerTicksWhileWaiting)",
+            "pageProbe?.slowStreamElapsedMs >= M5_SLOW_STREAM_MIN_ELAPSED_MS",
+            "pageProbe?.slowStreamFirstToSecondStageDelayMs >=",
+            "pageProbe?.slowStreamSecondToThirdStageDelayMs >=",
+            "pageProbe?.slowStreamConsumerPauseElapsedMs >=",
+            "pageProbe?.slowStreamConsumerPauseTimerTicks >=",
+            "pageProbe?.slowStreamTimerTicksWhileWaiting >=",
+            "snapshotM5SlowStreamHostHeartbeat",
+            "makeM5SlowStreamHostHeartbeat",
+            "hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat)",
             "pageProbe?.corsFetch === true",
             "pageProbe?.webSocketEcho === true",
             "pageProbe?.altSvcH3Advertised === true",

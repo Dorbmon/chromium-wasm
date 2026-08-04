@@ -665,6 +665,213 @@ try {
             )
         return json.loads(result.stdout)
 
+    def _exercise_slow_stream(
+        self, *, mismatch_mode: str = "normal"
+    ) -> dict[str, object]:
+        node = node_executable()
+        assert node is not None
+        program = r'''
+import fs from "node:fs";
+import http2 from "node:http2";
+
+const [httpsURL, rootCertificate, mismatchMode] = process.argv.slice(1);
+const target = new URL(httpsURL);
+const authority = `a.test:${target.port}`;
+const sessionOptions = {
+  ca: fs.readFileSync(rootCertificate),
+  servername: "a.test",
+};
+
+function createSession() {
+  return http2.connect(`https://127.0.0.1:${target.port}`, sessionOptions);
+}
+
+function get(session, path) {
+  return new Promise((resolve, reject) => {
+    const request = session.request({
+      ":authority": authority,
+      ":method": "GET",
+      ":path": path,
+    });
+    const chunks = [];
+    let headers = null;
+    request.once("response", (value) => { headers = value; });
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => resolve({
+      body: Buffer.concat(chunks).toString("utf8"),
+      headers,
+    }));
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+function openSlowStream(session) {
+  const request = session.request({
+    ":authority": authority,
+    ":method": "GET",
+    ":path": "/m5/slow-stream",
+  });
+  let responseHeaders = null;
+  let ended = false;
+  let waiter = null;
+  const chunks = [];
+  let finish;
+  let fail;
+  const finished = new Promise((resolve, reject) => {
+    finish = resolve;
+    fail = reject;
+  });
+  const response = new Promise((resolve, reject) => {
+    request.once("response", (headers) => {
+      responseHeaders = headers;
+      resolve(headers);
+    });
+    request.once("error", reject);
+  });
+  request.on("data", (chunk) => {
+    chunks.push({bytes: Buffer.from(chunk), atMs: performance.now()});
+    if (waiter) {
+      const current = waiter;
+      waiter = null;
+      current.resolve();
+    }
+  });
+  request.once("end", () => {
+    ended = true;
+    if (waiter) {
+      const current = waiter;
+      waiter = null;
+      current.reject(new Error("slow stream ended before next stage"));
+    }
+    finish();
+  });
+  request.once("error", (error) => {
+    if (waiter) {
+      const current = waiter;
+      waiter = null;
+      current.reject(error);
+    }
+    fail(error);
+  });
+  request.end();
+  async function waitForChunk() {
+    if (chunks.length > 0) {
+      return;
+    }
+    if (ended) {
+      throw new Error("slow stream ended before the expected bytes arrived");
+    }
+    await new Promise((resolve, reject) => { waiter = {resolve, reject}; });
+  }
+  async function readExact(length) {
+    const pieces = [];
+    let remaining = length;
+    let atMs = 0;
+    while (remaining > 0) {
+      await waitForChunk();
+      const current = chunks[0];
+      const count = Math.min(remaining, current.bytes.length);
+      pieces.push(current.bytes.subarray(0, count));
+      atMs = current.atMs;
+      remaining -= count;
+      if (count === current.bytes.length) {
+        chunks.shift();
+      } else {
+        current.bytes = current.bytes.subarray(count);
+      }
+    }
+    return {bytes: Buffer.concat(pieces, length), atMs};
+  }
+  return {
+    response,
+    finished,
+    responseStatus: () => responseHeaders?.[":status"] ?? null,
+    readExact,
+    remainingBytes: () => chunks.reduce(
+        (total, entry) => total + entry.bytes.length, 0),
+  };
+}
+
+const primary = createSession();
+const secondary = mismatchMode === "normal" ? null : createSession();
+try {
+  const slow = openSlowStream(primary);
+  await slow.response;
+  const first = await slow.readExact(Buffer.byteLength("M5_SLOW_STREAM_FIRST_STAGE"));
+  const firstMismatch = mismatchMode === "first-ack" ? await get(
+      secondary, "/m5/slow-stream-first-stage-ack") : null;
+  const firstAck = await get(primary, "/m5/slow-stream-first-stage-ack");
+  const second = await slow.readExact(Buffer.byteLength("M5_SLOW_STREAM_SECOND_STAGE"));
+  const pauseReady = await get(
+      primary, "/m5/slow-stream-consumer-pause-ready");
+  const consumerPauseStartedAt = performance.now();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const consumerBurst = await slow.readExact(64 * 1024);
+  const consumerPauseElapsedMs = performance.now() - consumerPauseStartedAt;
+  const consumerResume = await get(
+      primary, "/m5/slow-stream-consumer-resume");
+  const secondMismatch = mismatchMode === "second-ack" ? await get(
+      secondary, "/m5/slow-stream-second-stage-ack") : null;
+  const secondAck = await get(primary, "/m5/slow-stream-second-stage-ack");
+  const third = await slow.readExact(Buffer.byteLength("M5_SLOW_STREAM_THIRD_STAGE"));
+  await slow.finished;
+  const proofMismatch = mismatchMode === "proof" ? await get(
+      secondary, "/m5/slow-stream-proof") : null;
+  const proof = await get(primary, "/m5/slow-stream-proof");
+  const mismatch = firstMismatch || secondMismatch || proofMismatch;
+  process.stdout.write(JSON.stringify({
+    consumerBurstAllExpectedBytes: consumerBurst.bytes.every(
+        (value) => value === 0x53),
+    consumerBurstBytes: consumerBurst.bytes.length,
+    consumerPauseElapsedMs,
+    consumerPauseReadyBody: pauseReady.body,
+    consumerPauseReadyStatus: pauseReady.headers[":status"],
+    consumerResumeBody: consumerResume.body,
+    consumerResumeStatus: consumerResume.headers[":status"],
+    firstAckBody: firstAck.body,
+    firstAckStatus: firstAck.headers[":status"],
+    firstStage: first.bytes.toString("utf8"),
+    mismatchBody: mismatch?.body ?? null,
+    mismatchStatus: mismatch?.headers?.[":status"] ?? null,
+    responseStatus: slow.responseStatus(),
+    remainingBytes: slow.remainingBytes(),
+    secondAckBody: secondAck.body,
+    secondAckStatus: secondAck.headers[":status"],
+    secondDelayMs: second.atMs - first.atMs,
+    secondStage: second.bytes.toString("utf8"),
+    thirdDelayMs: third.atMs - second.atMs,
+    thirdStage: third.bytes.toString("utf8"),
+    proofBody: proof.body,
+    proofStatus: proof.headers[":status"],
+  }));
+} finally {
+  primary.close();
+  secondary?.close();
+}
+'''
+        result = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                program,
+                self.metadata["httpsUrl"],
+                str(ROOT_CERTIFICATE),
+                mismatch_mode,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            self.fail(
+                "slow-stream H2 client failed: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        return json.loads(result.stdout)
+
     def test_source_is_es_module_and_keeps_key_out_of_output_contract(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn('import http2 from "node:http2"', source)
@@ -715,6 +922,28 @@ try {
         self.assertIn("cancelStreamProofSessionMismatches", source)
         self.assertIn("h2-cancel-stream-cancel-reset", source)
         self.assertIn("h2-cancel-stream-proof", source)
+        self.assertIn("SLOW_STREAM_STAGES", source)
+        self.assertIn('requestPath === "/m5/slow-stream"', source)
+        self.assertIn('requestPath === "/m5/slow-stream-first-stage-ack"', source)
+        self.assertIn('requestPath === "/m5/slow-stream-second-stage-ack"', source)
+        self.assertIn(
+            'requestPath === "/m5/slow-stream-consumer-pause-ready"', source
+        )
+        self.assertIn(
+            'requestPath === "/m5/slow-stream-consumer-resume"', source
+        )
+        self.assertIn('requestPath === "/m5/slow-stream-proof"', source)
+        self.assertIn("verifySlowStream", source)
+        self.assertIn("readExactSlowStreamStage", source)
+        self.assertIn("SLOW_STREAM_STAGE_DELAY_MS", source)
+        self.assertIn("SLOW_STREAM_CONSUMER_BURST_BYTES", source)
+        self.assertIn("readExactSlowStreamConsumerBurst", source)
+        self.assertIn("handleSlowStreamConsumerPauseReady", source)
+        self.assertIn("handleSlowStreamConsumerResume", source)
+        self.assertIn("isSlowStreamSession", source)
+        self.assertIn("stream.session === context.slowStreamSession", source)
+        self.assertIn("h2-slow-stream-first-stage-ack", source)
+        self.assertIn("h2-slow-stream-proof", source)
         self.assertIn(
             "mixed-content-target-post-control-wisp-connect", source
         )
@@ -1263,6 +1492,179 @@ try {
         self.assertLess(
             events.index("h2-cancel-stream-proof-session-mismatch"),
             events.index("h2-cancel-stream-cancel-reset"),
+        )
+
+    def test_h2_slow_stream_requires_two_same_session_acks(self) -> None:
+        evidence = self._exercise_slow_stream()
+
+        self.assertEqual(evidence["responseStatus"], 200)
+        self.assertEqual(evidence["firstStage"], "M5_SLOW_STREAM_FIRST_STAGE")
+        self.assertEqual(
+            evidence["firstAckBody"], "M5_SLOW_STREAM_FIRST_STAGE_ACK"
+        )
+        self.assertEqual(evidence["firstAckStatus"], 200)
+        self.assertEqual(evidence["secondStage"], "M5_SLOW_STREAM_SECOND_STAGE")
+        self.assertEqual(evidence["consumerPauseReadyStatus"], 200)
+        self.assertEqual(
+            evidence["consumerPauseReadyBody"],
+            "M5_SLOW_STREAM_CONSUMER_PAUSE_READY",
+        )
+        self.assertGreaterEqual(evidence["consumerPauseElapsedMs"], 75)
+        self.assertEqual(evidence["consumerBurstBytes"], 64 * 1024)
+        self.assertTrue(evidence["consumerBurstAllExpectedBytes"])
+        self.assertEqual(evidence["consumerResumeStatus"], 200)
+        self.assertEqual(
+            evidence["consumerResumeBody"], "M5_SLOW_STREAM_CONSUMER_RESUMED"
+        )
+        self.assertEqual(
+            evidence["secondAckBody"], "M5_SLOW_STREAM_SECOND_STAGE_ACK"
+        )
+        self.assertEqual(evidence["secondAckStatus"], 200)
+        self.assertEqual(evidence["thirdStage"], "M5_SLOW_STREAM_THIRD_STAGE")
+        self.assertGreaterEqual(evidence["secondDelayMs"], 75)
+        self.assertGreaterEqual(evidence["thirdDelayMs"], 75)
+        self.assertEqual(evidence["proofStatus"], 200)
+        self.assertEqual(evidence["proofBody"], "M5_SLOW_STREAM_PROOF")
+        self.assertEqual(evidence["remainingBytes"], 0)
+
+        status = self._status()
+        self.assertEqual(status["slowStreamPhase"], "complete")
+        for field in (
+            "slowStreamRequests",
+            "slowStreamFirstStages",
+            "slowStreamSecondStages",
+            "slowStreamThirdStages",
+            "slowStreamCompletedStreams",
+            "slowStreamConsumerBurstWrites",
+            "slowStreamConsumerPauseReadyRequests",
+            "slowStreamConsumerResumes",
+            "slowStreamFirstStageAcks",
+            "slowStreamSecondStageAcks",
+            "slowStreamProofs",
+            "slowStreamStageDelaySchedules",
+        ):
+            expected = 2 if field == "slowStreamStageDelaySchedules" else 1
+            self.assertEqual(status[field], expected, field)
+        self.assertEqual(status["slowStreamStageDelayMs"], 150)
+        self.assertEqual(status["slowStreamConsumerBurstBytes"], 64 * 1024)
+        self.assertEqual(status["slowStreamSessionMismatches"], 0)
+        self.assertEqual(status["slowStreamStageAckTimeouts"], 0)
+        self.assertEqual(status["slowStreamUnexpectedCloses"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        expected_events = (
+            "h2-slow-stream-start",
+            "h2-slow-stream-first-stage",
+            "h2-slow-stream-first-stage-ack",
+            "h2-slow-stream-second-stage",
+            "h2-slow-stream-consumer-pause-ready",
+            "h2-slow-stream-consumer-burst",
+            "h2-slow-stream-consumer-resume",
+            "h2-slow-stream-second-stage-ack",
+            "h2-slow-stream-third-stage",
+            "h2-slow-stream-complete",
+            "h2-slow-stream-proof",
+        )
+        for event in expected_events:
+            self.assertEqual(events.count(event), 1, event)
+        self.assertEqual(
+            [events.index(event) for event in expected_events],
+            sorted(events.index(event) for event in expected_events),
+        )
+        burst_entry = next(
+            entry
+            for entry in status["transcript"]
+            if entry.get("event") == "h2-slow-stream-consumer-burst"
+        )
+        self.assertTrue(burst_entry.get("backpressured"))
+
+    def test_h2_slow_stream_rejects_first_ack_from_another_session(self) -> None:
+        evidence = self._exercise_slow_stream(mismatch_mode="first-ack")
+
+        self.assertEqual(evidence["mismatchStatus"], 409)
+        self.assertEqual(evidence["mismatchBody"], "M5_SLOW_STREAM_REJECTED")
+        self.assertEqual(evidence["firstAckStatus"], 200)
+        self.assertEqual(evidence["secondAckStatus"], 200)
+        self.assertEqual(evidence["proofStatus"], 200)
+        self.assertEqual(evidence["proofBody"], "M5_SLOW_STREAM_PROOF")
+
+        status = self._status()
+        self.assertEqual(status["slowStreamPhase"], "complete")
+        self.assertEqual(status["slowStreamSessionMismatches"], 1)
+        self.assertEqual(status["slowStreamProofs"], 1)
+        self.assertEqual(status["slowStreamUnexpectedCloses"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(
+            events.count("h2-slow-stream-stage-ack-session-mismatch"), 1
+        )
+        self.assertLess(
+            events.index("h2-slow-stream-stage-ack-session-mismatch"),
+            events.index("h2-slow-stream-first-stage-ack"),
+        )
+        self.assertEqual(events.count("h2-slow-stream-proof"), 1)
+
+    def test_h2_slow_stream_rejects_second_ack_from_another_session(self) -> None:
+        evidence = self._exercise_slow_stream(mismatch_mode="second-ack")
+
+        self.assertEqual(evidence["mismatchStatus"], 409)
+        self.assertEqual(evidence["mismatchBody"], "M5_SLOW_STREAM_REJECTED")
+        self.assertEqual(evidence["firstAckStatus"], 200)
+        self.assertEqual(evidence["secondAckStatus"], 200)
+        self.assertEqual(evidence["proofStatus"], 200)
+        self.assertEqual(evidence["remainingBytes"], 0)
+
+        status = self._status()
+        self.assertEqual(status["slowStreamPhase"], "complete")
+        self.assertEqual(status["slowStreamSessionMismatches"], 1)
+        self.assertEqual(status["slowStreamProofs"], 1)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(
+            events.count("h2-slow-stream-stage-ack-session-mismatch"), 1
+        )
+        self.assertLess(
+            events.index("h2-slow-stream-stage-ack-session-mismatch"),
+            events.index("h2-slow-stream-second-stage-ack"),
+        )
+
+    def test_h2_slow_stream_rejects_final_proof_from_another_session(self) -> None:
+        evidence = self._exercise_slow_stream(mismatch_mode="proof")
+
+        self.assertEqual(evidence["mismatchStatus"], 409)
+        self.assertEqual(
+            evidence["mismatchBody"], "M5_SLOW_STREAM_PROOF_REJECTED"
+        )
+        self.assertEqual(evidence["firstAckStatus"], 200)
+        self.assertEqual(evidence["secondAckStatus"], 200)
+        self.assertEqual(evidence["proofStatus"], 200)
+        self.assertEqual(evidence["proofBody"], "M5_SLOW_STREAM_PROOF")
+        self.assertEqual(evidence["remainingBytes"], 0)
+
+        status = self._status()
+        self.assertEqual(status["slowStreamPhase"], "complete")
+        self.assertEqual(status["slowStreamSessionMismatches"], 1)
+        self.assertEqual(status["slowStreamProofs"], 1)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(
+            events.count("h2-slow-stream-proof-session-mismatch"), 1
+        )
+        self.assertLess(
+            events.index("h2-slow-stream-proof-session-mismatch"),
+            events.index("h2-slow-stream-proof"),
         )
 
     def test_tls_failure_endpoint_is_trusted_but_rejects_a_test_name(self) -> None:

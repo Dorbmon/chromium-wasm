@@ -138,6 +138,21 @@ def passing_result() -> dict[str, object]:
                 "cancelStreamAborted": True,
                 "cancelStreamErrorName": "AbortError",
                 "cancelStreamProof": True,
+                "slowStreamStarted": True,
+                "slowStreamFirstStage": True,
+                "slowStreamSecondStage": True,
+                "slowStreamThirdStage": True,
+                "slowStreamComplete": True,
+                "slowStreamProof": True,
+                "slowStreamConsumerPauseStarted": True,
+                "slowStreamConsumerBurstRead": True,
+                "slowStreamConsumerResume": True,
+                "slowStreamElapsedMs": 200,
+                "slowStreamFirstToSecondStageDelayMs": 100,
+                "slowStreamSecondToThirdStageDelayMs": 100,
+                "slowStreamConsumerPauseElapsedMs": 100,
+                "slowStreamConsumerPauseTimerTicks": 4,
+                "slowStreamTimerTicksWhileWaiting": 8,
                 "cspConnectSrcBlocked": True,
                 "phase": "https-fixture",
                 "activeMixedContentBlocked": True,
@@ -148,6 +163,13 @@ def passing_result() -> dict[str, object]:
                 "activeMixedContentCspAllowed": True,
                 "nonce": "fixed-test-nonce",
             },
+        },
+        "slowStreamHeartbeat": {
+            "anchor": "m5-https-navigation-committed",
+            "elapsedMs": 200,
+            "timerDelta": 8,
+            "animationFrameDelta": 4,
+            "maxTimerGapMs": 50,
         },
         "logs": {
             "host": [
@@ -213,6 +235,24 @@ def passing_relay_status() -> dict[str, object]:
         "cancelStreamProofTimeouts": 0,
         "cancelStreamRequests": 1,
         "cancelStreamUnexpectedResets": 0,
+        "slowStreamPhase": "complete",
+        "slowStreamRequests": 1,
+        "slowStreamFirstStages": 1,
+        "slowStreamSecondStages": 1,
+        "slowStreamThirdStages": 1,
+        "slowStreamCompletedStreams": 1,
+        "slowStreamConsumerBurstBytes": 64 * 1024,
+        "slowStreamConsumerBurstWrites": 1,
+        "slowStreamConsumerPauseReadyRequests": 1,
+        "slowStreamConsumerResumes": 1,
+        "slowStreamFirstStageAcks": 1,
+        "slowStreamSecondStageAcks": 1,
+        "slowStreamProofs": 1,
+        "slowStreamSessionMismatches": 0,
+        "slowStreamStageAckTimeouts": 0,
+        "slowStreamUnexpectedCloses": 0,
+        "slowStreamStageDelayMs": 100,
+        "slowStreamStageDelaySchedules": 2,
         "cspConnectSrcProofs": 1,
         "cspConnectSrcTargetTcpConnections": 0,
         "cspConnectSrcTargetRequests": 0,
@@ -260,9 +300,37 @@ def passing_relay_status() -> dict[str, object]:
                 "rstCode": 8,
             },
             {"sequence": 18, "event": "h2-cancel-stream-proof"},
-            {"sequence": 19, "event": "h1-cors"},
-            {"sequence": 20, "event": "h1-wss-echo"},
-            {"sequence": 21, "event": "tls-failure-tcp-connect"},
+            {"sequence": 19, "event": "h2-slow-stream-start"},
+            {"sequence": 20, "event": "h2-slow-stream-first-stage"},
+            {
+                "sequence": 21,
+                "event": "h2-slow-stream-first-stage-ack",
+            },
+            {"sequence": 22, "event": "h2-slow-stream-second-stage"},
+            {
+                "sequence": 23,
+                "event": "h2-slow-stream-consumer-pause-ready",
+            },
+            {
+                "sequence": 24,
+                "event": "h2-slow-stream-consumer-burst",
+                "bytes": 64 * 1024,
+                "backpressured": True,
+            },
+            {
+                "sequence": 25,
+                "event": "h2-slow-stream-consumer-resume",
+            },
+            {
+                "sequence": 26,
+                "event": "h2-slow-stream-second-stage-ack",
+            },
+            {"sequence": 27, "event": "h2-slow-stream-third-stage"},
+            {"sequence": 28, "event": "h2-slow-stream-complete"},
+            {"sequence": 29, "event": "h2-slow-stream-proof"},
+            {"sequence": 30, "event": "h1-cors"},
+            {"sequence": 31, "event": "h1-wss-echo"},
+            {"sequence": 32, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -534,6 +602,15 @@ class M5ResultValidationTest(unittest.TestCase):
             "cancelStreamReceivedFirstChunk",
             "cancelStreamAborted",
             "cancelStreamProof",
+            "slowStreamStarted",
+            "slowStreamFirstStage",
+            "slowStreamSecondStage",
+            "slowStreamThirdStage",
+            "slowStreamComplete",
+            "slowStreamProof",
+            "slowStreamConsumerPauseStarted",
+            "slowStreamConsumerBurstRead",
+            "slowStreamConsumerResume",
             "cspConnectSrcBlocked",
             "activeMixedContentBlocked",
             "activeMixedContentCspAllowed",
@@ -546,6 +623,66 @@ class M5ResultValidationTest(unittest.TestCase):
                 assert isinstance(page_probe, dict)
                 page_probe[field] = False
                 with self.assertRaisesRegex(M0Error, field):
+                    validate_passing_result(result)
+
+    def test_rejects_invalid_slow_stream_page_timing_evidence(self) -> None:
+        for field, invalid_value in (
+            ("slowStreamElapsedMs", -1),
+            ("slowStreamElapsedMs", 0),
+            ("slowStreamElapsedMs", 74),
+            ("slowStreamElapsedMs", True),
+            ("slowStreamElapsedMs", None),
+            ("slowStreamFirstToSecondStageDelayMs", -1),
+            ("slowStreamFirstToSecondStageDelayMs", 0),
+            ("slowStreamFirstToSecondStageDelayMs", 74),
+            ("slowStreamFirstToSecondStageDelayMs", True),
+            ("slowStreamSecondToThirdStageDelayMs", -1),
+            ("slowStreamSecondToThirdStageDelayMs", 0),
+            ("slowStreamSecondToThirdStageDelayMs", 74),
+            ("slowStreamSecondToThirdStageDelayMs", True),
+            ("slowStreamConsumerPauseElapsedMs", -1),
+            ("slowStreamConsumerPauseElapsedMs", 0),
+            ("slowStreamConsumerPauseElapsedMs", 74),
+            ("slowStreamConsumerPauseElapsedMs", True),
+            ("slowStreamConsumerPauseTimerTicks", -1),
+            ("slowStreamConsumerPauseTimerTicks", 0),
+            ("slowStreamConsumerPauseTimerTicks", 1),
+            ("slowStreamConsumerPauseTimerTicks", True),
+            ("slowStreamTimerTicksWhileWaiting", -1),
+            ("slowStreamTimerTicksWhileWaiting", 0),
+            ("slowStreamTimerTicksWhileWaiting", 1),
+            ("slowStreamTimerTicksWhileWaiting", True),
+            ("slowStreamTimerTicksWhileWaiting", None),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                result = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                page_probe = readiness["pageProbe"]
+                assert isinstance(page_probe, dict)
+                page_probe[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, field):
+                    validate_passing_result(result)
+
+    def test_rejects_invalid_slow_stream_host_heartbeat(self) -> None:
+        for field, invalid_value in (
+            ("anchor", "m5-plaintext-http-control-navigation-committed"),
+            ("elapsedMs", 74),
+            ("elapsedMs", float("nan")),
+            ("timerDelta", 1),
+            ("timerDelta", True),
+            ("animationFrameDelta", 1),
+            ("animationFrameDelta", True),
+            ("maxTimerGapMs", -1),
+            ("maxTimerGapMs", 251),
+            ("maxTimerGapMs", True),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                result = passing_result()
+                heartbeat = result["slowStreamHeartbeat"]
+                assert isinstance(heartbeat, dict)
+                heartbeat[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, "slow-stream host heartbeat"):
                     validate_passing_result(result)
 
     def test_rejects_invalid_cancel_stream_page_evidence(self) -> None:
@@ -1166,6 +1303,229 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     M0Error, "cancellation failure event"
+                ):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+    def test_rejects_invalid_slow_stream_evidence(self) -> None:
+        relay_ready = parsed_relay_ready()
+
+        status = passing_relay_status()
+        status["slowStreamPhase"] = "second-stage"
+        with self.assertRaisesRegex(M0Error, "slow stream phase"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for field, actual_value in (
+            ("slowStreamRequests", 0),
+            ("slowStreamRequests", 2),
+            ("slowStreamFirstStages", 0),
+            ("slowStreamFirstStages", 2),
+            ("slowStreamSecondStages", 0),
+            ("slowStreamSecondStages", 2),
+            ("slowStreamThirdStages", 0),
+            ("slowStreamThirdStages", 2),
+            ("slowStreamCompletedStreams", 0),
+            ("slowStreamCompletedStreams", 2),
+            ("slowStreamConsumerBurstBytes", 0),
+            ("slowStreamConsumerBurstBytes", 64 * 1024 - 1),
+            ("slowStreamConsumerBurstBytes", 64 * 1024 + 1),
+            ("slowStreamConsumerBurstWrites", 0),
+            ("slowStreamConsumerBurstWrites", 2),
+            ("slowStreamConsumerPauseReadyRequests", 0),
+            ("slowStreamConsumerPauseReadyRequests", 2),
+            ("slowStreamConsumerResumes", 0),
+            ("slowStreamConsumerResumes", 2),
+            ("slowStreamFirstStageAcks", 0),
+            ("slowStreamFirstStageAcks", 2),
+            ("slowStreamSecondStageAcks", 0),
+            ("slowStreamSecondStageAcks", 2),
+            ("slowStreamProofs", 0),
+            ("slowStreamProofs", 2),
+            ("slowStreamSessionMismatches", 1),
+            ("slowStreamStageAckTimeouts", 1),
+            ("slowStreamUnexpectedCloses", 1),
+            ("slowStreamStageDelaySchedules", 0),
+            ("slowStreamStageDelaySchedules", 3),
+            ("slowStreamStageDelayMs", 74),
+            ("slowStreamStageDelayMs", True),
+        ):
+            with self.subTest(field=field, actual_value=actual_value):
+                status = passing_relay_status()
+                status[field] = actual_value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for invalid_bytes in (None, 0, 64 * 1024 - 1, 64 * 1024 + 1, "65536"):
+            with self.subTest(invalid_bytes=invalid_bytes):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                burst_entry = next(
+                    entry
+                    for entry in transcript
+                    if entry.get("event") == "h2-slow-stream-consumer-burst"
+                )
+                burst_entry["bytes"] = invalid_bytes
+                with self.assertRaisesRegex(M0Error, "bounded payload size"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for invalid_backpressure in (None, False, "true"):
+            with self.subTest(invalid_backpressure=invalid_backpressure):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                burst_entry = next(
+                    entry
+                    for entry in transcript
+                    if entry.get("event") == "h2-slow-stream-consumer-burst"
+                )
+                burst_entry["backpressured"] = invalid_backpressure
+                with self.assertRaisesRegex(M0Error, "H2 write backpressure"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-slow-stream-start",
+            "h2-slow-stream-first-stage",
+            "h2-slow-stream-first-stage-ack",
+            "h2-slow-stream-second-stage",
+            "h2-slow-stream-consumer-pause-ready",
+            "h2-slow-stream-consumer-burst",
+            "h2-slow-stream-consumer-resume",
+            "h2-slow-stream-second-stage-ack",
+            "h2-slow-stream-third-stage",
+            "h2-slow-stream-complete",
+            "h2-slow-stream-proof",
+        ):
+            with self.subTest(missing_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-slow-stream-start",
+            "h2-slow-stream-first-stage",
+            "h2-slow-stream-first-stage-ack",
+            "h2-slow-stream-second-stage",
+            "h2-slow-stream-consumer-pause-ready",
+            "h2-slow-stream-consumer-burst",
+            "h2-slow-stream-consumer-resume",
+            "h2-slow-stream-second-stage-ack",
+            "h2-slow-stream-third-stage",
+            "h2-slow-stream-complete",
+            "h2-slow-stream-proof",
+        ):
+            with self.subTest(duplicate_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for first_event, second_event in (
+            ("h2-cancel-stream-proof", "h2-slow-stream-start"),
+            ("h2-slow-stream-start", "h2-slow-stream-first-stage"),
+            ("h2-slow-stream-first-stage", "h2-slow-stream-first-stage-ack"),
+            (
+                "h2-slow-stream-first-stage-ack",
+                "h2-slow-stream-second-stage",
+            ),
+            (
+                "h2-slow-stream-second-stage",
+                "h2-slow-stream-consumer-pause-ready",
+            ),
+            (
+                "h2-slow-stream-consumer-pause-ready",
+                "h2-slow-stream-consumer-burst",
+            ),
+            (
+                "h2-slow-stream-consumer-burst",
+                "h2-slow-stream-consumer-resume",
+            ),
+            (
+                "h2-slow-stream-consumer-resume",
+                "h2-slow-stream-second-stage-ack",
+            ),
+            (
+                "h2-slow-stream-second-stage-ack",
+                "h2-slow-stream-third-stage",
+            ),
+            ("h2-slow-stream-third-stage", "h2-slow-stream-complete"),
+            ("h2-slow-stream-complete", "h2-slow-stream-proof"),
+            ("h2-slow-stream-proof", "h1-cors"),
+        ):
+            with self.subTest(first_event=first_event, second_event=second_event):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                first_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == first_event
+                )
+                second_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == second_event
+                )
+                transcript[first_index], transcript[second_index] = (
+                    transcript[second_index],
+                    transcript[first_index],
+                )
+                with self.assertRaisesRegex(
+                    M0Error,
+                    "slow stream stage events are not between cancellation proof "
+                    "and CORS",
+                ):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-slow-stream-rejected",
+            "h2-slow-stream-unexpected-close",
+            "h2-slow-stream-stage-ack-rejected",
+            "h2-slow-stream-stage-ack-session-mismatch",
+            "h2-slow-stream-stage-ack-timeout",
+            "h2-slow-stream-consumer-pause-ready-rejected",
+            "h2-slow-stream-consumer-pause-ready-session-mismatch",
+            "h2-slow-stream-consumer-resume-rejected",
+            "h2-slow-stream-consumer-resume-session-mismatch",
+            "h2-slow-stream-proof-rejected",
+            "h2-slow-stream-proof-session-mismatch",
+            "h2-slow-stream-proof-timeout",
+        ):
+            with self.subTest(forbidden_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(
+                    M0Error, "slow-stream failure event"
                 ):
                     run_m5_wisp_smoke.validate_relay_transcript(
                         status, relay_ready=relay_ready

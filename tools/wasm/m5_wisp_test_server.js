@@ -32,6 +32,27 @@ const CACHE_REVALIDATE_BODY = "M5_CACHE_REVALIDATE_OK";
 const CACHE_REVALIDATE_CACHE_CONTROL = "private, max-age=60, must-revalidate";
 const CANCEL_STREAM_FIRST_CHUNK = "M5_CANCEL_STREAM_FIRST_CHUNK";
 const CANCEL_STREAM_PROOF_BODY = "M5_CANCEL_STREAM_PROOF";
+// Keep the fixture stages ASCII and short. The page consumes exact byte
+// sequences through a ReadableStream reader before it is allowed to release
+// the next producer stage.
+const SLOW_STREAM_STAGES = Object.freeze([
+  "M5_SLOW_STREAM_FIRST_STAGE",
+  "M5_SLOW_STREAM_SECOND_STAGE",
+  "M5_SLOW_STREAM_THIRD_STAGE",
+]);
+const SLOW_STREAM_FIRST_STAGE_ACK_BODY = "M5_SLOW_STREAM_FIRST_STAGE_ACK";
+const SLOW_STREAM_SECOND_STAGE_ACK_BODY = "M5_SLOW_STREAM_SECOND_STAGE_ACK";
+const SLOW_STREAM_PROOF_BODY = "M5_SLOW_STREAM_PROOF";
+const SLOW_STREAM_CONSUMER_PAUSE_READY_BODY =
+    "M5_SLOW_STREAM_CONSUMER_PAUSE_READY";
+const SLOW_STREAM_CONSUMER_RESUME_BODY =
+    "M5_SLOW_STREAM_CONSUMER_RESUMED";
+// This is deliberately larger than one WISP DATA payload (16 KiB) while
+// remaining well below the configured one-megabyte inbound queue bound. The
+// page pauses its Fetch reader while this deterministic body is delivered,
+// then drains and validates every byte before the relay permits stage three.
+const SLOW_STREAM_CONSUMER_BURST_BYTES = 64 * 1024;
+const SLOW_STREAM_CONSUMER_BURST_BYTE = 0x53;  // ASCII "S".
 
 const WISP_PACKET_TYPES = Object.freeze({
   CONNECT: 0x01,
@@ -73,6 +94,12 @@ const MAX_TEST_COUNTER = 16;
 const RELAY_HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 const DESTINATION_IDLE_TIMEOUT_MS = 30 * 1000;
 const CANCEL_STREAM_PROOF_TIMEOUT_MS = 5 * 1000;
+// Each later stage is deliberately scheduled only after the page has read
+// and acknowledged the preceding stage on the same H2 session. The lower
+// bound is separately recorded, rather than inferring slowness from page
+// timers alone.
+const SLOW_STREAM_STAGE_DELAY_MS = 150;
+const SLOW_STREAM_STAGE_ACK_TIMEOUT_MS = 5 * 1000;
 
 const REPOSITORY_ROOT = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -672,6 +699,26 @@ function statusSnapshot(context) {
     relayErrors: context.stats.relayErrors,
     requestedDestinations: context.stats.requestedDestinations.map(
         (destination) => ({...destination})),
+    slowStreamCompletedStreams: context.stats.slowStreamCompletedStreams,
+    slowStreamConsumerBurstBytes: context.stats.slowStreamConsumerBurstBytes,
+    slowStreamConsumerBurstWrites:
+      context.stats.slowStreamConsumerBurstWrites,
+    slowStreamConsumerPauseReadyRequests:
+      context.stats.slowStreamConsumerPauseReadyRequests,
+    slowStreamConsumerResumes: context.stats.slowStreamConsumerResumes,
+    slowStreamFirstStageAcks: context.stats.slowStreamFirstStageAcks,
+    slowStreamFirstStages: context.stats.slowStreamFirstStages,
+    slowStreamPhase: context.slowStreamPhase,
+    slowStreamSessionMismatches: context.stats.slowStreamSessionMismatches,
+    slowStreamStageAckTimeouts: context.stats.slowStreamStageAckTimeouts,
+    slowStreamProofs: context.stats.slowStreamProofs,
+    slowStreamRequests: context.stats.slowStreamRequests,
+    slowStreamSecondStageAcks: context.stats.slowStreamSecondStageAcks,
+    slowStreamSecondStages: context.stats.slowStreamSecondStages,
+    slowStreamStageDelayMs: context.slowStreamStageDelayMs,
+    slowStreamStageDelaySchedules: context.stats.slowStreamStageDelaySchedules,
+    slowStreamThirdStages: context.stats.slowStreamThirdStages,
+    slowStreamUnexpectedCloses: context.stats.slowStreamUnexpectedCloses,
     tlsMismatchHttpStreams: context.stats.tlsMismatchHttpStreams,
     tlsMismatchTcpConnections: context.stats.tlsMismatchTcpConnections,
     udpPackets: context.stats.udpPackets,
@@ -1141,6 +1188,265 @@ function holdCancelStreamProof(context, stream) {
   });
 }
 
+function isSlowStreamSession(context, stream) {
+  return context.slowStreamSession !== null &&
+      stream.session === context.slowStreamSession;
+}
+
+function respondToSlowStreamControl(stream, status, body, state) {
+  if (stream.destroyed || stream.closed) {
+    return false;
+  }
+  const responseBody = Buffer.from(body);
+  try {
+    stream.respond(h2Headers({
+      ":status": status,
+      "content-length": String(responseBody.length),
+      "content-type": "text/plain; charset=utf-8",
+      "x-m5-slow-stream": state,
+    }));
+    stream.end(responseBody);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function clearSlowStreamStageAckTimeout(context) {
+  if (context.slowStreamStageAckTimeout !== null) {
+    clearTimeout(context.slowStreamStageAckTimeout);
+    context.slowStreamStageAckTimeout = null;
+  }
+}
+
+function clearSlowStreamStageTimer(context) {
+  if (context.slowStreamStageTimer !== null) {
+    clearTimeout(context.slowStreamStageTimer);
+    context.slowStreamStageTimer = null;
+  }
+}
+
+function armSlowStreamStageAckTimeout(context, expectedPhases) {
+  clearSlowStreamStageAckTimeout(context);
+  context.slowStreamStageAckTimeout = setTimeout(() => {
+    context.slowStreamStageAckTimeout = null;
+    if (!expectedPhases.includes(context.slowStreamPhase)) {
+      return;
+    }
+    context.slowStreamPhase = "stage-ack-timeout";
+    incrementBoundedCounter(context, "slowStreamStageAckTimeouts");
+    context.transcript.add("h2-slow-stream-stage-ack-timeout");
+    if (context.slowStreamResponse && !context.slowStreamResponse.destroyed &&
+        !context.slowStreamResponse.closed) {
+      context.slowStreamResponse.close(http2.constants.NGHTTP2_CANCEL);
+    }
+  }, SLOW_STREAM_STAGE_ACK_TIMEOUT_MS);
+  context.slowStreamStageAckTimeout.unref?.();
+}
+
+function writeSlowStreamStage(context, stageIndex) {
+  const stream = context.slowStreamResponse;
+  if (!stream || stream.destroyed || stream.closed ||
+      stageIndex < 0 || stageIndex >= SLOW_STREAM_STAGES.length) {
+    return false;
+  }
+  const body = Buffer.from(SLOW_STREAM_STAGES[stageIndex]);
+  try {
+    if (stageIndex === 0) {
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-type": "text/plain; charset=utf-8",
+        "x-m5-slow-stream": "streaming",
+      }));
+    }
+    stream.write(body);
+  } catch (_) {
+    return false;
+  }
+
+  if (stageIndex === 0) {
+    context.slowStreamPhase = "first-stage";
+    incrementBoundedCounter(context, "slowStreamFirstStages");
+    context.transcript.add("h2-slow-stream-first-stage");
+    armSlowStreamStageAckTimeout(context, ["first-stage"]);
+    return true;
+  }
+  if (stageIndex === 1) {
+    context.slowStreamPhase = "second-stage";
+    incrementBoundedCounter(context, "slowStreamSecondStages");
+    context.transcript.add("h2-slow-stream-second-stage");
+    armSlowStreamStageAckTimeout(context, [
+      "second-stage",
+      "second-stage-consumer-paused",
+      "second-stage-consumer-resumed",
+    ]);
+    return true;
+  }
+
+  clearSlowStreamStageAckTimeout(context);
+  context.slowStreamPhase = "complete";
+  incrementBoundedCounter(context, "slowStreamThirdStages");
+  context.transcript.add("h2-slow-stream-third-stage");
+  try {
+    stream.end();
+  } catch (_) {
+    return false;
+  }
+  incrementBoundedCounter(context, "slowStreamCompletedStreams");
+  context.transcript.add("h2-slow-stream-complete");
+  return true;
+}
+
+function scheduleSlowStreamStage(context, expectedPhase, stageIndex) {
+  clearSlowStreamStageTimer(context);
+  incrementBoundedCounter(context, "slowStreamStageDelaySchedules");
+  context.slowStreamStageTimer = setTimeout(() => {
+    context.slowStreamStageTimer = null;
+    if (context.slowStreamPhase !== expectedPhase) {
+      return;
+    }
+    if (!writeSlowStreamStage(context, stageIndex)) {
+      context.slowStreamPhase = "unexpected-close";
+      incrementBoundedCounter(context, "slowStreamUnexpectedCloses");
+      context.transcript.add("h2-slow-stream-unexpected-close");
+    }
+  }, context.slowStreamStageDelayMs);
+  context.slowStreamStageTimer.unref?.();
+}
+
+function rejectSlowStreamSessionMismatch(stream, context, event) {
+  incrementBoundedCounter(context, "slowStreamSessionMismatches");
+  context.transcript.add(event);
+  respondToSlowStreamControl(
+      stream, 409, "M5_SLOW_STREAM_REJECTED", "session-mismatch");
+}
+
+function writeSlowStreamConsumerBurst(context) {
+  const stream = context.slowStreamResponse;
+  if (!stream || stream.destroyed || stream.closed) {
+    return false;
+  }
+  const body = Buffer.alloc(
+      SLOW_STREAM_CONSUMER_BURST_BYTES, SLOW_STREAM_CONSUMER_BURST_BYTE);
+  try {
+    const writable = stream.write(body);
+    context.stats.slowStreamConsumerBurstBytes = body.length;
+    incrementBoundedCounter(context, "slowStreamConsumerBurstWrites");
+    context.transcript.add("h2-slow-stream-consumer-burst", {
+      backpressured: !writable,
+      bytes: body.length,
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function handleSlowStreamConsumerPauseReady(stream, context) {
+  if (!isSlowStreamSession(context, stream)) {
+    rejectSlowStreamSessionMismatch(
+        stream, context, "h2-slow-stream-consumer-pause-ready-session-mismatch");
+    return;
+  }
+  if (context.slowStreamPhase !== "second-stage") {
+    context.transcript.add("h2-slow-stream-consumer-pause-ready-rejected");
+    respondToSlowStreamControl(stream, 409, "M5_SLOW_STREAM_REJECTED", "rejected");
+    return;
+  }
+
+  context.slowStreamPhase = "second-stage-consumer-paused";
+  incrementBoundedCounter(context, "slowStreamConsumerPauseReadyRequests");
+  context.transcript.add("h2-slow-stream-consumer-pause-ready");
+  if (!writeSlowStreamConsumerBurst(context) ||
+      !respondToSlowStreamControl(
+          stream, 200, SLOW_STREAM_CONSUMER_PAUSE_READY_BODY, "paused")) {
+    context.slowStreamPhase = "unexpected-close";
+    incrementBoundedCounter(context, "slowStreamUnexpectedCloses");
+    context.transcript.add("h2-slow-stream-unexpected-close");
+  }
+}
+
+function handleSlowStreamConsumerResume(stream, context) {
+  if (!isSlowStreamSession(context, stream)) {
+    rejectSlowStreamSessionMismatch(
+        stream, context, "h2-slow-stream-consumer-resume-session-mismatch");
+    return;
+  }
+  if (context.slowStreamPhase !== "second-stage-consumer-paused") {
+    context.transcript.add("h2-slow-stream-consumer-resume-rejected");
+    respondToSlowStreamControl(stream, 409, "M5_SLOW_STREAM_REJECTED", "rejected");
+    return;
+  }
+
+  context.slowStreamPhase = "second-stage-consumer-resumed";
+  incrementBoundedCounter(context, "slowStreamConsumerResumes");
+  context.transcript.add("h2-slow-stream-consumer-resume");
+  if (!respondToSlowStreamControl(
+      stream, 200, SLOW_STREAM_CONSUMER_RESUME_BODY, "resumed")) {
+    context.slowStreamPhase = "unexpected-close";
+    incrementBoundedCounter(context, "slowStreamUnexpectedCloses");
+    context.transcript.add("h2-slow-stream-unexpected-close");
+  }
+}
+
+function handleSlowStreamStageAck(stream, context, stageIndex) {
+  if (!isSlowStreamSession(context, stream)) {
+    rejectSlowStreamSessionMismatch(
+        stream, context, "h2-slow-stream-stage-ack-session-mismatch");
+    return;
+  }
+
+  const expectedPhase = stageIndex === 0 ? "first-stage" :
+    "second-stage-consumer-resumed";
+  const acknowledgedPhase = stageIndex === 0 ?
+    "first-stage-acknowledged" : "second-stage-acknowledged";
+  const body = stageIndex === 0 ? SLOW_STREAM_FIRST_STAGE_ACK_BODY :
+    SLOW_STREAM_SECOND_STAGE_ACK_BODY;
+  if (context.slowStreamPhase !== expectedPhase) {
+    context.transcript.add("h2-slow-stream-stage-ack-rejected");
+    respondToSlowStreamControl(stream, 409, "M5_SLOW_STREAM_REJECTED", "rejected");
+    return;
+  }
+
+  clearSlowStreamStageAckTimeout(context);
+  context.slowStreamPhase = acknowledgedPhase;
+  if (stageIndex === 0) {
+    incrementBoundedCounter(context, "slowStreamFirstStageAcks");
+    context.transcript.add("h2-slow-stream-first-stage-ack");
+  } else {
+    incrementBoundedCounter(context, "slowStreamSecondStageAcks");
+    context.transcript.add("h2-slow-stream-second-stage-ack");
+  }
+  if (!respondToSlowStreamControl(stream, 200, body, "acknowledged")) {
+    context.slowStreamPhase = "unexpected-close";
+    incrementBoundedCounter(context, "slowStreamUnexpectedCloses");
+    context.transcript.add("h2-slow-stream-unexpected-close");
+    return;
+  }
+  scheduleSlowStreamStage(context, acknowledgedPhase, stageIndex + 1);
+}
+
+function handleSlowStreamProof(stream, context) {
+  if (!isSlowStreamSession(context, stream)) {
+    incrementBoundedCounter(context, "slowStreamSessionMismatches");
+    context.transcript.add("h2-slow-stream-proof-session-mismatch");
+    respondToSlowStreamControl(
+        stream, 409, "M5_SLOW_STREAM_PROOF_REJECTED", "session-mismatch");
+    return;
+  }
+  if (context.slowStreamPhase !== "complete") {
+    context.transcript.add("h2-slow-stream-proof-rejected");
+    respondToSlowStreamControl(
+        stream, 409, "M5_SLOW_STREAM_PROOF_REJECTED", "rejected");
+    return;
+  }
+  if (respondToSlowStreamControl(
+      stream, 200, SLOW_STREAM_PROOF_BODY, "complete")) {
+    incrementBoundedCounter(context, "slowStreamProofs");
+    context.transcript.add("h2-slow-stream-proof");
+  }
+}
+
 function h2Page(context) {
   const h1CorsUrl = `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`;
   const cspConnectSrcTargetUrl =
@@ -1172,6 +1478,21 @@ function h2Page(context) {
       new URL("/m5/cancel-proof", location.href).href;
   const cancelStreamFirstChunk =
       ${JSON.stringify(CANCEL_STREAM_FIRST_CHUNK)};
+  const slowStreamURL = new URL("/m5/slow-stream", location.href).href;
+  const slowStreamFirstStageAckURL =
+      new URL("/m5/slow-stream-first-stage-ack", location.href).href;
+  const slowStreamSecondStageAckURL =
+      new URL("/m5/slow-stream-second-stage-ack", location.href).href;
+  const slowStreamConsumerPauseReadyURL =
+      new URL("/m5/slow-stream-consumer-pause-ready", location.href).href;
+  const slowStreamConsumerResumeURL =
+      new URL("/m5/slow-stream-consumer-resume", location.href).href;
+  const slowStreamProofURL =
+      new URL("/m5/slow-stream-proof", location.href).href;
+  const slowStreamStages = ${JSON.stringify(SLOW_STREAM_STAGES)};
+  const slowStreamConsumerBurstBytes = ${SLOW_STREAM_CONSUMER_BURST_BYTES};
+  const slowStreamConsumerBurstByte = ${SLOW_STREAM_CONSUMER_BURST_BYTE};
+  const slowStreamConsumerPauseMs = 150;
   const mixedContentProofURL =
       new URL("/m5/mixed-content-proof", location.href).href;
   const mixedContentTargetURL = ${JSON.stringify(mixedContentTargetUrl)};
@@ -1192,6 +1513,21 @@ function h2Page(context) {
     cancelStreamAborted: false,
     cancelStreamErrorName: "",
     cancelStreamProof: false,
+    slowStreamStarted: false,
+    slowStreamFirstStage: false,
+    slowStreamSecondStage: false,
+    slowStreamThirdStage: false,
+    slowStreamComplete: false,
+    slowStreamProof: false,
+    slowStreamConsumerPauseStarted: false,
+    slowStreamConsumerBurstRead: false,
+    slowStreamConsumerResume: false,
+    slowStreamElapsedMs: 0,
+    slowStreamFirstToSecondStageDelayMs: 0,
+    slowStreamSecondToThirdStageDelayMs: 0,
+    slowStreamConsumerPauseElapsedMs: 0,
+    slowStreamConsumerPauseTimerTicks: 0,
+    slowStreamTimerTicksWhileWaiting: 0,
     activeMixedContentBlocked: false,
     activeMixedContentCspAllowed: false,
     activeMixedContentErrorName: "",
@@ -1357,6 +1693,200 @@ function h2Page(context) {
     return {started: true, receivedFirstChunk: true, errorName};
   }
 
+  async function readExactSlowStreamStage(reader, expected) {
+    let received = "";
+    while (received.length < expected.length) {
+      const next = await reader.read();
+      if (next.done) {
+        return {ok: false, atMs: performance.now()};
+      }
+      received += new TextDecoder().decode(next.value);
+    }
+    return {ok: received === expected, atMs: performance.now()};
+  }
+
+  async function readExactSlowStreamConsumerBurst(reader) {
+    let received = 0;
+    while (received < slowStreamConsumerBurstBytes) {
+      const next = await reader.read();
+      if (next.done || next.value.length === 0 ||
+          received + next.value.length > slowStreamConsumerBurstBytes) {
+        return {ok: false, atMs: performance.now()};
+      }
+      for (const value of next.value) {
+        if (value !== slowStreamConsumerBurstByte) {
+          return {ok: false, atMs: performance.now()};
+        }
+      }
+      received += next.value.length;
+    }
+    return {ok: true, atMs: performance.now()};
+  }
+
+  async function verifySlowStream() {
+    const timerTicksBefore = state.timerTicks;
+    const startedAt = performance.now();
+    const result = {
+      started: false,
+      firstStage: false,
+      secondStage: false,
+      thirdStage: false,
+      complete: false,
+      proof: false,
+      elapsedMs: 0,
+      firstToSecondStageDelayMs: 0,
+      secondToThirdStageDelayMs: 0,
+      consumerPauseStarted: false,
+      consumerBurstRead: false,
+      consumerResume: false,
+      consumerPauseElapsedMs: 0,
+      consumerPauseTimerTicks: 0,
+      timerTicksWhileWaiting: 0,
+    };
+    const finish = () => {
+      result.elapsedMs = Math.floor(performance.now() - startedAt);
+      result.timerTicksWhileWaiting = state.timerTicks - timerTicksBefore;
+      state.slowStreamElapsedMs = result.elapsedMs;
+      state.slowStreamFirstToSecondStageDelayMs =
+          result.firstToSecondStageDelayMs;
+      state.slowStreamSecondToThirdStageDelayMs =
+          result.secondToThirdStageDelayMs;
+      state.slowStreamConsumerPauseElapsedMs =
+          result.consumerPauseElapsedMs;
+      state.slowStreamConsumerPauseTimerTicks =
+          result.consumerPauseTimerTicks;
+      state.slowStreamTimerTicksWhileWaiting =
+          result.timerTicksWhileWaiting;
+      return result;
+    };
+    const response = await fetch(slowStreamURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    result.started = response.ok && !!response.body;
+    state.slowStreamStarted = result.started;
+    if (!result.started) {
+      return finish();
+    }
+
+    const reader = response.body.getReader();
+    const cancelOnFailure = async () => {
+      try {
+        await reader.cancel();
+      } catch (_) {
+        // The result below remains a failed staged-stream proof.
+      }
+    };
+    const firstStage = await readExactSlowStreamStage(
+        reader, slowStreamStages[0]);
+    result.firstStage = firstStage.ok;
+    state.slowStreamFirstStage = result.firstStage;
+    if (!result.firstStage) {
+      await cancelOnFailure();
+      return finish();
+    }
+    const firstAck = await fetch(slowStreamFirstStageAckURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!firstAck.ok || await firstAck.text() !==
+        ${JSON.stringify(SLOW_STREAM_FIRST_STAGE_ACK_BODY)}) {
+      await cancelOnFailure();
+      return finish();
+    }
+
+    const secondStage = await readExactSlowStreamStage(
+        reader, slowStreamStages[1]);
+    result.secondStage = secondStage.ok;
+    state.slowStreamSecondStage = result.secondStage;
+    result.firstToSecondStageDelayMs = Math.floor(
+        secondStage.atMs - firstStage.atMs);
+    state.slowStreamFirstToSecondStageDelayMs =
+        result.firstToSecondStageDelayMs;
+    if (!result.secondStage) {
+      await cancelOnFailure();
+      return finish();
+    }
+
+    result.consumerPauseStarted = true;
+    state.slowStreamConsumerPauseStarted = true;
+    const pauseReady = await fetch(slowStreamConsumerPauseReadyURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!pauseReady.ok || await pauseReady.text() !==
+        ${JSON.stringify(SLOW_STREAM_CONSUMER_PAUSE_READY_BODY)}) {
+      await cancelOnFailure();
+      return finish();
+    }
+    const pauseTimerTicksBefore = state.timerTicks;
+    const pauseStartedAt = performance.now();
+    await new Promise((resolve) => setTimeout(resolve, slowStreamConsumerPauseMs));
+    result.consumerPauseElapsedMs = Math.floor(
+        performance.now() - pauseStartedAt);
+    result.consumerPauseTimerTicks = state.timerTicks - pauseTimerTicksBefore;
+    state.slowStreamConsumerPauseElapsedMs = result.consumerPauseElapsedMs;
+    state.slowStreamConsumerPauseTimerTicks =
+        result.consumerPauseTimerTicks;
+
+    const burst = await readExactSlowStreamConsumerBurst(reader);
+    result.consumerBurstRead = burst.ok;
+    state.slowStreamConsumerBurstRead = result.consumerBurstRead;
+    if (!result.consumerBurstRead) {
+      await cancelOnFailure();
+      return finish();
+    }
+    const consumerResume = await fetch(slowStreamConsumerResumeURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    result.consumerResume = consumerResume.ok && await consumerResume.text() ===
+        ${JSON.stringify(SLOW_STREAM_CONSUMER_RESUME_BODY)};
+    state.slowStreamConsumerResume = result.consumerResume;
+    if (!result.consumerResume) {
+      await cancelOnFailure();
+      return finish();
+    }
+
+    const secondAck = await fetch(slowStreamSecondStageAckURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!secondAck.ok || await secondAck.text() !==
+        ${JSON.stringify(SLOW_STREAM_SECOND_STAGE_ACK_BODY)}) {
+      await cancelOnFailure();
+      return finish();
+    }
+
+    const thirdStage = await readExactSlowStreamStage(
+        reader, slowStreamStages[2]);
+    result.thirdStage = thirdStage.ok;
+    state.slowStreamThirdStage = result.thirdStage;
+    result.secondToThirdStageDelayMs = Math.floor(
+        thirdStage.atMs - secondStage.atMs);
+    state.slowStreamSecondToThirdStageDelayMs =
+        result.secondToThirdStageDelayMs;
+    if (!result.thirdStage) {
+      await cancelOnFailure();
+      return finish();
+    }
+    const completion = await reader.read();
+    result.complete = completion.done === true;
+    state.slowStreamComplete = result.complete;
+    if (!result.complete) {
+      await cancelOnFailure();
+      return finish();
+    }
+    const proof = await fetch(slowStreamProofURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    result.proof = proof.ok && await proof.text() ===
+        ${JSON.stringify(SLOW_STREAM_PROOF_BODY)};
+    state.slowStreamProof = result.proof;
+    return finish();
+  }
+
   // The Content Shell observer accepts its deterministic probe through a
   // string-valued JavaScript execution callback. Keep the network work async,
   // but serialize this synchronous snapshot so each periodic observer probe
@@ -1376,6 +1906,25 @@ function h2Page(context) {
     cancelStreamAborted: state.cancelStreamAborted,
     cancelStreamErrorName: state.cancelStreamErrorName,
     cancelStreamProof: state.cancelStreamProof,
+    slowStreamStarted: state.slowStreamStarted,
+    slowStreamFirstStage: state.slowStreamFirstStage,
+    slowStreamSecondStage: state.slowStreamSecondStage,
+    slowStreamThirdStage: state.slowStreamThirdStage,
+    slowStreamComplete: state.slowStreamComplete,
+    slowStreamProof: state.slowStreamProof,
+    slowStreamConsumerPauseStarted: state.slowStreamConsumerPauseStarted,
+    slowStreamConsumerBurstRead: state.slowStreamConsumerBurstRead,
+    slowStreamConsumerResume: state.slowStreamConsumerResume,
+    slowStreamElapsedMs: state.slowStreamElapsedMs,
+    slowStreamFirstToSecondStageDelayMs:
+        state.slowStreamFirstToSecondStageDelayMs,
+    slowStreamSecondToThirdStageDelayMs:
+        state.slowStreamSecondToThirdStageDelayMs,
+    slowStreamConsumerPauseElapsedMs:
+        state.slowStreamConsumerPauseElapsedMs,
+    slowStreamConsumerPauseTimerTicks:
+        state.slowStreamConsumerPauseTimerTicks,
+    slowStreamTimerTicksWhileWaiting: state.slowStreamTimerTicksWhileWaiting,
     activeMixedContentBlocked: state.activeMixedContentBlocked,
     activeMixedContentCspAllowed: state.activeMixedContentCspAllowed,
     activeMixedContentErrorName: state.activeMixedContentErrorName,
@@ -1476,6 +2025,37 @@ function h2Page(context) {
       }
       state.cancelStreamProof = true;
 
+      const slowStreamResult = await verifySlowStream();
+      state.slowStreamStarted = slowStreamResult.started;
+      state.slowStreamFirstStage = slowStreamResult.firstStage;
+      state.slowStreamSecondStage = slowStreamResult.secondStage;
+      state.slowStreamThirdStage = slowStreamResult.thirdStage;
+      state.slowStreamComplete = slowStreamResult.complete;
+      state.slowStreamProof = slowStreamResult.proof;
+      state.slowStreamConsumerPauseStarted =
+          slowStreamResult.consumerPauseStarted;
+      state.slowStreamConsumerBurstRead = slowStreamResult.consumerBurstRead;
+      state.slowStreamConsumerResume = slowStreamResult.consumerResume;
+      state.slowStreamElapsedMs = slowStreamResult.elapsedMs;
+      state.slowStreamFirstToSecondStageDelayMs =
+          slowStreamResult.firstToSecondStageDelayMs;
+      state.slowStreamSecondToThirdStageDelayMs =
+          slowStreamResult.secondToThirdStageDelayMs;
+      state.slowStreamConsumerPauseElapsedMs =
+          slowStreamResult.consumerPauseElapsedMs;
+      state.slowStreamConsumerPauseTimerTicks =
+          slowStreamResult.consumerPauseTimerTicks;
+      state.slowStreamTimerTicksWhileWaiting =
+          slowStreamResult.timerTicksWhileWaiting;
+      if (!state.slowStreamStarted || !state.slowStreamFirstStage ||
+          !state.slowStreamSecondStage || !state.slowStreamThirdStage ||
+          !state.slowStreamComplete || !state.slowStreamProof ||
+          !state.slowStreamConsumerPauseStarted ||
+          !state.slowStreamConsumerBurstRead ||
+          !state.slowStreamConsumerResume) {
+        throw new Error("M5 slow producer/consumer stream failed");
+      }
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -1489,9 +2069,15 @@ function h2Page(context) {
           state.cspConnectSrcBlocked && state.activeMixedContentBlocked &&
           state.cancelStreamStarted && state.cancelStreamReceivedFirstChunk &&
           state.cancelStreamAborted && state.cancelStreamProof &&
+          state.slowStreamStarted && state.slowStreamFirstStage &&
+          state.slowStreamSecondStage && state.slowStreamThirdStage &&
+          state.slowStreamComplete && state.slowStreamProof &&
+          state.slowStreamConsumerPauseStarted &&
+          state.slowStreamConsumerBurstRead &&
+          state.slowStreamConsumerResume &&
           state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/CSP/mixed/cancel/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -1714,6 +2300,66 @@ function createH2Server(context, tlsMaterial) {
       } else {
         respondToCancelStreamProof(stream, context, false);
       }
+      return;
+    }
+    if (requestPath === "/m5/slow-stream") {
+      incrementBoundedCounter(context, "slowStreamRequests");
+      if (context.slowStreamPhase !== "pre-stream") {
+        context.transcript.add("h2-slow-stream-rejected");
+        respondToSlowStreamControl(
+            stream, 409, "M5_SLOW_STREAM_REJECTED", "duplicate");
+        return;
+      }
+
+      context.slowStreamSession = stream.session;
+      context.slowStreamResponse = stream;
+      context.slowStreamPhase = "opening";
+      context.transcript.add("h2-slow-stream-start");
+      let closeObserved = false;
+      const observeClose = () => {
+        if (closeObserved) {
+          return;
+        }
+        closeObserved = true;
+        clearSlowStreamStageTimer(context);
+        clearSlowStreamStageAckTimeout(context);
+        if (context.slowStreamPhase === "complete" ||
+            context.slowStreamPhase === "stage-ack-timeout" ||
+            context.slowStreamPhase === "unexpected-close") {
+          return;
+        }
+        context.slowStreamPhase = "unexpected-close";
+        incrementBoundedCounter(context, "slowStreamUnexpectedCloses");
+        context.transcript.add("h2-slow-stream-unexpected-close");
+      };
+      stream.once("aborted", observeClose);
+      stream.once("close", observeClose);
+      stream.once("error", observeClose);
+      if (!writeSlowStreamStage(context, 0)) {
+        context.slowStreamPhase = "unexpected-close";
+        incrementBoundedCounter(context, "slowStreamUnexpectedCloses");
+        context.transcript.add("h2-slow-stream-unexpected-close");
+      }
+      return;
+    }
+    if (requestPath === "/m5/slow-stream-first-stage-ack") {
+      handleSlowStreamStageAck(stream, context, 0);
+      return;
+    }
+    if (requestPath === "/m5/slow-stream-second-stage-ack") {
+      handleSlowStreamStageAck(stream, context, 1);
+      return;
+    }
+    if (requestPath === "/m5/slow-stream-consumer-pause-ready") {
+      handleSlowStreamConsumerPauseReady(stream, context);
+      return;
+    }
+    if (requestPath === "/m5/slow-stream-consumer-resume") {
+      handleSlowStreamConsumerResume(stream, context);
+      return;
+    }
+    if (requestPath === "/m5/slow-stream-proof") {
+      handleSlowStreamProof(stream, context);
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -2119,6 +2765,12 @@ async function start(options) {
     cancelStreamPendingProofs: new Set(),
     cancelStreamPhase: "pre-cancel",
     cancelStreamSession: null,
+    slowStreamPhase: "pre-stream",
+    slowStreamResponse: null,
+    slowStreamSession: null,
+    slowStreamStageAckTimeout: null,
+    slowStreamStageDelayMs: SLOW_STREAM_STAGE_DELAY_MS,
+    slowStreamStageTimer: null,
     cspConnectSrcTargetPort: 0,
     cspConnectSrcTargetSockets: new Set(),
     echoPeers: new Set(),
@@ -2144,6 +2796,22 @@ async function start(options) {
       cancelStreamProofTimeouts: 0,
       cancelStreamRequests: 0,
       cancelStreamUnexpectedResets: 0,
+      slowStreamCompletedStreams: 0,
+      slowStreamConsumerBurstBytes: 0,
+      slowStreamConsumerBurstWrites: 0,
+      slowStreamConsumerPauseReadyRequests: 0,
+      slowStreamConsumerResumes: 0,
+      slowStreamFirstStageAcks: 0,
+      slowStreamFirstStages: 0,
+      slowStreamSessionMismatches: 0,
+      slowStreamStageAckTimeouts: 0,
+      slowStreamProofs: 0,
+      slowStreamRequests: 0,
+      slowStreamSecondStageAcks: 0,
+      slowStreamSecondStages: 0,
+      slowStreamStageDelaySchedules: 0,
+      slowStreamThirdStages: 0,
+      slowStreamUnexpectedCloses: 0,
       corsRequests: 0,
       cspConnectSrcProofs: 0,
       cspConnectSrcTargetRequests: 0,
@@ -2263,6 +2931,8 @@ async function start(options) {
       clearTimeout(pending.timeout);
     }
     context.cancelStreamPendingProofs.clear();
+    clearSlowStreamStageTimer(context);
+    clearSlowStreamStageAckTimeout(context);
     for (const session of context.h2Sessions) {
       session.close();
       // A headless outer browser can retain an idle H2 session after its Wasm

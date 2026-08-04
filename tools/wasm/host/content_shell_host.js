@@ -45,6 +45,17 @@ const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
 const M5_NETWORK_TEST_HOSTNAME = "a.test";
 const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
 const M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control";
+// The controlled M5 slow-stream fixture holds each acknowledged response
+// stage long enough to make a live Blink timer observation meaningful. Keep
+// these checks in the host contract as well as the Python runner so a stale
+// page probe cannot declare the fixture ready before it proved responsiveness.
+const M5_SLOW_STREAM_MIN_ELAPSED_MS = 75;
+const M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING = 2;
+const M5_SLOW_STREAM_MIN_STAGE_DELAY_MS = 75;
+const M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_MS = 75;
+const M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS = 2;
+const M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS = 2;
+const M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES = 2;
 const M5_NAVIGATION_PHASE = Object.freeze({
   NONE: "none",
   PLAINTEXT_HTTP_CONTROL: "plaintext-http-control",
@@ -1388,6 +1399,27 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       typeof pageProbe?.cancelStreamAborted === "boolean" &&
       typeof pageProbe?.cancelStreamErrorName === "string" &&
       typeof pageProbe?.cancelStreamProof === "boolean" &&
+      typeof pageProbe?.slowStreamStarted === "boolean" &&
+      typeof pageProbe?.slowStreamFirstStage === "boolean" &&
+      typeof pageProbe?.slowStreamSecondStage === "boolean" &&
+      typeof pageProbe?.slowStreamThirdStage === "boolean" &&
+      typeof pageProbe?.slowStreamComplete === "boolean" &&
+      typeof pageProbe?.slowStreamProof === "boolean" &&
+      typeof pageProbe?.slowStreamConsumerPauseStarted === "boolean" &&
+      typeof pageProbe?.slowStreamConsumerBurstRead === "boolean" &&
+      typeof pageProbe?.slowStreamConsumerResume === "boolean" &&
+      Number.isSafeInteger(pageProbe?.slowStreamElapsedMs) &&
+      pageProbe.slowStreamElapsedMs >= 0 &&
+      Number.isSafeInteger(pageProbe?.slowStreamFirstToSecondStageDelayMs) &&
+      pageProbe.slowStreamFirstToSecondStageDelayMs >= 0 &&
+      Number.isSafeInteger(pageProbe?.slowStreamSecondToThirdStageDelayMs) &&
+      pageProbe.slowStreamSecondToThirdStageDelayMs >= 0 &&
+      Number.isSafeInteger(pageProbe?.slowStreamConsumerPauseElapsedMs) &&
+      pageProbe.slowStreamConsumerPauseElapsedMs >= 0 &&
+      Number.isSafeInteger(pageProbe?.slowStreamConsumerPauseTimerTicks) &&
+      pageProbe.slowStreamConsumerPauseTimerTicks >= 0 &&
+      Number.isSafeInteger(pageProbe?.slowStreamTimerTicksWhileWaiting) &&
+      pageProbe.slowStreamTimerTicksWhileWaiting >= 0 &&
       typeof pageProbe?.corsFetch === "boolean" &&
       typeof pageProbe?.redirected === "boolean" &&
       typeof pageProbe?.webSocketEcho === "boolean" &&
@@ -1410,8 +1442,80 @@ function hasM5NetworkPageProbe(pageProbe) {
       pageProbe?.cancelStreamAborted === true &&
       pageProbe?.cancelStreamErrorName === "AbortError" &&
       pageProbe?.cancelStreamProof === true &&
+      pageProbe?.slowStreamStarted === true &&
+      pageProbe?.slowStreamFirstStage === true &&
+      pageProbe?.slowStreamSecondStage === true &&
+      pageProbe?.slowStreamThirdStage === true &&
+      pageProbe?.slowStreamComplete === true &&
+      pageProbe?.slowStreamProof === true &&
+      pageProbe?.slowStreamConsumerPauseStarted === true &&
+      pageProbe?.slowStreamConsumerBurstRead === true &&
+      pageProbe?.slowStreamConsumerResume === true &&
+      pageProbe?.slowStreamElapsedMs >= M5_SLOW_STREAM_MIN_ELAPSED_MS &&
+      pageProbe?.slowStreamFirstToSecondStageDelayMs >=
+        M5_SLOW_STREAM_MIN_STAGE_DELAY_MS &&
+      pageProbe?.slowStreamSecondToThirdStageDelayMs >=
+        M5_SLOW_STREAM_MIN_STAGE_DELAY_MS &&
+      pageProbe?.slowStreamConsumerPauseElapsedMs >=
+        M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_MS &&
+      pageProbe?.slowStreamConsumerPauseTimerTicks >=
+        M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS &&
+      pageProbe?.slowStreamTimerTicksWhileWaiting >=
+        M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING &&
       pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
       pageProbe?.altSvcH3Advertised === true;
+}
+
+function snapshotM5SlowStreamHostHeartbeat(heartbeat) {
+  if (heartbeat?.anchor !== "m5-https-navigation-committed" ||
+      !Number.isFinite(heartbeat?.elapsedMs) || heartbeat.elapsedMs < 0 ||
+      !Number.isSafeInteger(heartbeat?.timerEndTicks) ||
+      heartbeat.timerEndTicks < 0 ||
+      !Number.isSafeInteger(heartbeat?.animationFrameEndTicks) ||
+      heartbeat.animationFrameEndTicks < 0 ||
+      !Number.isFinite(heartbeat?.maxTimerGapMs) ||
+      heartbeat.maxTimerGapMs < 0) {
+    return null;
+  }
+  return {
+    anchor: heartbeat.anchor,
+    elapsedMs: heartbeat.elapsedMs,
+    timerEndTicks: heartbeat.timerEndTicks,
+    animationFrameEndTicks: heartbeat.animationFrameEndTicks,
+    maxTimerGapMs: heartbeat.maxTimerGapMs,
+  };
+}
+
+function makeM5SlowStreamHostHeartbeat(start, end) {
+  if (!start || !end || start.anchor !== end.anchor ||
+      end.elapsedMs < start.elapsedMs ||
+      end.timerEndTicks < start.timerEndTicks ||
+      end.animationFrameEndTicks < start.animationFrameEndTicks) {
+    return null;
+  }
+  return {
+    anchor: end.anchor,
+    elapsedMs: end.elapsedMs - start.elapsedMs,
+    timerDelta: end.timerEndTicks - start.timerEndTicks,
+    animationFrameDelta:
+      end.animationFrameEndTicks - start.animationFrameEndTicks,
+    // The host retains the maximum from the navigation anchor. Requiring it
+    // to remain bounded detects an outer-page stall during the slow stream
+    // even if later timer ticks catch up before this snapshot is returned.
+    maxTimerGapMs: end.maxTimerGapMs,
+  };
+}
+
+function hasM5SlowStreamHostHeartbeat(heartbeat) {
+  return heartbeat?.anchor === "m5-https-navigation-committed" &&
+      Number.isFinite(heartbeat?.elapsedMs) &&
+      heartbeat.elapsedMs >= M5_SLOW_STREAM_MIN_ELAPSED_MS &&
+      Number.isSafeInteger(heartbeat?.timerDelta) &&
+      heartbeat.timerDelta >= M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS &&
+      Number.isSafeInteger(heartbeat?.animationFrameDelta) &&
+      heartbeat.animationFrameDelta >= M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES &&
+      Number.isFinite(heartbeat?.maxTimerGapMs) &&
+      heartbeat.maxTimerGapMs <= MAXIMUM_TIMER_GAP_MS;
 }
 
 function isM5PlaintextHttpControlPageProbeIdentity(pageProbe) {
@@ -12265,6 +12369,8 @@ async function runM5WispNetworkSmokeFromQuery() {
   let navigationResult = null;
   let tlsFailureNavigationResult = null;
   let tlsFailureReadiness = null;
+  let slowStreamHeartbeat = null;
+  let slowStreamHeartbeatStart = null;
   let shutdown = null;
   let result;
 
@@ -12346,13 +12452,24 @@ async function runM5WispNetworkSmokeFromQuery() {
     navigationResult = await host.loadM5NetworkURL(testURL);
     while (performance.now() < deadline) {
       readiness = await host.readiness();
+      const pageProbe = readiness.pageProbe;
+      if (slowStreamHeartbeatStart === null &&
+          pageProbe?.slowStreamStarted === true &&
+          pageProbe?.slowStreamComplete !== true) {
+        slowStreamHeartbeatStart = snapshotM5SlowStreamHostHeartbeat(
+            readiness.heartbeat);
+      }
       if (readiness.baseReady && hasM5NetworkPageProbe(readiness.pageProbe)) {
+        slowStreamHeartbeat = makeM5SlowStreamHostHeartbeat(
+            slowStreamHeartbeatStart,
+            snapshotM5SlowStreamHostHeartbeat(readiness.heartbeat));
         break;
       }
       await delay(50);
     }
     if (!readiness || !readiness.baseReady ||
-        !hasM5NetworkPageProbe(readiness.pageProbe)) {
+        !hasM5NetworkPageProbe(readiness.pageProbe) ||
+        !hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat)) {
       throw new Error(
           "M5 WISP HTTPS fixture did not complete: " +
           JSON.stringify(readiness));
@@ -12429,6 +12546,29 @@ async function runM5WispNetworkSmokeFromQuery() {
         pageProbe.cancelStreamAborted === true &&
         pageProbe.cancelStreamErrorName === "AbortError" &&
         pageProbe.cancelStreamProof === true,
+      slowStream:
+        pageProbe.slowStreamStarted === true &&
+        pageProbe.slowStreamFirstStage === true &&
+        pageProbe.slowStreamSecondStage === true &&
+        pageProbe.slowStreamThirdStage === true &&
+        pageProbe.slowStreamComplete === true &&
+        pageProbe.slowStreamProof === true &&
+        pageProbe.slowStreamConsumerPauseStarted === true &&
+        pageProbe.slowStreamConsumerBurstRead === true &&
+        pageProbe.slowStreamConsumerResume === true &&
+        pageProbe.slowStreamElapsedMs >= M5_SLOW_STREAM_MIN_ELAPSED_MS &&
+        pageProbe.slowStreamFirstToSecondStageDelayMs >=
+          M5_SLOW_STREAM_MIN_STAGE_DELAY_MS &&
+        pageProbe.slowStreamSecondToThirdStageDelayMs >=
+          M5_SLOW_STREAM_MIN_STAGE_DELAY_MS &&
+        pageProbe.slowStreamConsumerPauseElapsedMs >=
+          M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_MS &&
+        pageProbe.slowStreamConsumerPauseTimerTicks >=
+          M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS &&
+        pageProbe.slowStreamTimerTicksWhileWaiting >=
+          M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING,
+      slowStreamHostHeartbeat:
+        hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat),
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
       cors: pageProbe.corsFetch === true,
       webSocket: pageProbe.webSocketEcho === true,
@@ -12454,6 +12594,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       plaintextHttpControlReadiness,
       navigationResult,
       readiness,
+      slowStreamHeartbeat,
       tlsFailureNavigationResult,
       tlsFailureReadiness,
       logs,
@@ -12477,6 +12618,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       navigationResult,
       tlsFailureNavigationResult,
       readiness: null,
+      slowStreamHeartbeat,
       tlsFailureReadiness: null,
       logs: null,
       shutdown,

@@ -60,6 +60,19 @@ M5_HTTP1_CORS_PATH = "/m5/cors-resource"
 M5_TLS_NAME_MISMATCH_PATH = "/m5/tls-name-mismatch"
 M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control"
 M5_MIXED_CONTENT_TARGET_PATH = "/m5/mixed-content-target"
+# The relay holds each post-ack response stage for this bounded interval. The
+# page must observe both elapsed time and its independent timer while Blink is
+# reading the response, rather than treating a fully buffered body as a slow
+# stream.
+M5_SLOW_STREAM_MIN_ELAPSED_MS = 75
+M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING = 2
+M5_SLOW_STREAM_MIN_STAGE_DELAY_MS = 75
+M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_MS = 75
+M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS = 2
+M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS = 2
+M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES = 2
+M5_SLOW_STREAM_MAX_HOST_TIMER_GAP_MS = 250
+M5_SLOW_STREAM_CONSUMER_BURST_BYTES = 64 * 1024
 M5_BROWSER_WINDOW_SIZE = "1280,800"
 MAXIMUM_RELAY_READY_LINE_BYTES = 16 * 1024
 MAXIMUM_RELAY_STATUS_BYTES = 256 * 1024
@@ -658,6 +671,37 @@ def validate_m5_result(
     heartbeat = _require_dict(readiness.get("heartbeat"), "M5 heartbeat")
     if heartbeat.get("anchor") != "m5-https-navigation-committed":
         raise M0Error("M5 heartbeat was not anchored to HTTPS navigation")
+    slow_stream_heartbeat = _require_dict(
+        result.get("slowStreamHeartbeat"), "M5 slow-stream host heartbeat"
+    )
+    if slow_stream_heartbeat.get("anchor") != "m5-https-navigation-committed":
+        raise M0Error(
+            "M5 slow-stream host heartbeat was not anchored to HTTPS navigation"
+        )
+    for field, minimum in (
+        ("elapsedMs", M5_SLOW_STREAM_MIN_ELAPSED_MS),
+        ("timerDelta", M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS),
+        ("animationFrameDelta", M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES),
+    ):
+        actual = slow_stream_heartbeat.get(field)
+        if type(actual) not in (int, float) or not (actual >= minimum):
+            raise M0Error(
+                f"M5 slow-stream host heartbeat {field} must be at least "
+                f"{minimum}, got {actual!r}"
+            )
+    for field in ("timerDelta", "animationFrameDelta"):
+        if type(slow_stream_heartbeat[field]) is not int:
+            raise M0Error(
+                f"M5 slow-stream host heartbeat {field} must be an integer"
+            )
+    max_timer_gap_ms = slow_stream_heartbeat.get("maxTimerGapMs")
+    if type(max_timer_gap_ms) not in (int, float) or not (
+        0 <= max_timer_gap_ms <= M5_SLOW_STREAM_MAX_HOST_TIMER_GAP_MS
+    ):
+        raise M0Error(
+            "M5 slow-stream host heartbeat maxTimerGapMs is outside the "
+            "bounded responsive range"
+        )
 
     page_probe = _require_dict(readiness.get("pageProbe"), "M5 page probe")
     expected_probe = {
@@ -677,6 +721,15 @@ def validate_m5_result(
         "cancelStreamAborted": True,
         "cancelStreamErrorName": "AbortError",
         "cancelStreamProof": True,
+        "slowStreamStarted": True,
+        "slowStreamFirstStage": True,
+        "slowStreamSecondStage": True,
+        "slowStreamThirdStage": True,
+        "slowStreamComplete": True,
+        "slowStreamProof": True,
+        "slowStreamConsumerPauseStarted": True,
+        "slowStreamConsumerBurstRead": True,
+        "slowStreamConsumerResume": True,
         "cspConnectSrcBlocked": True,
         "phase": "https-fixture",
         "activeMixedContentBlocked": True,
@@ -689,6 +742,35 @@ def validate_m5_result(
             raise M0Error(
                 f"M5 page probe {field} mismatch: expected "
                 f"{expected_value!r}, got {actual!r}"
+            )
+    for field, minimum in (
+        ("slowStreamElapsedMs", M5_SLOW_STREAM_MIN_ELAPSED_MS),
+        (
+            "slowStreamFirstToSecondStageDelayMs",
+            M5_SLOW_STREAM_MIN_STAGE_DELAY_MS,
+        ),
+        (
+            "slowStreamSecondToThirdStageDelayMs",
+            M5_SLOW_STREAM_MIN_STAGE_DELAY_MS,
+        ),
+        (
+            "slowStreamConsumerPauseElapsedMs",
+            M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_MS,
+        ),
+        (
+            "slowStreamConsumerPauseTimerTicks",
+            M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS,
+        ),
+        (
+            "slowStreamTimerTicksWhileWaiting",
+            M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING,
+        ),
+    ):
+        actual = page_probe.get(field)
+        if type(actual) is not int or actual < minimum:
+            raise M0Error(
+                f"M5 page probe {field} must be an integer at least "
+                f"{minimum}, got {actual!r}"
             )
     if page_probe.get("activeMixedContentTargetUrl") != mixed_content_target_url:
         raise M0Error(
@@ -834,6 +916,8 @@ def validate_relay_transcript(
         raise M0Error("relay plaintext HTTP control phase did not reach post-control")
     if status.get("cancelStreamPhase") != "cancel-observed":
         raise M0Error("relay cancel stream phase did not observe an HTTP/2 CANCEL")
+    if status.get("slowStreamPhase") != "complete":
+        raise M0Error("relay slow stream phase did not complete")
     for field in (
         "wispSessions",
         "rejectedDestinations",
@@ -854,6 +938,23 @@ def validate_relay_transcript(
         "cancelStreamProofSessionMismatches",
         "cancelStreamProofTimeouts",
         "cancelStreamUnexpectedResets",
+        "slowStreamRequests",
+        "slowStreamFirstStages",
+        "slowStreamSecondStages",
+        "slowStreamThirdStages",
+        "slowStreamCompletedStreams",
+        "slowStreamConsumerBurstBytes",
+        "slowStreamConsumerBurstWrites",
+        "slowStreamConsumerPauseReadyRequests",
+        "slowStreamConsumerResumes",
+        "slowStreamFirstStageAcks",
+        "slowStreamSecondStageAcks",
+        "slowStreamProofs",
+        "slowStreamSessionMismatches",
+        "slowStreamStageAckTimeouts",
+        "slowStreamUnexpectedCloses",
+        "slowStreamStageDelayMs",
+        "slowStreamStageDelaySchedules",
         "cspConnectSrcProofs",
         "cspConnectSrcTargetTcpConnections",
         "cspConnectSrcTargetRequests",
@@ -898,6 +999,22 @@ def validate_relay_transcript(
         ("cancelStreamProofSessionMismatches", 0),
         ("cancelStreamProofTimeouts", 0),
         ("cancelStreamUnexpectedResets", 0),
+        ("slowStreamRequests", 1),
+        ("slowStreamFirstStages", 1),
+        ("slowStreamSecondStages", 1),
+        ("slowStreamThirdStages", 1),
+        ("slowStreamCompletedStreams", 1),
+        ("slowStreamConsumerBurstBytes", M5_SLOW_STREAM_CONSUMER_BURST_BYTES),
+        ("slowStreamConsumerBurstWrites", 1),
+        ("slowStreamConsumerPauseReadyRequests", 1),
+        ("slowStreamConsumerResumes", 1),
+        ("slowStreamFirstStageAcks", 1),
+        ("slowStreamSecondStageAcks", 1),
+        ("slowStreamProofs", 1),
+        ("slowStreamSessionMismatches", 0),
+        ("slowStreamStageAckTimeouts", 0),
+        ("slowStreamUnexpectedCloses", 0),
+        ("slowStreamStageDelaySchedules", 2),
         ("cspConnectSrcProofs", 1),
         ("cspConnectSrcTargetTcpConnections", 0),
         ("cspConnectSrcTargetRequests", 0),
@@ -913,6 +1030,11 @@ def validate_relay_transcript(
                 f"relay {field} mismatch: expected exactly "
                 f"{expected_value}, got {status[field]}"
             )
+    if status["slowStreamStageDelayMs"] < M5_SLOW_STREAM_MIN_ELAPSED_MS:
+        raise M0Error(
+            "relay slowStreamStageDelayMs is shorter than the controlled "
+            "slow-stream interval"
+        )
     if status["plaintextHttpControlTcpConnections"] < 1:
         raise M0Error(
             "relay did not observe the plaintext HTTP control TCP connection"
@@ -1008,6 +1130,17 @@ def validate_relay_transcript(
         "h2-cancel-stream-start",
         "h2-cancel-stream-cancel-reset",
         "h2-cancel-stream-proof",
+        "h2-slow-stream-start",
+        "h2-slow-stream-first-stage",
+        "h2-slow-stream-first-stage-ack",
+        "h2-slow-stream-second-stage",
+        "h2-slow-stream-consumer-pause-ready",
+        "h2-slow-stream-consumer-burst",
+        "h2-slow-stream-consumer-resume",
+        "h2-slow-stream-second-stage-ack",
+        "h2-slow-stream-third-stage",
+        "h2-slow-stream-complete",
+        "h2-slow-stream-proof",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
@@ -1043,6 +1176,17 @@ def validate_relay_transcript(
         "h2-cancel-stream-start",
         "h2-cancel-stream-cancel-reset",
         "h2-cancel-stream-proof",
+        "h2-slow-stream-start",
+        "h2-slow-stream-first-stage",
+        "h2-slow-stream-first-stage-ack",
+        "h2-slow-stream-second-stage",
+        "h2-slow-stream-consumer-pause-ready",
+        "h2-slow-stream-consumer-burst",
+        "h2-slow-stream-consumer-resume",
+        "h2-slow-stream-second-stage-ack",
+        "h2-slow-stream-third-stage",
+        "h2-slow-stream-complete",
+        "h2-slow-stream-proof",
     ):
         if event_names.count(event) != 1:
             raise M0Error(f"relay transcript must contain exactly one {event!r}")
@@ -1055,6 +1199,25 @@ def validate_relay_transcript(
     if cancel_reset_entry.get("rstCode") != 8:
         raise M0Error(
             "relay cancel stream reset did not report NGHTTP2_CANCEL (8)"
+        )
+    slow_stream_consumer_burst_entry = next(
+        entry
+        for entry in transcript
+        if isinstance(entry, dict)
+        and entry.get("event") == "h2-slow-stream-consumer-burst"
+    )
+    if (
+        slow_stream_consumer_burst_entry.get("bytes")
+        != M5_SLOW_STREAM_CONSUMER_BURST_BYTES
+    ):
+        raise M0Error(
+            "relay slow-stream consumer burst does not report the exact "
+            "bounded payload size"
+        )
+    if slow_stream_consumer_burst_entry.get("backpressured") is not True:
+        raise M0Error(
+            "relay slow-stream consumer burst did not observe H2 write "
+            "backpressure"
         )
     if not (
         event_names.index("plaintext-http-control-tcp-connect")
@@ -1079,6 +1242,25 @@ def validate_relay_transcript(
             "relay cancellation proof events are not between active mixed-content "
             "proof and CORS"
         )
+    if not (
+        event_names.index("h2-cancel-stream-proof")
+        < event_names.index("h2-slow-stream-start")
+        < event_names.index("h2-slow-stream-first-stage")
+        < event_names.index("h2-slow-stream-first-stage-ack")
+        < event_names.index("h2-slow-stream-second-stage")
+        < event_names.index("h2-slow-stream-consumer-pause-ready")
+        < event_names.index("h2-slow-stream-consumer-burst")
+        < event_names.index("h2-slow-stream-consumer-resume")
+        < event_names.index("h2-slow-stream-second-stage-ack")
+        < event_names.index("h2-slow-stream-third-stage")
+        < event_names.index("h2-slow-stream-complete")
+        < event_names.index("h2-slow-stream-proof")
+        < event_names.index("h1-cors")
+    ):
+        raise M0Error(
+            "relay slow stream stage events are not between cancellation "
+            "proof and CORS"
+        )
     for event in (
         "h2-cancel-stream-rejected",
         "h2-cancel-stream-unexpected-reset",
@@ -1089,6 +1271,25 @@ def validate_relay_transcript(
         if event in events:
             raise M0Error(
                 "relay transcript unexpectedly contains cancellation failure "
+                f"event {event!r}"
+            )
+    for event in (
+        "h2-slow-stream-rejected",
+        "h2-slow-stream-unexpected-close",
+        "h2-slow-stream-stage-ack-rejected",
+        "h2-slow-stream-stage-ack-session-mismatch",
+        "h2-slow-stream-stage-ack-timeout",
+        "h2-slow-stream-consumer-pause-ready-rejected",
+        "h2-slow-stream-consumer-pause-ready-session-mismatch",
+        "h2-slow-stream-consumer-resume-rejected",
+        "h2-slow-stream-consumer-resume-session-mismatch",
+        "h2-slow-stream-proof-rejected",
+        "h2-slow-stream-proof-session-mismatch",
+        "h2-slow-stream-proof-timeout",
+    ):
+        if event in events:
+            raise M0Error(
+                "relay transcript unexpectedly contains slow-stream failure "
                 f"event {event!r}"
             )
     for event in (
