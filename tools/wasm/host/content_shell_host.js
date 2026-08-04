@@ -56,6 +56,7 @@ const M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_MS = 75;
 const M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS = 2;
 const M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS = 2;
 const M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES = 2;
+const M5_LARGE_DOWNLOAD_BYTES = 512 * 1024;
 const M5_NAVIGATION_PHASE = Object.freeze({
   NONE: "none",
   PLAINTEXT_HTTP_CONTROL: "plaintext-http-control",
@@ -1420,6 +1421,13 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       pageProbe.slowStreamConsumerPauseTimerTicks >= 0 &&
       Number.isSafeInteger(pageProbe?.slowStreamTimerTicksWhileWaiting) &&
       pageProbe.slowStreamTimerTicksWhileWaiting >= 0 &&
+      typeof pageProbe?.largeDownloadStarted === "boolean" &&
+      typeof pageProbe?.largeDownloadContentDisposition === "boolean" &&
+      typeof pageProbe?.largeDownloadComplete === "boolean" &&
+      Number.isSafeInteger(pageProbe?.largeDownloadBytes) &&
+      pageProbe.largeDownloadBytes >= 0 &&
+      Number.isSafeInteger(pageProbe?.largeDownloadReaderChunks) &&
+      pageProbe.largeDownloadReaderChunks >= 0 &&
       typeof pageProbe?.corsFetch === "boolean" &&
       typeof pageProbe?.redirected === "boolean" &&
       typeof pageProbe?.webSocketEcho === "boolean" &&
@@ -1462,6 +1470,11 @@ function hasM5NetworkPageProbe(pageProbe) {
         M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS &&
       pageProbe?.slowStreamTimerTicksWhileWaiting >=
         M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING &&
+      pageProbe?.largeDownloadStarted === true &&
+      pageProbe?.largeDownloadContentDisposition === true &&
+      pageProbe?.largeDownloadComplete === true &&
+      pageProbe?.largeDownloadBytes === M5_LARGE_DOWNLOAD_BYTES &&
+      pageProbe?.largeDownloadReaderChunks >= 1 &&
       pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
       pageProbe?.altSvcH3Advertised === true;
 }
@@ -12569,6 +12582,12 @@ async function runM5WispNetworkSmokeFromQuery() {
           M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING,
       slowStreamHostHeartbeat:
         hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat),
+      largeDownload:
+        pageProbe.largeDownloadStarted === true &&
+        pageProbe.largeDownloadContentDisposition === true &&
+        pageProbe.largeDownloadComplete === true &&
+        pageProbe.largeDownloadBytes === M5_LARGE_DOWNLOAD_BYTES &&
+        pageProbe.largeDownloadReaderChunks >= 1,
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
       cors: pageProbe.corsFetch === true,
       webSocket: pageProbe.webSocketEcho === true,

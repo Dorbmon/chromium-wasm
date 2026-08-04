@@ -153,6 +153,11 @@ def passing_result() -> dict[str, object]:
                 "slowStreamConsumerPauseElapsedMs": 100,
                 "slowStreamConsumerPauseTimerTicks": 4,
                 "slowStreamTimerTicksWhileWaiting": 8,
+                "largeDownloadStarted": True,
+                "largeDownloadContentDisposition": True,
+                "largeDownloadComplete": True,
+                "largeDownloadBytes": 512 * 1024,
+                "largeDownloadReaderChunks": 32,
                 "cspConnectSrcBlocked": True,
                 "phase": "https-fixture",
                 "activeMixedContentBlocked": True,
@@ -235,6 +240,13 @@ def passing_relay_status() -> dict[str, object]:
         "cancelStreamProofTimeouts": 0,
         "cancelStreamRequests": 1,
         "cancelStreamUnexpectedResets": 0,
+        "largeDownloadPhase": "complete",
+        "largeDownloadBackpressureEvents": 32,
+        "largeDownloadBytes": 512 * 1024,
+        "largeDownloadChunks": 32,
+        "largeDownloadCompletions": 1,
+        "largeDownloadRequests": 1,
+        "largeDownloadUnexpectedCloses": 0,
         "slowStreamPhase": "complete",
         "slowStreamRequests": 1,
         "slowStreamFirstStages": 1,
@@ -328,9 +340,11 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 27, "event": "h2-slow-stream-third-stage"},
             {"sequence": 28, "event": "h2-slow-stream-complete"},
             {"sequence": 29, "event": "h2-slow-stream-proof"},
-            {"sequence": 30, "event": "h1-cors"},
-            {"sequence": 31, "event": "h1-wss-echo"},
-            {"sequence": 32, "event": "tls-failure-tcp-connect"},
+            {"sequence": 30, "event": "h2-large-download-start"},
+            {"sequence": 31, "event": "h2-large-download-complete"},
+            {"sequence": 32, "event": "h1-cors"},
+            {"sequence": 33, "event": "h1-wss-echo"},
+            {"sequence": 34, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -611,6 +625,9 @@ class M5ResultValidationTest(unittest.TestCase):
             "slowStreamConsumerPauseStarted",
             "slowStreamConsumerBurstRead",
             "slowStreamConsumerResume",
+            "largeDownloadStarted",
+            "largeDownloadContentDisposition",
+            "largeDownloadComplete",
             "cspConnectSrcBlocked",
             "activeMixedContentBlocked",
             "activeMixedContentCspAllowed",
@@ -683,6 +700,26 @@ class M5ResultValidationTest(unittest.TestCase):
                 assert isinstance(heartbeat, dict)
                 heartbeat[field] = invalid_value
                 with self.assertRaisesRegex(M0Error, "slow-stream host heartbeat"):
+                    validate_passing_result(result)
+
+    def test_rejects_invalid_large_download_page_evidence(self) -> None:
+        for field, invalid_value in (
+            ("largeDownloadBytes", 0),
+            ("largeDownloadBytes", 512 * 1024 - 1),
+            ("largeDownloadBytes", 512 * 1024 + 1),
+            ("largeDownloadBytes", True),
+            ("largeDownloadReaderChunks", 0),
+            ("largeDownloadReaderChunks", -1),
+            ("largeDownloadReaderChunks", True),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                result = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                page_probe = readiness["pageProbe"]
+                assert isinstance(page_probe, dict)
+                page_probe[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, field):
                     validate_passing_result(result)
 
     def test_rejects_invalid_cancel_stream_page_evidence(self) -> None:
@@ -1474,7 +1511,6 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             ),
             ("h2-slow-stream-third-stage", "h2-slow-stream-complete"),
             ("h2-slow-stream-complete", "h2-slow-stream-proof"),
-            ("h2-slow-stream-proof", "h1-cors"),
         ):
             with self.subTest(first_event=first_event, second_event=second_event):
                 status = passing_relay_status()
@@ -1527,6 +1563,101 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(
                     M0Error, "slow-stream failure event"
                 ):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+    def test_rejects_invalid_large_download_evidence(self) -> None:
+        relay_ready = parsed_relay_ready()
+
+        status = passing_relay_status()
+        status["largeDownloadPhase"] = "streaming"
+        with self.assertRaisesRegex(M0Error, "large download phase"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for field, actual_value in (
+            ("largeDownloadBytes", 0),
+            ("largeDownloadBytes", 512 * 1024 - 1),
+            ("largeDownloadBytes", 512 * 1024 + 1),
+            ("largeDownloadChunks", 0),
+            ("largeDownloadChunks", 31),
+            ("largeDownloadChunks", 33),
+            ("largeDownloadCompletions", 0),
+            ("largeDownloadCompletions", 2),
+            ("largeDownloadRequests", 0),
+            ("largeDownloadRequests", 2),
+            ("largeDownloadUnexpectedCloses", 1),
+            ("largeDownloadBackpressureEvents", 0),
+            ("largeDownloadBackpressureEvents", 33),
+        ):
+            with self.subTest(field=field, actual_value=actual_value):
+                status = passing_relay_status()
+                status[field] = actual_value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-large-download-start",
+            "h2-large-download-complete",
+        ):
+            with self.subTest(missing_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for first_event, second_event in (
+            ("h2-slow-stream-proof", "h2-large-download-start"),
+            ("h2-large-download-start", "h2-large-download-complete"),
+            ("h2-large-download-complete", "h1-cors"),
+        ):
+            with self.subTest(first_event=first_event, second_event=second_event):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                first_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == first_event
+                )
+                second_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == second_event
+                )
+                transcript[first_index], transcript[second_index] = (
+                    transcript[second_index],
+                    transcript[first_index],
+                )
+                with self.assertRaisesRegex(M0Error, "large download events"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-large-download-rejected",
+            "h2-large-download-unexpected-close",
+        ):
+            with self.subTest(forbidden_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(M0Error, "large-download failure"):
                     run_m5_wisp_smoke.validate_relay_transcript(
                         status, relay_ready=relay_ready
                     )

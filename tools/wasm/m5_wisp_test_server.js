@@ -53,6 +53,16 @@ const SLOW_STREAM_CONSUMER_RESUME_BODY =
 // then drains and validates every byte before the relay permits stage three.
 const SLOW_STREAM_CONSUMER_BURST_BYTES = 64 * 1024;
 const SLOW_STREAM_CONSUMER_BURST_BYTE = 0x53;  // ASCII "S".
+// The large-download lane is intentionally well below the host bridge's
+// one-megabyte per-stream inbound queue, while still requiring 32 complete
+// WISP DATA payloads. Chromium must consume it as a byte stream; it is not a
+// host fetch or a synthetic browser download completion.
+const LARGE_DOWNLOAD_BYTES = 512 * 1024;
+const LARGE_DOWNLOAD_CHUNK_BYTES = 16 * 1024;
+const LARGE_DOWNLOAD_CHUNK_COUNT =
+    LARGE_DOWNLOAD_BYTES / LARGE_DOWNLOAD_CHUNK_BYTES;
+const LARGE_DOWNLOAD_CONTENT_DISPOSITION =
+    'attachment; filename="m5-large-download.bin"';
 
 const WISP_PACKET_TYPES = Object.freeze({
   CONNECT: 0x01,
@@ -681,6 +691,15 @@ function statusSnapshot(context) {
       count: context.stats.h2Requests,
       protocol: "h2",
     },
+    largeDownloadBackpressureEvents:
+      context.stats.largeDownloadBackpressureEvents,
+    largeDownloadBytes: context.stats.largeDownloadBytes,
+    largeDownloadChunks: context.stats.largeDownloadChunks,
+    largeDownloadCompletions: context.stats.largeDownloadCompletions,
+    largeDownloadPhase: context.largeDownloadPhase,
+    largeDownloadRequests: context.stats.largeDownloadRequests,
+    largeDownloadUnexpectedCloses:
+      context.stats.largeDownloadUnexpectedCloses,
     mixedContentProofs: context.stats.mixedContentProofs,
     mixedContentTargetPostControlRequests:
       context.stats.mixedContentTargetPostControlRequests,
@@ -1212,6 +1231,25 @@ function respondToSlowStreamControl(stream, status, body, state) {
   }
 }
 
+function respondToLargeDownloadControl(stream, status, body, state) {
+  if (stream.destroyed || stream.closed) {
+    return false;
+  }
+  const responseBody = Buffer.from(body);
+  try {
+    stream.respond(h2Headers({
+      ":status": status,
+      "content-length": String(responseBody.length),
+      "content-type": "text/plain; charset=utf-8",
+      "x-m5-large-download": state,
+    }));
+    stream.end(responseBody);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function clearSlowStreamStageAckTimeout(context) {
   if (context.slowStreamStageAckTimeout !== null) {
     clearTimeout(context.slowStreamStageAckTimeout);
@@ -1447,6 +1485,121 @@ function handleSlowStreamProof(stream, context) {
   }
 }
 
+function largeDownloadChunk(offset) {
+  const length = Math.min(
+      LARGE_DOWNLOAD_CHUNK_BYTES, LARGE_DOWNLOAD_BYTES - offset);
+  const body = Buffer.allocUnsafe(length);
+  for (let index = 0; index < body.length; ++index) {
+    // A byte position pattern catches truncation, duplication, reordering,
+    // and fabricated all-zero bodies without serializing the large body into
+    // a status response.
+    body[index] = (offset + index) & 0xff;
+  }
+  return body;
+}
+
+function failLargeDownload(context, stream) {
+  if (context.largeDownloadPhase === "complete" ||
+      context.largeDownloadPhase === "unexpected-close") {
+    return;
+  }
+  context.largeDownloadPhase = "unexpected-close";
+  incrementBoundedCounter(context, "largeDownloadUnexpectedCloses");
+  context.transcript.add("h2-large-download-unexpected-close");
+  if (stream && !stream.destroyed && !stream.closed) {
+    try {
+      stream.close(http2.constants.NGHTTP2_CANCEL);
+    } catch (_) {
+      // The stream is already terminal, which is the failure being recorded.
+    }
+  }
+}
+
+function writeLargeDownload(context, stream) {
+  if (context.largeDownloadPhase !== "pre-download") {
+    context.transcript.add("h2-large-download-rejected");
+    respondToLargeDownloadControl(
+        stream, 409, "M5_LARGE_DOWNLOAD_REJECTED", "duplicate");
+    return;
+  }
+
+  context.largeDownloadPhase = "streaming";
+  incrementBoundedCounter(context, "largeDownloadRequests");
+  context.transcript.add("h2-large-download-start");
+  let bytesWritten = 0;
+  let settled = false;
+  const fail = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    failLargeDownload(context, stream);
+  };
+  const finish = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    context.largeDownloadPhase = "complete";
+    incrementBoundedCounter(context, "largeDownloadCompletions");
+    context.transcript.add("h2-large-download-complete");
+    try {
+      stream.end();
+    } catch (_) {
+      // Blink's byte-exact EOF check is required independently by the page
+      // and runner, so a failed end cannot turn this into a passing download.
+      context.largeDownloadPhase = "unexpected-close";
+      incrementBoundedCounter(context, "largeDownloadUnexpectedCloses");
+      context.transcript.add("h2-large-download-unexpected-close");
+    }
+  };
+  const pump = () => {
+    if (settled || stream.destroyed || stream.closed) {
+      fail();
+      return;
+    }
+    while (bytesWritten < LARGE_DOWNLOAD_BYTES) {
+      const body = largeDownloadChunk(bytesWritten);
+      let writable = false;
+      try {
+        writable = stream.write(body);
+      } catch (_) {
+        fail();
+        return;
+      }
+      bytesWritten += body.length;
+      context.stats.largeDownloadBytes = bytesWritten;
+      context.stats.largeDownloadChunks = Math.min(
+          context.stats.largeDownloadChunks + 1, LARGE_DOWNLOAD_CHUNK_COUNT);
+      if (!writable) {
+        context.stats.largeDownloadBackpressureEvents = Math.min(
+            context.stats.largeDownloadBackpressureEvents + 1,
+            LARGE_DOWNLOAD_CHUNK_COUNT);
+        stream.once("drain", pump);
+        return;
+      }
+    }
+    finish();
+  };
+
+  stream.once("aborted", fail);
+  stream.once("close", fail);
+  stream.once("error", fail);
+  try {
+    stream.respond(h2Headers({
+      ":status": 200,
+      "content-disposition": LARGE_DOWNLOAD_CONTENT_DISPOSITION,
+      "content-length": String(LARGE_DOWNLOAD_BYTES),
+      "content-type": "application/octet-stream",
+      "x-m5-large-download": "streaming",
+    }));
+  } catch (_) {
+    fail();
+    return;
+  }
+  pump();
+}
+
 function h2Page(context) {
   const h1CorsUrl = `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`;
   const cspConnectSrcTargetUrl =
@@ -1489,10 +1642,14 @@ function h2Page(context) {
       new URL("/m5/slow-stream-consumer-resume", location.href).href;
   const slowStreamProofURL =
       new URL("/m5/slow-stream-proof", location.href).href;
+  const largeDownloadURL = new URL("/m5/large-download", location.href).href;
   const slowStreamStages = ${JSON.stringify(SLOW_STREAM_STAGES)};
   const slowStreamConsumerBurstBytes = ${SLOW_STREAM_CONSUMER_BURST_BYTES};
   const slowStreamConsumerBurstByte = ${SLOW_STREAM_CONSUMER_BURST_BYTE};
   const slowStreamConsumerPauseMs = 150;
+  const largeDownloadBytes = ${LARGE_DOWNLOAD_BYTES};
+  const largeDownloadContentDisposition =
+      ${JSON.stringify(LARGE_DOWNLOAD_CONTENT_DISPOSITION)};
   const mixedContentProofURL =
       new URL("/m5/mixed-content-proof", location.href).href;
   const mixedContentTargetURL = ${JSON.stringify(mixedContentTargetUrl)};
@@ -1528,6 +1685,11 @@ function h2Page(context) {
     slowStreamConsumerPauseElapsedMs: 0,
     slowStreamConsumerPauseTimerTicks: 0,
     slowStreamTimerTicksWhileWaiting: 0,
+    largeDownloadStarted: false,
+    largeDownloadContentDisposition: false,
+    largeDownloadComplete: false,
+    largeDownloadBytes: 0,
+    largeDownloadReaderChunks: 0,
     activeMixedContentBlocked: false,
     activeMixedContentCspAllowed: false,
     activeMixedContentErrorName: "",
@@ -1887,6 +2049,50 @@ function h2Page(context) {
     return finish();
   }
 
+  async function verifyLargeDownload() {
+    const result = {
+      started: false,
+      contentDisposition: false,
+      complete: false,
+      bytes: 0,
+      readerChunks: 0,
+    };
+    const response = await fetch(largeDownloadURL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    result.started = response.ok && !!response.body &&
+        response.headers.get("content-length") === String(largeDownloadBytes);
+    result.contentDisposition = response.headers.get("content-disposition") ===
+        largeDownloadContentDisposition;
+    state.largeDownloadStarted = result.started;
+    state.largeDownloadContentDisposition = result.contentDisposition;
+    if (!result.started || !result.contentDisposition) {
+      return result;
+    }
+    const reader = response.body.getReader();
+    while (result.bytes < largeDownloadBytes) {
+      const next = await reader.read();
+      if (next.done || next.value.length === 0 ||
+          result.bytes + next.value.length > largeDownloadBytes) {
+        return result;
+      }
+      for (let index = 0; index < next.value.length; ++index) {
+        if (next.value[index] !== ((result.bytes + index) & 0xff)) {
+          return result;
+        }
+      }
+      result.bytes += next.value.length;
+      result.readerChunks += 1;
+      state.largeDownloadBytes = result.bytes;
+      state.largeDownloadReaderChunks = result.readerChunks;
+    }
+    const completion = await reader.read();
+    result.complete = completion.done === true;
+    state.largeDownloadComplete = result.complete;
+    return result;
+  }
+
   // The Content Shell observer accepts its deterministic probe through a
   // string-valued JavaScript execution callback. Keep the network work async,
   // but serialize this synchronous snapshot so each periodic observer probe
@@ -1925,6 +2131,11 @@ function h2Page(context) {
     slowStreamConsumerPauseTimerTicks:
         state.slowStreamConsumerPauseTimerTicks,
     slowStreamTimerTicksWhileWaiting: state.slowStreamTimerTicksWhileWaiting,
+    largeDownloadStarted: state.largeDownloadStarted,
+    largeDownloadContentDisposition: state.largeDownloadContentDisposition,
+    largeDownloadComplete: state.largeDownloadComplete,
+    largeDownloadBytes: state.largeDownloadBytes,
+    largeDownloadReaderChunks: state.largeDownloadReaderChunks,
     activeMixedContentBlocked: state.activeMixedContentBlocked,
     activeMixedContentCspAllowed: state.activeMixedContentCspAllowed,
     activeMixedContentErrorName: state.activeMixedContentErrorName,
@@ -2056,6 +2267,21 @@ function h2Page(context) {
         throw new Error("M5 slow producer/consumer stream failed");
       }
 
+      const largeDownloadResult = await verifyLargeDownload();
+      state.largeDownloadStarted = largeDownloadResult.started;
+      state.largeDownloadContentDisposition =
+          largeDownloadResult.contentDisposition;
+      state.largeDownloadComplete = largeDownloadResult.complete;
+      state.largeDownloadBytes = largeDownloadResult.bytes;
+      state.largeDownloadReaderChunks = largeDownloadResult.readerChunks;
+      if (!state.largeDownloadStarted ||
+          !state.largeDownloadContentDisposition ||
+          !state.largeDownloadComplete ||
+          state.largeDownloadBytes !== largeDownloadBytes ||
+          state.largeDownloadReaderChunks < 1) {
+        throw new Error("M5 large download stream failed");
+      }
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -2075,9 +2301,14 @@ function h2Page(context) {
           state.slowStreamConsumerPauseStarted &&
           state.slowStreamConsumerBurstRead &&
           state.slowStreamConsumerResume &&
+          state.largeDownloadStarted &&
+          state.largeDownloadContentDisposition &&
+          state.largeDownloadComplete &&
+          state.largeDownloadBytes === largeDownloadBytes &&
+          state.largeDownloadReaderChunks >= 1 &&
           state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/download/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -2360,6 +2591,10 @@ function createH2Server(context, tlsMaterial) {
     }
     if (requestPath === "/m5/slow-stream-proof") {
       handleSlowStreamProof(stream, context);
+      return;
+    }
+    if (requestPath === "/m5/large-download") {
+      writeLargeDownload(context, stream);
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -2765,6 +3000,7 @@ async function start(options) {
     cancelStreamPendingProofs: new Set(),
     cancelStreamPhase: "pre-cancel",
     cancelStreamSession: null,
+    largeDownloadPhase: "pre-download",
     slowStreamPhase: "pre-stream",
     slowStreamResponse: null,
     slowStreamSession: null,
@@ -2796,6 +3032,12 @@ async function start(options) {
       cancelStreamProofTimeouts: 0,
       cancelStreamRequests: 0,
       cancelStreamUnexpectedResets: 0,
+      largeDownloadBackpressureEvents: 0,
+      largeDownloadBytes: 0,
+      largeDownloadChunks: 0,
+      largeDownloadCompletions: 0,
+      largeDownloadRequests: 0,
+      largeDownloadUnexpectedCloses: 0,
       slowStreamCompletedStreams: 0,
       slowStreamConsumerBurstBytes: 0,
       slowStreamConsumerBurstWrites: 0,

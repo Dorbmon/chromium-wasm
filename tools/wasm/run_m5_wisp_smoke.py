@@ -73,6 +73,9 @@ M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS = 2
 M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES = 2
 M5_SLOW_STREAM_MAX_HOST_TIMER_GAP_MS = 250
 M5_SLOW_STREAM_CONSUMER_BURST_BYTES = 64 * 1024
+M5_LARGE_DOWNLOAD_BYTES = 512 * 1024
+M5_LARGE_DOWNLOAD_CHUNK_BYTES = 16 * 1024
+M5_LARGE_DOWNLOAD_CHUNKS = M5_LARGE_DOWNLOAD_BYTES // M5_LARGE_DOWNLOAD_CHUNK_BYTES
 M5_BROWSER_WINDOW_SIZE = "1280,800"
 MAXIMUM_RELAY_READY_LINE_BYTES = 16 * 1024
 MAXIMUM_RELAY_STATUS_BYTES = 256 * 1024
@@ -730,6 +733,9 @@ def validate_m5_result(
         "slowStreamConsumerPauseStarted": True,
         "slowStreamConsumerBurstRead": True,
         "slowStreamConsumerResume": True,
+        "largeDownloadStarted": True,
+        "largeDownloadContentDisposition": True,
+        "largeDownloadComplete": True,
         "cspConnectSrcBlocked": True,
         "phase": "https-fixture",
         "activeMixedContentBlocked": True,
@@ -772,6 +778,20 @@ def validate_m5_result(
                 f"M5 page probe {field} must be an integer at least "
                 f"{minimum}, got {actual!r}"
             )
+    if page_probe.get("largeDownloadBytes") != M5_LARGE_DOWNLOAD_BYTES:
+        raise M0Error(
+            "M5 page probe largeDownloadBytes does not match the controlled "
+            "large download size"
+        )
+    large_download_reader_chunks = page_probe.get("largeDownloadReaderChunks")
+    if (
+        type(large_download_reader_chunks) is not int
+        or large_download_reader_chunks < 1
+    ):
+        raise M0Error(
+            "M5 page probe largeDownloadReaderChunks must record byte-stream "
+            "consumption"
+        )
     if page_probe.get("activeMixedContentTargetUrl") != mixed_content_target_url:
         raise M0Error(
             "M5 page probe activeMixedContentTargetUrl does not match the "
@@ -918,6 +938,8 @@ def validate_relay_transcript(
         raise M0Error("relay cancel stream phase did not observe an HTTP/2 CANCEL")
     if status.get("slowStreamPhase") != "complete":
         raise M0Error("relay slow stream phase did not complete")
+    if status.get("largeDownloadPhase") != "complete":
+        raise M0Error("relay large download phase did not complete")
     for field in (
         "wispSessions",
         "rejectedDestinations",
@@ -938,6 +960,12 @@ def validate_relay_transcript(
         "cancelStreamProofSessionMismatches",
         "cancelStreamProofTimeouts",
         "cancelStreamUnexpectedResets",
+        "largeDownloadBackpressureEvents",
+        "largeDownloadBytes",
+        "largeDownloadChunks",
+        "largeDownloadCompletions",
+        "largeDownloadRequests",
+        "largeDownloadUnexpectedCloses",
         "slowStreamRequests",
         "slowStreamFirstStages",
         "slowStreamSecondStages",
@@ -999,6 +1027,11 @@ def validate_relay_transcript(
         ("cancelStreamProofSessionMismatches", 0),
         ("cancelStreamProofTimeouts", 0),
         ("cancelStreamUnexpectedResets", 0),
+        ("largeDownloadBytes", M5_LARGE_DOWNLOAD_BYTES),
+        ("largeDownloadChunks", M5_LARGE_DOWNLOAD_CHUNKS),
+        ("largeDownloadCompletions", 1),
+        ("largeDownloadRequests", 1),
+        ("largeDownloadUnexpectedCloses", 0),
         ("slowStreamRequests", 1),
         ("slowStreamFirstStages", 1),
         ("slowStreamSecondStages", 1),
@@ -1034,6 +1067,14 @@ def validate_relay_transcript(
         raise M0Error(
             "relay slowStreamStageDelayMs is shorter than the controlled "
             "slow-stream interval"
+        )
+    if not (
+        1 <= status["largeDownloadBackpressureEvents"]
+        <= M5_LARGE_DOWNLOAD_CHUNKS
+    ):
+        raise M0Error(
+            "relay largeDownloadBackpressureEvents is outside the bounded "
+            "H2 write-backpressure range"
         )
     if status["plaintextHttpControlTcpConnections"] < 1:
         raise M0Error(
@@ -1141,6 +1182,8 @@ def validate_relay_transcript(
         "h2-slow-stream-third-stage",
         "h2-slow-stream-complete",
         "h2-slow-stream-proof",
+        "h2-large-download-start",
+        "h2-large-download-complete",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
@@ -1187,6 +1230,8 @@ def validate_relay_transcript(
         "h2-slow-stream-third-stage",
         "h2-slow-stream-complete",
         "h2-slow-stream-proof",
+        "h2-large-download-start",
+        "h2-large-download-complete",
     ):
         if event_names.count(event) != 1:
             raise M0Error(f"relay transcript must contain exactly one {event!r}")
@@ -1243,6 +1288,16 @@ def validate_relay_transcript(
             "proof and CORS"
         )
     if not (
+        event_names.index("h2-slow-stream-proof")
+        < event_names.index("h2-large-download-start")
+        < event_names.index("h2-large-download-complete")
+        < event_names.index("h1-cors")
+    ):
+        raise M0Error(
+            "relay large download events are not between slow-stream proof "
+            "and CORS"
+        )
+    if not (
         event_names.index("h2-cancel-stream-proof")
         < event_names.index("h2-slow-stream-start")
         < event_names.index("h2-slow-stream-first-stage")
@@ -1290,6 +1345,15 @@ def validate_relay_transcript(
         if event in events:
             raise M0Error(
                 "relay transcript unexpectedly contains slow-stream failure "
+                f"event {event!r}"
+            )
+    for event in (
+        "h2-large-download-rejected",
+        "h2-large-download-unexpected-close",
+    ):
+        if event in events:
+            raise M0Error(
+                "relay transcript unexpectedly contains large-download failure "
                 f"event {event!r}"
             )
     for event in (

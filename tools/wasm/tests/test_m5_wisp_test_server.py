@@ -872,6 +872,80 @@ try {
             )
         return json.loads(result.stdout)
 
+    def _exercise_large_download(self) -> dict[str, object]:
+        node = node_executable()
+        assert node is not None
+        program = r'''
+import fs from "node:fs";
+import http2 from "node:http2";
+
+const [httpsURL, rootCertificate] = process.argv.slice(1);
+const target = new URL(httpsURL);
+const authority = `a.test:${target.port}`;
+const session = http2.connect(`https://127.0.0.1:${target.port}`, {
+  ca: fs.readFileSync(rootCertificate),
+  servername: "a.test",
+});
+
+try {
+  const result = await new Promise((resolve, reject) => {
+    const request = session.request({
+      ":authority": authority,
+      ":method": "GET",
+      ":path": "/m5/large-download",
+    });
+    let headers = null;
+    let bytes = 0;
+    let chunks = 0;
+    let exactBytes = true;
+    request.once("response", (value) => { headers = value; });
+    request.on("data", (chunk) => {
+      const data = Buffer.from(chunk);
+      for (let index = 0; index < data.length; ++index) {
+        if (data[index] !== ((bytes + index) & 0xff)) {
+          exactBytes = false;
+        }
+      }
+      bytes += data.length;
+      chunks += 1;
+    });
+    request.once("end", () => resolve({
+      bytes,
+      chunks,
+      contentDisposition: headers?.["content-disposition"] ?? null,
+      contentLength: headers?.["content-length"] ?? null,
+      exactBytes,
+      responseStatus: headers?.[":status"] ?? null,
+    }));
+    request.once("error", reject);
+    request.end();
+  });
+  process.stdout.write(JSON.stringify(result));
+} finally {
+  session.close();
+}
+'''
+        result = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                program,
+                self.metadata["httpsUrl"],
+                str(ROOT_CERTIFICATE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            self.fail(
+                "large-download H2 client failed: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        return json.loads(result.stdout)
+
     def test_source_is_es_module_and_keeps_key_out_of_output_contract(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn('import http2 from "node:http2"', source)
@@ -944,6 +1018,11 @@ try {
         self.assertIn("stream.session === context.slowStreamSession", source)
         self.assertIn("h2-slow-stream-first-stage-ack", source)
         self.assertIn("h2-slow-stream-proof", source)
+        self.assertIn("LARGE_DOWNLOAD_BYTES", source)
+        self.assertIn('requestPath === "/m5/large-download"', source)
+        self.assertIn("writeLargeDownload", source)
+        self.assertIn("content-disposition", source)
+        self.assertIn("h2-large-download-complete", source)
         self.assertIn(
             "mixed-content-target-post-control-wisp-connect", source
         )
@@ -1665,6 +1744,40 @@ try {
         self.assertLess(
             events.index("h2-slow-stream-proof-session-mismatch"),
             events.index("h2-slow-stream-proof"),
+        )
+
+    def test_h2_large_download_is_exact_and_bounded(self) -> None:
+        evidence = self._exercise_large_download()
+
+        self.assertEqual(evidence["responseStatus"], 200)
+        self.assertEqual(evidence["contentLength"], str(512 * 1024))
+        self.assertEqual(
+            evidence["contentDisposition"],
+            'attachment; filename="m5-large-download.bin"',
+        )
+        self.assertEqual(evidence["bytes"], 512 * 1024)
+        self.assertGreaterEqual(evidence["chunks"], 1)
+        self.assertTrue(evidence["exactBytes"])
+
+        status = self._status()
+        self.assertEqual(status["largeDownloadPhase"], "complete")
+        self.assertEqual(status["largeDownloadRequests"], 1)
+        self.assertEqual(status["largeDownloadCompletions"], 1)
+        self.assertEqual(status["largeDownloadBytes"], 512 * 1024)
+        self.assertEqual(status["largeDownloadChunks"], 32)
+        self.assertGreaterEqual(status["largeDownloadBackpressureEvents"], 1)
+        self.assertLessEqual(status["largeDownloadBackpressureEvents"], 32)
+        self.assertEqual(status["largeDownloadUnexpectedCloses"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(events.count("h2-large-download-start"), 1)
+        self.assertEqual(events.count("h2-large-download-complete"), 1)
+        self.assertLess(
+            events.index("h2-large-download-start"),
+            events.index("h2-large-download-complete"),
         )
 
     def test_tls_failure_endpoint_is_trusted_but_rejects_a_test_name(self) -> None:
