@@ -26,6 +26,7 @@ const FIXTURE = "chromium-wasm-m5-network-v1";
 const WISP_PATH = "/wisp/";
 const STATUS_PATH = "/status";
 const TEST_HOSTNAME = "a.test";
+const REDIRECT_COOKIE_NAME = "m5_redirect";
 
 const WISP_PACKET_TYPES = Object.freeze({
   CONNECT: 0x01,
@@ -622,6 +623,8 @@ function statusSnapshot(context) {
       count: context.stats.h2Requests,
       protocol: "h2",
     },
+    redirectCookieValidations: context.stats.redirectCookieValidations,
+    redirectRequests: context.stats.redirectRequests,
     rejectedDestinations: context.stats.rejectedDestinations,
     relayErrors: context.stats.relayErrors,
     requestedDestinations: context.stats.requestedDestinations.map(
@@ -1030,6 +1033,7 @@ function h2Page(context) {
   const h2ResourceURL = new URL("/m5/h2-resource", location.href).href;
   const corsURL = ${JSON.stringify(h1CorsUrl)};
   const socketURL = ${JSON.stringify(webSocketUrl)};
+  const navigationEntry = performance.getEntriesByType("navigation")[0];
   const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)),
       (value) => value.toString(16).padStart(2, "0")).join("");
   const state = {
@@ -1038,6 +1042,7 @@ function h2Page(context) {
     h2Protocol: "",
     altSvcH3Advertised: false,
     corsFetch: false,
+    redirected: navigationEntry?.redirectCount === 1,
     webSocketEcho: false,
     complete: false,
     failure: null,
@@ -1086,6 +1091,7 @@ function h2Page(context) {
     h2Fetch: state.h2Fetch,
     h2Protocol: state.h2Protocol,
     corsFetch: state.corsFetch,
+    redirected: state.redirected,
     webSocketEcho: state.webSocketEcho,
     nonce,
     altSvcH3Advertised: state.altSvcH3Advertised,
@@ -1113,9 +1119,9 @@ function h2Page(context) {
           await corsResponse.text() === "M5_CORS_OK";
       state.webSocketEcho = await echoNonce();
       state.complete = state.h2Fetch && state.altSvcH3Advertised &&
-          state.corsFetch && state.webSocketEcho;
+          state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -1124,6 +1130,20 @@ function h2Page(context) {
   })();
 })();
 </script>`;
+}
+
+function hasExpectedRedirectCookie(headers, context) {
+  const header = headers.cookie;
+  const cookieLine = Array.isArray(header) ? header.join(";") : header;
+  if (typeof cookieLine !== "string") {
+    return false;
+  }
+  return cookieLine.split(";").some((entry) => {
+    const separator = entry.indexOf("=");
+    return separator > 0 &&
+        entry.slice(0, separator).trim() === REDIRECT_COOKIE_NAME &&
+        entry.slice(separator + 1).trim() === context.redirectCookieValue;
+  });
 }
 
 function createH2Server(context, tlsMaterial) {
@@ -1141,7 +1161,34 @@ function createH2Server(context, tlsMaterial) {
       return;
     }
     context.stats.h2Requests += 1;
+    if (requestPath === "/m5/redirect-cookie") {
+      context.stats.redirectRequests += 1;
+      stream.respond(h2Headers({
+        ":status": 302,
+        "location": "/m5/",
+        "set-cookie":
+          `${REDIRECT_COOKIE_NAME}=${context.redirectCookieValue}; ` +
+          "Secure; HttpOnly; SameSite=Strict; Path=/m5/",
+      }));
+      stream.end();
+      // Never include the opaque cookie value in status or transcript data.
+      context.transcript.add("h2-redirect");
+      context.transcript.add("h2-redirect-cookie");
+      return;
+    }
     if (requestPath === "/m5/") {
+      if (!hasExpectedRedirectCookie(headers, context)) {
+        const body = Buffer.from("M5_REDIRECT_COOKIE_REJECTED");
+        stream.respond(h2Headers({
+          ":status": 403,
+          "content-length": String(body.length),
+          "content-type": "text/plain; charset=utf-8",
+        }));
+        stream.end(body);
+        context.transcript.add("h2-page-cookie-rejected");
+        return;
+      }
+      context.stats.redirectCookieValidations += 1;
       const body = Buffer.from(h2Page(context));
       stream.respond(h2Headers({
         ":status": 200,
@@ -1152,6 +1199,7 @@ function createH2Server(context, tlsMaterial) {
       }));
       stream.end(body);
       context.transcript.add("h2-page");
+      context.transcript.add("h2-page-cookie");
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -1164,12 +1212,6 @@ function createH2Server(context, tlsMaterial) {
       }));
       stream.end(body);
       context.transcript.add("h2-resource");
-      return;
-    }
-    if (requestPath === "/m5/redirect") {
-      stream.respond(h2Headers({":status": 302, location: "/m5/"}));
-      stream.end();
-      context.transcript.add("h2-redirect");
       return;
     }
     stream.respond(h2Headers({":status": 404}));
@@ -1367,10 +1409,13 @@ async function start(options) {
     h2Port: 0,
     h2Sessions: new Set(),
     hostOrigin: options.hostOrigin,
+    redirectCookieValue: crypto.randomBytes(16).toString("hex"),
     relays: new Set(),
     stats: {
       corsRequests: 0,
       h2Requests: 0,
+      redirectCookieValidations: 0,
+      redirectRequests: 0,
       rejectedDestinations: 0,
       relayErrors: 0,
       requestedDestinations: [],
@@ -1409,6 +1454,8 @@ async function start(options) {
     protocol: 1,
     schema_version: 1,
     statusUrl: `http://${LOOPBACK_HOST}:${context.wispPort}${STATUS_PATH}`,
+    redirectUrl:
+      `https://${TEST_HOSTNAME}:${context.h2Port}/m5/redirect-cookie`,
     tlsFailureUrl:
       `https://${TEST_HOSTNAME}:${context.tlsFailurePort}/m5/tls-name-mismatch`,
     transcriptUrl: `http://${LOOPBACK_HOST}:${context.wispPort}${STATUS_PATH}`,

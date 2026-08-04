@@ -35,6 +35,7 @@ RELAY_READY_LINE = json.dumps(
         "schema_version": 1,
         "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
         "httpsUrl": "https://a.test:4443/m5/",
+        "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
         "http1Url": "https://a.test:4444/m5/cors-resource",
         "tlsFailureUrl": "https://a.test:4445/m5/tls-name-mismatch",
         "transcriptUrl": "http://127.0.0.1:40123/status",
@@ -94,6 +95,7 @@ def passing_result() -> dict[str, object]:
                 "corsFetch": True,
                 "webSocketEcho": True,
                 "altSvcH3Advertised": True,
+                "redirected": True,
                 "nonce": "fixed-test-nonce",
             },
         },
@@ -145,6 +147,8 @@ def passing_relay_status() -> dict[str, object]:
         "relayErrors": 0,
         "corsRequests": 1,
         "webSocketEchoes": 1,
+        "redirectRequests": 1,
+        "redirectCookieValidations": 1,
         "tlsMismatchTcpConnections": 1,
         "tlsMismatchHttpStreams": 0,
         "h2Requests": {"count": 2, "protocol": "h2"},
@@ -157,11 +161,14 @@ def passing_relay_status() -> dict[str, object]:
         "transcript": [
             {"sequence": 1, "event": "wisp-ready"},
             {"sequence": 2, "event": "connect-open"},
-            {"sequence": 3, "event": "h2-page"},
-            {"sequence": 4, "event": "h2-resource"},
-            {"sequence": 5, "event": "h1-cors"},
-            {"sequence": 6, "event": "h1-wss-echo"},
-            {"sequence": 7, "event": "tls-failure-tcp-connect"},
+            {"sequence": 3, "event": "h2-redirect"},
+            {"sequence": 4, "event": "h2-redirect-cookie"},
+            {"sequence": 5, "event": "h2-page"},
+            {"sequence": 6, "event": "h2-page-cookie"},
+            {"sequence": 7, "event": "h2-resource"},
+            {"sequence": 8, "event": "h1-cors"},
+            {"sequence": 9, "event": "h1-wss-echo"},
+            {"sequence": 10, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -172,6 +179,9 @@ class RelayReadinessTest(unittest.TestCase):
 
         self.assertEqual(ready.wisp_endpoint, "ws://127.0.0.1:40123/wisp/")
         self.assertEqual(ready.https_url, "https://a.test:4443/m5/")
+        self.assertEqual(
+            ready.redirect_url, "https://a.test:4443/m5/redirect-cookie"
+        )
         self.assertEqual(ready.http1_url, "https://a.test:4444/m5/cors-resource")
         self.assertEqual(
             ready.tls_failure_url,
@@ -191,6 +201,7 @@ class RelayReadinessTest(unittest.TestCase):
                     {
                         "wispEndpoint": endpoint,
                         "httpsUrl": "https://a.test:4443/m5/network",
+                        "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
                         "http1Url": "https://a.test:4444/m5/cors-resource",
                         "tlsFailureUrl": (
                             "https://a.test:4445/m5/tls-name-mismatch"
@@ -213,6 +224,7 @@ class RelayReadinessTest(unittest.TestCase):
                     {
                         "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
                         "httpsUrl": https_url,
+                        "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
                         "http1Url": "https://a.test:4444/m5/cors-resource",
                         "tlsFailureUrl": (
                             "https://a.test:4445/m5/tls-name-mismatch"
@@ -243,7 +255,7 @@ class RelayReadinessTest(unittest.TestCase):
         self.assertEqual(query["token"], ["result-token"])
         self.assertEqual(query["timeout_ms"], ["121250"])
         self.assertEqual(query["wisp_endpoint"], [ready.wisp_endpoint])
-        self.assertEqual(query["m5_url"], [ready.https_url])
+        self.assertEqual(query["m5_url"], [ready.redirect_url])
         self.assertEqual(
             query["m5_tls_failure_url"], [ready.tls_failure_url]
         )
@@ -260,6 +272,7 @@ class RelayReadinessTest(unittest.TestCase):
                     {
                         "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
                         "httpsUrl": "https://a.test:4443/m5/network",
+                        "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
                         "http1Url": "https://a.test:4444/m5/cors-resource",
                         "tlsFailureUrl": (
                             "https://a.test:4445/m5/tls-name-mismatch"
@@ -277,6 +290,13 @@ class RelayReadinessTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "distinct fixture port"):
             run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(ready))
 
+    def test_rejects_redirect_url_outside_the_h2_fixture_listener(self) -> None:
+        ready = json.loads(RELAY_READY_LINE)
+        ready["redirectUrl"] = "https://a.test:4444/m5/redirect-cookie"
+
+        with self.assertRaisesRegex(M0Error, "H2 fixture port"):
+            run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(ready))
+
 
 class M5ResultValidationTest(unittest.TestCase):
     def test_accepts_complete_chromium_network_evidence(self) -> None:
@@ -285,7 +305,7 @@ class M5ResultValidationTest(unittest.TestCase):
         )
 
     def test_rejects_missing_http2_or_websocket_evidence(self) -> None:
-        for field in ("h2Fetch", "corsFetch", "webSocketEcho"):
+        for field in ("h2Fetch", "corsFetch", "webSocketEcho", "redirected"):
             with self.subTest(field=field):
                 result = passing_result()
                 readiness = result["readiness"]
@@ -393,6 +413,65 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
         assert isinstance(destinations, list)
         destinations[-1] = {"hostname": "a.test", "port": 4444}
         with self.assertRaisesRegex(M0Error, "all fixed M5 destination streams"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+    def test_rejects_missing_redirect_counter_or_transcript_event(self) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        status = passing_relay_status()
+        status["redirectRequests"] = 0
+        with self.assertRaisesRegex(M0Error, "redirect request"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        status["redirectCookieValidations"] = 0
+        with self.assertRaisesRegex(M0Error, "redirect cookie"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for event_name in (
+            "h2-redirect",
+            "h2-redirect-cookie",
+            "h2-page-cookie",
+        ):
+            with self.subTest(event_name=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        redirect_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "h2-redirect-cookie"
+        )
+        page_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "h2-page-cookie"
+        )
+        transcript[redirect_index], transcript[page_index] = (
+            transcript[page_index],
+            transcript[redirect_index],
+        )
+        with self.assertRaisesRegex(M0Error, "before redirect cookie"):
             run_m5_wisp_smoke.validate_relay_transcript(
                 status, relay_ready=relay_ready
             )

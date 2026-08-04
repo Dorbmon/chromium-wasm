@@ -90,6 +90,7 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         for marker in (
             "pageProbe?.h2Fetch === true",
             'pageProbe?.h2Protocol === "h2"',
+            "pageProbe?.redirected === true",
             "pageProbe?.corsFetch === true",
             "pageProbe?.webSocketEcho === true",
             "pageProbe?.altSvcH3Advertised === true",

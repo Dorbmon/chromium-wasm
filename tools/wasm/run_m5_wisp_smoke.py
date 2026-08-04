@@ -73,6 +73,7 @@ class RelayReady:
 
     wisp_endpoint: str
     https_url: str
+    redirect_url: str
     http1_url: str
     tls_failure_url: str
     transcript_url: str
@@ -146,6 +147,23 @@ def validate_m5_https_url(
     return value
 
 
+def validate_m5_redirect_url(value: object, *, https_url: str) -> str:
+    """Accept a distinct M5 redirect source on the H2 fixture listener."""
+
+    redirect_url = validate_m5_https_url(
+        value, description="relay redirectUrl"
+    )
+    h2_port = _validated_port(urlsplit(https_url), "relay httpsUrl")
+    redirect_port = _validated_port(
+        urlsplit(redirect_url), "relay redirectUrl"
+    )
+    if redirect_port != h2_port:
+        raise M0Error("relay redirectUrl must use the H2 fixture port")
+    if redirect_url == https_url:
+        raise M0Error("relay redirectUrl must differ from relay httpsUrl")
+    return redirect_url
+
+
 def validate_relay_transcript_url(value: object) -> str:
     """Accept only the relay's local, fixed-path diagnostic endpoint."""
 
@@ -186,6 +204,9 @@ def parse_relay_ready_line(line: str) -> RelayReady:
     if schema_version is not None and schema_version != 1:
         raise M0Error("relay readiness schema version is unsupported")
     https_url = validate_m5_https_url(ready.get("httpsUrl"))
+    redirect_url = validate_m5_redirect_url(
+        ready.get("redirectUrl"), https_url=https_url
+    )
     http1_url = validate_m5_https_url(
         ready.get("http1Url"), description="relay http1Url"
     )
@@ -202,6 +223,7 @@ def parse_relay_ready_line(line: str) -> RelayReady:
     return RelayReady(
         wisp_endpoint=validate_wisp_endpoint(ready.get("wispEndpoint")),
         https_url=https_url,
+        redirect_url=redirect_url,
         http1_url=http1_url,
         tls_failure_url=tls_failure_url,
         transcript_url=validate_relay_transcript_url(
@@ -235,6 +257,9 @@ def m5_smoke_url(
     # nonlocal relay endpoint or arbitrary navigation URL into the host query.
     wisp_endpoint = validate_wisp_endpoint(relay_ready.wisp_endpoint)
     https_url = validate_m5_https_url(relay_ready.https_url)
+    redirect_url = validate_m5_redirect_url(
+        relay_ready.redirect_url, https_url=https_url
+    )
     tls_failure_url = validate_m5_https_url(
         relay_ready.tls_failure_url, description="relay tlsFailureUrl"
     )
@@ -244,7 +269,7 @@ def m5_smoke_url(
             "case": M5_CASE,
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
-            "m5_url": https_url,
+            "m5_url": redirect_url,
             "m5_tls_failure_url": tls_failure_url,
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -442,6 +467,7 @@ def validate_m5_result(
         "corsFetch": True,
         "webSocketEcho": True,
         "altSvcH3Advertised": True,
+        "redirected": True,
     }
     for field, expected_value in expected_probe.items():
         actual = page_probe.get(field)
@@ -577,6 +603,8 @@ def validate_relay_transcript(
         "relayErrors",
         "corsRequests",
         "webSocketEchoes",
+        "redirectRequests",
+        "redirectCookieValidations",
         "tlsMismatchTcpConnections",
         "tlsMismatchHttpStreams",
     ):
@@ -595,6 +623,10 @@ def validate_relay_transcript(
         raise M0Error("relay did not observe the inner CORS request")
     if status["webSocketEchoes"] < 1:
         raise M0Error("relay did not observe the inner WebSocket echo")
+    if status["redirectRequests"] < 1:
+        raise M0Error("relay did not observe the M5 redirect request")
+    if status["redirectCookieValidations"] < 1:
+        raise M0Error("relay did not validate the M5 redirect cookie")
     if status["tlsMismatchTcpConnections"] < 1:
         raise M0Error("relay did not observe the TLS-mismatch TCP connection")
     if status["tlsMismatchHttpStreams"] != 0:
@@ -641,11 +673,17 @@ def validate_relay_transcript(
     transcript = status.get("transcript")
     if not isinstance(transcript, list) or not transcript:
         raise M0Error("relay transcript is missing")
-    events = {entry.get("event") for entry in transcript if isinstance(entry, dict)}
+    event_names = [
+        entry.get("event") for entry in transcript if isinstance(entry, dict)
+    ]
+    events = set(event_names)
     for event in (
         "wisp-ready",
         "connect-open",
         "h2-page",
+        "h2-redirect",
+        "h2-redirect-cookie",
+        "h2-page-cookie",
         "h2-resource",
         "h1-cors",
         "h1-wss-echo",
@@ -653,6 +691,10 @@ def validate_relay_transcript(
     ):
         if event not in events:
             raise M0Error(f"relay transcript is missing {event!r}")
+    if event_names.index("h2-redirect-cookie") >= event_names.index(
+        "h2-page-cookie"
+    ):
+        raise M0Error("relay accepted the final page before redirect cookie")
 
 
 def wait_for_result(
@@ -894,6 +936,7 @@ def main() -> int:
                 {
                     "http1Url": relay_ready.http1_url,
                     "httpsUrl": relay_ready.https_url,
+                    "redirectUrl": relay_ready.redirect_url,
                     "tlsFailureUrl": relay_ready.tls_failure_url,
                     "transcriptUrl": relay_ready.transcript_url,
                     "wispEndpoint": relay_ready.wisp_endpoint,

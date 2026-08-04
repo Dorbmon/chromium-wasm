@@ -234,6 +234,102 @@ class M5WispTestServerTest(unittest.TestCase):
                         return bytes(body)
             self.fail("H2 response did not end its data stream")
 
+    def _exercise_redirect_cookie_gate(self) -> dict[str, object]:
+        node = node_executable()
+        assert node is not None
+        program = r'''
+import fs from "node:fs";
+import http2 from "node:http2";
+
+const [redirectURL, rootCertificate, statusURL] = process.argv.slice(1);
+const redirect = new URL(redirectURL);
+const authority = `a.test:${redirect.port}`;
+const session = http2.connect(`https://127.0.0.1:${redirect.port}`, {
+  ca: fs.readFileSync(rootCertificate),
+  servername: "a.test",
+});
+
+function get(path, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const request = session.request({
+      ":authority": authority,
+      ":method": "GET",
+      ":path": path,
+      ...headers,
+    });
+    const chunks = [];
+    let responseHeaders = null;
+    request.once("response", (headers) => { responseHeaders = headers; });
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => resolve({
+      body: Buffer.concat(chunks).toString("utf8"),
+      headers: responseHeaders,
+    }));
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+try {
+  const rejected = await get("/m5/");
+  const redirected = await get(redirect.pathname);
+  const setCookie = Array.isArray(redirected.headers["set-cookie"])
+    ? redirected.headers["set-cookie"][0]
+    : redirected.headers["set-cookie"];
+  if (typeof setCookie !== "string") {
+    throw new Error("redirect did not set a cookie");
+  }
+  const cookiePair = setCookie.split(";", 1)[0];
+  const [cookieName] = cookiePair.split("=", 1);
+  const wrongCookie = await get("/m5/", {
+    cookie: `${cookieName}=wrong-value`,
+  });
+  const finalPage = await get("/m5/", {cookie: cookiePair});
+  const statusText = await (await fetch(statusURL)).text();
+  process.stdout.write(JSON.stringify({
+    cookieAttributes: {
+      httpOnly: setCookie.includes("HttpOnly"),
+      pathM5: setCookie.includes("Path=/m5/"),
+      sameSiteStrict: setCookie.includes("SameSite=Strict"),
+      secure: setCookie.includes("Secure"),
+    },
+    cookieName,
+    finalHasFixture: finalPage.body.includes("Chromium Wasm M5 network fixture"),
+    finalStatus: finalPage.headers[":status"],
+    initialBody: rejected.body,
+    initialStatus: rejected.headers[":status"],
+    redirectLocation: redirected.headers.location,
+    redirectStatus: redirected.headers[":status"],
+    statusContainsCookie: statusText.includes(cookiePair),
+    wrongCookieBody: wrongCookie.body,
+    wrongCookieStatus: wrongCookie.headers[":status"],
+  }));
+} finally {
+  session.close();
+}
+'''
+        result = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                program,
+                self.metadata["redirectUrl"],
+                str(ROOT_CERTIFICATE),
+                self.metadata["transcriptUrl"],
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            self.fail(
+                "redirect-cookie H2 client failed: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        return json.loads(result.stdout)
+
     def test_source_is_es_module_and_keeps_key_out_of_output_contract(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn('import http2 from "node:http2"', source)
@@ -247,6 +343,11 @@ class M5WispTestServerTest(unittest.TestCase):
         self.assertIn("TLS_FAILURE_CERTIFICATE_PATH", source)
         self.assertIn("tls-failure-tcp-connect", source)
         self.assertIn("tls-failure-http-request", source)
+        self.assertIn("REDIRECT_COOKIE_NAME", source)
+        self.assertIn("HttpOnly", source)
+        self.assertIn("SameSite=Strict", source)
+        self.assertIn("h2-redirect-cookie", source)
+        self.assertIn("h2-page-cookie", source)
         self.assertNotIn("BEGIN PRIVATE KEY", source)
         self.assertNotIn("PRIVATE KEY", json.dumps(self.metadata))
 
@@ -259,6 +360,12 @@ class M5WispTestServerTest(unittest.TestCase):
         self.assertEqual(urlsplit(self.metadata["httpsUrl"]).scheme, "https")
         self.assertEqual(urlsplit(self.metadata["httpsUrl"]).hostname, "a.test")
         self.assertEqual(urlsplit(self.metadata["httpsUrl"]).path, "/m5/")
+        redirect_url = urlsplit(self.metadata["redirectUrl"])
+        self.assertEqual(redirect_url.scheme, "https")
+        self.assertEqual(redirect_url.hostname, "a.test")
+        self.assertEqual(redirect_url.path, "/m5/redirect-cookie")
+        self.assertEqual(
+            redirect_url.port, urlsplit(self.metadata["httpsUrl"]).port)
         tls_failure_url = urlsplit(self.metadata["tlsFailureUrl"])
         self.assertEqual(tls_failure_url.scheme, "https")
         self.assertEqual(tls_failure_url.hostname, "a.test")
@@ -311,10 +418,57 @@ class M5WispTestServerTest(unittest.TestCase):
         self.assertGreaterEqual(status["h2Requests"]["count"], 1)
         self.assertEqual(status["corsRequests"], 1)
         self.assertEqual(status["webSocketEchoes"], 1)
+        self.assertEqual(status["redirectRequests"], 0)
+        self.assertEqual(status["redirectCookieValidations"], 0)
         self.assertEqual(status["tlsMismatchTcpConnections"], 0)
         self.assertEqual(status["tlsMismatchHttpStreams"], 0)
         self.assertEqual(status["relayErrors"], 0)
+        self.assertNotIn("m5_redirect=", json.dumps(status))
         self.assertNotIn("PRIVATE KEY", json.dumps(status))
+
+    def test_redirect_cookie_gate_rejects_then_allows_the_final_h2_page(
+        self,
+    ) -> None:
+        evidence = self._exercise_redirect_cookie_gate()
+
+        self.assertEqual(evidence["initialStatus"], 403)
+        self.assertEqual(
+            evidence["initialBody"], "M5_REDIRECT_COOKIE_REJECTED"
+        )
+        self.assertEqual(evidence["redirectStatus"], 302)
+        self.assertEqual(evidence["redirectLocation"], "/m5/")
+        self.assertEqual(evidence["cookieName"], "m5_redirect")
+        self.assertEqual(evidence["wrongCookieStatus"], 403)
+        self.assertEqual(
+            evidence["wrongCookieBody"], "M5_REDIRECT_COOKIE_REJECTED"
+        )
+        self.assertEqual(
+            evidence["cookieAttributes"],
+            {
+                "httpOnly": True,
+                "pathM5": True,
+                "sameSiteStrict": True,
+                "secure": True,
+            },
+        )
+        self.assertEqual(evidence["finalStatus"], 200)
+        self.assertTrue(evidence["finalHasFixture"])
+        self.assertFalse(evidence["statusContainsCookie"])
+        self.assertNotIn("m5_redirect=", json.dumps(evidence))
+
+        status = self._status()
+        self.assertEqual(status["redirectRequests"], 1)
+        self.assertEqual(status["redirectCookieValidations"], 1)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(events.count("h2-page-cookie-rejected"), 2)
+        self.assertLess(
+            events.index("h2-redirect-cookie"),
+            events.index("h2-page-cookie"),
+        )
 
     def test_tls_failure_endpoint_is_trusted_but_rejects_a_test_name(self) -> None:
         parsed = urlsplit(self.metadata["tlsFailureUrl"])
