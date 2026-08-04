@@ -757,11 +757,13 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_pointer(int type,
                                                     int button) {
   if (type < static_cast<int>(content::DomPointerEventType::kMove) ||
       type > static_cast<int>(content::DomPointerEventType::kUp) ||
-      (button != 0 && button != 1) || x < 0 || y < 0) {
+      (button != 0 && button != 1 && button != 2) || x < 0 || y < 0) {
     return 0;
   }
   const ui::EventFlags mouse_button =
-      button == 0 ? ui::EF_LEFT_MOUSE_BUTTON : ui::EF_MIDDLE_MOUSE_BUTTON;
+      button == 0 ? ui::EF_LEFT_MOUSE_BUTTON
+                  : button == 1 ? ui::EF_MIDDLE_MOUSE_BUTTON
+                                : ui::EF_RIGHT_MOUSE_BUTTON;
   const auto event_type = static_cast<content::DomPointerEventType>(type);
   return content::PostHostCommand(base::BindOnce(
              &content::DispatchDomPointerOnUiThread, event_type,

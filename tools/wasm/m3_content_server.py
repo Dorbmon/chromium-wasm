@@ -28,6 +28,7 @@ M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
 M4_SELECT_CASE = "ozone_select_m4"
 M4_RESIZE_CASE = "ozone_resize_m4"
+M4_CONTEXT_MENU_CASE = "ozone_context_menu_m4"
 M4_SELECTION_CASE = "ozone_selection_m4"
 M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4"
 M4_COPY_PASTE_CASE = "ozone_copy_paste_m4"
@@ -60,6 +61,7 @@ M3_SCREENSHOT_CONTRACT = (
 M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
 M4_SELECT_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_select_page.html"
 M4_RESIZE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_resize_page.html"
+M4_CONTEXT_MENU_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_context_menu_page.html"
 M4_SELECTION_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_selection_page.html"
 M4_PRIMARY_PASTE_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_primary_paste_page.html"
@@ -207,6 +209,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             "/__m3__/m4-fixture.html": M4_POINTER_FIXTURE,
             "/__m3__/m4-select-fixture.html": M4_SELECT_FIXTURE,
             "/__m3__/m4-resize-fixture.html": M4_RESIZE_FIXTURE,
+            "/__m3__/m4-context-menu-fixture.html": M4_CONTEXT_MENU_FIXTURE,
             "/__m3__/m4-selection-fixture.html": M4_SELECTION_FIXTURE,
             "/__m3__/m4-primary-paste-fixture.html": M4_PRIMARY_PASTE_FIXTURE,
             "/__m3__/m4-copy-paste-fixture.html": M4_COPY_PASTE_FIXTURE,
@@ -268,6 +271,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_CASE,
                 M4_SELECT_CASE,
                 M4_RESIZE_CASE,
+                M4_CONTEXT_MENU_CASE,
                 M4_SELECTION_CASE,
                 M4_PRIMARY_PASTE_CASE,
                 M4_COPY_PASTE_CASE,
@@ -482,6 +486,34 @@ def m4_primary_paste_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-primary-paste-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_context_menu_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_CONTEXT_MENU_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-context-menu-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -2073,6 +2105,624 @@ def validate_m4_resize_result(
         raise M0Error("M4 resize host resize lifecycle is not exact")
     if not any("shutdown:complete" in line for line in host_logs):
         raise M0Error("M4 resize logs are missing clean shutdown")
+
+
+def validate_m4_context_menu_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate a real Aura context menu and its Copy command.
+
+    The menu is not an outer-page DOM control: it is a rendered child of the
+    existing Wasm Aura root.  This validates its opaque Copy row from the
+    captured compositor output, a physical secondary click, normal Blink Copy,
+    and the existing bounded physical Ctrl+V path.
+    """
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_CONTEXT_MENU_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 context-menu result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(
+        result.get("versions"), "M4 context-menu versions"
+    )
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 context-menu version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    proof_fields = {
+        "activationProof": (
+            "outerTraceExact",
+            "sourceFocused",
+            "selectionCollapsed",
+            "frameAfterActivation",
+        ),
+        "selectionProof": (
+            "outerTraceExact",
+            "nativeSelection",
+            "frameAfterDrag",
+        ),
+        "menuOpenProof": (
+            "outerTraceExact",
+            "innerSecondary",
+            "outerContextMenuSuppressed",
+            "frameAfterSecondary",
+        ),
+        "menuCopyProof": (
+            "outerTraceExact",
+            "nativeCopy",
+            "menuDismissed",
+            "frameAfterCopy",
+        ),
+        "pasteActivationProof": (
+            "outerTraceExact",
+            "pasteFocused",
+            "frameAfterActivation",
+        ),
+        "pasteProof": (
+            "outerPointerTraceExact",
+            "outerKeyTraceExact",
+            "innerKeys",
+            "nativePaste",
+            "frameAfterPaste",
+        ),
+    }
+    proofs: dict[str, dict[str, Any]] = {}
+    for proof_name, fields in proof_fields.items():
+        proof = _require_dict(
+            result.get(proof_name), f"M4 context-menu {proof_name}"
+        )
+        proofs[proof_name] = proof
+        for field in fields:
+            if proof.get(field) is not True:
+                raise M0Error(
+                    f"M4 context-menu {proof_name} {field} is not true"
+                )
+
+    copy_row = _require_dict(
+        proofs["menuOpenProof"].get("copyRow"),
+        "M4 context-menu Copy-row scan",
+    )
+    if copy_row.get("rgba") != [0, 87, 184, 255]:
+        raise M0Error("M4 context-menu Copy-row color is not opaque #0057b8")
+    pixel_count = _require_safe_integer(
+        copy_row.get("pixelCount"),
+        "M4 context-menu Copy-row pixel count",
+        minimum=5000,
+    )
+    copy_bounds: dict[str, int] = {}
+    for field in ("minX", "minY", "maxX", "maxY", "targetX", "targetY"):
+        maximum = M3_WIDTH - 1 if field.endswith("X") else M3_HEIGHT - 1
+        copy_bounds[field] = _require_safe_integer(
+            copy_row.get(field),
+            f"M4 context-menu Copy-row {field}",
+            minimum=0,
+            maximum=maximum,
+        )
+    if (
+        copy_bounds["maxX"] - copy_bounds["minX"] + 1 != 160
+        or copy_bounds["maxY"] - copy_bounds["minY"] + 1 != 40
+        or copy_bounds["targetX"]
+        != (copy_bounds["minX"] + copy_bounds["maxX"]) // 2
+        or copy_bounds["targetY"]
+        != (copy_bounds["minY"] + copy_bounds["maxY"]) // 2
+        or pixel_count > 160 * 40
+    ):
+        raise M0Error("M4 context-menu Copy-row scan geometry is invalid")
+
+    readiness = _require_dict(
+        result.get("readiness"), "M4 context-menu readiness"
+    )
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(
+                f"M4 context-menu readiness field {field} is not true"
+            )
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 context-menu readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 context-menu heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error(
+            "M4 context-menu heartbeat was not anchored to navigation"
+        )
+    _require_number(
+        heartbeat.get("elapsedMs"),
+        "M4 context-menu heartbeat elapsed time",
+        minimum=0,
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 context-menu frame")
+    frame_id = _require_safe_integer(
+        frame.get("id"), "M4 context-menu frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 context-menu frame timestamp", minimum=0
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error(
+            "M4 context-menu frame dimensions do not match the canvas"
+        )
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 context-menu page probe"
+    )
+    expected_probe = {
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-context-menu-v1",
+        "fontReady": True,
+        "ready": True,
+        "activeElementId": "context-paste",
+        "sourceValue": "MENU",
+        "pasteValue": "MENU",
+        "pasteSelectionStart": 4,
+        "pasteSelectionEnd": 4,
+        "resultText": "NATIVE MENU COPY PASTED",
+        "contextCopied": True,
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 context-menu page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    for field in ("sourceFocusCount", "pasteFocusCount", "timerTicks"):
+        _require_safe_integer(
+            page_probe.get(field),
+            f"M4 context-menu {field}",
+            minimum=3 if field == "timerTicks" else 1,
+        )
+
+    coordinates: dict[str, int] = {}
+    for field in (
+        "sourceTargetX",
+        "sourceTargetY",
+        "dragStartX",
+        "dragStartY",
+        "dragMiddleX",
+        "dragMiddleY",
+        "dragEndX",
+        "dragEndY",
+        "pasteTargetX",
+        "pasteTargetY",
+    ):
+        maximum = M3_WIDTH - 1 if field.endswith("X") else M3_HEIGHT - 1
+        coordinates[field] = _require_safe_integer(
+            page_probe.get(field),
+            f"M4 context-menu {field}",
+            minimum=0,
+            maximum=maximum,
+        )
+    if not (
+        coordinates["dragStartX"]
+        < coordinates["dragMiddleX"]
+        < coordinates["dragEndX"]
+        and coordinates["dragStartY"]
+        == coordinates["dragMiddleY"]
+        == coordinates["dragEndY"]
+    ):
+        raise M0Error("M4 context-menu drag geometry is not strictly forward")
+
+    selection = _require_dict(
+        page_probe.get("sourceSelection"), "M4 context-menu source selection"
+    )
+    if (
+        selection.get("start") != 0
+        or selection.get("end") != 4
+        or selection.get("text") != "MENU"
+        or selection.get("direction") not in ("none", "forward")
+    ):
+        raise M0Error("M4 context-menu source selection is not MENU")
+    selection_activity = _require_dict(
+        page_probe.get("selectionActivity"),
+        "M4 context-menu selection activity",
+    )
+    for field in ("trusted", "nonCollapsed", "trustedNonCollapsed"):
+        if selection_activity.get(field) is not True:
+            raise M0Error(
+                f"M4 context-menu selection activity {field} is not true"
+            )
+    for field in ("count", "selectCount", "selectionChangeCount"):
+        _require_safe_integer(
+            selection_activity.get(field),
+            f"M4 context-menu selection activity {field}",
+            minimum=1,
+        )
+
+    def require_secondary_source_events(field: str, prefix: str) -> None:
+        events = page_probe.get(field)
+        if not isinstance(events, list):
+            raise M0Error(f"M4 context-menu {field} is not an array")
+        for event_type, buttons in (("down", 2), ("up", 0)):
+            if not any(
+                isinstance(event, dict)
+                and event.get("type") == prefix + event_type
+                and event.get("trusted") is True
+                and event.get("button") == 2
+                and event.get("buttons") == buttons
+                and event.get("clientX") == coordinates["sourceTargetX"]
+                and event.get("clientY") == coordinates["sourceTargetY"]
+                and event.get("targetId") == "context-source"
+                and event.get("defaultPrevented") is False
+                for event in events
+            ):
+                raise M0Error(
+                    f"M4 context-menu {field} has no trusted secondary "
+                    f"{event_type} event"
+                )
+
+    require_secondary_source_events("sourcePointerTrace", "pointer")
+    require_secondary_source_events("sourceMouseTrace", "mouse")
+    context_events = page_probe.get("contextMenuTrace")
+    if not isinstance(context_events, list) or len(context_events) != 1:
+        raise M0Error("M4 context-menu inner trace is not exactly one event")
+    context_event = _require_dict(
+        context_events[0], "M4 context-menu inner contextmenu event"
+    )
+    for field, expected_value in {
+        "type": "contextmenu",
+        "trusted": True,
+        "button": 2,
+        "buttons": 2,
+        "clientX": coordinates["sourceTargetX"],
+        "clientY": coordinates["sourceTargetY"],
+        "targetId": "context-source",
+        "defaultPrevented": False,
+    }.items():
+        if context_event.get(field) != expected_value:
+            raise M0Error(f"M4 context-menu inner event {field} mismatch")
+    context_selection = _require_dict(
+        context_event.get("selection"), "M4 context-menu inner selection"
+    )
+    if (
+        context_selection.get("start") != 0
+        or context_selection.get("end") != 4
+        or context_selection.get("text") != "MENU"
+    ):
+        raise M0Error("M4 context-menu inner event lost MENU selection")
+
+    copy_events = page_probe.get("copyEventTrace")
+    if not isinstance(copy_events, list) or len(copy_events) != 1:
+        raise M0Error("M4 context-menu copy trace is not exactly one event")
+    copy_event = _require_dict(copy_events[0], "M4 context-menu copy event")
+    for field, expected_value in {
+        "type": "copy",
+        "trusted": True,
+        "targetId": "context-source",
+        "defaultPrevented": False,
+    }.items():
+        if copy_event.get(field) != expected_value:
+            raise M0Error(f"M4 context-menu copy event {field} mismatch")
+    copy_selection = _require_dict(
+        copy_event.get("selection"), "M4 context-menu Copy selection"
+    )
+    if (
+        copy_selection.get("start") != 0
+        or copy_selection.get("end") != 4
+        or copy_selection.get("text") != "MENU"
+    ):
+        raise M0Error("M4 context-menu Copy did not target MENU")
+
+    paste_events = page_probe.get("pasteEventTrace")
+    if not isinstance(paste_events, list) or len(paste_events) != 1:
+        raise M0Error("M4 context-menu paste trace is not exactly one event")
+    paste_event = _require_dict(paste_events[0], "M4 context-menu paste event")
+    for field, expected_value in {
+        "type": "paste",
+        "trusted": True,
+        "targetId": "context-paste",
+        "defaultPrevented": False,
+        "text": "MENU",
+    }.items():
+        if paste_event.get(field) != expected_value:
+            raise M0Error(f"M4 context-menu paste event {field} mismatch")
+    paste_text = page_probe.get("pasteTextInputTrace")
+    if not isinstance(paste_text, list) or len(paste_text) != 2:
+        raise M0Error("M4 context-menu paste text trace has wrong length")
+    for index, event_type in enumerate(("beforeinput", "input")):
+        text_event = _require_dict(
+            paste_text[index], f"M4 context-menu paste text event {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "trusted": True,
+            "inputType": "insertFromPaste",
+            "data": "MENU",
+            "isComposing": False,
+            "targetId": "context-paste",
+        }.items():
+            if text_event.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 context-menu paste text {index} {field} mismatch"
+                )
+
+    def click_trace(
+        x: int, y: int
+    ) -> tuple[tuple[str, int, int, int, int], ...]:
+        return (
+            ("move", x, y, -1, 0),
+            ("down", x, y, 0, 1),
+            ("up", x, y, 0, 0),
+        )
+
+    drag_trace = (
+        ("move", coordinates["dragStartX"], coordinates["dragStartY"], -1, 0),
+        ("down", coordinates["dragStartX"], coordinates["dragStartY"], 0, 1),
+        ("move", coordinates["dragMiddleX"], coordinates["dragMiddleY"], -1, 1),
+        ("move", coordinates["dragEndX"], coordinates["dragEndY"], -1, 1),
+        ("up", coordinates["dragEndX"], coordinates["dragEndY"], 0, 0),
+    )
+    secondary_trace = (
+        ("move", coordinates["sourceTargetX"], coordinates["sourceTargetY"], -1, 0),
+        ("down", coordinates["sourceTargetX"], coordinates["sourceTargetY"], 2, 2),
+        ("up", coordinates["sourceTargetX"], coordinates["sourceTargetY"], 2, 0),
+    )
+    expected_pointer_trace = (
+        *click_trace(
+            coordinates["sourceTargetX"], coordinates["sourceTargetY"]
+        ),
+        *drag_trace,
+        *secondary_trace,
+        *click_trace(copy_bounds["targetX"], copy_bounds["targetY"]),
+        *click_trace(
+            coordinates["pasteTargetX"], coordinates["pasteTargetY"]
+        ),
+    )
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 context-menu pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 context-menu readiness pointer"
+    )
+    if not _exact_json_value_equal(pointer_input, readiness_pointer):
+        raise M0Error(
+            "M4 context-menu pointer evidence differs from readiness evidence"
+        )
+    if pointer_input.get("enabled") is not True:
+        raise M0Error("M4 context-menu pointer listeners were not enabled")
+    queued_pointer = pointer_input.get("queuedRecords")
+    if not isinstance(queued_pointer, list) or len(queued_pointer) != len(
+        expected_pointer_trace
+    ):
+        raise M0Error("M4 context-menu pointer trace has wrong length")
+    for field in ("receivedCount", "trustedCount", "queuedCount"):
+        if pointer_input.get(field) != len(expected_pointer_trace):
+            raise M0Error(f"M4 context-menu pointer {field} mismatch")
+    final_pointer_frame = 0
+    for index, (event_type, x, y, button, buttons) in enumerate(
+        expected_pointer_trace
+    ):
+        record = _require_dict(
+            queued_pointer[index], f"M4 context-menu pointer trace {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "trusted": True,
+            "queued": True,
+            "button": button,
+            "buttons": buttons,
+            "sequence": index + 1,
+            "x": x,
+            "y": y,
+            "canvasFocused": True,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 context-menu pointer {index} {field} mismatch"
+                )
+        record_frame = _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 context-menu pointer {index} frame",
+            minimum=1,
+        )
+        if index == len(expected_pointer_trace) - 1:
+            final_pointer_frame = record_frame
+    last_queued = _require_dict(
+        pointer_input.get("lastQueued"), "M4 context-menu last queued pointer"
+    )
+    if not _exact_json_value_equal(last_queued, queued_pointer[-1]):
+        raise M0Error("M4 context-menu last pointer is not the paste release")
+    if frame_id <= final_pointer_frame:
+        raise M0Error("M4 context-menu has no compositor frame after paste")
+
+    outer_context = pointer_input.get("contextMenuRecords")
+    if not isinstance(outer_context, list) or len(outer_context) != 1:
+        raise M0Error("M4 context-menu outer context trace has wrong length")
+    outer_record = _require_dict(
+        outer_context[0], "M4 context-menu outer context record"
+    )
+    for field, expected_value in {
+        "sequence": 1,
+        "trusted": True,
+        "button": 2,
+        "buttons": 2,
+        "x": coordinates["sourceTargetX"],
+        "y": coordinates["sourceTargetY"],
+        "acceptedPointer": True,
+        "defaultPrevented": True,
+    }.items():
+        if outer_record.get(field) != expected_value:
+            raise M0Error(
+                f"M4 context-menu outer context record {field} mismatch"
+            )
+
+    expected_key_trace = (
+        ("down", "ControlLeft", "Control", True),
+        ("down", "KeyV", "v", True),
+        ("up", "KeyV", "v", True),
+        ("up", "ControlLeft", "Control", False),
+    )
+    # Blink exposes platform-specific modifier timing on Control's own DOM
+    # key events. The V down/up records remain the strict proof of the
+    # Ctrl+V chord; Control events need only preserve their trusted sequence.
+    expected_inner_key_trace = (
+        ("down", "ControlLeft", "Control", None),
+        ("down", "KeyV", "v", True),
+        ("up", "KeyV", "v", True),
+        ("up", "ControlLeft", "Control", None),
+    )
+    keyboard_input = _require_dict(
+        result.get("keyboardInput"), "M4 context-menu keyboard input"
+    )
+    readiness_keyboard = _require_dict(
+        readiness.get("keyboardInput"),
+        "M4 context-menu readiness keyboard",
+    )
+    if not _exact_json_value_equal(keyboard_input, readiness_keyboard):
+        raise M0Error(
+            "M4 context-menu keyboard evidence differs from readiness evidence"
+        )
+    if (
+        keyboard_input.get("enabled") is not True
+        or keyboard_input.get("activated") is not True
+        or keyboard_input.get("pressedCodes") != []
+        or keyboard_input.get("receivedCount") != len(expected_key_trace)
+        or keyboard_input.get("trustedCount") != len(expected_key_trace)
+        or keyboard_input.get("queuedCount") != len(expected_key_trace)
+    ):
+        raise M0Error("M4 context-menu keyboard state is invalid")
+    queued_keys = keyboard_input.get("queuedRecords")
+    if not isinstance(queued_keys, list) or len(queued_keys) != len(
+        expected_key_trace
+    ):
+        raise M0Error("M4 context-menu key trace has wrong length")
+    paste_key_down_frame = 0
+    for index, (event_type, code, key, control) in enumerate(expected_key_trace):
+        record = _require_dict(
+            queued_keys[index], f"M4 context-menu key trace {index}"
+        )
+        for field, expected_value in {
+            "type": event_type,
+            "code": code,
+            "key": key,
+            "trusted": True,
+            "queued": True,
+            "repeat": False,
+            "isComposing": False,
+            "sequence": index + 1,
+            "canvasFocused": True,
+            "pointerActivated": True,
+            "defaultPrevented": True,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 context-menu key {index} {field} mismatch"
+                )
+        if record.get("modifiers") != {
+            "alt": False,
+            "control": control,
+            "meta": False,
+            "shift": False,
+        }:
+            raise M0Error(f"M4 context-menu key {index} modifiers mismatch")
+        record_frame = _require_safe_integer(
+            record.get("frameIdBefore"),
+            f"M4 context-menu key {index} frame",
+            minimum=1,
+        )
+        if index == 1:
+            paste_key_down_frame = record_frame
+    if frame_id <= paste_key_down_frame:
+        raise M0Error("M4 context-menu has no frame after Ctrl+V")
+
+    inner_keys = page_probe.get("pasteKeyEventTrace")
+    if not isinstance(inner_keys, list) or len(inner_keys) != len(
+        expected_key_trace
+    ):
+        raise M0Error("M4 context-menu inner key trace has wrong length")
+    for index, (event_type, code, key, control) in enumerate(
+        expected_inner_key_trace
+    ):
+        record = _require_dict(
+            inner_keys[index], f"M4 context-menu inner key {index}"
+        )
+        for field, expected_value in {
+            "type": "keydown" if event_type == "down" else "keyup",
+            "code": code,
+            "key": key,
+            "trusted": True,
+            "repeat": False,
+            "isComposing": False,
+            "targetId": "context-paste",
+            "defaultPrevented": False,
+        }.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 context-menu inner key {index} {field} mismatch"
+                )
+        if control is not None and record.get("ctrlKey") != control:
+            raise M0Error(
+                f"M4 context-menu inner key {index} ctrlKey mismatch"
+            )
+
+    shutdown = _require_dict(
+        result.get("shutdown"), "M4 context-menu shutdown"
+    )
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 context-menu shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if shutdown.get(field) != 0:
+            raise M0Error(f"M4 context-menu shutdown {field} is not zero")
+    logs = _require_dict(result.get("logs"), "M4 context-menu logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 context-menu {stream} log is not an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 context-menu logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    for marker in (
+        "m4:pointer:listeners-attached",
+        "m4:keyboard:listeners-attached",
+        "m4:contextmenu:suppressed",
+        "m4:keyboard:pointer-activation",
+        "m4:keyboard:down:queued",
+        "m4:keyboard:up:queued",
+    ):
+        if marker not in host_logs:
+            raise M0Error(
+                f"M4 context-menu logs are missing lifecycle marker {marker!r}"
+            )
+    if host_logs[-1:] != ["shutdown:complete"]:
+        raise M0Error("M4 context-menu logs are missing clean shutdown")
 
 
 def validate_m4_selection_result(

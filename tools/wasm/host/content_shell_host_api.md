@@ -44,16 +44,16 @@ M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, the narrowly scoped
 `enableM4KeyboardInput()`, `enableM4FocusInput()`, and the bounded native
 composition contract `enableM4ImeProxyInput()` after initialization. They
 attach host-canvas or host-owned-proxy listeners, not a replacement HTML
-browser UI. Primary mouse pointer input, pixel wheel input, the bounded raw-key
-paths, host focus loss, and the limited composition route cross normal Ozone
-boundaries. A primary-mouse drag can use the same pointer path to make a native
-Blink selection; it is not a host selection command. Generic text entry,
-programmatic or arbitrary selection/replacement, deletion, generic paste,
-modifiers, repeat, touch, pen, non-primary buttons other than the bounded
-middle-click primary-paste route, cursor warping/confinement, focus regain
-without a pointer press, and richer multi-window behavior remain outside this
-first M4 input slice. Returning success while dropping an event is a contract
-failure.
+browser UI. Primary, bounded middle, and bounded secondary mouse pointer input,
+pixel wheel input, the bounded raw-key paths, host focus loss, and the limited
+composition route cross normal Ozone boundaries. A primary-mouse drag can use
+the same pointer path to make a native Blink selection; it is not a host
+selection command. Generic text entry, programmatic or arbitrary
+selection/replacement, deletion, generic paste, modifiers, repeat, touch, pen,
+non-primary buttons outside the bounded middle-click primary-paste and
+secondary context-menu routes, cursor warping/confinement, focus regain without
+a pointer press, and richer multi-window behavior remain outside this first M4
+input slice. Returning success while dropping an event is a contract failure.
 
 `initialize()` does not resolve merely because the Emscripten MODULARIZE
 factory resolved. It waits for a `shellReady` bridge report, proving that
@@ -111,21 +111,25 @@ exit statuses must be zero and equal.
 
 ### M4 pointer, wheel, raw-key, focus-loss, and IME ABI
 
-`chromium_wasm_host_pointer` accepts the bounded mouse buttons `0` (primary)
-and `1` (middle): `type` is `0` for move, `1` for down, or `2` for up. The
-host accepts only trusted mouse `PointerEvent`s for those two buttons. It
-focuses and captures the canvas for a press, and releases or cancels that
-capture with the same button on pointer up, pointer cancel, blur, visibility
-loss, or teardown. Other mouse buttons, touch, and pen remain explicitly
-unsupported. Middle input is presently limited to the native
+`chromium_wasm_host_pointer` accepts the bounded mouse buttons `0` (primary),
+`1` (middle), and `2` (secondary): `type` is `0` for move, `1` for down, or
+`2` for up. The host accepts only trusted mouse `PointerEvent`s for those
+buttons. It focuses and captures the canvas for a press, and releases or
+cancels that capture with the same button on pointer up, pointer cancel, blur,
+visibility loss, or teardown. Other mouse buttons, touch, and pen remain
+explicitly unsupported. Middle input is presently limited to the native
 primary-selection-paste proof below; it is not generic auxiliary-button input.
-One unmodified pointer ID/button stream may be active at a time; additional
-button chords, mismatched releases, and held moves with the wrong button mask
-are rejected before reaching Ozone. A matching active-button release remains a
-cleanup path once its own button bit has cleared, even if an unsupported button
-is still held, so the native input state cannot stick. Once a middle-button
-record is queued, the host prevents the outer page default so the embedding page
-cannot start its own middle-click behavior such as autoscroll.
+Secondary input is limited to the native context-menu proof below; it is not
+generic auxiliary-button input. One unmodified pointer ID/button stream may be
+active at a time; additional button chords, mismatched releases, and held moves
+with the wrong button mask are rejected before reaching Ozone. A matching
+active-button release remains a cleanup path once its own button bit has
+cleared, even if an unsupported button is still held, so the native input state
+cannot stick. Once a middle-button record is queued, the host prevents the
+outer page default so the embedding page cannot start its own middle-click
+behavior such as autoscroll. Once a matching secondary stream is queued, it
+prevents only the trusted matching outer-page `contextmenu` default; Blink
+still receives the native Ozone mouse stream and owns the in-Chromium menu.
 
 The `x` and `y` arguments of both M4 exports are physical canvas backing
 pixels, never outer-page CSS pixels. The host subtracts the canvas border and
@@ -279,6 +283,20 @@ pointer and key traces, exact trusted inner key traces, no text payload,
 clipboard API, or DOM command, no source/decoy mutation, and post-paste
 compositor frames. It does not provide system-clipboard integration or the
 asynchronous, permission-gated host clipboard bridge.
+
+The separate M4 native context-menu smoke uses a real native Blink input
+selection for `"MENU"`, then sends a trusted secondary click through the host
+canvas, Ozone, Aura, and Content. Content Shell creates one `WINDOW_TYPE_MENU`
+Aura child on the existing compositor root—never a second platform window—and
+keeps the renderer focused so the bounded Copy command calls
+`WebContents::Copy()` for that selection. The host locates the resulting opaque
+Copy row only in compositor pixels and sends a scan-derived primary click to
+the menu. It then activates a second real text input and sends raw
+`ControlLeft`+`KeyV`; the proof requires trusted native `contextmenu`, `copy`,
+`paste`, `beforeinput`, and `input` events, exact outer pointer/key traces,
+menu disappearance, a pasted value of `"MENU"`, and newer compositor frames.
+It does not call Clipboard APIs, DOM clipboard commands, programmatic
+selection, or an outer-page menu replacement.
 
 #### Bounded IME composition route
 

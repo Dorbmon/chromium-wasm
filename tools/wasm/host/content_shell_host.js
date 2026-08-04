@@ -7,6 +7,7 @@ const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
 const M4_SELECT_CASE = "ozone_select_m4";
 const M4_RESIZE_CASE = "ozone_resize_m4";
+const M4_CONTEXT_MENU_CASE = "ozone_context_menu_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
@@ -19,6 +20,8 @@ const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
 const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
+const M4_CONTEXT_MENU_FIXTURE =
+  "chromium-wasm-m4-ozone-context-menu-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v1";
 const M4_PRINTABLE_KEY_FIXTURE =
@@ -46,6 +49,13 @@ const M4_COPY_PASTE_DECOY_VALUE = "DECOY";
 const M4_CURSOR_TYPE_HAND = 2;
 const M4_SELECT_OPTION_RGBA = Object.freeze([250, 0, 250, 255]);
 const M4_SELECT_MINIMUM_POPUP_PIXELS = 4096;
+// This is the opaque row painted by WasmContextMenuOverlay.  It is a stable
+// visual protocol between the small native overlay and its browser smoke; the
+// smoke derives the Copy click point from the resulting compositor pixels.
+const M4_CONTEXT_MENU_COPY_ROW_RGBA = Object.freeze([0, 87, 184, 255]);
+const M4_CONTEXT_MENU_COPY_ROW_WIDTH = 160;
+const M4_CONTEXT_MENU_COPY_ROW_HEIGHT = 40;
+const M4_CONTEXT_MENU_MINIMUM_COPY_ROW_PIXELS = 5000;
 const M4_RESIZE_NARROW_WIDTH = 640;
 const M4_RESIZE_NARROW_HEIGHT = 480;
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
@@ -275,6 +285,58 @@ function scanM4SelectPopupOption(canvas, selectBounds) {
     targetX: Math.floor((minX + maxX) / 2),
     // The fixture has exactly three options. The midpoint of the rendered
     // option stack is the second option and is derived from actual pixels.
+    targetY: Math.floor((minY + maxY) / 2),
+  };
+}
+
+function scanM4ContextMenuCopyRow(canvas) {
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    throw new Error("M4 context-menu scan requires a canvas");
+  }
+  const context = globalThis.ChromiumWasmHostBridge?.context ??
+      canvas.getContext("2d", {alpha: false});
+  if (!context || typeof context.getImageData !== "function") {
+    throw new Error("M4 context-menu scan has no 2D canvas context");
+  }
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageData.data;
+  const [red, green, blue, alpha] = M4_CONTEXT_MENU_COPY_ROW_RGBA;
+  let pixelCount = 0;
+  let minX = canvas.width;
+  let minY = canvas.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < canvas.height; ++y) {
+    for (let x = 0; x < canvas.width; ++x) {
+      const offset = (y * canvas.width + x) * 4;
+      if (pixels[offset] !== red || pixels[offset + 1] !== green ||
+          pixels[offset + 2] !== blue || pixels[offset + 3] !== alpha) {
+        continue;
+      }
+      ++pixelCount;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
+  if (
+    pixelCount < M4_CONTEXT_MENU_MINIMUM_COPY_ROW_PIXELS ||
+    width !== M4_CONTEXT_MENU_COPY_ROW_WIDTH ||
+    height !== M4_CONTEXT_MENU_COPY_ROW_HEIGHT
+  ) {
+    return null;
+  }
+  return {
+    rgba: Array.from(M4_CONTEXT_MENU_COPY_ROW_RGBA),
+    pixelCount,
+    minX,
+    minY,
+    maxX,
+    maxY,
+    targetX: Math.floor((minX + maxX) / 2),
     targetY: Math.floor((minY + maxY) / 2),
   };
 }
@@ -607,6 +669,87 @@ function hasM4PrimaryPasteFinalPageEvidence(pageProbe) {
     pageProbe?.resultText === "PRIMARY SELECTION PASTED" &&
     hasM4PrimaryPasteInnerSourceEvents(pageProbe) &&
     hasM4PrimaryPasteInnerPasteEvents(pageProbe);
+}
+
+function hasM4ContextMenuNativeSelection(pageProbe) {
+  const selection = pageProbe?.sourceSelection;
+  const activity = pageProbe?.selectionActivity;
+  return pageProbe?.activeElementId === "context-source" &&
+    pageProbe?.sourceValue === "MENU" && selection?.start === 0 &&
+    selection?.end === 4 && selection?.text === "MENU" &&
+    (selection?.direction === "none" || selection?.direction === "forward") &&
+    activity?.count >= 1 && activity?.trusted === true &&
+    activity?.nonCollapsed === true && activity?.trustedNonCollapsed === true &&
+    activity?.selectCount >= 1 && activity?.selectionChangeCount >= 1;
+}
+
+function hasM4ContextMenuInnerSecondaryEvents(pageProbe, x, y) {
+  const contextMenus = pageProbe?.contextMenuTrace;
+  const pointer = pageProbe?.sourcePointerTrace;
+  const mouse = pageProbe?.sourceMouseTrace;
+  const hasSecondaryEvent = (records, prefix, type, buttons) =>
+    Array.isArray(records) && records.some((record) =>
+      record?.type === `${prefix}${type}` && record?.trusted === true &&
+      record?.button === 2 && record?.buttons === buttons &&
+      record?.clientX === x && record?.clientY === y &&
+      record?.targetId === "context-source" &&
+      record?.defaultPrevented === false);
+  const context = Array.isArray(contextMenus) ? contextMenus[0] : null;
+  const selection = context?.selection;
+  return Array.isArray(contextMenus) && contextMenus.length === 1 &&
+    context?.type === "contextmenu" && context?.trusted === true &&
+    // Chrome reports the right-button mask on the contextmenu event emitted
+    // for the trusted CDP secondary-button sequence. Preserve that observed
+    // native event state rather than normalizing it in the host bridge.
+    context?.button === 2 && context?.buttons === 2 &&
+    context?.clientX === x && context?.clientY === y &&
+    context?.targetId === "context-source" &&
+    context?.defaultPrevented === false && selection?.start === 0 &&
+    selection?.end === 4 && selection?.text === "MENU" &&
+    hasSecondaryEvent(pointer, "pointer", "down", 2) &&
+    hasSecondaryEvent(pointer, "pointer", "up", 0) &&
+    hasSecondaryEvent(mouse, "mouse", "down", 2) &&
+    hasSecondaryEvent(mouse, "mouse", "up", 0);
+}
+
+function hasM4ContextMenuOuterSuppression(records, x, y) {
+  if (!Array.isArray(records) || records.length !== 1) {
+    return false;
+  }
+  const record = records[0];
+  return record?.sequence === 1 && record?.trusted === true &&
+    record?.button === 2 && record?.buttons === 2 && record?.x === x &&
+    record?.y === y && record?.acceptedPointer === true &&
+    record?.defaultPrevented === true;
+}
+
+function hasM4ContextMenuCopyEvidence(pageProbe) {
+  const copies = pageProbe?.copyEventTrace;
+  const copy = Array.isArray(copies) ? copies[0] : null;
+  const selection = copy?.selection;
+  return Array.isArray(copies) && copies.length === 1 &&
+    copy?.type === "copy" && copy?.trusted === true &&
+    copy?.targetId === "context-source" && copy?.defaultPrevented === false &&
+    selection?.start === 0 && selection?.end === 4 &&
+    selection?.text === "MENU" && pageProbe?.sourceValue === "MENU";
+}
+
+function hasM4ContextMenuPasteEvidence(pageProbe) {
+  const paste = pageProbe?.pasteEventTrace;
+  const text = pageProbe?.pasteTextInputTrace;
+  return pageProbe?.activeElementId === "context-paste" &&
+    pageProbe?.pasteValue === "MENU" && pageProbe?.pasteSelectionStart === 4 &&
+    pageProbe?.pasteSelectionEnd === 4 &&
+    pageProbe?.resultText === "NATIVE MENU COPY PASTED" &&
+    pageProbe?.contextCopied === true && Array.isArray(paste) &&
+    paste.length === 1 && paste[0]?.type === "paste" &&
+    paste[0]?.trusted === true && paste[0]?.targetId === "context-paste" &&
+    paste[0]?.defaultPrevented === false && paste[0]?.text === "MENU" &&
+    Array.isArray(text) && text.length === 2 && text[0]?.type === "beforeinput" &&
+    text[1]?.type === "input" && text.every((record) =>
+      record?.trusted === true && record?.inputType === "insertFromPaste" &&
+      record?.data === "MENU" && record?.isComposing === false &&
+      record?.targetId === "context-paste");
 }
 
 function matchesM4CopyPasteQueuedKeyRecord(
@@ -992,6 +1135,9 @@ export class ChromiumWasmM3Host {
   #activeM4PointerId = null;
   #activeM4PointerButton = null;
   #lastM4PointerPoint = null;
+  #contextMenuSequence = 0;
+  #contextMenuRecords = [];
+  #pendingM4ContextMenu = null;
   #wheelInputEnabled = false;
   #wheelListeners = [];
   #wheelSequence = 0;
@@ -1157,7 +1303,16 @@ export class ChromiumWasmM3Host {
       lastQueued: this.#lastQueuedPointer
         ? clone(this.#lastQueuedPointer)
         : null,
+      contextMenuRecords: this.#contextMenuRecords.map((record) =>
+        clone(record)),
     };
+  }
+
+  #recordM4ContextMenu(record) {
+    this.#contextMenuRecords.push(record);
+    if (this.#contextMenuRecords.length > 16) {
+      this.#contextMenuRecords.shift();
+    }
   }
 
   #recordWheel(record) {
@@ -2091,6 +2246,7 @@ export class ChromiumWasmM3Host {
     this.#activeM4PointerId = null;
     this.#activeM4PointerButton = null;
     this.#lastM4PointerPoint = null;
+    this.#pendingM4ContextMenu = null;
     this.#releaseM4PointerCapture(pointerId);
     if (this.#lifecycle !== "running" || !point) {
       this.#recordHost(`m4:pointer:${reason}:release-skipped`);
@@ -2160,7 +2316,7 @@ export class ChromiumWasmM3Host {
     }
     if (
       (type === "down" || type === "up") &&
-      event.button !== 0 && event.button !== 1
+      event.button !== 0 && event.button !== 1 && event.button !== 2
     ) {
       recordAndReject("UNSUPPORTED_BUTTON", "unsupported-button");
       return;
@@ -2172,7 +2328,8 @@ export class ChromiumWasmM3Host {
       recordAndReject("INVALID_ACTIVE_POINTER_STATE", "invalid-active-state");
       return;
     }
-    const buttonMask = (button) => button === 0 ? 1 : 4;
+    const buttonMask = (button) =>
+      button === 0 ? 1 : button === 1 ? 4 : 2;
     let button;
     if (type === "down") {
       if (activePointerId !== null) {
@@ -2291,6 +2448,26 @@ export class ChromiumWasmM3Host {
         if (type === "down" && button === 0) {
           this.#armM4ImeProxyActivation(record);
         }
+        if (button === 2) {
+          // A trusted, accepted secondary stream earns suppression of only
+          // the embedding page's context menu. Blink receives the same native
+          // Ozone mouse events and owns the in-Chromium menu transaction.
+          const pending = this.#pendingM4ContextMenu;
+          if (type === "up" && pending?.pointerId === pointerId &&
+              pending.suppressed === true) {
+            // Some browsers emit contextmenu before secondary pointerup.
+            // Do not re-arm it after that one outer menu has been suppressed.
+            this.#pendingM4ContextMenu = null;
+          } else {
+            this.#pendingM4ContextMenu = {
+              pointerId,
+              pointerSequence: record.sequence,
+              x: point.x,
+              y: point.y,
+              suppressed: false,
+            };
+          }
+        }
         if (button === 1 && event.cancelable) {
           event.preventDefault();
           record.defaultPrevented = event.defaultPrevented === true;
@@ -2318,12 +2495,55 @@ export class ChromiumWasmM3Host {
       `m4:pointer:${type}:${record.queued ? "queued" : "rejected"}`);
   }
 
+  #handleM4ContextMenu(event) {
+    if (this.#lifecycle !== "running") {
+      return;
+    }
+    const record = {
+      sequence: ++this.#contextMenuSequence,
+      trusted: event.isTrusted === true,
+      button: Number(event.button),
+      buttons: Number(event.buttons),
+      acceptedPointer: false,
+      defaultPrevented: false,
+    };
+    const point = this.#canvasPointForPointerEvent(event);
+    if (point) {
+      record.x = point.x;
+      record.y = point.y;
+    }
+    const pending = this.#pendingM4ContextMenu;
+    if (!record.trusted) {
+      record.reason = "UNTRUSTED_DOM_EVENT";
+    } else if (record.button !== 2 || !point || !pending ||
+               pending.suppressed === true ||
+               pending.x !== point.x || pending.y !== point.y) {
+      record.reason = "NO_QUEUED_SECONDARY_STREAM";
+    } else {
+      record.acceptedPointer = true;
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      record.defaultPrevented = event.defaultPrevented === true;
+      if (!record.defaultPrevented) {
+        record.reason = "OUTER_CONTEXT_MENU_NOT_CANCELABLE";
+      }
+      this.#pendingM4ContextMenu.suppressed = true;
+    }
+    this.#recordM4ContextMenu(record);
+    this.#recordHost(
+      "m4:contextmenu:" +
+      (record.acceptedPointer && record.defaultPrevented
+        ? "suppressed" : "rejected"));
+  }
+
   #disableM4PointerInput() {
     for (const {target, type, listener} of this.#pointerListeners) {
       target.removeEventListener(type, listener);
     }
     this.#cancelActiveM4Pointer("teardown");
     this.#pointerListeners = [];
+    this.#pendingM4ContextMenu = null;
     this.#pointerInputEnabled = false;
   }
 
@@ -2356,6 +2576,13 @@ export class ChromiumWasmM3Host {
       target: this.#canvas,
       type: "lostpointercapture",
       listener: lostCaptureListener,
+    });
+    const contextMenuListener = (event) => this.#handleM4ContextMenu(event);
+    this.#canvas.addEventListener("contextmenu", contextMenuListener);
+    this.#pointerListeners.push({
+      target: this.#canvas,
+      type: "contextmenu",
+      listener: contextMenuListener,
     });
     const cancelOnBlur = () => this.#cancelActiveM4Pointer("blur");
     addEventListener("blur", cancelOnBlur);
@@ -5465,6 +5692,595 @@ async function runM4OzonePrimaryPasteSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneContextMenuSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+      1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let readiness = null;
+  let result;
+  let activationProof = null;
+  let selectionProof = null;
+  let menuOpenProof = null;
+  let menuCopyProof = null;
+  let pasteActivationProof = null;
+  let pasteProof = null;
+
+  try {
+    if (parameters.get("case") !== M4_CONTEXT_MENU_CASE) {
+      throw new Error("M4 context-menu case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 context-menu result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_CONTEXT_MENU_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+        parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+          "M4 context-menu base readiness timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    const source = {
+      targetX: Number(readiness.pageProbe.sourceTargetX),
+      targetY: Number(readiness.pageProbe.sourceTargetY),
+      dragStartX: Number(readiness.pageProbe.dragStartX),
+      dragStartY: Number(readiness.pageProbe.dragStartY),
+      dragMiddleX: Number(readiness.pageProbe.dragMiddleX),
+      dragMiddleY: Number(readiness.pageProbe.dragMiddleY),
+      dragEndX: Number(readiness.pageProbe.dragEndX),
+      dragEndY: Number(readiness.pageProbe.dragEndY),
+    };
+    const paste = {
+      targetX: Number(readiness.pageProbe.pasteTargetX),
+      targetY: Number(readiness.pageProbe.pasteTargetY),
+    };
+    for (const [name, value, maximum] of [
+      ["source target x", source.targetX, DEFAULT_WIDTH - 1],
+      ["source target y", source.targetY, DEFAULT_HEIGHT - 1],
+      ["source drag start x", source.dragStartX, DEFAULT_WIDTH - 1],
+      ["source drag start y", source.dragStartY, DEFAULT_HEIGHT - 1],
+      ["source drag middle x", source.dragMiddleX, DEFAULT_WIDTH - 1],
+      ["source drag middle y", source.dragMiddleY, DEFAULT_HEIGHT - 1],
+      ["source drag end x", source.dragEndX, DEFAULT_WIDTH - 1],
+      ["source drag end y", source.dragEndY, DEFAULT_HEIGHT - 1],
+      ["paste target x", paste.targetX, DEFAULT_WIDTH - 1],
+      ["paste target y", paste.targetY, DEFAULT_HEIGHT - 1],
+    ]) {
+      checkInteger(value, "M4 context-menu " + name, 0, maximum);
+    }
+    if (!(source.dragStartX < source.dragMiddleX &&
+          source.dragMiddleX < source.dragEndX &&
+          source.dragStartY === source.dragMiddleY &&
+          source.dragMiddleY === source.dragEndY)) {
+      throw new Error("M4 context-menu drag geometry is not strictly forward");
+    }
+
+    const activationTrace = [
+      ["move", source.targetX, source.targetY, -1, 0],
+      ["down", source.targetX, source.targetY, 0, 1],
+      ["up", source.targetX, source.targetY, 0, 0],
+    ];
+    const dragTrace = [
+      ["move", source.dragStartX, source.dragStartY, -1, 0],
+      ["down", source.dragStartX, source.dragStartY, 0, 1],
+      ["move", source.dragMiddleX, source.dragMiddleY, -1, 1],
+      ["move", source.dragEndX, source.dragEndY, -1, 1],
+      ["up", source.dragEndX, source.dragEndY, 0, 0],
+    ];
+    const secondaryTrace = [
+      ["move", source.targetX, source.targetY, -1, 0],
+      ["down", source.targetX, source.targetY, 2, 2],
+      ["up", source.targetX, source.targetY, 2, 0],
+    ];
+    const sourceTrace = [...activationTrace, ...dragTrace];
+    const menuOpenTrace = [...sourceTrace, ...secondaryTrace];
+    const pasteActivationTrace = [
+      ["move", paste.targetX, paste.targetY, -1, 0],
+      ["down", paste.targetX, paste.targetY, 0, 1],
+      ["up", paste.targetX, paste.targetY, 0, 0],
+    ];
+    const pasteKeyTrace = [
+      ["down", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, true],
+      ["down", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY, true],
+      ["up", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY, true],
+      ["up", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY, false],
+    ];
+    const innerPasteKeyTrace = [
+      ["keydown", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY,
+       null, "context-paste"],
+      ["keydown", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY,
+       true, "context-paste"],
+      ["keyup", M4_PASTE_DOM_CODE, M4_PASTE_DOM_KEY,
+       true, "context-paste"],
+      ["keyup", M4_CONTROL_LEFT_DOM_CODE, M4_CONTROL_LEFT_DOM_KEY,
+       null, "context-paste"],
+    ];
+
+    const pointerListeners = host.enableM4PointerInput();
+    const keyboardListeners = host.enableM4KeyboardInput();
+    window.__chromiumWasmM4ContextMenuState = {
+      state: "awaiting-dom-context-menu-activation",
+      sourceTargetX: source.targetX,
+      sourceTargetY: source.targetY,
+      pointerListeners,
+      keyboardListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas context-menu source activation";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const records = pointer?.queuedRecords;
+      const release = records?.[activationTrace.length - 1];
+      const pageProbe = readiness.pageProbe;
+      if (
+        pointer?.receivedCount === activationTrace.length &&
+        pointer?.trustedCount === activationTrace.length &&
+        pointer?.queuedCount === activationTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(records, activationTrace) &&
+        pageProbe?.activeElementId === "context-source" &&
+        pageProbe?.sourceFocusCount >= 1 &&
+        pageProbe?.sourceSelection?.start === pageProbe?.sourceSelection?.end &&
+        pageProbe?.sourceValue === "MENU" &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const activationPointer = readiness?.pointerInput;
+    const activationRelease = activationPointer?.queuedRecords?.[
+      activationTrace.length - 1];
+    activationProof = Object.freeze({
+      outerTraceExact:
+        activationPointer?.receivedCount === activationTrace.length &&
+        activationPointer?.trustedCount === activationTrace.length &&
+        activationPointer?.queuedCount === activationTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            activationPointer?.queuedRecords, activationTrace),
+      sourceFocused: readiness?.pageProbe?.activeElementId === "context-source" &&
+        readiness?.pageProbe?.sourceFocusCount >= 1,
+      selectionCollapsed:
+        readiness?.pageProbe?.sourceSelection?.start ===
+          readiness?.pageProbe?.sourceSelection?.end,
+      frameAfterActivation:
+        readiness?.frame?.id > activationRelease?.frameIdBefore,
+    });
+    if (!activationProof.outerTraceExact || !activationProof.sourceFocused ||
+        !activationProof.selectionCollapsed || !activationProof.frameAfterActivation) {
+      throw new Error(
+          "M4 context-menu source activation timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4ContextMenuState = {
+      state: "awaiting-dom-context-menu-drag",
+      dragStartX: source.dragStartX,
+      dragStartY: source.dragStartY,
+      dragMiddleX: source.dragMiddleX,
+      dragMiddleY: source.dragMiddleY,
+      dragEndX: source.dragEndX,
+      dragEndY: source.dragEndY,
+      pointer: clone(activationPointer),
+      activationProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas context-menu selection drag";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const release = pointer?.queuedRecords?.[sourceTrace.length - 1];
+      if (
+        pointer?.receivedCount === sourceTrace.length &&
+        pointer?.trustedCount === sourceTrace.length &&
+        pointer?.queuedCount === sourceTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pointer?.queuedRecords, sourceTrace) &&
+        hasM4ContextMenuNativeSelection(readiness.pageProbe) &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const selectedPointer = readiness?.pointerInput;
+    const selectionRelease = selectedPointer?.queuedRecords?.[
+      sourceTrace.length - 1];
+    selectionProof = Object.freeze({
+      outerTraceExact:
+        selectedPointer?.receivedCount === sourceTrace.length &&
+        selectedPointer?.trustedCount === sourceTrace.length &&
+        selectedPointer?.queuedCount === sourceTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            selectedPointer?.queuedRecords, sourceTrace),
+      nativeSelection: hasM4ContextMenuNativeSelection(readiness?.pageProbe),
+      frameAfterDrag: readiness?.frame?.id > selectionRelease?.frameIdBefore,
+    });
+    if (!selectionProof.outerTraceExact || !selectionProof.nativeSelection ||
+        !selectionProof.frameAfterDrag) {
+      throw new Error(
+          "M4 context-menu source selection timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4ContextMenuState = {
+      state: "awaiting-dom-context-menu-open",
+      sourceTargetX: source.targetX,
+      sourceTargetY: source.targetY,
+      pointer: clone(selectedPointer),
+      activationProof,
+      selectionProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas secondary click to open Copy menu";
+
+    let menuScan = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      menuScan = scanM4ContextMenuCopyRow(canvas);
+      const pointer = readiness.pointerInput;
+      const release = pointer?.queuedRecords?.[menuOpenTrace.length - 1];
+      if (
+        pointer?.receivedCount === menuOpenTrace.length &&
+        pointer?.trustedCount === menuOpenTrace.length &&
+        pointer?.queuedCount === menuOpenTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pointer?.queuedRecords, menuOpenTrace) &&
+        hasM4ContextMenuNativeSelection(readiness.pageProbe) &&
+        hasM4ContextMenuInnerSecondaryEvents(
+            readiness.pageProbe, source.targetX, source.targetY) &&
+        hasM4ContextMenuOuterSuppression(
+            pointer?.contextMenuRecords, source.targetX, source.targetY) &&
+        menuScan !== null && readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const menuPointer = readiness?.pointerInput;
+    const menuRelease = menuPointer?.queuedRecords?.[
+      menuOpenTrace.length - 1];
+    menuOpenProof = Object.freeze({
+      outerTraceExact:
+        menuPointer?.receivedCount === menuOpenTrace.length &&
+        menuPointer?.trustedCount === menuOpenTrace.length &&
+        menuPointer?.queuedCount === menuOpenTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            menuPointer?.queuedRecords, menuOpenTrace),
+      innerSecondary: hasM4ContextMenuInnerSecondaryEvents(
+          readiness?.pageProbe, source.targetX, source.targetY),
+      outerContextMenuSuppressed: hasM4ContextMenuOuterSuppression(
+          menuPointer?.contextMenuRecords, source.targetX, source.targetY),
+      copyRow: menuScan ? clone(menuScan) : null,
+      frameAfterSecondary: readiness?.frame?.id > menuRelease?.frameIdBefore,
+    });
+    if (!menuOpenProof.outerTraceExact || !menuOpenProof.innerSecondary ||
+        !menuOpenProof.outerContextMenuSuppressed || !menuOpenProof.copyRow ||
+        !menuOpenProof.frameAfterSecondary) {
+      throw new Error(
+          "M4 context-menu open timeout: " + JSON.stringify(readiness));
+    }
+
+    const copyTrace = [
+      ["move", menuScan.targetX, menuScan.targetY, -1, 0],
+      ["down", menuScan.targetX, menuScan.targetY, 0, 1],
+      ["up", menuScan.targetX, menuScan.targetY, 0, 0],
+    ];
+    const menuCopyTrace = [...menuOpenTrace, ...copyTrace];
+    window.__chromiumWasmM4ContextMenuState = {
+      state: "awaiting-dom-context-menu-copy",
+      menuTargetX: menuScan.targetX,
+      menuTargetY: menuScan.targetY,
+      copyRow: clone(menuScan),
+      pointer: clone(menuPointer),
+      activationProof,
+      selectionProof,
+      menuOpenProof,
+    };
+    statusElement.textContent =
+      "M4 ready for scan-derived native context-menu Copy click";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const release = pointer?.queuedRecords?.[menuCopyTrace.length - 1];
+      const menuClosed = scanM4ContextMenuCopyRow(canvas) === null;
+      if (
+        pointer?.receivedCount === menuCopyTrace.length &&
+        pointer?.trustedCount === menuCopyTrace.length &&
+        pointer?.queuedCount === menuCopyTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pointer?.queuedRecords, menuCopyTrace) &&
+        hasM4ContextMenuCopyEvidence(readiness.pageProbe) && menuClosed &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const copiedPointer = readiness?.pointerInput;
+    const copyRelease = copiedPointer?.queuedRecords?.[
+      menuCopyTrace.length - 1];
+    menuCopyProof = Object.freeze({
+      outerTraceExact:
+        copiedPointer?.receivedCount === menuCopyTrace.length &&
+        copiedPointer?.trustedCount === menuCopyTrace.length &&
+        copiedPointer?.queuedCount === menuCopyTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            copiedPointer?.queuedRecords, menuCopyTrace),
+      nativeCopy: hasM4ContextMenuCopyEvidence(readiness?.pageProbe),
+      menuDismissed: scanM4ContextMenuCopyRow(canvas) === null,
+      frameAfterCopy: readiness?.frame?.id > copyRelease?.frameIdBefore,
+    });
+    if (!menuCopyProof.outerTraceExact || !menuCopyProof.nativeCopy ||
+        !menuCopyProof.menuDismissed || !menuCopyProof.frameAfterCopy) {
+      throw new Error(
+          "M4 context-menu Copy timeout: " + JSON.stringify(readiness));
+    }
+
+    const pasteTrace = [...menuCopyTrace, ...pasteActivationTrace];
+    window.__chromiumWasmM4ContextMenuState = {
+      state: "awaiting-dom-context-menu-paste-activation",
+      pasteTargetX: paste.targetX,
+      pasteTargetY: paste.targetY,
+      pointer: clone(copiedPointer),
+      keyboard: clone(readiness.keyboardInput),
+      activationProof,
+      selectionProof,
+      menuOpenProof,
+      menuCopyProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas context-menu paste target activation";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const release = pointer?.queuedRecords?.[pasteTrace.length - 1];
+      if (
+        pointer?.receivedCount === pasteTrace.length &&
+        pointer?.trustedCount === pasteTrace.length &&
+        pointer?.queuedCount === pasteTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pointer?.queuedRecords, pasteTrace) &&
+        readiness.pageProbe?.activeElementId === "context-paste" &&
+        readiness.pageProbe?.pasteFocusCount >= 1 &&
+        readiness.frame?.id > release?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pasteActivatedPointer = readiness?.pointerInput;
+    const pasteActivationRelease = pasteActivatedPointer?.queuedRecords?.[
+      pasteTrace.length - 1];
+    pasteActivationProof = Object.freeze({
+      outerTraceExact:
+        pasteActivatedPointer?.receivedCount === pasteTrace.length &&
+        pasteActivatedPointer?.trustedCount === pasteTrace.length &&
+        pasteActivatedPointer?.queuedCount === pasteTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pasteActivatedPointer?.queuedRecords, pasteTrace),
+      pasteFocused: readiness?.pageProbe?.activeElementId === "context-paste" &&
+        readiness?.pageProbe?.pasteFocusCount >= 1,
+      frameAfterActivation:
+        readiness?.frame?.id > pasteActivationRelease?.frameIdBefore,
+    });
+    if (!pasteActivationProof.outerTraceExact ||
+        !pasteActivationProof.pasteFocused ||
+        !pasteActivationProof.frameAfterActivation) {
+      throw new Error(
+          "M4 context-menu paste activation timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4ContextMenuState = {
+      state: "awaiting-dom-context-menu-paste",
+      pointer: clone(pasteActivatedPointer),
+      keyboard: clone(readiness.keyboardInput),
+      activationProof,
+      selectionProof,
+      menuOpenProof,
+      menuCopyProof,
+      pasteActivationProof,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted physical ControlLeft+KeyV";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const keyboard = readiness.keyboardInput;
+      const pasteKeyDown = keyboard?.queuedRecords?.[1];
+      if (
+        pointer?.receivedCount === pasteTrace.length &&
+        pointer?.trustedCount === pasteTrace.length &&
+        pointer?.queuedCount === pasteTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pointer?.queuedRecords, pasteTrace) &&
+        keyboard?.receivedCount === pasteKeyTrace.length &&
+        keyboard?.trustedCount === pasteKeyTrace.length &&
+        keyboard?.queuedCount === pasteKeyTrace.length &&
+        keyboard?.pressedCodes?.length === 0 &&
+        matchesM4CopyPasteQueuedKeyTrace(
+            keyboard?.queuedRecords, pasteKeyTrace) &&
+        matchesM4CopyPasteInnerKeyTrace(
+            readiness.pageProbe?.pasteKeyEventTrace, innerPasteKeyTrace) &&
+        hasM4ContextMenuPasteEvidence(readiness.pageProbe) &&
+        readiness.frame?.id > pasteKeyDown?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const keyboard = readiness?.keyboardInput;
+    const pasteKeyDown = keyboard?.queuedRecords?.[1];
+    pasteProof = Object.freeze({
+      outerPointerTraceExact:
+        pointer?.receivedCount === pasteTrace.length &&
+        pointer?.trustedCount === pasteTrace.length &&
+        pointer?.queuedCount === pasteTrace.length &&
+        matchesM4PrimaryPasteQueuedPointerTrace(
+            pointer?.queuedRecords, pasteTrace),
+      outerKeyTraceExact:
+        keyboard?.receivedCount === pasteKeyTrace.length &&
+        keyboard?.trustedCount === pasteKeyTrace.length &&
+        keyboard?.queuedCount === pasteKeyTrace.length &&
+        keyboard?.pressedCodes?.length === 0 &&
+        matchesM4CopyPasteQueuedKeyTrace(
+            keyboard?.queuedRecords, pasteKeyTrace),
+      innerKeys: matchesM4CopyPasteInnerKeyTrace(
+          readiness?.pageProbe?.pasteKeyEventTrace, innerPasteKeyTrace),
+      nativePaste: hasM4ContextMenuPasteEvidence(readiness?.pageProbe),
+      frameAfterPaste: readiness?.frame?.id > pasteKeyDown?.frameIdBefore,
+    });
+    if (!pasteProof.outerPointerTraceExact || !pasteProof.outerKeyTraceExact ||
+        !pasteProof.innerKeys || !pasteProof.nativePaste ||
+        !pasteProof.frameAfterPaste) {
+      throw new Error(
+          "M4 context-menu Ctrl+V paste timeout: " +
+          JSON.stringify(readiness));
+    }
+
+    window.__chromiumWasmM4ContextMenuState = {
+      state: "input-delivered",
+      pointer: clone(pointer),
+      keyboard: clone(keyboard),
+      activationProof,
+      selectionProof,
+      menuOpenProof,
+      menuCopyProof,
+      pasteActivationProof,
+      pasteProof,
+    };
+    const shutdownTimeoutMs = Math.max(
+        1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      sourceSelection: selectionProof.nativeSelection === true,
+      nativeMenu: menuOpenProof.innerSecondary === true &&
+        menuOpenProof.outerContextMenuSuppressed === true &&
+        menuOpenProof.copyRow !== null,
+      nativeCopy: menuCopyProof.nativeCopy === true &&
+        menuCopyProof.menuDismissed === true,
+      nativePaste: pasteProof.nativePaste === true,
+      trustedDomInput: pasteProof.outerPointerTraceExact === true &&
+        pasteProof.outerKeyTraceExact === true,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_CONTEXT_MENU_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      keyboardInput: keyboard,
+      activationProof: clone(activationProof),
+      selectionProof: clone(selectionProof),
+      menuOpenProof: clone(menuOpenProof),
+      menuCopyProof: clone(menuCopyProof),
+      pasteActivationProof: clone(pasteActivationProof),
+      pasteProof: clone(pasteProof),
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_CONTEXT_MENU_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      pointerInput: null,
+      keyboardInput: null,
+      activationProof: activationProof ? clone(activationProof) : null,
+      selectionProof: selectionProof ? clone(selectionProof) : null,
+      menuOpenProof: menuOpenProof ? clone(menuOpenProof) : null,
+      menuCopyProof: menuCopyProof ? clone(menuCopyProof) : null,
+      pasteActivationProof: pasteActivationProof
+        ? clone(pasteActivationProof) : null,
+      pasteProof: pasteProof ? clone(pasteProof) : null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.keyboardInput = result.readiness.keyboardInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneCopyPasteSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -8529,6 +9345,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_RESIZE_CASE) {
     return runM4OzoneResizeSmokeFromQuery();
+  }
+  if (selectedCase === M4_CONTEXT_MENU_CASE) {
+    return runM4OzoneContextMenuSmokeFromQuery();
   }
   if (selectedCase === M4_SELECTION_CASE) {
     return runM4OzoneSelectionSmokeFromQuery();

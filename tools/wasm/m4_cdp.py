@@ -232,6 +232,32 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_secondary_click(self, x: float, y: float) -> None:
+        """Drive one physical secondary-button click without DOM commands."""
+
+        position = {"x": x, "y": y, "pointerType": "mouse"}
+        self.call(
+            "Input.dispatchMouseEvent", {**position, "type": "mouseMoved"}
+        )
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                **position,
+                "type": "mousePressed",
+                "button": "right",
+                "clickCount": 1,
+            },
+        )
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                **position,
+                "type": "mouseReleased",
+                "button": "right",
+                "clickCount": 1,
+            },
+        )
+
     def dispatch_primary_drag(
         self,
         start_x: float,

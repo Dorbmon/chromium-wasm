@@ -33,6 +33,7 @@ from m3_content_server import (
     M4_CASE,
     M4_SELECT_CASE,
     M4_RESIZE_CASE,
+    M4_CONTEXT_MENU_CASE,
     M4_SELECTION_CASE,
     M4_PRIMARY_PASTE_CASE,
     M4_COPY_PASTE_CASE,
@@ -47,6 +48,7 @@ from m3_content_server import (
     m4_smoke_url,
     m4_select_smoke_url,
     m4_resize_smoke_url,
+    m4_context_menu_smoke_url,
     m4_selection_smoke_url,
     m4_primary_paste_smoke_url,
     m4_copy_paste_smoke_url,
@@ -58,6 +60,7 @@ from m3_content_server import (
     validate_m4_result,
     validate_m4_select_result,
     validate_m4_resize_result,
+    validate_m4_context_menu_result,
     validate_m4_selection_result,
     validate_m4_primary_paste_result,
     validate_m4_copy_paste_result,
@@ -417,6 +420,7 @@ def main() -> int:
             "pointer",
             "select",
             "resize",
+            "context-menu",
             "selection",
             "primary-paste",
             "copy-paste",
@@ -463,6 +467,17 @@ def main() -> int:
         input_driver = (
             "host.resize 800x600 -> 640x480 -> 800x600 at DPR 1; "
             "no Chrome DevTools input"
+        )
+    elif args.input == "context-menu":
+        case = M4_CONTEXT_MENU_CASE
+        state_expression = (
+            "window.__chromiumWasmM4ContextMenuState || null"
+        )
+        expected_state = "awaiting-dom-context-menu-activation"
+        input_driver = (
+            "Chrome DevTools primary activation and drag, secondary click, "
+            "scan-derived Copy click, then raw ControlLeft+KeyV; no "
+            "clipboard or DOM text commands"
         )
     elif args.input == "selection":
         case = M4_SELECTION_CASE
@@ -638,6 +653,16 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
             )
+        elif args.input == "context-menu":
+            # The native menu proof has six separately observed physical
+            # phases, including pixel-derived overlay targeting.
+            url = m4_context_menu_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(90.0, max(1.0, args.timeout - 5.0)),
+            )
         elif args.input == "selection":
             url = m4_selection_smoke_url(
                 server,
@@ -806,6 +831,14 @@ def main() -> int:
                 y_field="sourceTargetY",
                 description="primary-paste source target",
             )
+        elif args.input == "context-menu":
+            click_x, click_y = canvas_point_position(
+                state,
+                canvas_geometry,
+                x_field="sourceTargetX",
+                y_field="sourceTargetY",
+                description="context-menu source target",
+            )
         elif args.input == "copy-paste":
             click_x, click_y = canvas_point_position(
                 state,
@@ -952,6 +985,122 @@ def main() -> int:
             )
             stage = "dispatch_trusted_dom_primary_paste"
             client.dispatch_middle_click(paste_x, paste_y)
+        elif args.input == "context-menu":
+            stage = "dispatch_trusted_dom_context_menu_source_activation"
+            client.dispatch_primary_click(click_x, click_y)
+            stage = "wait_for_context_menu_drag"
+            context_drag_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-context-menu-drag",
+            )
+            stage = "measure_context_menu_drag"
+            drag_start_x, drag_start_y = canvas_point_position(
+                context_drag_state,
+                canvas_geometry,
+                x_field="dragStartX",
+                y_field="dragStartY",
+                description="context-menu drag start",
+            )
+            drag_middle_x, drag_middle_y = canvas_point_position(
+                context_drag_state,
+                canvas_geometry,
+                x_field="dragMiddleX",
+                y_field="dragMiddleY",
+                description="context-menu drag middle",
+            )
+            drag_end_x, drag_end_y = canvas_point_position(
+                context_drag_state,
+                canvas_geometry,
+                x_field="dragEndX",
+                y_field="dragEndY",
+                description="context-menu drag end",
+            )
+            stage = "dispatch_trusted_dom_context_menu_drag"
+            client.dispatch_primary_drag(
+                drag_start_x,
+                drag_start_y,
+                drag_middle_x,
+                drag_middle_y,
+                drag_end_x,
+                drag_end_y,
+            )
+            stage = "wait_for_context_menu_secondary_click"
+            context_open_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-context-menu-open",
+            )
+            stage = "measure_context_menu_secondary_target"
+            secondary_x, secondary_y = canvas_point_position(
+                context_open_state,
+                canvas_geometry,
+                x_field="sourceTargetX",
+                y_field="sourceTargetY",
+                description="context-menu secondary target",
+            )
+            stage = "dispatch_trusted_dom_context_menu_secondary_click"
+            client.dispatch_secondary_click(secondary_x, secondary_y)
+            stage = "wait_for_context_menu_copy"
+            menu_copy_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-context-menu-copy",
+            )
+            stage = "measure_scan_derived_context_menu_copy_target"
+            copy_x, copy_y = canvas_point_position(
+                menu_copy_state,
+                canvas_geometry,
+                x_field="menuTargetX",
+                y_field="menuTargetY",
+                description="scan-derived context-menu Copy target",
+            )
+            stage = "dispatch_trusted_dom_context_menu_copy"
+            client.dispatch_primary_click(copy_x, copy_y)
+            stage = "wait_for_context_menu_paste_activation"
+            paste_activation_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-context-menu-paste-activation",
+            )
+            stage = "measure_context_menu_paste_target"
+            paste_x, paste_y = canvas_point_position(
+                paste_activation_state,
+                canvas_geometry,
+                x_field="pasteTargetX",
+                y_field="pasteTargetY",
+                description="context-menu paste target",
+            )
+            stage = "dispatch_trusted_dom_context_menu_paste_activation"
+            client.dispatch_primary_click(paste_x, paste_y)
+            stage = "wait_for_context_menu_ctrl_v"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-context-menu-paste",
+            )
+            stage = "dispatch_trusted_dom_context_menu_ctrl_v"
+            client.dispatch_ctrl_v()
         elif args.input == "copy-paste":
             stage = "dispatch_trusted_dom_copy_source_activation"
             client.dispatch_primary_click(click_x, click_y)
@@ -1263,6 +1412,11 @@ def main() -> int:
             input_key = "pointerInput"
         elif args.input == "select":
             validate_m4_select_result(result, expected_versions=versions)
+            input_key = "pointerInput"
+        elif args.input == "context-menu":
+            validate_m4_context_menu_result(
+                result, expected_versions=versions
+            )
             input_key = "pointerInput"
         elif args.input == "selection":
             validate_m4_selection_result(result, expected_versions=versions)

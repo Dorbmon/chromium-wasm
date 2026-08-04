@@ -41,14 +41,15 @@ class M4OzonePrimaryPasteContractTest(unittest.TestCase):
             preferences.index("#elif BUILDFLAG(IS_POSIX)"),
         )
 
-    def test_pointer_abi_maps_only_primary_and_middle_buttons(self) -> None:
+    def test_pointer_abi_maps_primary_middle_and_secondary_buttons(self) -> None:
         api = source("content/shell/browser/wasm_host_api.cc")
         host = source("tools/wasm/host/content_shell_host.js")
 
         for marker in (
             "ui::EventFlags button",
-            "(button != 0 && button != 1)",
+            "(button != 0 && button != 1 && button != 2)",
             "ui::EF_MIDDLE_MOUSE_BUTTON",
+            "ui::EF_RIGHT_MOUSE_BUTTON",
             "gfx::Point(x, y), mouse_button",
         ):
             with self.subTest(marker=marker):
@@ -56,8 +57,8 @@ class M4OzonePrimaryPasteContractTest(unittest.TestCase):
         for marker in (
             "#activeM4PointerButton = null;",
             "const button = this.#activeM4PointerButton;",
-            "event.button !== 0 && event.button !== 1",
-            "const buttonMask = (button) => button === 0 ? 1 : 4;",
+            "event.button !== 0 && event.button !== 1 && event.button !== 2",
+            "button === 0 ? 1 : button === 1 ? 4 : 2",
             "POINTER_ALREADY_ACTIVE",
             "POINTER_BUTTON_MISMATCH",
             "INVALID_POINTER_RELEASE",

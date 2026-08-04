@@ -1,0 +1,320 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 Ozone context-menu fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  body {
+    min-height: 900px;
+    margin: 0;
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    width: 520px;
+    margin: 64px 0 0 96px;
+    padding: 28px;
+    border: 4px solid #163a63;
+    background: #ffffff;
+  }
+
+  label {
+    display: block;
+    margin-top: 22px;
+  }
+
+  input {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 18px;
+    border: 3px solid #0f5b94;
+    background: #d8f0ff;
+    color: #062b4d;
+    font: 20px/20px Ahem, sans-serif;
+    letter-spacing: 0;
+    outline: none;
+  }
+
+  input:focus {
+    border-color: #ff8a00;
+    box-shadow: 0 0 0 4px #ffcf75;
+  }
+
+  #result[data-context-copied="true"] {
+    color: #08763b;
+  }
+</style>
+<main>
+  <p id="title">M4 OZONE NATIVE CONTEXT MENU</p>
+  <label for="context-source">DRAG TO SELECT, THEN SECONDARY-CLICK COPY</label>
+  <input id="context-source" type="text" value="MENU" autocomplete="off" spellcheck="false">
+  <label for="context-paste">CLICK, THEN PRESS CTRL+V</label>
+  <input id="context-paste" type="text" autocomplete="off" spellcheck="false">
+  <p id="result" data-context-copied="false">WAITING FOR NATIVE MENU COPY</p>
+</main>
+<script>
+  (() => {
+    const SOURCE_VALUE = "MENU";
+    const VIEWPORT_WIDTH = 800;
+    const VIEWPORT_HEIGHT = 600;
+    const source = document.querySelector("#context-source");
+    const paste = document.querySelector("#context-paste");
+    const result = document.querySelector("#result");
+    const sourcePointerTrace = [];
+    const sourceMouseTrace = [];
+    const contextMenuTrace = [];
+    const pasteEventTrace = [];
+    const pasteTextInputTrace = [];
+    const copyEventTrace = [];
+    const pasteKeyEventTrace = [];
+    const selectionActivity = {
+      count: 0,
+      trusted: false,
+      nonCollapsed: false,
+      trustedNonCollapsed: false,
+      selectCount: 0,
+      selectionChangeCount: 0,
+    };
+    let sourceFocusCount = 0;
+    let pasteFocusCount = 0;
+    let fontReady = !document.fonts;
+    let timerTicks = 0;
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    function tracePointer(event) {
+      return {
+        type: event.type,
+        trusted: event.isTrusted === true,
+        button: event.button,
+        buttons: event.buttons,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+      };
+    }
+
+    function sourceSelection() {
+      const start = source.selectionStart;
+      const end = source.selectionEnd;
+      if (
+        !Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+        start < 0 || end < start
+      ) {
+        return null;
+      }
+      return {
+        start,
+        end,
+        text: source.value.slice(start, end),
+        direction: source.selectionDirection,
+      };
+    }
+
+    function recordSelection(event, kind) {
+      const selection = sourceSelection();
+      const nonCollapsed = selection !== null && selection.start < selection.end;
+      const trusted = event.isTrusted === true;
+      selectionActivity.count += 1;
+      selectionActivity.trusted = selectionActivity.trusted || trusted;
+      selectionActivity.nonCollapsed = selectionActivity.nonCollapsed || nonCollapsed;
+      selectionActivity.trustedNonCollapsed =
+        selectionActivity.trustedNonCollapsed || trusted && nonCollapsed;
+      if (kind === "select") {
+        selectionActivity.selectCount += 1;
+      } else {
+        selectionActivity.selectionChangeCount += 1;
+      }
+    }
+
+    for (const type of ["pointerdown", "pointermove", "pointerup"]) {
+      source.addEventListener(type, (event) => {
+        sourcePointerTrace.push(tracePointer(event));
+      });
+    }
+    for (const type of ["mousedown", "mousemove", "mouseup"]) {
+      source.addEventListener(type, (event) => {
+        sourceMouseTrace.push(tracePointer(event));
+      });
+    }
+    source.addEventListener("contextmenu", (event) => {
+      // This must remain uncancelled: Blink forwards the real request through
+      // WebContents to the Wasm Aura menu overlay.
+      contextMenuTrace.push({
+        ...tracePointer(event),
+        selection: sourceSelection(),
+      });
+    });
+    source.addEventListener("select", (event) => recordSelection(event, "select"));
+    document.addEventListener("selectionchange", (event) => {
+      if (document.activeElement === source) {
+        recordSelection(event, "selectionchange");
+      }
+    });
+    source.addEventListener("focus", (event) => {
+      if (event.isTrusted) {
+        sourceFocusCount += 1;
+      }
+    });
+    paste.addEventListener("focus", (event) => {
+      if (event.isTrusted) {
+        pasteFocusCount += 1;
+      }
+    });
+    source.addEventListener("copy", (event) => {
+      copyEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+        selection: sourceSelection(),
+      });
+    });
+    paste.addEventListener("paste", (event) => {
+      pasteEventTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+        text: event.clipboardData?.getData("text/plain") || null,
+      });
+    });
+    for (const type of ["keydown", "keyup"]) {
+      paste.addEventListener(type, (event) => {
+        pasteKeyEventTrace.push({
+          type: event.type,
+          trusted: event.isTrusted === true,
+          code: event.code,
+          key: event.key,
+          ctrlKey: event.ctrlKey === true,
+          repeat: event.repeat === true,
+          isComposing: event.isComposing === true,
+          targetId: event.target?.id || null,
+          defaultPrevented: event.defaultPrevented === true,
+        });
+      });
+    }
+    for (const type of ["beforeinput", "input"]) {
+      paste.addEventListener(type, (event) => {
+        pasteTextInputTrace.push({
+          type: event.type,
+          trusted: event.isTrusted === true,
+          inputType: event.inputType,
+          data: typeof event.data === "string" ? event.data : null,
+          isComposing: event.isComposing === true,
+          targetId: event.target?.id || null,
+        });
+        if (
+          event.type === "input" && event.isTrusted === true &&
+          paste.value === SOURCE_VALUE &&
+          paste.selectionStart === SOURCE_VALUE.length &&
+          paste.selectionEnd === SOURCE_VALUE.length
+        ) {
+          result.dataset.contextCopied = "true";
+          result.textContent = "NATIVE MENU COPY PASTED";
+        }
+      });
+    }
+
+    function coordinate(value, maximum) {
+      const result = Math.floor(value);
+      return Number.isSafeInteger(result) && result >= 0 && result <= maximum
+        ? result : null;
+    }
+
+    function geometry() {
+      const sourceRect = source.getBoundingClientRect();
+      const pasteRect = paste.getBoundingClientRect();
+      const style = getComputedStyle(source);
+      const borderLeft = Number.parseFloat(style.borderLeftWidth);
+      const borderRight = Number.parseFloat(style.borderRightWidth);
+      const paddingLeft = Number.parseFloat(style.paddingLeft);
+      const paddingRight = Number.parseFloat(style.paddingRight);
+      if (
+        !Number.isFinite(sourceRect.left) || !Number.isFinite(sourceRect.right) ||
+        !Number.isFinite(sourceRect.top) || !Number.isFinite(sourceRect.height) ||
+        !Number.isFinite(pasteRect.left) || !Number.isFinite(pasteRect.top) ||
+        !Number.isFinite(pasteRect.width) || !Number.isFinite(pasteRect.height) ||
+        !Number.isFinite(borderLeft) || !Number.isFinite(borderRight) ||
+        !Number.isFinite(paddingLeft) || !Number.isFinite(paddingRight) ||
+        sourceRect.width <= 0 || sourceRect.height <= 0 ||
+        pasteRect.width <= 0 || pasteRect.height <= 0
+      ) {
+        return {ready: false};
+      }
+      const sourceY = sourceRect.top + sourceRect.height / 2;
+      const textLeft = sourceRect.left + borderLeft + paddingLeft;
+      const textRight = sourceRect.right - borderRight - paddingRight;
+      const sourceTargetX = coordinate(
+          sourceRect.left + sourceRect.width / 2, VIEWPORT_WIDTH - 1);
+      const sourceTargetY = coordinate(sourceY, VIEWPORT_HEIGHT - 1);
+      const dragStartX = coordinate(textLeft + 1, VIEWPORT_WIDTH - 1);
+      const dragMiddleX = coordinate(
+          textLeft + (textRight - textLeft) / 2, VIEWPORT_WIDTH - 1);
+      const dragEndX = coordinate(textRight - 1, VIEWPORT_WIDTH - 1);
+      const pasteTargetX = coordinate(
+          pasteRect.left + pasteRect.width / 2, VIEWPORT_WIDTH - 1);
+      const pasteTargetY = coordinate(
+          pasteRect.top + pasteRect.height / 2, VIEWPORT_HEIGHT - 1);
+      const coordinates = [
+        sourceTargetX, sourceTargetY, dragStartX, dragMiddleX, dragEndX,
+        pasteTargetX, pasteTargetY,
+      ];
+      return {
+        sourceTargetX,
+        sourceTargetY,
+        dragStartX,
+        dragStartY: coordinate(sourceY, VIEWPORT_HEIGHT - 1),
+        dragMiddleX,
+        dragMiddleY: coordinate(sourceY, VIEWPORT_HEIGHT - 1),
+        dragEndX,
+        dragEndY: coordinate(sourceY, VIEWPORT_HEIGHT - 1),
+        pasteTargetX,
+        pasteTargetY,
+        ready: coordinates.every((value) => value !== null) &&
+          dragStartX < dragMiddleX && dragMiddleX < dragEndX,
+      };
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      const currentGeometry = geometry();
+      return JSON.stringify({
+        protocol: 1,
+        fixture: "chromium-wasm-m4-ozone-context-menu-v1",
+        fontReady,
+        timerTicks,
+        ready: document.readyState === "complete" && fontReady &&
+          currentGeometry.ready === true,
+        ...currentGeometry,
+        activeElementId: document.activeElement?.id || null,
+        sourceValue: source.value,
+        sourceSelection: sourceSelection(),
+        selectionActivity,
+        sourceFocusCount,
+        pasteFocusCount,
+        sourcePointerTrace,
+        sourceMouseTrace,
+        contextMenuTrace,
+        copyEventTrace,
+        pasteEventTrace,
+        pasteTextInputTrace,
+        pasteKeyEventTrace,
+        pasteValue: paste.value,
+        pasteSelectionStart: paste.selectionStart,
+        pasteSelectionEnd: paste.selectionEnd,
+        resultText: result.textContent,
+        contextCopied: result.dataset.contextCopied === "true",
+      });
+    };
+  })();
+</script>

@@ -340,8 +340,9 @@ class M4OzonePointerContractTest(unittest.TestCase):
         for marker in (
             "DomPointerEventType::kMove",
             "DomPointerEventType::kUp",
-            "(button != 0 && button != 1)",
+            "(button != 0 && button != 1 && button != 2)",
             "ui::EF_MIDDLE_MOUSE_BUTTON",
+            "ui::EF_RIGHT_MOUSE_BUTTON",
             "x < 0 || y < 0",
             "PostHostCommand",
             "DispatchDomPointerOnUiThread",

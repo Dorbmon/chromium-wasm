@@ -540,10 +540,17 @@ static_library("content_shell_lib") {
         ]
       }
     } else {
-      sources += [
-        "browser/shell_platform_delegate_aura.cc",
-        "browser/shell_web_contents_view_delegate_aura.cc",
-      ]
+      sources += [ "browser/shell_platform_delegate_aura.cc" ]
+      if (is_wasm) {
+        sources += [ "browser/shell_web_contents_view_delegate_wasm.cc" ]
+        deps += [
+          "//skia",
+          "//ui/base:hit_test",
+          "//ui/compositor",
+        ]
+      } else {
+        sources += [ "browser/shell_web_contents_view_delegate_aura.cc" ]
+      }
     }
   } else {
     sources -= [
