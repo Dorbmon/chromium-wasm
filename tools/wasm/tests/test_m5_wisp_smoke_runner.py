@@ -96,6 +96,8 @@ def passing_result() -> dict[str, object]:
                 "webSocketEcho": True,
                 "altSvcH3Advertised": True,
                 "redirected": True,
+                "cacheStored": True,
+                "cacheRevalidated": True,
                 "nonce": "fixed-test-nonce",
             },
         },
@@ -149,6 +151,10 @@ def passing_relay_status() -> dict[str, object]:
         "webSocketEchoes": 1,
         "redirectRequests": 1,
         "redirectCookieValidations": 1,
+        "cacheStore200s": 1,
+        "cacheConditionalRequests": 1,
+        "cacheNotModified304s": 1,
+        "cacheUnexpectedRequests": 0,
         "tlsMismatchTcpConnections": 1,
         "tlsMismatchHttpStreams": 0,
         "h2Requests": {"count": 2, "protocol": "h2"},
@@ -166,9 +172,11 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 5, "event": "h2-page"},
             {"sequence": 6, "event": "h2-page-cookie"},
             {"sequence": 7, "event": "h2-resource"},
-            {"sequence": 8, "event": "h1-cors"},
-            {"sequence": 9, "event": "h1-wss-echo"},
-            {"sequence": 10, "event": "tls-failure-tcp-connect"},
+            {"sequence": 8, "event": "h2-cache-store-200"},
+            {"sequence": 9, "event": "h2-cache-revalidate-304"},
+            {"sequence": 10, "event": "h1-cors"},
+            {"sequence": 11, "event": "h1-wss-echo"},
+            {"sequence": 12, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -305,7 +313,14 @@ class M5ResultValidationTest(unittest.TestCase):
         )
 
     def test_rejects_missing_http2_or_websocket_evidence(self) -> None:
-        for field in ("h2Fetch", "corsFetch", "webSocketEcho", "redirected"):
+        for field in (
+            "h2Fetch",
+            "corsFetch",
+            "webSocketEcho",
+            "redirected",
+            "cacheStored",
+            "cacheRevalidated",
+        ):
             with self.subTest(field=field):
                 result = passing_result()
                 readiness = result["readiness"]
@@ -472,6 +487,67 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             transcript[redirect_index],
         )
         with self.assertRaisesRegex(M0Error, "before redirect cookie"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+    def test_rejects_invalid_cache_revalidation_evidence(self) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        for field, actual_value in (
+            ("cacheStore200s", 0),
+            ("cacheStore200s", 2),
+            ("cacheConditionalRequests", 0),
+            ("cacheConditionalRequests", 2),
+            ("cacheNotModified304s", 0),
+            ("cacheNotModified304s", 2),
+            ("cacheUnexpectedRequests", 1),
+        ):
+            with self.subTest(field=field, actual_value=actual_value):
+                status = passing_relay_status()
+                status[field] = actual_value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h2-cache-store-200",
+            "h2-cache-revalidate-304",
+        ):
+            with self.subTest(event_name=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        store_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "h2-cache-store-200"
+        )
+        revalidation_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "h2-cache-revalidate-304"
+        )
+        transcript[store_index], transcript[revalidation_index] = (
+            transcript[revalidation_index],
+            transcript[store_index],
+        )
+        with self.assertRaisesRegex(M0Error, "before storing"):
             run_m5_wisp_smoke.validate_relay_transcript(
                 status, relay_ready=relay_ready
             )

@@ -27,6 +27,9 @@ const WISP_PATH = "/wisp/";
 const STATUS_PATH = "/status";
 const TEST_HOSTNAME = "a.test";
 const REDIRECT_COOKIE_NAME = "m5_redirect";
+const CACHE_REVALIDATE_ETAG = '"m5-cache-revalidate-v1"';
+const CACHE_REVALIDATE_BODY = "M5_CACHE_REVALIDATE_OK";
+const CACHE_REVALIDATE_CACHE_CONTROL = "private, max-age=60, must-revalidate";
 
 const WISP_PACKET_TYPES = Object.freeze({
   CONNECT: 0x01,
@@ -62,6 +65,9 @@ const MAX_ECHO_MESSAGE_BYTES = 4096;
 const STREAM_PACKET_CREDIT = 64;
 const GLOBAL_PACKET_CREDIT = 1024;
 const MAX_TRANSCRIPT_ENTRIES = 256;
+// Cache-test counters are compact evidence rather than a request log. Keep
+// them saturating so a loopback client cannot make status output unbounded.
+const MAX_CACHE_REVALIDATION_COUNTER = 16;
 const RELAY_HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 const DESTINATION_IDLE_TIMEOUT_MS = 30 * 1000;
 
@@ -612,12 +618,21 @@ function appendRequestedDestination(context, hostname, port) {
   context.stats.requestedDestinations.push({hostname, port});
 }
 
+function incrementBoundedCacheCounter(context, name) {
+  context.stats[name] = Math.min(
+      context.stats[name] + 1, MAX_CACHE_REVALIDATION_COUNTER);
+}
+
 function statusSnapshot(context) {
   return {
     fixture: FIXTURE,
     protocol: 1,
     ready: true,
     activeWispSessions: context.relays.size,
+    cacheConditionalRequests: context.stats.cacheConditionalRequests,
+    cacheNotModified304s: context.stats.cacheNotModified304s,
+    cacheStore200s: context.stats.cacheStore200s,
+    cacheUnexpectedRequests: context.stats.cacheUnexpectedRequests,
     corsRequests: context.stats.corsRequests,
     h2Requests: {
       count: context.stats.h2Requests,
@@ -1030,6 +1045,9 @@ function h2Page(context) {
 (() => {
   "use strict";
   const fixture = ${JSON.stringify(FIXTURE)};
+  const cacheRevalidateURL =
+      new URL("/m5/cache-revalidate", location.href).href;
+  const cacheRevalidateETag = ${JSON.stringify(CACHE_REVALIDATE_ETAG)};
   const h2ResourceURL = new URL("/m5/h2-resource", location.href).href;
   const corsURL = ${JSON.stringify(h1CorsUrl)};
   const socketURL = ${JSON.stringify(webSocketUrl)};
@@ -1041,6 +1059,8 @@ function h2Page(context) {
     h2Fetch: false,
     h2Protocol: "",
     altSvcH3Advertised: false,
+    cacheStored: false,
+    cacheRevalidated: false,
     corsFetch: false,
     redirected: navigationEntry?.redirectCount === 1,
     webSocketEcho: false,
@@ -1090,6 +1110,8 @@ function h2Page(context) {
     timerTicks: state.timerTicks,
     h2Fetch: state.h2Fetch,
     h2Protocol: state.h2Protocol,
+    cacheStored: state.cacheStored,
+    cacheRevalidated: state.cacheRevalidated,
     corsFetch: state.corsFetch,
     redirected: state.redirected,
     webSocketEcho: state.webSocketEcho,
@@ -1110,6 +1132,29 @@ function h2Page(context) {
       state.altSvcH3Advertised =
           /(?:^|,)\\s*h3=/.test(h2Response.headers.get("alt-svc") || "");
 
+      // Fetch the first response with reload so this page always creates a
+      // cache entry. The second request must revalidate that entry instead of
+      // being satisfied as a fresh cache hit; the relay records the exact 304.
+      const cacheStoreResponse = await fetch(cacheRevalidateURL, {
+        cache: "reload",
+        // This cache behavior must not depend on the redirect fixture's
+        // HttpOnly cookie. Chromium still owns the cache entry and validator.
+        credentials: "omit",
+      });
+      const cacheStoreText = await cacheStoreResponse.text();
+      state.cacheStored = cacheStoreResponse.ok &&
+          cacheStoreText === ${JSON.stringify(CACHE_REVALIDATE_BODY)} &&
+          cacheStoreResponse.headers.get("etag") === cacheRevalidateETag;
+      const cacheRevalidateResponse = await fetch(cacheRevalidateURL, {
+        cache: "no-cache",
+        credentials: "omit",
+      });
+      const cacheRevalidateText = await cacheRevalidateResponse.text();
+      state.cacheRevalidated = state.cacheStored &&
+          cacheRevalidateResponse.ok &&
+          cacheRevalidateText === ${JSON.stringify(CACHE_REVALIDATE_BODY)} &&
+          cacheRevalidateResponse.headers.get("etag") === cacheRevalidateETag;
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -1119,9 +1164,10 @@ function h2Page(context) {
           await corsResponse.text() === "M5_CORS_OK";
       state.webSocketEcho = await echoNonce();
       state.complete = state.h2Fetch && state.altSvcH3Advertised &&
-          state.corsFetch && state.redirected && state.webSocketEcho;
+          state.cacheStored && state.cacheRevalidated && state.corsFetch &&
+          state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -1200,6 +1246,49 @@ function createH2Server(context, tlsMaterial) {
       stream.end(body);
       context.transcript.add("h2-page");
       context.transcript.add("h2-page-cookie");
+      return;
+    }
+    if (requestPath === "/m5/cache-revalidate") {
+      const ifNoneMatch = headers["if-none-match"];
+      if (ifNoneMatch === undefined) {
+        const body = Buffer.from(CACHE_REVALIDATE_BODY);
+        incrementBoundedCacheCounter(context, "cacheStore200s");
+        stream.respond(h2Headers({
+          ":status": 200,
+          "cache-control": CACHE_REVALIDATE_CACHE_CONTROL,
+          "content-length": String(body.length),
+          "content-type": "text/plain; charset=utf-8",
+          "etag": CACHE_REVALIDATE_ETAG,
+          "x-m5-cache-state": "stored",
+        }));
+        stream.end(body);
+        context.transcript.add("h2-cache-store-200");
+        return;
+      }
+
+      incrementBoundedCacheCounter(context, "cacheConditionalRequests");
+      if (ifNoneMatch !== CACHE_REVALIDATE_ETAG) {
+        const body = Buffer.from("M5_CACHE_REVALIDATE_UNEXPECTED");
+        incrementBoundedCacheCounter(context, "cacheUnexpectedRequests");
+        stream.respond(h2Headers({
+          ":status": 400,
+          "content-length": String(body.length),
+          "content-type": "text/plain; charset=utf-8",
+        }));
+        stream.end(body);
+        context.transcript.add("h2-cache-revalidate-unexpected");
+        return;
+      }
+
+      incrementBoundedCacheCounter(context, "cacheNotModified304s");
+      stream.respond(h2Headers({
+        ":status": 304,
+        "cache-control": CACHE_REVALIDATE_CACHE_CONTROL,
+        "etag": CACHE_REVALIDATE_ETAG,
+        "x-m5-cache-state": "revalidated",
+      }));
+      stream.end();
+      context.transcript.add("h2-cache-revalidate-304");
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -1412,6 +1501,10 @@ async function start(options) {
     redirectCookieValue: crypto.randomBytes(16).toString("hex"),
     relays: new Set(),
     stats: {
+      cacheConditionalRequests: 0,
+      cacheNotModified304s: 0,
+      cacheStore200s: 0,
+      cacheUnexpectedRequests: 0,
       corsRequests: 0,
       h2Requests: 0,
       redirectCookieValidations: 0,

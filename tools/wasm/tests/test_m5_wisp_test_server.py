@@ -330,6 +330,98 @@ try {
             )
         return json.loads(result.stdout)
 
+    def _exercise_cache_revalidation(self, mode: str) -> dict[str, object]:
+        node = node_executable()
+        assert node is not None
+        program = r'''
+import fs from "node:fs";
+import http2 from "node:http2";
+
+const [httpsURL, rootCertificate, mode] = process.argv.slice(1);
+const target = new URL(httpsURL);
+const authority = `a.test:${target.port}`;
+const session = http2.connect(`https://127.0.0.1:${target.port}`, {
+  ca: fs.readFileSync(rootCertificate),
+  servername: "a.test",
+});
+
+function get(headers = {}) {
+  return new Promise((resolve, reject) => {
+    const request = session.request({
+      ":authority": authority,
+      ":method": "GET",
+      ":path": "/m5/cache-revalidate",
+      ...headers,
+    });
+    const chunks = [];
+    let responseHeaders = null;
+    request.once("response", (headers) => { responseHeaders = headers; });
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => resolve({
+      body: Buffer.concat(chunks).toString("utf8"),
+      headers: responseHeaders,
+    }));
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+try {
+  if (mode === "saturate") {
+    const statuses = [];
+    for (let index = 0; index < 20; index += 1) {
+      const response = await get();
+      statuses.push(response.headers[":status"]);
+    }
+    process.stdout.write(JSON.stringify({statuses}));
+  } else {
+    const stored = await get();
+    const etag = stored.headers.etag;
+    if (typeof etag !== "string") {
+      throw new Error("cache store did not return an ETag");
+    }
+    const validator = mode === "exact" ? etag : '"m5-cache-wrong"';
+    const revalidated = await get({"if-none-match": validator});
+    process.stdout.write(JSON.stringify({
+      cacheControl: stored.headers["cache-control"],
+      etag,
+      revalidateBody: revalidated.body,
+      revalidateETag: revalidated.headers.etag,
+      revalidateHasContentLength:
+        Object.hasOwn(revalidated.headers, "content-length"),
+      revalidateState: revalidated.headers["x-m5-cache-state"],
+      revalidateStatus: revalidated.headers[":status"],
+      storeBody: stored.body,
+      storeState: stored.headers["x-m5-cache-state"],
+      storeStatus: stored.headers[":status"],
+    }));
+  }
+} finally {
+  session.close();
+}
+'''
+        result = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                program,
+                self.metadata["httpsUrl"],
+                str(ROOT_CERTIFICATE),
+                mode,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            self.fail(
+                "cache-revalidation H2 client failed: "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        return json.loads(result.stdout)
+
     def test_source_is_es_module_and_keeps_key_out_of_output_contract(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn('import http2 from "node:http2"', source)
@@ -348,6 +440,9 @@ try {
         self.assertIn("SameSite=Strict", source)
         self.assertIn("h2-redirect-cookie", source)
         self.assertIn("h2-page-cookie", source)
+        self.assertIn("CACHE_REVALIDATE_ETAG", source)
+        self.assertIn("h2-cache-store-200", source)
+        self.assertIn("h2-cache-revalidate-304", source)
         self.assertNotIn("BEGIN PRIVATE KEY", source)
         self.assertNotIn("PRIVATE KEY", json.dumps(self.metadata))
 
@@ -418,6 +513,10 @@ try {
         self.assertGreaterEqual(status["h2Requests"]["count"], 1)
         self.assertEqual(status["corsRequests"], 1)
         self.assertEqual(status["webSocketEchoes"], 1)
+        self.assertEqual(status["cacheStore200s"], 0)
+        self.assertEqual(status["cacheConditionalRequests"], 0)
+        self.assertEqual(status["cacheNotModified304s"], 0)
+        self.assertEqual(status["cacheUnexpectedRequests"], 0)
         self.assertEqual(status["redirectRequests"], 0)
         self.assertEqual(status["redirectCookieValidations"], 0)
         self.assertEqual(status["tlsMismatchTcpConnections"], 0)
@@ -469,6 +568,72 @@ try {
             events.index("h2-redirect-cookie"),
             events.index("h2-page-cookie"),
         )
+
+    def test_cache_revalidation_stores_then_returns_an_exact_304(self) -> None:
+        evidence = self._exercise_cache_revalidation("exact")
+
+        self.assertEqual(evidence["storeStatus"], 200)
+        self.assertEqual(evidence["storeBody"], "M5_CACHE_REVALIDATE_OK")
+        self.assertEqual(evidence["storeState"], "stored")
+        self.assertEqual(evidence["etag"], '"m5-cache-revalidate-v1"')
+        self.assertEqual(
+            evidence["cacheControl"], "private, max-age=60, must-revalidate"
+        )
+        self.assertEqual(evidence["revalidateStatus"], 304)
+        self.assertEqual(evidence["revalidateBody"], "")
+        self.assertEqual(evidence["revalidateETag"], evidence["etag"])
+        self.assertEqual(evidence["revalidateState"], "revalidated")
+        self.assertFalse(evidence["revalidateHasContentLength"])
+
+        status = self._status()
+        self.assertEqual(status["cacheStore200s"], 1)
+        self.assertEqual(status["cacheConditionalRequests"], 1)
+        self.assertEqual(status["cacheNotModified304s"], 1)
+        self.assertEqual(status["cacheUnexpectedRequests"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(events.count("h2-cache-store-200"), 1)
+        self.assertEqual(events.count("h2-cache-revalidate-304"), 1)
+        self.assertLess(
+            events.index("h2-cache-store-200"),
+            events.index("h2-cache-revalidate-304"),
+        )
+
+    def test_cache_revalidation_rejects_an_unexpected_validator(self) -> None:
+        evidence = self._exercise_cache_revalidation("wrong")
+
+        self.assertEqual(evidence["storeStatus"], 200)
+        self.assertEqual(evidence["revalidateStatus"], 400)
+        self.assertEqual(
+            evidence["revalidateBody"], "M5_CACHE_REVALIDATE_UNEXPECTED"
+        )
+
+        status = self._status()
+        self.assertEqual(status["cacheStore200s"], 1)
+        self.assertEqual(status["cacheConditionalRequests"], 1)
+        self.assertEqual(status["cacheNotModified304s"], 0)
+        self.assertEqual(status["cacheUnexpectedRequests"], 1)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertIn("h2-cache-store-200", events)
+        self.assertIn("h2-cache-revalidate-unexpected", events)
+        self.assertNotIn("h2-cache-revalidate-304", events)
+
+    def test_cache_revalidation_counters_are_bounded(self) -> None:
+        evidence = self._exercise_cache_revalidation("saturate")
+        self.assertEqual(evidence["statuses"], [200] * 20)
+
+        status = self._status()
+        self.assertEqual(status["cacheStore200s"], 16)
+        self.assertEqual(status["cacheConditionalRequests"], 0)
+        self.assertEqual(status["cacheNotModified304s"], 0)
+        self.assertEqual(status["cacheUnexpectedRequests"], 0)
 
     def test_tls_failure_endpoint_is_trusted_but_rejects_a_test_name(self) -> None:
         parsed = urlsplit(self.metadata["tlsFailureUrl"])

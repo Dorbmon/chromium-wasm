@@ -468,6 +468,8 @@ def validate_m5_result(
         "webSocketEcho": True,
         "altSvcH3Advertised": True,
         "redirected": True,
+        "cacheStored": True,
+        "cacheRevalidated": True,
     }
     for field, expected_value in expected_probe.items():
         actual = page_probe.get(field)
@@ -605,6 +607,10 @@ def validate_relay_transcript(
         "webSocketEchoes",
         "redirectRequests",
         "redirectCookieValidations",
+        "cacheStore200s",
+        "cacheConditionalRequests",
+        "cacheNotModified304s",
+        "cacheUnexpectedRequests",
         "tlsMismatchTcpConnections",
         "tlsMismatchHttpStreams",
     ):
@@ -627,6 +633,17 @@ def validate_relay_transcript(
         raise M0Error("relay did not observe the M5 redirect request")
     if status["redirectCookieValidations"] < 1:
         raise M0Error("relay did not validate the M5 redirect cookie")
+    for field, expected_value in (
+        ("cacheStore200s", 1),
+        ("cacheConditionalRequests", 1),
+        ("cacheNotModified304s", 1),
+        ("cacheUnexpectedRequests", 0),
+    ):
+        if status[field] != expected_value:
+            raise M0Error(
+                f"relay {field} mismatch: expected exactly "
+                f"{expected_value}, got {status[field]}"
+            )
     if status["tlsMismatchTcpConnections"] < 1:
         raise M0Error("relay did not observe the TLS-mismatch TCP connection")
     if status["tlsMismatchHttpStreams"] != 0:
@@ -685,6 +702,8 @@ def validate_relay_transcript(
         "h2-redirect-cookie",
         "h2-page-cookie",
         "h2-resource",
+        "h2-cache-store-200",
+        "h2-cache-revalidate-304",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
@@ -695,6 +714,10 @@ def validate_relay_transcript(
         "h2-page-cookie"
     ):
         raise M0Error("relay accepted the final page before redirect cookie")
+    if event_names.index("h2-cache-store-200") >= event_names.index(
+        "h2-cache-revalidate-304"
+    ):
+        raise M0Error("relay revalidated the cache before storing the entry")
 
 
 def wait_for_result(
