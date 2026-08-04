@@ -93,6 +93,11 @@ bool IsSupportedM4DomCode(ui::DomCode dom_code) {
          dom_code == ui::DomCode::US_C || dom_code == ui::DomCode::US_V;
 }
 
+bool IsM4RepeatableDomCode(ui::DomCode dom_code) {
+  return dom_code == ui::DomCode::ARROW_DOWN ||
+         dom_code == ui::DomCode::BACKSPACE;
+}
+
 enum class DomPointerEventType {
   kMove = 0,
   kDown = 1,
@@ -348,8 +353,8 @@ class WasmHostState {
     base::AutoLock lock(lock_);
     // Track successfully posted physical-key transitions at the ABI boundary.
     // This keeps a direct caller from receiving queue success for a duplicate
-    // record that the Ozone injector would otherwise drop. The sole repeat
-    // record is a trusted ArrowDown keydown that follows its initial press.
+    // record that the Ozone injector would otherwise drop. Repeat records are
+    // limited to trusted held ArrowDown and Backspace keydowns.
     if (!IsM4KeyTransitionAllowedLocked(physical_key, down, auto_repeat) ||
         !task_runner_ ||
         !task_runner_->PostTask(FROM_HERE, std::move(command))) {
@@ -389,8 +394,11 @@ class WasmHostState {
                                       bool auto_repeat) const
       EXCLUSIVE_LOCKS_REQUIRED(lock_) {
     if (auto_repeat) {
-      return down && physical_key == ui::DomCode::ARROW_DOWN &&
-             m4_arrow_down_;
+      if (!down || !IsM4RepeatableDomCode(physical_key)) {
+        return false;
+      }
+      return physical_key == ui::DomCode::ARROW_DOWN ? m4_arrow_down_
+                                                       : m4_backspace_;
     }
     bool key_down = false;
     if (physical_key == ui::DomCode::ARROW_DOWN) {
@@ -427,7 +435,7 @@ class WasmHostState {
                                    bool auto_repeat)
       EXCLUSIVE_LOCKS_REQUIRED(lock_) {
     if (auto_repeat) {
-      DCHECK_EQ(physical_key, ui::DomCode::ARROW_DOWN);
+      DCHECK(IsM4RepeatableDomCode(physical_key));
       DCHECK(down);
       return;
     }
@@ -643,10 +651,10 @@ void DispatchDomKeyOnUiThread(ui::DomCode physical_key,
   }
 
   // The host submits explicit trusted DOM records. SystemInputInjector has no
-  // separate repeat field: an accepted ArrowDown repeat is represented by a
-  // supplied duplicate keydown with auto-repeat suppression disabled. The
-  // Wasm injector dispatches that one record with EF_IS_REPEAT; it never owns
-  // or schedules an independent repeat timer.
+  // separate repeat field: an accepted ArrowDown or Backspace repeat is
+  // represented by a supplied duplicate keydown with auto-repeat suppression
+  // disabled. The Wasm injector dispatches that one record with EF_IS_REPEAT;
+  // it never owns or schedules an independent repeat timer.
   input_injector->InjectKeyEvent(physical_key, down,
                                  /*suppress_auto_repeat=*/!auto_repeat);
 }
@@ -910,6 +918,16 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_arrow_down_repeat() {
              ui::DomCode::ARROW_DOWN, /*down=*/true, /*auto_repeat=*/true,
              base::BindOnce(&content::DispatchDomKeyOnUiThread,
                             ui::DomCode::ARROW_DOWN, /*down=*/true,
+                            /*auto_repeat=*/true))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_backspace_repeat() {
+  return content::GetWasmHostState().PostM4KeyCommand(
+             ui::DomCode::BACKSPACE, /*down=*/true, /*auto_repeat=*/true,
+             base::BindOnce(&content::DispatchDomKeyOnUiThread,
+                            ui::DomCode::BACKSPACE, /*down=*/true,
                             /*auto_repeat=*/true))
              ? 1
              : 0;

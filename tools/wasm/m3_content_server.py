@@ -6424,12 +6424,12 @@ def validate_m4_backspace_result(
     *,
     expected_versions: dict[str, str],
 ) -> None:
-    """Validate a fixed-US KeyA insert followed by physical Backspace.
+    """Validate KeyA/KeyB insertion then one physical Backspace repeat.
 
     The outer driver may queue only raw physical-key records. The exact
     trusted Blink trace below proves that normal text editing, rather than a
     DevTools text command or the composition bridge, inserted and then
-    deleted the character.
+    deleted both characters.
     """
 
     expected = {
@@ -6511,7 +6511,7 @@ def validate_m4_backspace_result(
     expected_probe = {
         "fontReady": True,
         "protocol": M3_PROTOCOL,
-        "fixture": "chromium-wasm-m4-ozone-backspace-v1",
+        "fixture": "chromium-wasm-m4-ozone-backspace-v2",
         "ready": True,
         "activeElementId": "editable-target",
         "activationCount": 1,
@@ -6520,7 +6520,7 @@ def validate_m4_backspace_result(
         "value": "",
         "selectionStart": 0,
         "selectionEnd": 0,
-        "resultText": "TEXT INSERTED THEN DELETED",
+        "resultText": "TEXT INSERTED THEN REPEATEDLY DELETED",
     }
     for field, expected_value in expected_probe.items():
         actual_value = page_probe.get(field)
@@ -6532,6 +6532,69 @@ def validate_m4_backspace_result(
                 f"M4 backspace page probe {field} mismatch: expected "
                 f"{expected_value!r}, got {actual_value!r}"
             )
+
+    def require_stage_proof(
+        field_name: str, expected_proof: dict[str, object]
+    ) -> None:
+        proof = _require_dict(
+            result.get(field_name), f"M4 backspace {field_name}"
+        )
+        for proof_field, expected_value in expected_proof.items():
+            actual_value = proof.get(proof_field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"M4 backspace {field_name} {proof_field} mismatch: "
+                    f"expected {expected_value!r}, got {actual_value!r}"
+                )
+
+    require_stage_proof(
+        "keyAProof",
+        {
+            "outerTraceExact": True,
+            "innerTraceExact": True,
+            "textTraceExact": True,
+            "noComposition": True,
+            "value": "a",
+            "selectionStart": 1,
+            "selectionEnd": 1,
+            "frameAfterKeyADown": True,
+        },
+    )
+    require_stage_proof(
+        "keyBProof",
+        {
+            "outerTraceExact": True,
+            "innerTraceExact": True,
+            "textTraceExact": True,
+            "noComposition": True,
+            "value": "ab",
+            "selectionStart": 2,
+            "selectionEnd": 2,
+            "frameAfterKeyBDown": True,
+        },
+    )
+    require_stage_proof(
+        "backspaceRepeatProof",
+        {
+            "outerTraceExact": True,
+            "innerTraceExact": True,
+            "textTraceExact": True,
+            "noComposition": True,
+            "repeatExact": True,
+            "initialDownRepeatFalse": True,
+            "repeatedDownRepeatTrue": True,
+            "releaseRepeatFalse": True,
+            "backspaceHeld": True,
+            "releaseExact": True,
+            "value": "",
+            "selectionStart": 0,
+            "selectionEnd": 0,
+            "frameAfterRepeatDown": True,
+        },
+    )
     _require_safe_integer(
         page_probe.get("focusCount"), "M4 backspace focus count", minimum=1
     )
@@ -6554,15 +6617,18 @@ def validate_m4_backspace_result(
     )
 
     key_event_trace = page_probe.get("keyEventTrace")
-    if not isinstance(key_event_trace, list) or len(key_event_trace) != 4:
-        raise M0Error("M4 backspace inner key trace is not exactly four events")
+    if not isinstance(key_event_trace, list) or len(key_event_trace) != 7:
+        raise M0Error("M4 backspace inner key trace is not exactly seven events")
     expected_key_trace = (
-        ("keydown", "KeyA", "a"),
-        ("keyup", "KeyA", "a"),
-        ("keydown", "Backspace", "Backspace"),
-        ("keyup", "Backspace", "Backspace"),
+        ("keydown", "KeyA", "a", False),
+        ("keyup", "KeyA", "a", False),
+        ("keydown", "KeyB", "b", False),
+        ("keyup", "KeyB", "b", False),
+        ("keydown", "Backspace", "Backspace", False),
+        ("keydown", "Backspace", "Backspace", True),
+        ("keyup", "Backspace", "Backspace", False),
     )
-    for index, (event_type, code, key) in enumerate(expected_key_trace):
+    for index, (event_type, code, key, repeat) in enumerate(expected_key_trace):
         record = _require_dict(
             key_event_trace[index], f"M4 backspace inner key trace {index}"
         )
@@ -6571,7 +6637,7 @@ def validate_m4_backspace_result(
             "trusted": True,
             "code": code,
             "key": key,
-            "repeat": False,
+            "repeat": repeat,
             "isComposing": False,
             "defaultPrevented": False,
             "targetId": "editable-target",
@@ -6588,11 +6654,15 @@ def validate_m4_backspace_result(
                 )
 
     text_input_trace = page_probe.get("textInputTrace")
-    if not isinstance(text_input_trace, list) or len(text_input_trace) != 4:
-        raise M0Error("M4 backspace text trace is not exactly four events")
+    if not isinstance(text_input_trace, list) or len(text_input_trace) != 8:
+        raise M0Error("M4 backspace text trace is not exactly eight events")
     expected_text_trace = (
         ("beforeinput", "insertText", "a"),
         ("input", "insertText", "a"),
+        ("beforeinput", "insertText", "b"),
+        ("input", "insertText", "b"),
+        ("beforeinput", "deleteContentBackward", None),
+        ("input", "deleteContentBackward", None),
         ("beforeinput", "deleteContentBackward", None),
         ("input", "deleteContentBackward", None),
     )
@@ -6735,25 +6805,28 @@ def validate_m4_backspace_result(
         count = _require_safe_integer(
             keyboard_input.get(field),
             f"M4 backspace keyboard {field}",
-            minimum=4,
+            minimum=7,
         )
-        if count != 4:
+        if count != 7:
             raise M0Error(
-                f"M4 backspace keyboard {field} is not exactly four"
+                f"M4 backspace keyboard {field} is not exactly seven"
             )
 
     queued_records = keyboard_input.get("queuedRecords")
-    if not isinstance(queued_records, list) or len(queued_records) != 4:
-        raise M0Error("M4 backspace queued key trace is not exactly four records")
+    if not isinstance(queued_records, list) or len(queued_records) != 7:
+        raise M0Error("M4 backspace queued key trace is not exactly seven records")
     expected_queue = (
-        ("down", "KeyA", "a"),
-        ("up", "KeyA", "a"),
-        ("down", "Backspace", "Backspace"),
-        ("up", "Backspace", "Backspace"),
+        ("down", "KeyA", "a", False),
+        ("up", "KeyA", "a", False),
+        ("down", "KeyB", "b", False),
+        ("up", "KeyB", "b", False),
+        ("down", "Backspace", "Backspace", False),
+        ("down", "Backspace", "Backspace", True),
+        ("up", "Backspace", "Backspace", False),
     )
     previous_sequence = 0
-    backspace_down_frame_id = 0
-    for index, (event_type, code, key) in enumerate(expected_queue):
+    backspace_repeat_frame_id = 0
+    for index, (event_type, code, key, repeat) in enumerate(expected_queue):
         record = _require_dict(
             queued_records[index], f"M4 backspace queued key trace {index}"
         )
@@ -6763,7 +6836,7 @@ def validate_m4_backspace_result(
             "key": key,
             "trusted": True,
             "queued": True,
-            "repeat": False,
+            "repeat": repeat,
             "isComposing": False,
             "canvasFocused": True,
             "pointerActivated": True,
@@ -6822,16 +6895,16 @@ def validate_m4_backspace_result(
             f"M4 backspace queued key trace {index} frame ID",
             minimum=1,
         )
-        if index == 2:
-            backspace_down_frame_id = record_frame_id
+        if index == 5:
+            backspace_repeat_frame_id = record_frame_id
 
-    if keyboard_input.get("lastQueuedDown") != queued_records[2]:
-        raise M0Error("M4 backspace last queued key down is not Backspace")
-    if keyboard_input.get("lastQueuedUp") != queued_records[3]:
+    if keyboard_input.get("lastQueuedDown") != queued_records[5]:
+        raise M0Error("M4 backspace last queued key down is not the repeat")
+    if keyboard_input.get("lastQueuedUp") != queued_records[6]:
         raise M0Error("M4 backspace last queued key up is not Backspace")
-    if frame_id <= backspace_down_frame_id:
+    if frame_id <= backspace_repeat_frame_id:
         raise M0Error(
-            "M4 backspace result has no compositor frame after Backspace"
+            "M4 backspace result has no compositor frame after Backspace repeat"
         )
 
     shutdown = _require_dict(result.get("shutdown"), "M4 backspace shutdown")
@@ -6870,6 +6943,7 @@ def validate_m4_backspace_result(
         "m4:pointer:up:queued",
         "m4:keyboard:pointer-activation",
         "m4:keyboard:down:queued",
+        "m4:keyboard:repeat:queued",
         "m4:keyboard:up:queued",
         "shutdown:complete",
     ):
@@ -6877,6 +6951,16 @@ def validate_m4_backspace_result(
             raise M0Error(
                 "M4 backspace logs are missing lifecycle marker "
                 f"{marker!r}"
+            )
+    for marker, expected_count in (
+        ("m4:keyboard:down:queued", 3),
+        ("m4:keyboard:repeat:queued", 1),
+        ("m4:keyboard:up:queued", 3),
+    ):
+        if sum(marker in line for line in host_logs) != expected_count:
+            raise M0Error(
+                "M4 backspace logs do not contain exactly "
+                f"{expected_count} {marker!r} records"
             )
 
 

@@ -26,6 +26,7 @@ def key_record(
     event_type: str,
     code: str,
     key: str,
+    repeat: bool,
     sequence: int,
     frame_id: int,
 ) -> dict[str, object]:
@@ -35,7 +36,7 @@ def key_record(
         "key": key,
         "trusted": True,
         "queued": True,
-        "repeat": False,
+        "repeat": repeat,
         "isComposing": False,
         "modifiers": {
             "alt": False,
@@ -48,6 +49,34 @@ def key_record(
         "canvasFocused": True,
         "pointerActivated": True,
         "defaultPrevented": True,
+    }
+
+
+def inner_key_record(
+    event_type: str, code: str, key: str, repeat: bool
+) -> dict[str, object]:
+    return {
+        "type": event_type,
+        "trusted": True,
+        "code": code,
+        "key": key,
+        "repeat": repeat,
+        "isComposing": False,
+        "defaultPrevented": False,
+        "targetId": "editable-target",
+    }
+
+
+def text_input_record(
+    event_type: str, input_type: str, data: str | None
+) -> dict[str, object]:
+    return {
+        "type": event_type,
+        "trusted": True,
+        "inputType": input_type,
+        "data": data,
+        "isComposing": False,
+        "targetId": "editable-target",
     }
 
 
@@ -75,102 +104,48 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         },
     }
     queued_records = [
-        key_record("down", "KeyA", "a", 1, 7),
-        key_record("up", "KeyA", "a", 2, 7),
-        key_record("down", "Backspace", "Backspace", 3, 8),
-        key_record("up", "Backspace", "Backspace", 4, 8),
+        key_record("down", "KeyA", "a", False, 1, 7),
+        key_record("up", "KeyA", "a", False, 2, 7),
+        key_record("down", "KeyB", "b", False, 3, 8),
+        key_record("up", "KeyB", "b", False, 4, 8),
+        key_record("down", "Backspace", "Backspace", False, 5, 9),
+        key_record("down", "Backspace", "Backspace", True, 6, 10),
+        key_record("up", "Backspace", "Backspace", False, 7, 10),
     ]
     keyboard_input = {
         "enabled": True,
         "activated": True,
-        "receivedCount": 4,
-        "trustedCount": 4,
-        "queuedCount": 4,
+        "receivedCount": 7,
+        "trustedCount": 7,
+        "queuedCount": 7,
         "queuedRecords": queued_records,
         "pressedCodes": [],
-        "lastQueuedDown": copy.deepcopy(queued_records[2]),
-        "lastQueuedUp": copy.deepcopy(queued_records[3]),
+        "lastQueuedDown": copy.deepcopy(queued_records[5]),
+        "lastQueuedUp": copy.deepcopy(queued_records[6]),
     }
     key_event_trace = [
-        {
-            "type": "keydown",
-            "trusted": True,
-            "code": "KeyA",
-            "key": "a",
-            "repeat": False,
-            "isComposing": False,
-            "defaultPrevented": False,
-            "targetId": "editable-target",
-        },
-        {
-            "type": "keyup",
-            "trusted": True,
-            "code": "KeyA",
-            "key": "a",
-            "repeat": False,
-            "isComposing": False,
-            "defaultPrevented": False,
-            "targetId": "editable-target",
-        },
-        {
-            "type": "keydown",
-            "trusted": True,
-            "code": "Backspace",
-            "key": "Backspace",
-            "repeat": False,
-            "isComposing": False,
-            "defaultPrevented": False,
-            "targetId": "editable-target",
-        },
-        {
-            "type": "keyup",
-            "trusted": True,
-            "code": "Backspace",
-            "key": "Backspace",
-            "repeat": False,
-            "isComposing": False,
-            "defaultPrevented": False,
-            "targetId": "editable-target",
-        },
+        inner_key_record("keydown", "KeyA", "a", False),
+        inner_key_record("keyup", "KeyA", "a", False),
+        inner_key_record("keydown", "KeyB", "b", False),
+        inner_key_record("keyup", "KeyB", "b", False),
+        inner_key_record("keydown", "Backspace", "Backspace", False),
+        inner_key_record("keydown", "Backspace", "Backspace", True),
+        inner_key_record("keyup", "Backspace", "Backspace", False),
     ]
     text_input_trace = [
-        {
-            "type": "beforeinput",
-            "trusted": True,
-            "inputType": "insertText",
-            "data": "a",
-            "isComposing": False,
-            "targetId": "editable-target",
-        },
-        {
-            "type": "input",
-            "trusted": True,
-            "inputType": "insertText",
-            "data": "a",
-            "isComposing": False,
-            "targetId": "editable-target",
-        },
-        {
-            "type": "beforeinput",
-            "trusted": True,
-            "inputType": "deleteContentBackward",
-            "data": None,
-            "isComposing": False,
-            "targetId": "editable-target",
-        },
-        {
-            "type": "input",
-            "trusted": True,
-            "inputType": "deleteContentBackward",
-            "data": None,
-            "isComposing": False,
-            "targetId": "editable-target",
-        },
+        text_input_record("beforeinput", "insertText", "a"),
+        text_input_record("input", "insertText", "a"),
+        text_input_record("beforeinput", "insertText", "b"),
+        text_input_record("input", "insertText", "b"),
+        text_input_record("beforeinput", "deleteContentBackward", None),
+        text_input_record("input", "deleteContentBackward", None),
+        text_input_record("beforeinput", "deleteContentBackward", None),
+        text_input_record("input", "deleteContentBackward", None),
     ]
     page_probe = {
         "fontReady": True,
         "protocol": 1,
-        "fixture": "chromium-wasm-m4-ozone-backspace-v1",
+        "fixture": "chromium-wasm-m4-ozone-backspace-v2",
         "ready": True,
         "targetCenterX": 388,
         "targetCenterY": 215,
@@ -183,7 +158,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         "value": "",
         "selectionStart": 0,
         "selectionEnd": 0,
-        "resultText": "TEXT INSERTED THEN DELETED",
+        "resultText": "TEXT INSERTED THEN REPEATEDLY DELETED",
         "keyEventTrace": key_event_trace,
         "textInputTrace": text_input_trace,
         "compositionEventCounts": {
@@ -214,7 +189,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "elapsedMs": 1200,
             },
             "frame": {
-                "id": 9,
+                "id": 11,
                 "timestampMs": 1180,
                 "width": 800,
                 "height": 600,
@@ -225,6 +200,42 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         },
         "pointerInput": pointer_input,
         "keyboardInput": keyboard_input,
+        "keyAProof": {
+            "outerTraceExact": True,
+            "innerTraceExact": True,
+            "textTraceExact": True,
+            "noComposition": True,
+            "value": "a",
+            "selectionStart": 1,
+            "selectionEnd": 1,
+            "frameAfterKeyADown": True,
+        },
+        "keyBProof": {
+            "outerTraceExact": True,
+            "innerTraceExact": True,
+            "textTraceExact": True,
+            "noComposition": True,
+            "value": "ab",
+            "selectionStart": 2,
+            "selectionEnd": 2,
+            "frameAfterKeyBDown": True,
+        },
+        "backspaceRepeatProof": {
+            "outerTraceExact": True,
+            "innerTraceExact": True,
+            "textTraceExact": True,
+            "noComposition": True,
+            "repeatExact": True,
+            "initialDownRepeatFalse": True,
+            "repeatedDownRepeatTrue": True,
+            "releaseRepeatFalse": True,
+            "backspaceHeld": True,
+            "releaseExact": True,
+            "value": "",
+            "selectionStart": 0,
+            "selectionEnd": 0,
+            "frameAfterRepeatDown": True,
+        },
         "shutdown": {
             "ok": True,
             "accepted": True,
@@ -240,6 +251,11 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "m4:keyboard:pointer-activation",
                 "m4:pointer:up:queued",
                 "m4:keyboard:down:queued",
+                "m4:keyboard:up:queued",
+                "m4:keyboard:down:queued",
+                "m4:keyboard:up:queued",
+                "m4:keyboard:down:queued",
+                "m4:keyboard:repeat:queued",
                 "m4:keyboard:up:queued",
                 "shutdown:complete",
             ],
@@ -282,20 +298,24 @@ class M4BackspaceResultValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "text trace 0 trusted mismatch"):
             self.assert_valid(result, versions)
 
-    def test_delete_must_follow_insert_with_null_data(self) -> None:
-        result, versions = passing_result()
-        readiness = result["readiness"]
-        assert isinstance(readiness, dict)
-        page_probe = readiness["pageProbe"]
-        assert isinstance(page_probe, dict)
-        text_trace = page_probe["textInputTrace"]
-        assert isinstance(text_trace, list)
-        record = text_trace[2]
-        assert isinstance(record, dict)
-        record["data"] = "a"
+    def test_two_delete_pairs_follow_the_two_insert_pairs(self) -> None:
+        for index in (4, 6):
+            with self.subTest(index=index):
+                result, versions = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                page_probe = readiness["pageProbe"]
+                assert isinstance(page_probe, dict)
+                text_trace = page_probe["textInputTrace"]
+                assert isinstance(text_trace, list)
+                record = text_trace[index]
+                assert isinstance(record, dict)
+                record["data"] = "a"
 
-        with self.assertRaisesRegex(M0Error, "text trace 2 data mismatch"):
-            self.assert_valid(result, versions)
+                with self.assertRaisesRegex(
+                    M0Error, f"text trace {index} data mismatch"
+                ):
+                    self.assert_valid(result, versions)
 
     def test_outer_key_records_must_be_exact_and_ordered(self) -> None:
         result, versions = passing_result()
@@ -319,15 +339,159 @@ class M4BackspaceResultValidationTest(unittest.TestCase):
         assert isinstance(keyboard, dict)
         records = keyboard["queuedRecords"]
         assert isinstance(records, list)
-        record = records[3]
+        record = records[6]
         assert isinstance(record, dict)
-        record["sequence"] = 3
+        record["sequence"] = 6
         readiness = result["readiness"]
         assert isinstance(readiness, dict)
         readiness["keyboardInput"] = copy.deepcopy(keyboard)
 
         with self.assertRaisesRegex(M0Error, "sequence"):
             self.assert_valid(result, versions)
+
+    def test_backspace_repeat_is_exact_in_outer_and_inner_traces(self) -> None:
+        result, versions = passing_result()
+        keyboard = result["keyboardInput"]
+        assert isinstance(keyboard, dict)
+        records = keyboard["queuedRecords"]
+        assert isinstance(records, list)
+        repeated_down = records[5]
+        assert isinstance(repeated_down, dict)
+        repeated_down["repeat"] = False
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        readiness["keyboardInput"] = copy.deepcopy(keyboard)
+
+        with self.assertRaisesRegex(
+            M0Error, "queued key trace 5 repeat mismatch"
+        ):
+            self.assert_valid(result, versions)
+
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        key_trace = page_probe["keyEventTrace"]
+        assert isinstance(key_trace, list)
+        repeated_keydown = key_trace[5]
+        assert isinstance(repeated_keydown, dict)
+        repeated_keydown["repeat"] = False
+
+        with self.assertRaisesRegex(
+            M0Error, "inner key trace 5 repeat mismatch"
+        ):
+            self.assert_valid(result, versions)
+
+    def test_repeat_admission_trace_rejects_invalid_repeat_positions(self) -> None:
+        for index, updates in (
+            # KeyA must never become a repeat.
+            (0, {"repeat": True}),
+            # The initial Backspace keydown must precede the held repeat.
+            (4, {"repeat": True}),
+            # A repeated keydown after the Backspace release is invalid.
+            (6, {"type": "down", "repeat": True}),
+        ):
+            with self.subTest(index=index, updates=updates):
+                result, versions = passing_result()
+                keyboard = result["keyboardInput"]
+                assert isinstance(keyboard, dict)
+                records = keyboard["queuedRecords"]
+                assert isinstance(records, list)
+                record = records[index]
+                assert isinstance(record, dict)
+                record.update(updates)
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                readiness["keyboardInput"] = copy.deepcopy(keyboard)
+
+                with self.assertRaisesRegex(
+                    M0Error, f"queued key trace {index}"
+                ):
+                    self.assert_valid(result, versions)
+
+    def test_text_trace_requires_explicit_non_composing_state(self) -> None:
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        second_delete = text_trace[6]
+        assert isinstance(second_delete, dict)
+        second_delete.pop("isComposing")
+
+        with self.assertRaisesRegex(
+            M0Error, "text trace 6 isComposing mismatch"
+        ):
+            self.assert_valid(result, versions)
+
+        result, versions = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        text_trace = page_probe["textInputTrace"]
+        assert isinstance(text_trace, list)
+        first_delete = text_trace[4]
+        assert isinstance(first_delete, dict)
+        first_delete["isComposing"] = True
+
+        with self.assertRaisesRegex(
+            M0Error, "text trace 4 isComposing mismatch"
+        ):
+            self.assert_valid(result, versions)
+
+    def test_terminal_stage_proofs_are_required_and_exact(self) -> None:
+        result, versions = passing_result()
+        result.pop("keyBProof")
+
+        with self.assertRaisesRegex(M0Error, "keyBProof"):
+            self.assert_valid(result, versions)
+
+        for proof_name, field, invalid_value in (
+            ("keyAProof", "outerTraceExact", False),
+            ("keyAProof", "innerTraceExact", False),
+            ("keyAProof", "textTraceExact", False),
+            ("keyAProof", "noComposition", False),
+            ("keyAProof", "value", "ab"),
+            ("keyAProof", "selectionStart", 0),
+            ("keyAProof", "selectionEnd", 0),
+            ("keyAProof", "frameAfterKeyADown", False),
+            ("keyBProof", "outerTraceExact", False),
+            ("keyBProof", "innerTraceExact", False),
+            ("keyBProof", "textTraceExact", False),
+            ("keyBProof", "noComposition", False),
+            ("keyBProof", "value", "a"),
+            ("keyBProof", "selectionStart", 1),
+            ("keyBProof", "selectionEnd", 1),
+            ("keyBProof", "frameAfterKeyBDown", False),
+            ("backspaceRepeatProof", "outerTraceExact", False),
+            ("backspaceRepeatProof", "innerTraceExact", False),
+            ("backspaceRepeatProof", "textTraceExact", False),
+            ("backspaceRepeatProof", "noComposition", False),
+            ("backspaceRepeatProof", "repeatExact", False),
+            ("backspaceRepeatProof", "initialDownRepeatFalse", False),
+            ("backspaceRepeatProof", "repeatedDownRepeatTrue", False),
+            ("backspaceRepeatProof", "releaseRepeatFalse", False),
+            ("backspaceRepeatProof", "backspaceHeld", False),
+            ("backspaceRepeatProof", "releaseExact", False),
+            ("backspaceRepeatProof", "value", "a"),
+            ("backspaceRepeatProof", "selectionStart", 1),
+            ("backspaceRepeatProof", "selectionEnd", 1),
+            ("backspaceRepeatProof", "frameAfterRepeatDown", False),
+        ):
+            with self.subTest(proof_name=proof_name, field=field):
+                result, versions = passing_result()
+                proof = result[proof_name]
+                assert isinstance(proof, dict)
+                proof[field] = invalid_value
+
+                with self.assertRaisesRegex(
+                    M0Error, f"{proof_name} {field} mismatch"
+                ):
+                    self.assert_valid(result, versions)
 
     def test_final_empty_value_and_collapsed_selection_are_required(self) -> None:
         result, versions = passing_result()
@@ -507,15 +671,17 @@ class M4BackspaceResultValidationTest(unittest.TestCase):
                 ):
                     self.assert_valid(result, versions)
 
-    def test_later_frame_after_backspace_is_required(self) -> None:
+    def test_later_frame_after_backspace_repeat_is_required(self) -> None:
         result, versions = passing_result()
         readiness = result["readiness"]
         assert isinstance(readiness, dict)
         frame = readiness["frame"]
         assert isinstance(frame, dict)
-        frame["id"] = 8
+        frame["id"] = 10
 
-        with self.assertRaisesRegex(M0Error, "no compositor frame after Backspace"):
+        with self.assertRaisesRegex(
+            M0Error, "no compositor frame after Backspace repeat"
+        ):
             self.assert_valid(result, versions)
 
 
@@ -531,12 +697,15 @@ class RecordingDevToolsClient:
 
 
 class M4BackspaceDevToolsClientTest(unittest.TestCase):
-    def test_raw_key_a_then_backspace_use_no_text_payload(self) -> None:
+    def test_raw_key_a_b_then_backspace_repeat_use_no_text_payload(
+        self,
+    ) -> None:
         recording = RecordingDevToolsClient()
         client = object.__new__(m4_cdp.DevToolsClient)
         client.call = recording.call  # type: ignore[method-assign]
 
         client.dispatch_key_a()
+        client.dispatch_key_b()
         client.dispatch_backspace()
 
         self.assertEqual(
@@ -566,10 +735,41 @@ class M4BackspaceDevToolsClientTest(unittest.TestCase):
                     "Input.dispatchKeyEvent",
                     {
                         "type": "rawKeyDown",
+                        "code": "KeyB",
+                        "key": "b",
+                        "windowsVirtualKeyCode": 66,
+                        "modifiers": 0,
+                    },
+                ),
+                (
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "keyUp",
+                        "code": "KeyB",
+                        "key": "b",
+                        "windowsVirtualKeyCode": 66,
+                        "modifiers": 0,
+                    },
+                ),
+                (
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "rawKeyDown",
                         "code": "Backspace",
                         "key": "Backspace",
                         "windowsVirtualKeyCode": 8,
                         "modifiers": 0,
+                    },
+                ),
+                (
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "rawKeyDown",
+                        "code": "Backspace",
+                        "key": "Backspace",
+                        "windowsVirtualKeyCode": 8,
+                        "modifiers": 0,
+                        "autoRepeat": True,
                     },
                 ),
                 (
@@ -593,7 +793,7 @@ class M4BackspaceDevToolsClientTest(unittest.TestCase):
 class M4BackspaceKeyAStageTest(unittest.TestCase):
     def passing_state(self) -> dict[str, object]:
         return {
-            "state": "awaiting-dom-backspace",
+            "state": "awaiting-dom-backspace-key-b",
             "keyAProof": {
                 "outerTraceExact": True,
                 "innerTraceExact": True,
@@ -636,6 +836,93 @@ class M4BackspaceKeyAStageTest(unittest.TestCase):
         proof["selectionEnd"] = True
         with self.assertRaisesRegex(M0Error, "selectionEnd"):
             run_m4_ozone_smoke.validate_backspace_key_a_stage(state)
+
+
+class M4BackspaceStagedProofTest(unittest.TestCase):
+    def key_b_state(self) -> dict[str, object]:
+        return {
+            "state": "awaiting-dom-backspace-down",
+            "keyBProof": {
+                "outerTraceExact": True,
+                "innerTraceExact": True,
+                "textTraceExact": True,
+                "noComposition": True,
+                "frameAfterKeyBDown": True,
+                "value": "ab",
+                "selectionStart": 2,
+                "selectionEnd": 2,
+            },
+        }
+
+    def initial_delete_state(self) -> dict[str, object]:
+        return {
+            "state": "awaiting-dom-backspace-repeat",
+            "backspaceDownProof": {
+                "outerTraceExact": True,
+                "innerTraceExact": True,
+                "textTraceExact": True,
+                "noComposition": True,
+                "initialDownRepeatFalse": True,
+                "backspaceHeld": True,
+                "frameAfterBackspaceDown": True,
+                "value": "a",
+                "selectionStart": 1,
+                "selectionEnd": 1,
+            },
+        }
+
+    def repeat_delete_state(self) -> dict[str, object]:
+        return {
+            "state": "awaiting-dom-backspace-up",
+            "backspaceRepeatPendingProof": {
+                "outerTraceExact": True,
+                "innerTraceExact": True,
+                "textTraceExact": True,
+                "noComposition": True,
+                "initialDownRepeatFalse": True,
+                "repeatedDownRepeatTrue": True,
+                "repeatExact": True,
+                "backspaceHeld": True,
+                "frameAfterRepeatDown": True,
+                "value": "",
+                "selectionStart": 0,
+                "selectionEnd": 0,
+            },
+        }
+
+    def test_key_b_stage_requires_the_two_character_edit_proof(self) -> None:
+        run_m4_ozone_smoke.validate_backspace_key_b_stage(self.key_b_state())
+
+        state = self.key_b_state()
+        proof = state["keyBProof"]
+        assert isinstance(proof, dict)
+        proof["value"] = "a"
+        with self.assertRaisesRegex(M0Error, "value 'ab'"):
+            run_m4_ozone_smoke.validate_backspace_key_b_stage(state)
+
+    def test_initial_delete_stage_requires_a_held_non_repeat_keydown(self) -> None:
+        run_m4_ozone_smoke.validate_backspace_initial_delete_stage(
+            self.initial_delete_state()
+        )
+
+        state = self.initial_delete_state()
+        proof = state["backspaceDownProof"]
+        assert isinstance(proof, dict)
+        proof["initialDownRepeatFalse"] = False
+        with self.assertRaisesRegex(M0Error, "initialDownRepeatFalse"):
+            run_m4_ozone_smoke.validate_backspace_initial_delete_stage(state)
+
+    def test_repeat_delete_stage_requires_a_held_repeat_keydown(self) -> None:
+        run_m4_ozone_smoke.validate_backspace_repeat_delete_stage(
+            self.repeat_delete_state()
+        )
+
+        state = self.repeat_delete_state()
+        proof = state["backspaceRepeatPendingProof"]
+        assert isinstance(proof, dict)
+        proof["repeatedDownRepeatTrue"] = False
+        with self.assertRaisesRegex(M0Error, "repeatedDownRepeatTrue"):
+            run_m4_ozone_smoke.validate_backspace_repeat_delete_stage(state)
 
 
 if __name__ == "__main__":

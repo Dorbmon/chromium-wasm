@@ -328,7 +328,7 @@ def wait_for_input_state(
 
 
 def validate_backspace_key_a_stage(state: dict[str, Any]) -> None:
-    """Require the host's frozen KeyA Blink-edit proof before Backspace."""
+    """Require the host's frozen KeyA Blink-edit proof before KeyB."""
 
     proof = state.get("keyAProof")
     if not isinstance(proof, dict):
@@ -351,6 +351,93 @@ def validate_backspace_key_a_stage(state: dict[str, Any]) -> None:
         if type(value) is not int or value != 1:
             raise M0Error(
                 f"M4 Backspace KeyA stage {field} is not exactly 1"
+            )
+
+
+def validate_backspace_key_b_stage(state: dict[str, Any]) -> None:
+    """Require the host's frozen KeyA/KeyB Blink-edit proof before delete."""
+
+    proof = state.get("keyBProof")
+    if not isinstance(proof, dict):
+        raise M0Error("M4 Backspace KeyB stage did not publish a proof")
+    for field in (
+        "outerTraceExact",
+        "innerTraceExact",
+        "textTraceExact",
+        "noComposition",
+        "frameAfterKeyBDown",
+    ):
+        if proof.get(field) is not True:
+            raise M0Error(
+                "M4 Backspace KeyB stage did not prove " + field
+            )
+    if proof.get("value") != "ab":
+        raise M0Error("M4 Backspace KeyB stage did not retain value 'ab'")
+    for field in ("selectionStart", "selectionEnd"):
+        value = proof.get(field)
+        if type(value) is not int or value != 2:
+            raise M0Error(
+                f"M4 Backspace KeyB stage {field} is not exactly 2"
+            )
+
+
+def validate_backspace_initial_delete_stage(state: dict[str, Any]) -> None:
+    """Require one normal Backspace delete before its raw repeat record."""
+
+    proof = state.get("backspaceDownProof")
+    if not isinstance(proof, dict):
+        raise M0Error("M4 Backspace initial-delete stage did not publish a proof")
+    for field in (
+        "outerTraceExact",
+        "innerTraceExact",
+        "textTraceExact",
+        "noComposition",
+        "initialDownRepeatFalse",
+        "backspaceHeld",
+        "frameAfterBackspaceDown",
+    ):
+        if proof.get(field) is not True:
+            raise M0Error(
+                "M4 Backspace initial-delete stage did not prove " + field
+            )
+    if proof.get("value") != "a":
+        raise M0Error(
+            "M4 Backspace initial-delete stage did not retain value 'a'"
+        )
+    for field in ("selectionStart", "selectionEnd"):
+        value = proof.get(field)
+        if type(value) is not int or value != 1:
+            raise M0Error(
+                f"M4 Backspace initial-delete stage {field} is not exactly 1"
+            )
+
+
+def validate_backspace_repeat_delete_stage(state: dict[str, Any]) -> None:
+    """Require one held physical Backspace repeat before its release."""
+
+    proof = state.get("backspaceRepeatPendingProof")
+    if not isinstance(proof, dict):
+        raise M0Error("M4 Backspace repeat stage did not publish a proof")
+    for field in (
+        "outerTraceExact",
+        "innerTraceExact",
+        "textTraceExact",
+        "noComposition",
+        "initialDownRepeatFalse",
+        "repeatedDownRepeatTrue",
+        "repeatExact",
+        "backspaceHeld",
+        "frameAfterRepeatDown",
+    ):
+        if proof.get(field) is not True:
+            raise M0Error("M4 Backspace repeat stage did not prove " + field)
+    if proof.get("value") != "":
+        raise M0Error("M4 Backspace repeat stage did not empty the input")
+    for field in ("selectionStart", "selectionEnd"):
+        value = proof.get(field)
+        if type(value) is not int or value != 0:
+            raise M0Error(
+                f"M4 Backspace repeat stage {field} is not exactly 0"
             )
 
 
@@ -571,10 +658,10 @@ def main() -> int:
         state_expression = "window.__chromiumWasmM4BackspaceState || null"
         expected_state = "awaiting-dom-backspace-activation"
         input_driver = (
-            "Chrome DevTools Input.dispatchMouseEvent + raw KeyA then raw "
-            "Backspace Input.dispatchKeyEvent pairs without text; the runner "
-            "waits for the trusted KeyA Blink edit before dispatching "
-            "Backspace"
+            "Chrome DevTools Input.dispatchMouseEvent + raw KeyA, KeyB, and "
+            "held Backspace rawKeyDown/autoRepeat/keyUp records without text; "
+            "the runner waits for each trusted Blink edit before the next "
+            "physical key record"
         )
     elif args.input == "ime-bridge":
         case = M4_IME_BRIDGE_CASE
@@ -1476,11 +1563,50 @@ def main() -> int:
                 result_queue,
                 deadline,
                 state_expression,
-                "awaiting-dom-backspace",
+                "awaiting-dom-backspace-key-b",
             )
             validate_backspace_key_a_stage(key_a_state)
-            stage = "dispatch_trusted_dom_backspace"
-            client.dispatch_backspace()
+            stage = "dispatch_trusted_dom_backspace_key_b"
+            client.dispatch_key_b()
+            stage = "wait_for_backspace_key_b_blink_edit"
+            key_b_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-backspace-down",
+            )
+            validate_backspace_key_b_stage(key_b_state)
+            stage = "dispatch_trusted_dom_backspace_down"
+            client.dispatch_backspace_down()
+            stage = "wait_for_backspace_initial_delete"
+            backspace_down_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-backspace-repeat",
+            )
+            validate_backspace_initial_delete_stage(backspace_down_state)
+            stage = "dispatch_trusted_dom_backspace_repeat"
+            client.dispatch_backspace_repeat()
+            stage = "wait_for_backspace_repeat_delete"
+            backspace_repeat_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-backspace-up",
+            )
+            validate_backspace_repeat_delete_stage(backspace_repeat_state)
+            stage = "dispatch_trusted_dom_backspace_up"
+            client.dispatch_backspace_up()
         elif args.input == "ime-bridge":
             stage = "dispatch_trusted_dom_ime_bridge_activation"
             client.dispatch_primary_click(click_x, click_y)

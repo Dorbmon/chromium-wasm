@@ -442,29 +442,55 @@ class DevToolsClient:
             },
         )
 
-    def dispatch_backspace(self) -> None:
-        """Drive one physical Backspace key pair without a text payload."""
-
-        base = {
+    @staticmethod
+    def _backspace_key_event() -> dict[str, object]:
+        return {
             "code": "Backspace",
             "key": "Backspace",
             "windowsVirtualKeyCode": 8,
             "modifiers": 0,
         }
+
+    def dispatch_backspace_down(self) -> None:
+        """Press physical Backspace without a text payload."""
+
         self.call(
             "Input.dispatchKeyEvent",
             {
-                **base,
+                **self._backspace_key_event(),
                 "type": "rawKeyDown",
             },
         )
+
+    def dispatch_backspace_repeat(self) -> None:
+        """Deliver one physical held-Backspace repeat without text."""
+
         self.call(
             "Input.dispatchKeyEvent",
             {
-                **base,
+                **self._backspace_key_event(),
+                "type": "rawKeyDown",
+                "autoRepeat": True,
+            },
+        )
+
+    def dispatch_backspace_up(self) -> None:
+        """Release physical Backspace without a text payload."""
+
+        self.call(
+            "Input.dispatchKeyEvent",
+            {
+                **self._backspace_key_event(),
                 "type": "keyUp",
             },
         )
+
+    def dispatch_backspace(self) -> None:
+        """Drive one held Backspace down/repeat/up sequence without text."""
+
+        self.dispatch_backspace_down()
+        self.dispatch_backspace_repeat()
+        self.dispatch_backspace_up()
 
     def dispatch_control_shortcut(
         self, code: str, key: str, windows_virtual_key_code: int

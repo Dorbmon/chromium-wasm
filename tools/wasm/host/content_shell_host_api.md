@@ -77,6 +77,7 @@ int chromium_wasm_host_pointer(int type, int x, int y, int button);
 int chromium_wasm_host_wheel(int x, int y, int delta_x, int delta_y);
 int chromium_wasm_host_key(const char* code, int down);
 int chromium_wasm_host_arrow_down_repeat(void);
+int chromium_wasm_host_backspace_repeat(void);
 int chromium_wasm_host_text_input(int action, int session_id, int sequence,
                                   const uint8_t* text_utf8,
                                   int text_utf8_bytes, int selection_start,
@@ -214,12 +215,13 @@ keyboard API. The ABI rejects unpaired or duplicate Control, `KeyC`, and
 cancelable canvas `keydown`/`keyup` pair after a queued primary-pointer press
 has activated the Wasm window. It rejects modifier, composition, dead-key,
 process-key, unsupported-code, mismatched key, duplicate-down, and unmatched-up
-records explicitly. `chromium_wasm_host_arrow_down_repeat` is the only repeat
-escape hatch: the host calls it only for a trusted, cancelable `ArrowDown`
-`keydown` with `KeyboardEvent.repeat == true` while that same ArrowDown is
-already held. It posts exactly one Ozone `kKeyPressed` record with
-`EF_IS_REPEAT`; it neither starts nor requests a repeat timer. Repeat-before-
-down, keyup repeats, and repeats of every other supported key remain rejected.
+records explicitly. `chromium_wasm_host_arrow_down_repeat` and
+`chromium_wasm_host_backspace_repeat` are the only repeat escape hatches. The
+host calls either only for a trusted, cancelable matching `keydown` with
+`KeyboardEvent.repeat == true` while that exact physical key is already held.
+Each posts exactly one Ozone `kKeyPressed` record with `EF_IS_REPEAT`; neither
+starts nor requests a repeat timer. Repeat-before-down, keyup repeats, and
+repeats of every other supported key remain rejected.
 A successful export means the record was queued on the UI task runner; it does
 not mean Blink has received it. The host cancels its held key state on canvas or
 window blur, visibility loss, teardown, and shutdown, releasing chord keys
@@ -282,17 +284,20 @@ This proves the bounded direct-layout path through Ozone/Aura and Chromium
 text input; it does not provide generic text entry or IME support.
 
 The separate M4 Backspace smoke clicks a real initially empty Blink text input,
-then drives a trusted `KeyA` `rawKeyDown`/`keyUp` pair followed by a trusted
-`Backspace` `rawKeyDown`/`keyUp` pair. It sends raw physical-key records only,
-with no DevTools text payload. The proof requires the exact trusted inner
-four-key trace, then exactly four trusted editing events: `beforeinput` and
-`input` with `inputType == "insertText"` and data `"a"`, followed by
-`beforeinput` and `input` with `inputType == "deleteContentBackward"` and
-`data == null`. It also requires no composition events, an empty final value,
-a collapsed final selection at `[0, 0]`, and a compositor frame newer than the
-Backspace down record. This proves one bounded physical insert-then-delete
-path through Ozone/Aura/Blink; it does not make the key ABI a text-injection or
-generic-editing interface.
+then drives trusted `KeyA` and `KeyB` `rawKeyDown`/`keyUp` pairs, followed by
+one held physical `Backspace` `rawKeyDown`, exactly one `autoRepeat`
+`rawKeyDown`, and `keyUp`. It sends raw physical-key records only, with no
+DevTools text payload or host repeat timer. The runner waits for the completed
+`"a"`, then `"ab"`, Blink edit stages before each delete record. The proof
+requires the exact trusted seven-key trace, whose Backspace records have repeat
+flags `false`, `true`, and `false`, and exactly eight trusted editing events:
+two `insertText` pairs with data `"a"` then `"b"`, followed by two
+`deleteContentBackward` pairs with `data == null`. It also requires trusted,
+non-composing input throughout, an empty final value, a collapsed final
+selection at `[0, 0]`, and a compositor frame newer than the repeated
+Backspace down record. This proves one bounded physical insert-then-repeat-
+delete path through Ozone/Aura/Blink; it does not make the key ABI a
+text-injection or generic-editing interface.
 
 The separate M4 selection smoke begins with a static `value="WASM"` native
 text input. An external driver clicks the input and then sends one trusted

@@ -149,7 +149,7 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         abi_whitelist = section(
             api,
             "bool IsSupportedM4DomCode(ui::DomCode dom_code)",
-            "enum class DomPointerEventType",
+            "bool IsM4RepeatableDomCode",
         )
         self.assertEqual(
             re.findall(r"ui::DomCode::([A-Z_]+)", abi_whitelist),
@@ -162,6 +162,15 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
                 "US_C",
                 "US_V",
             ],
+        )
+        repeatable_codes = section(
+            api,
+            "bool IsM4RepeatableDomCode(ui::DomCode dom_code)",
+            "enum class DomPointerEventType",
+        )
+        self.assertEqual(
+            re.findall(r"ui::DomCode::([A-Z_]+)", repeatable_codes),
+            ["ARROW_DOWN", "BACKSPACE"],
         )
 
         dispatch = section(
@@ -232,6 +241,20 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, repeat_export)
+        backspace_repeat_export = section(
+            api,
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_backspace_repeat",
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_url",
+        )
+        for marker in (
+            "ui::DomCode::BACKSPACE",
+            "/*down=*/true",
+            "/*auto_repeat=*/true",
+            "PostM4KeyCommand",
+            "DispatchDomKeyOnUiThread",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, backspace_repeat_export)
         state = section(
             api,
             "class WasmHostState",
@@ -239,14 +262,15 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         )
         for marker in (
             "m4_arrow_down_",
+            "m4_backspace_",
             "bool auto_repeat",
-            "physical_key == ui::DomCode::ARROW_DOWN",
+            "IsM4RepeatableDomCode(physical_key)",
             "RecordM4KeyTransitionLocked",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, state)
 
-    def test_backspace_proof_is_a_raw_key_insert_then_delete_sequence(
+    def test_backspace_proof_is_a_raw_key_insert_then_repeat_delete_sequence(
         self,
     ) -> None:
         cdp = source("tools/wasm/m4_cdp.py")
@@ -256,16 +280,41 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         key_a = section(
             cdp,
             "def dispatch_key_a(self) -> None:",
+            "\n\n    def dispatch_key_b(self) -> None:",
+        )
+        key_b = section(
+            cdp,
+            "def dispatch_key_b(self) -> None:",
+            "\n\n    @staticmethod\n    def _backspace_key_event",
+        )
+        backspace_down = section(
+            cdp,
+            "def dispatch_backspace_down(self) -> None:",
+            "\n\n    def dispatch_backspace_repeat(self) -> None:",
+        )
+        backspace_key_event = section(
+            cdp,
+            "def _backspace_key_event() -> dict[str, object]:",
+            "\n\n    def dispatch_backspace_down(self) -> None:",
+        )
+        backspace_repeat = section(
+            cdp,
+            "def dispatch_backspace_repeat(self) -> None:",
+            "\n\n    def dispatch_backspace_up(self) -> None:",
+        )
+        backspace_up = section(
+            cdp,
+            "def dispatch_backspace_up(self) -> None:",
             "\n\n    def dispatch_backspace(self) -> None:",
         )
         backspace = section(
             cdp,
             "def dispatch_backspace(self) -> None:",
-            "\n\n    def dispatch_ime_preedit(self) -> None:",
+            "\n\n    def dispatch_control_shortcut(",
         )
         for raw_key_method, code, key, virtual_key in (
             (key_a, "KeyA", "a", "65"),
-            (backspace, "Backspace", "Backspace", "8"),
+            (key_b, "KeyB", "b", "66"),
         ):
             with self.subTest(code=code):
                 for marker in (
@@ -279,6 +328,37 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
                     self.assertIn(marker, raw_key_method)
                 self.assertNotIn('"text":', raw_key_method)
                 self.assertNotIn("Input.insertText", raw_key_method)
+        for raw_key_method, event_type in (
+            (backspace_down, "rawKeyDown"),
+            (backspace_up, "keyUp"),
+        ):
+            for marker in (
+                f'"type": "{event_type}"',
+                "**self._backspace_key_event()",
+            ):
+                with self.subTest(marker=marker):
+                    self.assertIn(marker, raw_key_method)
+            self.assertNotIn('"text":', raw_key_method)
+            self.assertNotIn("Input.insertText", raw_key_method)
+        for marker in (
+            '"code": "Backspace"',
+            '"key": "Backspace"',
+            '"windowsVirtualKeyCode": 8',
+            '"modifiers": 0',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, backspace_key_event)
+        self.assertIn('"autoRepeat": True', backspace_repeat)
+        self.assertIn("**self._backspace_key_event()", backspace_repeat)
+        self.assertNotIn('"text":', backspace_repeat)
+        self.assertNotIn("Input.insertText", backspace_repeat)
+        for marker in (
+            "self.dispatch_backspace_down()",
+            "self.dispatch_backspace_repeat()",
+            "self.dispatch_backspace_up()",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, backspace)
 
         smoke = section(
             host,
@@ -288,14 +368,18 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         for marker in (
             "const fullKeyQueue = [",
             '"down", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY',
-            '"down", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY',
+            '"down", M4_PRINTABLE_KEY_B_DOM_CODE, M4_PRINTABLE_KEY_B_DOM_KEY',
+            '"down", M4_BACKSPACE_DOM_CODE, M4_BACKSPACE_DOM_KEY, true',
             '"beforeinput", "deleteContentBackward", null',
             '"input", "deleteContentBackward", null',
             "pageAfterKeyA?.value !== M4_PRINTABLE_KEY_DOM_KEY",
+            'pageAfterKeyB?.value !== "ab"',
             "pageProbe?.value !== \"\"",
             "pageProbe?.selectionStart !== 0",
             "pageProbe?.selectionEnd !== 0",
-            'pageProbe?.resultText !== "TEXT INSERTED THEN DELETED"',
+            'pageProbe?.resultText !== "TEXT INSERTED THEN REPEATEDLY DELETED"',
+            "keyboard?.receivedCount !== 7",
+            "backspaceRepeatProof",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, smoke)
@@ -309,12 +393,16 @@ class M4OzoneKeyboardContractTest(unittest.TestCase):
         for marker in (
             '("beforeinput", "insertText", "a")',
             '("input", "insertText", "a")',
+            '("beforeinput", "insertText", "b")',
+            '("input", "insertText", "b")',
             '("beforeinput", "deleteContentBackward", None)',
             '("input", "deleteContentBackward", None)',
             '"value": "",',
             '"selectionStart": 0,',
             '"selectionEnd": 0,',
-            '"TEXT INSERTED THEN DELETED"',
+            '"TEXT INSERTED THEN REPEATEDLY DELETED"',
+            '"keyBProof"',
+            '"backspaceRepeatProof"',
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, validator)

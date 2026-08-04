@@ -39,6 +39,7 @@ class M4OzoneBackspaceContractTest(unittest.TestCase):
         for marker in (
             'const M4_BACKSPACE_DOM_CODE = "Backspace"',
             'const M4_BACKSPACE_DOM_KEY = "Backspace"',
+            'const M4_BACKSPACE_FIXTURE = "chromium-wasm-m4-ozone-backspace-v2"',
             "case M4_BACKSPACE_DOM_CODE:",
             "matchesM4BackspaceOuterKeyRecord",
             "queuedRecords",
@@ -56,20 +57,49 @@ class M4OzoneBackspaceContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, host)
 
+        handler = section(
+            host,
+            "  #handleM4KeyboardEvent(type, event)",
+            "  #disableM4KeyboardInput",
+        )
+        for marker in (
+            "const backspaceRepeat = type === \"down\" && record.repeat &&",
+            "record.code === M4_BACKSPACE_DOM_CODE",
+            "this.#keyboardCodesDown.has(record.code)",
+            "const boundedRepeat = arrowDownRepeat || backspaceRepeat",
+            "if (record.repeat && !boundedRepeat)",
+            "UNSUPPORTED_REPEAT",
+            "chromium_wasm_host_backspace_repeat",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, handler)
+        self.assertRegex(
+            handler,
+            r"const backspaceRepeat = type === \"down\" && record\.repeat &&\s*"
+            r"record\.code === M4_BACKSPACE_DOM_CODE &&\s*"
+            r"this\.\#keyboardCodesDown\.has\(record\.code\);",
+        )
+
     def test_fixture_observes_the_exact_blink_edit_trace(self) -> None:
         fixture = source("tools/wasm/testdata/m4_ozone_backspace_page.html")
 
         for marker in (
             'id="editable-target" type="text"',
-            'event.code !== "KeyA" && event.code !== "Backspace"',
+            'event.code !== "KeyA"',
+            'event.code !== "KeyB"',
+            'event.code !== "Backspace"',
             "keyEventTrace",
             "textInputTrace",
             "event.isTrusted",
+            "event.repeat",
+            "event.isComposing",
             "event.inputType",
             "compositionEventCounts",
             "target.selectionStart",
             "target.selectionEnd",
-            '"TEXT INSERTED THEN DELETED"',
+            '"chromium-wasm-m4-ozone-backspace-v2"',
+            "textInputTrace.length === 8",
+            '"TEXT INSERTED THEN REPEATEDLY DELETED"',
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, fixture)
@@ -84,27 +114,79 @@ class M4OzoneBackspaceContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, fixture)
 
-    def test_runner_stages_key_a_before_backspace_without_text(self) -> None:
+    def test_backspace_repeat_requires_a_held_backspace(self) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        handler = section(
+            host,
+            "  #handleM4KeyboardEvent(type, event)",
+            "  #disableM4KeyboardInput",
+        )
+
+        # This guard rejects repeat-before-down and repeat-after-up because
+        # the code is absent from #keyboardCodesDown, and rejects KeyA
+        # repeats because the code must be the bounded Backspace code.
+        for scenario, guard in (
+            ("repeat-before-down", "this.#keyboardCodesDown.has(record.code)"),
+            ("KeyA-repeat", "record.code === M4_BACKSPACE_DOM_CODE"),
+            ("repeat-after-keyup", "this.#keyboardCodesDown.has(record.code)"),
+        ):
+            with self.subTest(scenario=scenario):
+                self.assertIn(guard, handler)
+                self.assertIn("if (record.repeat && !boundedRepeat)", handler)
+                self.assertIn("UNSUPPORTED_REPEAT", handler)
+
+    def test_runner_stages_key_a_key_b_and_backspace_repeat_without_text(
+        self,
+    ) -> None:
         cdp = source("tools/wasm/m4_cdp.py")
         runner = source("tools/wasm/run_m4_ozone_smoke.py")
         server = source("tools/wasm/m3_content_server.py")
 
+        backspace_down = section(
+            cdp,
+            "    def dispatch_backspace_down(self) -> None:",
+            "\n\n    def dispatch_backspace_repeat(self) -> None:",
+        )
+        backspace_base = section(
+            cdp,
+            "    def _backspace_key_event() -> dict[str, object]:",
+            "\n\n    def dispatch_backspace_down(self) -> None:",
+        )
+        backspace_repeat = section(
+            cdp,
+            "    def dispatch_backspace_repeat(self) -> None:",
+            "\n\n    def dispatch_backspace_up(self) -> None:",
+        )
+        backspace_up = section(
+            cdp,
+            "    def dispatch_backspace_up(self) -> None:",
+            "\n\n    def dispatch_backspace(self) -> None:",
+        )
         backspace = section(
             cdp,
             "    def dispatch_backspace(self) -> None:",
-            "\n\n    def dispatch_ime_preedit(self) -> None:",
+            "\n\n    def dispatch_control_shortcut(",
         )
         for marker in (
-            '"type": "rawKeyDown"',
-            '"type": "keyUp"',
             '"code": "Backspace"',
             '"key": "Backspace"',
             '"windowsVirtualKeyCode": 8',
         ):
             with self.subTest(marker=marker):
+                self.assertIn(marker, backspace_base)
+        self.assertIn('"type": "rawKeyDown"', backspace_down)
+        self.assertIn('"autoRepeat": True', backspace_repeat)
+        self.assertIn('"type": "keyUp"', backspace_up)
+        for marker in (
+            "self.dispatch_backspace_down()",
+            "self.dispatch_backspace_repeat()",
+            "self.dispatch_backspace_up()",
+        ):
+            with self.subTest(marker=marker):
                 self.assertIn(marker, backspace)
-        self.assertNotIn('"text":', backspace)
-        self.assertNotIn("Input.insertText", backspace)
+        for method in (backspace_down, backspace_repeat, backspace_up):
+            self.assertNotIn('"text":', method)
+            self.assertNotIn("Input.insertText", method)
 
         driver = section(
             runner,
@@ -116,19 +198,40 @@ class M4OzoneBackspaceContractTest(unittest.TestCase):
             "client.dispatch_primary_click(click_x, click_y)",
             '"awaiting-dom-backspace-key-a"',
             "client.dispatch_key_a()",
-            '"awaiting-dom-backspace"',
+            '"awaiting-dom-backspace-key-b"',
             "validate_backspace_key_a_stage(key_a_state)",
-            "client.dispatch_backspace()",
+            "client.dispatch_key_b()",
+            '"awaiting-dom-backspace-down"',
+            "validate_backspace_key_b_stage(key_b_state)",
+            "client.dispatch_backspace_down()",
+            '"awaiting-dom-backspace-repeat"',
+            "validate_backspace_initial_delete_stage(backspace_down_state)",
+            "client.dispatch_backspace_repeat()",
+            '"awaiting-dom-backspace-up"',
+            "validate_backspace_repeat_delete_stage(backspace_repeat_state)",
+            "client.dispatch_backspace_up()",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, driver)
         self.assertLess(
             driver.index("client.dispatch_key_a()"),
-            driver.index('"awaiting-dom-backspace"'),
+            driver.index('"awaiting-dom-backspace-key-b"'),
         )
         self.assertLess(
-            driver.index('"awaiting-dom-backspace"'),
-            driver.index("client.dispatch_backspace()"),
+            driver.index("client.dispatch_key_b()"),
+            driver.index('"awaiting-dom-backspace-down"'),
+        )
+        self.assertLess(
+            driver.index("client.dispatch_backspace_down()"),
+            driver.index('"awaiting-dom-backspace-repeat"'),
+        )
+        self.assertLess(
+            driver.index("client.dispatch_backspace_repeat()"),
+            driver.index('"awaiting-dom-backspace-up"'),
+        )
+        self.assertLess(
+            driver.index('"awaiting-dom-backspace-up"'),
+            driver.index("client.dispatch_backspace_up()"),
         )
         self.assertNotIn("Input.insertText", driver)
         self.assertNotIn("dispatch_key_a_then_backspace", runner)
@@ -140,12 +243,16 @@ class M4OzoneBackspaceContractTest(unittest.TestCase):
             "def m4_backspace_smoke_url(",
             "def validate_m4_backspace_result(",
             "deleteContentBackward",
-            "queued key trace is not exactly four records",
+            "keyAProof",
+            "keyBProof",
+            "backspaceRepeatProof",
+            "repeatExact",
+            "queued key trace is not exactly seven records",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, server)
 
-    def test_host_waits_for_the_key_a_blink_edit_before_backspace(self) -> None:
+    def test_host_stages_key_a_key_b_and_held_backspace_repeat(self) -> None:
         host = source("tools/wasm/host/content_shell_host.js")
         smoke = section(
             host,
@@ -158,34 +265,62 @@ class M4OzoneBackspaceContractTest(unittest.TestCase):
             "host.enableM4KeyboardInput()",
             "window.__chromiumWasmM4BackspaceState",
             'state: "awaiting-dom-backspace-key-a"',
-            'state: "awaiting-dom-backspace"',
-            "const keyAProof = {",
-            "M4 trusted Ozone KeyA insert timeout before Backspace",
+            'state: "awaiting-dom-backspace-key-b"',
+            'state: "awaiting-dom-backspace-down"',
+            'state: "awaiting-dom-backspace-repeat"',
+            'state: "awaiting-dom-backspace-up"',
+            "keyAProof = {",
+            "keyBProof = {",
+            "backspaceDownProof",
+            "backspaceRepeatProof = {",
+            "keyABQueue",
+            "backspaceDownQueue",
+            "backspaceRepeatQueue",
+            "M4 trusted Ozone KeyB insert timeout before Backspace",
             "insertText",
             "deleteContentBackward",
-            "TEXT INSERTED THEN DELETED",
-            "keyboard?.receivedCount === 4",
+            "TEXT INSERTED THEN REPEATEDLY DELETED",
+            "keyboard?.receivedCount === 7",
             "compositionCounts?.compositionstart === 0",
-            "readiness.frame?.id > backspaceDown?.frameIdBefore",
+            "repeatExact",
+            "initialDownRepeatFalse",
+            "repeatedDownRepeatTrue",
+            "releaseRepeatFalse",
+            "backspaceHeld",
+            "releaseExact",
+            "readiness.frame?.id > repeatedBackspaceDown?.frameIdBefore",
+            "keyAProof,",
+            "keyBProof,",
+            "backspaceRepeatProof,",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, smoke)
         self.assertLess(
-            smoke.index("M4 trusted Ozone KeyA insert timeout before Backspace"),
-            smoke.index("const keyAProof = {"),
+            smoke.index("keyAProof = {"),
+            smoke.index('state: "awaiting-dom-backspace-key-b"'),
         )
         self.assertLess(
-            smoke.index("const keyAProof = {"),
-            smoke.index('state: "awaiting-dom-backspace"'),
+            smoke.index('state: "awaiting-dom-backspace-key-b"'),
+            smoke.index("keyBProof = {"),
         )
         self.assertLess(
-            smoke.index('state: "awaiting-dom-backspace"'),
-            smoke.index("const backspaceDown = queuedRecords?.[2];"),
+            smoke.index("keyBProof = {"),
+            smoke.index('state: "awaiting-dom-backspace-down"'),
+        )
+        self.assertLess(
+            smoke.index('state: "awaiting-dom-backspace-down"'),
+            smoke.index('state: "awaiting-dom-backspace-repeat"'),
+        )
+        self.assertLess(
+            smoke.index('state: "awaiting-dom-backspace-repeat"'),
+            smoke.index('state: "awaiting-dom-backspace-up"'),
         )
         for forbidden in (
             "injectInput(",
             "chromium_wasm_host_click",
             "Input.insertText",
+            "keyboard.receivedCount === 4",
+            "pageProbe.resultText === \"TEXT INSERTED THEN DELETED\"",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, smoke)

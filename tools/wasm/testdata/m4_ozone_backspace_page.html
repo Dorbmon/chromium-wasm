@@ -52,9 +52,9 @@
 </style>
 <main>
   <p id="title">M4 OZONE BACKSPACE INPUT</p>
-  <label for="editable-target">CLICK, THEN PRESS A AND BACKSPACE</label>
+  <label for="editable-target">CLICK, THEN PRESS A, B, AND REPEAT BACKSPACE</label>
   <input id="editable-target" type="text" autocomplete="off" spellcheck="false">
-  <p id="result" data-edit-delivered="false">WAITING FOR A AND BACKSPACE</p>
+  <p id="result" data-edit-delivered="false">WAITING FOR A, B, AND REPEATED BACKSPACE</p>
 </main>
 <script>
   (() => {
@@ -90,7 +90,10 @@
 
     for (const eventType of ["keydown", "keyup"]) {
       document.addEventListener(eventType, (event) => {
-        if (event.code !== "KeyA" && event.code !== "Backspace") {
+        if (
+          event.code !== "KeyA" && event.code !== "KeyB" &&
+          event.code !== "Backspace"
+        ) {
           return;
         }
         keyEventTrace.push({
@@ -125,14 +128,14 @@
         targetId: event.target?.id || null,
       });
       if (
-        textInputTrace.length === 4 &&
+        textInputTrace.length === 8 &&
         target.value === "" &&
         target.selectionStart === 0 &&
         target.selectionEnd === 0
       ) {
         result.dataset.editDelivered = "true";
         result.textContent = event.isTrusted
-          ? "TEXT INSERTED THEN DELETED"
+          ? "TEXT INSERTED THEN REPEATEDLY DELETED"
           : "UNTRUSTED EDIT INPUT";
       }
     });
@@ -161,7 +164,7 @@
       return JSON.stringify({
         protocol: 1,
         timerTicks,
-        fixture: "chromium-wasm-m4-ozone-backspace-v1",
+        fixture: "chromium-wasm-m4-ozone-backspace-v2",
         fontReady,
         keyEventTrace,
         textInputTrace,
