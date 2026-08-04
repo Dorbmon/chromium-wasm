@@ -44,6 +44,13 @@ const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
 const M5_NETWORK_TEST_HOSTNAME = "a.test";
 const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
+const M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control";
+const M5_NAVIGATION_PHASE = Object.freeze({
+  NONE: "none",
+  PLAINTEXT_HTTP_CONTROL: "plaintext-http-control",
+  HTTPS_FIXTURE: "https-fixture",
+  TLS_NAME_MISMATCH: "tls-name-mismatch",
+});
 // net::ERR_CERT_COMMON_NAME_INVALID. Keep the test evidence tied to
 // Chromium's native certificate verifier, not a JavaScript fetch failure.
 const M5_TLS_NAME_MISMATCH_NET_ERROR = -200;
@@ -1359,17 +1366,59 @@ function isEmptyM4ImeTextSummary(value) {
       value?.utf8Bytes === 0 && value?.codePointCount === 0;
 }
 
-function hasM5NetworkPageProbe(pageProbe) {
+function isM5NetworkPageProbeIdentity(pageProbe) {
   return pageProbe?.protocol === HOST_PROTOCOL &&
       pageProbe?.fixture === M5_NETWORK_FIXTURE &&
+      pageProbe?.phase === M5_NAVIGATION_PHASE.HTTPS_FIXTURE &&
+      typeof pageProbe?.ready === "boolean" &&
+      Number.isSafeInteger(pageProbe?.timerTicks) &&
+      pageProbe.timerTicks >= 0 &&
+      typeof pageProbe?.h2Fetch === "boolean" &&
+      typeof pageProbe?.h2Protocol === "string" &&
+      typeof pageProbe?.altSvcH3Advertised === "boolean" &&
+      typeof pageProbe?.cacheStored === "boolean" &&
+      typeof pageProbe?.cacheRevalidated === "boolean" &&
+      typeof pageProbe?.cspConnectSrcBlocked === "boolean" &&
+      typeof pageProbe?.activeMixedContentBlocked === "boolean" &&
+      typeof pageProbe?.activeMixedContentTargetUrl === "string" &&
+      typeof pageProbe?.activeMixedContentErrorName === "string" &&
+      typeof pageProbe?.activeMixedContentCspAllowed === "boolean" &&
+      typeof pageProbe?.corsFetch === "boolean" &&
+      typeof pageProbe?.redirected === "boolean" &&
+      typeof pageProbe?.webSocketEcho === "boolean" &&
+      typeof pageProbe?.nonce === "string" && pageProbe.nonce.length > 0;
+}
+
+function hasM5NetworkPageProbe(pageProbe) {
+  return isM5NetworkPageProbeIdentity(pageProbe) &&
       pageProbe?.ready === true &&
       pageProbe?.h2Fetch === true && pageProbe?.h2Protocol === "h2" &&
       pageProbe?.redirected === true &&
       pageProbe?.cacheStored === true && pageProbe?.cacheRevalidated === true &&
       pageProbe?.cspConnectSrcBlocked === true &&
+      pageProbe?.activeMixedContentBlocked === true &&
+      pageProbe.activeMixedContentTargetUrl.length > 0 &&
+      pageProbe?.activeMixedContentErrorName === "TypeError" &&
+      pageProbe?.activeMixedContentCspAllowed === true &&
       pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
-      pageProbe?.altSvcH3Advertised === true &&
-      typeof pageProbe?.nonce === "string" && pageProbe.nonce.length > 0;
+      pageProbe?.altSvcH3Advertised === true;
+}
+
+function isM5PlaintextHttpControlPageProbeIdentity(pageProbe) {
+  return pageProbe?.protocol === HOST_PROTOCOL &&
+      pageProbe?.fixture === M5_NETWORK_FIXTURE &&
+      pageProbe?.phase === M5_NAVIGATION_PHASE.PLAINTEXT_HTTP_CONTROL &&
+      typeof pageProbe?.ready === "boolean" &&
+      Number.isSafeInteger(pageProbe?.timerTicks) &&
+      pageProbe.timerTicks >= 0 &&
+      pageProbe?.plaintextHttpControlDocument === true &&
+      typeof pageProbe?.plaintextHttpControlProof === "boolean";
+}
+
+function hasM5PlaintextHttpControlPageProbe(pageProbe) {
+  return isM5PlaintextHttpControlPageProbeIdentity(pageProbe) &&
+      pageProbe?.ready === true &&
+      pageProbe?.plaintextHttpControlProof === true;
 }
 
 function asReport(value, description) {
@@ -1419,6 +1468,16 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportM5PageProbe(report) {
     deliverBridgeReport("_reportM5PageProbe", [report]);
+  },
+  reportM5PlaintextHttpControlNavigation(report) {
+    deliverBridgeReport("_reportM5PlaintextHttpControlNavigation", [report]);
+  },
+  reportM5PlaintextHttpControlNavigationError(report) {
+    deliverBridgeReport(
+      "_reportM5PlaintextHttpControlNavigationError", [report]);
+  },
+  reportM5PlaintextHttpControlPageProbe(report) {
+    deliverBridgeReport("_reportM5PlaintextHttpControlPageProbe", [report]);
   },
   reportOzoneFocusState(report) {
     deliverBridgeReport("_reportOzoneFocusState", [report]);
@@ -1635,6 +1694,37 @@ function normalizeM5NetworkTestURL(value) {
   return parsed.href;
 }
 
+// Active mixed-content coverage admits one exact plaintext top-level control
+// document. It remains separate from the HTTPS fixture policy above and does
+// not authorize HTTP navigation to arbitrary M5 paths.
+function normalizeM5PlaintextHttpControlURL(value) {
+  if (
+    typeof value !== "string" || value.length === 0 || value.length > 2048
+  ) {
+    throw new Error("M5 plaintext HTTP control URL must be a nonempty string");
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (_) {
+    throw new Error("M5 plaintext HTTP control URL is invalid");
+  }
+  if (
+    parsed.protocol !== "http:" ||
+    parsed.hostname !== M5_NETWORK_TEST_HOSTNAME ||
+    !parsed.port ||
+    parsed.username || parsed.password || parsed.search || parsed.hash ||
+    parsed.pathname !== M5_PLAINTEXT_HTTP_CONTROL_PATH
+  ) {
+    throw new Error("M5 plaintext HTTP control URL violates the fixture policy");
+  }
+  const port = Number(parsed.port);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("M5 plaintext HTTP control URL has an invalid port");
+  }
+  return parsed.href;
+}
+
 export class ChromiumWasmM3Host {
   #canvas;
   #imeProxy;
@@ -1642,6 +1732,7 @@ export class ChromiumWasmM3Host {
   #wispConfigured = false;
   #m5NetworkTestActive = false;
   #m5NetworkNavigationCount = 0;
+  #m5NetworkPhase = M5_NAVIGATION_PHASE.NONE;
   #module = null;
   #lifecycle = "new";
   #runtimeInitialized = false;
@@ -4096,65 +4187,121 @@ export class ChromiumWasmM3Host {
     return {ok: true, scheme: "data"};
   }
 
+  async loadM5PlaintextHttpControlURL(url) {
+    this.#requireRunning("loadM5PlaintextHttpControlURL");
+    if (!this.#wispConfigured) {
+      throw new Error("M5 network navigation requires a WISP configuration");
+    }
+    const testURL = normalizeM5PlaintextHttpControlURL(url);
+    if (
+      this.#m5NetworkNavigationCount !== 0 ||
+      this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.NONE
+    ) {
+      throw new Error("M5 plaintext HTTP control must be the first navigation");
+    }
+    return this.#postM5TestNavigation({
+      testURL,
+      exportName: "chromium_wasm_host_load_m5_plaintext_http_control_url",
+      phase: M5_NAVIGATION_PHASE.PLAINTEXT_HTTP_CONTROL,
+      scheme: "http",
+      requestedLog: "navigation:requested:m5-plaintext-http-control",
+    });
+  }
+
   async loadM5NetworkURL(url) {
     this.#requireRunning("loadM5NetworkURL");
     if (!this.#wispConfigured) {
       throw new Error("M5 network navigation requires a WISP configuration");
     }
     const testURL = normalizeM5NetworkTestURL(url);
-    if (this.#m5NetworkNavigationCount >= 2) {
-      throw new Error("M5 network navigation has exhausted its test budget");
-    }
-    if (
-      this.#m5NetworkNavigationCount === 1 &&
-      (this.#navigation.committed !== true ||
-        this.#navigation.scheme !== "https")
-    ) {
+    let phase;
+    let requestedLog;
+    if (this.#m5NetworkPhase === M5_NAVIGATION_PHASE.PLAINTEXT_HTTP_CONTROL) {
+      if (
+        this.#m5NetworkNavigationCount !== 1 ||
+        this.#navigation.committed !== true ||
+        this.#navigation.scheme !== "http" ||
+        !hasM5PlaintextHttpControlPageProbe(this.#pageProbe)
+      ) {
+        throw new Error(
+          "M5 HTTPS navigation requires a committed plaintext HTTP control");
+      }
+      phase = M5_NAVIGATION_PHASE.HTTPS_FIXTURE;
+      requestedLog = "navigation:requested:m5-https";
+    } else if (this.#m5NetworkPhase === M5_NAVIGATION_PHASE.HTTPS_FIXTURE) {
+      if (
+        this.#m5NetworkNavigationCount !== 2 ||
+        this.#navigation.committed !== true ||
+        this.#navigation.scheme !== "https" ||
+        !hasM5NetworkPageProbe(this.#pageProbe)
+      ) {
+        throw new Error(
+          "M5 TLS rejection navigation requires an initial HTTPS fixture " +
+          "commit");
+      }
+      phase = M5_NAVIGATION_PHASE.TLS_NAME_MISMATCH;
+      requestedLog = "navigation:requested:m5-https-tls-failure";
+    } else {
       throw new Error(
-        "M5 TLS rejection navigation requires an initial HTTPS commit");
+        "M5 HTTPS navigation requires the plaintext-control then HTTPS phases");
     }
+    return this.#postM5TestNavigation({
+      testURL,
+      exportName: "chromium_wasm_host_load_m5_url",
+      phase,
+      scheme: "https",
+      requestedLog,
+    });
+  }
 
+  #postM5TestNavigation({testURL, exportName, phase, scheme, requestedLog}) {
+    const previousM5NetworkTestActive = this.#m5NetworkTestActive;
+    const previousM5NetworkNavigationCount = this.#m5NetworkNavigationCount;
+    const previousM5NetworkPhase = this.#m5NetworkPhase;
     const previousNavigation = this.#navigation;
     const previousPageProbe = this.#pageProbe;
-    // The C ABI posts work to Chromium's UI sequence. Mark this first so a
-    // proxied completion report cannot race the host-side test-mode gate.
+    // The C ABI posts work to Chromium's UI sequence. Arm the exact phase
+    // before posting so a proxied report cannot race the host-side gate.
     this.#m5NetworkTestActive = true;
     ++this.#m5NetworkNavigationCount;
+    this.#m5NetworkPhase = phase;
     this.#navigation = {};
     this.#pageProbe = {};
     let result;
     try {
-      result = this.#callExport(
-        "chromium_wasm_host_load_m5_url",
-        "number",
-        ["string"],
-        [testURL],
-      );
+      result = this.#callExport(exportName, "number", ["string"], [testURL]);
     } catch (error) {
-      --this.#m5NetworkNavigationCount;
-      this.#m5NetworkTestActive = this.#m5NetworkNavigationCount !== 0;
-      this.#navigation = previousNavigation;
-      this.#pageProbe = previousPageProbe;
+      this.#restoreM5TestNavigation({
+        active: previousM5NetworkTestActive,
+        count: previousM5NetworkNavigationCount,
+        phase: previousM5NetworkPhase,
+        navigation: previousNavigation,
+        pageProbe: previousPageProbe,
+      });
       throw error;
     }
     if (result !== 1) {
-      --this.#m5NetworkNavigationCount;
-      this.#m5NetworkTestActive = this.#m5NetworkNavigationCount !== 0;
-      this.#navigation = previousNavigation;
-      this.#pageProbe = previousPageProbe;
+      this.#restoreM5TestNavigation({
+        active: previousM5NetworkTestActive,
+        count: previousM5NetworkNavigationCount,
+        phase: previousM5NetworkPhase,
+        navigation: previousNavigation,
+        pageProbe: previousPageProbe,
+      });
       throw new Error(
-        `runtime rejected M5 HTTPS navigation with status ${String(result)}`);
+        `runtime rejected M5 ${scheme.toUpperCase()} navigation with status ` +
+        String(result));
     }
-    this.#recordHost(
-      this.#m5NetworkNavigationCount === 1
-        ? "navigation:requested:m5-https"
-        : "navigation:requested:m5-https-tls-failure",
-    );
-    return {
-      ok: true,
-      scheme: "https",
-      hostname: M5_NETWORK_TEST_HOSTNAME,
-    };
+    this.#recordHost(requestedLog);
+    return {ok: true, scheme, hostname: M5_NETWORK_TEST_HOSTNAME};
+  }
+
+  #restoreM5TestNavigation({active, count, phase, navigation, pageProbe}) {
+    this.#m5NetworkTestActive = active;
+    this.#m5NetworkNavigationCount = count;
+    this.#m5NetworkPhase = phase;
+    this.#navigation = navigation;
+    this.#pageProbe = pageProbe;
   }
 
   async injectInput(event) {
@@ -4498,11 +4645,24 @@ export class ChromiumWasmM3Host {
     try {
       const report = asReport(value, "M5 navigation report");
       if (
-        !this.#m5NetworkTestActive ||
-        this.#m5NetworkNavigationCount !== 1 ||
         report.protocol !== HOST_PROTOCOL ||
         report.committed !== true ||
         report.scheme !== "https"
+      ) {
+        throw new Error("M5 navigation report identity mismatch");
+      }
+      if (
+        this.#m5NetworkTestActive &&
+        this.#m5NetworkNavigationCount === 3 &&
+        this.#m5NetworkPhase === M5_NAVIGATION_PHASE.TLS_NAME_MISMATCH
+      ) {
+        this.#recordHost("m5:ignored-stale:https-navigation");
+        return;
+      }
+      if (
+        !this.#m5NetworkTestActive ||
+        this.#m5NetworkNavigationCount !== 2 ||
+        this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.HTTPS_FIXTURE
       ) {
         throw new Error("M5 navigation report must commit the HTTPS fixture");
       }
@@ -4518,7 +4678,8 @@ export class ChromiumWasmM3Host {
       const report = asReport(value, "M5 navigation failure report");
       if (
         !this.#m5NetworkTestActive ||
-        this.#m5NetworkNavigationCount !== 2 ||
+        this.#m5NetworkNavigationCount !== 3 ||
+        this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.TLS_NAME_MISMATCH ||
         report.protocol !== HOST_PROTOCOL ||
         report.committed !== false ||
         report.scheme !== "https" ||
@@ -4544,16 +4705,144 @@ export class ChromiumWasmM3Host {
   _reportM5PageProbe(value) {
     try {
       const report = asReport(value, "M5 page probe");
+      if (!isM5NetworkPageProbeIdentity(report)) {
+        throw new Error("M5 page probe identity mismatch");
+      }
+      if (
+        this.#m5NetworkTestActive &&
+        this.#m5NetworkNavigationCount === 3 &&
+        this.#m5NetworkPhase === M5_NAVIGATION_PHASE.TLS_NAME_MISMATCH
+      ) {
+        this.#recordHost("m5:ignored-stale:https-page-probe");
+        return;
+      }
       if (
         !this.#m5NetworkTestActive ||
-        report.protocol !== HOST_PROTOCOL ||
-        report.fixture !== M5_NETWORK_FIXTURE
+        this.#m5NetworkNavigationCount !== 2 ||
+        this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.HTTPS_FIXTURE
       ) {
-        throw new Error("M5 page probe identity mismatch");
+        throw new Error("M5 page probe is not armed for the HTTPS fixture");
       }
       this.#pageProbe = clone(report);
     } catch (error) {
       this._reportFatal(`invalid M5 page probe: ${String(error)}`);
+    }
+  }
+
+  _reportM5PlaintextHttpControlNavigation(value) {
+    try {
+      const report = asReport(value, "M5 plaintext HTTP control navigation");
+      if (
+        report.protocol !== HOST_PROTOCOL ||
+        report.committed !== true ||
+        report.scheme !== "http"
+      ) {
+        throw new Error(
+          "M5 plaintext HTTP control navigation identity mismatch");
+      }
+      if (
+        this.#m5NetworkTestActive &&
+        ((this.#m5NetworkNavigationCount === 2 &&
+          this.#m5NetworkPhase === M5_NAVIGATION_PHASE.HTTPS_FIXTURE) ||
+         (this.#m5NetworkNavigationCount === 3 &&
+          this.#m5NetworkPhase === M5_NAVIGATION_PHASE.TLS_NAME_MISMATCH))
+      ) {
+        this.#recordHost("m5:ignored-stale:plaintext-http-control-navigation");
+        return;
+      }
+      if (
+        !this.#m5NetworkTestActive ||
+        this.#m5NetworkNavigationCount !== 1 ||
+        this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.PLAINTEXT_HTTP_CONTROL
+      ) {
+        throw new Error(
+          "M5 plaintext HTTP control navigation must commit the exact fixture");
+      }
+      this.#navigation = {committed: true, scheme: "http"};
+      this.#resetHeartbeatWindow(
+        "m5-plaintext-http-control-navigation-committed");
+      this.#recordHost("navigation:committed:m5-plaintext-http-control");
+    } catch (error) {
+      this._reportFatal(
+        `invalid M5 plaintext HTTP control navigation report: ${String(error)}`);
+    }
+  }
+
+  _reportM5PlaintextHttpControlNavigationError(value) {
+    try {
+      const report = asReport(
+        value, "M5 plaintext HTTP control navigation failure report");
+      if (
+        report.protocol !== HOST_PROTOCOL ||
+        report.committed !== false ||
+        report.scheme !== "http" ||
+        !Number.isSafeInteger(report.netError) || report.netError === 0
+      ) {
+        throw new Error(
+          "M5 plaintext HTTP control navigation failure identity is invalid");
+      }
+      if (
+        this.#m5NetworkTestActive &&
+        ((this.#m5NetworkNavigationCount === 2 &&
+          this.#m5NetworkPhase === M5_NAVIGATION_PHASE.HTTPS_FIXTURE) ||
+         (this.#m5NetworkNavigationCount === 3 &&
+          this.#m5NetworkPhase === M5_NAVIGATION_PHASE.TLS_NAME_MISMATCH))
+      ) {
+        this.#recordHost(
+          "m5:ignored-stale:plaintext-http-control-navigation-error");
+        return;
+      }
+      if (
+        !this.#m5NetworkTestActive ||
+        this.#m5NetworkNavigationCount !== 1 ||
+        this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.PLAINTEXT_HTTP_CONTROL
+      ) {
+        throw new Error(
+          "M5 plaintext HTTP control navigation failure is invalid");
+      }
+      this.#navigation = {
+        committed: false,
+        scheme: "http",
+        netError: report.netError,
+      };
+      this.#resetHeartbeatWindow(
+        "m5-plaintext-http-control-navigation-failed");
+      this.#recordHost(
+        `navigation:failed:m5-plaintext-http-control:${report.netError}`);
+    } catch (error) {
+      this._reportFatal(
+        "invalid M5 plaintext HTTP control navigation failure report: " +
+        String(error));
+    }
+  }
+
+  _reportM5PlaintextHttpControlPageProbe(value) {
+    try {
+      const report = asReport(value, "M5 plaintext HTTP control page probe");
+      if (!isM5PlaintextHttpControlPageProbeIdentity(report)) {
+        throw new Error("M5 plaintext HTTP control page probe identity mismatch");
+      }
+      if (
+        this.#m5NetworkTestActive &&
+        ((this.#m5NetworkNavigationCount === 2 &&
+          this.#m5NetworkPhase === M5_NAVIGATION_PHASE.HTTPS_FIXTURE) ||
+         (this.#m5NetworkNavigationCount === 3 &&
+          this.#m5NetworkPhase === M5_NAVIGATION_PHASE.TLS_NAME_MISMATCH))
+      ) {
+        this.#recordHost("m5:ignored-stale:plaintext-http-control-page-probe");
+        return;
+      }
+      if (
+        !this.#m5NetworkTestActive ||
+        this.#m5NetworkNavigationCount !== 1 ||
+        this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.PLAINTEXT_HTTP_CONTROL
+      ) {
+        throw new Error("M5 plaintext HTTP control page probe is not armed");
+      }
+      this.#pageProbe = clone(report);
+    } catch (error) {
+      this._reportFatal(
+        `invalid M5 plaintext HTTP control page probe: ${String(error)}`);
     }
   }
 
@@ -11953,12 +12242,16 @@ async function runM5WispNetworkSmokeFromQuery() {
   const token = parameters.get("token") || "";
   const relayEndpoint = parameters.get("wisp_endpoint");
   const m5URL = parameters.get("m5_url");
+  const m5PlaintextHttpControlURL = parameters.get(
+    "m5_plaintext_http_control_url");
   const m5TLSFailureURL = parameters.get("m5_tls_failure_url");
   const timeoutMs = Math.max(
     1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
   let host = null;
   let readiness = null;
   let initialFrame = null;
+  let plaintextHttpControlNavigationResult = null;
+  let plaintextHttpControlReadiness = null;
   let navigationResult = null;
   let tlsFailureNavigationResult = null;
   let tlsFailureReadiness = null;
@@ -11976,6 +12269,8 @@ async function runM5WispNetworkSmokeFromQuery() {
       throw new Error("missing M5 WISP endpoint");
     }
     const testURL = normalizeM5NetworkTestURL(m5URL);
+    const plaintextHttpControlURL = normalizeM5PlaintextHttpControlURL(
+      m5PlaintextHttpControlURL);
     const tlsFailureURL = normalizeM5NetworkTestURL(m5TLSFailureURL);
     host = new ChromiumWasmM3Host(
         canvas, versions, {fixture: M5_NETWORK_FIXTURE});
@@ -12003,6 +12298,39 @@ async function runM5WispNetworkSmokeFromQuery() {
     }
     if (!initialFrame) {
       throw new Error("M5 runtime did not present the initial shell frame");
+    }
+
+    plaintextHttpControlNavigationResult =
+      await host.loadM5PlaintextHttpControlURL(plaintextHttpControlURL);
+    while (performance.now() < deadline) {
+      plaintextHttpControlReadiness = await host.readiness();
+      if (
+        plaintextHttpControlReadiness.navigation?.committed === true &&
+        plaintextHttpControlReadiness.navigation?.scheme === "http" &&
+        hasM5PlaintextHttpControlPageProbe(
+          plaintextHttpControlReadiness.pageProbe)
+      ) {
+        break;
+      }
+      if (
+        plaintextHttpControlReadiness.navigation?.committed === false &&
+        plaintextHttpControlReadiness.navigation?.scheme === "http"
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    if (
+      !plaintextHttpControlReadiness ||
+      plaintextHttpControlReadiness.navigation?.committed !== true ||
+      plaintextHttpControlReadiness.navigation?.scheme !== "http" ||
+      !hasM5PlaintextHttpControlPageProbe(
+        plaintextHttpControlReadiness.pageProbe) ||
+      plaintextHttpControlReadiness.fatalErrors?.length !== 0
+    ) {
+      throw new Error(
+        "M5 WISP plaintext HTTP control did not complete: " +
+        JSON.stringify(plaintextHttpControlReadiness));
     }
 
     navigationResult = await host.loadM5NetworkURL(testURL);
@@ -12056,6 +12384,13 @@ async function runM5WispNetworkSmokeFromQuery() {
       canvasFocused: document.activeElement === canvas,
       initialFrame: initialFrame !== null,
       wispConfigured: logs.host.includes("initialize:wisp-configured"),
+      plaintextHttpControl:
+        plaintextHttpControlNavigationResult?.ok === true &&
+        plaintextHttpControlReadiness.navigation?.committed === true &&
+        plaintextHttpControlReadiness.navigation?.scheme === "http" &&
+        hasM5PlaintextHttpControlPageProbe(
+          plaintextHttpControlReadiness.pageProbe) &&
+        plaintextHttpControlReadiness.fatalErrors?.length === 0,
       m5Navigation:
         navigationResult?.ok === true &&
         readiness.navigation?.committed === true &&
@@ -12072,6 +12407,12 @@ async function runM5WispNetworkSmokeFromQuery() {
       cache:
         pageProbe.cacheStored === true && pageProbe.cacheRevalidated === true,
       csp: pageProbe.cspConnectSrcBlocked === true,
+      activeMixedContent:
+        pageProbe.activeMixedContentBlocked === true &&
+        typeof pageProbe.activeMixedContentTargetUrl === "string" &&
+        pageProbe.activeMixedContentTargetUrl.length > 0 &&
+        pageProbe.activeMixedContentErrorName === "TypeError" &&
+        pageProbe.activeMixedContentCspAllowed === true,
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
       cors: pageProbe.corsFetch === true,
       webSocket: pageProbe.webSocketEcho === true,
@@ -12093,6 +12434,8 @@ async function runM5WispNetworkSmokeFromQuery() {
       canvasFocused: document.activeElement === canvas,
       versions,
       initialFrame,
+      plaintextHttpControlNavigationResult,
+      plaintextHttpControlReadiness,
       navigationResult,
       readiness,
       tlsFailureNavigationResult,
@@ -12113,6 +12456,8 @@ async function runM5WispNetworkSmokeFromQuery() {
       canvasFocused: document.activeElement === canvas,
       versions,
       initialFrame,
+      plaintextHttpControlNavigationResult,
+      plaintextHttpControlReadiness,
       navigationResult,
       tlsFailureNavigationResult,
       readiness: null,
@@ -12130,6 +12475,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       }
       try {
         result.readiness = await host.readiness();
+        result.plaintextHttpControlReadiness = result.readiness;
         result.tlsFailureReadiness = result.readiness;
       } catch (diagnosticError) {
         result.error += "; readiness diagnostics: " + String(diagnosticError);

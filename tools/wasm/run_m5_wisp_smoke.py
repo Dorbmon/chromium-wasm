@@ -54,7 +54,12 @@ SENTINEL = "CHROMIUM_WASM_M5_WISP"
 M5_CASE = "wisp_network_m5"
 M5_FIXTURE = "chromium-wasm-m5-network-v1"
 M5_TEST_HOSTNAME = "a.test"
-M5_TEST_PATH_PREFIX = "/m5/"
+M5_HTTPS_FIXTURE_PATH = "/m5/"
+M5_REDIRECT_PATH = "/m5/redirect-cookie"
+M5_HTTP1_CORS_PATH = "/m5/cors-resource"
+M5_TLS_NAME_MISMATCH_PATH = "/m5/tls-name-mismatch"
+M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control"
+M5_MIXED_CONTENT_TARGET_PATH = "/m5/mixed-content-target"
 M5_BROWSER_WINDOW_SIZE = "1280,800"
 MAXIMUM_RELAY_READY_LINE_BYTES = 16 * 1024
 MAXIMUM_RELAY_STATUS_BYTES = 256 * 1024
@@ -74,6 +79,8 @@ class RelayReady:
     wisp_endpoint: str
     https_url: str
     redirect_url: str
+    plaintext_http_control_url: str
+    mixed_content_target_url: str
     http1_url: str
     tls_failure_url: str
     transcript_url: str
@@ -124,9 +131,12 @@ def validate_wisp_endpoint(value: object) -> str:
 
 
 def validate_m5_https_url(
-    value: object, *, description: str = "relay httpsUrl"
+    value: object,
+    *,
+    description: str = "relay httpsUrl",
+    expected_path: str = M5_HTTPS_FIXTURE_PATH,
 ) -> str:
-    """Accept only the fixed HTTPS fixture navigation URL."""
+    """Accept one exact HTTPS M5 fixture URL."""
 
     if not isinstance(value, str) or not value:
         raise M0Error(f"{description} must be a nonempty string")
@@ -136,11 +146,14 @@ def validate_m5_https_url(
     if (
         parsed.scheme != "https"
         or parsed.hostname != M5_TEST_HOSTNAME
-        or parsed.username
-        or parsed.password
+        or parsed.username is not None
+        or parsed.password is not None
+        or "@" in parsed.netloc
         or parsed.query
         or parsed.fragment
-        or not parsed.path.startswith(M5_TEST_PATH_PREFIX)
+        or "?" in value
+        or "#" in value
+        or parsed.path != expected_path
     ):
         raise M0Error(f"{description} violates the M5 fixture policy")
     _validated_port(parsed, description)
@@ -151,7 +164,9 @@ def validate_m5_redirect_url(value: object, *, https_url: str) -> str:
     """Accept a distinct M5 redirect source on the H2 fixture listener."""
 
     redirect_url = validate_m5_https_url(
-        value, description="relay redirectUrl"
+        value,
+        description="relay redirectUrl",
+        expected_path=M5_REDIRECT_PATH,
     )
     h2_port = _validated_port(urlsplit(https_url), "relay httpsUrl")
     redirect_port = _validated_port(
@@ -162,6 +177,66 @@ def validate_m5_redirect_url(value: object, *, https_url: str) -> str:
     if redirect_url == https_url:
         raise M0Error("relay redirectUrl must differ from relay httpsUrl")
     return redirect_url
+
+
+def _validate_m5_plaintext_http_url(
+    value: object, *, description: str, expected_path: str
+) -> str:
+    """Accept one exact plaintext M5 fixture URL."""
+
+    if not isinstance(value, str) or not value:
+        raise M0Error(f"{description} must be a nonempty string")
+    if len(value.encode("utf-8")) > 2048:
+        raise M0Error(f"{description} is too long")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != M5_TEST_HOSTNAME
+        or parsed.username
+        or parsed.password
+        or "@" in parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or "?" in value
+        or "#" in value
+        or parsed.path != expected_path
+    ):
+        raise M0Error(f"{description} violates the M5 plaintext fixture policy")
+    _validated_port(parsed, description)
+    return value
+
+
+def validate_m5_plaintext_http_control_url(value: object) -> str:
+    """Accept only the fixed M5 plaintext HTTP control navigation."""
+
+    return _validate_m5_plaintext_http_url(
+        value,
+        description="relay plaintextHttpControlUrl",
+        expected_path=M5_PLAINTEXT_HTTP_CONTROL_PATH,
+    )
+
+
+def validate_m5_mixed_content_target_url(
+    value: object, *, plaintext_http_control_url: str
+) -> str:
+    """Accept the exact M5 active mixed-content target on the control port."""
+
+    mixed_content_target_url = _validate_m5_plaintext_http_url(
+        value,
+        description="relay mixedContentTargetUrl",
+        expected_path=M5_MIXED_CONTENT_TARGET_PATH,
+    )
+    control_port = _validated_port(
+        urlsplit(plaintext_http_control_url), "relay plaintextHttpControlUrl"
+    )
+    target_port = _validated_port(
+        urlsplit(mixed_content_target_url), "relay mixedContentTargetUrl"
+    )
+    if target_port != control_port:
+        raise M0Error(
+            "relay mixedContentTargetUrl must use the plaintext control port"
+        )
+    return mixed_content_target_url
 
 
 def validate_relay_transcript_url(value: object) -> str:
@@ -207,23 +282,43 @@ def parse_relay_ready_line(line: str) -> RelayReady:
     redirect_url = validate_m5_redirect_url(
         ready.get("redirectUrl"), https_url=https_url
     )
+    plaintext_http_control_url = validate_m5_plaintext_http_control_url(
+        ready.get("plaintextHttpControlUrl")
+    )
+    mixed_content_target_url = validate_m5_mixed_content_target_url(
+        ready.get("mixedContentTargetUrl"),
+        plaintext_http_control_url=plaintext_http_control_url,
+    )
     http1_url = validate_m5_https_url(
-        ready.get("http1Url"), description="relay http1Url"
+        ready.get("http1Url"),
+        description="relay http1Url",
+        expected_path=M5_HTTP1_CORS_PATH,
     )
     tls_failure_url = validate_m5_https_url(
-        ready.get("tlsFailureUrl"), description="relay tlsFailureUrl"
+        ready.get("tlsFailureUrl"),
+        description="relay tlsFailureUrl",
+        expected_path=M5_TLS_NAME_MISMATCH_PATH,
     )
     h2_port = _validated_port(urlsplit(https_url), "relay httpsUrl")
     h1_port = _validated_port(urlsplit(http1_url), "relay http1Url")
     tls_failure_port = _validated_port(
         urlsplit(tls_failure_url), "relay tlsFailureUrl"
     )
-    if tls_failure_port in (h2_port, h1_port):
+    plaintext_http_control_port = _validated_port(
+        urlsplit(plaintext_http_control_url), "relay plaintextHttpControlUrl"
+    )
+    if tls_failure_port in (h2_port, h1_port, plaintext_http_control_port):
         raise M0Error("relay tlsFailureUrl must use a distinct fixture port")
+    if plaintext_http_control_port in (h2_port, h1_port):
+        raise M0Error(
+            "relay plaintextHttpControlUrl must use a distinct fixture port"
+        )
     return RelayReady(
         wisp_endpoint=validate_wisp_endpoint(ready.get("wispEndpoint")),
         https_url=https_url,
         redirect_url=redirect_url,
+        plaintext_http_control_url=plaintext_http_control_url,
+        mixed_content_target_url=mixed_content_target_url,
         http1_url=http1_url,
         tls_failure_url=tls_failure_url,
         transcript_url=validate_relay_transcript_url(
@@ -260,9 +355,37 @@ def m5_smoke_url(
     redirect_url = validate_m5_redirect_url(
         relay_ready.redirect_url, https_url=https_url
     )
-    tls_failure_url = validate_m5_https_url(
-        relay_ready.tls_failure_url, description="relay tlsFailureUrl"
+    plaintext_http_control_url = validate_m5_plaintext_http_control_url(
+        relay_ready.plaintext_http_control_url
     )
+    validate_m5_mixed_content_target_url(
+        relay_ready.mixed_content_target_url,
+        plaintext_http_control_url=plaintext_http_control_url,
+    )
+    http1_url = validate_m5_https_url(
+        relay_ready.http1_url,
+        description="relay http1Url",
+        expected_path=M5_HTTP1_CORS_PATH,
+    )
+    tls_failure_url = validate_m5_https_url(
+        relay_ready.tls_failure_url,
+        description="relay tlsFailureUrl",
+        expected_path=M5_TLS_NAME_MISMATCH_PATH,
+    )
+    h2_port = _validated_port(urlsplit(https_url), "relay httpsUrl")
+    h1_port = _validated_port(urlsplit(http1_url), "relay http1Url")
+    plaintext_http_control_port = _validated_port(
+        urlsplit(plaintext_http_control_url), "relay plaintextHttpControlUrl"
+    )
+    tls_failure_port = _validated_port(
+        urlsplit(tls_failure_url), "relay tlsFailureUrl"
+    )
+    if plaintext_http_control_port in (h2_port, h1_port):
+        raise M0Error(
+            "relay plaintextHttpControlUrl must use a distinct fixture port"
+        )
+    if tls_failure_port in (h2_port, h1_port, plaintext_http_control_port):
+        raise M0Error("relay tlsFailureUrl must use a distinct fixture port")
     host, port = server.server_address[:2]
     query = urlencode(
         {
@@ -270,6 +393,7 @@ def m5_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "m5_url": redirect_url,
+            "m5_plaintext_http_control_url": plaintext_http_control_url,
             "m5_tls_failure_url": tls_failure_url,
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -398,9 +522,20 @@ def _require_positive_integer(value: object, description: str) -> int:
 
 
 def validate_m5_result(
-    result: dict[str, Any], *, expected_versions: dict[str, str]
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+    relay_ready: RelayReady,
 ) -> None:
-    """Require evidence from Chromium's HTTPS page, not host success alone."""
+    """Require Chromium evidence across plaintext, HTTPS, and TLS phases."""
+
+    plaintext_http_control_url = validate_m5_plaintext_http_control_url(
+        relay_ready.plaintext_http_control_url
+    )
+    mixed_content_target_url = validate_m5_mixed_content_target_url(
+        relay_ready.mixed_content_target_url,
+        plaintext_http_control_url=plaintext_http_control_url,
+    )
 
     expected = {
         "protocol": 1,
@@ -425,6 +560,73 @@ def validate_m5_result(
     _require_positive_integer(initial_frame.get("id"), "M5 initial frame ID")
     if initial_frame.get("width") != 800 or initial_frame.get("height") != 600:
         raise M0Error("M5 initial frame dimensions do not match the canvas")
+
+    plaintext_http_control_navigation_result = _require_dict(
+        result.get("plaintextHttpControlNavigationResult"),
+        "M5 plaintext HTTP control navigation result",
+    )
+    if plaintext_http_control_navigation_result != {
+        "ok": True,
+        "scheme": "http",
+        "hostname": M5_TEST_HOSTNAME,
+    }:
+        raise M0Error(
+            "M5 plaintext HTTP control navigation result does not identify "
+            "the fixture"
+        )
+    plaintext_http_control_readiness = _require_dict(
+        result.get("plaintextHttpControlReadiness"),
+        "M5 plaintext HTTP control readiness",
+    )
+    for field in (
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "pageReady",
+    ):
+        if plaintext_http_control_readiness.get(field) is not True:
+            raise M0Error(
+                f"M5 plaintext HTTP control readiness field {field} is not true"
+            )
+    if plaintext_http_control_readiness.get("fatalErrors") != []:
+        raise M0Error("M5 plaintext HTTP control readiness reported fatal errors")
+    plaintext_http_control_navigation = _require_dict(
+        plaintext_http_control_readiness.get("navigation"),
+        "M5 plaintext HTTP control navigation",
+    )
+    if plaintext_http_control_navigation != {"committed": True, "scheme": "http"}:
+        raise M0Error("M5 plaintext HTTP control did not commit the HTTP navigation")
+    plaintext_http_control_heartbeat = _require_dict(
+        plaintext_http_control_readiness.get("heartbeat"),
+        "M5 plaintext HTTP control heartbeat",
+    )
+    if (
+        plaintext_http_control_heartbeat.get("anchor")
+        != "m5-plaintext-http-control-navigation-committed"
+    ):
+        raise M0Error(
+            "M5 plaintext HTTP control heartbeat was not anchored to HTTP "
+            "navigation"
+        )
+    plaintext_http_control_probe = _require_dict(
+        plaintext_http_control_readiness.get("pageProbe"),
+        "M5 plaintext HTTP control page probe",
+    )
+    for field, expected_value in {
+        "protocol": 1,
+        "fixture": M5_FIXTURE,
+        "ready": True,
+        "phase": "plaintext-http-control",
+        "plaintextHttpControlDocument": True,
+        "plaintextHttpControlProof": True,
+    }.items():
+        actual = plaintext_http_control_probe.get(field)
+        if type(actual) is not type(expected_value) or actual != expected_value:
+            raise M0Error(
+                f"M5 plaintext HTTP control page probe {field} mismatch: "
+                f"expected {expected_value!r}, got {actual!r}"
+            )
 
     navigation_result = _require_dict(
         result.get("navigationResult"), "M5 navigation result"
@@ -471,6 +673,10 @@ def validate_m5_result(
         "cacheStored": True,
         "cacheRevalidated": True,
         "cspConnectSrcBlocked": True,
+        "phase": "https-fixture",
+        "activeMixedContentBlocked": True,
+        "activeMixedContentErrorName": "TypeError",
+        "activeMixedContentCspAllowed": True,
     }
     for field, expected_value in expected_probe.items():
         actual = page_probe.get(field)
@@ -479,6 +685,11 @@ def validate_m5_result(
                 f"M5 page probe {field} mismatch: expected "
                 f"{expected_value!r}, got {actual!r}"
             )
+    if page_probe.get("activeMixedContentTargetUrl") != mixed_content_target_url:
+        raise M0Error(
+            "M5 page probe activeMixedContentTargetUrl does not match the "
+            "relay fixture target"
+        )
     nonce = page_probe.get("nonce")
     if not isinstance(nonce, str) or not nonce:
         raise M0Error("M5 page probe has no fixture nonce")
@@ -529,15 +740,30 @@ def validate_m5_result(
         if not isinstance(logs.get(stream), list):
             raise M0Error(f"M5 {stream} log is not an array")
     host_logs = logs["host"]
-    for marker in (
+    required_host_markers = (
         "initialize:wisp-configured",
+        "navigation:requested:m5-plaintext-http-control",
+        "navigation:committed:m5-plaintext-http-control",
         "navigation:requested:m5-https",
         "navigation:requested:m5-https-tls-failure",
         "navigation:failed:m5-https:-200",
         "shutdown:complete",
-    ):
+    )
+    for marker in required_host_markers:
         if marker not in host_logs:
             raise M0Error(f"M5 host logs are missing {marker!r}")
+    for marker in required_host_markers[1:]:
+        if host_logs.count(marker) != 1:
+            raise M0Error(f"M5 host logs must contain exactly one {marker!r}")
+    if not (
+        host_logs.index("navigation:requested:m5-plaintext-http-control")
+        < host_logs.index("navigation:committed:m5-plaintext-http-control")
+        < host_logs.index("navigation:requested:m5-https")
+        < host_logs.index("navigation:requested:m5-https-tls-failure")
+        < host_logs.index("navigation:failed:m5-https:-200")
+        < host_logs.index("shutdown:complete")
+    ):
+        raise M0Error("M5 host logs do not preserve the M5 phase order")
     if host_logs[-1:] != ["shutdown:complete"]:
         raise M0Error("M5 host logs do not end with clean shutdown")
 
@@ -599,6 +825,8 @@ def validate_relay_transcript(
         raise M0Error("relay transcript fixture or protocol mismatch")
     if status.get("ready") is not True:
         raise M0Error("relay transcript did not report readiness")
+    if status.get("plaintextHttpControlPhase") != "post-control":
+        raise M0Error("relay plaintext HTTP control phase did not reach post-control")
     for field in (
         "wispSessions",
         "rejectedDestinations",
@@ -615,6 +843,13 @@ def validate_relay_transcript(
         "cspConnectSrcProofs",
         "cspConnectSrcTargetTcpConnections",
         "cspConnectSrcTargetRequests",
+        "plaintextHttpControlTcpConnections",
+        "plaintextHttpControlRequests",
+        "plaintextHttpControlProofs",
+        "mixedContentTargetPostControlWispConnects",
+        "mixedContentTargetPostControlTcpConnections",
+        "mixedContentTargetPostControlRequests",
+        "mixedContentProofs",
         "tlsMismatchTcpConnections",
         "tlsMismatchHttpStreams",
     ):
@@ -645,12 +880,22 @@ def validate_relay_transcript(
         ("cspConnectSrcProofs", 1),
         ("cspConnectSrcTargetTcpConnections", 0),
         ("cspConnectSrcTargetRequests", 0),
+        ("plaintextHttpControlRequests", 1),
+        ("plaintextHttpControlProofs", 1),
+        ("mixedContentTargetPostControlWispConnects", 0),
+        ("mixedContentTargetPostControlTcpConnections", 0),
+        ("mixedContentTargetPostControlRequests", 0),
+        ("mixedContentProofs", 1),
     ):
         if status[field] != expected_value:
             raise M0Error(
                 f"relay {field} mismatch: expected exactly "
                 f"{expected_value}, got {status[field]}"
             )
+    if status["plaintextHttpControlTcpConnections"] < 1:
+        raise M0Error(
+            "relay did not observe the plaintext HTTP control TCP connection"
+        )
     if status["tlsMismatchTcpConnections"] < 1:
         raise M0Error("relay did not observe the TLS-mismatch TCP connection")
     if status["tlsMismatchHttpStreams"] != 0:
@@ -667,13 +912,28 @@ def validate_relay_transcript(
         raise M0Error("relay has no observed WISP destinations")
     h2_port = _validated_port(urlsplit(relay_ready.https_url), "relay httpsUrl")
     h1_port = _validated_port(urlsplit(relay_ready.http1_url), "relay http1Url")
+    plaintext_http_control_port = _validated_port(
+        urlsplit(relay_ready.plaintext_http_control_url),
+        "relay plaintextHttpControlUrl",
+    )
+    mixed_content_target_port = _validated_port(
+        urlsplit(relay_ready.mixed_content_target_url),
+        "relay mixedContentTargetUrl",
+    )
     tls_failure_port = _validated_port(
         urlsplit(relay_ready.tls_failure_url), "relay tlsFailureUrl"
     )
-    if tls_failure_port in (h2_port, h1_port):
+    if mixed_content_target_port != plaintext_http_control_port:
+        raise M0Error(
+            "relay mixed-content target is not on the plaintext control port"
+        )
+    if tls_failure_port in (h2_port, h1_port, plaintext_http_control_port):
         raise M0Error("relay TLS-mismatch destination is not distinct")
+    if plaintext_http_control_port in (h2_port, h1_port):
+        raise M0Error("relay plaintext HTTP control destination is not distinct")
     h2_count = 0
     h1_count = 0
+    plaintext_http_control_count = 0
     tls_failure_count = 0
     for destination in destinations:
         if not isinstance(destination, dict):
@@ -687,11 +947,18 @@ def validate_relay_transcript(
             h2_count += 1
         elif port == h1_port:
             h1_count += 1
+        elif port == plaintext_http_control_port:
+            plaintext_http_control_count += 1
         elif port == tls_failure_port:
             tls_failure_count += 1
         else:
             raise M0Error("relay observed a non-fixture WISP port")
-    if h2_count < 1 or h1_count < 2 or tls_failure_count < 1:
+    if (
+        h2_count < 1
+        or h1_count < 2
+        or plaintext_http_control_count < 1
+        or tls_failure_count < 1
+    ):
         raise M0Error("relay did not observe all fixed M5 destination streams")
 
     transcript = status.get("transcript")
@@ -704,6 +971,10 @@ def validate_relay_transcript(
     for event in (
         "wisp-ready",
         "connect-open",
+        "plaintext-http-control-tcp-connect",
+        "h1-plaintext-http-control",
+        "h1-plaintext-http-control-proof",
+        "plaintext-http-control-phase-complete",
         "h2-page",
         "h2-redirect",
         "h2-redirect-cookie",
@@ -712,6 +983,7 @@ def validate_relay_transcript(
         "h2-cache-store-200",
         "h2-cache-revalidate-304",
         "h2-csp-connect-src-proof",
+        "h2-mixed-content-proof",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
@@ -740,6 +1012,33 @@ def validate_relay_transcript(
             "relay CSP proof event is not between cache revalidation and CORS"
         )
     for event in (
+        "h1-plaintext-http-control",
+        "h1-plaintext-http-control-proof",
+        "plaintext-http-control-phase-complete",
+        "h2-mixed-content-proof",
+    ):
+        if event_names.count(event) != 1:
+            raise M0Error(f"relay transcript must contain exactly one {event!r}")
+    if not (
+        event_names.index("plaintext-http-control-tcp-connect")
+        < event_names.index("h1-plaintext-http-control")
+        < event_names.index("h1-plaintext-http-control-proof")
+        < event_names.index("plaintext-http-control-phase-complete")
+        < event_names.index("h2-redirect")
+    ):
+        raise M0Error(
+            "relay plaintext HTTP control did not complete before HTTPS "
+            "navigation"
+        )
+    if not (
+        event_names.index(csp_proof_event)
+        < event_names.index("h2-mixed-content-proof")
+        < event_names.index("h1-cors")
+    ):
+        raise M0Error(
+            "relay active mixed-content proof is not between CSP and CORS"
+        )
+    for event in (
         "csp-connect-src-target-tcp-connect",
         "h1-csp-connect-src-target-request",
     ):
@@ -747,6 +1046,16 @@ def validate_relay_transcript(
             raise M0Error(
                 f"relay transcript unexpectedly contains forbidden CSP target "
                 f"event {event!r}"
+            )
+    for event in (
+        "mixed-content-target-post-control-wisp-connect",
+        "mixed-content-target-post-control-tcp-connect",
+        "h1-mixed-content-target-post-control-request",
+    ):
+        if event in events:
+            raise M0Error(
+                "relay transcript unexpectedly contains post-control mixed "
+                f"content target event {event!r}"
             )
 
 
@@ -814,6 +1123,12 @@ def write_failure_diagnostics(
                 {
                     "wispEndpoint": relay_ready.wisp_endpoint,
                     "httpsUrl": relay_ready.https_url,
+                    "plaintextHttpControlUrl": (
+                        relay_ready.plaintext_http_control_url
+                    ),
+                    "mixedContentTargetUrl": (
+                        relay_ready.mixed_content_target_url
+                    ),
                 }
                 if relay_ready
                 else None
@@ -989,6 +1304,12 @@ def main() -> int:
                 {
                     "http1Url": relay_ready.http1_url,
                     "httpsUrl": relay_ready.https_url,
+                    "plaintextHttpControlUrl": (
+                        relay_ready.plaintext_http_control_url
+                    ),
+                    "mixedContentTargetUrl": (
+                        relay_ready.mixed_content_target_url
+                    ),
                     "redirectUrl": relay_ready.redirect_url,
                     "tlsFailureUrl": relay_ready.tls_failure_url,
                     "transcriptUrl": relay_ready.transcript_url,
@@ -1036,7 +1357,9 @@ def main() -> int:
         stage = "wait_for_result"
         result = wait_for_result(browser, browser_stderr, result_queue, deadline)
         stage = "validate_runtime_contract"
-        validate_m5_result(result, expected_versions=versions)
+        validate_m5_result(
+            result, expected_versions=versions, relay_ready=relay_ready
+        )
         stage = "fetch_relay_transcript"
         relay_status = fetch_relay_transcript(
             relay_ready.transcript_url,

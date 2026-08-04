@@ -60,6 +60,24 @@ def read_http_headers(connection: socket.socket) -> tuple[str, bytes]:
     return header.decode("latin-1"), remaining
 
 
+def read_http_response(connection: socket.socket) -> tuple[str, bytes]:
+    header, body = read_http_headers(connection)
+    content_length = None
+    for line in header.split("\r\n")[1:]:
+        name, separator, value = line.partition(":")
+        if separator and name.lower() == "content-length":
+            content_length = int(value.strip())
+            break
+    if content_length is None:
+        raise AssertionError("HTTP response omitted Content-Length")
+    while len(body) < content_length:
+        chunk = connection.recv(content_length - len(body))
+        if not chunk:
+            raise AssertionError("HTTP response ended before its body")
+        body += chunk
+    return header, body[:content_length]
+
+
 class BufferedSocket:
     def __init__(self, connection: socket.socket, pending: bytes = b"") -> None:
         self.connection = connection
@@ -183,6 +201,25 @@ class M5WispTestServerTest(unittest.TestCase):
         connection = context.wrap_socket(raw, server_hostname="a.test")
         return connection, parsed
 
+    def _plaintext_http_get(
+        self, url_name: str, *, origin: str | None = None
+    ) -> tuple[str, bytes, object]:
+        parsed = urlsplit(self.metadata[url_name])
+        self.assertEqual(parsed.scheme, "http")
+        self.assertEqual(parsed.hostname, "a.test")
+        self.assertIsNotNone(parsed.port)
+        raw = socket.create_connection(("127.0.0.1", parsed.port), timeout=5)
+        with raw:
+            request = (
+                f"GET {parsed.path} HTTP/1.1\r\n"
+                f"Host: a.test:{parsed.port}\r\n"
+            )
+            if origin is not None:
+                request += f"Origin: {origin}\r\n"
+            raw.sendall((request + "Connection: close\r\n\r\n").encode("ascii"))
+            header, body = read_http_response(raw)
+        return header, body, parsed
+
     def _status(self) -> dict[str, object]:
         with urlopen(self.metadata["transcriptUrl"], timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -294,6 +331,7 @@ try {
       secure: setCookie.includes("Secure"),
     },
     cookieName,
+    finalContentSecurityPolicy: finalPage.headers["content-security-policy"],
     finalHasFixture: finalPage.body.includes("Chromium Wasm M5 network fixture"),
     finalStatus: finalPage.headers[":status"],
     initialBody: rejected.body,
@@ -449,6 +487,22 @@ try {
         self.assertIn("event.blockedURI === cspConnectSrcTargetURL", source)
         self.assertIn("h2-csp-connect-src-proof", source)
         self.assertIn("csp-connect-src-target-tcp-connect", source)
+        self.assertIn("plaintextHttpControlUrl", source)
+        self.assertIn("plaintextHttpControlProofUrl", source)
+        self.assertIn("mixedContentTargetUrl", source)
+        self.assertIn(
+            "window.__chromiumWasmM5PlaintextHttpControlProbe", source
+        )
+        self.assertIn('phase: "plaintext-http-control"', source)
+        self.assertIn('phase: "https-fixture"', source)
+        self.assertIn("activeMixedContentCspAllowed", source)
+        self.assertIn('activeMixedContentErrorName !== "TypeError"', source)
+        self.assertIn("h2-mixed-content-proof", source)
+        self.assertIn(
+            "mixed-content-target-post-control-wisp-connect", source
+        )
+        self.assertNotIn("upgrade-insecure-requests", source)
+        self.assertNotIn("block-all-mixed-content", source)
         self.assertNotIn("BEGIN PRIVATE KEY", source)
         self.assertNotIn("PRIVATE KEY", json.dumps(self.metadata))
 
@@ -474,6 +528,45 @@ try {
         self.assertIsNotNone(tls_failure_url.port)
         self.assertNotEqual(
             tls_failure_url.port, urlsplit(self.metadata["httpsUrl"]).port)
+        plaintext_control_url = urlsplit(
+            self.metadata["plaintextHttpControlUrl"]
+        )
+        plaintext_control_proof_url = urlsplit(
+            self.metadata["plaintextHttpControlProofUrl"]
+        )
+        mixed_content_target_url = urlsplit(
+            self.metadata["mixedContentTargetUrl"]
+        )
+        self.assertEqual(plaintext_control_url.scheme, "http")
+        self.assertEqual(plaintext_control_url.hostname, "a.test")
+        self.assertEqual(
+            plaintext_control_url.path, "/m5/plaintext-control"
+        )
+        self.assertEqual(plaintext_control_proof_url.scheme, "http")
+        self.assertEqual(plaintext_control_proof_url.hostname, "a.test")
+        self.assertEqual(
+            plaintext_control_proof_url.path, "/m5/plaintext-control-proof"
+        )
+        self.assertEqual(mixed_content_target_url.scheme, "http")
+        self.assertEqual(mixed_content_target_url.hostname, "a.test")
+        self.assertEqual(
+            mixed_content_target_url.path, "/m5/mixed-content-target"
+        )
+        self.assertIsNotNone(plaintext_control_url.port)
+        self.assertEqual(
+            plaintext_control_proof_url.port, plaintext_control_url.port
+        )
+        self.assertEqual(
+            mixed_content_target_url.port, plaintext_control_url.port
+        )
+        self.assertNotIn(
+            plaintext_control_url.port,
+            {
+                urlsplit(self.metadata["httpsUrl"]).port,
+                urlsplit(self.metadata["http1Url"]).port,
+                tls_failure_url.port,
+            },
+        )
         csp_target_url = urlsplit(self.metadata["cspConnectSrcTargetUrl"])
         self.assertEqual(csp_target_url.scheme, "https")
         self.assertEqual(csp_target_url.hostname, "a.test")
@@ -484,6 +577,7 @@ try {
             {
                 urlsplit(self.metadata["httpsUrl"]).port,
                 urlsplit(self.metadata["http1Url"]).port,
+                plaintext_control_url.port,
                 tls_failure_url.port,
             },
         )
@@ -539,6 +633,16 @@ try {
         self.assertEqual(status["cspConnectSrcProofs"], 0)
         self.assertEqual(status["cspConnectSrcTargetTcpConnections"], 0)
         self.assertEqual(status["cspConnectSrcTargetRequests"], 0)
+        self.assertEqual(status["mixedContentProofs"], 0)
+        self.assertEqual(status["mixedContentTargetPostControlWispConnects"], 0)
+        self.assertEqual(
+            status["mixedContentTargetPostControlTcpConnections"], 0
+        )
+        self.assertEqual(status["mixedContentTargetPostControlRequests"], 0)
+        self.assertEqual(status["plaintextHttpControlPhase"], "pre-control")
+        self.assertEqual(status["plaintextHttpControlTcpConnections"], 0)
+        self.assertEqual(status["plaintextHttpControlRequests"], 0)
+        self.assertEqual(status["plaintextHttpControlProofs"], 0)
         self.assertEqual(status["redirectRequests"], 0)
         self.assertEqual(status["redirectCookieValidations"], 0)
         self.assertEqual(status["tlsMismatchTcpConnections"], 0)
@@ -582,6 +686,170 @@ try {
         self.assertIn("csp-connect-src-target-tcp-connect", events)
         self.assertIn("h1-csp-connect-src-target-request", events)
 
+    def test_plaintext_http_control_flips_phase_and_target_is_cors_readable(
+        self,
+    ) -> None:
+        page_origin = (
+            f"https://a.test:{urlsplit(self.metadata['httpsUrl']).port}"
+        )
+        rejected_proof_header, rejected_proof_body, _ = (
+            self._plaintext_http_get("plaintextHttpControlProofUrl")
+        )
+        self.assertIn("HTTP/1.1 409", rejected_proof_header)
+        self.assertIn(
+            "X-M5-Plaintext-Control: proof-rejected", rejected_proof_header
+        )
+        self.assertEqual(
+            rejected_proof_body, b"M5_PLAINTEXT_CONTROL_PROOF_REJECTED"
+        )
+        rejected_proof_status = self._status()
+        self.assertEqual(
+            rejected_proof_status["plaintextHttpControlPhase"], "pre-control"
+        )
+        self.assertEqual(
+            rejected_proof_status["plaintextHttpControlRequests"], 0
+        )
+        self.assertEqual(
+            rejected_proof_status["plaintextHttpControlProofs"], 0
+        )
+
+        control_header, control_body, control_url = self._plaintext_http_get(
+            "plaintextHttpControlUrl"
+        )
+        self.assertIn("HTTP/1.1 200", control_header)
+        self.assertIn("Content-Type: text/html; charset=utf-8", control_header)
+        self.assertIn("X-M5-HTTP-Version: http/1.1", control_header)
+        self.assertIn("X-M5-Plaintext-Control: document", control_header)
+        self.assertNotIn("Strict-Transport-Security", control_header)
+        self.assertIn(
+            b"window.__chromiumWasmM5PlaintextHttpControlProbe", control_body
+        )
+        self.assertIn(b'phase: "plaintext-http-control"', control_body)
+        self.assertIn(b"timerTicks: state.timerTicks", control_body)
+        self.assertIn(
+            b"state.timerTicks = Math.min(state.timerTicks + 1, 1000)",
+            control_body,
+        )
+        self.assertIn(b"plaintextHttpControlDocument: true", control_body)
+        self.assertIn(
+            b"plaintextHttpControlProof: state.plaintextHttpControlProof",
+            control_body,
+        )
+        control_script = control_body.split(b"<script>\n", 1)[1].split(
+            b"\n</script>", 1
+        )[0].decode("utf-8")
+        node = node_executable()
+        assert node is not None
+        parsed_control_script = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                "new Function(process.argv[1]);",
+                control_script,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if parsed_control_script.returncode != 0:
+            self.fail(
+                "plaintext control page script did not parse: "
+                f"{parsed_control_script.stderr!r}"
+            )
+
+        before_proof = self._status()
+        self.assertEqual(
+            before_proof["plaintextHttpControlPhase"], "pre-control"
+        )
+        self.assertEqual(before_proof["plaintextHttpControlRequests"], 1)
+        self.assertEqual(before_proof["plaintextHttpControlProofs"], 0)
+        self.assertGreaterEqual(
+            before_proof["plaintextHttpControlTcpConnections"], 1
+        )
+        self.assertEqual(
+            before_proof["mixedContentTargetPostControlWispConnects"], 0
+        )
+        self.assertEqual(
+            before_proof["mixedContentTargetPostControlTcpConnections"], 0
+        )
+        self.assertEqual(
+            before_proof["mixedContentTargetPostControlRequests"], 0
+        )
+
+        proof_header, proof_body, proof_url = self._plaintext_http_get(
+            "plaintextHttpControlProofUrl"
+        )
+        self.assertEqual(proof_url.port, control_url.port)
+        self.assertIn("HTTP/1.1 200", proof_header)
+        self.assertIn("X-M5-Plaintext-Control: proof", proof_header)
+        self.assertEqual(proof_body, b"M5_PLAINTEXT_CONTROL_PROOF")
+
+        after_proof = self._status()
+        self.assertEqual(
+            after_proof["plaintextHttpControlPhase"], "post-control"
+        )
+        self.assertEqual(after_proof["plaintextHttpControlRequests"], 1)
+        self.assertEqual(after_proof["plaintextHttpControlProofs"], 1)
+        self.assertGreaterEqual(
+            after_proof["plaintextHttpControlTcpConnections"], 1
+        )
+        self.assertEqual(
+            after_proof["mixedContentTargetPostControlWispConnects"], 0
+        )
+        events = [
+            entry.get("event")
+            for entry in after_proof["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertIn("h1-plaintext-http-control", events)
+        self.assertIn("h1-plaintext-http-control-proof", events)
+        self.assertIn("plaintext-http-control-phase-complete", events)
+        self.assertLess(
+            events.index("h1-plaintext-http-control"),
+            events.index("h1-plaintext-http-control-proof"),
+        )
+        self.assertLess(
+            events.index("h1-plaintext-http-control-proof"),
+            events.index("plaintext-http-control-phase-complete"),
+        )
+
+        target_header, target_body, target_url = self._plaintext_http_get(
+            "mixedContentTargetUrl", origin=page_origin
+        )
+        self.assertEqual(target_url.port, control_url.port)
+        self.assertIn("HTTP/1.1 200", target_header)
+        self.assertIn(
+            f"Access-Control-Allow-Origin: {page_origin}", target_header
+        )
+        self.assertIn(
+            "X-M5-Mixed-Content-Target: reached", target_header
+        )
+        self.assertEqual(target_body, b"M5_MIXED_CONTENT_TARGET_UNEXPECTED")
+
+        after_target = self._status()
+        self.assertEqual(
+            after_target["mixedContentTargetPostControlWispConnects"], 0
+        )
+        self.assertGreaterEqual(
+            after_target["mixedContentTargetPostControlTcpConnections"], 1
+        )
+        self.assertEqual(
+            after_target["mixedContentTargetPostControlRequests"], 1
+        )
+        target_events = [
+            entry.get("event")
+            for entry in after_target["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertIn(
+            "mixed-content-target-post-control-tcp-connect", target_events
+        )
+        self.assertIn(
+            "h1-mixed-content-target-post-control-request", target_events
+        )
+
     def test_redirect_cookie_gate_rejects_then_allows_the_final_h2_page(
         self,
     ) -> None:
@@ -609,6 +877,22 @@ try {
         )
         self.assertEqual(evidence["finalStatus"], 200)
         self.assertTrue(evidence["finalHasFixture"])
+        expected_mixed_content_origin = (
+            f"http://a.test:{urlsplit(self.metadata['plaintextHttpControlUrl']).port}"
+        )
+        self.assertIn(
+            expected_mixed_content_origin,
+            evidence["finalContentSecurityPolicy"],
+        )
+        self.assertEqual(
+            evidence["finalContentSecurityPolicy"].count("http://"), 1
+        )
+        self.assertNotIn(
+            "upgrade-insecure-requests", evidence["finalContentSecurityPolicy"]
+        )
+        self.assertNotIn(
+            "block-all-mixed-content", evidence["finalContentSecurityPolicy"]
+        )
         self.assertFalse(evidence["statusContainsCookie"])
         self.assertNotIn("m5_redirect=", json.dumps(evidence))
 
@@ -723,6 +1007,16 @@ try {
         self.assertNotIn("tls-failure-http-request", events)
 
     def test_wisp_v21_fragmentation_ping_allowlist_and_transcript(self) -> None:
+        control_header, _, _ = self._plaintext_http_get(
+            "plaintextHttpControlUrl"
+        )
+        self.assertIn("HTTP/1.1 200", control_header)
+        proof_header, proof_body, _ = self._plaintext_http_get(
+            "plaintextHttpControlProofUrl"
+        )
+        self.assertIn("HTTP/1.1 200", proof_header)
+        self.assertEqual(proof_body, b"M5_PLAINTEXT_CONTROL_PROOF")
+
         host, port, endpoint_path = self._endpoint("wispEndpoint")
         raw = socket.create_connection((host, port), timeout=5)
         self.addCleanup(raw.close)
@@ -778,6 +1072,46 @@ try {
         self.assertEqual((packet_type, stream_id), (0x03, 7))
         self.assertEqual(struct.unpack("<I", credit)[0], 64)
 
+        plaintext_control_port = urlsplit(
+            self.metadata["plaintextHttpControlUrl"]
+        ).port
+        assert plaintext_control_port is not None
+        plaintext_control = (
+            bytes([0x01]) +
+            struct.pack("<H", plaintext_control_port) +
+            b"a.test"
+        )
+        send_websocket_frame(
+            raw, 0x02, wisp_packet(0x01, 11, plaintext_control)
+        )
+        finished, opcode, payload = read_websocket_frame(connection)
+        self.assertTrue(finished)
+        self.assertEqual(opcode, 0x02)
+        packet_type, stream_id, credit = parse_wisp_packet(payload)
+        self.assertEqual((packet_type, stream_id), (0x03, 11))
+        self.assertEqual(struct.unpack("<I", credit)[0], 64)
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = self._status()
+            if (
+                status["mixedContentTargetPostControlWispConnects"] >= 1
+                and status["mixedContentTargetPostControlTcpConnections"] >= 1
+            ):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(
+                "post-control plaintext listener did not observe WISP/TCP"
+            )
+        self.assertIn(
+            {"hostname": "a.test", "port": plaintext_control_port},
+            status["requestedDestinations"],
+        )
+        self.assertEqual(
+            status["mixedContentTargetPostControlRequests"], 0
+        )
+
         denied = bytes([0x01]) + struct.pack("<H", h2_port) + b"outside.test"
         send_websocket_frame(raw, 0x02, wisp_packet(0x01, 8, denied))
         finished, opcode, payload = read_websocket_frame(connection)
@@ -826,6 +1160,18 @@ try {
         self.assertIn(
             {"hostname": "a.test", "port": h2_port},
             status["requestedDestinations"])
+        self.assertIn(
+            {"hostname": "a.test", "port": plaintext_control_port},
+            status["requestedDestinations"])
+        self.assertGreaterEqual(
+            status["mixedContentTargetPostControlWispConnects"], 1
+        )
+        self.assertGreaterEqual(
+            status["mixedContentTargetPostControlTcpConnections"], 1
+        )
+        self.assertEqual(
+            status["mixedContentTargetPostControlRequests"], 0
+        )
         self.assertGreaterEqual(status["tlsMismatchTcpConnections"], 1)
         self.assertEqual(status["tlsMismatchHttpStreams"], 0)
         self.assertGreaterEqual(status["rejectedDestinations"], 2)

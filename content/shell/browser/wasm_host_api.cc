@@ -74,6 +74,11 @@ constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr std::string_view kM5NetworkTestHostname = "a.test";
 constexpr std::string_view kM5NetworkTestPathPrefix = "/m5/";
+// The plaintext control is deliberately one exact test URL. It establishes
+// Chromium-to-WISP HTTP transport before the HTTPS fixture proves that an
+// active mixed-content fetch to the same listener is blocked.
+constexpr std::string_view kM5PlaintextHttpControlPath =
+    "/m5/plaintext-control";
 constexpr size_t kMaximumM4TextInputUtf16Units = 64 * 1024;
 constexpr size_t kMaximumM4TextInputUtf8Bytes =
     kMaximumM4TextInputUtf16Units * 3;
@@ -127,9 +132,20 @@ bool IsM5NetworkTestUrl(const GURL& candidate_url) {
          candidate_url.path().starts_with(kM5NetworkTestPathPrefix);
 }
 
+bool IsM5PlaintextHttpControlUrl(const GURL& candidate_url) {
+  return IsWasmM5NetworkTestModeEnabled() && candidate_url.is_valid() &&
+         candidate_url.SchemeIs(url::kHttpScheme) &&
+         candidate_url.host() == kM5NetworkTestHostname &&
+         candidate_url.has_port() &&
+         !candidate_url.has_username() && !candidate_url.has_password() &&
+         !candidate_url.has_query() && !candidate_url.has_ref() &&
+         candidate_url.path() == kM5PlaintextHttpControlPath;
+}
+
 bool IsObservedWasmHostUrl(const GURL& candidate_url) {
   return candidate_url.SchemeIs(url::kDataScheme) ||
-         IsM5NetworkTestUrl(candidate_url);
+         IsM5NetworkTestUrl(candidate_url) ||
+         IsM5PlaintextHttpControlUrl(candidate_url);
 }
 
 extern "C" int chromium_wasm_report_readiness(
@@ -141,6 +157,11 @@ extern "C" int chromium_wasm_report_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_navigation();
 extern "C" int chromium_wasm_report_m5_navigation_error(int net_error);
 extern "C" int chromium_wasm_report_m5_page_probe(const char* probe);
+extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation();
+extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation_error(
+    int net_error);
+extern "C" int chromium_wasm_report_m5_plaintext_http_control_page_probe(
+    const char* probe);
 extern "C" int chromium_wasm_report_fatal(const char* message);
 extern "C" int chromium_wasm_report_ozone_text_input_delivery(
     int action,
@@ -275,6 +296,16 @@ class WasmHostObserver final : public WebContentsObserver {
 
     const GURL& navigation_url = navigation_handle->GetURL();
     const net::Error net_error = navigation_handle->GetNetErrorCode();
+    if (IsM5PlaintextHttpControlUrl(navigation_url) &&
+        net_error != net::OK) {
+      if (chromium_wasm_report_m5_plaintext_http_control_navigation_error(
+              static_cast<int>(net_error)) != 1) {
+        ReportFatal(
+            "host rejected the failed M5 plaintext HTTP control navigation "
+            "report");
+      }
+      return;
+    }
     if (IsM5NetworkTestUrl(navigation_url) && net_error != net::OK) {
       if (chromium_wasm_report_m5_navigation_error(
               static_cast<int>(net_error)) != 1) {
@@ -290,6 +321,13 @@ class WasmHostObserver final : public WebContentsObserver {
       if (chromium_wasm_report_navigation() != 1) {
         ReportFatal("host rejected the committed data navigation report");
       }
+      return;
+    }
+    if (IsM5PlaintextHttpControlUrl(navigation_url) &&
+        chromium_wasm_report_m5_plaintext_http_control_navigation() != 1) {
+      ReportFatal(
+          "host rejected the committed M5 plaintext HTTP control navigation "
+          "report");
       return;
     }
     if (IsM5NetworkTestUrl(navigation_url) &&
@@ -335,11 +373,16 @@ class WasmHostObserver final : public WebContentsObserver {
       return;
     }
 
-    const bool is_m5_network_test =
-        IsM5NetworkTestUrl(web_contents()->GetLastCommittedURL());
+    const GURL& committed_url = web_contents()->GetLastCommittedURL();
+    const bool is_m5_network_test = IsM5NetworkTestUrl(committed_url);
+    const bool is_m5_plaintext_http_control =
+        IsM5PlaintextHttpControlUrl(committed_url);
     probe_in_flight_ = true;
     frame->ExecuteJavaScriptForTests(
-        is_m5_network_test
+        is_m5_plaintext_http_control
+            ? u"window.__chromiumWasmM5PlaintextHttpControlProbe ? "
+              u"window.__chromiumWasmM5PlaintextHttpControlProbe() : ''"
+            : is_m5_network_test
             ? u"window.__chromiumWasmM5Probe ? "
               u"window.__chromiumWasmM5Probe() : ''"
             : u"window.__chromiumWasmM4Probe ? "
@@ -348,12 +391,14 @@ class WasmHostObserver final : public WebContentsObserver {
               u"window.__chromiumWasmM3Probe() : '')",
         base::BindOnce(&WasmHostObserver::OnPageProbe,
                        weak_ptr_factory_.GetWeakPtr(),
-                       navigation_generation_, is_m5_network_test),
+                       navigation_generation_, is_m5_network_test,
+                       is_m5_plaintext_http_control),
         ISOLATED_WORLD_ID_GLOBAL);
   }
 
   void OnPageProbe(uint64_t navigation_generation,
                    bool is_m5_network_test,
+                   bool is_m5_plaintext_http_control,
                    base::Value result) {
     if (navigation_generation != navigation_generation_) {
       return;
@@ -362,11 +407,14 @@ class WasmHostObserver final : public WebContentsObserver {
     if (!result.is_string() || result.GetString().empty()) {
       return;
     }
-    const int accepted = is_m5_network_test
-                             ? chromium_wasm_report_m5_page_probe(
+    const int accepted = is_m5_plaintext_http_control
+                             ? chromium_wasm_report_m5_plaintext_http_control_page_probe(
                                    result.GetString().c_str())
-                             : chromium_wasm_report_page_probe(
-                                   result.GetString().c_str());
+                             : is_m5_network_test
+                                   ? chromium_wasm_report_m5_page_probe(
+                                         result.GetString().c_str())
+                                   : chromium_wasm_report_page_probe(
+                                         result.GetString().c_str());
     if (accepted != 1) {
       ReportFatal("host rejected the deterministic page probe");
       probe_timer_.Stop();
@@ -1023,6 +1071,25 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_url(const char* test_url) {
   }
   GURL url(std::string(test_url, length));
   if (!content::IsM5NetworkTestUrl(url)) {
+    return 0;
+  }
+  return content::PostHostCommand(
+             base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_plaintext_http_control_url(
+    const char* test_url) {
+  if (!test_url || !content::IsWasmM5NetworkTestModeEnabled()) {
+    return 0;
+  }
+  const size_t length = strnlen(test_url, content::kMaximumDataUrlBytes + 1);
+  if (length == 0 || length > content::kMaximumDataUrlBytes) {
+    return 0;
+  }
+  GURL url(std::string(test_url, length));
+  if (!content::IsM5PlaintextHttpControlUrl(url)) {
     return 0;
   }
   return content::PostHostCommand(

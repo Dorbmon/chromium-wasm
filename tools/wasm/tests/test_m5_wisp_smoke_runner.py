@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -36,6 +37,12 @@ RELAY_READY_LINE = json.dumps(
         "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
         "httpsUrl": "https://a.test:4443/m5/",
         "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
+        "plaintextHttpControlUrl": (
+            "http://a.test:4446/m5/plaintext-control"
+        ),
+        "mixedContentTargetUrl": (
+            "http://a.test:4446/m5/mixed-content-target"
+        ),
         "http1Url": "https://a.test:4444/m5/cors-resource",
         "tlsFailureUrl": "https://a.test:4445/m5/tls-name-mismatch",
         "transcriptUrl": "http://127.0.0.1:40123/status",
@@ -62,6 +69,11 @@ def passing_result() -> dict[str, object]:
             "height": 600,
             "timestampMs": 1,
         },
+        "plaintextHttpControlNavigationResult": {
+            "ok": True,
+            "scheme": "http",
+            "hostname": "a.test",
+        },
         "navigationResult": {
             "ok": True,
             "scheme": "https",
@@ -71,6 +83,29 @@ def passing_result() -> dict[str, object]:
             "ok": True,
             "scheme": "https",
             "hostname": "a.test",
+        },
+        "plaintextHttpControlReadiness": {
+            "baseReady": True,
+            "runtimeInitialized": True,
+            "shellReady": True,
+            "surfaceReady": True,
+            "navigationCommitted": True,
+            "firstVisuallyNonEmptyPaint": True,
+            "pageReady": True,
+            "fatalErrors": [],
+            "navigation": {"committed": True, "scheme": "http"},
+            "heartbeat": {
+                "anchor": "m5-plaintext-http-control-navigation-committed",
+                "elapsedMs": 10,
+            },
+            "pageProbe": {
+                "protocol": 1,
+                "fixture": "chromium-wasm-m5-network-v1",
+                "ready": True,
+                "phase": "plaintext-http-control",
+                "plaintextHttpControlDocument": True,
+                "plaintextHttpControlProof": True,
+            },
         },
         "readiness": {
             "baseReady": True,
@@ -99,12 +134,21 @@ def passing_result() -> dict[str, object]:
                 "cacheStored": True,
                 "cacheRevalidated": True,
                 "cspConnectSrcBlocked": True,
+                "phase": "https-fixture",
+                "activeMixedContentBlocked": True,
+                "activeMixedContentTargetUrl": (
+                    "http://a.test:4446/m5/mixed-content-target"
+                ),
+                "activeMixedContentErrorName": "TypeError",
+                "activeMixedContentCspAllowed": True,
                 "nonce": "fixed-test-nonce",
             },
         },
         "logs": {
             "host": [
                 "initialize:wisp-configured",
+                "navigation:requested:m5-plaintext-http-control",
+                "navigation:committed:m5-plaintext-http-control",
                 "navigation:requested:m5-https",
                 "navigation:requested:m5-https-tls-failure",
                 "navigation:failed:m5-https:-200",
@@ -159,10 +203,19 @@ def passing_relay_status() -> dict[str, object]:
         "cspConnectSrcProofs": 1,
         "cspConnectSrcTargetTcpConnections": 0,
         "cspConnectSrcTargetRequests": 0,
+        "plaintextHttpControlPhase": "post-control",
+        "plaintextHttpControlTcpConnections": 1,
+        "plaintextHttpControlRequests": 1,
+        "plaintextHttpControlProofs": 1,
+        "mixedContentTargetPostControlWispConnects": 0,
+        "mixedContentTargetPostControlTcpConnections": 0,
+        "mixedContentTargetPostControlRequests": 0,
+        "mixedContentProofs": 1,
         "tlsMismatchTcpConnections": 1,
         "tlsMismatchHttpStreams": 0,
         "h2Requests": {"count": 2, "protocol": "h2"},
         "requestedDestinations": [
+            {"hostname": "a.test", "port": 4446},
             {"hostname": "a.test", "port": 4443},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
@@ -171,29 +224,57 @@ def passing_relay_status() -> dict[str, object]:
         "transcript": [
             {"sequence": 1, "event": "wisp-ready"},
             {"sequence": 2, "event": "connect-open"},
-            {"sequence": 3, "event": "h2-redirect"},
-            {"sequence": 4, "event": "h2-redirect-cookie"},
-            {"sequence": 5, "event": "h2-page"},
-            {"sequence": 6, "event": "h2-page-cookie"},
-            {"sequence": 7, "event": "h2-resource"},
-            {"sequence": 8, "event": "h2-cache-store-200"},
-            {"sequence": 9, "event": "h2-cache-revalidate-304"},
-            {"sequence": 10, "event": "h2-csp-connect-src-proof"},
-            {"sequence": 11, "event": "h1-cors"},
-            {"sequence": 12, "event": "h1-wss-echo"},
-            {"sequence": 13, "event": "tls-failure-tcp-connect"},
+            {"sequence": 3, "event": "plaintext-http-control-tcp-connect"},
+            {"sequence": 4, "event": "h1-plaintext-http-control"},
+            {"sequence": 5, "event": "h1-plaintext-http-control-proof"},
+            {
+                "sequence": 6,
+                "event": "plaintext-http-control-phase-complete",
+            },
+            {"sequence": 7, "event": "h2-redirect"},
+            {"sequence": 8, "event": "h2-redirect-cookie"},
+            {"sequence": 9, "event": "h2-page"},
+            {"sequence": 10, "event": "h2-page-cookie"},
+            {"sequence": 11, "event": "h2-resource"},
+            {"sequence": 12, "event": "h2-cache-store-200"},
+            {"sequence": 13, "event": "h2-cache-revalidate-304"},
+            {"sequence": 14, "event": "h2-csp-connect-src-proof"},
+            {"sequence": 15, "event": "h2-mixed-content-proof"},
+            {"sequence": 16, "event": "h1-cors"},
+            {"sequence": 17, "event": "h1-wss-echo"},
+            {"sequence": 18, "event": "tls-failure-tcp-connect"},
         ],
     }
 
 
+def parsed_relay_ready() -> run_m5_wisp_smoke.RelayReady:
+    return run_m5_wisp_smoke.parse_relay_ready_line(RELAY_READY_LINE)
+
+
+def validate_passing_result(result: dict[str, object]) -> None:
+    run_m5_wisp_smoke.validate_m5_result(
+        result,
+        expected_versions=VERSIONS,
+        relay_ready=parsed_relay_ready(),
+    )
+
+
 class RelayReadinessTest(unittest.TestCase):
     def test_parses_fixed_loopback_readiness(self) -> None:
-        ready = run_m5_wisp_smoke.parse_relay_ready_line(RELAY_READY_LINE)
+        ready = parsed_relay_ready()
 
         self.assertEqual(ready.wisp_endpoint, "ws://127.0.0.1:40123/wisp/")
         self.assertEqual(ready.https_url, "https://a.test:4443/m5/")
         self.assertEqual(
             ready.redirect_url, "https://a.test:4443/m5/redirect-cookie"
+        )
+        self.assertEqual(
+            ready.plaintext_http_control_url,
+            "http://a.test:4446/m5/plaintext-control",
+        )
+        self.assertEqual(
+            ready.mixed_content_target_url,
+            "http://a.test:4446/m5/mixed-content-target",
         )
         self.assertEqual(ready.http1_url, "https://a.test:4444/m5/cors-resource")
         self.assertEqual(
@@ -210,46 +291,29 @@ class RelayReadinessTest(unittest.TestCase):
             "ws://127.0.0.1:40123/wisp",
         ):
             with self.subTest(endpoint=endpoint):
-                line = json.dumps(
-                    {
-                        "wispEndpoint": endpoint,
-                        "httpsUrl": "https://a.test:4443/m5/network",
-                        "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
-                        "http1Url": "https://a.test:4444/m5/cors-resource",
-                        "tlsFailureUrl": (
-                            "https://a.test:4445/m5/tls-name-mismatch"
-                        ),
-                        "transcriptUrl": "http://127.0.0.1:40123/status",
-                    }
-                )
+                readiness = json.loads(RELAY_READY_LINE)
+                readiness["wispEndpoint"] = endpoint
                 with self.assertRaisesRegex(M0Error, "wispEndpoint"):
-                    run_m5_wisp_smoke.parse_relay_ready_line(line)
+                    run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(readiness))
 
-    def test_rejects_arbitrary_or_query_bearing_navigation_url(self) -> None:
+    def test_rejects_nonexact_or_query_bearing_https_fixture_url(self) -> None:
         for https_url in (
             "https://example.test:4443/m5/network",
             "http://a.test:4443/m5/network",
             "https://a.test:4443/not-m5",
+            "https://a.test:4443/m5/network",
             "https://a.test:4443/m5/network?secret=1",
+            "https://a.test:4443/m5/#",
+            "https://@a.test:4443/m5/",
         ):
             with self.subTest(https_url=https_url):
-                line = json.dumps(
-                    {
-                        "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
-                        "httpsUrl": https_url,
-                        "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
-                        "http1Url": "https://a.test:4444/m5/cors-resource",
-                        "tlsFailureUrl": (
-                            "https://a.test:4445/m5/tls-name-mismatch"
-                        ),
-                        "transcriptUrl": "http://127.0.0.1:40123/status",
-                    }
-                )
+                readiness = json.loads(RELAY_READY_LINE)
+                readiness["httpsUrl"] = https_url
                 with self.assertRaisesRegex(M0Error, "httpsUrl"):
-                    run_m5_wisp_smoke.parse_relay_ready_line(line)
+                    run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(readiness))
 
     def test_m5_query_is_tokenized_and_carries_only_validated_values(self) -> None:
-        ready = run_m5_wisp_smoke.parse_relay_ready_line(RELAY_READY_LINE)
+        ready = parsed_relay_ready()
         url = run_m5_wisp_smoke.m5_smoke_url(
             FakeServer(),
             "result-token",
@@ -270,6 +334,11 @@ class RelayReadinessTest(unittest.TestCase):
         self.assertEqual(query["wisp_endpoint"], [ready.wisp_endpoint])
         self.assertEqual(query["m5_url"], [ready.redirect_url])
         self.assertEqual(
+            query["m5_plaintext_http_control_url"],
+            [ready.plaintext_http_control_url],
+        )
+        self.assertNotIn("m5_mixed_content_target_url", query)
+        self.assertEqual(
             query["m5_tls_failure_url"], [ready.tls_failure_url]
         )
 
@@ -281,20 +350,10 @@ class RelayReadinessTest(unittest.TestCase):
             "http://127.0.0.1:40123/status?token=secret",
         ):
             with self.subTest(transcript_url=transcript_url):
-                line = json.dumps(
-                    {
-                        "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
-                        "httpsUrl": "https://a.test:4443/m5/network",
-                        "redirectUrl": "https://a.test:4443/m5/redirect-cookie",
-                        "http1Url": "https://a.test:4444/m5/cors-resource",
-                        "tlsFailureUrl": (
-                            "https://a.test:4445/m5/tls-name-mismatch"
-                        ),
-                        "transcriptUrl": transcript_url,
-                    }
-                )
+                readiness = json.loads(RELAY_READY_LINE)
+                readiness["transcriptUrl"] = transcript_url
                 with self.assertRaisesRegex(M0Error, "transcriptUrl"):
-                    run_m5_wisp_smoke.parse_relay_ready_line(line)
+                    run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(readiness))
 
     def test_rejects_tls_failure_url_on_a_normal_fixture_port(self) -> None:
         ready = json.loads(RELAY_READY_LINE)
@@ -310,12 +369,138 @@ class RelayReadinessTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "H2 fixture port"):
             run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(ready))
 
+    def test_rejects_nonexact_named_https_fixture_paths(self) -> None:
+        for field, value in (
+            ("redirectUrl", "https://a.test:4443/m5/not-redirect-cookie"),
+            ("http1Url", "https://a.test:4444/m5/not-cors-resource"),
+            (
+                "tlsFailureUrl",
+                "https://a.test:4445/m5/not-tls-name-mismatch",
+            ),
+        ):
+            with self.subTest(field=field, value=value):
+                readiness = json.loads(RELAY_READY_LINE)
+                readiness[field] = value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.parse_relay_ready_line(
+                        json.dumps(readiness)
+                    )
+
+    def test_rejects_nonexact_plaintext_control_or_mixed_target_url(self) -> None:
+        for field, value in (
+            (
+                "plaintextHttpControlUrl",
+                "https://a.test:4446/m5/plaintext-control",
+            ),
+            (
+                "plaintextHttpControlUrl",
+                "http://example.test:4446/m5/plaintext-control",
+            ),
+            (
+                "plaintextHttpControlUrl",
+                "http://a.test:4446/m5/plaintext-control/extra",
+            ),
+            (
+                "plaintextHttpControlUrl",
+                "http://a.test:4446/m5/plaintext-control?query=1",
+            ),
+            (
+                "plaintextHttpControlUrl",
+                "http://@a.test:4446/m5/plaintext-control",
+            ),
+            (
+                "plaintextHttpControlUrl",
+                "http://a.test:4446/m5/plaintext-control?",
+            ),
+            (
+                "mixedContentTargetUrl",
+                "https://a.test:4446/m5/mixed-content-target",
+            ),
+            (
+                "mixedContentTargetUrl",
+                "http://example.test:4446/m5/mixed-content-target",
+            ),
+            (
+                "mixedContentTargetUrl",
+                "http://a.test:4446/m5/plaintext-control",
+            ),
+            (
+                "mixedContentTargetUrl",
+                "http://a.test:4446/m5/mixed-content-target?query=1",
+            ),
+            (
+                "mixedContentTargetUrl",
+                "http://a.test:4446/m5/mixed-content-target#",
+            ),
+        ):
+            with self.subTest(field=field, value=value):
+                readiness = json.loads(RELAY_READY_LINE)
+                readiness[field] = value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.parse_relay_ready_line(
+                        json.dumps(readiness)
+                    )
+
+        readiness = json.loads(RELAY_READY_LINE)
+        readiness["mixedContentTargetUrl"] = (
+            "http://a.test:4447/m5/mixed-content-target"
+        )
+        with self.assertRaisesRegex(M0Error, "plaintext control port"):
+            run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(readiness))
+
+        readiness = json.loads(RELAY_READY_LINE)
+        readiness["plaintextHttpControlUrl"] = (
+            "http://a.test:4443/m5/plaintext-control"
+        )
+        readiness["mixedContentTargetUrl"] = (
+            "http://a.test:4443/m5/mixed-content-target"
+        )
+        with self.assertRaisesRegex(M0Error, "distinct fixture port"):
+            run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(readiness))
+
+    def test_m5_query_revalidates_plaintext_control_and_port_layout(self) -> None:
+        ready = parsed_relay_ready()
+        invalid_control = replace(
+            ready,
+            plaintext_http_control_url="http://a.test:4446/m5/not-plaintext-control",
+        )
+        with self.assertRaisesRegex(M0Error, "plaintextHttpControlUrl"):
+            run_m5_wisp_smoke.m5_smoke_url(
+                FakeServer(), "result-token", VERSIONS, relay_ready=invalid_control
+            )
+
+        invalid_target = replace(
+            ready,
+            mixed_content_target_url="http://a.test:4447/m5/mixed-content-target",
+        )
+        with self.assertRaisesRegex(M0Error, "plaintext control port"):
+            run_m5_wisp_smoke.m5_smoke_url(
+                FakeServer(), "result-token", VERSIONS, relay_ready=invalid_target
+            )
+
+        colliding_control = replace(
+            ready,
+            plaintext_http_control_url="http://a.test:4443/m5/plaintext-control",
+            mixed_content_target_url="http://a.test:4443/m5/mixed-content-target",
+        )
+        with self.assertRaisesRegex(M0Error, "distinct fixture port"):
+            run_m5_wisp_smoke.m5_smoke_url(
+                FakeServer(), "result-token", VERSIONS, relay_ready=colliding_control
+            )
+
+        invalid_tls_path = replace(
+            ready,
+            tls_failure_url="https://a.test:4445/m5/not-tls-name-mismatch",
+        )
+        with self.assertRaisesRegex(M0Error, "tlsFailureUrl"):
+            run_m5_wisp_smoke.m5_smoke_url(
+                FakeServer(), "result-token", VERSIONS, relay_ready=invalid_tls_path
+            )
+
 
 class M5ResultValidationTest(unittest.TestCase):
     def test_accepts_complete_chromium_network_evidence(self) -> None:
-        run_m5_wisp_smoke.validate_m5_result(
-            passing_result(), expected_versions=VERSIONS
-        )
+        validate_passing_result(passing_result())
 
     def test_rejects_missing_page_network_evidence(self) -> None:
         for field in (
@@ -326,6 +511,8 @@ class M5ResultValidationTest(unittest.TestCase):
             "cacheStored",
             "cacheRevalidated",
             "cspConnectSrcBlocked",
+            "activeMixedContentBlocked",
+            "activeMixedContentCspAllowed",
         ):
             with self.subTest(field=field):
                 result = passing_result()
@@ -335,9 +522,122 @@ class M5ResultValidationTest(unittest.TestCase):
                 assert isinstance(page_probe, dict)
                 page_probe[field] = False
                 with self.assertRaisesRegex(M0Error, field):
-                    run_m5_wisp_smoke.validate_m5_result(
-                        result, expected_versions=VERSIONS
-                    )
+                    validate_passing_result(result)
+
+    def test_rejects_invalid_plaintext_control_evidence(self) -> None:
+        result = passing_result()
+        navigation_result = result["plaintextHttpControlNavigationResult"]
+        assert isinstance(navigation_result, dict)
+        navigation_result["scheme"] = "https"
+        with self.assertRaisesRegex(
+            M0Error, "plaintext HTTP control navigation result"
+        ):
+            validate_passing_result(result)
+
+        result = passing_result()
+        control_readiness = result["plaintextHttpControlReadiness"]
+        assert isinstance(control_readiness, dict)
+        control_readiness["navigation"] = {"committed": True, "scheme": "https"}
+        with self.assertRaisesRegex(M0Error, "HTTP navigation"):
+            validate_passing_result(result)
+
+        for field, invalid_value in (
+            ("phase", "https-fixture"),
+            ("plaintextHttpControlDocument", False),
+            ("plaintextHttpControlProof", False),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                result = passing_result()
+                control_readiness = result["plaintextHttpControlReadiness"]
+                assert isinstance(control_readiness, dict)
+                page_probe = control_readiness["pageProbe"]
+                assert isinstance(page_probe, dict)
+                page_probe[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, field):
+                    validate_passing_result(result)
+
+        result = passing_result()
+        control_readiness = result["plaintextHttpControlReadiness"]
+        assert isinstance(control_readiness, dict)
+        control_readiness["heartbeat"] = {"anchor": "m5-https-navigation-committed"}
+        with self.assertRaisesRegex(M0Error, "control heartbeat"):
+            validate_passing_result(result)
+
+    def test_allows_control_before_a_new_visually_nonempty_paint(self) -> None:
+        # The initial shell frame is already proven before the HTTP control
+        # navigation. Content is not required to emit a second FVN paint for
+        # that intermediate document, so transport proof must not depend on
+        # this observer callback.
+        result = passing_result()
+        control_readiness = result["plaintextHttpControlReadiness"]
+        assert isinstance(control_readiness, dict)
+        control_readiness["baseReady"] = False
+        control_readiness["firstVisuallyNonEmptyPaint"] = False
+        validate_passing_result(result)
+
+    def test_rejects_invalid_mixed_content_proof_or_host_phase_order(self) -> None:
+        for field, invalid_value in (
+            ("phase", "plaintext-http-control"),
+            ("activeMixedContentErrorName", "SecurityError"),
+            (
+                "activeMixedContentTargetUrl",
+                "http://a.test:4446/m5/not-the-mixed-content-target",
+            ),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                result = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                page_probe = readiness["pageProbe"]
+                assert isinstance(page_probe, dict)
+                page_probe[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, field):
+                    validate_passing_result(result)
+
+        result = passing_result()
+        logs = result["logs"]
+        assert isinstance(logs, dict)
+        host_logs = logs["host"]
+        assert isinstance(host_logs, list)
+        host_logs.remove("navigation:requested:m5-plaintext-http-control")
+        with self.assertRaisesRegex(
+            M0Error, "navigation:requested:m5-plaintext-http-control"
+        ):
+            validate_passing_result(result)
+
+        for marker in (
+            "navigation:requested:m5-plaintext-http-control",
+            "navigation:committed:m5-plaintext-http-control",
+            "navigation:requested:m5-https",
+            "navigation:requested:m5-https-tls-failure",
+            "navigation:failed:m5-https:-200",
+            "shutdown:complete",
+        ):
+            with self.subTest(duplicate_marker=marker):
+                result = passing_result()
+                logs = result["logs"]
+                assert isinstance(logs, dict)
+                host_logs = logs["host"]
+                assert isinstance(host_logs, list)
+                host_logs.append(marker)
+                with self.assertRaisesRegex(M0Error, marker):
+                    validate_passing_result(result)
+
+        result = passing_result()
+        logs = result["logs"]
+        assert isinstance(logs, dict)
+        host_logs = logs["host"]
+        assert isinstance(host_logs, list)
+        requested_index = host_logs.index(
+            "navigation:requested:m5-plaintext-http-control"
+        )
+        https_index = host_logs.index("navigation:requested:m5-https")
+        host_logs[requested_index], host_logs[https_index] = (
+            host_logs[https_index],
+            host_logs[requested_index],
+        )
+        with self.assertRaisesRegex(M0Error, "M5 phase order"):
+            validate_passing_result(result)
 
     def test_rejects_data_navigation_or_unclean_shutdown(self) -> None:
         result = passing_result()
@@ -345,9 +645,7 @@ class M5ResultValidationTest(unittest.TestCase):
         assert isinstance(readiness, dict)
         readiness["navigation"] = {"committed": True, "scheme": "data"}
         with self.assertRaisesRegex(M0Error, "HTTPS"):
-            run_m5_wisp_smoke.validate_m5_result(
-                result, expected_versions=VERSIONS
-            )
+            validate_passing_result(result)
 
     def test_rejects_unexpected_native_tls_failure(self) -> None:
         result = passing_result()
@@ -357,9 +655,7 @@ class M5ResultValidationTest(unittest.TestCase):
         assert isinstance(navigation, dict)
         navigation["committed"] = True
         with self.assertRaisesRegex(M0Error, "TLS-failure navigation committed"):
-            run_m5_wisp_smoke.validate_m5_result(
-                result, expected_versions=VERSIONS
-            )
+            validate_passing_result(result)
 
         result = passing_result()
         tls_failure_readiness = result["tlsFailureReadiness"]
@@ -368,18 +664,14 @@ class M5ResultValidationTest(unittest.TestCase):
         assert isinstance(navigation, dict)
         navigation["netError"] = -201
         with self.assertRaisesRegex(M0Error, "TLS-failure navigation netError"):
-            run_m5_wisp_smoke.validate_m5_result(
-                result, expected_versions=VERSIONS
-            )
+            validate_passing_result(result)
 
         result = passing_result()
         shutdown = result["shutdown"]
         assert isinstance(shutdown, dict)
         shutdown["runtimeExitCode"] = 1
         with self.assertRaisesRegex(M0Error, "runtimeExitCode"):
-            run_m5_wisp_smoke.validate_m5_result(
-                result, expected_versions=VERSIONS
-            )
+            validate_passing_result(result)
 
 
 class M5RelayTranscriptValidationTest(unittest.TestCase):
@@ -557,6 +849,150 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             run_m5_wisp_smoke.validate_relay_transcript(
                 status, relay_ready=relay_ready
             )
+
+    def test_rejects_invalid_plaintext_control_and_mixed_content_evidence(
+        self,
+    ) -> None:
+        relay_ready = parsed_relay_ready()
+
+        status = passing_relay_status()
+        status["plaintextHttpControlPhase"] = "control"
+        with self.assertRaisesRegex(M0Error, "plaintext HTTP control phase"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for field, actual_value, error in (
+            (
+                "plaintextHttpControlTcpConnections",
+                0,
+                "plaintext HTTP control TCP",
+            ),
+            ("plaintextHttpControlRequests", 0, "plaintextHttpControlRequests"),
+            ("plaintextHttpControlRequests", 2, "plaintextHttpControlRequests"),
+            ("plaintextHttpControlProofs", 0, "plaintextHttpControlProofs"),
+            ("plaintextHttpControlProofs", 2, "plaintextHttpControlProofs"),
+            (
+                "mixedContentTargetPostControlWispConnects",
+                1,
+                "mixedContentTargetPostControlWispConnects",
+            ),
+            (
+                "mixedContentTargetPostControlTcpConnections",
+                1,
+                "mixedContentTargetPostControlTcpConnections",
+            ),
+            (
+                "mixedContentTargetPostControlRequests",
+                1,
+                "mixedContentTargetPostControlRequests",
+            ),
+            ("mixedContentProofs", 0, "mixedContentProofs"),
+            ("mixedContentProofs", 2, "mixedContentProofs"),
+        ):
+            with self.subTest(field=field, actual_value=actual_value):
+                status = passing_relay_status()
+                status[field] = actual_value
+                with self.assertRaisesRegex(M0Error, error):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "plaintext-http-control-tcp-connect",
+            "h1-plaintext-http-control",
+            "h1-plaintext-http-control-proof",
+            "plaintext-http-control-phase-complete",
+            "h2-mixed-content-proof",
+        ):
+            with self.subTest(missing_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "h1-plaintext-http-control",
+            "h1-plaintext-http-control-proof",
+            "plaintext-http-control-phase-complete",
+            "h2-mixed-content-proof",
+        ):
+            with self.subTest(duplicate_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for first_event, second_event, error in (
+            (
+                "h1-plaintext-http-control-proof",
+                "plaintext-http-control-phase-complete",
+                "plaintext HTTP control did not complete before HTTPS navigation",
+            ),
+            (
+                "h2-csp-connect-src-proof",
+                "h2-mixed-content-proof",
+                "active mixed-content proof is not between CSP and CORS",
+            ),
+            (
+                "h2-mixed-content-proof",
+                "h1-cors",
+                "active mixed-content proof is not between CSP and CORS",
+            ),
+        ):
+            with self.subTest(first_event=first_event, second_event=second_event):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                first_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == first_event
+                )
+                second_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == second_event
+                )
+                transcript[first_index], transcript[second_index] = (
+                    transcript[second_index],
+                    transcript[first_index],
+                )
+                with self.assertRaisesRegex(M0Error, error):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "mixed-content-target-post-control-wisp-connect",
+            "mixed-content-target-post-control-tcp-connect",
+            "h1-mixed-content-target-post-control-request",
+        ):
+            with self.subTest(forbidden_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {"sequence": len(transcript) + 1, "event": event_name}
+                )
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
 
     def test_rejects_invalid_csp_connect_src_evidence(self) -> None:
         relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(

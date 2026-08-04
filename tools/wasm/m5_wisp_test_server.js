@@ -642,6 +642,18 @@ function statusSnapshot(context) {
       count: context.stats.h2Requests,
       protocol: "h2",
     },
+    mixedContentProofs: context.stats.mixedContentProofs,
+    mixedContentTargetPostControlRequests:
+      context.stats.mixedContentTargetPostControlRequests,
+    mixedContentTargetPostControlTcpConnections:
+      context.stats.mixedContentTargetPostControlTcpConnections,
+    mixedContentTargetPostControlWispConnects:
+      context.stats.mixedContentTargetPostControlWispConnects,
+    plaintextHttpControlPhase: context.plaintextHttpControlPhase,
+    plaintextHttpControlProofs: context.stats.plaintextHttpControlProofs,
+    plaintextHttpControlRequests: context.stats.plaintextHttpControlRequests,
+    plaintextHttpControlTcpConnections:
+      context.stats.plaintextHttpControlTcpConnections,
     redirectCookieValidations: context.stats.redirectCookieValidations,
     redirectRequests: context.stats.redirectRequests,
     rejectedDestinations: context.stats.rejectedDestinations,
@@ -768,6 +780,17 @@ class WispRelay {
       this._sendPacket(wispClosePacket(streamId, WISP_CLOSE_REASONS.BLOCKED));
       this.context.transcript.add("connect-rejected", {streamId, port});
       return;
+    }
+    // The mixed-content target deliberately shares this exact cleartext
+    // a.test listener with the positive plaintext control. Once that control
+    // has completed, no later WISP CONNECT may reach its port. Count the
+    // attempt before net.connect() so a failed TCP open cannot hide it.
+    if (this.context.plaintextHttpControlPhase === "post-control" &&
+        port === this.context.plaintextHttpControlPort) {
+      incrementBoundedCounter(
+          this.context, "mixedContentTargetPostControlWispConnects");
+      this.context.transcript.add(
+          "mixed-content-target-post-control-wisp-connect", {streamId, port});
     }
 
     const socket = net.connect({
@@ -1041,6 +1064,9 @@ function h2Page(context) {
   const cspConnectSrcTargetUrl =
       `https://${TEST_HOSTNAME}:${context.cspConnectSrcTargetPort}/` +
       "m5/csp-connect-src-target";
+  const mixedContentTargetUrl =
+      "http://" + TEST_HOSTNAME + ":" + context.plaintextHttpControlPort +
+      "/m5/mixed-content-target";
   const webSocketUrl = `wss://${TEST_HOSTNAME}:${context.h1Port}/m5/ws`;
   return `<!doctype html>
 <meta charset="utf-8">
@@ -1059,6 +1085,9 @@ function h2Page(context) {
       new URL("/m5/csp-connect-src-proof", location.href).href;
   const cspConnectSrcTargetURL = ${JSON.stringify(cspConnectSrcTargetUrl)};
   const h2ResourceURL = new URL("/m5/h2-resource", location.href).href;
+  const mixedContentProofURL =
+      new URL("/m5/mixed-content-proof", location.href).href;
+  const mixedContentTargetURL = ${JSON.stringify(mixedContentTargetUrl)};
   const corsURL = ${JSON.stringify(h1CorsUrl)};
   const socketURL = ${JSON.stringify(webSocketUrl)};
   const navigationEntry = performance.getEntriesByType("navigation")[0];
@@ -1071,6 +1100,9 @@ function h2Page(context) {
     altSvcH3Advertised: false,
     cacheStored: false,
     cacheRevalidated: false,
+    activeMixedContentBlocked: false,
+    activeMixedContentCspAllowed: false,
+    activeMixedContentErrorName: "",
     cspConnectSrcBlocked: false,
     corsFetch: false,
     redirected: navigationEntry?.redirectCount === 1,
@@ -1153,6 +1185,37 @@ function h2Page(context) {
     return rejected && await violation;
   }
 
+  async function verifyActiveMixedContentBlock() {
+    let cspConnectSrcViolation = false;
+    const listener = (event) => {
+      if (event.disposition === "enforce" &&
+          event.effectiveDirective === "connect-src" &&
+          event.blockedURI === mixedContentTargetURL) {
+        cspConnectSrcViolation = true;
+      }
+    };
+    document.addEventListener("securitypolicyviolation", listener);
+    let errorName = "";
+    try {
+      await fetch(mixedContentTargetURL, {
+        cache: "no-store",
+        credentials: "omit",
+        mode: "cors",
+      });
+    } catch (error) {
+      errorName = typeof error?.name === "string" ? error.name : "";
+    }
+    // CSP violation delivery is asynchronous. Leave a bounded grace window
+    // for an enforcing connect-src report before treating this as native
+    // mixed-content rejection.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    document.removeEventListener("securitypolicyviolation", listener);
+    return {
+      cspAllowed: !cspConnectSrcViolation,
+      errorName,
+    };
+  }
+
   // The Content Shell observer accepts its deterministic probe through a
   // string-valued JavaScript execution callback. Keep the network work async,
   // but serialize this synchronous snapshot so each periodic observer probe
@@ -1161,11 +1224,16 @@ function h2Page(context) {
     protocol: 1,
     fixture,
     ready: state.complete && state.timerTicks >= 3,
+    phase: "https-fixture",
     timerTicks: state.timerTicks,
     h2Fetch: state.h2Fetch,
     h2Protocol: state.h2Protocol,
     cacheStored: state.cacheStored,
     cacheRevalidated: state.cacheRevalidated,
+    activeMixedContentBlocked: state.activeMixedContentBlocked,
+    activeMixedContentCspAllowed: state.activeMixedContentCspAllowed,
+    activeMixedContentErrorName: state.activeMixedContentErrorName,
+    activeMixedContentTargetUrl: mixedContentTargetURL,
     cspConnectSrcBlocked: state.cspConnectSrcBlocked,
     corsFetch: state.corsFetch,
     redirected: state.redirected,
@@ -1223,6 +1291,23 @@ function h2Page(context) {
         throw new Error("M5 CSP connect-src proof failed");
       }
 
+      const mixedContentResult = await verifyActiveMixedContentBlock();
+      state.activeMixedContentCspAllowed = mixedContentResult.cspAllowed;
+      state.activeMixedContentErrorName = mixedContentResult.errorName;
+      if (!state.activeMixedContentCspAllowed ||
+          state.activeMixedContentErrorName !== "TypeError") {
+        throw new Error("M5 active mixed-content target was not blocked");
+      }
+      const mixedContentProofResponse = await fetch(mixedContentProofURL, {
+        cache: "no-store",
+        credentials: "omit",
+      });
+      if (!mixedContentProofResponse.ok ||
+          await mixedContentProofResponse.text() !== "M5_MIXED_CONTENT_PROOF") {
+        throw new Error("M5 mixed-content proof failed");
+      }
+      state.activeMixedContentBlocked = true;
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -1233,10 +1318,10 @@ function h2Page(context) {
       state.webSocketEcho = await echoNonce();
       state.complete = state.h2Fetch && state.altSvcH3Advertised &&
           state.cacheStored && state.cacheRevalidated &&
-          state.cspConnectSrcBlocked && state.corsFetch && state.redirected &&
-          state.webSocketEcho;
+          state.cspConnectSrcBlocked && state.activeMixedContentBlocked &&
+          state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/CSP/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/CSP/mixed/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -1310,7 +1395,12 @@ function createH2Server(context, tlsMaterial) {
         "content-length": String(body.length),
         "content-type": "text/html; charset=utf-8",
         "content-security-policy":
-          `default-src 'self'; connect-src 'self' https://${TEST_HOSTNAME}:${context.h1Port} wss://${TEST_HOSTNAME}:${context.h1Port}; base-uri 'none'; object-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'`,
+          "default-src 'self'; connect-src 'self' https://" +
+          TEST_HOSTNAME + ":" + context.h1Port + " wss://" +
+          TEST_HOSTNAME + ":" + context.h1Port + " http://" +
+          TEST_HOSTNAME + ":" + context.plaintextHttpControlPort +
+          "; base-uri 'none'; object-src 'none'; script-src 'unsafe-inline'; " +
+          "style-src 'unsafe-inline'",
       }));
       stream.end(body);
       context.transcript.add("h2-page");
@@ -1370,6 +1460,18 @@ function createH2Server(context, tlsMaterial) {
       }));
       stream.end(body);
       context.transcript.add("h2-csp-connect-src-proof");
+      return;
+    }
+    if (requestPath === "/m5/mixed-content-proof") {
+      const body = Buffer.from("M5_MIXED_CONTENT_PROOF");
+      incrementBoundedCounter(context, "mixedContentProofs");
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-length": String(body.length),
+        "content-type": "text/plain; charset=utf-8",
+      }));
+      stream.end(body);
+      context.transcript.add("h2-mixed-content-proof");
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -1479,6 +1581,168 @@ function createCspConnectSrcTargetServer(context, tlsMaterial) {
     socket.once("close", () => context.cspConnectSrcTargetSockets.delete(socket));
     incrementBoundedCounter(context, "cspConnectSrcTargetTcpConnections");
     context.transcript.add("csp-connect-src-target-tcp-connect");
+  });
+  return server;
+}
+
+function writePlaintextHttpResponse(response, status, body, extra = {}) {
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  response.writeHead(status, {
+    "Cache-Control": "no-store",
+    "Connection": "close",
+    "Content-Length": String(bytes.length),
+    "Content-Type": "text/plain; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+    "X-M5-HTTP-Version": "http/1.1",
+    ...extra,
+  });
+  response.end(bytes);
+}
+
+function plaintextHttpControlPage() {
+  return [
+    "<!doctype html>",
+    '<meta charset="utf-8">',
+    "<title>Chromium Wasm M5 plaintext control</title>",
+    "<style>body{font:16px sans-serif;margin:2rem}#m5-status{white-space:pre-wrap}</style>",
+    "<h1>Chromium Wasm M5 plaintext control</h1>",
+    '<p id="m5-status">Proving Chromium plaintext HTTP transport…</p>',
+    "<script>",
+    "(() => {",
+    '  "use strict";',
+    "  const fixture = " + JSON.stringify(FIXTURE) + ";",
+    "  const proofURL =",
+    '      new URL("/m5/plaintext-control-proof", location.href).href;',
+    "  const state = {",
+    "    timerTicks: 0,",
+    "    plaintextHttpControlProof: false,",
+    "    failure: null,",
+    "  };",
+    '  const status = document.querySelector("#m5-status");',
+    "  setInterval(() => {",
+    "    state.timerTicks = Math.min(state.timerTicks + 1, 1000);",
+    "  }, 25);",
+    "",
+    "  window.__chromiumWasmM5PlaintextHttpControlProbe = () => JSON.stringify({",
+    "    protocol: 1,",
+    "    fixture,",
+    "    ready: state.plaintextHttpControlProof && state.timerTicks >= 3,",
+    '    phase: "plaintext-http-control",',
+    "    timerTicks: state.timerTicks,",
+    "    plaintextHttpControlDocument: true,",
+    "    plaintextHttpControlProof: state.plaintextHttpControlProof,",
+    "  });",
+    "",
+    "  (async () => {",
+    "    try {",
+    "      const response = await fetch(proofURL, {",
+    '        cache: "no-store",',
+    '        credentials: "omit",',
+    "      });",
+    "      state.plaintextHttpControlProof = response.ok &&",
+    '          await response.text() === "M5_PLAINTEXT_CONTROL_PROOF";',
+    "      if (!state.plaintextHttpControlProof) {",
+    '        throw new Error("M5 plaintext control proof failed");',
+    "      }",
+    '      status.textContent = "Chromium plaintext HTTP control passed.";',
+    "    } catch (_) {",
+    '      state.failure = "plaintext-control-failed";',
+    '      status.textContent = "Chromium plaintext HTTP control failed.";',
+    "    }",
+    "  })();",
+    "})();",
+    "</script>",
+  ].join("\n");
+}
+
+function createPlaintextHttpControlServer(context) {
+  const server = http.createServer((request, response) => {
+    const pageOrigin = "https://" + TEST_HOSTNAME + ":" + context.h2Port;
+    const isControlDocument = request.method === "GET" &&
+        request.url === "/m5/plaintext-control";
+    const isControlProof = request.method === "GET" &&
+        request.url === "/m5/plaintext-control-proof";
+    const isMixedContentTarget = request.method === "GET" &&
+        request.url === "/m5/mixed-content-target";
+
+    if (isControlDocument) {
+      if (context.plaintextHttpControlPhase !== "pre-control") {
+        writePlaintextHttpResponse(
+            response, 409, "M5_PLAINTEXT_CONTROL_PHASE_COMPLETE", {
+              "X-M5-Plaintext-Control": "phase-complete",
+            });
+        return;
+      }
+      context.plaintextHttpControlDocumentServed = true;
+      incrementBoundedCounter(context, "plaintextHttpControlRequests");
+      context.transcript.add("h1-plaintext-http-control");
+      writePlaintextHttpResponse(response, 200, plaintextHttpControlPage(), {
+        "Content-Security-Policy":
+          "default-src 'self'; base-uri 'none'; object-src 'none'; " +
+          "connect-src 'self'; script-src 'unsafe-inline'; " +
+          "style-src 'unsafe-inline'",
+        "Content-Type": "text/html; charset=utf-8",
+        "X-M5-Plaintext-Control": "document",
+      });
+      return;
+    }
+
+    if (isControlProof) {
+      if (context.plaintextHttpControlPhase !== "pre-control" ||
+          !context.plaintextHttpControlDocumentServed) {
+        writePlaintextHttpResponse(
+            response, 409, "M5_PLAINTEXT_CONTROL_PROOF_REJECTED", {
+              "X-M5-Plaintext-Control": "proof-rejected",
+            });
+        return;
+      }
+      incrementBoundedCounter(context, "plaintextHttpControlProofs");
+      context.transcript.add("h1-plaintext-http-control-proof");
+      context.plaintextHttpControlPhase = "post-control";
+      context.transcript.add("plaintext-http-control-phase-complete");
+      writePlaintextHttpResponse(response, 200, "M5_PLAINTEXT_CONTROL_PROOF", {
+        "X-M5-Plaintext-Control": "proof",
+      });
+      return;
+    }
+
+    if (isMixedContentTarget) {
+      const reachedAfterControl =
+          context.plaintextHttpControlPhase === "post-control";
+      if (reachedAfterControl) {
+        incrementBoundedCounter(
+            context, "mixedContentTargetPostControlRequests");
+        context.transcript.add(
+            "h1-mixed-content-target-post-control-request");
+      }
+      const expectedRequest = request.headers.origin === pageOrigin;
+      writePlaintextHttpResponse(
+          response, expectedRequest ? 200 : 404,
+          expectedRequest ? "M5_MIXED_CONTENT_TARGET_UNEXPECTED" :
+            "M5_MIXED_CONTENT_TARGET_BAD_REQUEST", {
+            "Access-Control-Allow-Origin": pageOrigin,
+            "Vary": "Origin",
+            "X-M5-Mixed-Content-Target": "reached",
+          });
+      return;
+    }
+
+    writePlaintextHttpResponse(response, 404, "M5_PLAINTEXT_HTTP_NOT_FOUND");
+  });
+  server.on("connection", (socket) => {
+    context.plaintextHttpControlSockets.add(socket);
+    socket.once("close", () => context.plaintextHttpControlSockets.delete(socket));
+    if (context.plaintextHttpControlPhase === "pre-control") {
+      incrementBoundedCounter(context, "plaintextHttpControlTcpConnections");
+      context.transcript.add("plaintext-http-control-tcp-connect");
+      return;
+    }
+    // Once the control proof flips phase, no WISP/TCP connection to this same
+    // listener is expected. The listener cannot know a request path yet, so
+    // this catches an attempted mixed-content route before HTTP parsing.
+    incrementBoundedCounter(
+        context, "mixedContentTargetPostControlTcpConnections");
+    context.transcript.add("mixed-content-target-post-control-tcp-connect");
   });
   return server;
 }
@@ -1617,6 +1881,10 @@ async function start(options) {
     h2Port: 0,
     h2Sessions: new Set(),
     hostOrigin: options.hostOrigin,
+    plaintextHttpControlDocumentServed: false,
+    plaintextHttpControlPhase: "pre-control",
+    plaintextHttpControlPort: 0,
+    plaintextHttpControlSockets: new Set(),
     redirectCookieValue: crypto.randomBytes(16).toString("hex"),
     relays: new Set(),
     stats: {
@@ -1629,6 +1897,13 @@ async function start(options) {
       cspConnectSrcTargetRequests: 0,
       cspConnectSrcTargetTcpConnections: 0,
       h2Requests: 0,
+      mixedContentProofs: 0,
+      mixedContentTargetPostControlRequests: 0,
+      mixedContentTargetPostControlTcpConnections: 0,
+      mixedContentTargetPostControlWispConnects: 0,
+      plaintextHttpControlProofs: 0,
+      plaintextHttpControlRequests: 0,
+      plaintextHttpControlTcpConnections: 0,
       redirectCookieValidations: 0,
       redirectRequests: 0,
       rejectedDestinations: 0,
@@ -1649,27 +1924,41 @@ async function start(options) {
   const h1Server = createH1Server(context, tlsMaterial);
   const cspConnectSrcTargetServer =
       createCspConnectSrcTargetServer(context, tlsMaterial);
+  const plaintextHttpControlServer = createPlaintextHttpControlServer(context);
   const tlsFailureServer = createTlsFailureServer(context, tlsFailureMaterial);
   const wispServer = createWispServer(context);
   context.h2Port = await listenLoopback(h2Server);
   context.h1Port = await listenLoopback(h1Server);
   context.cspConnectSrcTargetPort =
       await listenLoopback(cspConnectSrcTargetServer);
+  context.plaintextHttpControlPort =
+      await listenLoopback(plaintextHttpControlServer);
   context.tlsFailurePort = await listenLoopback(tlsFailureServer);
   context.wispPort = await listenLoopback(wispServer);
   context.allowedPorts.add(context.h2Port);
   context.allowedPorts.add(context.h1Port);
   context.allowedPorts.add(context.cspConnectSrcTargetPort);
+  context.allowedPorts.add(context.plaintextHttpControlPort);
   context.allowedPorts.add(context.tlsFailurePort);
   context.transcript.add("fixture-ready", {
     cspConnectSrcTargetPort: context.cspConnectSrcTargetPort,
     h1Port: context.h1Port,
     h2Port: context.h2Port,
+    plaintextHttpControlPort: context.plaintextHttpControlPort,
     tlsFailurePort: context.tlsFailurePort,
   });
 
   const metadata = {
     fixture: FIXTURE,
+    mixedContentTargetUrl:
+      "http://" + TEST_HOSTNAME + ":" + context.plaintextHttpControlPort +
+      "/m5/mixed-content-target",
+    plaintextHttpControlProofUrl:
+      "http://" + TEST_HOSTNAME + ":" + context.plaintextHttpControlPort +
+      "/m5/plaintext-control-proof",
+    plaintextHttpControlUrl:
+      "http://" + TEST_HOSTNAME + ":" + context.plaintextHttpControlPort +
+      "/m5/plaintext-control",
     cspConnectSrcTargetUrl:
       `https://${TEST_HOSTNAME}:${context.cspConnectSrcTargetPort}/` +
       "m5/csp-connect-src-target",
@@ -1715,6 +2004,9 @@ async function start(options) {
     for (const socket of context.cspConnectSrcTargetSockets) {
       socket.destroy();
     }
+    for (const socket of context.plaintextHttpControlSockets) {
+      socket.destroy();
+    }
     for (const session of context.h2Sessions) {
       session.close();
       // A headless outer browser can retain an idle H2 session after its Wasm
@@ -1724,12 +2016,14 @@ async function start(options) {
     }
     h1Server.closeAllConnections?.();
     cspConnectSrcTargetServer.closeAllConnections?.();
+    plaintextHttpControlServer.closeAllConnections?.();
     tlsFailureServer.closeAllConnections?.();
     wispServer.closeAllConnections?.();
     await Promise.all([
       closeServer(h2Server),
       closeServer(h1Server),
       closeServer(cspConnectSrcTargetServer),
+      closeServer(plaintextHttpControlServer),
       closeServer(tlsFailureServer),
       closeServer(wispServer),
     ]);

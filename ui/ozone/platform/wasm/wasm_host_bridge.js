@@ -316,6 +316,48 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // The M5 active mixed-content proof first commits a single exact HTTP
+  // control page. Keep its reports separate from both the HTTPS M5 fixture
+  // and normal data: navigation so it cannot broaden the host boundary.
+  chromium_wasm_report_m5_plaintext_http_control_navigation__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_m5_plaintext_http_control_navigation__proxy: 'sync',
+  chromium_wasm_report_m5_plaintext_http_control_navigation: () => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportM5PlaintextHttpControlNavigation !== 'function') {
+      return 0;
+    }
+    bridge.reportM5PlaintextHttpControlNavigation({
+      protocol: ChromiumWasmHostBridge.version,
+      committed: true,
+      scheme: 'http',
+    });
+    return 1;
+  },
+
+  chromium_wasm_report_m5_plaintext_http_control_navigation_error__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_m5_plaintext_http_control_navigation_error__proxy:
+      'sync',
+  chromium_wasm_report_m5_plaintext_http_control_navigation_error:
+      (netError) => {
+        const bridge = ChromiumWasmHostBridge.bridge();
+        if (!bridge || typeof bridge.reportM5PlaintextHttpControlNavigationError !==
+            'function') {
+          return 0;
+        }
+        bridge.reportM5PlaintextHttpControlNavigationError({
+          protocol: ChromiumWasmHostBridge.version,
+          committed: false,
+          scheme: 'http',
+          netError,
+        });
+        return 1;
+      },
+
   chromium_wasm_report_m5_page_probe__deps: [
     '$ChromiumWasmHostBridge',
     '$UTF8ToString',
@@ -327,6 +369,21 @@ mergeInto(LibraryManager.library, {
       return 0;
     }
     bridge.reportM5PageProbe(UTF8ToString(probe));
+    return 1;
+  },
+
+  chromium_wasm_report_m5_plaintext_http_control_page_probe__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_plaintext_http_control_page_probe__proxy: 'sync',
+  chromium_wasm_report_m5_plaintext_http_control_page_probe: (probe) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportM5PlaintextHttpControlPageProbe !== 'function') {
+      return 0;
+    }
+    bridge.reportM5PlaintextHttpControlPageProbe(UTF8ToString(probe));
     return 1;
   },
 
