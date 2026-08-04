@@ -98,6 +98,24 @@ const WASM_PAGE_BYTES = 64 * 1024;
 const MAXIMUM_WHEEL_DELTA = 0x7fffffff;
 const MAXIMUM_IME_PROXY_TEXT_UNITS = 64 * 1024;
 const MAXIMUM_IME_PROXY_TEXT_BYTES = MAXIMUM_IME_PROXY_TEXT_UNITS * 3;
+const WISP_CONFIGURATION_VERSION = 1;
+const WISP_OPTION_RANGES = Object.freeze({
+  maxStreams: Object.freeze([1, 4096, 1024]),
+  maxHostnameBytes: Object.freeze([1, 253, 253]),
+  maxDataFrameBytes: Object.freeze([1, 1024 * 1024, 16 * 1024]),
+  maxInboundStreamBytes: Object.freeze([1, 64 * 1024 * 1024, 1024 * 1024]),
+  maxOutboundStreamBytes: Object.freeze([1, 64 * 1024 * 1024, 1024 * 1024]),
+  maxInboundBytes: Object.freeze([1, 256 * 1024 * 1024, 16 * 1024 * 1024]),
+  maxOutboundBytes: Object.freeze([1, 256 * 1024 * 1024, 16 * 1024 * 1024]),
+  maxWebSocketBufferedBytes: Object.freeze([
+    6, 64 * 1024 * 1024, 4 * 1024 * 1024,
+  ]),
+  maxIncomingPacketBytes: Object.freeze([
+    5, 64 * 1024 * 1024, 1024 * 1024 + 5,
+  ]),
+  handshakeTimeoutMs: Object.freeze([1000, 120 * 1000, 15 * 1000]),
+  streamOpenTimeoutMs: Object.freeze([1000, 120 * 1000, 30 * 1000]),
+});
 const M4_IME_TEXT_ACTION = Object.freeze({
   setComposition: 1,
   confirmComposition: 2,
@@ -1463,6 +1481,98 @@ function checkInteger(value, description, minimum, maximum) {
       `${description} must be an integer in [${minimum}, ${maximum}]`);
   }
   return value;
+}
+
+function isWispLoopbackHost(hostname) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized.endsWith(".localhost") ||
+      normalized === "::1") {
+    return true;
+  }
+  const octets = normalized.split(".");
+  return octets.length === 4 && octets.every((octet) =>
+    /^\d{1,3}$/.test(octet) && Number(octet) <= 255) &&
+      Number(octets[0]) === 127;
+}
+
+// Copies a deliberately small, credential-free WISP configuration into the
+// Emscripten Module before its factory runs. Web content never receives this
+// object, and the bridge has no endpoint default: omitting |configuration|
+// leaves Chromium networking explicitly unavailable rather than falling back
+// to host fetch().
+export function normalizeWispConfiguration(configuration) {
+  if (configuration === undefined) {
+    return undefined;
+  }
+  if (!configuration || typeof configuration !== "object" ||
+      Array.isArray(configuration)) {
+    throw new Error("WISP configuration must be an object");
+  }
+
+  const allowedFields = new Set([
+    "version",
+    "endpoint",
+    "subprotocol",
+    ...Object.keys(WISP_OPTION_RANGES),
+  ]);
+  for (const field of Object.getOwnPropertyNames(configuration)) {
+    if (!allowedFields.has(field)) {
+      throw new Error(`WISP configuration field is not allowed: ${field}`);
+    }
+  }
+  if (configuration.version !== WISP_CONFIGURATION_VERSION) {
+    throw new Error("WISP configuration version is unsupported");
+  }
+  if (typeof configuration.endpoint !== "string" ||
+      configuration.endpoint.length === 0 ||
+      configuration.endpoint.length > 2048) {
+    throw new Error("WISP endpoint must be a nonempty absolute URL");
+  }
+
+  let endpoint;
+  try {
+    endpoint = new URL(configuration.endpoint);
+  } catch (_) {
+    throw new Error("WISP endpoint is not a valid absolute URL");
+  }
+  if ((endpoint.protocol !== "wss:" &&
+       !(endpoint.protocol === "ws:" && isWispLoopbackHost(endpoint.hostname))) ||
+      endpoint.username || endpoint.password || endpoint.search ||
+      endpoint.hash || !endpoint.pathname.endsWith("/")) {
+    throw new Error("WISP endpoint violates the transport policy");
+  }
+
+  const normalized = {
+    version: WISP_CONFIGURATION_VERSION,
+    endpoint: endpoint.href,
+  };
+  if (Object.hasOwn(configuration, "subprotocol")) {
+    const {subprotocol} = configuration;
+    if (typeof subprotocol !== "string" || subprotocol.length === 0 ||
+        subprotocol.length > 128 ||
+        !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(subprotocol)) {
+      throw new Error("WISP subprotocol is invalid");
+    }
+    normalized.subprotocol = subprotocol;
+  }
+
+  const effectiveOptions = {};
+  for (const [name, [minimum, maximum, fallback]] of
+       Object.entries(WISP_OPTION_RANGES)) {
+    const value = Object.hasOwn(configuration, name) ? configuration[name] :
+      fallback;
+    checkInteger(value, `WISP ${name}`, minimum, maximum);
+    effectiveOptions[name] = value;
+    if (Object.hasOwn(configuration, name)) {
+      normalized[name] = value;
+    }
+  }
+  if (effectiveOptions.maxWebSocketBufferedBytes <
+      effectiveOptions.maxDataFrameBytes + 5) {
+    throw new Error("WISP WebSocket buffer cannot hold one DATA packet");
+  }
+
+  return Object.freeze(normalized);
 }
 
 export class ChromiumWasmM3Host {
@@ -3747,6 +3857,7 @@ export class ChromiumWasmM3Host {
   async initialize({
     modulePath,
     readyTimeoutMs = DEFAULT_RUNTIME_REGISTRATION_TIMEOUT_MS,
+    wisp = undefined,
   }) {
     if (this.#lifecycle !== "new") {
       throw new Error("initialize may only be called once");
@@ -3768,6 +3879,7 @@ export class ChromiumWasmM3Host {
     if (resolvedModule.origin !== location.origin) {
       throw new Error("M3 module must be served from the host origin");
     }
+    const wispConfiguration = normalizeWispConfiguration(wisp);
     this.#lifecycle = "initializing";
     this.#canvas.focus();
     if (document.activeElement !== this.#canvas) {
@@ -3813,6 +3925,10 @@ export class ChromiumWasmM3Host {
       // of independent worker-module requests and their unresolved
       // loading-workers dependencies.
       moduleOptions.mainScriptUrlOrBlob = moduleScriptBlob;
+    }
+    if (wispConfiguration) {
+      moduleOptions.chromiumWasmWisp = wispConfiguration;
+      this.#recordHost("initialize:wisp-configured");
     }
     // Keep the main module on its original URL so Emscripten resolves and
     // streams the large Wasm binary with the same origin and base URL. Only

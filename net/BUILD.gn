@@ -30,6 +30,17 @@ if (is_android) {
 
 enable_built_in_dns = use_blink
 
+# The WISP bridge config is attached only to Wasm final binaries below. It
+# provides a narrow, synchronous proxy ABI used by TCPSocketWasm; WebSocket
+# events stay on the browser JavaScript main thread and never invoke Chromium
+# callbacks.
+config("wisp_wasm_host_bridge") {
+  ldflags = [
+    "--js-library=" +
+        rebase_path("socket/wisp_host_bridge_wasm.js", root_build_dir),
+  ]
+}
+
 # TODO(droger): Support client auth on iOS. See http://crbug.com/145954).
 #
 # Historically this was disabled because client auth required
@@ -1543,7 +1554,11 @@ component("net") {
       "socket/tcp_socket_wasm.h",
       "socket/udp_socket_wasm.cc",
       "socket/udp_socket_wasm.h",
+      "socket/wisp_transport_wasm.cc",
+      "socket/wisp_transport_wasm.h",
     ]
+    inputs = [ "socket/wisp_host_bridge_wasm.js" ]
+    all_dependent_configs = [ ":wisp_wasm_host_bridge" ]
     if (chrome_root_store_supported) {
       sources += [ "cert/internal/system_trust_store_wasm.cc" ]
     }

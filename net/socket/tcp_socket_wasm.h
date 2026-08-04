@@ -9,6 +9,10 @@
 
 #include <memory>
 
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
+#include "base/timer/timer.h"
 #include "net/base/address_family.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/ip_endpoint.h"
@@ -31,9 +35,13 @@ class NetLog;
 struct NetLogSource;
 class SocketTag;
 
-// M3 has no TCP transport. This class keeps the platform-neutral socket graph
-// type-complete while rejecting every operation that would create or use a
-// native TCP socket. M5 replaces this boundary with a WISP stream transport.
+// A Chromium TCP socket backed by a multiplexed host-side WISP connection.
+//
+// The application sequence owns all socket state and callbacks. JavaScript
+// WebSocket events never call into this object: synchronous proxied bridge
+// calls are polled from this sequence instead. That keeps Chromium's socket
+// callback affinity intact while the browser JavaScript main thread remains
+// free to service Web APIs and canvas work.
 class NET_EXPORT TCPSocketWasm {
  public:
   static std::unique_ptr<TCPSocketWasm> Create(
@@ -116,9 +124,62 @@ class NET_EXPORT TCPSocketWasm {
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetLogWithSource net_log_source);
 
+  enum class State {
+    kClosed,
+    kOpen,
+    kConnecting,
+    kConnected,
+    kEof,
+    kFailed,
+  };
+
+  // Starts a short, sequence-affine poll only while a connect, read, or write
+  // callback is outstanding. Host-side queues are bounded, so polling does
+  // not create an unbounded pending work source.
+  void SchedulePoll();
+  void PollWispStream();
+  bool HasPendingOperation() const;
+
+  int ReadNow(IOBuffer* buf, int buf_len);
+  int WriteNow(IOBuffer* buf, int buf_len);
+  int StreamFailureResult();
+  void UpdateStateFromTransport();
+
+  void CompleteConnect(int result);
+  void CompleteRead(int result);
+  void CompleteReadIfReady(int result);
+  void CompleteWrite(int result);
+
+  void BeginConnectLogging(const IPEndPoint& address);
+  void EndConnectLogging(int result);
+  void LogReadResult(IOBuffer* buf, int result);
+  void LogWriteResult(IOBuffer* buf, int result);
+
   std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher_;
   NetLogWithSource net_log_;
   bool logging_multiple_connect_attempts_ = false;
+
+  State state_ = State::kClosed;
+  AddressFamily family_ = ADDRESS_FAMILY_UNSPECIFIED;
+  uint32_t stream_id_ = 0;
+  int stream_error_ = 0;
+  IPEndPoint peer_address_;
+  bool connect_attempt_logged_ = false;
+
+  CompletionOnceCallback connect_callback_;
+
+  scoped_refptr<IOBuffer> read_buffer_;
+  int read_buffer_length_ = 0;
+  CompletionOnceCallback read_callback_;
+  CompletionOnceCallback read_if_ready_callback_;
+
+  scoped_refptr<IOBuffer> write_buffer_;
+  int write_buffer_length_ = 0;
+  CompletionOnceCallback write_callback_;
+
+  base::OneShotTimer poll_timer_;
+  SEQUENCE_CHECKER(sequence_checker_);
+  base::WeakPtrFactory<TCPSocketWasm> weak_ptr_factory_{this};
 };
 
 }  // namespace net
