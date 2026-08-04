@@ -443,6 +443,12 @@ try {
         self.assertIn("CACHE_REVALIDATE_ETAG", source)
         self.assertIn("h2-cache-store-200", source)
         self.assertIn("h2-cache-revalidate-304", source)
+        self.assertIn("cspConnectSrcTargetUrl", source)
+        self.assertIn("securitypolicyviolation", source)
+        self.assertIn('event.disposition === "enforce"', source)
+        self.assertIn("event.blockedURI === cspConnectSrcTargetURL", source)
+        self.assertIn("h2-csp-connect-src-proof", source)
+        self.assertIn("csp-connect-src-target-tcp-connect", source)
         self.assertNotIn("BEGIN PRIVATE KEY", source)
         self.assertNotIn("PRIVATE KEY", json.dumps(self.metadata))
 
@@ -468,6 +474,19 @@ try {
         self.assertIsNotNone(tls_failure_url.port)
         self.assertNotEqual(
             tls_failure_url.port, urlsplit(self.metadata["httpsUrl"]).port)
+        csp_target_url = urlsplit(self.metadata["cspConnectSrcTargetUrl"])
+        self.assertEqual(csp_target_url.scheme, "https")
+        self.assertEqual(csp_target_url.hostname, "a.test")
+        self.assertEqual(csp_target_url.path, "/m5/csp-connect-src-target")
+        self.assertIsNotNone(csp_target_url.port)
+        self.assertNotIn(
+            csp_target_url.port,
+            {
+                urlsplit(self.metadata["httpsUrl"]).port,
+                urlsplit(self.metadata["http1Url"]).port,
+                tls_failure_url.port,
+            },
+        )
         self.assertEqual(self.metadata["statusUrl"], self.metadata["transcriptUrl"])
 
         h1_connection, h1_url = self._tls_connection("http1Url")
@@ -517,6 +536,9 @@ try {
         self.assertEqual(status["cacheConditionalRequests"], 0)
         self.assertEqual(status["cacheNotModified304s"], 0)
         self.assertEqual(status["cacheUnexpectedRequests"], 0)
+        self.assertEqual(status["cspConnectSrcProofs"], 0)
+        self.assertEqual(status["cspConnectSrcTargetTcpConnections"], 0)
+        self.assertEqual(status["cspConnectSrcTargetRequests"], 0)
         self.assertEqual(status["redirectRequests"], 0)
         self.assertEqual(status["redirectCookieValidations"], 0)
         self.assertEqual(status["tlsMismatchTcpConnections"], 0)
@@ -524,6 +546,41 @@ try {
         self.assertEqual(status["relayErrors"], 0)
         self.assertNotIn("m5_redirect=", json.dumps(status))
         self.assertNotIn("PRIVATE KEY", json.dumps(status))
+
+    def test_csp_connect_src_target_is_tls_and_cors_readable(self) -> None:
+        connection, target_url = self._tls_connection("cspConnectSrcTargetUrl")
+        expected_body = b"M5_CSP_CONNECT_SRC_TARGET_UNEXPECTED"
+        page_origin = (
+            f"https://a.test:{urlsplit(self.metadata['httpsUrl']).port}")
+        with connection:
+            connection.sendall(
+                b"GET /m5/csp-connect-src-target HTTP/1.1\r\n" +
+                f"Host: a.test:{target_url.port}\r\n".encode("ascii") +
+                f"Origin: {page_origin}\r\n".encode("ascii") +
+                b"Connection: close\r\n\r\n")
+            header, body = read_http_headers(connection)
+            self.assertIn("HTTP/1.1 200", header)
+            self.assertIn(
+                f"Access-Control-Allow-Origin: {page_origin}", header)
+            self.assertIn("X-M5-CSP-Connect-Src-Target: reached", header)
+            while len(body) < len(expected_body):
+                chunk = connection.recv(len(expected_body) - len(body))
+                if not chunk:
+                    self.fail("CSP target response ended before its body")
+                body += chunk
+        self.assertEqual(body, expected_body)
+
+        status = self._status()
+        self.assertEqual(status["cspConnectSrcTargetTcpConnections"], 1)
+        self.assertEqual(status["cspConnectSrcTargetRequests"], 1)
+        self.assertEqual(status["cspConnectSrcProofs"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertIn("csp-connect-src-target-tcp-connect", events)
+        self.assertIn("h1-csp-connect-src-target-request", events)
 
     def test_redirect_cookie_gate_rejects_then_allows_the_final_h2_page(
         self,

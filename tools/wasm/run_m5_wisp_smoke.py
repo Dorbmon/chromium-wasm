@@ -470,6 +470,7 @@ def validate_m5_result(
         "redirected": True,
         "cacheStored": True,
         "cacheRevalidated": True,
+        "cspConnectSrcBlocked": True,
     }
     for field, expected_value in expected_probe.items():
         actual = page_probe.get(field)
@@ -611,6 +612,9 @@ def validate_relay_transcript(
         "cacheConditionalRequests",
         "cacheNotModified304s",
         "cacheUnexpectedRequests",
+        "cspConnectSrcProofs",
+        "cspConnectSrcTargetTcpConnections",
+        "cspConnectSrcTargetRequests",
         "tlsMismatchTcpConnections",
         "tlsMismatchHttpStreams",
     ):
@@ -638,6 +642,9 @@ def validate_relay_transcript(
         ("cacheConditionalRequests", 1),
         ("cacheNotModified304s", 1),
         ("cacheUnexpectedRequests", 0),
+        ("cspConnectSrcProofs", 1),
+        ("cspConnectSrcTargetTcpConnections", 0),
+        ("cspConnectSrcTargetRequests", 0),
     ):
         if status[field] != expected_value:
             raise M0Error(
@@ -704,6 +711,7 @@ def validate_relay_transcript(
         "h2-resource",
         "h2-cache-store-200",
         "h2-cache-revalidate-304",
+        "h2-csp-connect-src-proof",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
@@ -718,6 +726,28 @@ def validate_relay_transcript(
         "h2-cache-revalidate-304"
     ):
         raise M0Error("relay revalidated the cache before storing the entry")
+    csp_proof_event = "h2-csp-connect-src-proof"
+    if event_names.count(csp_proof_event) != 1:
+        raise M0Error(
+            f"relay transcript must contain exactly one {csp_proof_event!r}"
+        )
+    if not (
+        event_names.index("h2-cache-revalidate-304")
+        < event_names.index(csp_proof_event)
+        < event_names.index("h1-cors")
+    ):
+        raise M0Error(
+            "relay CSP proof event is not between cache revalidation and CORS"
+        )
+    for event in (
+        "csp-connect-src-target-tcp-connect",
+        "h1-csp-connect-src-target-request",
+    ):
+        if event in events:
+            raise M0Error(
+                f"relay transcript unexpectedly contains forbidden CSP target "
+                f"event {event!r}"
+            )
 
 
 def wait_for_result(

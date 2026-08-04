@@ -65,9 +65,9 @@ const MAX_ECHO_MESSAGE_BYTES = 4096;
 const STREAM_PACKET_CREDIT = 64;
 const GLOBAL_PACKET_CREDIT = 1024;
 const MAX_TRANSCRIPT_ENTRIES = 256;
-// Cache-test counters are compact evidence rather than a request log. Keep
-// them saturating so a loopback client cannot make status output unbounded.
-const MAX_CACHE_REVALIDATION_COUNTER = 16;
+// Test counters are compact evidence rather than request logs. Keep them
+// saturating so a loopback client cannot make status output unbounded.
+const MAX_TEST_COUNTER = 16;
 const RELAY_HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 const DESTINATION_IDLE_TIMEOUT_MS = 30 * 1000;
 
@@ -618,9 +618,9 @@ function appendRequestedDestination(context, hostname, port) {
   context.stats.requestedDestinations.push({hostname, port});
 }
 
-function incrementBoundedCacheCounter(context, name) {
+function incrementBoundedCounter(context, name) {
   context.stats[name] = Math.min(
-      context.stats[name] + 1, MAX_CACHE_REVALIDATION_COUNTER);
+      context.stats[name] + 1, MAX_TEST_COUNTER);
 }
 
 function statusSnapshot(context) {
@@ -633,6 +633,10 @@ function statusSnapshot(context) {
     cacheNotModified304s: context.stats.cacheNotModified304s,
     cacheStore200s: context.stats.cacheStore200s,
     cacheUnexpectedRequests: context.stats.cacheUnexpectedRequests,
+    cspConnectSrcProofs: context.stats.cspConnectSrcProofs,
+    cspConnectSrcTargetRequests: context.stats.cspConnectSrcTargetRequests,
+    cspConnectSrcTargetTcpConnections:
+      context.stats.cspConnectSrcTargetTcpConnections,
     corsRequests: context.stats.corsRequests,
     h2Requests: {
       count: context.stats.h2Requests,
@@ -1034,6 +1038,9 @@ function h2Headers(extra = {}) {
 
 function h2Page(context) {
   const h1CorsUrl = `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`;
+  const cspConnectSrcTargetUrl =
+      `https://${TEST_HOSTNAME}:${context.cspConnectSrcTargetPort}/` +
+      "m5/csp-connect-src-target";
   const webSocketUrl = `wss://${TEST_HOSTNAME}:${context.h1Port}/m5/ws`;
   return `<!doctype html>
 <meta charset="utf-8">
@@ -1048,6 +1055,9 @@ function h2Page(context) {
   const cacheRevalidateURL =
       new URL("/m5/cache-revalidate", location.href).href;
   const cacheRevalidateETag = ${JSON.stringify(CACHE_REVALIDATE_ETAG)};
+  const cspConnectSrcProofURL =
+      new URL("/m5/csp-connect-src-proof", location.href).href;
+  const cspConnectSrcTargetURL = ${JSON.stringify(cspConnectSrcTargetUrl)};
   const h2ResourceURL = new URL("/m5/h2-resource", location.href).href;
   const corsURL = ${JSON.stringify(h1CorsUrl)};
   const socketURL = ${JSON.stringify(webSocketUrl)};
@@ -1061,6 +1071,7 @@ function h2Page(context) {
     altSvcH3Advertised: false,
     cacheStored: false,
     cacheRevalidated: false,
+    cspConnectSrcBlocked: false,
     corsFetch: false,
     redirected: navigationEntry?.redirectCount === 1,
     webSocketEcho: false,
@@ -1099,6 +1110,49 @@ function h2Page(context) {
     });
   }
 
+  function isCspConnectSrcTargetViolation(event) {
+    // Fetch connect-src reports retain the complete blocked URL in Chromium.
+    // Match it exactly so a report-only policy or another endpoint on this
+    // loopback target cannot turn a transport error into a CSP pass.
+    return event.disposition === "enforce" &&
+        event.effectiveDirective === "connect-src" &&
+        event.blockedURI === cspConnectSrcTargetURL;
+  }
+
+  function waitForCspConnectSrcTargetViolation() {
+    return new Promise((resolve) => {
+      let timeout = null;
+      const listener = (event) => {
+        if (!isCspConnectSrcTargetViolation(event)) {
+          return;
+        }
+        clearTimeout(timeout);
+        document.removeEventListener("securitypolicyviolation", listener);
+        resolve(true);
+      };
+      document.addEventListener("securitypolicyviolation", listener);
+      timeout = setTimeout(() => {
+        document.removeEventListener("securitypolicyviolation", listener);
+        resolve(false);
+      }, 1000);
+    });
+  }
+
+  async function verifyCspConnectSrcBlock() {
+    const violation = waitForCspConnectSrcTargetViolation();
+    let rejected = false;
+    try {
+      await fetch(cspConnectSrcTargetURL, {
+        cache: "no-store",
+        credentials: "omit",
+        mode: "cors",
+      });
+    } catch (_) {
+      rejected = true;
+    }
+    return rejected && await violation;
+  }
+
   // The Content Shell observer accepts its deterministic probe through a
   // string-valued JavaScript execution callback. Keep the network work async,
   // but serialize this synchronous snapshot so each periodic observer probe
@@ -1112,6 +1166,7 @@ function h2Page(context) {
     h2Protocol: state.h2Protocol,
     cacheStored: state.cacheStored,
     cacheRevalidated: state.cacheRevalidated,
+    cspConnectSrcBlocked: state.cspConnectSrcBlocked,
     corsFetch: state.corsFetch,
     redirected: state.redirected,
     webSocketEcho: state.webSocketEcho,
@@ -1155,6 +1210,19 @@ function h2Page(context) {
           cacheRevalidateText === ${JSON.stringify(CACHE_REVALIDATE_BODY)} &&
           cacheRevalidateResponse.headers.get("etag") === cacheRevalidateETag;
 
+      state.cspConnectSrcBlocked = await verifyCspConnectSrcBlock();
+      if (!state.cspConnectSrcBlocked) {
+        throw new Error("M5 CSP connect-src target was not blocked");
+      }
+      const cspProofResponse = await fetch(cspConnectSrcProofURL, {
+        cache: "no-store",
+        credentials: "omit",
+      });
+      if (!cspProofResponse.ok ||
+          await cspProofResponse.text() !== "M5_CSP_CONNECT_SRC_PROOF") {
+        throw new Error("M5 CSP connect-src proof failed");
+      }
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -1164,10 +1232,11 @@ function h2Page(context) {
           await corsResponse.text() === "M5_CORS_OK";
       state.webSocketEcho = await echoNonce();
       state.complete = state.h2Fetch && state.altSvcH3Advertised &&
-          state.cacheStored && state.cacheRevalidated && state.corsFetch &&
-          state.redirected && state.webSocketEcho;
+          state.cacheStored && state.cacheRevalidated &&
+          state.cspConnectSrcBlocked && state.corsFetch && state.redirected &&
+          state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/CSP/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -1252,7 +1321,7 @@ function createH2Server(context, tlsMaterial) {
       const ifNoneMatch = headers["if-none-match"];
       if (ifNoneMatch === undefined) {
         const body = Buffer.from(CACHE_REVALIDATE_BODY);
-        incrementBoundedCacheCounter(context, "cacheStore200s");
+        incrementBoundedCounter(context, "cacheStore200s");
         stream.respond(h2Headers({
           ":status": 200,
           "cache-control": CACHE_REVALIDATE_CACHE_CONTROL,
@@ -1266,10 +1335,10 @@ function createH2Server(context, tlsMaterial) {
         return;
       }
 
-      incrementBoundedCacheCounter(context, "cacheConditionalRequests");
+      incrementBoundedCounter(context, "cacheConditionalRequests");
       if (ifNoneMatch !== CACHE_REVALIDATE_ETAG) {
         const body = Buffer.from("M5_CACHE_REVALIDATE_UNEXPECTED");
-        incrementBoundedCacheCounter(context, "cacheUnexpectedRequests");
+        incrementBoundedCounter(context, "cacheUnexpectedRequests");
         stream.respond(h2Headers({
           ":status": 400,
           "content-length": String(body.length),
@@ -1280,7 +1349,7 @@ function createH2Server(context, tlsMaterial) {
         return;
       }
 
-      incrementBoundedCacheCounter(context, "cacheNotModified304s");
+      incrementBoundedCounter(context, "cacheNotModified304s");
       stream.respond(h2Headers({
         ":status": 304,
         "cache-control": CACHE_REVALIDATE_CACHE_CONTROL,
@@ -1289,6 +1358,18 @@ function createH2Server(context, tlsMaterial) {
       }));
       stream.end();
       context.transcript.add("h2-cache-revalidate-304");
+      return;
+    }
+    if (requestPath === "/m5/csp-connect-src-proof") {
+      const body = Buffer.from("M5_CSP_CONNECT_SRC_PROOF");
+      incrementBoundedCounter(context, "cspConnectSrcProofs");
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-length": String(body.length),
+        "content-type": "text/plain; charset=utf-8",
+      }));
+      stream.end(body);
+      context.transcript.add("h2-csp-connect-src-proof");
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -1362,6 +1443,42 @@ function createTlsFailureServer(context, tlsMaterial) {
   server.on("session", (session) => {
     context.h2Sessions.add(session);
     session.once("close", () => context.h2Sessions.delete(session));
+  });
+  return server;
+}
+
+function createCspConnectSrcTargetServer(context, tlsMaterial) {
+  // This target has a valid a.test certificate and a CORS-readable response.
+  // It is omitted from the fixture page's connect-src directive, so an M5
+  // browser run must never establish this connection or reach this handler.
+  const server = https.createServer({cert: tlsMaterial, key: tlsMaterial},
+      (request, response) => {
+        const pageOrigin = `https://${TEST_HOSTNAME}:${context.h2Port}`;
+        const expectedRequest = request.method === "GET" &&
+            request.url === "/m5/csp-connect-src-target" &&
+            request.headers.origin === pageOrigin;
+        incrementBoundedCounter(context, "cspConnectSrcTargetRequests");
+        context.transcript.add("h1-csp-connect-src-target-request");
+        const body = expectedRequest
+          ? "M5_CSP_CONNECT_SRC_TARGET_UNEXPECTED"
+          : "M5_CSP_CONNECT_SRC_TARGET_BAD_REQUEST";
+        response.writeHead(expectedRequest ? 200 : 404, {
+          "Access-Control-Allow-Origin": pageOrigin,
+          "Cache-Control": "no-store",
+          "Connection": "close",
+          "Content-Length": Buffer.byteLength(body),
+          "Content-Type": "text/plain; charset=utf-8",
+          "Vary": "Origin",
+          "X-Content-Type-Options": "nosniff",
+          "X-M5-CSP-Connect-Src-Target": "reached",
+        });
+        response.end(body);
+      });
+  server.on("connection", (socket) => {
+    context.cspConnectSrcTargetSockets.add(socket);
+    socket.once("close", () => context.cspConnectSrcTargetSockets.delete(socket));
+    incrementBoundedCounter(context, "cspConnectSrcTargetTcpConnections");
+    context.transcript.add("csp-connect-src-target-tcp-connect");
   });
   return server;
 }
@@ -1493,6 +1610,8 @@ async function start(options) {
   const tlsFailureMaterial = fs.readFileSync(TLS_FAILURE_CERTIFICATE_PATH);
   const context = {
     allowedPorts: new Set(),
+    cspConnectSrcTargetPort: 0,
+    cspConnectSrcTargetSockets: new Set(),
     echoPeers: new Set(),
     h1Port: 0,
     h2Port: 0,
@@ -1506,6 +1625,9 @@ async function start(options) {
       cacheStore200s: 0,
       cacheUnexpectedRequests: 0,
       corsRequests: 0,
+      cspConnectSrcProofs: 0,
+      cspConnectSrcTargetRequests: 0,
+      cspConnectSrcTargetTcpConnections: 0,
       h2Requests: 0,
       redirectCookieValidations: 0,
       redirectRequests: 0,
@@ -1525,16 +1647,22 @@ async function start(options) {
   };
   const h2Server = createH2Server(context, tlsMaterial);
   const h1Server = createH1Server(context, tlsMaterial);
+  const cspConnectSrcTargetServer =
+      createCspConnectSrcTargetServer(context, tlsMaterial);
   const tlsFailureServer = createTlsFailureServer(context, tlsFailureMaterial);
   const wispServer = createWispServer(context);
   context.h2Port = await listenLoopback(h2Server);
   context.h1Port = await listenLoopback(h1Server);
+  context.cspConnectSrcTargetPort =
+      await listenLoopback(cspConnectSrcTargetServer);
   context.tlsFailurePort = await listenLoopback(tlsFailureServer);
   context.wispPort = await listenLoopback(wispServer);
   context.allowedPorts.add(context.h2Port);
   context.allowedPorts.add(context.h1Port);
+  context.allowedPorts.add(context.cspConnectSrcTargetPort);
   context.allowedPorts.add(context.tlsFailurePort);
   context.transcript.add("fixture-ready", {
+    cspConnectSrcTargetPort: context.cspConnectSrcTargetPort,
     h1Port: context.h1Port,
     h2Port: context.h2Port,
     tlsFailurePort: context.tlsFailurePort,
@@ -1542,6 +1670,9 @@ async function start(options) {
 
   const metadata = {
     fixture: FIXTURE,
+    cspConnectSrcTargetUrl:
+      `https://${TEST_HOSTNAME}:${context.cspConnectSrcTargetPort}/` +
+      "m5/csp-connect-src-target",
     http1Url: `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`,
     httpsUrl: `https://${TEST_HOSTNAME}:${context.h2Port}/m5/`,
     protocol: 1,
@@ -1581,6 +1712,9 @@ async function start(options) {
     for (const socket of context.tlsFailureSockets) {
       socket.destroy();
     }
+    for (const socket of context.cspConnectSrcTargetSockets) {
+      socket.destroy();
+    }
     for (const session of context.h2Sessions) {
       session.close();
       // A headless outer browser can retain an idle H2 session after its Wasm
@@ -1589,11 +1723,13 @@ async function start(options) {
       session.destroy();
     }
     h1Server.closeAllConnections?.();
+    cspConnectSrcTargetServer.closeAllConnections?.();
     tlsFailureServer.closeAllConnections?.();
     wispServer.closeAllConnections?.();
     await Promise.all([
       closeServer(h2Server),
       closeServer(h1Server),
+      closeServer(cspConnectSrcTargetServer),
       closeServer(tlsFailureServer),
       closeServer(wispServer),
     ]);

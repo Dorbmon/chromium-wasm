@@ -1366,6 +1366,7 @@ function hasM5NetworkPageProbe(pageProbe) {
       pageProbe?.h2Fetch === true && pageProbe?.h2Protocol === "h2" &&
       pageProbe?.redirected === true &&
       pageProbe?.cacheStored === true && pageProbe?.cacheRevalidated === true &&
+      pageProbe?.cspConnectSrcBlocked === true &&
       pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
       pageProbe?.altSvcH3Advertised === true &&
       typeof pageProbe?.nonce === "string" && pageProbe.nonce.length > 0;
@@ -12070,6 +12071,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       redirect: pageProbe.redirected === true,
       cache:
         pageProbe.cacheStored === true && pageProbe.cacheRevalidated === true,
+      csp: pageProbe.cspConnectSrcBlocked === true,
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
       cors: pageProbe.corsFetch === true,
       webSocket: pageProbe.webSocketEcho === true,

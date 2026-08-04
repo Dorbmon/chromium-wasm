@@ -93,6 +93,7 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
             "pageProbe?.redirected === true",
             "pageProbe?.cacheStored === true",
             "pageProbe?.cacheRevalidated === true",
+            "pageProbe?.cspConnectSrcBlocked === true",
             "pageProbe?.corsFetch === true",
             "pageProbe?.webSocketEcho === true",
             "pageProbe?.altSvcH3Advertised === true",

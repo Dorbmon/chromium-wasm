@@ -98,6 +98,7 @@ def passing_result() -> dict[str, object]:
                 "redirected": True,
                 "cacheStored": True,
                 "cacheRevalidated": True,
+                "cspConnectSrcBlocked": True,
                 "nonce": "fixed-test-nonce",
             },
         },
@@ -155,6 +156,9 @@ def passing_relay_status() -> dict[str, object]:
         "cacheConditionalRequests": 1,
         "cacheNotModified304s": 1,
         "cacheUnexpectedRequests": 0,
+        "cspConnectSrcProofs": 1,
+        "cspConnectSrcTargetTcpConnections": 0,
+        "cspConnectSrcTargetRequests": 0,
         "tlsMismatchTcpConnections": 1,
         "tlsMismatchHttpStreams": 0,
         "h2Requests": {"count": 2, "protocol": "h2"},
@@ -174,9 +178,10 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 7, "event": "h2-resource"},
             {"sequence": 8, "event": "h2-cache-store-200"},
             {"sequence": 9, "event": "h2-cache-revalidate-304"},
-            {"sequence": 10, "event": "h1-cors"},
-            {"sequence": 11, "event": "h1-wss-echo"},
-            {"sequence": 12, "event": "tls-failure-tcp-connect"},
+            {"sequence": 10, "event": "h2-csp-connect-src-proof"},
+            {"sequence": 11, "event": "h1-cors"},
+            {"sequence": 12, "event": "h1-wss-echo"},
+            {"sequence": 13, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -312,7 +317,7 @@ class M5ResultValidationTest(unittest.TestCase):
             passing_result(), expected_versions=VERSIONS
         )
 
-    def test_rejects_missing_http2_or_websocket_evidence(self) -> None:
+    def test_rejects_missing_page_network_evidence(self) -> None:
         for field in (
             "h2Fetch",
             "corsFetch",
@@ -320,6 +325,7 @@ class M5ResultValidationTest(unittest.TestCase):
             "redirected",
             "cacheStored",
             "cacheRevalidated",
+            "cspConnectSrcBlocked",
         ):
             with self.subTest(field=field):
                 result = passing_result()
@@ -551,6 +557,101 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             run_m5_wisp_smoke.validate_relay_transcript(
                 status, relay_ready=relay_ready
             )
+
+    def test_rejects_invalid_csp_connect_src_evidence(self) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        for field, actual_value in (
+            ("cspConnectSrcProofs", 0),
+            ("cspConnectSrcProofs", 2),
+            ("cspConnectSrcTargetTcpConnections", 1),
+            ("cspConnectSrcTargetRequests", 1),
+        ):
+            with self.subTest(field=field, actual_value=actual_value):
+                status = passing_relay_status()
+                status[field] = actual_value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        status["transcript"] = [
+            entry
+            for entry in transcript
+            if entry.get("event") != "h2-csp-connect-src-proof"
+        ]
+        with self.assertRaisesRegex(M0Error, "h2-csp-connect-src-proof"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        transcript.append(
+            {
+                "sequence": len(transcript) + 1,
+                "event": "h2-csp-connect-src-proof",
+            }
+        )
+        with self.assertRaisesRegex(M0Error, "h2-csp-connect-src-proof"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for first_event, second_event in (
+            ("h2-cache-revalidate-304", "h2-csp-connect-src-proof"),
+            ("h2-csp-connect-src-proof", "h1-cors"),
+        ):
+            with self.subTest(
+                first_event=first_event, second_event=second_event
+            ):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                first_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == first_event
+                )
+                second_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == second_event
+                )
+                transcript[first_index], transcript[second_index] = (
+                    transcript[second_index],
+                    transcript[first_index],
+                )
+                with self.assertRaisesRegex(
+                    M0Error, "between cache revalidation and CORS"
+                ):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in (
+            "csp-connect-src-target-tcp-connect",
+            "h1-csp-connect-src-target-request",
+        ):
+            with self.subTest(event_name=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript.append(
+                    {
+                        "sequence": len(transcript) + 1,
+                        "event": event_name,
+                    }
+                )
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
 
 
 class M5ResultEndpointTest(unittest.TestCase):
