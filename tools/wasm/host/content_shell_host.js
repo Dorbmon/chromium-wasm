@@ -18,6 +18,7 @@ const M4_SELECTION_CASE = "ozone_selection_m4";
 const M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4";
 const M4_COPY_PASTE_CASE = "ozone_copy_paste_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
+const M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
@@ -36,6 +37,8 @@ const M4_PRIMARY_PASTE_FIXTURE =
   "chromium-wasm-m4-ozone-primary-paste-v1";
 const M4_COPY_PASTE_FIXTURE = "chromium-wasm-m4-ozone-copy-paste-v1";
 const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
+const M4_FOCUS_RETENTION_FIXTURE =
+  "chromium-wasm-m4-ozone-focus-retention-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
@@ -1467,6 +1470,7 @@ export class ChromiumWasmM3Host {
   #pageProbe = {};
   #ozoneFocusState = null;
   #ozoneFocusReportSequence = 0;
+  #ozoneFocusReports = [];
   #ozoneCursor = null;
   #ozoneCursorReportSequence = 0;
   #ozoneTextInputState = null;
@@ -4035,6 +4039,7 @@ export class ChromiumWasmM3Host {
       ozoneFocusState: this.#ozoneFocusState
         ? clone(this.#ozoneFocusState)
         : null,
+      ozoneFocusReports: clone(this.#ozoneFocusReports),
       ozoneCursor: this.#ozoneCursor ? clone(this.#ozoneCursor) : null,
       ozoneTextInputState: this.#ozoneTextInputState
         ? clone(this.#ozoneTextInputState)
@@ -4255,6 +4260,10 @@ export class ChromiumWasmM3Host {
         keyboardTargetPresent: report.keyboardTargetPresent,
         active: report.active,
       };
+      this.#ozoneFocusReports.push(this.#ozoneFocusState);
+      if (this.#ozoneFocusReports.length > 32) {
+        this.#ozoneFocusReports.shift();
+      }
       this.#recordHost(
         "ozone:focus:" +
         (report.keyboardTargetPresent ? "keyboard-target-present" :
@@ -10876,6 +10885,7 @@ async function runM4OzoneFocusSmokeFromQuery() {
       }
       await delay(50);
     }
+    const pointerAfterFocusLoss = readiness?.pointerInput;
     const keyboard = readiness?.keyboardInput;
     const focus = readiness?.focusInput;
     const focusLoss = focus?.lastQueuedFocusLoss;
@@ -10926,7 +10936,7 @@ async function runM4OzoneFocusSmokeFromQuery() {
       state: "focus-loss-delivered",
       targetX,
       targetY,
-      pointer: clone(pointer),
+      pointer: clone(pointerAfterFocusLoss),
       keyboard: clone(keyboard),
       focus: clone(focus),
       ozoneFocusState: clone(ozoneFocusState),
@@ -10991,7 +11001,7 @@ async function runM4OzoneFocusSmokeFromQuery() {
       canvasFocused: document.activeElement === canvas,
       versions,
       readiness,
-      pointerInput: pointer,
+      pointerInput: pointerAfterFocusLoss,
       keyboardInput: keyboard,
       focusInput: focus,
       ozoneFocusState,
@@ -11049,6 +11059,564 @@ async function runM4OzoneFocusSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneFocusRetentionSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+      1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  const expectedModifiers = {
+    alt: false,
+    control: false,
+    meta: false,
+    shift: false,
+  };
+  const keyQueue = [
+    ["down", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+    ["up", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+  ];
+  const keyTrace = [
+    ["keydown", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+    ["keyup", M4_PRINTABLE_KEY_DOM_CODE, M4_PRINTABLE_KEY_DOM_KEY],
+  ];
+  const textTrace = [
+    ["beforeinput", M4_PRINTABLE_KEY_DOM_KEY],
+    ["input", M4_PRINTABLE_KEY_DOM_KEY],
+  ];
+  const matchesPointerTrace = (pointer, expected) => {
+    const records = pointer?.queuedRecords;
+    return pointer?.receivedCount === expected.length &&
+      pointer?.trustedCount === expected.length &&
+      pointer?.queuedCount === expected.length &&
+      Array.isArray(records) && records.length === expected.length &&
+      expected.every(([type, x, y, button, buttons], index) => {
+        const record = records[index];
+        return record?.sequence === index + 1 && record?.type === type &&
+          record?.trusted === true &&
+          record?.queued === true && record?.canvasFocused === true &&
+          record?.x === x && record?.y === y && record?.button === button &&
+          record?.buttons === buttons &&
+          Number.isSafeInteger(record?.frameIdBefore) &&
+          record.frameIdBefore >= 1;
+      });
+  };
+  const expectedPointerTrace = () => [
+    ["move", editableTargetX, editableTargetY, -1, 0],
+    ["down", editableTargetX, editableTargetY, 0, 1],
+    ["up", editableTargetX, editableTargetY, 0, 0],
+    ["move", retentionTargetX, retentionTargetY, -1, 0],
+  ];
+  const initialPointerTrace = () => expectedPointerTrace().slice(0, 3);
+  const matchesOuterKeyTrace = (keyboard) => {
+    const records = keyboard?.queuedRecords;
+    return Array.isArray(records) && records.length === keyQueue.length &&
+      keyQueue.every(([type, code, key], index) => {
+        const record = records[index];
+        return record?.type === type && record?.code === code &&
+          record?.key === key && record?.trusted === true &&
+          record?.queued === true && record?.repeat === false &&
+          record?.isComposing === false && record?.canvasFocused === true &&
+          record?.pointerActivated === true &&
+          record?.defaultPrevented === true &&
+          JSON.stringify(record?.modifiers) === JSON.stringify(expectedModifiers) &&
+          Number.isSafeInteger(record?.frameIdBefore) &&
+          record.frameIdBefore >= 1;
+      });
+  };
+  const matchesInnerKeyTrace = (trace) =>
+    Array.isArray(trace) && trace.length === keyTrace.length &&
+    keyTrace.every(([type, code, key], index) => {
+      const record = trace[index];
+      return record?.type === type && record?.trusted === true &&
+        record?.code === code && record?.key === key &&
+        record?.repeat === false && record?.isComposing === false &&
+        record?.defaultPrevented === false &&
+        record?.targetId === "editable-target";
+    });
+  const matchesTextTrace = (trace) =>
+    Array.isArray(trace) && trace.length === textTrace.length &&
+    textTrace.every(([type, data], index) => {
+      const record = trace[index];
+      return record?.type === type && record?.trusted === true &&
+        record?.inputType === "insertText" && record?.data === data &&
+        record?.isComposing === false &&
+        record?.targetId === "editable-target";
+    });
+  const hasNoComposition = (retention) => {
+    const counts = retention?.compositionEventCounts;
+    return counts?.compositionstart === 0 && counts?.compositionupdate === 0 &&
+      counts?.compositionend === 0;
+  };
+  let host = null;
+  let result;
+  let readiness = null;
+  let editableTargetX = null;
+  let editableTargetY = null;
+  let retentionTargetX = null;
+  let retentionTargetY = null;
+  let retentionFocusSequenceBefore = null;
+  let retentionFocusSequenceAfter = null;
+  let retentionOzoneFocusReports = null;
+
+  try {
+    if (parameters.get("case") !== M4_FOCUS_RETENTION_CASE) {
+      throw new Error("M4 focus-retention case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 focus-retention result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M4_FOCUS_RETENTION_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 focus-retention base readiness timeout: " +
+        JSON.stringify(readiness));
+    }
+    editableTargetX = Number(readiness.pageProbe.editableTargetX);
+    editableTargetY = Number(readiness.pageProbe.editableTargetY);
+    retentionTargetX = Number(readiness.pageProbe.retentionTargetX);
+    retentionTargetY = Number(readiness.pageProbe.retentionTargetY);
+    checkInteger(
+        editableTargetX, "M4 focus-retention editable target x", 0,
+        DEFAULT_WIDTH - 1);
+    checkInteger(
+        editableTargetY, "M4 focus-retention editable target y", 0,
+        DEFAULT_HEIGHT - 1);
+    checkInteger(
+        retentionTargetX, "M4 focus-retention inert target x", 0,
+        DEFAULT_WIDTH - 1);
+    checkInteger(
+        retentionTargetY, "M4 focus-retention inert target y", 0,
+        DEFAULT_HEIGHT - 1);
+    const pointerListeners = host.enableM4PointerInput();
+    const keyboardListeners = host.enableM4KeyboardInput();
+    const focusListeners = host.enableM4FocusInput();
+    window.__chromiumWasmM4FocusRetentionState = {
+      state: "awaiting-dom-focus-retention-activation",
+      editableTargetX,
+      editableTargetY,
+      retentionTargetX,
+      retentionTargetY,
+      pointerListeners,
+      keyboardListeners,
+      focusListeners,
+    };
+    statusElement.textContent =
+      "M4 ready for trusted canvas editable-focus activation";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const pageProbe = readiness.pageProbe;
+      const retention = pageProbe?.focusRetention;
+      const ozoneFocusState = readiness.ozoneFocusState;
+      if (
+        pointer?.queuedRecords?.length === 3 &&
+        matchesPointerTrace(pointer, initialPointerTrace()) &&
+        retention?.editableActivationCount === 1 &&
+        retention?.editableClickTrusted === true &&
+        retention?.editableFocusCount === 1 &&
+        retention?.editableFocusTrusted === true &&
+        retention?.editableBlurCount === 0 &&
+        retention?.windowBlurCount === 0 &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.documentHasFocus === true &&
+        ozoneFocusState?.keyboardTargetPresent === true &&
+        ozoneFocusState?.active === true &&
+        readiness.frame?.id > pointer.queuedRecords[1].frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const initialPointer = readiness?.pointerInput;
+    const initialPageProbe = readiness?.pageProbe;
+    const initialRetention = initialPageProbe?.focusRetention;
+    const initialFocus = readiness?.focusInput;
+    const initialOzoneFocusState = readiness?.ozoneFocusState;
+    const initialOzoneFocusReports = readiness?.ozoneFocusReports;
+    if (
+      !readiness ||
+      !matchesPointerTrace(initialPointer, initialPointerTrace()) ||
+      initialRetention?.editableActivationCount !== 1 ||
+      initialRetention?.editableClickTrusted !== true ||
+      initialRetention?.editableFocusCount !== 1 ||
+      initialRetention?.editableFocusTrusted !== true ||
+      initialRetention?.editableBlurCount !== 0 ||
+      initialRetention?.windowBlurCount !== 0 ||
+      initialPageProbe?.activeElementId !== "editable-target" ||
+      initialPageProbe?.documentHasFocus !== true ||
+      initialFocus?.receivedCount !== 1 ||
+      initialFocus?.trustedCount !== 1 ||
+      initialFocus?.queuedCount !== 1 ||
+      initialFocus?.hostWindowActive !== true ||
+      initialFocus?.lastQueuedFocusLoss !== null ||
+      initialOzoneFocusState?.keyboardTargetPresent !== true ||
+      initialOzoneFocusState?.active !== true ||
+      !Number.isSafeInteger(initialOzoneFocusState?.sequence) ||
+      !Array.isArray(initialOzoneFocusReports) ||
+      initialOzoneFocusReports.length === 0 ||
+      initialOzoneFocusReports.at(-1)?.sequence !==
+        initialOzoneFocusState.sequence ||
+      !(readiness.frame?.id > initialPointer?.queuedRecords?.[1]?.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone focus-retention activation timeout: " +
+        JSON.stringify(readiness));
+    }
+    retentionFocusSequenceBefore = initialOzoneFocusState.sequence;
+    window.__chromiumWasmM4FocusRetentionState = {
+      state: "awaiting-dom-focus-retention-pointer",
+      editableTargetX,
+      editableTargetY,
+      retentionTargetX,
+      retentionTargetY,
+      retentionFocusSequenceBefore,
+      pointer: clone(initialPointer),
+      focus: clone(readiness.focusInput),
+      ozoneFocusState: clone(initialOzoneFocusState),
+    };
+    statusElement.textContent =
+      "M4 ready for trusted inert canvas pointer move retaining Blink focus";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const focus = readiness.focusInput;
+      const pageProbe = readiness.pageProbe;
+      const retention = pageProbe?.focusRetention;
+      const ozoneFocusState = readiness.ozoneFocusState;
+      const reportsAfter = Array.isArray(readiness.ozoneFocusReports)
+        ? readiness.ozoneFocusReports.filter(
+            (report) => report?.sequence > retentionFocusSequenceBefore)
+        : null;
+      if (
+        pointer?.queuedRecords?.length === 4 &&
+        matchesPointerTrace(pointer, expectedPointerTrace()) &&
+        retention?.retentionPointerMoveCount === 1 &&
+        retention?.retentionPointerMoveTrusted === true &&
+        retention?.editableBlurCount === 0 &&
+        retention?.windowBlurCount === 0 &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.documentHasFocus === true &&
+        focus?.hostWindowActive === true &&
+        focus?.receivedCount === 1 &&
+        focus?.trustedCount === 1 &&
+        focus?.queuedCount === 1 &&
+        focus?.lastQueuedFocusLoss === null &&
+        ozoneFocusState?.sequence === retentionFocusSequenceBefore &&
+        ozoneFocusState?.keyboardTargetPresent === true &&
+        ozoneFocusState?.active === true &&
+        reportsAfter?.length === 0
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointerAfterRetention = readiness?.pointerInput;
+    const focusAfterRetention = readiness?.focusInput;
+    const pageAfterRetention = readiness?.pageProbe;
+    const retentionAfterPointer = pageAfterRetention?.focusRetention;
+    const ozoneAfterRetention = readiness?.ozoneFocusState;
+    const reportsAfterRetention = Array.isArray(readiness?.ozoneFocusReports)
+      ? readiness.ozoneFocusReports.filter(
+          (report) => report?.sequence > retentionFocusSequenceBefore)
+      : null;
+    if (
+      !readiness ||
+      !matchesPointerTrace(pointerAfterRetention, expectedPointerTrace()) ||
+      retentionAfterPointer?.retentionPointerMoveCount !== 1 ||
+      retentionAfterPointer?.retentionPointerMoveTrusted !== true ||
+      retentionAfterPointer?.editableBlurCount !== 0 ||
+      retentionAfterPointer?.windowBlurCount !== 0 ||
+      pageAfterRetention?.activeElementId !== "editable-target" ||
+      pageAfterRetention?.documentHasFocus !== true ||
+      focusAfterRetention?.hostWindowActive !== true ||
+      focusAfterRetention?.receivedCount !== 1 ||
+      focusAfterRetention?.trustedCount !== 1 ||
+      focusAfterRetention?.queuedCount !== 1 ||
+      focusAfterRetention?.lastQueuedFocusLoss !== null ||
+      ozoneAfterRetention?.sequence !== retentionFocusSequenceBefore ||
+      ozoneAfterRetention?.keyboardTargetPresent !== true ||
+      ozoneAfterRetention?.active !== true ||
+      !Array.isArray(reportsAfterRetention) ||
+      reportsAfterRetention.length !== 0
+    ) {
+      throw new Error(
+        "M4 trusted Ozone focus-retention pointer timeout: " +
+        JSON.stringify(readiness));
+    }
+    retentionFocusSequenceAfter = ozoneAfterRetention.sequence;
+    retentionOzoneFocusReports = clone(reportsAfterRetention);
+    window.__chromiumWasmM4FocusRetentionState = {
+      state: "awaiting-dom-focus-retention-key",
+      editableTargetX,
+      editableTargetY,
+      retentionTargetX,
+      retentionTargetY,
+      retentionFocusSequenceBefore,
+      retentionFocusSequenceAfter,
+      pointer: clone(pointerAfterRetention),
+      focus: clone(focusAfterRetention),
+      ozoneFocusState: clone(ozoneAfterRetention),
+    };
+    statusElement.textContent =
+      "M4 ready for trusted raw KeyA after retained focus";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const keyboard = readiness.keyboardInput;
+      const pageProbe = readiness.pageProbe;
+      const retention = pageProbe?.focusRetention;
+      if (
+        keyboard?.receivedCount === 2 &&
+        keyboard?.trustedCount === 2 &&
+        keyboard?.queuedCount === 2 &&
+        keyboard?.activated === true &&
+        keyboard?.pressedCodes?.length === 0 &&
+        matchesOuterKeyTrace(keyboard) &&
+        matchesInnerKeyTrace(retention?.keyEventTrace) &&
+        matchesTextTrace(retention?.textInputTrace) &&
+        hasNoComposition(retention) &&
+        retention?.value === M4_PRINTABLE_KEY_DOM_KEY &&
+        retention?.selectionStart === 1 &&
+        retention?.selectionEnd === 1 &&
+        retention?.resultText === "FOCUS RETAINED" &&
+        retention?.editableBlurCount === 0 &&
+        retention?.windowBlurCount === 0 &&
+        retention?.retentionPointerMoveCount === 1 &&
+        retention?.retentionPointerMoveTrusted === true &&
+        pageProbe?.activeElementId === "editable-target" &&
+        pageProbe?.documentHasFocus === true &&
+        readiness.focusInput?.receivedCount === 1 &&
+        readiness.focusInput?.trustedCount === 1 &&
+        readiness.focusInput?.queuedCount === 1 &&
+        readiness.focusInput?.hostWindowActive === true &&
+        readiness.focusInput?.lastQueuedFocusLoss === null &&
+        readiness.ozoneFocusState?.sequence === retentionFocusSequenceBefore &&
+        readiness.ozoneFocusState?.keyboardTargetPresent === true &&
+        readiness.ozoneFocusState?.active === true &&
+        Array.isArray(readiness.ozoneFocusReports) &&
+        readiness.ozoneFocusReports.every(
+            (report) => report?.sequence <= retentionFocusSequenceBefore) &&
+        readiness.frame?.id > keyboard.queuedRecords[0].frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const keyboard = readiness?.keyboardInput;
+    const focus = readiness?.focusInput;
+    const pageProbe = readiness?.pageProbe;
+    const retention = pageProbe?.focusRetention;
+    const ozoneFocusState = readiness?.ozoneFocusState;
+    const finalOzoneFocusReports = Array.isArray(readiness?.ozoneFocusReports)
+      ? readiness.ozoneFocusReports.filter(
+          (report) => report?.sequence > retentionFocusSequenceBefore)
+      : null;
+    if (
+      !readiness ||
+      !matchesPointerTrace(pointer, expectedPointerTrace()) ||
+      keyboard?.receivedCount !== 2 ||
+      keyboard?.trustedCount !== 2 ||
+      keyboard?.queuedCount !== 2 ||
+      keyboard?.activated !== true ||
+      keyboard?.pressedCodes?.length !== 0 ||
+      !matchesOuterKeyTrace(keyboard) ||
+      !matchesInnerKeyTrace(retention?.keyEventTrace) ||
+      !matchesTextTrace(retention?.textInputTrace) ||
+      !hasNoComposition(retention) ||
+      retention?.value !== M4_PRINTABLE_KEY_DOM_KEY ||
+      retention?.selectionStart !== 1 ||
+      retention?.selectionEnd !== 1 ||
+      retention?.resultText !== "FOCUS RETAINED" ||
+      retention?.editableBlurCount !== 0 ||
+      retention?.windowBlurCount !== 0 ||
+      retention?.retentionPointerMoveCount !== 1 ||
+      retention?.retentionPointerMoveTrusted !== true ||
+      pageProbe?.activeElementId !== "editable-target" ||
+      pageProbe?.documentHasFocus !== true ||
+      focus?.hostWindowActive !== true ||
+      focus?.receivedCount !== 1 ||
+      focus?.trustedCount !== 1 ||
+      focus?.queuedCount !== 1 ||
+      focus?.lastQueuedFocusLoss !== null ||
+      ozoneFocusState?.sequence !== retentionFocusSequenceBefore ||
+      ozoneFocusState?.keyboardTargetPresent !== true ||
+      ozoneFocusState?.active !== true ||
+      !Array.isArray(finalOzoneFocusReports) ||
+      finalOzoneFocusReports.length !== 0 ||
+      !(readiness.frame?.id > keyboard?.queuedRecords?.[0]?.frameIdBefore)
+    ) {
+      throw new Error(
+        "M4 trusted Ozone focus-retention KeyA timeout: " +
+        JSON.stringify(readiness));
+    }
+    retentionFocusSequenceAfter = ozoneFocusState.sequence;
+    retentionOzoneFocusReports = clone(finalOzoneFocusReports);
+    const focusRetentionProof = {
+      pointerTraceExact: matchesPointerTrace(pointer, expectedPointerTrace()),
+      nativeFocusStateStable:
+        retentionFocusSequenceAfter === retentionFocusSequenceBefore &&
+        Array.isArray(retentionOzoneFocusReports) &&
+        retentionOzoneFocusReports.length === 0 &&
+        ozoneFocusState.sequence === retentionFocusSequenceBefore &&
+        ozoneFocusState.keyboardTargetPresent === true &&
+        ozoneFocusState.active === true,
+      blinkFocusRetained:
+        retention.editableBlurCount === 0 &&
+        retention.windowBlurCount === 0 &&
+        pageProbe.activeElementId === "editable-target" &&
+        pageProbe.documentHasFocus === true,
+      keyOuterTraceExact: matchesOuterKeyTrace(keyboard),
+      keyInnerTraceExact: matchesInnerKeyTrace(retention.keyEventTrace),
+      textTraceExact: matchesTextTrace(retention.textInputTrace),
+      noComposition: hasNoComposition(retention),
+      frameAfterKeyDown:
+        readiness.frame.id > keyboard.queuedRecords[0].frameIdBefore,
+    };
+    window.__chromiumWasmM4FocusRetentionState = {
+      state: "input-delivered",
+      editableTargetX,
+      editableTargetY,
+      retentionTargetX,
+      retentionTargetY,
+      retentionFocusSequenceBefore,
+      retentionFocusSequenceAfter,
+      focusRetentionProof: clone(focusRetentionProof),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      trustedPointerInput: focusRetentionProof.pointerTraceExact,
+      retainedNativeFocus: focusRetentionProof.nativeFocusStateStable,
+      retainedBlinkFocus: focusRetentionProof.blinkFocusRetained,
+      trustedKeyEditing:
+        focusRetentionProof.keyOuterTraceExact &&
+        focusRetentionProof.keyInnerTraceExact &&
+        focusRetentionProof.textTraceExact &&
+        focusRetentionProof.noComposition &&
+        focusRetentionProof.frameAfterKeyDown,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_FOCUS_RETENTION_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      editableTargetX,
+      editableTargetY,
+      retentionTargetX,
+      retentionTargetY,
+      retentionFocusSequenceBefore,
+      retentionFocusSequenceAfter,
+      retentionOzoneFocusReports,
+      pointerInput: pointer,
+      keyboardInput: keyboard,
+      focusInput: focus,
+      ozoneFocusState,
+      focusRetentionProof,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_FOCUS_RETENTION_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness: null,
+      editableTargetX,
+      editableTargetY,
+      retentionTargetX,
+      retentionTargetY,
+      retentionFocusSequenceBefore,
+      retentionFocusSequenceAfter,
+      retentionOzoneFocusReports,
+      pointerInput: null,
+      keyboardInput: null,
+      focusInput: null,
+      ozoneFocusState: null,
+      focusRetentionProof: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+        result.keyboardInput = result.readiness.keyboardInput;
+        result.focusInput = result.readiness.focusInput;
+        result.ozoneFocusState = result.readiness.ozoneFocusState;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 export async function runContentShellSmokeFromQuery() {
   const selectedCase = new URLSearchParams(location.search).get("case");
   if (selectedCase === M3_CASE) {
@@ -11098,6 +11666,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_FOCUS_CASE) {
     return runM4OzoneFocusSmokeFromQuery();
+  }
+  if (selectedCase === M4_FOCUS_RETENTION_CASE) {
+    return runM4OzoneFocusRetentionSmokeFromQuery();
   }
   throw new Error("unknown Content Shell Wasm smoke case");
 }

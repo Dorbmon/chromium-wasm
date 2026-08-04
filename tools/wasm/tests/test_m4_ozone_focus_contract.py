@@ -244,6 +244,24 @@ class M4OzoneFocusContractTest(unittest.TestCase):
         self.assertNotIn("injectInput(", smoke)
         self.assertNotIn("chromium_wasm_host_click", smoke)
 
+    def test_focus_loss_reports_pointer_evidence_after_the_outer_exit(self) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        smoke = section(
+            host,
+            "async function runM4OzoneFocusSmokeFromQuery()",
+            "export async function runContentShellSmokeFromQuery",
+        )
+
+        self.assertIn(
+            "const pointerAfterFocusLoss = readiness?.pointerInput;", smoke
+        )
+        self.assertIn("pointer: clone(pointerAfterFocusLoss)", smoke)
+        self.assertIn("pointerInput: pointerAfterFocusLoss", smoke)
+        self.assertLess(
+            smoke.index("const pointerAfterFocusLoss = readiness?.pointerInput;"),
+            smoke.index("pointerInput: pointerAfterFocusLoss"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

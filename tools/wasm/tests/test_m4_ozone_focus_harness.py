@@ -80,8 +80,8 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
     }
     pointer_input = {
         "enabled": True,
-        "receivedCount": 3,
-        "trustedCount": 3,
+        "receivedCount": 4,
+        "trustedCount": 4,
         "queuedCount": 3,
         "lastQueued": {
             "type": "up",
@@ -220,6 +220,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "m4:focus:pointer-activation",
                 "m4:pointer:up:queued",
                 "m4:keyboard:down:queued",
+                "m4:pointer:exit:no-unpressed-hover",
                 "m4:keyboard:canvas-blur:release-queued",
                 "m4:focus:canvas-blur:deactivate-queued",
                 "ozone:focus:keyboard-target-absent:inactive",

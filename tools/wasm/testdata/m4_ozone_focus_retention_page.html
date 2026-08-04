@@ -1,0 +1,225 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 Ozone focus-retention fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  body {
+    min-height: 900px;
+    margin: 0;
+    background: #f5f8fc;
+    color: #182433;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    width: 520px;
+    margin: 72px 0 0 96px;
+    padding: 28px;
+    border: 4px solid #163a63;
+    background: #ffffff;
+  }
+
+  label {
+    display: block;
+    margin-top: 22px;
+  }
+
+  #editable-target {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 18px;
+    border: 3px solid #0f5b94;
+    background: #d8f0ff;
+    color: #062b4d;
+    font: inherit;
+    outline: none;
+  }
+
+  #editable-target:focus {
+    border-color: #ff8a00;
+    box-shadow: 0 0 0 4px #ffcf75;
+  }
+
+  #retention-target {
+    display: block;
+    margin-top: 26px;
+    padding: 18px;
+    border: 3px solid #397243;
+    background: #dff5df;
+    color: #173b1c;
+    user-select: none;
+  }
+
+  #result[data-focus-retained="true"] {
+    color: #08763b;
+  }
+</style>
+<main>
+  <p id="title">M4 OZONE FOCUS RETENTION</p>
+  <label for="editable-target">CLICK THE EDITOR</label>
+  <input id="editable-target" type="text" autocomplete="off" spellcheck="false">
+  <div id="retention-target">THEN MOVE OVER THIS INERT TARGET AND PRESS A</div>
+  <p id="result" data-focus-retained="false">WAITING FOR RETAINED FOCUS</p>
+</main>
+<script>
+  (() => {
+    const editable = document.querySelector("#editable-target");
+    const retentionTarget = document.querySelector("#retention-target");
+    const result = document.querySelector("#result");
+    let editableActivationCount = 0;
+    let editableClickTrusted = false;
+    let editableFocusCount = 0;
+    let editableFocusTrusted = false;
+    let editableBlurCount = 0;
+    let windowBlurCount = 0;
+    let windowBlurTrusted = false;
+    let retentionPointerMoveCount = 0;
+    let retentionPointerMoveTrusted = false;
+    let editableCenter = null;
+    let retentionCenter = null;
+    const keyEventTrace = [];
+    const textInputTrace = [];
+    const compositionEventCounts = {
+      compositionstart: 0,
+      compositionupdate: 0,
+      compositionend: 0,
+    };
+    let fontReady = !document.fonts;
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    let timerTicks = 0;
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    editable.addEventListener("click", (event) => {
+      editableActivationCount += 1;
+      editableClickTrusted = event.isTrusted === true;
+    });
+    editable.addEventListener("focus", (event) => {
+      editableFocusCount += 1;
+      editableFocusTrusted = event.isTrusted === true;
+    });
+    editable.addEventListener("blur", () => {
+      editableBlurCount += 1;
+    });
+    window.addEventListener("blur", (event) => {
+      windowBlurCount += 1;
+      windowBlurTrusted = event.isTrusted === true;
+    });
+    retentionTarget.addEventListener("pointermove", (event) => {
+      retentionPointerMoveCount += 1;
+      retentionPointerMoveTrusted = event.isTrusted === true;
+    });
+
+    for (const eventType of ["keydown", "keyup"]) {
+      document.addEventListener(eventType, (event) => {
+        if (event.code !== "KeyA") {
+          return;
+        }
+        keyEventTrace.push({
+          type: event.type,
+          trusted: event.isTrusted === true,
+          code: event.code,
+          key: event.key,
+          repeat: event.repeat === true,
+          isComposing: event.isComposing === true,
+          defaultPrevented: event.defaultPrevented === true,
+          targetId: event.target?.id || null,
+        });
+      });
+    }
+    editable.addEventListener("beforeinput", (event) => {
+      textInputTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        inputType: event.inputType,
+        data: typeof event.data === "string" ? event.data : null,
+        isComposing: event.isComposing === true,
+        targetId: event.target?.id || null,
+      });
+    });
+    editable.addEventListener("input", (event) => {
+      textInputTrace.push({
+        type: event.type,
+        trusted: event.isTrusted === true,
+        inputType: event.inputType,
+        data: typeof event.data === "string" ? event.data : null,
+        isComposing: event.isComposing === true,
+        targetId: event.target?.id || null,
+      });
+      const retained =
+        event.isTrusted === true && editable.value === "a" &&
+        editable.selectionStart === 1 && editable.selectionEnd === 1 &&
+        document.activeElement === editable && editableFocusCount === 1 &&
+        editableBlurCount === 0 && windowBlurCount === 0 &&
+        retentionPointerMoveCount === 1 && retentionPointerMoveTrusted === true;
+      result.dataset.focusRetained = String(retained);
+      result.textContent = retained ? "FOCUS RETAINED" : "FOCUS NOT RETAINED";
+    });
+    for (const eventType of [
+      "compositionstart", "compositionupdate", "compositionend",
+    ]) {
+      editable.addEventListener(eventType, () => {
+        compositionEventCounts[eventType] += 1;
+      });
+    }
+
+    function captureCenter(element, cachedCenter) {
+      if (cachedCenter) {
+        return cachedCenter;
+      }
+      const rect = element.getBoundingClientRect();
+      return {
+        x: Math.floor(rect.left + rect.width / 2),
+        y: Math.floor(rect.top + rect.height / 2),
+      };
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      editableCenter = captureCenter(editable, editableCenter);
+      retentionCenter = captureCenter(retentionTarget, retentionCenter);
+      const focusRetention = {
+        editableActivationCount,
+        editableClickTrusted,
+        editableFocusCount,
+        editableFocusTrusted,
+        editableBlurCount,
+        windowBlurCount,
+        windowBlurTrusted,
+        retentionPointerMoveCount,
+        retentionPointerMoveTrusted,
+        keyEventTrace,
+        textInputTrace,
+        compositionEventCounts,
+        value: editable.value,
+        selectionStart: editable.selectionStart,
+        selectionEnd: editable.selectionEnd,
+        resultText: result.textContent,
+      };
+      return JSON.stringify({
+        protocol: 1,
+        timerTicks,
+        fixture: "chromium-wasm-m4-ozone-focus-retention-v1",
+        fontReady,
+        focusRetention,
+        ready: document.readyState === "complete" && fontReady &&
+            editableCenter.x >= 0 && editableCenter.y >= 0 &&
+            retentionCenter.x >= 0 && retentionCenter.y >= 0 &&
+            (editableCenter.x !== retentionCenter.x ||
+              editableCenter.y !== retentionCenter.y),
+        editableTargetX: editableCenter.x,
+        editableTargetY: editableCenter.y,
+        retentionTargetX: retentionCenter.x,
+        retentionTargetY: retentionCenter.y,
+        activeElementId: document.activeElement?.id || null,
+        documentHasFocus: document.hasFocus(),
+      });
+    };
+  })();
+</script>

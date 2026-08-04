@@ -40,6 +40,7 @@ from m3_content_server import (
     M4_PRIMARY_PASTE_CASE,
     M4_COPY_PASTE_CASE,
     M4_FOCUS_CASE,
+    M4_FOCUS_RETENTION_CASE,
     M4_WHEEL_CASE,
     M4_KEYBOARD_CASE,
     M4_PRINTABLE_KEY_CASE,
@@ -47,6 +48,7 @@ from m3_content_server import (
     M4_IME_BRIDGE_CASE,
     create_m3_server,
     m4_focus_smoke_url,
+    m4_focus_retention_smoke_url,
     m4_smoke_url,
     m4_select_smoke_url,
     m4_resize_smoke_url,
@@ -71,6 +73,7 @@ from m3_content_server import (
     validate_m4_primary_paste_result,
     validate_m4_copy_paste_result,
     validate_m4_focus_result,
+    validate_m4_focus_retention_result,
     validate_m4_wheel_result,
     validate_m4_keyboard_result,
     validate_m4_printable_key_result,
@@ -537,6 +540,7 @@ def main() -> int:
             "backspace",
             "ime-bridge",
             "focus",
+            "focus-retention",
         ),
         default="pointer",
         help="trusted DOM input path to drive",
@@ -676,6 +680,15 @@ def main() -> int:
             "Input.imeSetComposition followed by " + terminal_driver +
             "; the terminal is bound to its trusted candidate before Ozone "
             "delivers the composition to Blink"
+        )
+    elif args.input == "focus-retention":
+        case = M4_FOCUS_RETENTION_CASE
+        state_expression = "window.__chromiumWasmM4FocusRetentionState || null"
+        expected_state = "awaiting-dom-focus-retention-activation"
+        input_driver = (
+            "Chrome DevTools primary canvas click on the editable target, then "
+            "a trusted unpressed pointer move to an inert target followed by a "
+            "raw KeyA down/up pair without text"
         )
     else:
         case = M4_FOCUS_CASE
@@ -874,6 +887,14 @@ def main() -> int:
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
                 terminal_mode=args.ime_terminal,
             )
+        elif args.input == "focus-retention":
+            url = m4_focus_retention_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
         else:
             url = m4_focus_smoke_url(
                 server,
@@ -1013,6 +1034,14 @@ def main() -> int:
                 x_field="clearTargetX",
                 y_field="clearTargetY",
                 description="rapid tooltip title-less target",
+            )
+        elif args.input == "focus-retention":
+            click_x, click_y = canvas_point_position(
+                state,
+                canvas_geometry,
+                x_field="editableTargetX",
+                y_field="editableTargetY",
+                description="focus-retention editable target",
             )
         else:
             click_x, click_y = canvas_click_position(state, canvas_geometry)
@@ -1637,6 +1666,41 @@ def main() -> int:
                 client.dispatch_ime_commit()
             else:
                 client.dispatch_ime_cancel()
+        elif args.input == "focus-retention":
+            stage = "dispatch_trusted_dom_focus_retention_activation"
+            client.dispatch_primary_click(click_x, click_y)
+            stage = "wait_for_focus_retention_pointer"
+            retention_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-focus-retention-pointer",
+            )
+            stage = "measure_focus_retention_inert_target"
+            retention_x, retention_y = canvas_point_position(
+                retention_state,
+                canvas_geometry,
+                x_field="retentionTargetX",
+                y_field="retentionTargetY",
+                description="focus-retention inert target",
+            )
+            stage = "dispatch_trusted_dom_focus_retention_pointer_move"
+            client.dispatch_mouse_move(retention_x, retention_y)
+            stage = "wait_for_focus_retention_key"
+            wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-focus-retention-key",
+            )
+            stage = "dispatch_trusted_dom_focus_retention_key_a"
+            client.dispatch_key_a()
         else:
             stage = "dispatch_trusted_dom_focus_activation"
             client.dispatch_primary_click(click_x, click_y)
@@ -1724,6 +1788,11 @@ def main() -> int:
                 terminal_mode=args.ime_terminal,
             )
             input_key = "imeProxyInput"
+        elif args.input == "focus-retention":
+            validate_m4_focus_retention_result(
+                result, expected_versions=versions
+            )
+            input_key = "keyboardInput"
         else:
             validate_m4_focus_result(result, expected_versions=versions)
             input_key = "focusInput"
