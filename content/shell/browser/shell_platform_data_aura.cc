@@ -7,6 +7,9 @@
 #include <memory>
 #include <utility>
 
+#if BUILDFLAG(IS_WASM)
+#include "content/shell/browser/shell_tooltip_wasm.h"
+#endif
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
@@ -329,6 +332,7 @@ ShellPlatformDataAura::ShellPlatformDataAura(const gfx::Size& initial_size) {
   cursor_manager_ =
       std::make_unique<wm::CursorManager>(std::move(native_cursor_manager));
   aura::client::SetCursorClient(host_->window(), cursor_manager_.get());
+  tooltip_controller_ = CreateWasmTooltipController(host_->window());
 #else
   // TODO(https://crbug.com/1336055): this is needed for
   // mouse_cursor_overlay_controller_browsertest.cc on cast_shell_linux as
@@ -340,6 +344,7 @@ ShellPlatformDataAura::ShellPlatformDataAura(const gfx::Size& initial_size) {
 
 ShellPlatformDataAura::~ShellPlatformDataAura() {
 #if BUILDFLAG(IS_WASM)
+  tooltip_controller_.reset();
   aura::client::SetCursorClient(host_->window(), nullptr);
   cursor_manager_.reset();
 #else

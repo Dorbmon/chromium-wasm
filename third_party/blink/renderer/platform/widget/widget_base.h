@@ -248,6 +248,9 @@ class PLATFORM_EXPORT WidgetBase : public mojom::blink::Widget,
 
   WidgetBaseClient* client() { return client_; }
 
+  void SetTooltipInputEventTime(base::TimeTicks input_event_time) {
+    tooltip_input_event_time_ = input_event_time;
+  }
   void UpdateTooltipUnderCursor(const String& tooltip_text, TextDirection dir);
   // This function allows us to trigger a tooltip to show from a keypress. The
   // tooltip will be positioned relative to the gfx::Rect. That rect corresponds
@@ -510,6 +513,9 @@ class PLATFORM_EXPORT WidgetBase : public mojom::blink::Widget,
   bool has_focus_ = false;
   WidgetBaseInputHandler input_handler_{this};
   scoped_refptr<WidgetCompositor> widget_compositor_;
+
+  // The most recent mouse input that can produce a tooltip update.
+  base::TimeTicks tooltip_input_event_time_;
 
   // Stores the current selection bounds.
   gfx::Rect selection_focus_rect_;

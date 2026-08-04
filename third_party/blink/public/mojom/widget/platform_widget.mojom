@@ -40,9 +40,11 @@ interface WidgetHost {
   SetCursor(ui.mojom.Cursor cursor);
 
   // Sent by a widget to the browser to set the tooltip text for the current
-  // cursor position. An empty |tooltip_text| will hide the tooltip view.
+  // cursor position. |input_event_time| identifies the mouse event that
+  // produced the update. An empty |tooltip_text| will hide the tooltip view.
   UpdateTooltipUnderCursor(mojo_base.mojom.String16 tooltip_text,
-                           mojo_base.mojom.TextDirection text_direction_hint);
+                           mojo_base.mojom.TextDirection text_direction_hint,
+                           mojo_base.mojom.TimeTicks input_event_time);
 
   // Sent by a widget to the browser to set the tooltip text and trigger a
   // tooltip to show up, aligned with the bounds (in widget-relative DIPS)

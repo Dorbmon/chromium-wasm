@@ -11,6 +11,7 @@
 
 #include "base/component_export.h"
 #include "base/observer_list.h"
+#include "base/time/time.h"
 #include "components/input/event_with_latency_info.h"
 #include "components/input/render_input_router.h"
 #include "components/viz/common/hit_test/aggregated_hit_test_region.h"
@@ -223,6 +224,14 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
 
   // Calls UpdateTooltip if the view is under the cursor.
   virtual void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) {}
+
+  // Returns whether a tooltip update from |input_event_time| still applies.
+  // Most platforms retain the existing under-cursor check, but a platform with
+  // an asynchronous host bridge can compare this value with trusted input.
+  virtual bool IsTooltipInputEventCurrent(
+      base::TimeTicks input_event_time) const {
+    return true;
+  }
 
   // Updates the tooltip text and displays the requested tooltip on the screen.
   // An empty string will clear a visible tooltip.

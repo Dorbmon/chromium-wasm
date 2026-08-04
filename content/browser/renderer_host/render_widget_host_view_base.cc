@@ -42,6 +42,7 @@
 #include "content/common/features.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/page_visibility_state.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/mojom/frame/intrinsic_sizing_info.mojom.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/display/display_util.h"
@@ -738,6 +739,12 @@ void RenderWidgetHostViewBase::OnFrameTokenChangedForView(
 void RenderWidgetHostViewBase::ProcessMouseEvent(
     const blink::WebMouseEvent& event,
     const ui::LatencyInfo& latency) {
+  if (event.GetType() == blink::WebInputEvent::Type::kMouseMove) {
+    RecordTooltipInputEventTime(event.TimeStamp(), event.PositionInScreen());
+  } else {
+    InvalidateTooltipInputEventEpoch();
+  }
+
   // TODO(crbug.com/40564125): Figure out the reason |host| is null here in all
   // Process* functions.
   if (!host())
@@ -752,9 +759,48 @@ void RenderWidgetHostViewBase::ProcessMouseEvent(
   host()->ForwardMouseEventWithLatencyInfo(event, latency);
 }
 
+bool RenderWidgetHostViewBase::IsTooltipInputEventCurrent(
+    base::TimeTicks input_event_time) const {
+#if BUILDFLAG(IS_WASM)
+  return has_tooltip_input_epoch_ && !input_event_time.is_null() &&
+         input_event_time >= tooltip_input_epoch_start_time_ &&
+         input_event_time <= tooltip_input_event_time_;
+#else
+  return true;
+#endif
+}
+
+void RenderWidgetHostViewBase::RecordTooltipInputEventTime(
+    base::TimeTicks input_event_time,
+    const gfx::PointF& screen_location) {
+#if BUILDFLAG(IS_WASM)
+  if (input_event_time.is_null()) {
+    InvalidateTooltipInputEventEpoch();
+    return;
+  }
+  if (!has_tooltip_input_epoch_ ||
+      screen_location != tooltip_input_screen_location_) {
+    tooltip_input_epoch_start_time_ = input_event_time;
+    tooltip_input_screen_location_ = screen_location;
+    has_tooltip_input_epoch_ = true;
+  }
+  tooltip_input_event_time_ = input_event_time;
+#endif
+}
+
+void RenderWidgetHostViewBase::InvalidateTooltipInputEventEpoch() {
+#if BUILDFLAG(IS_WASM)
+  has_tooltip_input_epoch_ = false;
+  tooltip_input_epoch_start_time_ = base::TimeTicks();
+  tooltip_input_event_time_ = base::TimeTicks();
+#endif
+}
+
 void RenderWidgetHostViewBase::ProcessMouseWheelEvent(
     const blink::WebMouseWheelEvent& event,
     const ui::LatencyInfo& latency) {
+  InvalidateTooltipInputEventEpoch();
+
   if (!host())
     return;
 
@@ -769,6 +815,8 @@ void RenderWidgetHostViewBase::ProcessMouseWheelEvent(
 void RenderWidgetHostViewBase::ProcessTouchEvent(
     const blink::WebTouchEvent& event,
     const ui::LatencyInfo& latency) {
+  InvalidateTooltipInputEventEpoch();
+
   if (!host())
     return;
 
@@ -785,6 +833,8 @@ void RenderWidgetHostViewBase::ProcessTouchEvent(
 void RenderWidgetHostViewBase::ProcessGestureEvent(
     const blink::WebGestureEvent& event,
     const ui::LatencyInfo& latency) {
+  InvalidateTooltipInputEventEpoch();
+
   if (!host())
     return;
 

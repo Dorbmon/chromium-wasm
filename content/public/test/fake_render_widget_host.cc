@@ -50,7 +50,8 @@ void FakeRenderWidgetHost::SetCursor(const ui::Cursor& cursor) {}
 
 void FakeRenderWidgetHost::UpdateTooltipUnderCursor(
     const std::u16string& tooltip_text,
-    base::i18n::TextDirection text_direction_hint) {}
+    base::i18n::TextDirection text_direction_hint,
+    base::TimeTicks input_event_time) {}
 
 void FakeRenderWidgetHost::UpdateTooltipFromKeyboard(
     const std::u16string& tooltip_text,

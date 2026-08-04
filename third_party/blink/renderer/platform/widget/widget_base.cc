@@ -1153,7 +1153,8 @@ void WidgetBase::SetCursor(const ui::Cursor& cursor) {
 void WidgetBase::UpdateTooltipUnderCursor(const String& tooltip_text,
                                           TextDirection dir) {
   widget_host_->UpdateTooltipUnderCursor(
-      tooltip_text.empty() ? "" : tooltip_text, ToBaseTextDirection(dir));
+      tooltip_text.empty() ? "" : tooltip_text, ToBaseTextDirection(dir),
+      tooltip_input_event_time_);
 }
 
 void WidgetBase::UpdateTooltipFromKeyboard(const String& tooltip_text,

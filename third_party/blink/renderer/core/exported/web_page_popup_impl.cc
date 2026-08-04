@@ -965,6 +965,9 @@ WebInputEventResult WebPagePopupImpl::HandleInputEvent(
   if (closing_)
     return WebInputEventResult::kNotHandled;
   DCHECK(!WebInputEvent::IsTouchEventType(event.Event().GetType()));
+  if (WebInputEvent::IsMouseEventType(event.Event().GetType())) {
+    widget_base_->SetTooltipInputEventTime(event.Event().TimeStamp());
+  }
   return WidgetEventHandler::HandleInputEvent(event, &MainFrame());
 }
 

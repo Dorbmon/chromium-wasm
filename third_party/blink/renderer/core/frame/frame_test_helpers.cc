@@ -1128,7 +1128,8 @@ void TestWebFrameWidgetHost::SetCursor(const ui::Cursor& cursor) {
 
 void TestWebFrameWidgetHost::UpdateTooltipUnderCursor(
     const String& tooltip_text,
-    base::i18n::TextDirection text_direction_hint) {}
+    base::i18n::TextDirection text_direction_hint,
+    base::TimeTicks input_event_time) {}
 
 void TestWebFrameWidgetHost::UpdateTooltipFromKeyboard(
     const String& tooltip_text,

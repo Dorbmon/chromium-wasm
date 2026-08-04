@@ -1,0 +1,198 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chromium Wasm M4 Ozone tooltip fixture</title>
+<style>
+  @font-face {
+    font-family: Ahem;
+    src: url(data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__) format("woff2");
+  }
+
+  html,
+  body,
+  main {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background: #edf5ff;
+    color: #172b4d;
+    font-family: Ahem, sans-serif;
+  }
+
+  main {
+    position: relative;
+  }
+
+  #fixture-heading {
+    position: absolute;
+    top: 24px;
+    left: 56px;
+    margin: 0;
+    font-size: 20px;
+    line-height: 20px;
+  }
+
+  #tooltip-target,
+  #confirm-target,
+  #clear-target {
+    box-sizing: border-box;
+    position: absolute;
+    width: 200px;
+    height: 72px;
+    padding: 24px 12px;
+    border: 4px solid #1f5c9b;
+    font-size: 16px;
+    line-height: 16px;
+  }
+
+  #tooltip-target {
+    top: 80px;
+    left: 120px;
+    background: #dbeeff;
+  }
+
+  #confirm-target {
+    top: 250px;
+    left: 120px;
+    border-color: #2f7d32;
+    background: #dff5e1;
+  }
+
+  #clear-target {
+    top: 340px;
+    left: 480px;
+    border-color: #9a2c2c;
+    background: #ffe3e3;
+  }
+
+  #result {
+    position: absolute;
+    top: 196px;
+    left: 120px;
+    margin: 0;
+    color: #245d28;
+    font-size: 16px;
+    line-height: 16px;
+  }
+</style>
+<main>
+  <p id="fixture-heading">M4 OZONE NATIVE TITLE TOOLTIP</p>
+  <div id="tooltip-target" title="WASM TOOLTIP">HOVER TITLE</div>
+  <div id="confirm-target" title="SWAM TOOLTIP">CONFIRM TITLE</div>
+  <div id="clear-target">CLEAR TARGET</div>
+  <p id="result">WAITING FOR TRUSTED TITLE HOVER</p>
+</main>
+<script>
+  (() => {
+    const FIXTURE = "chromium-wasm-m4-ozone-tooltip-v1";
+    const VIEWPORT_WIDTH = 800;
+    const VIEWPORT_HEIGHT = 600;
+    const HOVER_TARGET_X = 220;
+    const HOVER_TARGET_Y = 116;
+    const CONFIRM_TARGET_X = 220;
+    const CONFIRM_TARGET_Y = 286;
+    const CLEAR_TARGET_X = 580;
+    const CLEAR_TARGET_Y = 376;
+    const target = document.querySelector("#tooltip-target");
+    const confirmTarget = document.querySelector("#confirm-target");
+    const clearTarget = document.querySelector("#clear-target");
+    const result = document.querySelector("#result");
+    const mouseTrace = [];
+    const pointerTrace = [];
+    let fontReady = !document.fonts;
+    Promise.resolve(document.fonts?.ready).then(() => {
+      fontReady = true;
+    });
+    let timerTicks = 0;
+    setInterval(() => { timerTicks += 1; }, 50);
+
+    function tracePointerEvent(event) {
+      return {
+        type: event.type,
+        trusted: event.isTrusted === true,
+        button: event.button,
+        buttons: event.buttons,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        targetId: event.target?.id || null,
+        defaultPrevented: event.defaultPrevented === true,
+        observedAtMs: Math.floor(performance.now()),
+      };
+    }
+
+    for (const element of [target, confirmTarget, clearTarget]) {
+      element.addEventListener("mousemove", (event) => {
+        const trace = tracePointerEvent(event);
+        mouseTrace.push(trace);
+        if (trace.trusted) {
+          // A visible Blink update ties each event phase to a subsequent
+          // compositor frame without using a host-side test overlay.
+          result.textContent = `TRUSTED MOVE ${mouseTrace.length}`;
+        }
+      });
+      element.addEventListener("pointermove", (event) => {
+        pointerTrace.push(tracePointerEvent(event));
+      });
+    }
+
+    function viewportCoordinate(value, maximum) {
+      const coordinate = Math.floor(value);
+      return Number.isSafeInteger(coordinate) && coordinate >= 0 &&
+          coordinate <= maximum ? coordinate : null;
+    }
+
+    function centerOf(element) {
+      const rect = element.getBoundingClientRect();
+      if (
+        !Number.isFinite(rect.left) || !Number.isFinite(rect.top) ||
+        !Number.isFinite(rect.width) || !Number.isFinite(rect.height) ||
+        rect.width <= 0 || rect.height <= 0
+      ) {
+        return {x: null, y: null, ready: false};
+      }
+      return {
+        x: viewportCoordinate(rect.left + rect.width / 2, VIEWPORT_WIDTH - 1),
+        y: viewportCoordinate(rect.top + rect.height / 2, VIEWPORT_HEIGHT - 1),
+        ready: true,
+      };
+    }
+
+    window.__chromiumWasmM4Probe = () => {
+      const hoverTarget = centerOf(target);
+      const confirmTargetCenter = centerOf(confirmTarget);
+      const clearTargetCenter = centerOf(clearTarget);
+      const geometryIsDeterministic =
+        hoverTarget.x === HOVER_TARGET_X &&
+        hoverTarget.y === HOVER_TARGET_Y &&
+        confirmTargetCenter.x === CONFIRM_TARGET_X &&
+        confirmTargetCenter.y === CONFIRM_TARGET_Y &&
+        clearTargetCenter.x === CLEAR_TARGET_X &&
+        clearTargetCenter.y === CLEAR_TARGET_Y;
+      return JSON.stringify({
+        protocol: 1,
+        timerTicks,
+        fixture: FIXTURE,
+        fontReady,
+        ready: document.readyState === "complete" && fontReady &&
+            hoverTarget.ready && confirmTargetCenter.ready &&
+            clearTargetCenter.ready &&
+            geometryIsDeterministic,
+        hoverTargetX: hoverTarget.x,
+        hoverTargetY: hoverTarget.y,
+        confirmTargetX: confirmTargetCenter.x,
+        confirmTargetY: confirmTargetCenter.y,
+        clearTargetX: clearTargetCenter.x,
+        clearTargetY: clearTargetCenter.y,
+        tooltipTitle: target.title,
+        confirmTitle: confirmTarget.title,
+        clearTitle: clearTarget.getAttribute("title"),
+        mouseTrace,
+        pointerTrace,
+        resultText: result.textContent,
+      });
+    };
+  })();
+</script>

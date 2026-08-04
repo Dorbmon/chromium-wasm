@@ -9,6 +9,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/threading/thread_checker.h"
+#include "base/time/time.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/platform/platform_event_source.h"
@@ -50,8 +51,11 @@ class WasmPlatformEventSource final : public PlatformEventSource {
                         int source_device_id);
 
  private:
+  base::TimeTicks NextMouseEventTime();
+
   raw_ptr<WasmWindowManager> window_manager_;
   base::ThreadChecker thread_checker_;
+  base::TimeTicks last_mouse_event_time_;
 };
 
 std::unique_ptr<SystemInputInjector> CreateWasmSystemInputInjector(

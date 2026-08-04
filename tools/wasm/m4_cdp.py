@@ -317,6 +317,19 @@ class DevToolsClient:
             },
         )
 
+    def dispatch_mouse_move(self, x: float, y: float) -> None:
+        """Drive one physical pointer move without a click or text input."""
+
+        self.call(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseMoved",
+                "x": x,
+                "y": y,
+                "pointerType": "mouse",
+            },
+        )
+
     def dispatch_mouse_wheel(
         self,
         x: float,

@@ -7,6 +7,7 @@
 
 #include <utility>
 
+#include "base/time/time.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -56,7 +57,8 @@ class FakeRenderWidgetHost : public blink::mojom::FrameWidgetHost,
   void SetCursor(const ui::Cursor& cursor) override;
   void UpdateTooltipUnderCursor(
       const std::u16string& tooltip_text,
-      base::i18n::TextDirection text_direction_hint) override;
+      base::i18n::TextDirection text_direction_hint,
+      base::TimeTicks input_event_time) override;
   void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
                                  base::i18n::TextDirection text_direction_hint,
                                  const gfx::Rect& bounds) override;

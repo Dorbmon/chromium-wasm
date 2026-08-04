@@ -8,6 +8,9 @@
 #include <memory>
 
 #include "build/build_config.h"
+#if BUILDFLAG(IS_WASM)
+#include "content/shell/browser/shell_tooltip_wasm.h"
+#endif
 #include "ui/aura/window_tree_host.h"
 
 namespace aura {
@@ -62,6 +65,7 @@ class ShellPlatformDataAura {
   std::unique_ptr<aura::client::WindowParentingClient> window_parenting_client_;
 #if BUILDFLAG(IS_WASM)
   std::unique_ptr<wm::CursorManager> cursor_manager_;
+  WasmTooltipControllerPtr tooltip_controller_;
 #else
   std::unique_ptr<aura::client::CursorShapeClient> cursor_shape_client_;
 #endif

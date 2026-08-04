@@ -8,6 +8,7 @@ const M4_CASE = "ozone_pointer_m4";
 const M4_SELECT_CASE = "ozone_select_m4";
 const M4_RESIZE_CASE = "ozone_resize_m4";
 const M4_CONTEXT_MENU_CASE = "ozone_context_menu_m4";
+const M4_TOOLTIP_CASE = "ozone_tooltip_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
 const M4_KEYBOARD_CASE = "ozone_keyboard_m4";
 const M4_PRINTABLE_KEY_CASE = "ozone_printable_key_m4";
@@ -22,6 +23,7 @@ const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
 const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
 const M4_CONTEXT_MENU_FIXTURE =
   "chromium-wasm-m4-ozone-context-menu-v1";
+const M4_TOOLTIP_FIXTURE = "chromium-wasm-m4-ozone-tooltip-v1";
 const M4_WHEEL_FIXTURE = "chromium-wasm-m4-ozone-wheel-v1";
 const M4_KEYBOARD_FIXTURE = "chromium-wasm-m4-ozone-keyboard-v2";
 const M4_PRINTABLE_KEY_FIXTURE =
@@ -56,6 +58,22 @@ const M4_CONTEXT_MENU_COPY_ROW_RGBA = Object.freeze([0, 87, 184, 255]);
 const M4_CONTEXT_MENU_COPY_ROW_WIDTH = 160;
 const M4_CONTEXT_MENU_COPY_ROW_HEIGHT = 40;
 const M4_CONTEXT_MENU_MINIMUM_COPY_ROW_PIXELS = 5000;
+// This is the complete opaque native tooltip visual protocol. It is painted
+// by WasmTooltipController, rather than by a host-page DOM overlay. The smoke
+// scans every expected pixel so the title path proves both presence and
+// disappearance of the Aura child surface.
+const M4_TOOLTIP_BACKGROUND_RGBA = Object.freeze([32, 33, 36, 255]);
+const M4_TOOLTIP_BORDER_RGBA = Object.freeze([95, 99, 104, 255]);
+const M4_TOOLTIP_INK_RGBA = Object.freeze([255, 255, 255, 255]);
+const M4_TOOLTIP_WIDTH = 110;
+const M4_TOOLTIP_HEIGHT = 24;
+const M4_TOOLTIP_BACKGROUND_PIXELS = 1952;
+const M4_TOOLTIP_BORDER_PIXELS = 264;
+const M4_TOOLTIP_INK_PIXELS = 424;
+const M4_TOOLTIP_CURSOR_OFFSET_X = 12;
+const M4_TOOLTIP_CURSOR_OFFSET_Y = 18;
+const M4_TOOLTIP_CLEAR_QUIESCENCE_MS = 750;
+const M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS = 250;
 const M4_RESIZE_NARROW_WIDTH = 640;
 const M4_RESIZE_NARROW_HEIGHT = 480;
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
@@ -341,6 +359,171 @@ function scanM4ContextMenuCopyRow(canvas) {
   };
 }
 
+const M4_TOOLTIP_GLYPHS = Object.freeze({
+  A: "010101111101101",
+  I: "111010010010111",
+  L: "100100100100111",
+  M: "101111111101101",
+  O: "111101101101111",
+  P: "110101110100100",
+  S: "111100111001111",
+  T: "111010010010010",
+  W: "101101101111101",
+});
+
+function matchesM4TooltipRgba(pixels, offset, rgba) {
+  return pixels[offset] === rgba[0] && pixels[offset + 1] === rgba[1] &&
+    pixels[offset + 2] === rgba[2] && pixels[offset + 3] === rgba[3];
+}
+
+function m4TooltipInkMask(label) {
+  const inkPixels = new Set();
+  const originX = 8;
+  const originY = 7;
+  const glyphScale = 2;
+  const glyphWidth = 3;
+  const glyphHeight = 5;
+  const glyphSpacing = 2;
+  for (let glyphIndex = 0; glyphIndex < label.length; ++glyphIndex) {
+    const glyph = M4_TOOLTIP_GLYPHS[label[glyphIndex]];
+    if (!glyph) {
+      continue;
+    }
+    for (let row = 0; row < glyphHeight; ++row) {
+      for (let column = 0; column < glyphWidth; ++column) {
+        if (glyph[row * glyphWidth + column] !== "1") {
+          continue;
+        }
+        const x = originX +
+          glyphIndex * (glyphWidth * glyphScale + glyphSpacing) +
+          column * glyphScale;
+        const y = originY + row * glyphScale;
+        for (let scaledY = 0; scaledY < glyphScale; ++scaledY) {
+          for (let scaledX = 0; scaledX < glyphScale; ++scaledX) {
+            inkPixels.add(`${x + scaledX},${y + scaledY}`);
+          }
+        }
+      }
+    }
+  }
+  return inkPixels;
+}
+
+function m4TooltipCanvasPixels(canvas) {
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    throw new Error("M4 tooltip scan requires a canvas");
+  }
+  const context = globalThis.ChromiumWasmHostBridge?.context ??
+      canvas.getContext("2d", {alpha: false});
+  if (!context || typeof context.getImageData !== "function") {
+    throw new Error("M4 tooltip scan has no 2D canvas context");
+  }
+  return context.getImageData(0, 0, canvas.width, canvas.height).data;
+}
+
+function countM4TooltipBackgroundPixels(canvas) {
+  const pixels = m4TooltipCanvasPixels(canvas);
+  let count = 0;
+  for (let offset = 0; offset < pixels.length; offset += 4) {
+    if (matchesM4TooltipRgba(pixels, offset, M4_TOOLTIP_BACKGROUND_RGBA)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+function scanM4TooltipOverlay(canvas, anchorX, anchorY, label) {
+  const inkMask = m4TooltipInkMask(label);
+  const pixels = m4TooltipCanvasPixels(canvas);
+  let backgroundPixels = 0;
+  let minX = canvas.width;
+  let minY = canvas.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < canvas.height; ++y) {
+    for (let x = 0; x < canvas.width; ++x) {
+      const offset = (y * canvas.width + x) * 4;
+      if (!matchesM4TooltipRgba(
+          pixels, offset, M4_TOOLTIP_BACKGROUND_RGBA)) {
+        continue;
+      }
+      ++backgroundPixels;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  if (backgroundPixels !== M4_TOOLTIP_BACKGROUND_PIXELS) {
+    return null;
+  }
+  const expectedMinX = anchorX + M4_TOOLTIP_CURSOR_OFFSET_X;
+  const expectedMinY = anchorY + M4_TOOLTIP_CURSOR_OFFSET_Y;
+  const width = M4_TOOLTIP_WIDTH;
+  const height = M4_TOOLTIP_HEIGHT;
+  const expectedMaxX = expectedMinX + width - 1;
+  const expectedMaxY = expectedMinY + height - 1;
+  // The scan above locates only the interior background. The one-pixel
+  // native border is deliberately a different color, so validate the
+  // background's interior bounds before scanning the complete overlay.
+  if (
+    minX !== expectedMinX + 1 || minY !== expectedMinY + 1 ||
+    maxX !== expectedMaxX - 1 || maxY !== expectedMaxY - 1
+  ) {
+    return null;
+  }
+
+  let borderPixels = 0;
+  let inkPixels = 0;
+  for (let localY = 0; localY < height; ++localY) {
+    for (let localX = 0; localX < width; ++localX) {
+      const offset = ((expectedMinY + localY) * canvas.width +
+                      expectedMinX + localX) * 4;
+      const isBorder = localX === 0 || localY === 0 ||
+        localX === width - 1 || localY === height - 1;
+      const isInk = inkMask.has(`${localX},${localY}`);
+      if (isBorder) {
+        if (!matchesM4TooltipRgba(pixels, offset, M4_TOOLTIP_BORDER_RGBA)) {
+          return null;
+        }
+        ++borderPixels;
+      } else if (isInk) {
+        if (!matchesM4TooltipRgba(pixels, offset, M4_TOOLTIP_INK_RGBA)) {
+          return null;
+        }
+        ++inkPixels;
+      } else if (!matchesM4TooltipRgba(
+          pixels, offset, M4_TOOLTIP_BACKGROUND_RGBA)) {
+        return null;
+      }
+    }
+  }
+  if (
+    borderPixels !== M4_TOOLTIP_BORDER_PIXELS ||
+    inkPixels !== M4_TOOLTIP_INK_PIXELS ||
+    inkMask.size !== M4_TOOLTIP_INK_PIXELS
+  ) {
+    return null;
+  }
+  return {
+    backgroundRgba: Array.from(M4_TOOLTIP_BACKGROUND_RGBA),
+    borderRgba: Array.from(M4_TOOLTIP_BORDER_RGBA),
+    inkRgba: Array.from(M4_TOOLTIP_INK_RGBA),
+    backgroundPixels,
+    borderPixels,
+    inkPixels,
+    minX: expectedMinX,
+    minY: expectedMinY,
+    maxX: expectedMaxX,
+    maxY: expectedMaxY,
+    width,
+    height,
+    anchorX: expectedMinX,
+    anchorY: expectedMinY,
+    label,
+  };
+}
+
 function isM4ResizeCardRect(rect) {
   return rect &&
     ["left", "top", "width", "height"].every((field) =>
@@ -552,6 +735,68 @@ function hasM4SelectionFinalPageEvidence(pageProbe, innerTraces) {
         pageProbe?.mouseEventTrace, "mouse", innerTraces.mouse) &&
     matchesM4SelectionInnerTrace(
         pageProbe?.pointerEventTrace, "pointer", innerTraces.pointer);
+}
+
+function matchesM4TooltipQueuedPointerRecord(record, x, y) {
+  return record?.type === "move" && record?.trusted === true &&
+    record?.queued === true && record?.button === -1 &&
+    record?.buttons === 0 && record?.canvasFocused === true &&
+    Number.isSafeInteger(record?.sequence) && record.sequence >= 1 &&
+    Number.isSafeInteger(record?.x) && record.x === x &&
+    Number.isSafeInteger(record?.y) && record.y === y &&
+    Number.isSafeInteger(record?.frameIdBefore) && record.frameIdBefore >= 1;
+}
+
+function matchesM4TooltipQueuedPointerTrace(records, expectedRecords) {
+  return Array.isArray(records) && records.length === expectedRecords.length &&
+    expectedRecords.every(([x, y], index) =>
+      matchesM4TooltipQueuedPointerRecord(records[index], x, y) &&
+      records[index].sequence === index + 1);
+}
+
+function matchesM4TooltipInnerMove(record, prefix, targetId, x, y) {
+  const button = prefix === "mouse" ? 0 : -1;
+  return record?.type === `${prefix}move` && record?.trusted === true &&
+    record?.button === button && record?.buttons === 0 &&
+    record?.clientX === x && record?.clientY === y &&
+    record?.targetId === targetId && record?.defaultPrevented === false;
+}
+
+function hasM4TooltipInnerTrace(pageProbe, expected) {
+  const hasTrace = (records, prefix) => Array.isArray(records) &&
+    records.length === expected.length && expected.every(
+        ([targetId, x, y], index) => matchesM4TooltipInnerMove(
+            records[index], prefix, targetId, x, y));
+  return hasTrace(pageProbe?.mouseTrace, "mouse") &&
+    hasTrace(pageProbe?.pointerTrace, "pointer");
+}
+
+function m4TooltipInnerTraceGapMs(pageProbe, firstIndex, secondIndex) {
+  const traces = [pageProbe?.mouseTrace, pageProbe?.pointerTrace];
+  let maximumGapMs = 0;
+  for (const trace of traces) {
+    const firstTimestamp = trace?.[firstIndex]?.observedAtMs;
+    const secondTimestamp = trace?.[secondIndex]?.observedAtMs;
+    if (!Number.isSafeInteger(firstTimestamp) || firstTimestamp < 0 ||
+        !Number.isSafeInteger(secondTimestamp) ||
+        secondTimestamp < firstTimestamp) {
+      return null;
+    }
+    maximumGapMs = Math.max(maximumGapMs, secondTimestamp - firstTimestamp);
+  }
+  return maximumGapMs;
+}
+
+function hasM4TooltipPageIdentity(pageProbe) {
+  return pageProbe?.protocol === HOST_PROTOCOL &&
+    pageProbe?.fixture === M4_TOOLTIP_FIXTURE && pageProbe?.fontReady === true &&
+    pageProbe?.ready === true && pageProbe?.tooltipTitle === "WASM TOOLTIP" &&
+    pageProbe?.confirmTitle === "SWAM TOOLTIP" &&
+    pageProbe?.clearTitle === null;
+}
+
+function hasM4TooltipTrustedMoveResult(pageProbe, moveCount) {
+  return pageProbe?.resultText === `TRUSTED MOVE ${moveCount}`;
 }
 
 function matchesM4PrimaryPasteQueuedPointerRecord(
@@ -7300,6 +7545,444 @@ async function runM4OzoneWheelSmokeFromQuery() {
   return result;
 }
 
+async function runM4OzoneTooltipSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let readiness = null;
+  let result;
+  let tooltipRapidClearProof = null;
+  let tooltipShowProof = null;
+  let tooltipClearProof = null;
+
+  try {
+    if (parameters.get("case") !== M4_TOOLTIP_CASE) {
+      throw new Error("M4 tooltip case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 tooltip result token");
+    }
+    host = new ChromiumWasmM3Host(
+      canvas, versions, {fixture: M4_TOOLTIP_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady || !hasM4TooltipPageIdentity(
+        readiness.pageProbe)) {
+      throw new Error(
+        `M4 tooltip base readiness timeout: ${JSON.stringify(readiness)}`);
+    }
+
+    const hoverX = Number(readiness.pageProbe.hoverTargetX);
+    const hoverY = Number(readiness.pageProbe.hoverTargetY);
+    const confirmX = Number(readiness.pageProbe.confirmTargetX);
+    const confirmY = Number(readiness.pageProbe.confirmTargetY);
+    const confirmTitle = readiness.pageProbe.confirmTitle;
+    const clearX = Number(readiness.pageProbe.clearTargetX);
+    const clearY = Number(readiness.pageProbe.clearTargetY);
+    checkInteger(hoverX, "M4 tooltip hover x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(hoverY, "M4 tooltip hover y", 0, DEFAULT_HEIGHT - 1);
+    checkInteger(confirmX, "M4 tooltip confirm x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(confirmY, "M4 tooltip confirm y", 0, DEFAULT_HEIGHT - 1);
+    checkInteger(clearX, "M4 tooltip clear x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(clearY, "M4 tooltip clear y", 0, DEFAULT_HEIGHT - 1);
+    if (confirmTitle !== "SWAM TOOLTIP") {
+      throw new Error("M4 tooltip fixture confirm title mismatch");
+    }
+    if (
+      hoverX + M4_TOOLTIP_CURSOR_OFFSET_X + M4_TOOLTIP_WIDTH >
+          DEFAULT_WIDTH ||
+      hoverY + M4_TOOLTIP_CURSOR_OFFSET_Y + M4_TOOLTIP_HEIGHT >
+          DEFAULT_HEIGHT ||
+      confirmX + M4_TOOLTIP_CURSOR_OFFSET_X + M4_TOOLTIP_WIDTH >
+          DEFAULT_WIDTH ||
+      confirmY + M4_TOOLTIP_CURSOR_OFFSET_Y + M4_TOOLTIP_HEIGHT >
+          DEFAULT_HEIGHT ||
+      (clearX >= hoverX + M4_TOOLTIP_CURSOR_OFFSET_X &&
+       clearX < hoverX + M4_TOOLTIP_CURSOR_OFFSET_X + M4_TOOLTIP_WIDTH &&
+       clearY >= hoverY + M4_TOOLTIP_CURSOR_OFFSET_Y &&
+       clearY < hoverY + M4_TOOLTIP_CURSOR_OFFSET_Y + M4_TOOLTIP_HEIGHT) ||
+      (clearX >= confirmX + M4_TOOLTIP_CURSOR_OFFSET_X &&
+       clearX < confirmX + M4_TOOLTIP_CURSOR_OFFSET_X + M4_TOOLTIP_WIDTH &&
+       clearY >= confirmY + M4_TOOLTIP_CURSOR_OFFSET_Y &&
+       clearY < confirmY + M4_TOOLTIP_CURSOR_OFFSET_Y + M4_TOOLTIP_HEIGHT)
+    ) {
+      throw new Error("M4 tooltip fixture coordinates overlap the overlay");
+    }
+
+    const pointerListeners = host.enableM4PointerInput();
+    canvas.focus({preventScroll: true});
+    if (document.activeElement !== canvas) {
+      throw new Error("M4 tooltip canvas did not retain host focus");
+    }
+    if (scanM4TooltipOverlay(canvas, hoverX, hoverY, "WASM TOOLTIP") !== null) {
+      throw new Error("M4 tooltip overlay was visible before pointer hover");
+    }
+    window.__chromiumWasmM4TooltipState = {
+      state: "awaiting-dom-tooltip-race",
+      hoverTargetX: hoverX,
+      hoverTargetY: hoverY,
+      confirmTargetX: confirmX,
+      confirmTargetY: confirmY,
+      clearTargetX: clearX,
+      clearTargetY: clearY,
+      pointerListeners,
+    };
+    statusElement.textContent = "M4 ready for rapid trusted title clear";
+
+    // Drive a title -> title-less transition before the hover timer can fire.
+    // Both DOM elements live in the same RenderWidgetHostViewAura window, so
+    // this exercises the renderer callback ordering that a window-only target
+    // check cannot distinguish by itself.
+    const raceTrace = [
+      [hoverX, hoverY],
+      [clearX, clearY],
+    ];
+    const raceInnerTrace = [
+      ["tooltip-target", hoverX, hoverY],
+      ["clear-target", clearX, clearY],
+    ];
+    let raceTooltipAbsent = false;
+    let raceTooltipAbsenceStartedAt = null;
+    let raceTooltipBackgroundPixels = null;
+    let raceMoveGapMs = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const raceClearRecord = pointer?.queuedRecords?.[raceTrace.length - 1];
+      raceTooltipBackgroundPixels = countM4TooltipBackgroundPixels(canvas);
+      raceMoveGapMs = m4TooltipInnerTraceGapMs(readiness.pageProbe, 0, 1);
+      const raceInputObserved =
+        pointer?.receivedCount === raceTrace.length &&
+        pointer?.trustedCount === raceTrace.length &&
+        pointer?.queuedCount === raceTrace.length &&
+        matchesM4TooltipQueuedPointerTrace(pointer?.queuedRecords, raceTrace) &&
+        hasM4TooltipInnerTrace(readiness.pageProbe, raceInnerTrace) &&
+        hasM4TooltipTrustedMoveResult(readiness.pageProbe, raceTrace.length) &&
+        raceMoveGapMs !== null &&
+        raceMoveGapMs <= M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS &&
+        readiness.frame?.id > raceClearRecord?.frameIdBefore;
+      if (raceInputObserved) {
+        if (raceTooltipBackgroundPixels === 0) {
+          if (raceTooltipAbsenceStartedAt === null) {
+            raceTooltipAbsenceStartedAt = performance.now();
+          }
+          raceTooltipAbsent = performance.now() -
+            raceTooltipAbsenceStartedAt >= M4_TOOLTIP_CLEAR_QUIESCENCE_MS;
+        } else {
+          raceTooltipAbsenceStartedAt = null;
+          raceTooltipAbsent = false;
+        }
+      }
+      if (raceInputObserved && raceTooltipAbsent) {
+        break;
+      }
+      await delay(50);
+    }
+    const racePointer = readiness?.pointerInput;
+    const raceClearRecord =
+      racePointer?.queuedRecords?.[raceTrace.length - 1];
+    if (
+      !readiness || racePointer?.receivedCount !== raceTrace.length ||
+      racePointer?.trustedCount !== raceTrace.length ||
+      racePointer?.queuedCount !== raceTrace.length ||
+      !matchesM4TooltipQueuedPointerTrace(
+        racePointer?.queuedRecords, raceTrace) ||
+      !hasM4TooltipInnerTrace(readiness.pageProbe, raceInnerTrace) ||
+      !hasM4TooltipTrustedMoveResult(readiness.pageProbe, raceTrace.length) ||
+      raceMoveGapMs === null ||
+      raceMoveGapMs > M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS ||
+      !(readiness.frame?.id > raceClearRecord?.frameIdBefore) ||
+      !raceTooltipAbsent || raceTooltipBackgroundPixels !== 0
+    ) {
+      throw new Error(
+        "M4 rapid native title clear did not remain absent: " +
+        JSON.stringify(readiness));
+    }
+    tooltipRapidClearProof = {
+      frameId: readiness.frame.id,
+      backgroundPixels: raceTooltipBackgroundPixels,
+      quietForMs: Math.floor(
+        performance.now() - raceTooltipAbsenceStartedAt),
+      moveGapMs: raceMoveGapMs,
+    };
+    window.__chromiumWasmM4TooltipState = {
+      state: "awaiting-dom-tooltip-hover",
+      hoverTargetX: hoverX,
+      hoverTargetY: hoverY,
+      confirmTargetX: confirmX,
+      confirmTargetY: confirmY,
+      clearTargetX: clearX,
+      clearTargetY: clearY,
+      pointerListeners,
+      tooltipRapidClearProof: clone(tooltipRapidClearProof),
+    };
+    statusElement.textContent = "M4 rapid title clear proved; await title hover";
+
+    // Blink intentionally coalesces unchanged tooltip decisions. Require two
+    // trusted host moves at the same title point so the native bridge must
+    // retain the one logical hover across both physical records.
+    const hoverTrace = [...raceTrace, [confirmX, confirmY], [confirmX, confirmY]];
+    const hoverInnerTrace = [...raceInnerTrace,
+      ["confirm-target", confirmX, confirmY],
+      ["confirm-target", confirmX, confirmY]];
+    let tooltipOverlay = null;
+    let duplicateHoverGapMs = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const hoverRecord = pointer?.queuedRecords?.[hoverTrace.length - 1];
+      tooltipOverlay = scanM4TooltipOverlay(
+        canvas, confirmX, confirmY, confirmTitle);
+      const hasHoverInnerTrace = hasM4TooltipInnerTrace(
+          readiness.pageProbe, hoverInnerTrace);
+      duplicateHoverGapMs = m4TooltipInnerTraceGapMs(
+          readiness.pageProbe, 2, 3);
+      if (
+        pointer?.receivedCount === hoverTrace.length &&
+        pointer?.trustedCount === hoverTrace.length &&
+        pointer?.queuedCount === hoverTrace.length &&
+        matchesM4TooltipQueuedPointerTrace(pointer?.queuedRecords, hoverTrace) &&
+        hasHoverInnerTrace && duplicateHoverGapMs !== null &&
+        duplicateHoverGapMs <= M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS &&
+        tooltipOverlay !== null &&
+        readiness.frame?.id > hoverRecord?.frameIdBefore
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const hoverPointer = readiness?.pointerInput;
+    const hoverRecord = hoverPointer?.queuedRecords?.[hoverTrace.length - 1];
+    if (
+      !readiness || hoverPointer?.receivedCount !== hoverTrace.length ||
+      hoverPointer?.trustedCount !== hoverTrace.length ||
+      hoverPointer?.queuedCount !== hoverTrace.length ||
+      !matchesM4TooltipQueuedPointerTrace(
+        hoverPointer?.queuedRecords, hoverTrace) ||
+      !hasM4TooltipInnerTrace(readiness.pageProbe, hoverInnerTrace) ||
+      !hasM4TooltipTrustedMoveResult(readiness.pageProbe, hoverTrace.length) ||
+      duplicateHoverGapMs === null ||
+      duplicateHoverGapMs > M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS ||
+      tooltipOverlay === null ||
+      !(readiness.frame?.id > hoverRecord?.frameIdBefore)
+    ) {
+      throw new Error(
+        `M4 native title tooltip did not appear: ${JSON.stringify(readiness)}`);
+    }
+    tooltipShowProof = {
+      frameId: readiness.frame.id,
+      overlay: clone(tooltipOverlay),
+      duplicateMoveGapMs: duplicateHoverGapMs,
+    };
+    window.__chromiumWasmM4TooltipState = {
+      state: "awaiting-dom-tooltip-clear",
+      hoverTargetX: hoverX,
+      hoverTargetY: hoverY,
+      confirmTargetX: confirmX,
+      confirmTargetY: confirmY,
+      clearTargetX: clearX,
+      clearTargetY: clearY,
+      pointerListeners,
+      tooltipShowProof: clone(tooltipShowProof),
+    };
+    statusElement.textContent = "M4 tooltip visible; await trusted clear move";
+
+    const fullTrace = [...hoverTrace, [clearX, clearY]];
+    const fullInnerTrace = [...hoverInnerTrace,
+      ["clear-target", clearX, clearY]];
+    let tooltipAbsent = false;
+    let tooltipAbsenceStartedAt = null;
+    let tooltipBackgroundPixels = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const clearRecord = pointer?.queuedRecords?.[fullTrace.length - 1];
+      // The fixture deliberately contains no tooltip background color. Count
+      // it globally, not only at the first anchor, so a delayed title update
+      // cannot pass by reappearing under the clear target.
+      tooltipBackgroundPixels = countM4TooltipBackgroundPixels(canvas);
+      const clearInputObserved =
+        pointer?.receivedCount === fullTrace.length &&
+        pointer?.trustedCount === fullTrace.length &&
+        pointer?.queuedCount === fullTrace.length &&
+        matchesM4TooltipQueuedPointerTrace(pointer?.queuedRecords, fullTrace) &&
+        hasM4TooltipInnerTrace(readiness.pageProbe, fullInnerTrace) &&
+        hasM4TooltipTrustedMoveResult(readiness.pageProbe, fullTrace.length);
+      const clearFramePresented =
+        readiness.frame?.id > clearRecord?.frameIdBefore;
+      if (clearInputObserved && clearFramePresented) {
+        if (tooltipBackgroundPixels === 0) {
+          if (tooltipAbsenceStartedAt === null) {
+            tooltipAbsenceStartedAt = performance.now();
+          }
+          // Title updates cross the renderer/browser boundary. Stay quiet for
+          // longer than the native hover delay to catch a late re-arm.
+          tooltipAbsent = performance.now() - tooltipAbsenceStartedAt >=
+            M4_TOOLTIP_CLEAR_QUIESCENCE_MS;
+        } else {
+          tooltipAbsenceStartedAt = null;
+          tooltipAbsent = false;
+        }
+      }
+      if (clearInputObserved && clearFramePresented && tooltipAbsent) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = readiness?.pointerInput;
+    const clearRecord = pointer?.queuedRecords?.[fullTrace.length - 1];
+    if (
+      !readiness || pointer?.receivedCount !== fullTrace.length ||
+      pointer?.trustedCount !== fullTrace.length ||
+      pointer?.queuedCount !== fullTrace.length ||
+      !matchesM4TooltipQueuedPointerTrace(pointer?.queuedRecords, fullTrace) ||
+      !hasM4TooltipInnerTrace(readiness.pageProbe, fullInnerTrace) ||
+      !hasM4TooltipTrustedMoveResult(readiness.pageProbe, fullTrace.length) ||
+      !tooltipAbsent || tooltipBackgroundPixels !== 0 ||
+      !(readiness.frame?.id > clearRecord?.frameIdBefore)
+    ) {
+      throw new Error(
+        `M4 native title tooltip did not clear: ${JSON.stringify(readiness)}`);
+    }
+    tooltipClearProof = {
+      frameId: readiness.frame.id,
+      overlayAbsent: true,
+      backgroundPixels: tooltipBackgroundPixels,
+      quietForMs: Math.floor(performance.now() - tooltipAbsenceStartedAt),
+    };
+    window.__chromiumWasmM4TooltipState = {
+      state: "input-delivered",
+      hoverTargetX: hoverX,
+      hoverTargetY: hoverY,
+      confirmTargetX: confirmX,
+      confirmTargetY: confirmY,
+      clearTargetX: clearX,
+      clearTargetY: clearY,
+      pointerListeners,
+      tooltipShowProof: clone(tooltipShowProof),
+      tooltipClearProof: clone(tooltipClearProof),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      trustedDomInput:
+        matchesM4TooltipQueuedPointerTrace(pointer.queuedRecords, fullTrace) &&
+        hasM4TooltipInnerTrace(readiness.pageProbe, fullInnerTrace) &&
+        hasM4TooltipTrustedMoveResult(readiness.pageProbe, fullTrace.length),
+      rapidTitleCleared:
+        tooltipRapidClearProof.backgroundPixels === 0 &&
+        tooltipRapidClearProof.quietForMs >= M4_TOOLTIP_CLEAR_QUIESCENCE_MS &&
+        tooltipRapidClearProof.moveGapMs <= M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS,
+      nativeTooltipShown:
+        tooltipShowProof.overlay !== null &&
+        tooltipShowProof.duplicateMoveGapMs <=
+          M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS &&
+        tooltipShowProof.frameId > hoverRecord.frameIdBefore,
+      nativeTooltipCleared:
+        tooltipClearProof.overlayAbsent === true &&
+        tooltipClearProof.backgroundPixels === 0 &&
+        tooltipClearProof.frameId > clearRecord.frameIdBefore,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_TOOLTIP_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: pointer,
+      tooltipRapidClearProof,
+      tooltipShowProof,
+      tooltipClearProof,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : `failed checks: ${failedChecks.join(", ")}`,
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_TOOLTIP_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      pointerInput: readiness?.pointerInput ?? null,
+      tooltipRapidClearProof,
+      tooltipShowProof,
+      tooltipClearProof,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += `; diagnostics: ${String(diagnosticError)}`;
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+      } catch (diagnosticError) {
+        result.error += `; readiness diagnostics: ${String(diagnosticError)}`;
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 async function runM4OzoneKeyboardSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -9378,6 +10061,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_CONTEXT_MENU_CASE) {
     return runM4OzoneContextMenuSmokeFromQuery();
+  }
+  if (selectedCase === M4_TOOLTIP_CASE) {
+    return runM4OzoneTooltipSmokeFromQuery();
   }
   if (selectedCase === M4_SELECTION_CASE) {
     return runM4OzoneSelectionSmokeFromQuery();

@@ -2820,8 +2820,13 @@ void RenderWidgetHostImpl::ShowPopup(const gfx::Rect& initial_screen_rect,
 
 void RenderWidgetHostImpl::UpdateTooltipUnderCursor(
     const std::u16string& tooltip_text,
-    base::i18n::TextDirection text_direction_hint) {
+    base::i18n::TextDirection text_direction_hint,
+    base::TimeTicks input_event_time) {
   if (!GetView()) {
+    return;
+  }
+
+  if (!GetView()->IsTooltipInputEventCurrent(input_event_time)) {
     return;
   }
 

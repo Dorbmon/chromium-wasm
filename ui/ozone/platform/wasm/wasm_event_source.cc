@@ -177,6 +177,24 @@ WasmPlatformEventSource::~WasmPlatformEventSource() {
   DCHECK(thread_checker_.CalledOnValidThread());
 }
 
+base::TimeTicks WasmPlatformEventSource::NextMouseEventTime() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+
+  // A tooltip update returns asynchronously from Blink, so its timestamp is
+  // also its correlation token at the browser endpoint. Emscripten's clock is
+  // monotonic but may return the same tick for adjacent host records. Reserve
+  // one microsecond for each accepted mouse event so no two records can share
+  // that token.
+  const base::TimeTicks now = EventTimeForNow();
+  if (now <= last_mouse_event_time_) {
+    last_mouse_event_time_ =
+        last_mouse_event_time_ + base::Microseconds(1);
+  } else {
+    last_mouse_event_time_ = now;
+  }
+  return last_mouse_event_time_;
+}
+
 bool WasmPlatformEventSource::DispatchMouseEvent(
     EventType type,
     const gfx::PointF& screen_location,
@@ -209,7 +227,7 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
   gfx::Point location = root_location;
   location.Offset(-target->GetBoundsInPixels().x(),
                   -target->GetBoundsInPixels().y());
-  MouseEvent event(type, location, root_location, EventTimeForNow(), flags,
+  MouseEvent event(type, location, root_location, NextMouseEventTime(), flags,
                    changed_button_flags);
   event.set_source_device_id(source_device_id);
   Event::DispatcherApi(&event).set_target(target);

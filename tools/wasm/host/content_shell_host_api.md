@@ -305,6 +305,23 @@ menu disappearance, a pasted value of `"MENU"`, and newer compositor frames.
 It does not call Clipboard APIs, DOM clipboard commands, programmatic
 selection, or an outer-page menu replacement.
 
+The separate M4 native title-tooltip smoke sends exactly four unpressed,
+trusted mouse moves through the existing pointer ABI. It first sends a rapid
+move to a real Blink element whose `title` is `"WASM TOOLTIP"` and then to a
+distant title-less element within 250 ms; the native pixels must remain absent
+for 750 ms, longer than the hover delay. It then moves to a distinct Blink
+title and anchor to prove the normal show path, followed by a final title-less
+move to prove removal. Content Shell's
+root-owned `wm::TooltipClient` receives Blink's normal Aura tooltip property
+and, after its native 500 ms hover timer, creates one non-hit-testable
+`WINDOW_TYPE_TOOLTIP` child in the existing compositor root. It never creates
+a second platform window, a Views bubble, or a host-page DOM overlay. The smoke
+scans only compositor pixels and requires the exact 110×24 opaque native
+overlay at the pointer-relative `(+12,+18)` anchor, including its background,
+border, and fixed bitmap title mask. Keyboard tooltips, rich typography, custom
+tooltip content, Chrome/Views bubbles, and generic transient-surface behavior
+remain outside this bounded first route.
+
 #### Bounded IME composition route
 
 A queued pointer event alone does not arm the proxy: its focus is delayed until

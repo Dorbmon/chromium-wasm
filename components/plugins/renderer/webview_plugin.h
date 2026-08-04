@@ -12,6 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-forward.h"
@@ -187,8 +188,10 @@ class WebViewPlugin : public blink::WebPlugin, public blink::WebViewObserver {
 
     // blink::mojom::WidgetHost implementation.
     void SetCursor(const ui::Cursor& cursor) override;
-    void UpdateTooltipUnderCursor(const std::u16string& tooltip_text,
-                                  base::i18n::TextDirection hint) override;
+    void UpdateTooltipUnderCursor(
+        const std::u16string& tooltip_text,
+        base::i18n::TextDirection hint,
+        base::TimeTicks input_event_time) override;
     void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
                                    base::i18n::TextDirection hint,
                                    const gfx::Rect& bounds) override;

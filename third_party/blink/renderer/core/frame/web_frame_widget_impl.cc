@@ -3085,6 +3085,9 @@ WebInputEventResult WebFrameWidgetImpl::DispatchBufferedTouchEvents() {
 WebInputEventResult WebFrameWidgetImpl::HandleInputEvent(
     const WebCoalescedInputEvent& coalesced_event) {
   const WebInputEvent& input_event = coalesced_event.Event();
+  if (WebInputEvent::IsMouseEventType(input_event.GetType())) {
+    widget_base_->SetTooltipInputEventTime(input_event.TimeStamp());
+  }
   TRACE_EVENT1("input,rail", "WebFrameWidgetImpl::HandleInputEvent", "type",
                WebInputEvent::GetName(input_event.GetType()));
   DCHECK(!WebInputEvent::IsTouchEventType(input_event.GetType()));

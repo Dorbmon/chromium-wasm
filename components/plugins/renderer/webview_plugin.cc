@@ -315,7 +315,8 @@ WebViewPlugin::WebViewHelper::~WebViewHelper() {
 
 void WebViewPlugin::WebViewHelper::UpdateTooltipUnderCursor(
     const std::u16string& tooltip_text,
-    base::i18n::TextDirection hint) {
+    base::i18n::TextDirection hint,
+    base::TimeTicks input_event_time) {
   UpdateTooltip(tooltip_text);
 }
 

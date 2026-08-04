@@ -2428,6 +2428,7 @@ bool RenderWidgetHostViewAura::RequiresDoubleTapGestureEvents() const {
 // RenderWidgetHostViewAura, ui::EventHandler implementation:
 
 void RenderWidgetHostViewAura::OnKeyEvent(ui::KeyEvent* event) {
+  InvalidateTooltipInputEventEpoch();
   last_pointer_type_ = ui::EventPointerType::kUnknown;
 
 #if BUILDFLAG(IS_WIN)
@@ -2462,6 +2463,12 @@ void RenderWidgetHostViewAura::OnKeyEvent(ui::KeyEvent* event) {
 }
 
 void RenderWidgetHostViewAura::OnMouseEvent(ui::MouseEvent* event) {
+  if (event->type() == ui::EventType::kMouseMoved) {
+    RecordTooltipInputEventTime(event->time_stamp(), event->root_location_f());
+  } else {
+    InvalidateTooltipInputEventEpoch();
+  }
+
 #if BUILDFLAG(IS_WIN)
   if (event->type() == ui::EventType::kMouseMoved) {
     if (event->location() == last_mouse_move_location_ &&
@@ -2667,10 +2674,12 @@ void RenderWidgetHostViewAura::OnFocusHandwritingTarget(
 #endif  // BUILDFLAG(IS_WIN)
 
 void RenderWidgetHostViewAura::OnScrollEvent(ui::ScrollEvent* event) {
+  InvalidateTooltipInputEventEpoch();
   event_handler_->OnScrollEvent(event);
 }
 
 void RenderWidgetHostViewAura::OnTouchEvent(ui::TouchEvent* event) {
+  InvalidateTooltipInputEventEpoch();
   last_pointer_type_ = event->pointer_details().pointer_type;
 
 #if BUILDFLAG(IS_WIN)
@@ -2711,6 +2720,7 @@ void RenderWidgetHostViewAura::OnTouchEvent(ui::TouchEvent* event) {
 }
 
 void RenderWidgetHostViewAura::OnGestureEvent(ui::GestureEvent* event) {
+  InvalidateTooltipInputEventEpoch();
   last_pointer_type_ = event->details().primary_pointer_type();
   event_handler_->OnGestureEvent(event);
 }

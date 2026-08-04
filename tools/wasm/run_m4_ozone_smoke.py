@@ -34,6 +34,7 @@ from m3_content_server import (
     M4_SELECT_CASE,
     M4_RESIZE_CASE,
     M4_CONTEXT_MENU_CASE,
+    M4_TOOLTIP_CASE,
     M4_SELECTION_CASE,
     M4_PRIMARY_PASTE_CASE,
     M4_COPY_PASTE_CASE,
@@ -49,6 +50,7 @@ from m3_content_server import (
     m4_select_smoke_url,
     m4_resize_smoke_url,
     m4_context_menu_smoke_url,
+    m4_tooltip_smoke_url,
     m4_selection_smoke_url,
     m4_primary_paste_smoke_url,
     m4_copy_paste_smoke_url,
@@ -61,6 +63,7 @@ from m3_content_server import (
     validate_m4_select_result,
     validate_m4_resize_result,
     validate_m4_context_menu_result,
+    validate_m4_tooltip_result,
     validate_m4_selection_result,
     validate_m4_primary_paste_result,
     validate_m4_copy_paste_result,
@@ -421,6 +424,7 @@ def main() -> int:
             "select",
             "resize",
             "context-menu",
+            "tooltip",
             "selection",
             "primary-paste",
             "copy-paste",
@@ -478,6 +482,17 @@ def main() -> int:
             "Chrome DevTools primary activation and drag, secondary click, "
             "scan-derived Copy click, then raw ControlLeft+KeyV; no "
             "clipboard or DOM text commands"
+        )
+    elif args.input == "tooltip":
+        case = M4_TOOLTIP_CASE
+        state_expression = "window.__chromiumWasmM4TooltipState || null"
+        expected_state = "awaiting-dom-tooltip-race"
+        input_driver = (
+            "Chrome DevTools Input.dispatchMouseEvent: five mouseMoved "
+            "records: immediate title-to-title-less race, duplicate title "
+            "hover for Blink coalescing, then title-less clear; no click, "
+            "keyboard, text, clipboard, or "
+            "DOM commands"
         )
     elif args.input == "selection":
         case = M4_SELECTION_CASE
@@ -663,6 +678,14 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(90.0, max(1.0, args.timeout - 5.0)),
             )
+        elif args.input == "tooltip":
+            url = m4_tooltip_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
         elif args.input == "selection":
             url = m4_selection_smoke_url(
                 server,
@@ -846,6 +869,21 @@ def main() -> int:
                 x_field="copySourceTargetX",
                 y_field="copySourceTargetY",
                 description="copy-paste source target",
+            )
+        elif args.input == "tooltip":
+            click_x, click_y = canvas_point_position(
+                state,
+                canvas_geometry,
+                x_field="hoverTargetX",
+                y_field="hoverTargetY",
+                description="tooltip title target",
+            )
+            rapid_clear_x, rapid_clear_y = canvas_point_position(
+                state,
+                canvas_geometry,
+                x_field="clearTargetX",
+                y_field="clearTargetY",
+                description="rapid tooltip title-less target",
             )
         else:
             click_x, click_y = canvas_click_position(state, canvas_geometry)
@@ -1101,6 +1139,53 @@ def main() -> int:
             )
             stage = "dispatch_trusted_dom_context_menu_ctrl_v"
             client.dispatch_ctrl_v()
+        elif args.input == "tooltip":
+            stage = "dispatch_trusted_dom_tooltip_race_hover"
+            client.dispatch_mouse_move(click_x, click_y)
+            stage = "dispatch_trusted_dom_tooltip_race_clear"
+            client.dispatch_mouse_move(rapid_clear_x, rapid_clear_y)
+            stage = "wait_for_tooltip_hover"
+            tooltip_hover_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-tooltip-hover",
+            )
+            stage = "measure_tooltip_confirm_target"
+            hover_x, hover_y = canvas_point_position(
+                tooltip_hover_state,
+                canvas_geometry,
+                x_field="confirmTargetX",
+                y_field="confirmTargetY",
+                description="tooltip confirm title target",
+            )
+            stage = "dispatch_trusted_dom_tooltip_confirm"
+            client.dispatch_mouse_move(hover_x, hover_y)
+            stage = "dispatch_trusted_dom_tooltip_confirm_duplicate"
+            client.dispatch_mouse_move(hover_x, hover_y)
+            stage = "wait_for_tooltip_clear_target"
+            tooltip_clear_state = wait_for_input_state(
+                client,
+                browser,
+                browser_stderr,
+                result_queue,
+                deadline,
+                state_expression,
+                "awaiting-dom-tooltip-clear",
+            )
+            stage = "measure_tooltip_clear_target"
+            clear_x, clear_y = canvas_point_position(
+                tooltip_clear_state,
+                canvas_geometry,
+                x_field="clearTargetX",
+                y_field="clearTargetY",
+                description="tooltip title-less target",
+            )
+            stage = "dispatch_trusted_dom_tooltip_clear"
+            client.dispatch_mouse_move(clear_x, clear_y)
         elif args.input == "copy-paste":
             stage = "dispatch_trusted_dom_copy_source_activation"
             client.dispatch_primary_click(click_x, click_y)
@@ -1417,6 +1502,9 @@ def main() -> int:
             validate_m4_context_menu_result(
                 result, expected_versions=versions
             )
+            input_key = "pointerInput"
+        elif args.input == "tooltip":
+            validate_m4_tooltip_result(result, expected_versions=versions)
             input_key = "pointerInput"
         elif args.input == "selection":
             validate_m4_selection_result(result, expected_versions=versions)

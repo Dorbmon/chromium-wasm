@@ -50,6 +50,7 @@
 #include "ui/display/screen_infos.h"
 #include "ui/events/blink/did_overscroll_params.h"
 #include "ui/events/event_constants.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/range/range.h"
@@ -145,6 +146,8 @@ class CONTENT_EXPORT RenderWidgetHostViewBase
   input::RenderInputRouter* GetViewRenderInputRouter() override;
   void ProcessMouseEvent(const blink::WebMouseEvent& event,
                          const ui::LatencyInfo& latency) override;
+  bool IsTooltipInputEventCurrent(
+      base::TimeTicks input_event_time) const override;
   void ProcessMouseWheelEvent(const blink::WebMouseWheelEvent& event,
                               const ui::LatencyInfo& latency) override;
   void ProcessTouchEvent(const blink::WebTouchEvent& event,
@@ -579,6 +582,10 @@ class CONTENT_EXPORT RenderWidgetHostViewBase
 #endif  // BUILDFLAG(IS_WIN)
 
  protected:
+  void RecordTooltipInputEventTime(base::TimeTicks input_event_time,
+                                   const gfx::PointF& screen_location);
+  void InvalidateTooltipInputEventEpoch();
+
   explicit RenderWidgetHostViewBase(RenderWidgetHost* host);
   ~RenderWidgetHostViewBase() override;
 
@@ -683,6 +690,14 @@ class CONTENT_EXPORT RenderWidgetHostViewBase
   // Cursor size in logical pixels, obtained from the OS. This value is general
   // to all displays.
   gfx::Size system_cursor_size_;
+
+  // The latest mouse time in the current screen-location hover epoch. Blink
+  // deliberately coalesces duplicate moves, so an asynchronous tooltip update
+  // from any event in this epoch is still current.
+  base::TimeTicks tooltip_input_event_time_;
+  base::TimeTicks tooltip_input_epoch_start_time_;
+  gfx::PointF tooltip_input_screen_location_;
+  bool has_tooltip_input_epoch_ = false;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(

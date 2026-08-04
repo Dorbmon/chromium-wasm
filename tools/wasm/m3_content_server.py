@@ -29,6 +29,7 @@ M4_CASE = "ozone_pointer_m4"
 M4_SELECT_CASE = "ozone_select_m4"
 M4_RESIZE_CASE = "ozone_resize_m4"
 M4_CONTEXT_MENU_CASE = "ozone_context_menu_m4"
+M4_TOOLTIP_CASE = "ozone_tooltip_m4"
 M4_SELECTION_CASE = "ozone_selection_m4"
 M4_PRIMARY_PASTE_CASE = "ozone_primary_paste_m4"
 M4_COPY_PASTE_CASE = "ozone_copy_paste_m4"
@@ -43,6 +44,8 @@ M3_WIDTH = 800
 M3_HEIGHT = 600
 M4_RESIZE_NARROW_WIDTH = 640
 M4_RESIZE_NARROW_HEIGHT = 480
+M4_TOOLTIP_CLEAR_QUIESCENCE_MS = 750
+M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS = 250
 M3_MINIMUM_RUNTIME_MS = 3000
 M3_MINIMUM_TIMER_TICKS = 60
 M3_MINIMUM_ANIMATION_FRAMES = 30
@@ -62,6 +65,7 @@ M4_POINTER_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_input_page.html"
 M4_SELECT_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_select_page.html"
 M4_RESIZE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_resize_page.html"
 M4_CONTEXT_MENU_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_context_menu_page.html"
+M4_TOOLTIP_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_tooltip_page.html"
 M4_SELECTION_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_selection_page.html"
 M4_PRIMARY_PASTE_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_primary_paste_page.html"
@@ -210,6 +214,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
             "/__m3__/m4-select-fixture.html": M4_SELECT_FIXTURE,
             "/__m3__/m4-resize-fixture.html": M4_RESIZE_FIXTURE,
             "/__m3__/m4-context-menu-fixture.html": M4_CONTEXT_MENU_FIXTURE,
+            "/__m3__/m4-tooltip-fixture.html": M4_TOOLTIP_FIXTURE,
             "/__m3__/m4-selection-fixture.html": M4_SELECTION_FIXTURE,
             "/__m3__/m4-primary-paste-fixture.html": M4_PRIMARY_PASTE_FIXTURE,
             "/__m3__/m4-copy-paste-fixture.html": M4_COPY_PASTE_FIXTURE,
@@ -272,6 +277,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_SELECT_CASE,
                 M4_RESIZE_CASE,
                 M4_CONTEXT_MENU_CASE,
+                M4_TOOLTIP_CASE,
                 M4_SELECTION_CASE,
                 M4_PRIMARY_PASTE_CASE,
                 M4_COPY_PASTE_CASE,
@@ -514,6 +520,34 @@ def m4_context_menu_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-context-menu-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_tooltip_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_TOOLTIP_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m4-tooltip-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -2723,6 +2757,412 @@ def validate_m4_context_menu_result(
             )
     if host_logs[-1:] != ["shutdown:complete"]:
         raise M0Error("M4 context-menu logs are missing clean shutdown")
+
+
+def validate_m4_tooltip_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate Blink's title through the native Aura tooltip path.
+
+    The only externally driven events are five physical mouse moves. A rapid
+    title-to-title-less pair must remain absent past the hover delay; two
+    same-point title moves must expose the compositor tooltip, then a final
+    title-less move must remove it.
+    """
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_TOOLTIP_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 tooltip result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 tooltip versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 tooltip version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    readiness = _require_dict(result.get("readiness"), "M4 tooltip readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 tooltip readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 tooltip readiness reported fatal errors")
+    heartbeat = _require_dict(
+        readiness.get("heartbeat"), "M4 tooltip heartbeat"
+    )
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error("M4 tooltip heartbeat was not anchored to navigation")
+    _require_number(
+        heartbeat.get("elapsedMs"), "M4 tooltip heartbeat elapsed time", minimum=0
+    )
+
+    frame = _require_dict(readiness.get("frame"), "M4 tooltip frame")
+    final_frame_id = _require_safe_integer(
+        frame.get("id"), "M4 tooltip frame ID", minimum=1
+    )
+    _require_number(
+        frame.get("timestampMs"), "M4 tooltip frame timestamp", minimum=0
+    )
+    if frame.get("width") != M3_WIDTH or frame.get("height") != M3_HEIGHT:
+        raise M0Error("M4 tooltip frame dimensions do not match the canvas")
+
+    page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 tooltip page probe"
+    )
+    expected_probe = {
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-tooltip-v1",
+        "fontReady": True,
+        "ready": True,
+        "tooltipTitle": "WASM TOOLTIP",
+        "confirmTitle": "SWAM TOOLTIP",
+        "clearTitle": None,
+        "resultText": "TRUSTED MOVE 5",
+    }
+    for field, expected_value in expected_probe.items():
+        actual_value = page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 tooltip page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        page_probe.get("timerTicks"), "M4 tooltip inner timer ticks", minimum=3
+    )
+    coordinates = {
+        "hoverTargetX": 220,
+        "hoverTargetY": 116,
+        "confirmTargetX": 220,
+        "confirmTargetY": 286,
+        "clearTargetX": 580,
+        "clearTargetY": 376,
+    }
+    for field, expected_value in coordinates.items():
+        maximum = M3_WIDTH - 1 if field.endswith("X") else M3_HEIGHT - 1
+        actual_value = _require_safe_integer(
+            page_probe.get(field), f"M4 tooltip {field}", minimum=0,
+            maximum=maximum,
+        )
+        if actual_value != expected_value:
+            raise M0Error(
+                f"M4 tooltip {field} mismatch: expected {expected_value}, "
+                f"got {actual_value}"
+            )
+    hover_x = coordinates["hoverTargetX"]
+    hover_y = coordinates["hoverTargetY"]
+    confirm_x = coordinates["confirmTargetX"]
+    confirm_y = coordinates["confirmTargetY"]
+    clear_x = coordinates["clearTargetX"]
+    clear_y = coordinates["clearTargetY"]
+    if (
+        hover_x + 12 + 110 > M3_WIDTH
+        or hover_y + 18 + 24 > M3_HEIGHT
+        or confirm_x + 12 + 110 > M3_WIDTH
+        or confirm_y + 18 + 24 > M3_HEIGHT
+    ):
+        raise M0Error("M4 tooltip fixture can only show a clamped overlay")
+
+    expected_moves = (
+        ("tooltip-target", hover_x, hover_y),
+        ("clear-target", clear_x, clear_y),
+        ("confirm-target", confirm_x, confirm_y),
+        ("confirm-target", confirm_x, confirm_y),
+        ("clear-target", clear_x, clear_y),
+    )
+
+    def require_inner_trace(prefix: str, button: int) -> None:
+        trace = page_probe.get(f"{prefix}Trace")
+        if not isinstance(trace, list) or len(trace) != len(expected_moves):
+            raise M0Error(f"M4 tooltip {prefix} trace is not five moves")
+        for index, (target_id, x, y) in enumerate(expected_moves):
+            record = _require_dict(
+                trace[index], f"M4 tooltip {prefix} trace {index}"
+            )
+            expected_record = {
+                "type": f"{prefix}move",
+                "trusted": True,
+                "button": button,
+                "buttons": 0,
+                "clientX": x,
+                "clientY": y,
+                "targetId": target_id,
+                "defaultPrevented": False,
+            }
+            for field, expected_value in expected_record.items():
+                if record.get(field) != expected_value:
+                    raise M0Error(
+                        f"M4 tooltip {prefix} trace {index} {field} mismatch"
+                    )
+
+    require_inner_trace("mouse", 0)
+    require_inner_trace("pointer", -1)
+
+    def require_move_gap(
+        prefix: str, first_index: int, second_index: int, description: str
+    ) -> int:
+        trace = page_probe.get(f"{prefix}Trace")
+        assert isinstance(trace, list)
+        first_move = _require_dict(
+            trace[first_index], f"M4 tooltip {prefix} {description} first move"
+        )
+        second_move = _require_dict(
+            trace[second_index],
+            f"M4 tooltip {prefix} {description} second move",
+        )
+        first_timestamp = _require_safe_integer(
+            first_move.get("observedAtMs"),
+            f"M4 tooltip {prefix} {description} first move timestamp",
+            minimum=0,
+        )
+        second_timestamp = _require_safe_integer(
+            second_move.get("observedAtMs"),
+            f"M4 tooltip {prefix} {description} second move timestamp",
+            minimum=0,
+        )
+        if second_timestamp < first_timestamp:
+            raise M0Error(
+                f"M4 tooltip {prefix} {description} timestamps are not ordered"
+            )
+        return second_timestamp - first_timestamp
+
+    rapid_move_gap_ms = max(
+        require_move_gap("mouse", 0, 1, "rapid move"),
+        require_move_gap("pointer", 0, 1, "rapid move"),
+    )
+    if rapid_move_gap_ms > M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS:
+        raise M0Error(
+            "M4 tooltip rapid title clear was not delivered before hover"
+        )
+    duplicate_hover_gap_ms = max(
+        require_move_gap("mouse", 2, 3, "duplicate hover"),
+        require_move_gap("pointer", 2, 3, "duplicate hover"),
+    )
+    if duplicate_hover_gap_ms > M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS:
+        raise M0Error("M4 tooltip duplicate title hover was not prompt")
+
+    pointer_input = _require_dict(
+        result.get("pointerInput"), "M4 tooltip pointer input"
+    )
+    readiness_pointer = _require_dict(
+        readiness.get("pointerInput"), "M4 tooltip readiness pointer input"
+    )
+    if not _exact_json_value_equal(pointer_input, readiness_pointer):
+        raise M0Error("M4 tooltip pointer evidence differs from readiness")
+    if (
+        pointer_input.get("enabled") is not True
+        or pointer_input.get("receivedCount") != len(expected_moves)
+        or pointer_input.get("trustedCount") != len(expected_moves)
+        or pointer_input.get("queuedCount") != len(expected_moves)
+    ):
+        raise M0Error("M4 tooltip pointer input counts are not exact")
+    queued_records = pointer_input.get("queuedRecords")
+    if not isinstance(queued_records, list) or len(queued_records) != len(
+        expected_moves
+    ):
+        raise M0Error("M4 tooltip pointer trace is not exactly five moves")
+    input_frames: list[int] = []
+    for index, (_, x, y) in enumerate(expected_moves):
+        record = _require_dict(
+            queued_records[index], f"M4 tooltip pointer trace {index}"
+        )
+        expected_record = {
+            "sequence": index + 1,
+            "type": "move",
+            "trusted": True,
+            "queued": True,
+            "button": -1,
+            "buttons": 0,
+            "x": x,
+            "y": y,
+            "canvasFocused": True,
+        }
+        for field, expected_value in expected_record.items():
+            if record.get(field) != expected_value:
+                raise M0Error(
+                    f"M4 tooltip pointer trace {index} {field} mismatch"
+                )
+        input_frames.append(
+            _require_safe_integer(
+                record.get("frameIdBefore"),
+                f"M4 tooltip pointer trace {index} frame ID",
+                minimum=1,
+            )
+        )
+    last_queued = _require_dict(
+        pointer_input.get("lastQueued"), "M4 tooltip last queued pointer"
+    )
+    if not _exact_json_value_equal(last_queued, queued_records[-1]):
+        raise M0Error("M4 tooltip last queued pointer differs from trace")
+
+    rapid_clear_proof = _require_dict(
+        result.get("tooltipRapidClearProof"), "M4 rapid tooltip clear proof"
+    )
+    rapid_clear_frame_id = _require_safe_integer(
+        rapid_clear_proof.get("frameId"),
+        "M4 rapid tooltip clear frame ID",
+        minimum=1,
+    )
+    if rapid_clear_frame_id <= input_frames[1]:
+        raise M0Error("M4 rapid tooltip clear has no newer compositor frame")
+    if _require_safe_integer(
+        rapid_clear_proof.get("backgroundPixels"),
+        "M4 rapid tooltip clear background pixels",
+        minimum=0,
+    ) != 0:
+        raise M0Error("M4 rapid tooltip clear proof leaves native background")
+    rapid_quiet_for_ms = _require_safe_integer(
+        rapid_clear_proof.get("quietForMs"),
+        "M4 rapid tooltip clear quiet duration",
+        minimum=0,
+    )
+    if rapid_quiet_for_ms < M4_TOOLTIP_CLEAR_QUIESCENCE_MS:
+        raise M0Error("M4 rapid tooltip clear did not outlive the hover delay")
+    if _require_safe_integer(
+        rapid_clear_proof.get("moveGapMs"),
+        "M4 rapid tooltip clear move gap",
+        minimum=0,
+    ) != rapid_move_gap_ms:
+        raise M0Error("M4 rapid tooltip clear proof has the wrong input gap")
+
+    show_proof = _require_dict(
+        result.get("tooltipShowProof"), "M4 tooltip show proof"
+    )
+    show_frame_id = _require_safe_integer(
+        show_proof.get("frameId"), "M4 tooltip show frame ID", minimum=1
+    )
+    if (
+        show_frame_id <= rapid_clear_frame_id
+        or show_frame_id <= input_frames[3]
+    ):
+        raise M0Error("M4 tooltip has no compositor frame after the hover")
+    overlay = _require_dict(
+        show_proof.get("overlay"), "M4 tooltip compositor overlay scan"
+    )
+    for field, expected_value in {
+        "backgroundRgba": [32, 33, 36, 255],
+        "borderRgba": [95, 99, 104, 255],
+        "inkRgba": [255, 255, 255, 255],
+        "backgroundPixels": 1952,
+        "borderPixels": 264,
+        "inkPixels": 424,
+        "minX": confirm_x + 12,
+        "minY": confirm_y + 18,
+        "maxX": confirm_x + 12 + 110 - 1,
+        "maxY": confirm_y + 18 + 24 - 1,
+        "width": 110,
+        "height": 24,
+        "anchorX": confirm_x + 12,
+        "anchorY": confirm_y + 18,
+        "label": "SWAM TOOLTIP",
+    }.items():
+        actual_value = overlay.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 tooltip compositor overlay {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    if _require_safe_integer(
+        show_proof.get("duplicateMoveGapMs"),
+        "M4 tooltip duplicate hover move gap",
+        minimum=0,
+    ) != duplicate_hover_gap_ms:
+        raise M0Error("M4 tooltip show proof has the wrong duplicate move gap")
+
+    clear_proof = _require_dict(
+        result.get("tooltipClearProof"), "M4 tooltip clear proof"
+    )
+    clear_frame_id = _require_safe_integer(
+        clear_proof.get("frameId"), "M4 tooltip clear frame ID", minimum=1
+    )
+    if clear_proof.get("overlayAbsent") is not True:
+        raise M0Error("M4 tooltip clear proof does not remove the overlay")
+    if _require_safe_integer(
+        clear_proof.get("backgroundPixels"),
+        "M4 tooltip clear background pixels",
+        minimum=0,
+    ) != 0:
+        raise M0Error("M4 tooltip clear proof leaves native background pixels")
+    quiet_for_ms = _require_safe_integer(
+        clear_proof.get("quietForMs"),
+        "M4 tooltip clear quiet duration",
+        minimum=0,
+    )
+    if quiet_for_ms < M4_TOOLTIP_CLEAR_QUIESCENCE_MS:
+        raise M0Error("M4 tooltip clear proof did not outlive the hover delay")
+    if clear_frame_id <= show_frame_id or clear_frame_id <= input_frames[4]:
+        raise M0Error("M4 tooltip has no newer compositor frame after clear")
+    if final_frame_id != clear_frame_id:
+        raise M0Error("M4 tooltip final frame differs from the clear proof")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 tooltip shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 tooltip shutdown {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 tooltip shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 tooltip shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 tooltip logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 tooltip {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 tooltip logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    pointer_logs = [
+        line for line in host_logs if line.startswith("m4:pointer:")
+    ]
+    if pointer_logs != [
+        "m4:pointer:listeners-attached",
+        "m4:pointer:move:queued",
+        "m4:pointer:move:queued",
+        "m4:pointer:move:queued",
+        "m4:pointer:move:queued",
+        "m4:pointer:move:queued",
+    ]:
+        raise M0Error("M4 tooltip pointer lifecycle logs are not exact")
+    if host_logs[-1:] != ["shutdown:complete"]:
+        raise M0Error("M4 tooltip logs are missing clean shutdown")
 
 
 def validate_m4_selection_result(
