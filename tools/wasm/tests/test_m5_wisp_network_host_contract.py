@@ -53,8 +53,16 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         self.assertIn("this.#wispConfigured", m5_loader)
         self.assertIn("normalizeM5NetworkTestURL(url)", m5_loader)
         self.assertIn("this.#m5NetworkTestActive = true;", m5_loader)
+        self.assertIn("this.#m5NetworkNavigationCount >= 2", m5_loader)
+        self.assertIn(
+            "M5 TLS rejection navigation requires an initial HTTPS commit",
+            m5_loader,
+        )
         self.assertIn('"chromium_wasm_host_load_m5_url"', m5_loader)
-        self.assertIn("this.#m5NetworkTestActive = false;", m5_loader)
+        self.assertIn(
+            "this.#m5NetworkTestActive = this.#m5NetworkNavigationCount !== 0;",
+            m5_loader,
+        )
         self.assertIn('scheme: "https"', m5_loader)
 
     def test_m5_reports_and_smoke_proof_are_separate_from_data_reports(
@@ -63,13 +71,21 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         host = source("tools/wasm/host/content_shell_host.js")
 
         self.assertIn("reportM5Navigation(report)", host)
+        self.assertIn("reportM5NavigationError(report)", host)
         self.assertIn("reportM5PageProbe(report)", host)
         self.assertIn("_reportM5Navigation(value)", host)
+        self.assertIn("_reportM5NavigationError(value)", host)
         self.assertIn("_reportM5PageProbe(value)", host)
+        self.assertIn("M5_TLS_NAME_MISMATCH_NET_ERROR = -200", host)
         self.assertIn('report.scheme !== "https"', host)
+        self.assertIn(
+            "report.netError !== M5_TLS_NAME_MISMATCH_NET_ERROR", host
+        )
         self.assertIn("report.fixture !== M5_NETWORK_FIXTURE", host)
         self.assertIn("hasM5NetworkPageProbe(readiness.pageProbe)", host)
         self.assertIn("runM5WispNetworkSmokeFromQuery", host)
+        self.assertIn('parameters.get("m5_tls_failure_url")', host)
+        self.assertIn("tlsFailureReadiness.navigation?.netError", host)
         self.assertIn("if (selectedCase === M5_NETWORK_CASE)", host)
         for marker in (
             "pageProbe?.h2Fetch === true",
@@ -89,12 +105,32 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         m5_probe = bridge.split(
             "chromium_wasm_report_m5_page_probe: (probe) => {", 1
         )[1].split("\n  },", 1)[0]
+        m5_failure = bridge.split(
+            "chromium_wasm_report_m5_navigation_error: (netError) => {", 1
+        )[1].split("\n  },", 1)[0]
 
         self.assertIn("bridge.reportM5Navigation", m5_navigation)
         self.assertIn("scheme: 'https'", m5_navigation)
         self.assertNotIn("reportNavigation", m5_navigation)
+        self.assertIn("bridge.reportM5NavigationError", m5_failure)
+        self.assertIn("committed: false", m5_failure)
+        self.assertIn("netError", m5_failure)
+        self.assertNotIn("reportNavigation", m5_failure)
         self.assertIn("bridge.reportM5PageProbe", m5_probe)
         self.assertNotIn("reportPageProbe", m5_probe)
+
+    def test_m5_tls_name_mismatch_is_reported_before_commit_filtering(self) -> None:
+        host_api = source("content/shell/browser/wasm_host_api.cc")
+        failure_path = host_api.split(
+            "void DidFinishNavigation(NavigationHandle* navigation_handle) override {",
+            1,
+        )[1].split("if (!navigation_handle->HasCommitted())", 1)[0]
+
+        self.assertIn('#include "net/base/net_errors.h"', host_api)
+        self.assertIn("chromium_wasm_report_m5_navigation_error", host_api)
+        self.assertIn("navigation_handle->GetNetErrorCode()", failure_path)
+        self.assertIn("net_error != net::OK", failure_path)
+        self.assertIn("IsM5NetworkTestUrl(navigation_url)", failure_path)
 
 
 if __name__ == "__main__":

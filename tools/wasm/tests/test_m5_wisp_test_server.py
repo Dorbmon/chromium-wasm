@@ -187,6 +187,16 @@ class M5WispTestServerTest(unittest.TestCase):
         with urlopen(self.metadata["transcriptUrl"], timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _wait_for_tls_failure_tcp_connection(self) -> dict[str, object]:
+        deadline = time.monotonic() + 5
+        status: dict[str, object] = {}
+        while time.monotonic() < deadline:
+            status = self._status()
+            if status.get("tlsMismatchTcpConnections", 0) >= 1:
+                return status
+            time.sleep(0.05)
+        self.fail("TLS failure endpoint did not observe a TCP connection")
+
     def _h2_resource(self) -> bytes:
         connection, parsed = self._tls_connection("httpsUrl", alpn=["h2"])
         with connection:
@@ -234,6 +244,9 @@ class M5WispTestServerTest(unittest.TestCase):
         self.assertIn(
             "window.__chromiumWasmM5Probe = () => JSON.stringify({", source)
         self.assertIn('h2Response.headers.get("alt-svc")', source)
+        self.assertIn("TLS_FAILURE_CERTIFICATE_PATH", source)
+        self.assertIn("tls-failure-tcp-connect", source)
+        self.assertIn("tls-failure-http-request", source)
         self.assertNotIn("BEGIN PRIVATE KEY", source)
         self.assertNotIn("PRIVATE KEY", json.dumps(self.metadata))
 
@@ -246,6 +259,13 @@ class M5WispTestServerTest(unittest.TestCase):
         self.assertEqual(urlsplit(self.metadata["httpsUrl"]).scheme, "https")
         self.assertEqual(urlsplit(self.metadata["httpsUrl"]).hostname, "a.test")
         self.assertEqual(urlsplit(self.metadata["httpsUrl"]).path, "/m5/")
+        tls_failure_url = urlsplit(self.metadata["tlsFailureUrl"])
+        self.assertEqual(tls_failure_url.scheme, "https")
+        self.assertEqual(tls_failure_url.hostname, "a.test")
+        self.assertEqual(tls_failure_url.path, "/m5/tls-name-mismatch")
+        self.assertIsNotNone(tls_failure_url.port)
+        self.assertNotEqual(
+            tls_failure_url.port, urlsplit(self.metadata["httpsUrl"]).port)
         self.assertEqual(self.metadata["statusUrl"], self.metadata["transcriptUrl"])
 
         h1_connection, h1_url = self._tls_connection("http1Url")
@@ -291,8 +311,40 @@ class M5WispTestServerTest(unittest.TestCase):
         self.assertGreaterEqual(status["h2Requests"]["count"], 1)
         self.assertEqual(status["corsRequests"], 1)
         self.assertEqual(status["webSocketEchoes"], 1)
+        self.assertEqual(status["tlsMismatchTcpConnections"], 0)
+        self.assertEqual(status["tlsMismatchHttpStreams"], 0)
         self.assertEqual(status["relayErrors"], 0)
         self.assertNotIn("PRIVATE KEY", json.dumps(status))
+
+    def test_tls_failure_endpoint_is_trusted_but_rejects_a_test_name(self) -> None:
+        parsed = urlsplit(self.metadata["tlsFailureUrl"])
+        self.assertEqual(parsed.hostname, "a.test")
+        self.assertIsNotNone(parsed.port)
+
+        context = ssl.create_default_context(cafile=str(ROOT_CERTIFICATE))
+        context.set_alpn_protocols(["h2"])
+        raw = socket.create_connection(("127.0.0.1", parsed.port), timeout=5)
+        try:
+            with self.assertRaises(ssl.SSLCertVerificationError) as failure:
+                context.wrap_socket(raw, server_hostname="a.test")
+        finally:
+            raw.close()
+
+        # X509_V_ERR_HOSTNAME_MISMATCH is stable across the OpenSSL versions
+        # used by Chromium's Python tooling. The chain is trusted; this is not
+        # an authority, date, or transport failure.
+        self.assertEqual(failure.exception.verify_code, 62)
+        self.assertIn("Hostname mismatch", str(failure.exception))
+
+        status = self._wait_for_tls_failure_tcp_connection()
+        self.assertEqual(status["tlsMismatchHttpStreams"], 0)
+        events = {
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        }
+        self.assertIn("tls-failure-tcp-connect", events)
+        self.assertNotIn("tls-failure-http-request", events)
 
     def test_wisp_v21_fragmentation_ping_allowlist_and_transcript(self) -> None:
         host, port, endpoint_path = self._endpoint("wispEndpoint")
@@ -366,6 +418,28 @@ class M5WispTestServerTest(unittest.TestCase):
         packet_type, stream_id, reason = parse_wisp_packet(payload)
         self.assertEqual((packet_type, stream_id, reason), (0x04, 9, b"H"))
 
+        tls_failure_port = urlsplit(self.metadata["tlsFailureUrl"]).port
+        assert tls_failure_port is not None
+        tls_failure = (
+            bytes([0x01]) + struct.pack("<H", tls_failure_port) + b"a.test"
+        )
+        send_websocket_frame(raw, 0x02, wisp_packet(0x01, 10, tls_failure))
+        finished, opcode, payload = read_websocket_frame(connection)
+        self.assertTrue(finished)
+        self.assertEqual(opcode, 0x02)
+        packet_type, stream_id, credit = parse_wisp_packet(payload)
+        self.assertEqual((packet_type, stream_id), (0x03, 10))
+        self.assertEqual(struct.unpack("<I", credit)[0], 64)
+
+        # The relay confirms the WISP stream before the loopback target has
+        # necessarily accepted TCP. Wait for the target-side evidence while
+        # the stream is still open so this test is independent of test order.
+        status = self._wait_for_tls_failure_tcp_connection()
+        self.assertIn(
+            {"hostname": "a.test", "port": tls_failure_port},
+            status["requestedDestinations"])
+        self.assertEqual(status["tlsMismatchHttpStreams"], 0)
+
         send_websocket_frame(raw, 0x08, struct.pack("!H", 1000))
         finished, opcode, _ = read_websocket_frame(connection)
         self.assertTrue(finished)
@@ -376,6 +450,8 @@ class M5WispTestServerTest(unittest.TestCase):
         self.assertIn(
             {"hostname": "a.test", "port": h2_port},
             status["requestedDestinations"])
+        self.assertGreaterEqual(status["tlsMismatchTcpConnections"], 1)
+        self.assertEqual(status["tlsMismatchHttpStreams"], 0)
         self.assertGreaterEqual(status["rejectedDestinations"], 2)
         self.assertEqual(status["udpPackets"], 1)
         self.assertEqual(status["relayErrors"], 0)

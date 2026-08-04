@@ -300,6 +300,22 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  chromium_wasm_report_m5_navigation_error__deps: ['$ChromiumWasmHostBridge'],
+  chromium_wasm_report_m5_navigation_error__proxy: 'sync',
+  chromium_wasm_report_m5_navigation_error: (netError) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportM5NavigationError !== 'function') {
+      return 0;
+    }
+    bridge.reportM5NavigationError({
+      protocol: ChromiumWasmHostBridge.version,
+      committed: false,
+      scheme: 'https',
+      netError,
+    });
+    return 1;
+  },
+
   chromium_wasm_report_m5_page_probe__deps: [
     '$ChromiumWasmHostBridge',
     '$UTF8ToString',

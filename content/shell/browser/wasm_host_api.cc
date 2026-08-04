@@ -39,6 +39,7 @@
 #include "content/shell/browser/shell.h"
 #include "emscripten/emscripten.h"
 #include "emscripten/heap.h"
+#include "net/base/net_errors.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/window.h"
@@ -138,6 +139,7 @@ extern "C" int chromium_wasm_report_readiness(
 extern "C" int chromium_wasm_report_navigation();
 extern "C" int chromium_wasm_report_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_navigation();
+extern "C" int chromium_wasm_report_m5_navigation_error(int net_error);
 extern "C" int chromium_wasm_report_m5_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_fatal(const char* message);
 extern "C" int chromium_wasm_report_ozone_text_input_delivery(
@@ -267,12 +269,23 @@ class WasmHostObserver final : public WebContentsObserver {
 
   void DidFinishNavigation(NavigationHandle* navigation_handle) override {
     if (!navigation_handle->IsInPrimaryMainFrame() ||
-        !navigation_handle->HasCommitted() ||
         navigation_handle->IsSameDocument()) {
       return;
     }
 
     const GURL& navigation_url = navigation_handle->GetURL();
+    const net::Error net_error = navigation_handle->GetNetErrorCode();
+    if (IsM5NetworkTestUrl(navigation_url) && net_error != net::OK) {
+      if (chromium_wasm_report_m5_navigation_error(
+              static_cast<int>(net_error)) != 1) {
+        ReportFatal("host rejected the failed M5 HTTPS navigation report");
+      }
+      return;
+    }
+
+    if (!navigation_handle->HasCommitted()) {
+      return;
+    }
     if (navigation_url.SchemeIs(url::kDataScheme)) {
       if (chromium_wasm_report_navigation() != 1) {
         ReportFatal("host rejected the committed data navigation report");

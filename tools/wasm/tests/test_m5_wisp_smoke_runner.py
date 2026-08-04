@@ -34,8 +34,9 @@ RELAY_READY_LINE = json.dumps(
     {
         "schema_version": 1,
         "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
-        "httpsUrl": "https://a.test:4443/m5/network",
+        "httpsUrl": "https://a.test:4443/m5/",
         "http1Url": "https://a.test:4444/m5/cors-resource",
+        "tlsFailureUrl": "https://a.test:4445/m5/tls-name-mismatch",
         "transcriptUrl": "http://127.0.0.1:40123/status",
     }
 )
@@ -61,6 +62,11 @@ def passing_result() -> dict[str, object]:
             "timestampMs": 1,
         },
         "navigationResult": {
+            "ok": True,
+            "scheme": "https",
+            "hostname": "a.test",
+        },
+        "tlsFailureNavigationResult": {
             "ok": True,
             "scheme": "https",
             "hostname": "a.test",
@@ -95,10 +101,25 @@ def passing_result() -> dict[str, object]:
             "host": [
                 "initialize:wisp-configured",
                 "navigation:requested:m5-https",
+                "navigation:requested:m5-https-tls-failure",
+                "navigation:failed:m5-https:-200",
                 "shutdown:complete",
             ],
             "stdout": [],
             "stderr": [],
+        },
+        "tlsFailureReadiness": {
+            "navigationCommitted": False,
+            "fatalErrors": [],
+            "navigation": {
+                "committed": False,
+                "scheme": "https",
+                "netError": -200,
+            },
+            "heartbeat": {
+                "anchor": "m5-https-navigation-tls-rejected",
+                "elapsedMs": 10,
+            },
         },
         "shutdown": {
             "ok": True,
@@ -124,11 +145,14 @@ def passing_relay_status() -> dict[str, object]:
         "relayErrors": 0,
         "corsRequests": 1,
         "webSocketEchoes": 1,
+        "tlsMismatchTcpConnections": 1,
+        "tlsMismatchHttpStreams": 0,
         "h2Requests": {"count": 2, "protocol": "h2"},
         "requestedDestinations": [
             {"hostname": "a.test", "port": 4443},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
+            {"hostname": "a.test", "port": 4445},
         ],
         "transcript": [
             {"sequence": 1, "event": "wisp-ready"},
@@ -137,6 +161,7 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 4, "event": "h2-resource"},
             {"sequence": 5, "event": "h1-cors"},
             {"sequence": 6, "event": "h1-wss-echo"},
+            {"sequence": 7, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -146,8 +171,12 @@ class RelayReadinessTest(unittest.TestCase):
         ready = run_m5_wisp_smoke.parse_relay_ready_line(RELAY_READY_LINE)
 
         self.assertEqual(ready.wisp_endpoint, "ws://127.0.0.1:40123/wisp/")
-        self.assertEqual(ready.https_url, "https://a.test:4443/m5/network")
+        self.assertEqual(ready.https_url, "https://a.test:4443/m5/")
         self.assertEqual(ready.http1_url, "https://a.test:4444/m5/cors-resource")
+        self.assertEqual(
+            ready.tls_failure_url,
+            "https://a.test:4445/m5/tls-name-mismatch",
+        )
         self.assertEqual(ready.transcript_url, "http://127.0.0.1:40123/status")
 
     def test_rejects_nonloopback_or_credentialed_wisp_endpoint(self) -> None:
@@ -163,6 +192,9 @@ class RelayReadinessTest(unittest.TestCase):
                         "wispEndpoint": endpoint,
                         "httpsUrl": "https://a.test:4443/m5/network",
                         "http1Url": "https://a.test:4444/m5/cors-resource",
+                        "tlsFailureUrl": (
+                            "https://a.test:4445/m5/tls-name-mismatch"
+                        ),
                         "transcriptUrl": "http://127.0.0.1:40123/status",
                     }
                 )
@@ -182,6 +214,9 @@ class RelayReadinessTest(unittest.TestCase):
                         "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
                         "httpsUrl": https_url,
                         "http1Url": "https://a.test:4444/m5/cors-resource",
+                        "tlsFailureUrl": (
+                            "https://a.test:4445/m5/tls-name-mismatch"
+                        ),
                         "transcriptUrl": "http://127.0.0.1:40123/status",
                     }
                 )
@@ -209,6 +244,9 @@ class RelayReadinessTest(unittest.TestCase):
         self.assertEqual(query["timeout_ms"], ["121250"])
         self.assertEqual(query["wisp_endpoint"], [ready.wisp_endpoint])
         self.assertEqual(query["m5_url"], [ready.https_url])
+        self.assertEqual(
+            query["m5_tls_failure_url"], [ready.tls_failure_url]
+        )
 
     def test_rejects_nonlocal_or_unscoped_transcript_url(self) -> None:
         for transcript_url in (
@@ -223,11 +261,21 @@ class RelayReadinessTest(unittest.TestCase):
                         "wispEndpoint": "ws://127.0.0.1:40123/wisp/",
                         "httpsUrl": "https://a.test:4443/m5/network",
                         "http1Url": "https://a.test:4444/m5/cors-resource",
+                        "tlsFailureUrl": (
+                            "https://a.test:4445/m5/tls-name-mismatch"
+                        ),
                         "transcriptUrl": transcript_url,
                     }
                 )
                 with self.assertRaisesRegex(M0Error, "transcriptUrl"):
                     run_m5_wisp_smoke.parse_relay_ready_line(line)
+
+    def test_rejects_tls_failure_url_on_a_normal_fixture_port(self) -> None:
+        ready = json.loads(RELAY_READY_LINE)
+        ready["tlsFailureUrl"] = "https://a.test:4443/m5/tls-name-mismatch"
+
+        with self.assertRaisesRegex(M0Error, "distinct fixture port"):
+            run_m5_wisp_smoke.parse_relay_ready_line(json.dumps(ready))
 
 
 class M5ResultValidationTest(unittest.TestCase):
@@ -256,6 +304,29 @@ class M5ResultValidationTest(unittest.TestCase):
         assert isinstance(readiness, dict)
         readiness["navigation"] = {"committed": True, "scheme": "data"}
         with self.assertRaisesRegex(M0Error, "HTTPS"):
+            run_m5_wisp_smoke.validate_m5_result(
+                result, expected_versions=VERSIONS
+            )
+
+    def test_rejects_unexpected_native_tls_failure(self) -> None:
+        result = passing_result()
+        tls_failure_readiness = result["tlsFailureReadiness"]
+        assert isinstance(tls_failure_readiness, dict)
+        navigation = tls_failure_readiness["navigation"]
+        assert isinstance(navigation, dict)
+        navigation["committed"] = True
+        with self.assertRaisesRegex(M0Error, "TLS-failure navigation committed"):
+            run_m5_wisp_smoke.validate_m5_result(
+                result, expected_versions=VERSIONS
+            )
+
+        result = passing_result()
+        tls_failure_readiness = result["tlsFailureReadiness"]
+        assert isinstance(tls_failure_readiness, dict)
+        navigation = tls_failure_readiness["navigation"]
+        assert isinstance(navigation, dict)
+        navigation["netError"] = -201
+        with self.assertRaisesRegex(M0Error, "TLS-failure navigation netError"):
             run_m5_wisp_smoke.validate_m5_result(
                 result, expected_versions=VERSIONS
             )
@@ -295,6 +366,33 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
         status = passing_relay_status()
         status["udpPackets"] = 1
         with self.assertRaisesRegex(M0Error, "UDP"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+    def test_rejects_missing_tls_mismatch_or_an_http_stream(self) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        status = passing_relay_status()
+        status["tlsMismatchTcpConnections"] = 0
+        with self.assertRaisesRegex(M0Error, "TLS-mismatch TCP"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        status["tlsMismatchHttpStreams"] = 1
+        with self.assertRaisesRegex(M0Error, "HTTP stream after TLS mismatch"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        destinations = status["requestedDestinations"]
+        assert isinstance(destinations, list)
+        destinations[-1] = {"hostname": "a.test", "port": 4444}
+        with self.assertRaisesRegex(M0Error, "all fixed M5 destination streams"):
             run_m5_wisp_smoke.validate_relay_transcript(
                 status, relay_ready=relay_ready
             )

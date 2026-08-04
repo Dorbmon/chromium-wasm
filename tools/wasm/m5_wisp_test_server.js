@@ -68,6 +68,12 @@ const REPOSITORY_ROOT = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)), "../..");
 const TEST_CERTIFICATE_PATH = path.join(
     REPOSITORY_ROOT, "net/data/ssl/certificates/test_names.pem");
+// This leaf chains to the same test root as |TEST_CERTIFICATE_PATH|, but its
+// only DNS SAN is localhost. Serving it for an a.test WISP destination makes
+// the M5 negative lane a deterministic hostname-validation failure rather
+// than an untrusted-root or expired-certificate failure.
+const TLS_FAILURE_CERTIFICATE_PATH = path.join(
+    REPOSITORY_ROOT, "net/data/ssl/certificates/localhost_cert.pem");
 
 function fail(message) {
   throw new Error(message);
@@ -620,6 +626,8 @@ function statusSnapshot(context) {
     relayErrors: context.stats.relayErrors,
     requestedDestinations: context.stats.requestedDestinations.map(
         (destination) => ({...destination})),
+    tlsMismatchHttpStreams: context.stats.tlsMismatchHttpStreams,
+    tlsMismatchTcpConnections: context.stats.tlsMismatchTcpConnections,
     udpPackets: context.stats.udpPackets,
     webSocketEchoes: context.stats.webSocketEchoes,
     wispSessions: context.stats.wispSessions,
@@ -1174,6 +1182,59 @@ function createH2Server(context, tlsMaterial) {
   return server;
 }
 
+function createTlsFailureServer(context, tlsMaterial) {
+  // Certificate selection happens during TLS, before HTTP routing. Keep this
+  // endpoint on a distinct loopback port so the normal a.test H2 route can
+  // retain its valid test_names.pem certificate while this route presents the
+  // trusted-but-wrong-name localhost certificate.
+  const server = http2.createSecureServer({
+    allowHTTP1: false,
+    cert: tlsMaterial,
+    key: tlsMaterial,
+  });
+  server.on("connection", (socket) => {
+    context.tlsFailureSockets.add(socket);
+    socket.once("close", () => context.tlsFailureSockets.delete(socket));
+    context.stats.tlsMismatchTcpConnections += 1;
+    // A validating TLS client normally closes after receiving the
+    // certificate, before Node emits a completed TLS session. TCP connection
+    // evidence is therefore intentional; do not mistake it for handshake
+    // success.
+    context.transcript.add("tls-failure-tcp-connect");
+  });
+  server.on("stream", (stream, headers) => {
+    context.stats.tlsMismatchHttpStreams += 1;
+    context.transcript.add("tls-failure-http-request");
+
+    // No normal M5 run may reach this handler. If certificate validation were
+    // incorrectly bypassed, make the controlled cross-origin response
+    // readable by the successful page so its fetch cannot look like a CORS
+    // failure instead of a TLS regression.
+    const pageOrigin = `https://${TEST_HOSTNAME}:${context.h2Port}`;
+    const expectedRequest = headers[":method"] === "GET" &&
+        headers[":path"] === "/m5/tls-name-mismatch";
+    const body = Buffer.from(expectedRequest
+        ? "M5_TLS_NAME_MISMATCH_UNEXPECTED"
+        : "M5_TLS_FAILURE_ENDPOINT_UNEXPECTED_REQUEST");
+    stream.respond({
+      ":status": expectedRequest ? 200 : 404,
+      "access-control-allow-origin": pageOrigin,
+      "cache-control": "no-store",
+      "content-length": String(body.length),
+      "content-type": "text/plain; charset=utf-8",
+      "vary": "Origin",
+      "x-content-type-options": "nosniff",
+      "x-m5-tls-failure-endpoint": "reached",
+    });
+    stream.end(body);
+  });
+  server.on("session", (session) => {
+    context.h2Sessions.add(session);
+    session.once("close", () => context.h2Sessions.delete(session));
+  });
+  return server;
+}
+
 function createH1Server(context, tlsMaterial) {
   const server = https.createServer({cert: tlsMaterial, key: tlsMaterial},
       (request, response) => {
@@ -1294,10 +1355,11 @@ function statusSummary(context, reason) {
 }
 
 async function start(options) {
-  // This PEM contains the test server key as well as its certificate. It is
-  // read only by the two loopback TLS listeners and is never serialized into
-  // page content, WISP traffic, status output, or stdout metadata.
+  // These PEMs contain test server keys as well as certificates. They are read
+  // only by loopback TLS listeners and are never serialized into page content,
+  // WISP traffic, status output, or stdout metadata.
   const tlsMaterial = fs.readFileSync(TEST_CERTIFICATE_PATH);
+  const tlsFailureMaterial = fs.readFileSync(TLS_FAILURE_CERTIFICATE_PATH);
   const context = {
     allowedPorts: new Set(),
     echoPeers: new Set(),
@@ -1312,24 +1374,32 @@ async function start(options) {
       rejectedDestinations: 0,
       relayErrors: 0,
       requestedDestinations: [],
+      tlsMismatchHttpStreams: 0,
+      tlsMismatchTcpConnections: 0,
       udpPackets: 0,
       webSocketEchoes: 0,
       wispSessions: 0,
     },
+    tlsFailurePort: 0,
+    tlsFailureSockets: new Set(),
     transcript: new Transcript(),
     wispSockets: new Set(),
   };
   const h2Server = createH2Server(context, tlsMaterial);
   const h1Server = createH1Server(context, tlsMaterial);
+  const tlsFailureServer = createTlsFailureServer(context, tlsFailureMaterial);
   const wispServer = createWispServer(context);
   context.h2Port = await listenLoopback(h2Server);
   context.h1Port = await listenLoopback(h1Server);
+  context.tlsFailurePort = await listenLoopback(tlsFailureServer);
   context.wispPort = await listenLoopback(wispServer);
   context.allowedPorts.add(context.h2Port);
   context.allowedPorts.add(context.h1Port);
+  context.allowedPorts.add(context.tlsFailurePort);
   context.transcript.add("fixture-ready", {
     h1Port: context.h1Port,
     h2Port: context.h2Port,
+    tlsFailurePort: context.tlsFailurePort,
   });
 
   const metadata = {
@@ -1339,6 +1409,8 @@ async function start(options) {
     protocol: 1,
     schema_version: 1,
     statusUrl: `http://${LOOPBACK_HOST}:${context.wispPort}${STATUS_PATH}`,
+    tlsFailureUrl:
+      `https://${TEST_HOSTNAME}:${context.tlsFailurePort}/m5/tls-name-mismatch`,
     transcriptUrl: `http://${LOOPBACK_HOST}:${context.wispPort}${STATUS_PATH}`,
     webSocketUrl: `wss://${TEST_HOSTNAME}:${context.h1Port}/m5/ws`,
     wispEndpoint: `ws://${LOOPBACK_HOST}:${context.wispPort}${WISP_PATH}`,
@@ -1366,6 +1438,9 @@ async function start(options) {
     for (const socket of context.wispSockets) {
       socket.destroy();
     }
+    for (const socket of context.tlsFailureSockets) {
+      socket.destroy();
+    }
     for (const session of context.h2Sessions) {
       session.close();
       // A headless outer browser can retain an idle H2 session after its Wasm
@@ -1374,10 +1449,12 @@ async function start(options) {
       session.destroy();
     }
     h1Server.closeAllConnections?.();
+    tlsFailureServer.closeAllConnections?.();
     wispServer.closeAllConnections?.();
     await Promise.all([
       closeServer(h2Server),
       closeServer(h1Server),
+      closeServer(tlsFailureServer),
       closeServer(wispServer),
     ]);
     // This record is deliberately restricted to bounded metadata; in

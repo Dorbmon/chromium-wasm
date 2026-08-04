@@ -74,6 +74,7 @@ class RelayReady:
     wisp_endpoint: str
     https_url: str
     http1_url: str
+    tls_failure_url: str
     transcript_url: str
 
 
@@ -121,13 +122,15 @@ def validate_wisp_endpoint(value: object) -> str:
     return value
 
 
-def validate_m5_https_url(value: object) -> str:
+def validate_m5_https_url(
+    value: object, *, description: str = "relay httpsUrl"
+) -> str:
     """Accept only the fixed HTTPS fixture navigation URL."""
 
     if not isinstance(value, str) or not value:
-        raise M0Error("relay httpsUrl must be a nonempty string")
+        raise M0Error(f"{description} must be a nonempty string")
     if len(value.encode("utf-8")) > 2048:
-        raise M0Error("relay httpsUrl is too long")
+        raise M0Error(f"{description} is too long")
     parsed = urlsplit(value)
     if (
         parsed.scheme != "https"
@@ -138,8 +141,8 @@ def validate_m5_https_url(value: object) -> str:
         or parsed.fragment
         or not parsed.path.startswith(M5_TEST_PATH_PREFIX)
     ):
-        raise M0Error("relay httpsUrl violates the M5 fixture policy")
-    _validated_port(parsed, "relay httpsUrl")
+        raise M0Error(f"{description} violates the M5 fixture policy")
+    _validated_port(parsed, description)
     return value
 
 
@@ -182,10 +185,25 @@ def parse_relay_ready_line(line: str) -> RelayReady:
     schema_version = ready.get("schema_version")
     if schema_version is not None and schema_version != 1:
         raise M0Error("relay readiness schema version is unsupported")
+    https_url = validate_m5_https_url(ready.get("httpsUrl"))
+    http1_url = validate_m5_https_url(
+        ready.get("http1Url"), description="relay http1Url"
+    )
+    tls_failure_url = validate_m5_https_url(
+        ready.get("tlsFailureUrl"), description="relay tlsFailureUrl"
+    )
+    h2_port = _validated_port(urlsplit(https_url), "relay httpsUrl")
+    h1_port = _validated_port(urlsplit(http1_url), "relay http1Url")
+    tls_failure_port = _validated_port(
+        urlsplit(tls_failure_url), "relay tlsFailureUrl"
+    )
+    if tls_failure_port in (h2_port, h1_port):
+        raise M0Error("relay tlsFailureUrl must use a distinct fixture port")
     return RelayReady(
         wisp_endpoint=validate_wisp_endpoint(ready.get("wispEndpoint")),
-        https_url=validate_m5_https_url(ready.get("httpsUrl")),
-        http1_url=validate_m5_https_url(ready.get("http1Url")),
+        https_url=https_url,
+        http1_url=http1_url,
+        tls_failure_url=tls_failure_url,
         transcript_url=validate_relay_transcript_url(
             ready.get("transcriptUrl")
         ),
@@ -217,6 +235,9 @@ def m5_smoke_url(
     # nonlocal relay endpoint or arbitrary navigation URL into the host query.
     wisp_endpoint = validate_wisp_endpoint(relay_ready.wisp_endpoint)
     https_url = validate_m5_https_url(relay_ready.https_url)
+    tls_failure_url = validate_m5_https_url(
+        relay_ready.tls_failure_url, description="relay tlsFailureUrl"
+    )
     host, port = server.server_address[:2]
     query = urlencode(
         {
@@ -224,6 +245,7 @@ def m5_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "m5_url": https_url,
+            "m5_tls_failure_url": tls_failure_url,
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
             "token": token,
@@ -432,6 +454,47 @@ def validate_m5_result(
     if not isinstance(nonce, str) or not nonce:
         raise M0Error("M5 page probe has no fixture nonce")
 
+    tls_failure_navigation_result = _require_dict(
+        result.get("tlsFailureNavigationResult"),
+        "M5 TLS-failure navigation result",
+    )
+    if tls_failure_navigation_result != {
+        "ok": True,
+        "scheme": "https",
+        "hostname": M5_TEST_HOSTNAME,
+    }:
+        raise M0Error(
+            "M5 TLS-failure navigation result does not identify the HTTPS "
+            "fixture"
+        )
+    tls_failure_readiness = _require_dict(
+        result.get("tlsFailureReadiness"), "M5 TLS-failure readiness"
+    )
+    tls_failure_navigation = _require_dict(
+        tls_failure_readiness.get("navigation"), "M5 TLS-failure navigation"
+    )
+    expected_tls_failure_navigation = {
+        "committed": False,
+        "scheme": "https",
+        "netError": -200,
+    }
+    for field, expected_value in expected_tls_failure_navigation.items():
+        actual = tls_failure_navigation.get(field)
+        if type(actual) is not type(expected_value) or actual != expected_value:
+            raise M0Error(
+                f"M5 TLS-failure navigation {field} mismatch: expected "
+                f"{expected_value!r}, got {actual!r}"
+            )
+    if tls_failure_readiness.get("navigationCommitted") is not False:
+        raise M0Error("M5 TLS-failure readiness unexpectedly committed")
+    if tls_failure_readiness.get("fatalErrors") != []:
+        raise M0Error("M5 TLS-failure readiness reported fatal errors")
+    tls_failure_heartbeat = _require_dict(
+        tls_failure_readiness.get("heartbeat"), "M5 TLS-failure heartbeat"
+    )
+    if tls_failure_heartbeat.get("anchor") != "m5-https-navigation-tls-rejected":
+        raise M0Error("M5 TLS-failure heartbeat was not natively rejected")
+
     logs = _require_dict(result.get("logs"), "M5 logs")
     for stream in ("host", "stdout", "stderr"):
         if not isinstance(logs.get(stream), list):
@@ -440,6 +503,8 @@ def validate_m5_result(
     for marker in (
         "initialize:wisp-configured",
         "navigation:requested:m5-https",
+        "navigation:requested:m5-https-tls-failure",
+        "navigation:failed:m5-https:-200",
         "shutdown:complete",
     ):
         if marker not in host_logs:
@@ -512,6 +577,8 @@ def validate_relay_transcript(
         "relayErrors",
         "corsRequests",
         "webSocketEchoes",
+        "tlsMismatchTcpConnections",
+        "tlsMismatchHttpStreams",
     ):
         value = status.get(field)
         if type(value) is not int or value < 0:
@@ -528,6 +595,10 @@ def validate_relay_transcript(
         raise M0Error("relay did not observe the inner CORS request")
     if status["webSocketEchoes"] < 1:
         raise M0Error("relay did not observe the inner WebSocket echo")
+    if status["tlsMismatchTcpConnections"] < 1:
+        raise M0Error("relay did not observe the TLS-mismatch TCP connection")
+    if status["tlsMismatchHttpStreams"] != 0:
+        raise M0Error("relay observed an HTTP stream after TLS mismatch")
 
     h2_requests = _require_dict(status.get("h2Requests"), "relay H2 requests")
     if h2_requests.get("protocol") != "h2":
@@ -540,8 +611,14 @@ def validate_relay_transcript(
         raise M0Error("relay has no observed WISP destinations")
     h2_port = _validated_port(urlsplit(relay_ready.https_url), "relay httpsUrl")
     h1_port = _validated_port(urlsplit(relay_ready.http1_url), "relay http1Url")
+    tls_failure_port = _validated_port(
+        urlsplit(relay_ready.tls_failure_url), "relay tlsFailureUrl"
+    )
+    if tls_failure_port in (h2_port, h1_port):
+        raise M0Error("relay TLS-mismatch destination is not distinct")
     h2_count = 0
     h1_count = 0
+    tls_failure_count = 0
     for destination in destinations:
         if not isinstance(destination, dict):
             raise M0Error("relay destination is not an object")
@@ -554,9 +631,11 @@ def validate_relay_transcript(
             h2_count += 1
         elif port == h1_port:
             h1_count += 1
+        elif port == tls_failure_port:
+            tls_failure_count += 1
         else:
             raise M0Error("relay observed a non-fixture WISP port")
-    if h2_count < 1 or h1_count < 2:
+    if h2_count < 1 or h1_count < 2 or tls_failure_count < 1:
         raise M0Error("relay did not observe all fixed M5 destination streams")
 
     transcript = status.get("transcript")
@@ -570,6 +649,7 @@ def validate_relay_transcript(
         "h2-resource",
         "h1-cors",
         "h1-wss-echo",
+        "tls-failure-tcp-connect",
     ):
         if event not in events:
             raise M0Error(f"relay transcript is missing {event!r}")
@@ -814,6 +894,7 @@ def main() -> int:
                 {
                     "http1Url": relay_ready.http1_url,
                     "httpsUrl": relay_ready.https_url,
+                    "tlsFailureUrl": relay_ready.tls_failure_url,
                     "transcriptUrl": relay_ready.transcript_url,
                     "wispEndpoint": relay_ready.wisp_endpoint,
                 },

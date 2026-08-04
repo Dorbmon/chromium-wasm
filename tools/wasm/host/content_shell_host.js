@@ -44,6 +44,9 @@ const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
 const M5_NETWORK_TEST_HOSTNAME = "a.test";
 const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
+// net::ERR_CERT_COMMON_NAME_INVALID. Keep the test evidence tied to
+// Chromium's native certificate verifier, not a JavaScript fetch failure.
+const M5_TLS_NAME_MISMATCH_NET_ERROR = -200;
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
 const M4_PRINTABLE_KEY_DOM_KEY = "a";
@@ -1408,6 +1411,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   reportM5Navigation(report) {
     deliverBridgeReport("_reportM5Navigation", [report]);
   },
+  reportM5NavigationError(report) {
+    deliverBridgeReport("_reportM5NavigationError", [report]);
+  },
   reportM5PageProbe(report) {
     deliverBridgeReport("_reportM5PageProbe", [report]);
   },
@@ -1632,6 +1638,7 @@ export class ChromiumWasmM3Host {
   #fixture;
   #wispConfigured = false;
   #m5NetworkTestActive = false;
+  #m5NetworkNavigationCount = 0;
   #module = null;
   #lifecycle = "new";
   #runtimeInitialized = false;
@@ -4091,13 +4098,25 @@ export class ChromiumWasmM3Host {
     if (!this.#wispConfigured) {
       throw new Error("M5 network navigation requires a WISP configuration");
     }
-    if (this.#m5NetworkTestActive) {
-      throw new Error("M5 network navigation may only be requested once");
-    }
     const testURL = normalizeM5NetworkTestURL(url);
+    if (this.#m5NetworkNavigationCount >= 2) {
+      throw new Error("M5 network navigation has exhausted its test budget");
+    }
+    if (
+      this.#m5NetworkNavigationCount === 1 &&
+      (this.#navigation.committed !== true ||
+        this.#navigation.scheme !== "https")
+    ) {
+      throw new Error(
+        "M5 TLS rejection navigation requires an initial HTTPS commit");
+    }
+
+    const previousNavigation = this.#navigation;
+    const previousPageProbe = this.#pageProbe;
     // The C ABI posts work to Chromium's UI sequence. Mark this first so a
     // proxied completion report cannot race the host-side test-mode gate.
     this.#m5NetworkTestActive = true;
+    ++this.#m5NetworkNavigationCount;
     this.#navigation = {};
     this.#pageProbe = {};
     let result;
@@ -4109,15 +4128,25 @@ export class ChromiumWasmM3Host {
         [testURL],
       );
     } catch (error) {
-      this.#m5NetworkTestActive = false;
+      --this.#m5NetworkNavigationCount;
+      this.#m5NetworkTestActive = this.#m5NetworkNavigationCount !== 0;
+      this.#navigation = previousNavigation;
+      this.#pageProbe = previousPageProbe;
       throw error;
     }
     if (result !== 1) {
-      this.#m5NetworkTestActive = false;
+      --this.#m5NetworkNavigationCount;
+      this.#m5NetworkTestActive = this.#m5NetworkNavigationCount !== 0;
+      this.#navigation = previousNavigation;
+      this.#pageProbe = previousPageProbe;
       throw new Error(
         `runtime rejected M5 HTTPS navigation with status ${String(result)}`);
     }
-    this.#recordHost("navigation:requested:m5-https");
+    this.#recordHost(
+      this.#m5NetworkNavigationCount === 1
+        ? "navigation:requested:m5-https"
+        : "navigation:requested:m5-https-tls-failure",
+    );
     return {
       ok: true,
       scheme: "https",
@@ -4467,6 +4496,7 @@ export class ChromiumWasmM3Host {
       const report = asReport(value, "M5 navigation report");
       if (
         !this.#m5NetworkTestActive ||
+        this.#m5NetworkNavigationCount !== 1 ||
         report.protocol !== HOST_PROTOCOL ||
         report.committed !== true ||
         report.scheme !== "https"
@@ -4477,6 +4507,34 @@ export class ChromiumWasmM3Host {
       this.#resetHeartbeatWindow("m5-https-navigation-committed");
     } catch (error) {
       this._reportFatal(`invalid M5 navigation report: ${String(error)}`);
+    }
+  }
+
+  _reportM5NavigationError(value) {
+    try {
+      const report = asReport(value, "M5 navigation failure report");
+      if (
+        !this.#m5NetworkTestActive ||
+        this.#m5NetworkNavigationCount !== 2 ||
+        report.protocol !== HOST_PROTOCOL ||
+        report.committed !== false ||
+        report.scheme !== "https" ||
+        report.netError !== M5_TLS_NAME_MISMATCH_NET_ERROR
+      ) {
+        throw new Error(
+          "M5 navigation failure must be the TLS-name-mismatch fixture");
+      }
+      this.#navigation = {
+        committed: false,
+        scheme: "https",
+        netError: M5_TLS_NAME_MISMATCH_NET_ERROR,
+      };
+      this.#resetHeartbeatWindow("m5-https-navigation-tls-rejected");
+      this.#recordHost(
+        `navigation:failed:m5-https:${M5_TLS_NAME_MISMATCH_NET_ERROR}`);
+    } catch (error) {
+      this._reportFatal(
+        `invalid M5 navigation failure report: ${String(error)}`);
     }
   }
 
@@ -11892,12 +11950,15 @@ async function runM5WispNetworkSmokeFromQuery() {
   const token = parameters.get("token") || "";
   const relayEndpoint = parameters.get("wisp_endpoint");
   const m5URL = parameters.get("m5_url");
+  const m5TLSFailureURL = parameters.get("m5_tls_failure_url");
   const timeoutMs = Math.max(
     1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
   let host = null;
   let readiness = null;
   let initialFrame = null;
   let navigationResult = null;
+  let tlsFailureNavigationResult = null;
+  let tlsFailureReadiness = null;
   let shutdown = null;
   let result;
 
@@ -11912,6 +11973,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       throw new Error("missing M5 WISP endpoint");
     }
     const testURL = normalizeM5NetworkTestURL(m5URL);
+    const tlsFailureURL = normalizeM5NetworkTestURL(m5TLSFailureURL);
     host = new ChromiumWasmM3Host(
         canvas, versions, {fixture: M5_NETWORK_FIXTURE});
     window.chromiumWasmHost = host;
@@ -11955,6 +12017,31 @@ async function runM5WispNetworkSmokeFromQuery() {
           JSON.stringify(readiness));
     }
 
+    tlsFailureNavigationResult = await host.loadM5NetworkURL(tlsFailureURL);
+    while (performance.now() < deadline) {
+      tlsFailureReadiness = await host.readiness();
+      if (
+        tlsFailureReadiness.navigation?.committed === false &&
+        tlsFailureReadiness.navigation?.scheme === "https" &&
+        tlsFailureReadiness.navigation?.netError ===
+          M5_TLS_NAME_MISMATCH_NET_ERROR
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    if (
+      !tlsFailureReadiness ||
+      tlsFailureReadiness.navigation?.committed !== false ||
+      tlsFailureReadiness.navigation?.scheme !== "https" ||
+      tlsFailureReadiness.navigation?.netError !==
+        M5_TLS_NAME_MISMATCH_NET_ERROR
+    ) {
+      throw new Error(
+        "M5 WISP TLS-name-mismatch fixture did not fail natively: " +
+        JSON.stringify(tlsFailureReadiness));
+    }
+
     const shutdownTimeoutMs = Math.max(
       1000, Math.min(60000, deadline - performance.now()));
     shutdown = await host.shutdown(shutdownTimeoutMs);
@@ -11970,6 +12057,13 @@ async function runM5WispNetworkSmokeFromQuery() {
         navigationResult?.ok === true &&
         readiness.navigation?.committed === true &&
         readiness.navigation?.scheme === "https",
+      tlsNameMismatch:
+        tlsFailureNavigationResult?.ok === true &&
+        tlsFailureReadiness.navigation?.committed === false &&
+        tlsFailureReadiness.navigation?.scheme === "https" &&
+        tlsFailureReadiness.navigation?.netError ===
+          M5_TLS_NAME_MISMATCH_NET_ERROR &&
+        tlsFailureReadiness.fatalErrors?.length === 0,
       fixture: hasM5NetworkPageProbe(pageProbe),
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
       cors: pageProbe.corsFetch === true,
@@ -11994,6 +12088,8 @@ async function runM5WispNetworkSmokeFromQuery() {
       initialFrame,
       navigationResult,
       readiness,
+      tlsFailureNavigationResult,
+      tlsFailureReadiness,
       logs,
       shutdown,
       failedChecks,
@@ -12011,7 +12107,9 @@ async function runM5WispNetworkSmokeFromQuery() {
       versions,
       initialFrame,
       navigationResult,
+      tlsFailureNavigationResult,
       readiness: null,
+      tlsFailureReadiness: null,
       logs: null,
       shutdown,
       failedChecks: ["exception"],
@@ -12025,6 +12123,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       }
       try {
         result.readiness = await host.readiness();
+        result.tlsFailureReadiness = result.readiness;
       } catch (diagnosticError) {
         result.error += "; readiness diagnostics: " + String(diagnosticError);
       }
