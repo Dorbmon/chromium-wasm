@@ -126,12 +126,14 @@ class M4OzonePointerContractTest(unittest.TestCase):
 
         for marker in (
             "void SetCursorScreenPoint(const gfx::Point& point);",
+            "void SetCursorOutsideDisplay();",
             "gfx::Point GetCursorScreenPoint() const;",
             "gfx::Point cursor_screen_point_;",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, manager_header)
         self.assertIn("cursor_screen_point_ = point;", manager)
+        self.assertIn("cursor_screen_point_ = gfx::Point(-1, -1);", manager)
         self.assertIn("return window_manager_->GetCursorScreenPoint();", screen)
         self.assertNotIn(
             "Host cursor position is unsupported by the M4 pointer slice", screen
@@ -358,7 +360,10 @@ class M4OzonePointerContractTest(unittest.TestCase):
             initialize,
         )
         self.assertIn("state.SetInputInjector(std::move(input_injector));", initialize)
-        self.assertNotIn("WasmPlatformEventSource", api)
+        self.assertIn(
+            '#include "ui/ozone/platform/wasm/wasm_event_source.h"', api
+        )
+        self.assertIn("ui::DispatchWasmMouseExit()", api)
         self.assertNotIn("WasmSystemInputInjector", api)
 
         legacy_click = section(
@@ -402,6 +407,7 @@ class M4OzonePointerContractTest(unittest.TestCase):
             '"pointerdown", "down"',
             '"pointerup", "up"',
             '"pointercancel", "cancel"',
+            '"pointerleave"',
             '"lostpointercapture"',
             '"visibilitychange"',
         ):

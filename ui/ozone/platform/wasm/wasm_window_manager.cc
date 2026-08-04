@@ -76,6 +76,15 @@ void WasmWindowManager::SetCursorScreenPoint(const gfx::Point& point) {
   cursor_screen_point_ = point;
 }
 
+void WasmWindowManager::SetCursorOutsideDisplay() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  // WasmScreen exposes one display with an origin of (0, 0). DOM
+  // `pointerleave` has no in-display coordinate, so use a point outside that
+  // display rather than retaining the last valid host point. Aura consults
+  // PlatformScreen before synthesizing hover moves after layout changes.
+  cursor_screen_point_ = gfx::Point(-1, -1);
+}
+
 gfx::Point WasmWindowManager::GetCursorScreenPoint() const {
   DCHECK(thread_checker_.CalledOnValidThread());
   return cursor_screen_point_;
@@ -90,6 +99,13 @@ void WasmWindowManager::SetPointerFocusedWindow(WasmWindow* window) {
 WasmWindow* WasmWindowManager::GetPointerFocusedWindow() {
   DCHECK(thread_checker_.CalledOnValidThread());
   return pointer_focused_window_;
+}
+
+WasmWindow* WasmWindowManager::TakePointerFocusedWindow() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  WasmWindow* pointer_focused_window = pointer_focused_window_;
+  pointer_focused_window_ = nullptr;
+  return pointer_focused_window;
 }
 
 void WasmWindowManager::SetKeyboardFocusedWindow(WasmWindow* window) {

@@ -102,6 +102,7 @@
     const result = document.querySelector("#result");
     const mouseTrace = [];
     const pointerTrace = [];
+    const mouseLeaveTrace = [];
     let fontReady = !document.fonts;
     Promise.resolve(document.fonts?.ready).then(() => {
       fontReady = true;
@@ -137,6 +138,12 @@
         pointerTrace.push(tracePointerEvent(event));
       });
     }
+
+    // Only observe the final title-bearing hover target. Earlier moves
+    // deliberately leave their targets while exercising tooltip replacement.
+    confirmTarget.addEventListener("mouseleave", (event) => {
+      mouseLeaveTrace.push(tracePointerEvent(event));
+    });
 
     function viewportCoordinate(value, maximum) {
       const coordinate = Math.floor(value);
@@ -191,6 +198,7 @@
         clearTitle: clearTarget.getAttribute("title"),
         mouseTrace,
         pointerTrace,
+        mouseLeaveTrace,
         resultText: result.textContent,
       });
     };

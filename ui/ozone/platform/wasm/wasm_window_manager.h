@@ -37,10 +37,17 @@ class WasmWindowManager {
   // coordinate space. Keep the latest accepted coordinate here so both event
   // routing and PlatformScreen observe the same cursor position.
   void SetCursorScreenPoint(const gfx::Point& point);
+  // Marks the host cursor as outside the sole Wasm logical display. The
+  // screen point must remain outside all roots until the next accepted host
+  // pointer record, so Aura cannot synthesize a stale in-canvas hover move.
+  void SetCursorOutsideDisplay();
   gfx::Point GetCursorScreenPoint() const;
 
   void SetPointerFocusedWindow(WasmWindow* window);
   WasmWindow* GetPointerFocusedWindow();
+  // Returns the last non-captured pointer target and clears it before an exit
+  // event can synchronously reenter Aura and destroy platform state.
+  WasmWindow* TakePointerFocusedWindow();
   void SetKeyboardFocusedWindow(WasmWindow* window);
   WasmWindow* GetKeyboardFocusedWindow();
   bool IsKeyboardFocusedWidget(gfx::AcceleratedWidget widget);

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
@@ -35,6 +36,11 @@ bool IsSupportedM4DomCode(DomCode dom_code) {
          dom_code == DomCode::BACKSPACE ||
          dom_code == DomCode::CONTROL_LEFT || dom_code == DomCode::US_C ||
          dom_code == DomCode::US_V;
+}
+
+raw_ptr<WasmPlatformEventSource>& GetWasmPlatformEventSource() {
+  static base::NoDestructor<raw_ptr<WasmPlatformEventSource>> event_source;
+  return *event_source;
 }
 
 class WasmSystemInputInjector final : public SystemInputInjector {
@@ -171,10 +177,14 @@ WasmPlatformEventSource::WasmPlatformEventSource(
     WasmWindowManager* window_manager)
     : window_manager_(window_manager) {
   CHECK(window_manager_);
+  CHECK(!GetWasmPlatformEventSource());
+  GetWasmPlatformEventSource() = this;
 }
 
 WasmPlatformEventSource::~WasmPlatformEventSource() {
   DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK_EQ(GetWasmPlatformEventSource(), this);
+  GetWasmPlatformEventSource() = nullptr;
 }
 
 base::TimeTicks WasmPlatformEventSource::NextMouseEventTime() {
@@ -218,6 +228,12 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
     return false;
   }
 
+  if (type != EventType::kMouseExited) {
+    last_mouse_root_location_ = root_location;
+    last_mouse_source_device_id_ = source_device_id;
+    has_last_mouse_root_location_ = true;
+  }
+
   if (type == EventType::kMousePressed &&
       (changed_button_flags & EF_LEFT_MOUSE_BUTTON)) {
     // Pointer hover follows hit testing, but keyboard focus follows activation.
@@ -230,6 +246,34 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
   MouseEvent event(type, location, root_location, NextMouseEventTime(), flags,
                    changed_button_flags);
   event.set_source_device_id(source_device_id);
+  Event::DispatcherApi(&event).set_target(target);
+  PlatformEventSource::DispatchEvent(&event);
+  return true;
+}
+
+bool WasmPlatformEventSource::DispatchMouseExitEvent() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  if (PlatformEventSource::ShouldIgnoreNativePlatformEvents() ||
+      !has_last_mouse_root_location_) {
+    return false;
+  }
+
+  // Clear the manager state before dispatch. Mouse exit processing can
+  // synchronously reenter Aura and destroy the target window.
+  WasmWindow* target = window_manager_->TakePointerFocusedWindow();
+  window_manager_->SetCursorOutsideDisplay();
+  has_last_mouse_root_location_ = false;
+  if (!target || !target->IsVisible()) {
+    return false;
+  }
+
+  const gfx::Point root_location = last_mouse_root_location_;
+  gfx::Point location = root_location;
+  location.Offset(-target->GetBoundsInPixels().x(),
+                  -target->GetBoundsInPixels().y());
+  MouseEvent event(EventType::kMouseExited, location, root_location,
+                   NextMouseEventTime(), EF_NONE, EF_NONE);
+  event.set_source_device_id(last_mouse_source_device_id_);
   Event::DispatcherApi(&event).set_target(target);
   PlatformEventSource::DispatchEvent(&event);
   return true;
@@ -302,6 +346,11 @@ bool WasmPlatformEventSource::DispatchKeyEvent(EventType type,
 std::unique_ptr<SystemInputInjector> CreateWasmSystemInputInjector(
     WasmPlatformEventSource* event_source) {
   return std::make_unique<WasmSystemInputInjector>(event_source);
+}
+
+bool DispatchWasmMouseExit() {
+  WasmPlatformEventSource* event_source = GetWasmPlatformEventSource();
+  return event_source && event_source->DispatchMouseExitEvent();
 }
 
 }  // namespace ui

@@ -40,6 +40,11 @@ class WasmPlatformEventSource final : public PlatformEventSource {
                           EventFlags changed_button_flags,
                           int source_device_id);
 
+  // Emits one normal mouse exit for the last accepted host hover. The host
+  // supplies no outside-canvas coordinate because that coordinate is not in
+  // the Wasm display; this path uses the last valid in-canvas location.
+  bool DispatchMouseExitEvent();
+
   bool DispatchMouseWheelEvent(const gfx::PointF& screen_location,
                                const gfx::Vector2d& offset,
                                EventFlags flags,
@@ -56,10 +61,18 @@ class WasmPlatformEventSource final : public PlatformEventSource {
   raw_ptr<WasmWindowManager> window_manager_;
   base::ThreadChecker thread_checker_;
   base::TimeTicks last_mouse_event_time_;
+  gfx::Point last_mouse_root_location_;
+  int last_mouse_source_device_id_ = ED_UNKNOWN_DEVICE;
+  bool has_last_mouse_root_location_ = false;
 };
 
 std::unique_ptr<SystemInputInjector> CreateWasmSystemInputInjector(
     WasmPlatformEventSource* event_source);
+
+// Opaque Ozone-Wasm routing boundary for Content Shell. This intentionally
+// avoids expanding the generic SystemInputInjector API for a host-canvas
+// leave event.
+bool DispatchWasmMouseExit();
 
 }  // namespace ui
 

@@ -208,6 +208,18 @@ def canvas_click_position(
     )
 
 
+def canvas_pointer_exit_position(
+    inside_x: float, geometry: dict[str, Any]
+) -> tuple[float, float]:
+    """Choose a trusted pointer position immediately above the canvas."""
+
+    top = _require_finite_number(geometry.get("top"), "canvas top")
+    # CDP accepts viewport-relative coordinates just beyond an edge. This also
+    # handles a canvas flush with the viewport top without pretending its
+    # outside point belongs to the Wasm display.
+    return inside_x, top - 1.0
+
+
 def read_canvas_geometry(client: DevToolsClient) -> dict[str, Any]:
     value = client.evaluate(
         """(() => {
@@ -490,7 +502,8 @@ def main() -> int:
         input_driver = (
             "Chrome DevTools Input.dispatchMouseEvent: five mouseMoved "
             "records: immediate title-to-title-less race, duplicate title "
-            "hover for Blink coalescing, then title-less clear; no click, "
+            "hover for Blink coalescing, then a real host-canvas pointerleave; "
+            "no click, "
             "keyboard, text, clipboard, or "
             "DOM commands"
         )
@@ -1166,7 +1179,7 @@ def main() -> int:
             client.dispatch_mouse_move(hover_x, hover_y)
             stage = "dispatch_trusted_dom_tooltip_confirm_duplicate"
             client.dispatch_mouse_move(hover_x, hover_y)
-            stage = "wait_for_tooltip_clear_target"
+            stage = "wait_for_tooltip_exit"
             tooltip_clear_state = wait_for_input_state(
                 client,
                 browser,
@@ -1174,18 +1187,14 @@ def main() -> int:
                 result_queue,
                 deadline,
                 state_expression,
-                "awaiting-dom-tooltip-clear",
+                "awaiting-dom-tooltip-exit",
             )
-            stage = "measure_tooltip_clear_target"
-            clear_x, clear_y = canvas_point_position(
-                tooltip_clear_state,
-                canvas_geometry,
-                x_field="clearTargetX",
-                y_field="clearTargetY",
-                description="tooltip title-less target",
+            stage = "measure_tooltip_canvas_exit"
+            exit_x, exit_y = canvas_pointer_exit_position(
+                hover_x, canvas_geometry
             )
-            stage = "dispatch_trusted_dom_tooltip_clear"
-            client.dispatch_mouse_move(clear_x, clear_y)
+            stage = "dispatch_trusted_dom_tooltip_canvas_exit"
+            client.dispatch_mouse_move(exit_x, exit_y)
         elif args.input == "copy-paste":
             stage = "dispatch_trusted_dom_copy_source_activation"
             client.dispatch_primary_click(click_x, click_y)

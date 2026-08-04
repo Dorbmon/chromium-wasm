@@ -754,6 +754,15 @@ function matchesM4TooltipQueuedPointerTrace(records, expectedRecords) {
       records[index].sequence === index + 1);
 }
 
+function matchesM4TooltipQueuedPointerExit(record, sequence) {
+  return record?.type === "exit" && record?.trusted === true &&
+    record?.queued === true && record?.button === -1 &&
+    record?.buttons === 0 && record?.canvasFocused === true &&
+    record?.sequence === sequence &&
+    Number.isSafeInteger(record?.frameIdBefore) && record.frameIdBefore >= 1 &&
+    !Object.hasOwn(record, "x") && !Object.hasOwn(record, "y");
+}
+
 function matchesM4TooltipInnerMove(record, prefix, targetId, x, y) {
   const button = prefix === "mouse" ? 0 : -1;
   return record?.type === `${prefix}move` && record?.trusted === true &&
@@ -769,6 +778,15 @@ function hasM4TooltipInnerTrace(pageProbe, expected) {
             records[index], prefix, targetId, x, y));
   return hasTrace(pageProbe?.mouseTrace, "mouse") &&
     hasTrace(pageProbe?.pointerTrace, "pointer");
+}
+
+function hasM4TooltipInnerMouseExit(pageProbe, targetId, x, y) {
+  const trace = pageProbe?.mouseLeaveTrace;
+  const record = Array.isArray(trace) && trace.length === 1 ? trace[0] : null;
+  return record?.type === "mouseleave" && record?.trusted === true &&
+    record?.button === 0 && record?.buttons === 0 &&
+    record?.clientX === x && record?.clientY === y &&
+    record?.targetId === targetId && record?.defaultPrevented === false;
 }
 
 function m4TooltipInnerTraceGapMs(pageProbe, firstIndex, secondIndex) {
@@ -1423,6 +1441,7 @@ export class ChromiumWasmM3Host {
   #activeM4PointerId = null;
   #activeM4PointerButton = null;
   #lastM4PointerPoint = null;
+  #m4PointerHoverActive = false;
   #contextMenuSequence = 0;
   #contextMenuRecords = [];
   #pendingM4ContextMenu = null;
@@ -2528,6 +2547,7 @@ export class ChromiumWasmM3Host {
     const pointerId = this.#activeM4PointerId;
     const button = this.#activeM4PointerButton;
     const point = this.#lastM4PointerPoint;
+    this.#m4PointerHoverActive = false;
     if (pointerId === null || button === null) {
       return;
     }
@@ -2552,6 +2572,77 @@ export class ChromiumWasmM3Host {
     } catch (error) {
       this.#recordHost(`m4:pointer:${reason}:release-failed`);
     }
+  }
+
+  #handleM4PointerExit(event) {
+    if (this.#lifecycle !== "running") {
+      return;
+    }
+    const pointerId = Number(event.pointerId);
+    const record = {
+      sequence: ++this.#pointerSequence,
+      type: "exit",
+      pointerId,
+      trusted: event.isTrusted === true,
+      queued: false,
+      button: Number(event.button),
+      buttons: Number(event.buttons),
+      frameIdBefore: this.#frame?.id ?? 0,
+      canvasFocused: document.activeElement === this.#canvas,
+    };
+    const recordAndReject = (reason, detail) => {
+      record.reason = reason;
+      this.#recordPointer(record);
+      this.#recordHost(`m4:pointer:exit:${detail}`);
+    };
+    if (!record.trusted) {
+      recordAndReject("UNTRUSTED_DOM_EVENT", "untrusted");
+      return;
+    }
+    if (
+      event.pointerType !== "mouse" ||
+      event.isPrimary !== true ||
+      !Number.isSafeInteger(pointerId)
+    ) {
+      recordAndReject("UNSUPPORTED_POINTER", "unsupported-pointer");
+      return;
+    }
+    if (
+      !Number.isSafeInteger(record.button) ||
+      !Number.isSafeInteger(record.buttons) ||
+      record.button !== -1 ||
+      record.buttons !== 0
+    ) {
+      recordAndReject("INVALID_BUTTON_STATE", "invalid-button-state");
+      return;
+    }
+    // A captured drag owns its leave/release path. Only an unpressed hover
+    // can yield the native host-canvas mouse exit, because its last point is
+    // still inside the Wasm display.
+    if (
+      this.#activeM4PointerId !== null ||
+      this.#activeM4PointerButton !== null ||
+      !this.#m4PointerHoverActive
+    ) {
+      recordAndReject("NO_UNPRESSED_HOVER", "no-unpressed-hover");
+      return;
+    }
+    try {
+      const result = this.#callExport(
+        "chromium_wasm_host_pointer_exit", "number", [], []);
+      record.queued = result === 1;
+      if (!record.queued) {
+        record.reason = "QUEUE_REJECTED";
+      } else {
+        this.#m4PointerHoverActive = false;
+        this.#lastQueuedPointer = record;
+      }
+    } catch (error) {
+      record.reason = `EXPORT_ERROR:${String(error)}`;
+    }
+    this.#recordPointer(record);
+    this.#recordHost(
+      `m4:pointer:exit:${record.queued ? "queued" : "rejected"}`);
   }
 
   #handleM4PointerEvent(type, event) {
@@ -2711,6 +2802,11 @@ export class ChromiumWasmM3Host {
         record.reason = "QUEUE_REJECTED";
       } else {
         this.#lastQueuedPointer = record;
+        if (type === "move" && activePointerId === null) {
+          this.#m4PointerHoverActive = true;
+        } else if (type !== "move") {
+          this.#m4PointerHoverActive = false;
+        }
         if (type === "down") {
           this.#activeM4PointerId = pointerId;
           this.#activeM4PointerButton = button;
@@ -2832,6 +2928,7 @@ export class ChromiumWasmM3Host {
     this.#cancelActiveM4Pointer("teardown");
     this.#pointerListeners = [];
     this.#pendingM4ContextMenu = null;
+    this.#m4PointerHoverActive = false;
     this.#pointerInputEnabled = false;
   }
 
@@ -2864,6 +2961,13 @@ export class ChromiumWasmM3Host {
       target: this.#canvas,
       type: "lostpointercapture",
       listener: lostCaptureListener,
+    });
+    const pointerLeaveListener = (event) => this.#handleM4PointerExit(event);
+    this.#canvas.addEventListener("pointerleave", pointerLeaveListener);
+    this.#pointerListeners.push({
+      target: this.#canvas,
+      type: "pointerleave",
+      listener: pointerLeaveListener,
     });
     const contextMenuListener = (event) => this.#handleM4ContextMenu(event);
     this.#canvas.addEventListener("contextmenu", contextMenuListener);
@@ -7565,7 +7669,7 @@ async function runM4OzoneTooltipSmokeFromQuery() {
   let result;
   let tooltipRapidClearProof = null;
   let tooltipShowProof = null;
-  let tooltipClearProof = null;
+  let tooltipExitProof = null;
 
   try {
     if (parameters.get("case") !== M4_TOOLTIP_CASE) {
@@ -7803,7 +7907,7 @@ async function runM4OzoneTooltipSmokeFromQuery() {
       duplicateMoveGapMs: duplicateHoverGapMs,
     };
     window.__chromiumWasmM4TooltipState = {
-      state: "awaiting-dom-tooltip-clear",
+      state: "awaiting-dom-tooltip-exit",
       hoverTargetX: hoverX,
       hoverTargetY: hoverY,
       confirmTargetX: confirmX,
@@ -7813,32 +7917,32 @@ async function runM4OzoneTooltipSmokeFromQuery() {
       pointerListeners,
       tooltipShowProof: clone(tooltipShowProof),
     };
-    statusElement.textContent = "M4 tooltip visible; await trusted clear move";
+    statusElement.textContent = "M4 tooltip visible; await trusted canvas exit";
 
-    const fullTrace = [...hoverTrace, [clearX, clearY]];
-    const fullInnerTrace = [...hoverInnerTrace,
-      ["clear-target", clearX, clearY]];
+    const exitSequence = hoverTrace.length + 1;
     let tooltipAbsent = false;
     let tooltipAbsenceStartedAt = null;
     let tooltipBackgroundPixels = null;
     while (performance.now() < deadline) {
       readiness = await host.readiness();
       const pointer = readiness.pointerInput;
-      const clearRecord = pointer?.queuedRecords?.[fullTrace.length - 1];
+      const exitRecord = pointer?.queuedRecords?.[hoverTrace.length];
       // The fixture deliberately contains no tooltip background color. Count
-      // it globally, not only at the first anchor, so a delayed title update
-      // cannot pass by reappearing under the clear target.
+      // it globally so a delayed title update cannot pass by reappearing.
       tooltipBackgroundPixels = countM4TooltipBackgroundPixels(canvas);
-      const clearInputObserved =
-        pointer?.receivedCount === fullTrace.length &&
-        pointer?.trustedCount === fullTrace.length &&
-        pointer?.queuedCount === fullTrace.length &&
-        matchesM4TooltipQueuedPointerTrace(pointer?.queuedRecords, fullTrace) &&
-        hasM4TooltipInnerTrace(readiness.pageProbe, fullInnerTrace) &&
-        hasM4TooltipTrustedMoveResult(readiness.pageProbe, fullTrace.length);
-      const clearFramePresented =
-        readiness.frame?.id > clearRecord?.frameIdBefore;
-      if (clearInputObserved && clearFramePresented) {
+      const exitInputObserved =
+        pointer?.receivedCount === exitSequence &&
+        pointer?.trustedCount === exitSequence &&
+        pointer?.queuedCount === exitSequence &&
+        matchesM4TooltipQueuedPointerTrace(
+          pointer?.queuedRecords?.slice(0, hoverTrace.length), hoverTrace) &&
+        matchesM4TooltipQueuedPointerExit(exitRecord, exitSequence) &&
+        hasM4TooltipInnerTrace(readiness.pageProbe, hoverInnerTrace) &&
+        hasM4TooltipTrustedMoveResult(readiness.pageProbe, hoverTrace.length) &&
+        hasM4TooltipInnerMouseExit(
+          readiness.pageProbe, "confirm-target", confirmX, confirmY);
+      const exitFramePresented = readiness.frame?.id > exitRecord?.frameIdBefore;
+      if (exitInputObserved && exitFramePresented) {
         if (tooltipBackgroundPixels === 0) {
           if (tooltipAbsenceStartedAt === null) {
             tooltipAbsenceStartedAt = performance.now();
@@ -7852,27 +7956,31 @@ async function runM4OzoneTooltipSmokeFromQuery() {
           tooltipAbsent = false;
         }
       }
-      if (clearInputObserved && clearFramePresented && tooltipAbsent) {
+      if (exitInputObserved && exitFramePresented && tooltipAbsent) {
         break;
       }
       await delay(50);
     }
     const pointer = readiness?.pointerInput;
-    const clearRecord = pointer?.queuedRecords?.[fullTrace.length - 1];
+    const exitRecord = pointer?.queuedRecords?.[hoverTrace.length];
     if (
-      !readiness || pointer?.receivedCount !== fullTrace.length ||
-      pointer?.trustedCount !== fullTrace.length ||
-      pointer?.queuedCount !== fullTrace.length ||
-      !matchesM4TooltipQueuedPointerTrace(pointer?.queuedRecords, fullTrace) ||
-      !hasM4TooltipInnerTrace(readiness.pageProbe, fullInnerTrace) ||
-      !hasM4TooltipTrustedMoveResult(readiness.pageProbe, fullTrace.length) ||
+      !readiness || pointer?.receivedCount !== exitSequence ||
+      pointer?.trustedCount !== exitSequence ||
+      pointer?.queuedCount !== exitSequence ||
+      !matchesM4TooltipQueuedPointerTrace(
+        pointer?.queuedRecords?.slice(0, hoverTrace.length), hoverTrace) ||
+      !matchesM4TooltipQueuedPointerExit(exitRecord, exitSequence) ||
+      !hasM4TooltipInnerTrace(readiness.pageProbe, hoverInnerTrace) ||
+      !hasM4TooltipTrustedMoveResult(readiness.pageProbe, hoverTrace.length) ||
+      !hasM4TooltipInnerMouseExit(
+        readiness.pageProbe, "confirm-target", confirmX, confirmY) ||
       !tooltipAbsent || tooltipBackgroundPixels !== 0 ||
-      !(readiness.frame?.id > clearRecord?.frameIdBefore)
+      !(readiness.frame?.id > exitRecord?.frameIdBefore)
     ) {
       throw new Error(
-        `M4 native title tooltip did not clear: ${JSON.stringify(readiness)}`);
+        `M4 native title tooltip did not exit: ${JSON.stringify(readiness)}`);
     }
-    tooltipClearProof = {
+    tooltipExitProof = {
       frameId: readiness.frame.id,
       overlayAbsent: true,
       backgroundPixels: tooltipBackgroundPixels,
@@ -7888,7 +7996,7 @@ async function runM4OzoneTooltipSmokeFromQuery() {
       clearTargetY: clearY,
       pointerListeners,
       tooltipShowProof: clone(tooltipShowProof),
-      tooltipClearProof: clone(tooltipClearProof),
+      tooltipExitProof: clone(tooltipExitProof),
     };
     const shutdownTimeoutMs = Math.max(
       1000, Math.min(60000, deadline - performance.now()));
@@ -7900,9 +8008,14 @@ async function runM4OzoneTooltipSmokeFromQuery() {
       canvasFocused: document.activeElement === canvas,
       baseReady: readiness.baseReady === true,
       trustedDomInput:
-        matchesM4TooltipQueuedPointerTrace(pointer.queuedRecords, fullTrace) &&
-        hasM4TooltipInnerTrace(readiness.pageProbe, fullInnerTrace) &&
-        hasM4TooltipTrustedMoveResult(readiness.pageProbe, fullTrace.length),
+        matchesM4TooltipQueuedPointerTrace(
+          pointer.queuedRecords.slice(0, hoverTrace.length), hoverTrace) &&
+        matchesM4TooltipQueuedPointerExit(pointer.queuedRecords[hoverTrace.length],
+                                          exitSequence) &&
+        hasM4TooltipInnerTrace(readiness.pageProbe, hoverInnerTrace) &&
+        hasM4TooltipTrustedMoveResult(readiness.pageProbe, hoverTrace.length) &&
+        hasM4TooltipInnerMouseExit(
+          readiness.pageProbe, "confirm-target", confirmX, confirmY),
       rapidTitleCleared:
         tooltipRapidClearProof.backgroundPixels === 0 &&
         tooltipRapidClearProof.quietForMs >= M4_TOOLTIP_CLEAR_QUIESCENCE_MS &&
@@ -7912,10 +8025,10 @@ async function runM4OzoneTooltipSmokeFromQuery() {
         tooltipShowProof.duplicateMoveGapMs <=
           M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS &&
         tooltipShowProof.frameId > hoverRecord.frameIdBefore,
-      nativeTooltipCleared:
-        tooltipClearProof.overlayAbsent === true &&
-        tooltipClearProof.backgroundPixels === 0 &&
-        tooltipClearProof.frameId > clearRecord.frameIdBefore,
+      nativeTooltipExited:
+        tooltipExitProof.overlayAbsent === true &&
+        tooltipExitProof.backgroundPixels === 0 &&
+        tooltipExitProof.frameId > exitRecord.frameIdBefore,
       shutdown:
         shutdown.ok === true && shutdown.complete === true &&
         shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
@@ -7936,7 +8049,7 @@ async function runM4OzoneTooltipSmokeFromQuery() {
       pointerInput: pointer,
       tooltipRapidClearProof,
       tooltipShowProof,
-      tooltipClearProof,
+      tooltipExitProof,
       logs,
       shutdown,
       failedChecks,
@@ -7956,7 +8069,7 @@ async function runM4OzoneTooltipSmokeFromQuery() {
       pointerInput: readiness?.pointerInput ?? null,
       tooltipRapidClearProof,
       tooltipShowProof,
-      tooltipClearProof,
+      tooltipExitProof,
       logs: null,
       shutdown: null,
       failedChecks: ["exception"],

@@ -2766,10 +2766,10 @@ def validate_m4_tooltip_result(
 ) -> None:
     """Validate Blink's title through the native Aura tooltip path.
 
-    The only externally driven events are five physical mouse moves. A rapid
-    title-to-title-less pair must remain absent past the hover delay; two
-    same-point title moves must expose the compositor tooltip, then a final
-    title-less move must remove it.
+    Four physical mouse moves exercise a rapid title-to-title-less pair and a
+    duplicate same-point title hover. A fifth trusted DOM move leaves the host
+    canvas, which must become one native mouse-exit record rather than an
+    out-of-viewport in-canvas move.
     """
 
     expected = {
@@ -2844,7 +2844,7 @@ def validate_m4_tooltip_result(
         "tooltipTitle": "WASM TOOLTIP",
         "confirmTitle": "SWAM TOOLTIP",
         "clearTitle": None,
-        "resultText": "TRUSTED MOVE 5",
+        "resultText": "TRUSTED MOVE 4",
     }
     for field, expected_value in expected_probe.items():
         actual_value = page_probe.get(field)
@@ -2897,13 +2897,12 @@ def validate_m4_tooltip_result(
         ("clear-target", clear_x, clear_y),
         ("confirm-target", confirm_x, confirm_y),
         ("confirm-target", confirm_x, confirm_y),
-        ("clear-target", clear_x, clear_y),
     )
 
     def require_inner_trace(prefix: str, button: int) -> None:
         trace = page_probe.get(f"{prefix}Trace")
         if not isinstance(trace, list) or len(trace) != len(expected_moves):
-            raise M0Error(f"M4 tooltip {prefix} trace is not five moves")
+            raise M0Error(f"M4 tooltip {prefix} trace is not four moves")
         for index, (target_id, x, y) in enumerate(expected_moves):
             record = _require_dict(
                 trace[index], f"M4 tooltip {prefix} trace {index}"
@@ -2926,6 +2925,22 @@ def validate_m4_tooltip_result(
 
     require_inner_trace("mouse", 0)
     require_inner_trace("pointer", -1)
+    mouse_leave_trace = page_probe.get("mouseLeaveTrace")
+    if not isinstance(mouse_leave_trace, list) or len(mouse_leave_trace) != 1:
+        raise M0Error("M4 tooltip inner mouseleave trace is not exact")
+    mouse_leave = _require_dict(mouse_leave_trace[0], "M4 tooltip mouseleave")
+    for field, expected_value in {
+        "type": "mouseleave",
+        "trusted": True,
+        "button": 0,
+        "buttons": 0,
+        "clientX": confirm_x,
+        "clientY": confirm_y,
+        "targetId": "confirm-target",
+        "defaultPrevented": False,
+    }.items():
+        if mouse_leave.get(field) != expected_value:
+            raise M0Error(f"M4 tooltip mouseleave {field} mismatch")
 
     def require_move_gap(
         prefix: str, first_index: int, second_index: int, description: str
@@ -2978,18 +2993,17 @@ def validate_m4_tooltip_result(
     )
     if not _exact_json_value_equal(pointer_input, readiness_pointer):
         raise M0Error("M4 tooltip pointer evidence differs from readiness")
+    exit_sequence = len(expected_moves) + 1
     if (
         pointer_input.get("enabled") is not True
-        or pointer_input.get("receivedCount") != len(expected_moves)
-        or pointer_input.get("trustedCount") != len(expected_moves)
-        or pointer_input.get("queuedCount") != len(expected_moves)
+        or pointer_input.get("receivedCount") != exit_sequence
+        or pointer_input.get("trustedCount") != exit_sequence
+        or pointer_input.get("queuedCount") != exit_sequence
     ):
         raise M0Error("M4 tooltip pointer input counts are not exact")
     queued_records = pointer_input.get("queuedRecords")
-    if not isinstance(queued_records, list) or len(queued_records) != len(
-        expected_moves
-    ):
-        raise M0Error("M4 tooltip pointer trace is not exactly five moves")
+    if not isinstance(queued_records, list) or len(queued_records) != exit_sequence:
+        raise M0Error("M4 tooltip pointer trace is not four moves and one exit")
     input_frames: list[int] = []
     for index, (_, x, y) in enumerate(expected_moves):
         record = _require_dict(
@@ -3018,6 +3032,29 @@ def validate_m4_tooltip_result(
                 minimum=1,
             )
         )
+    exit_record = _require_dict(
+        queued_records[-1], "M4 tooltip pointer exit record"
+    )
+    for field, expected_value in {
+        "sequence": exit_sequence,
+        "type": "exit",
+        "trusted": True,
+        "queued": True,
+        "button": -1,
+        "buttons": 0,
+        "canvasFocused": True,
+    }.items():
+        if exit_record.get(field) != expected_value:
+            raise M0Error(
+                f"M4 tooltip pointer exit {field} mismatch"
+            )
+    if "x" in exit_record or "y" in exit_record:
+        raise M0Error("M4 tooltip pointer exit forwarded an outside coordinate")
+    exit_frame_id = _require_safe_integer(
+        exit_record.get("frameIdBefore"),
+        "M4 tooltip pointer exit frame ID",
+        minimum=1,
+    )
     last_queued = _require_dict(
         pointer_input.get("lastQueued"), "M4 tooltip last queued pointer"
     )
@@ -3101,31 +3138,31 @@ def validate_m4_tooltip_result(
     ) != duplicate_hover_gap_ms:
         raise M0Error("M4 tooltip show proof has the wrong duplicate move gap")
 
-    clear_proof = _require_dict(
-        result.get("tooltipClearProof"), "M4 tooltip clear proof"
+    exit_proof = _require_dict(
+        result.get("tooltipExitProof"), "M4 tooltip exit proof"
     )
-    clear_frame_id = _require_safe_integer(
-        clear_proof.get("frameId"), "M4 tooltip clear frame ID", minimum=1
+    exit_proof_frame_id = _require_safe_integer(
+        exit_proof.get("frameId"), "M4 tooltip exit frame ID", minimum=1
     )
-    if clear_proof.get("overlayAbsent") is not True:
-        raise M0Error("M4 tooltip clear proof does not remove the overlay")
+    if exit_proof.get("overlayAbsent") is not True:
+        raise M0Error("M4 tooltip exit proof does not remove the overlay")
     if _require_safe_integer(
-        clear_proof.get("backgroundPixels"),
-        "M4 tooltip clear background pixels",
+        exit_proof.get("backgroundPixels"),
+        "M4 tooltip exit background pixels",
         minimum=0,
     ) != 0:
-        raise M0Error("M4 tooltip clear proof leaves native background pixels")
+        raise M0Error("M4 tooltip exit proof leaves native background pixels")
     quiet_for_ms = _require_safe_integer(
-        clear_proof.get("quietForMs"),
-        "M4 tooltip clear quiet duration",
+        exit_proof.get("quietForMs"),
+        "M4 tooltip exit quiet duration",
         minimum=0,
     )
     if quiet_for_ms < M4_TOOLTIP_CLEAR_QUIESCENCE_MS:
-        raise M0Error("M4 tooltip clear proof did not outlive the hover delay")
-    if clear_frame_id <= show_frame_id or clear_frame_id <= input_frames[4]:
-        raise M0Error("M4 tooltip has no newer compositor frame after clear")
-    if final_frame_id != clear_frame_id:
-        raise M0Error("M4 tooltip final frame differs from the clear proof")
+        raise M0Error("M4 tooltip exit proof did not outlive the hover delay")
+    if exit_proof_frame_id <= show_frame_id or exit_proof_frame_id <= exit_frame_id:
+        raise M0Error("M4 tooltip has no newer compositor frame after exit")
+    if final_frame_id != exit_proof_frame_id:
+        raise M0Error("M4 tooltip final frame differs from the exit proof")
 
     shutdown = _require_dict(result.get("shutdown"), "M4 tooltip shutdown")
     for field in ("ok", "accepted", "complete"):
@@ -3158,7 +3195,7 @@ def validate_m4_tooltip_result(
         "m4:pointer:move:queued",
         "m4:pointer:move:queued",
         "m4:pointer:move:queued",
-        "m4:pointer:move:queued",
+        "m4:pointer:exit:queued",
     ]:
         raise M0Error("M4 tooltip pointer lifecycle logs are not exact")
     if host_logs[-1:] != ["shutdown:complete"]:

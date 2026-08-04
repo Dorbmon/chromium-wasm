@@ -133,9 +133,22 @@ behavior such as autoscroll. Once a matching secondary stream is queued, it
 prevents only the trusted matching outer-page `contextmenu` default; Blink
 still receives the native Ozone mouse stream and owns the in-Chromium menu.
 
-The `x` and `y` arguments of both M4 exports are physical canvas backing
-pixels, never outer-page CSS pixels. The host subtracts the canvas border and
-content origin from `clientX`/`clientY`, scales through
+`chromium_wasm_host_pointer_exit` accepts no arguments. The host calls it only
+for a trusted primary-mouse `canvas.pointerleave` with the standard
+unpressed-move button state (`button == -1`, `buttons == 0`), no captured
+pointer stream, and one successfully queued prior in-canvas hover. It does not
+forward the outer coordinate: that coordinate lies outside the Wasm display.
+Instead, ozone_wasm dispatches one normal `kMouseExited` event at the former
+valid in-canvas root point and former pointer target, clearing the target before
+reentrant Aura dispatch. The exit receives a strictly newer mouse timestamp,
+invalidates the title-tooltip hover epoch, and reaches normal Aura/Blink leave
+handling. `lostpointercapture`, blur, visibility loss, and teardown retain
+their existing release/deactivation behavior; they do not implicitly invoke
+this unpressed-hover ABI.
+
+The `x` and `y` arguments of coordinate-bearing M4 exports are physical canvas
+backing pixels, never outer-page CSS pixels. The host subtracts the canvas
+border and content origin from `clientX`/`clientY`, scales through
 `canvas.width / canvas.clientWidth` and its Y equivalent, then floors the
 result. Coordinates must be nonnegative; the UI-side task separately checks
 that they still fall within the current Wasm viewport.

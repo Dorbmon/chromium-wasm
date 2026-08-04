@@ -51,9 +51,10 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "ui/ozone/platform/wasm/wasm_event_source.h"
+#include "ui/ozone/platform/wasm/wasm_input_method.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/system_input_injector.h"
-#include "ui/ozone/platform/wasm/wasm_input_method.h"
 #include "ui/ozone/platform/wasm/wasm_screen.h"
 #include "ui/platform_window/platform_window.h"
 #include "url/gurl.h"
@@ -586,6 +587,16 @@ void DispatchDomPointerOnUiThread(DomPointerEventType type,
   NOTREACHED();
 }
 
+void DispatchDomPointerExitOnUiThread() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  // The Ozone source retains the former valid in-canvas point and platform
+  // target. A host pointerleave has no coordinate within the Wasm display, so
+  // it must not be modeled as an out-of-viewport mouse move.
+  if (!ui::DispatchWasmMouseExit()) {
+    LOG(WARNING) << "M4 host pointer exit had no active Wasm hover target";
+  }
+}
+
 void DispatchDomWheelOnUiThread(const gfx::Point& location,
                                 const gfx::Vector2d& dom_delta) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
@@ -814,6 +825,13 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_pointer(int type,
   return content::PostHostCommand(base::BindOnce(
              &content::DispatchDomPointerOnUiThread, event_type,
              gfx::Point(x, y), mouse_button))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_pointer_exit() {
+  return content::PostHostCommand(
+             base::BindOnce(&content::DispatchDomPointerExitOnUiThread))
              ? 1
              : 0;
 }

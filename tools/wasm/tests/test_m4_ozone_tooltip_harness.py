@@ -57,6 +57,20 @@ def pointer_record(
     }
 
 
+def pointer_exit_record(sequence: int, frame_id: int) -> dict[str, object]:
+    return {
+        "type": "exit",
+        "pointerId": 1,
+        "trusted": True,
+        "queued": True,
+        "button": -1,
+        "buttons": 0,
+        "sequence": sequence,
+        "frameIdBefore": frame_id,
+        "canvasFocused": True,
+    }
+
+
 def inner_move(
     prefix: str, target_id: str, x: int, y: int, observed_at_ms: int
 ) -> dict[str, object]:
@@ -64,6 +78,22 @@ def inner_move(
         "type": f"{prefix}move",
         "trusted": True,
         "button": 0 if prefix == "mouse" else -1,
+        "buttons": 0,
+        "clientX": x,
+        "clientY": y,
+        "targetId": target_id,
+        "defaultPrevented": False,
+        "observedAtMs": observed_at_ms,
+    }
+
+
+def inner_mouse_leave(
+    target_id: str, x: int, y: int, observed_at_ms: int
+) -> dict[str, object]:
+    return {
+        "type": "mouseleave",
+        "trusted": True,
+        "button": 0,
         "buttons": 0,
         "clientX": x,
         "clientY": y,
@@ -99,7 +129,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
         pointer_record(CLEAR_X, CLEAR_Y, 2, 10),
         pointer_record(CONFIRM_X, CONFIRM_Y, 3, 11),
         pointer_record(CONFIRM_X, CONFIRM_Y, 4, 11),
-        pointer_record(CLEAR_X, CLEAR_Y, 5, 13),
+        pointer_exit_record(5, 13),
     ]
     pointer_input: dict[str, object] = {
         "enabled": True,
@@ -129,7 +159,6 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
             inner_move("mouse", "clear-target", CLEAR_X, CLEAR_Y, 115),
             inner_move("mouse", "confirm-target", CONFIRM_X, CONFIRM_Y, 1000),
             inner_move("mouse", "confirm-target", CONFIRM_X, CONFIRM_Y, 1015),
-            inner_move("mouse", "clear-target", CLEAR_X, CLEAR_Y, 1100),
         ],
         "pointerTrace": [
             inner_move("pointer", "tooltip-target", HOVER_X, HOVER_Y, 101),
@@ -140,9 +169,11 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
             inner_move(
                 "pointer", "confirm-target", CONFIRM_X, CONFIRM_Y, 1016
             ),
-            inner_move("pointer", "clear-target", CLEAR_X, CLEAR_Y, 1101),
         ],
-        "resultText": "TRUSTED MOVE 5",
+        "mouseLeaveTrace": [
+            inner_mouse_leave("confirm-target", CONFIRM_X, CONFIRM_Y, 1100)
+        ],
+        "resultText": "TRUSTED MOVE 4",
     }
     result: dict[str, object] = {
         "protocol": 1,
@@ -187,7 +218,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
             "overlay": overlay_scan(),
             "duplicateMoveGapMs": 15,
         },
-        "tooltipClearProof": {
+        "tooltipExitProof": {
             "frameId": 14,
             "overlayAbsent": True,
             "backgroundPixels": 0,
@@ -207,7 +238,7 @@ def passing_result() -> tuple[dict[str, object], dict[str, str]]:
                 "m4:pointer:move:queued",
                 "m4:pointer:move:queued",
                 "m4:pointer:move:queued",
-                "m4:pointer:move:queued",
+                "m4:pointer:exit:queued",
                 "shutdown:complete",
             ],
             "stdout": [],
@@ -321,7 +352,7 @@ class M4TooltipResultValidationTest(unittest.TestCase):
 
         self.assert_valid(result, versions)
 
-    def test_tooltip_requires_five_exact_trusted_unpressed_moves(self) -> None:
+    def test_tooltip_requires_four_moves_then_one_trusted_canvas_exit(self) -> None:
         result, versions = passing_result()
         self.pointer_records(result)[1]["button"] = 0
         with self.assertRaises(M0Error):
@@ -339,6 +370,16 @@ class M4TooltipResultValidationTest(unittest.TestCase):
 
         result, versions = passing_result()
         self.pointer_records(result)[3]["x"] = CONFIRM_X - 1
+        with self.assertRaises(M0Error):
+            self.assert_valid(result, versions)
+
+        result, versions = passing_result()
+        self.pointer_records(result)[4]["type"] = "move"
+        with self.assertRaises(M0Error):
+            self.assert_valid(result, versions)
+
+        result, versions = passing_result()
+        self.pointer_records(result)[4]["x"] = CONFIRM_X
         with self.assertRaises(M0Error):
             self.assert_valid(result, versions)
 
@@ -361,6 +402,15 @@ class M4TooltipResultValidationTest(unittest.TestCase):
         with self.assertRaises(M0Error):
             self.assert_valid(result, versions)
 
+        result, versions = passing_result()
+        mouse_leave_trace = self.page_probe(result)["mouseLeaveTrace"]
+        assert isinstance(mouse_leave_trace, list)
+        mouse_leave = mouse_leave_trace[0]
+        assert isinstance(mouse_leave, dict)
+        mouse_leave["targetId"] = "clear-target"
+        with self.assertRaises(M0Error):
+            self.assert_valid(result, versions)
+
     def test_tooltip_visual_requires_the_exact_native_overlay_protocol(self) -> None:
         result, versions = passing_result()
         shown = result["tooltipShowProof"]
@@ -380,7 +430,7 @@ class M4TooltipResultValidationTest(unittest.TestCase):
         with self.assertRaises(M0Error):
             self.assert_valid(result, versions)
 
-    def test_tooltip_show_and_clear_require_later_compositor_frames(self) -> None:
+    def test_tooltip_show_and_exit_require_later_compositor_frames(self) -> None:
         result, versions = passing_result()
         rapid = result["tooltipRapidClearProof"]
         assert isinstance(rapid, dict)
@@ -441,23 +491,23 @@ class M4TooltipResultValidationTest(unittest.TestCase):
             self.assert_valid(result, versions)
 
         result, versions = passing_result()
-        cleared = result["tooltipClearProof"]
-        assert isinstance(cleared, dict)
-        cleared["overlayAbsent"] = False
+        exited = result["tooltipExitProof"]
+        assert isinstance(exited, dict)
+        exited["overlayAbsent"] = False
         with self.assertRaises(M0Error):
             self.assert_valid(result, versions)
 
         result, versions = passing_result()
-        cleared = result["tooltipClearProof"]
-        assert isinstance(cleared, dict)
-        cleared["backgroundPixels"] = 1
+        exited = result["tooltipExitProof"]
+        assert isinstance(exited, dict)
+        exited["backgroundPixels"] = 1
         with self.assertRaises(M0Error):
             self.assert_valid(result, versions)
 
         result, versions = passing_result()
-        cleared = result["tooltipClearProof"]
-        assert isinstance(cleared, dict)
-        cleared["quietForMs"] = (
+        exited = result["tooltipExitProof"]
+        assert isinstance(exited, dict)
+        exited["quietForMs"] = (
             m3_content_server.M4_TOOLTIP_CLEAR_QUIESCENCE_MS - 1
         )
         with self.assertRaises(M0Error):

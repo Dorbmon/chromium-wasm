@@ -313,6 +313,93 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
         )
         self.assertIn("NextMouseEventTime()", mouse_dispatch)
 
+    def test_host_canvas_exit_uses_the_last_native_hover_target(self) -> None:
+        api = source("content/shell/browser/wasm_host_api.cc")
+        event_source_header = source(
+            "ui/ozone/platform/wasm/wasm_event_source.h"
+        )
+        event_source = source("ui/ozone/platform/wasm/wasm_event_source.cc")
+        manager_header = source(
+            "ui/ozone/platform/wasm/wasm_window_manager.h"
+        )
+        manager = source("ui/ozone/platform/wasm/wasm_window_manager.cc")
+        host = source("tools/wasm/host/content_shell_host.js")
+
+        for marker in (
+            "bool DispatchMouseExitEvent();",
+            "gfx::Point last_mouse_root_location_;",
+            "int last_mouse_source_device_id_ = ED_UNKNOWN_DEVICE;",
+            "bool has_last_mouse_root_location_ = false;",
+            "bool DispatchWasmMouseExit();",
+            "WasmWindow* TakePointerFocusedWindow();",
+            "void SetCursorOutsideDisplay();",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, event_source_header + manager_header)
+
+        dispatch_exit = section(
+            event_source,
+            "bool WasmPlatformEventSource::DispatchMouseExitEvent()",
+            "bool WasmPlatformEventSource::DispatchMouseWheelEvent(",
+        )
+        for marker in (
+            "has_last_mouse_root_location_",
+            "window_manager_->TakePointerFocusedWindow()",
+            "window_manager_->SetCursorOutsideDisplay()",
+            "has_last_mouse_root_location_ = false;",
+            "EventType::kMouseExited",
+            "NextMouseEventTime()",
+            "event.set_source_device_id(last_mouse_source_device_id_);",
+            "PlatformEventSource::DispatchEvent(&event);",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, dispatch_exit)
+        self.assertLess(
+            dispatch_exit.index("window_manager_->TakePointerFocusedWindow()"),
+            dispatch_exit.index("window_manager_->SetCursorOutsideDisplay()"),
+        )
+        self.assertLess(
+            dispatch_exit.index("window_manager_->SetCursorOutsideDisplay()"),
+            dispatch_exit.index("PlatformEventSource::DispatchEvent(&event)"),
+        )
+        self.assertIn("pointer_focused_window_ = nullptr;", manager)
+        self.assertIn("cursor_screen_point_ = gfx::Point(-1, -1);", manager)
+
+        exit_dispatch = section(
+            api,
+            "void DispatchDomPointerExitOnUiThread()",
+            "void DispatchDomWheelOnUiThread(",
+        )
+        self.assertIn("ui::DispatchWasmMouseExit()", exit_dispatch)
+        self.assertIn("out-of-viewport mouse move", exit_dispatch)
+        exit_export = section(
+            api,
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_pointer_exit()",
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_wheel(",
+        )
+        self.assertIn("PostHostCommand", exit_export)
+        self.assertIn("DispatchDomPointerExitOnUiThread", exit_export)
+
+        exit_handler = section(
+            host,
+            "  #handleM4PointerExit(event) {",
+            "  #handleM4PointerEvent(type, event) {",
+        )
+        for marker in (
+            'type: "exit"',
+            'event.pointerType !== "mouse"',
+            "event.isPrimary !== true",
+            "record.button !== -1",
+            "record.buttons !== 0",
+            "NO_UNPRESSED_HOVER",
+            "chromium_wasm_host_pointer_exit",
+            "this.#m4PointerHoverActive = false;",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, exit_handler)
+        listeners = section(host, "  enableM4PointerInput()", "  #handleM4WheelEvent")
+        self.assertIn('"pointerleave"', listeners)
+
     def test_controller_cancels_on_input_and_does_not_reuse_stale_titles(
         self,
     ) -> None:
@@ -385,8 +472,10 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
             'clearTitle: clearTarget.getAttribute("title")',
             "mouseTrace",
             "pointerTrace",
+            "mouseLeaveTrace",
             'element.addEventListener("mousemove"',
             'element.addEventListener("pointermove"',
+            'confirmTarget.addEventListener("mouseleave"',
             "trusted: event.isTrusted === true",
             "defaultPrevented: event.defaultPrevented === true",
             "observedAtMs: Math.floor(performance.now())",
@@ -395,6 +484,8 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, fixture)
+
+        self.assertEqual(fixture.count('addEventListener("mouseleave"'), 1)
 
         for forbidden in (
             "navigator.clipboard",
@@ -447,10 +538,12 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
             "window.__chromiumWasmM4TooltipState",
             'state: "awaiting-dom-tooltip-race"',
             'state: "awaiting-dom-tooltip-hover"',
-            'state: "awaiting-dom-tooltip-clear"',
+            'state: "awaiting-dom-tooltip-exit"',
             "tooltipRapidClearProof",
             "tooltipShowProof",
-            "tooltipClearProof",
+            "tooltipExitProof",
+            "matchesM4TooltipQueuedPointerExit",
+            "hasM4TooltipInnerMouseExit",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, host)
@@ -484,7 +577,7 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
                 self.assertIn(marker, rapid_proof)
 
         show_proof = smoke.split("    const hoverTrace = [", 1)[1].split(
-            "    const fullTrace = [", 1
+            "    const exitSequence =", 1
         )[0]
         for marker in (
             "[confirmX, confirmY]",
@@ -496,15 +589,17 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
             with self.subTest(show_marker=marker):
                 self.assertIn(marker, show_proof)
 
-        clear_proof = smoke.split("    const fullTrace = [", 1)[1].split(
+        exit_proof = smoke.split("    const exitSequence =", 1)[1].split(
             "    const shutdownTimeoutMs", 1
         )[0]
-        self.assertIn("countM4TooltipBackgroundPixels(canvas)", clear_proof)
-        self.assertIn("tooltipAbsenceStartedAt", clear_proof)
-        self.assertIn("quietForMs", clear_proof)
+        self.assertIn("matchesM4TooltipQueuedPointerExit", exit_proof)
+        self.assertIn("hasM4TooltipInnerMouseExit", exit_proof)
+        self.assertIn("countM4TooltipBackgroundPixels(canvas)", exit_proof)
+        self.assertIn("tooltipAbsenceStartedAt", exit_proof)
+        self.assertIn("quietForMs", exit_proof)
         self.assertNotIn(
             "scanM4TooltipOverlay(canvas, hoverX, hoverY) === null",
-            clear_proof,
+            exit_proof,
         )
 
         for marker in (
@@ -524,12 +619,13 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
             "window.__chromiumWasmM4TooltipState || null",
             '"awaiting-dom-tooltip-race"',
             '"awaiting-dom-tooltip-hover"',
-            '"awaiting-dom-tooltip-clear"',
+            '"awaiting-dom-tooltip-exit"',
             "client.dispatch_mouse_move(click_x, click_y)",
             "client.dispatch_mouse_move(rapid_clear_x, rapid_clear_y)",
             'x_field="confirmTargetX"',
             'y_field="confirmTargetY"',
-            "client.dispatch_mouse_move(clear_x, clear_y)",
+            "canvas_pointer_exit_position(",
+            "client.dispatch_mouse_move(exit_x, exit_y)",
             "validate_m4_tooltip_result(result, expected_versions=versions)",
         ):
             with self.subTest(marker=marker):
