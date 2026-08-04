@@ -41,7 +41,28 @@ M4_BACKSPACE_CASE = "ozone_backspace_m4"
 M4_FOCUS_CASE = "ozone_focus_m4"
 M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4"
 M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4"
+M5_WISP_CASE = "wisp_network_m5"
 M3_PROTOCOL = 1
+M3_RESULT_CASES = (
+    M3_CASE,
+    M4_CASE,
+    M4_SELECT_CASE,
+    M4_RESIZE_CASE,
+    M4_DPR_CASE,
+    M4_CONTEXT_MENU_CASE,
+    M4_TOOLTIP_CASE,
+    M4_SELECTION_CASE,
+    M4_PRIMARY_PASTE_CASE,
+    M4_COPY_PASTE_CASE,
+    M4_WHEEL_CASE,
+    M4_KEYBOARD_CASE,
+    M4_PRINTABLE_KEY_CASE,
+    M4_BACKSPACE_CASE,
+    M4_IME_BRIDGE_CASE,
+    M4_FOCUS_CASE,
+    M4_FOCUS_RETENTION_CASE,
+    M5_WISP_CASE,
+)
 M3_WIDTH = 800
 M3_HEIGHT = 600
 M4_RESIZE_NARROW_WIDTH = 640
@@ -151,6 +172,10 @@ def accept_result(
         state.result_received = True
         state.result_queue.put_nowait(result)
     return True
+
+
+def is_supported_result_case(value: object) -> bool:
+    return isinstance(value, str) and value in M3_RESULT_CASES
 
 
 def _artifact_for_request(
@@ -280,25 +305,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
         if (
             not isinstance(result, dict)
             or result.get("protocol") != M3_PROTOCOL
-            or result.get("case") not in (
-                M3_CASE,
-                M4_CASE,
-                M4_SELECT_CASE,
-                M4_RESIZE_CASE,
-                M4_DPR_CASE,
-                M4_CONTEXT_MENU_CASE,
-                M4_TOOLTIP_CASE,
-                M4_SELECTION_CASE,
-                M4_PRIMARY_PASTE_CASE,
-                M4_COPY_PASTE_CASE,
-                M4_WHEEL_CASE,
-                M4_KEYBOARD_CASE,
-                M4_PRINTABLE_KEY_CASE,
-                M4_BACKSPACE_CASE,
-                M4_IME_BRIDGE_CASE,
-                M4_FOCUS_CASE,
-                M4_FOCUS_RETENTION_CASE,
-            )
+            or not is_supported_result_case(result.get("case"))
         ):
             self.send_error(400)
             return

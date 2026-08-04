@@ -150,7 +150,16 @@ class M4OzonePrimaryPasteContractTest(unittest.TestCase):
             "    def do_POST(self) -> None:",
             "\n\n\nclass M3HTTPServer",
         )
-        self.assertIn("M4_PRIMARY_PASTE_CASE", post_handler)
+        # Result-case validation is centralized so later milestones can add a
+        # bounded case without duplicating the M4 allowlist in every handler.
+        self.assertIn(
+            "is_supported_result_case(result.get(\"case\"))", post_handler)
+        result_case_allowlist = section(
+            server,
+            "M3_RESULT_CASES = (",
+            ")\nM3_WIDTH",
+        )
+        self.assertIn("M4_PRIMARY_PASTE_CASE", result_case_allowlist)
 
     def test_host_requires_native_selection_then_native_paste(self) -> None:
         host = source("tools/wasm/host/content_shell_host.js")

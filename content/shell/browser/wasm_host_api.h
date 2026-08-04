@@ -12,6 +12,11 @@ namespace content {
 void InitializeWasmHostApi();
 void ShutdownWasmHostApi();
 
+// Enables the tightly scoped M5 network-test lane before ContentMain creates
+// the Network Service. Only content_shell_wasm_m5_test invokes this; the
+// regular Content Shell keeps its data:-only navigation boundary.
+void EnableWasmM5NetworkTestModeForTesting();
+
 }  // namespace content
 
 #endif  // CONTENT_SHELL_BROWSER_WASM_HOST_API_H_

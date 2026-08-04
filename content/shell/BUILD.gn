@@ -861,6 +861,19 @@ if (is_android) {
 } else if (is_wasm) {
   assert(enable_chromium_wasm_content)
 
+  # The source PEM also contains a test private key. This action deliberately
+  # extracts only the CERTIFICATE block into a generated C++ include for the
+  # dedicated M5 TLS test executable; it is never an embedded runtime asset.
+  action("generate_wasm_m5_test_root_cert") {
+    testonly = true
+    visibility = [ ":content_shell_wasm_m5_test" ]
+    script = "//net/data/ssl/scripts/generate-fuzzer-cert-include.py"
+    sources = [ "//net/data/ssl/certificates/root_ca_cert.pem" ]
+    outputs = [ "$target_gen_dir/app/wasm_m5_test_root_cert.inc" ]
+    args = [ rebase_path(sources[0], root_build_dir) ] +
+           rebase_path(outputs, root_build_dir)
+  }
+
   executable("content_shell_wasm") {
     testonly = true
     sources = [ "app/shell_main.cc" ]
@@ -874,6 +887,34 @@ if (is_android) {
       ":content_shell_lib",
       ":pak",
       "//content/public/app",
+      "//third_party/icu:icudata",
+    ]
+  }
+
+  # This target exists solely for the controlled M5 HTTPS/WISP acceptance
+  # harness. The production Content Shell contains neither the test root nor
+  # an enabled non-data navigation path.
+  executable("content_shell_wasm_m5_test") {
+    testonly = true
+    sources = [
+      "app/shell_main.cc",
+      "app/wasm_m5_test_trust.cc",
+      "app/wasm_m5_test_trust.h",
+    ]
+    inputs = [
+      "$root_out_dir/content_shell.pak",
+      "$root_out_dir/icudtl.dat",
+    ]
+    configs += [ ":content_shell_wasm_assets" ]
+    defines = [ "CONTENT_SHELL_WASM_M5_TEST=1" ]
+    deps = [
+      ":content_shell_app",
+      ":content_shell_lib",
+      ":generate_wasm_m5_test_root_cert",
+      ":pak",
+      "//base",
+      "//content/public/app",
+      "//net",
       "//third_party/icu:icudata",
     ]
   }

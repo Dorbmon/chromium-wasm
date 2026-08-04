@@ -281,6 +281,39 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // The dedicated M5 test executable reports its fixed HTTPS fixture through
+  // a separate bridge entry. Keeping this distinct from the production
+  // data:-navigation reports makes the test-only trust and navigation lane
+  // auditable at the host boundary.
+  chromium_wasm_report_m5_navigation__deps: ['$ChromiumWasmHostBridge'],
+  chromium_wasm_report_m5_navigation__proxy: 'sync',
+  chromium_wasm_report_m5_navigation: () => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportM5Navigation !== 'function') {
+      return 0;
+    }
+    bridge.reportM5Navigation({
+      protocol: ChromiumWasmHostBridge.version,
+      committed: true,
+      scheme: 'https',
+    });
+    return 1;
+  },
+
+  chromium_wasm_report_m5_page_probe__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_page_probe__proxy: 'sync',
+  chromium_wasm_report_m5_page_probe: (probe) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportM5PageProbe !== 'function') {
+      return 0;
+    }
+    bridge.reportM5PageProbe(UTF8ToString(probe));
+    return 1;
+  },
+
   chromium_wasm_report_fatal__deps: [
     '$ChromiumWasmHostBridge',
     '$UTF8ToString',

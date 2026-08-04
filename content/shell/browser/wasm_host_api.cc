@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -70,6 +71,8 @@ constexpr int kMaximumCanvasDimension = 16384;
 // linear-memory ceiling to Content, V8, and browser services.
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
+constexpr std::string_view kM5NetworkTestHostname = "a.test";
+constexpr std::string_view kM5NetworkTestPathPrefix = "/m5/";
 constexpr size_t kMaximumM4TextInputUtf16Units = 64 * 1024;
 constexpr size_t kMaximumM4TextInputUtf8Bytes =
     kMaximumM4TextInputUtf16Units * 3;
@@ -104,12 +107,38 @@ enum class DomPointerEventType {
   kUp = 2,
 };
 
+std::atomic_bool& GetWasmM5NetworkTestMode() {
+  static std::atomic_bool enabled(false);
+  return enabled;
+}
+
+bool IsWasmM5NetworkTestModeEnabled() {
+  return GetWasmM5NetworkTestMode().load(std::memory_order_relaxed);
+}
+
+bool IsM5NetworkTestUrl(const GURL& candidate_url) {
+  return IsWasmM5NetworkTestModeEnabled() && candidate_url.is_valid() &&
+         candidate_url.SchemeIs(url::kHttpsScheme) &&
+         candidate_url.host() == kM5NetworkTestHostname &&
+         candidate_url.has_port() &&
+         !candidate_url.has_username() && !candidate_url.has_password() &&
+         !candidate_url.has_query() && !candidate_url.has_ref() &&
+         candidate_url.path().starts_with(kM5NetworkTestPathPrefix);
+}
+
+bool IsObservedWasmHostUrl(const GURL& candidate_url) {
+  return candidate_url.SchemeIs(url::kDataScheme) ||
+         IsM5NetworkTestUrl(candidate_url);
+}
+
 extern "C" int chromium_wasm_report_readiness(
     int shell_ready,
     int surface_ready,
     int first_visually_nonempty_paint);
 extern "C" int chromium_wasm_report_navigation();
 extern "C" int chromium_wasm_report_page_probe(const char* probe);
+extern "C" int chromium_wasm_report_m5_navigation();
+extern "C" int chromium_wasm_report_m5_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_fatal(const char* message);
 extern "C" int chromium_wasm_report_ozone_text_input_delivery(
     int action,
@@ -243,17 +272,21 @@ class WasmHostObserver final : public WebContentsObserver {
       return;
     }
 
-    if (!navigation_handle->GetURL().SchemeIs(url::kDataScheme)) {
+    const GURL& navigation_url = navigation_handle->GetURL();
+    if (navigation_url.SchemeIs(url::kDataScheme)) {
+      if (chromium_wasm_report_navigation() != 1) {
+        ReportFatal("host rejected the committed data navigation report");
+      }
       return;
     }
-
-    if (chromium_wasm_report_navigation() != 1) {
-      ReportFatal("host rejected the committed data navigation report");
+    if (IsM5NetworkTestUrl(navigation_url) &&
+        chromium_wasm_report_m5_navigation() != 1) {
+      ReportFatal("host rejected the committed M5 HTTPS navigation report");
     }
   }
 
   void DocumentOnLoadCompletedInPrimaryMainFrame() override {
-    if (!web_contents()->GetLastCommittedURL().SchemeIs(url::kDataScheme)) {
+    if (!IsObservedWasmHostUrl(web_contents()->GetLastCommittedURL())) {
       return;
     }
     ProbePage();
@@ -262,7 +295,7 @@ class WasmHostObserver final : public WebContentsObserver {
   }
 
   void DidFirstVisuallyNonEmptyPaint() override {
-    if (!web_contents()->GetLastCommittedURL().SchemeIs(url::kDataScheme)) {
+    if (!IsObservedWasmHostUrl(web_contents()->GetLastCommittedURL())) {
       return;
     }
     if (chromium_wasm_report_readiness(
@@ -289,19 +322,26 @@ class WasmHostObserver final : public WebContentsObserver {
       return;
     }
 
+    const bool is_m5_network_test =
+        IsM5NetworkTestUrl(web_contents()->GetLastCommittedURL());
     probe_in_flight_ = true;
     frame->ExecuteJavaScriptForTests(
-        u"window.__chromiumWasmM4Probe ? "
-        u"window.__chromiumWasmM4Probe() : "
-        u"(window.__chromiumWasmM3Probe ? "
-        u"window.__chromiumWasmM3Probe() : '')",
+        is_m5_network_test
+            ? u"window.__chromiumWasmM5Probe ? "
+              u"window.__chromiumWasmM5Probe() : ''"
+            : u"window.__chromiumWasmM4Probe ? "
+              u"window.__chromiumWasmM4Probe() : "
+              u"(window.__chromiumWasmM3Probe ? "
+              u"window.__chromiumWasmM3Probe() : '')",
         base::BindOnce(&WasmHostObserver::OnPageProbe,
                        weak_ptr_factory_.GetWeakPtr(),
-                       navigation_generation_),
+                       navigation_generation_, is_m5_network_test),
         ISOLATED_WORLD_ID_GLOBAL);
   }
 
-  void OnPageProbe(uint64_t navigation_generation, base::Value result) {
+  void OnPageProbe(uint64_t navigation_generation,
+                   bool is_m5_network_test,
+                   base::Value result) {
     if (navigation_generation != navigation_generation_) {
       return;
     }
@@ -309,7 +349,12 @@ class WasmHostObserver final : public WebContentsObserver {
     if (!result.is_string() || result.GetString().empty()) {
       return;
     }
-    if (chromium_wasm_report_page_probe(result.GetString().c_str()) != 1) {
+    const int accepted = is_m5_network_test
+                             ? chromium_wasm_report_m5_page_probe(
+                                   result.GetString().c_str())
+                             : chromium_wasm_report_page_probe(
+                                   result.GetString().c_str());
+    if (accepted != 1) {
       ReportFatal("host rejected the deterministic page probe");
       probe_timer_.Stop();
     }
@@ -784,6 +829,10 @@ void InitializeWasmHostApi() {
   }
 }
 
+void EnableWasmM5NetworkTestModeForTesting() {
+  GetWasmM5NetworkTestMode().store(true, std::memory_order_relaxed);
+}
+
 void ShutdownWasmHostApi() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
@@ -943,6 +992,24 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_url(const char* data_url) {
   }
   GURL url(std::string(data_url, length));
   if (!url.is_valid() || !url.SchemeIs(url::kDataScheme)) {
+    return 0;
+  }
+  return content::PostHostCommand(
+             base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_url(const char* test_url) {
+  if (!test_url || !content::IsWasmM5NetworkTestModeEnabled()) {
+    return 0;
+  }
+  const size_t length = strnlen(test_url, content::kMaximumDataUrlBytes + 1);
+  if (length == 0 || length > content::kMaximumDataUrlBytes) {
+    return 0;
+  }
+  GURL url(std::string(test_url, length));
+  if (!content::IsM5NetworkTestUrl(url)) {
     return 0;
   }
   return content::PostHostCommand(

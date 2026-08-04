@@ -10,6 +10,11 @@
 #include <stdio.h>
 
 extern "C" int chromium_wasm_report_process_exit(int exit_code);
+
+#if defined(CONTENT_SHELL_WASM_M5_TEST)
+#include "content/shell/app/wasm_m5_test_trust.h"
+#include "content/shell/browser/wasm_host_api.h"
+#endif
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -100,6 +105,13 @@ extern "C" IOS_INIT_EXPORT int ContentAppMain(int argc, const char** argv) {
 
 int main(int argc, const char** argv) {
 #if BUILDFLAG(IS_WASM)
+#if defined(CONTENT_SHELL_WASM_M5_TEST)
+  // Do this before ContentMain constructs the Network Service and its
+  // certificate verifier. The normal Wasm Content Shell never calls either
+  // test-only initializer.
+  content::InstallWasmM5TestTrustRoot();
+  content::EnableWasmM5NetworkTestModeForTesting();
+#endif
   int exit_code;
   {
     content::ShellMainDelegate delegate;

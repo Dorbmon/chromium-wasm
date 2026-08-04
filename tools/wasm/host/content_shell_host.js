@@ -20,6 +20,7 @@ const M4_COPY_PASTE_CASE = "ozone_copy_paste_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
+const M5_NETWORK_CASE = "wisp_network_m5";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v2";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
 const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
@@ -40,6 +41,9 @@ const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_FOCUS_RETENTION_FIXTURE =
   "chromium-wasm-m4-ozone-focus-retention-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
+const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
+const M5_NETWORK_TEST_HOSTNAME = "a.test";
+const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
 const M4_PRINTABLE_KEY_DOM_KEY = "a";
@@ -1352,6 +1356,16 @@ function isEmptyM4ImeTextSummary(value) {
       value?.utf8Bytes === 0 && value?.codePointCount === 0;
 }
 
+function hasM5NetworkPageProbe(pageProbe) {
+  return pageProbe?.protocol === HOST_PROTOCOL &&
+      pageProbe?.fixture === M5_NETWORK_FIXTURE &&
+      pageProbe?.ready === true &&
+      pageProbe?.h2Fetch === true && pageProbe?.h2Protocol === "h2" &&
+      pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
+      pageProbe?.altSvcH3Advertised === true &&
+      typeof pageProbe?.nonce === "string" && pageProbe.nonce.length > 0;
+}
+
 function asReport(value, description) {
   let report = value;
   if (typeof report === "string") {
@@ -1390,6 +1404,12 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportPageProbe(report) {
     deliverBridgeReport("_reportPageProbe", [report]);
+  },
+  reportM5Navigation(report) {
+    deliverBridgeReport("_reportM5Navigation", [report]);
+  },
+  reportM5PageProbe(report) {
+    deliverBridgeReport("_reportM5PageProbe", [report]);
   },
   reportOzoneFocusState(report) {
     deliverBridgeReport("_reportOzoneFocusState", [report]);
@@ -1575,10 +1595,43 @@ export function normalizeWispConfiguration(configuration) {
   return Object.freeze(normalized);
 }
 
+// M5 has one deliberately narrow non-data navigation lane. Its runtime test
+// server chooses an ephemeral TLS port, but the hostname and fixture path are
+// fixed so this cannot become a general-purpose host navigation API.
+function normalizeM5NetworkTestURL(value) {
+  if (
+    typeof value !== "string" || value.length === 0 || value.length > 2048
+  ) {
+    throw new Error("M5 network test URL must be a nonempty string");
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (_) {
+    throw new Error("M5 network test URL is invalid");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname !== M5_NETWORK_TEST_HOSTNAME ||
+    !parsed.port ||
+    parsed.username || parsed.password || parsed.search || parsed.hash ||
+    !parsed.pathname.startsWith(M5_NETWORK_TEST_PATH_PREFIX)
+  ) {
+    throw new Error("M5 network test URL violates the fixture policy");
+  }
+  const port = Number(parsed.port);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("M5 network test URL has an invalid port");
+  }
+  return parsed.href;
+}
+
 export class ChromiumWasmM3Host {
   #canvas;
   #imeProxy;
   #fixture;
+  #wispConfigured = false;
+  #m5NetworkTestActive = false;
   #module = null;
   #lifecycle = "new";
   #runtimeInitialized = false;
@@ -3880,6 +3933,7 @@ export class ChromiumWasmM3Host {
       throw new Error("M3 module must be served from the host origin");
     }
     const wispConfiguration = normalizeWispConfiguration(wisp);
+    this.#wispConfigured = Boolean(wispConfiguration);
     this.#lifecycle = "initializing";
     this.#canvas.focus();
     if (document.activeElement !== this.#canvas) {
@@ -4030,6 +4084,45 @@ export class ChromiumWasmM3Host {
     }
     this.#recordHost("navigation:requested:data");
     return {ok: true, scheme: "data"};
+  }
+
+  async loadM5NetworkURL(url) {
+    this.#requireRunning("loadM5NetworkURL");
+    if (!this.#wispConfigured) {
+      throw new Error("M5 network navigation requires a WISP configuration");
+    }
+    if (this.#m5NetworkTestActive) {
+      throw new Error("M5 network navigation may only be requested once");
+    }
+    const testURL = normalizeM5NetworkTestURL(url);
+    // The C ABI posts work to Chromium's UI sequence. Mark this first so a
+    // proxied completion report cannot race the host-side test-mode gate.
+    this.#m5NetworkTestActive = true;
+    this.#navigation = {};
+    this.#pageProbe = {};
+    let result;
+    try {
+      result = this.#callExport(
+        "chromium_wasm_host_load_m5_url",
+        "number",
+        ["string"],
+        [testURL],
+      );
+    } catch (error) {
+      this.#m5NetworkTestActive = false;
+      throw error;
+    }
+    if (result !== 1) {
+      this.#m5NetworkTestActive = false;
+      throw new Error(
+        `runtime rejected M5 HTTPS navigation with status ${String(result)}`);
+    }
+    this.#recordHost("navigation:requested:m5-https");
+    return {
+      ok: true,
+      scheme: "https",
+      hostname: M5_NETWORK_TEST_HOSTNAME,
+    };
   }
 
   async injectInput(event) {
@@ -4366,6 +4459,40 @@ export class ChromiumWasmM3Host {
       }
     } catch (error) {
       this._reportFatal(`invalid page probe: ${String(error)}`);
+    }
+  }
+
+  _reportM5Navigation(value) {
+    try {
+      const report = asReport(value, "M5 navigation report");
+      if (
+        !this.#m5NetworkTestActive ||
+        report.protocol !== HOST_PROTOCOL ||
+        report.committed !== true ||
+        report.scheme !== "https"
+      ) {
+        throw new Error("M5 navigation report must commit the HTTPS fixture");
+      }
+      this.#navigation = {committed: true, scheme: "https"};
+      this.#resetHeartbeatWindow("m5-https-navigation-committed");
+    } catch (error) {
+      this._reportFatal(`invalid M5 navigation report: ${String(error)}`);
+    }
+  }
+
+  _reportM5PageProbe(value) {
+    try {
+      const report = asReport(value, "M5 page probe");
+      if (
+        !this.#m5NetworkTestActive ||
+        report.protocol !== HOST_PROTOCOL ||
+        report.fixture !== M5_NETWORK_FIXTURE
+      ) {
+        throw new Error("M5 page probe identity mismatch");
+      }
+      this.#pageProbe = clone(report);
+    } catch (error) {
+      this._reportFatal(`invalid M5 page probe: ${String(error)}`);
     }
   }
 
@@ -11750,6 +11877,166 @@ async function runM4OzoneFocusRetentionSmokeFromQuery() {
   return result;
 }
 
+async function runM5WispNetworkSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const relayEndpoint = parameters.get("wisp_endpoint");
+  const m5URL = parameters.get("m5_url");
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let readiness = null;
+  let initialFrame = null;
+  let navigationResult = null;
+  let shutdown = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M5_NETWORK_CASE) {
+      throw new Error("M5 WISP case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M5 WISP result token");
+    }
+    if (!relayEndpoint) {
+      throw new Error("missing M5 WISP endpoint");
+    }
+    const testURL = normalizeM5NetworkTestURL(m5URL);
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M5_NETWORK_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+      wisp: {
+        version: WISP_CONFIGURATION_VERSION,
+        endpoint: relayEndpoint,
+        subprotocol: "wisp",
+      },
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    while (performance.now() < deadline) {
+      const candidate = await host.readiness();
+      if (candidate.frame?.width === DEFAULT_WIDTH &&
+          candidate.frame?.height === DEFAULT_HEIGHT) {
+        initialFrame = candidate.frame;
+        break;
+      }
+      await delay(25);
+    }
+    if (!initialFrame) {
+      throw new Error("M5 runtime did not present the initial shell frame");
+    }
+
+    navigationResult = await host.loadM5NetworkURL(testURL);
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady && hasM5NetworkPageProbe(readiness.pageProbe)) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness || !readiness.baseReady ||
+        !hasM5NetworkPageProbe(readiness.pageProbe)) {
+      throw new Error(
+          "M5 WISP HTTPS fixture did not complete: " +
+          JSON.stringify(readiness));
+    }
+
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    shutdown = await host.shutdown(shutdownTimeoutMs);
+    const pageProbe = readiness.pageProbe;
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      initialFrame: initialFrame !== null,
+      wispConfigured: logs.host.includes("initialize:wisp-configured"),
+      m5Navigation:
+        navigationResult?.ok === true &&
+        readiness.navigation?.committed === true &&
+        readiness.navigation?.scheme === "https",
+      fixture: hasM5NetworkPageProbe(pageProbe),
+      http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
+      cors: pageProbe.corsFetch === true,
+      webSocket: pageProbe.webSocketEcho === true,
+      altSvcH3Advertised: pageProbe.altSvcH3Advertised === true,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M5_NETWORK_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      initialFrame,
+      navigationResult,
+      readiness,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M5_NETWORK_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      initialFrame,
+      navigationResult,
+      readiness: null,
+      logs: null,
+      shutdown,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
 export async function runContentShellSmokeFromQuery() {
   const selectedCase = new URLSearchParams(location.search).get("case");
   if (selectedCase === M3_CASE) {
@@ -11802,6 +12089,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_FOCUS_RETENTION_CASE) {
     return runM4OzoneFocusRetentionSmokeFromQuery();
+  }
+  if (selectedCase === M5_NETWORK_CASE) {
+    return runM5WispNetworkSmokeFromQuery();
   }
   throw new Error("unknown Content Shell Wasm smoke case");
 }
