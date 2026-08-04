@@ -142,6 +142,7 @@
 #include "services/network/public/cpp/parsed_headers.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/simple_host_resolver.h"
+#include "services/network/public/cpp/web_transport_error_mojom_traits.h"
 #include "services/network/public/mojom/clear_data_filter.mojom.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom-forward.h"
 #include "services/network/public/mojom/cookie_encryption_provider.mojom.h"
@@ -2073,11 +2074,23 @@ void NetworkContext::CreateWebTransport(
     mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
         url_loader_network_observer,
     mojom::ClientSecurityStatePtr client_security_state) {
+#if BUILDFLAG(IS_WASM)
+  // Standalone WebTransport creates a dedicated HTTP/3 client and UDP socket,
+  // bypassing HttpNetworkSession's QUIC policy. WISP is TCP-only, so fail at
+  // the platform boundary with an explicit unsupported-feature error.
+  mojo::Remote<mojom::WebTransportHandshakeClient> handshake_client(
+      std::move(pending_handshake_client));
+  handshake_client->OnHandshakeFailed(
+      net::WebTransportError(net::ERR_NOT_IMPLEMENTED));
+  handshake_client.reset();
+  return;
+#else
   web_transports_.insert(std::make_unique<WebTransport>(
       url, origin, key, fingerprints, application_protocols, congestion_control,
       this, std::move(pending_handshake_client),
       std::move(url_loader_network_observer),
       std::move(client_security_state)));
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 void NetworkContext::CreateNetLogExporter(
@@ -2130,6 +2143,16 @@ void NetworkContext::ResolveHost(
 void NetworkContext::CreateHostResolver(
     const std::optional<net::DnsConfigOverrides>& config_overrides,
     mojo::PendingReceiver<mojom::HostResolver> receiver) {
+#if BUILDFLAG(IS_WASM)
+  if (config_overrides &&
+      config_overrides.value() != net::DnsConfigOverrides()) {
+    LOG(WARNING) << "Rejecting unsupported custom DNS configuration on Wasm; "
+                 << "WISP remains the only hostname transport.";
+    receiver.reset();
+    return;
+  }
+#endif
+
   net::HostResolver* internal_resolver = url_request_context_->host_resolver();
   std::unique_ptr<net::HostResolver> private_internal_resolver;
 
@@ -2534,15 +2557,16 @@ void NetworkContext::CreateP2PSocketManager(
 
 void NetworkContext::CreateMdnsResponder(
     mojo::PendingReceiver<mojom::MdnsResponder> responder_receiver) {
-#if BUILDFLAG(ENABLE_MDNS)
+#if BUILDFLAG(ENABLE_MDNS) && !BUILDFLAG(IS_WASM)
   if (!mdns_responder_manager_) {
     mdns_responder_manager_ = std::make_unique<MdnsResponderManager>();
   }
 
   mdns_responder_manager_->CreateMdnsResponder(std::move(responder_receiver));
 #else
-  NOTREACHED();
-#endif  // BUILDFLAG(ENABLE_MDNS)
+  LOG(WARNING) << "mDNS responders are unsupported on Wasm.";
+  responder_receiver.reset();
+#endif  // BUILDFLAG(ENABLE_MDNS) && !BUILDFLAG(IS_WASM)
 }
 
 void NetworkContext::AddDomainReliabilityContextForTesting(
@@ -3098,6 +3122,13 @@ URLRequestContextOwner NetworkContext::MakeURLRequestContext(
             std::move(network_layer));
       }));
 
+#if BUILDFLAG(IS_WASM)
+  if (command_line->HasSwitch(switches::kHostResolverRules) ||
+      command_line->HasSwitch(switches::kHostRules)) {
+    LOG(WARNING) << "Ignoring hostname mapping switches on Wasm; "
+                 << "normal navigation must resolve through WISP.";
+  }
+#else
   if (command_line->HasSwitch(switches::kHostResolverRules)) {
     builder.set_host_mapping_rules(
         command_line->GetSwitchValueASCII(switches::kHostResolverRules));
@@ -3117,6 +3148,7 @@ URLRequestContextOwner NetworkContext::MakeURLRequestContext(
     builder.set_host_mapping_rules(
         command_line->GetSwitchValueASCII(switches::kHostRules));
   }
+#endif  // BUILDFLAG(IS_WASM)
 
 #if BUILDFLAG(IS_WIN)
   if (params_->socket_brokers) {

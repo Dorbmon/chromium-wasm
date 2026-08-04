@@ -149,6 +149,7 @@ namespace {
 // some platform's resolvers.
 const size_t kMaxHostLength = 4096;
 
+#if !BUILDFLAG(IS_WASM)
 // Time between IPv6 probes, i.e. for how long results of each IPv6 probe are
 // cached.
 const int kIPv6ProbePeriodMs = 1000;
@@ -157,6 +158,7 @@ const int kIPv6ProbePeriodMs = 1000;
 const uint8_t kIPv6ProbeAddress[] = {0x20, 0x01, 0x48, 0x60, 0x48, 0x60,
                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                      0x00, 0x00, 0x88, 0x88};
+#endif  // !BUILDFLAG(IS_WASM)
 
 // True if |hostname| ends with either ".local" or ".local.".
 bool ResemblesMulticastDNSName(std::string_view hostname) {
@@ -179,12 +181,14 @@ bool ConfigureAsyncDnsNoFallbackFieldTrial() {
   return kDefault;
 }
 
+#if !BUILDFLAG(IS_WASM)
 base::DictValue NetLogIPv6AvailableParams(bool ipv6_available, bool cached) {
   base::DictValue dict;
   dict.Set("ipv6_available", ipv6_available);
   dict.Set("cached", cached);
   return dict;
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 // Maximum of 64 concurrent resolver calls (excluding retries).
 // Between 2010 and 2020, the limit was set to 6 because of a report of a broken
@@ -295,6 +299,7 @@ int GetPortForGloballyReachableCheck() {
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
+#if !BUILDFLAG(IS_WASM)
 // LINT.IfChange(DnsClientCapability)
 enum class DnsClientCapability {
   kSecureDisabledInsecureDisabled = 0,
@@ -326,6 +331,7 @@ void RecordDnsClientCapabilityMetrics(const DnsClient* dns_client) {
   base::UmaHistogramEnumeration("Net.DNS.DnsConfig.DnsClientCapability",
                                 capability);
 }
+#endif  // !BUILDFLAG(IS_WASM)
 }  // namespace
 
 //-----------------------------------------------------------------------------
@@ -579,6 +585,11 @@ HostResolverManager::CreateMdnsListener(const HostPortPair& host,
   auto listener =
       std::make_unique<HostResolverMdnsListenerImpl>(host, query_type);
 
+#if BUILDFLAG(IS_WASM)
+  // mDNS requires UDP multicast, which WISP deliberately does not expose.
+  listener->set_initialization_error(ERR_NOT_IMPLEMENTED);
+  return listener;
+#else
   MDnsClient* client;
   int rv = GetOrCreateMdnsClient(&client);
 
@@ -590,6 +601,7 @@ HostResolverManager::CreateMdnsListener(const HostPortPair& host,
     listener->set_initialization_error(rv);
   }
   return listener;
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 std::unique_ptr<HostResolver::ServiceEndpointRequest>
@@ -853,6 +865,19 @@ HostCache::Entry HostResolverManager::ResolveLocally(
   DCHECK(out_stale_info);
   *out_stale_info = std::nullopt;
 
+#if BUILDFLAG(IS_WASM)
+  // WISP provides only hostname-to-TCP-destination resolution. Direct DNS,
+  // mDNS, and record-only DNS requests would require a different protocol
+  // rather than silently falling back to Chromium or browser-host DNS.
+  if ((source == HostResolverSource::DNS && !ip_address.IsValid()) ||
+      source == HostResolverSource::MULTICAST_DNS ||
+      ResemblesMulticastDNSName(job_key.host.GetHostname()) ||
+      !HasAddressType(job_key.query_types)) {
+    return HostCache::Entry(ERR_NOT_IMPLEMENTED,
+                            HostCache::Entry::SOURCE_UNKNOWN);
+  }
+#endif
+
   CreateTaskSequence(job_key, cache_usage, secure_dns_policy, out_tasks);
   source_net_log.AddEvent(
       NetLogEventType::HOST_RESOLVER_MANAGER_TASK_SEQUENCE_CREATED, [&] {
@@ -909,8 +934,18 @@ HostCache::Entry HostResolverManager::ResolveLocally(
   std::optional<HostCache::Entry> resolved =
       ServeLocalhost(job_key.host.GetHostname(), job_key.query_types,
                      default_family_due_to_no_ipv6);
+#if BUILDFLAG(IS_WASM)
+  if (resolved) {
+    // A WISP gateway is a separate network endpoint. Treating localhost as a
+    // normal loopback answer here would retarget it to the gateway's loopback
+    // namespace and could bypass the browser's local-network policy.
+    return HostCache::Entry(ERR_NAME_NOT_RESOLVED,
+                            HostCache::Entry::SOURCE_UNKNOWN);
+  }
+#else
   if (resolved)
     return resolved.value();
+#endif
 
   // Do initial cache lookups.
   while (!out_tasks->empty() && IsLocalTask(out_tasks->front())) {
@@ -1397,6 +1432,20 @@ void HostResolverManager::CreateTaskSequence(
     std::deque<TaskType>* out_tasks) {
   DCHECK(out_tasks->empty());
 
+#if BUILDFLAG(IS_WASM)
+  const bool has_address_type = HasAddressType(job_key.query_types);
+  // The Wasm Network Service installs a System resolver override that turns a
+  // hostname into a bounded WISP destination marker. Do not consult Chromium
+  // caches, HOSTS mappings, built-in DNS, mDNS, or platform DNS: all can
+  // contain browser-host results that bypass WISP's hostname boundary.
+  // LOCAL_ONLY remains local by its documented contract.
+  if (job_key.source != HostResolverSource::LOCAL_ONLY &&
+      job_key.source != HostResolverSource::MULTICAST_DNS &&
+      has_address_type) {
+    out_tasks->push_back(TaskType::SYSTEM);
+  }
+  return;
+#else
   // A cache lookup should generally be performed first. For jobs involving a
   // DnsTask, this task may be replaced.
   bool allow_cache =
@@ -1493,10 +1542,12 @@ void HostResolverManager::CreateTaskSequence(
            out_tasks->end());
     DCHECK(std::ranges::find(*out_tasks, TaskType::MDNS) == out_tasks->end());
   }
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 namespace {
 
+#if !BUILDFLAG(IS_WASM)
 bool RequestWillUseWiFi(handles::NetworkHandle network) {
   NetworkChangeNotifier::ConnectionType connection_type;
   if (network == handles::kInvalidNetworkHandle)
@@ -1506,6 +1557,7 @@ bool RequestWillUseWiFi(handles::NetworkHandle network) {
 
   return connection_type == NetworkChangeNotifier::CONNECTION_WIFI;
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 }  // namespace
 
@@ -1527,6 +1579,12 @@ int HostResolverManager::StartIPv6ReachabilityCheck(
     const NetLogWithSource& net_log,
     ClientSocketFactory* client_socket_factory,
     CompletionOnceCallback callback) {
+#if BUILDFLAG(IS_WASM)
+  // WISP owns destination address-family selection. Chromium's normal probe
+  // would create a UDP socket to a public resolver, which is unsupported and
+  // must not become an out-of-band transport on Wasm.
+  return OK;
+#else
   // Don't bother checking if the request will use WiFi and IPv6 is assumed to
   // not work on WiFi.
   if (!check_ipv6_on_wifi_ && RequestWillUseWiFi(target_network_)) {
@@ -1563,6 +1621,7 @@ int HostResolverManager::StartIPv6ReachabilityCheck(
         return NetLogIPv6AvailableParams(last_ipv6_probe_result_, cached);
       });
   return rv;
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 void HostResolverManager::SetLastIPv6ProbeResult(bool last_ipv6_probe_result) {

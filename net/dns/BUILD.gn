@@ -6,7 +6,7 @@ import("//net/features.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 import("//third_party/protobuf/proto_library.gni")
 
-enable_built_in_dns = use_blink
+enable_built_in_dns = use_blink && !is_wasm
 
 source_set("dns") {
   # Due to circular dependencies, should only be depended on through //net.
@@ -146,7 +146,11 @@ source_set("dns") {
   }
 
   if (is_wasm) {
-    sources += [ "dns_config_service_wasm.cc" ]
+    sources += [
+      "dns_config_service_wasm.cc",
+      "wisp_host_resolver_wasm.cc",
+      "wisp_host_resolver_wasm.h",
+    ]
   }
 
   if (is_android) {

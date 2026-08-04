@@ -64,6 +64,9 @@
 #include "net/dns/host_resolver.h"
 #include "net/dns/host_resolver_manager.h"
 #include "net/dns/host_resolver_proc.h"
+#if BUILDFLAG(IS_WASM)
+#include "net/dns/wisp_host_resolver_wasm.h"
+#endif
 #include "net/dns/public/dns_config_overrides.h"
 #include "net/dns/public/dns_over_https_config.h"
 #include "net/dns/public/doh_provider_entry.h"
@@ -255,6 +258,7 @@ void HandleBadMessage(const std::string& error) {
 #endif
 }
 
+#if !BUILDFLAG(IS_WASM)
 // Runs `results_cb` on `sequenced_task_runner` with an empty result and
 // net::ERR_ABORTED.
 void AsyncResolveSystemDnsWithEmptyResult(
@@ -286,6 +290,7 @@ void ResolveSystemDnsWithMojo(
   system_dns_override->Resolve(hostname, addr_family, flags, network,
                                std::move(results_cb_with_default_invoke));
 }
+#endif  // !BUILDFLAG(IS_WASM)
 
 // Creating an instance of this class starts exporting UMA data related to
 // RestrictedCookieManager. There should only be one instance of this class at a
@@ -388,6 +393,13 @@ NetworkService::NetworkService(
   DCHECK(!g_network_service);
   g_network_service = this;
 
+#if BUILDFLAG(IS_WASM)
+  // WISP supplies TCP streams only. Set this before a NetworkContext can
+  // construct its HttpNetworkSession, rather than relying on an embedder
+  // switch or post-construction DisableQuic() call.
+  quic_disabled_ = true;
+#endif
+
   if (base::FeatureList::IsEnabled(net::features::kNetTaskScheduler)) {
     net::NetTaskScheduler::MaybeCreate();
   }
@@ -435,9 +447,17 @@ void NetworkService::Initialize(mojom::NetworkServiceParamsPtr params,
     SetEnvironment(std::move(params->environment));
   }
 
+#if BUILDFLAG(IS_WASM)
+  if (params->system_dns_resolver) {
+    LOG(WARNING) << "Ignoring unsupported system DNS resolver on Wasm; "
+                 << "WISP remains the only hostname transport.";
+  }
+  net::InstallWasmWispSystemDnsResolver();
+#else
   if (params->system_dns_resolver) {
     SetSystemDnsResolver(std::move(params->system_dns_resolver));
   }
+#endif
 
   std::unique_ptr<net::NetworkChangeNotifier> network_change_notifier =
       CreateNetworkChangeNotifierIfNeeded(
@@ -533,6 +553,9 @@ NetworkService::~NetworkService() {
     trace_net_log_observer_.StopWatchForTraceStart();
   }
 
+#if BUILDFLAG(IS_WASM)
+  net::ResetWasmWispDestinationRegistry();
+#endif
   net::SetSystemDnsResolverOverride(base::NullCallback());
 }
 
@@ -656,6 +679,11 @@ void NetworkService::SetSystemDnsResolver(
     mojo::PendingRemote<mojom::SystemDnsResolver> override_remote) {
   CHECK(override_remote);
 
+#if BUILDFLAG(IS_WASM)
+  LOG(WARNING) << "System DNS resolver overrides are unsupported on Wasm; "
+               << "use WISP";
+  return;
+#else
   // Using a Remote (as opposed to a SharedRemote) is fine as system host
   // resolver overrides should only be invoked on the main thread.
   mojo::Remote<mojom::SystemDnsResolver> system_dns_override(
@@ -666,6 +694,7 @@ void NetworkService::SetSystemDnsResolver(
   // which will cancel all ongoing DNS resolutions.
   net::SetSystemDnsResolverOverride(base::BindRepeating(
       ResolveSystemDnsWithMojo, std::move(system_dns_override)));
+#endif  // BUILDFLAG(IS_WASM)
 }
 
 void NetworkService::StartNetLog(base::File file,
@@ -752,6 +781,11 @@ void NetworkService::ConfigureStubHostResolver(
     bool additional_dns_types_enabled,
     const std::vector<net::IPEndPoint>& fallback_doh_nameservers,
     bool insecure_dns_via_platform_apis_enabled) {
+#if BUILDFLAG(IS_WASM)
+  LOG(WARNING) << "Ignoring unsupported Chromium stub DNS configuration on "
+               << "Wasm; WISP remains the only hostname transport.";
+  return;
+#else
   // Enable or disable the insecure part of DnsClient. "DnsClient" is the class
   // that implements the stub resolver.
   net::HostResolverManager::InsecureDnsMode mode;
@@ -789,6 +823,7 @@ void NetworkService::ConfigureStubHostResolver(
       network_context->CloseAllConnections(base::DoNothing());
     }
   }
+#endif
 }
 
 void NetworkService::DisableQuic() {

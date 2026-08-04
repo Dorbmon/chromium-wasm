@@ -15,8 +15,10 @@
 #include "build/build_config.h"
 #include "net/base/address_list.h"
 #include "net/base/io_buffer.h"
+#include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_activity_monitor.h"
+#include "net/dns/wisp_host_resolver_wasm.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source_type.h"
 #include "net/socket/socket_net_log_params.h"
@@ -136,10 +138,28 @@ int TCPSocketWasm::Connect(const IPEndPoint& address,
       address.port() == 0) {
     return ERR_ADDRESS_INVALID;
   }
+  // Hostname resolution returns an opaque public marker so generic Chromium
+  // connect jobs can keep using IPEndPoints. Recover the original hostname at
+  // the transport boundary. IP literals intentionally stay literals.
+  const std::optional<std::string> resolved_hostname =
+      GetWasmWispDestinationHostname(address.address());
+  if (!resolved_hostname.has_value() &&
+      (!address.address().IsPubliclyRoutable() ||
+       address.address().IsMulticast())) {
+    // WISP connects from its gateway, not from this browser host. Do not let
+    // direct private, link-local, loopback, or multicast literals retarget a
+    // page's request into the gateway's local network namespace. Chromium's
+    // routability helper intentionally considers IPv6 multicast publicly
+    // routable, so retain the explicit multicast check here.
+    return ERR_ADDRESS_UNREACHABLE;
+  }
   if (!IsWasmWispTransportConfigured())
     return ERR_NOT_IMPLEMENTED;
 
   BeginConnectLogging(address);
+
+  const std::string hostname =
+      resolved_hostname.value_or(address.ToStringWithoutPort());
 
   // WISP stream identifiers are client-chosen, nonzero uint32 values. The
   // bridge rejects collisions, so retry a few statistically independent IDs
@@ -149,8 +169,7 @@ int TCPSocketWasm::Connect(const IPEndPoint& address,
     stream_id_ = static_cast<uint32_t>(base::RandUint64());
     if (stream_id_ == 0)
       continue;
-    opened = OpenWasmWispStream(stream_id_, address.ToStringWithoutPort(),
-                                address.port());
+    opened = OpenWasmWispStream(stream_id_, hostname, address.port());
   }
   if (!opened) {
     stream_id_ = 0;

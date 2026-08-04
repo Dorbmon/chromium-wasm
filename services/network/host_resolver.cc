@@ -104,13 +104,6 @@ void HostResolver::ResolveHost(
     const net::NetworkAnonymizationKey& network_anonymization_key,
     mojom::ResolveHostParametersPtr optional_parameters,
     mojo::PendingRemote<mojom::ResolveHostClient> response_client) {
-#if !BUILDFLAG(ENABLE_MDNS)
-  // TODO(crbug.com/41375980): Handle without crashing if we create restricted
-  // HostResolvers for passing to untrusted processes.
-  DCHECK(!optional_parameters ||
-         optional_parameters->source != net::HostResolverSource::MULTICAST_DNS);
-#endif  // !BUILDFLAG(ENABLE_MDNS)
-
   if (!GetResolveHostCallback().is_null()) {
     GetResolveHostCallback().Run(host->is_host_port_pair()
                                      ? host->get_host_port_pair().host()
@@ -145,7 +138,7 @@ void HostResolver::MdnsListen(
     net::DnsQueryType query_type,
     mojo::PendingRemote<mojom::MdnsListenClient> response_client,
     MdnsListenCallback callback) {
-#if BUILDFLAG(ENABLE_MDNS)
+#if BUILDFLAG(ENABLE_MDNS) && !BUILDFLAG(IS_WASM)
   auto listener = std::make_unique<HostResolverMdnsListener>(internal_resolver_,
                                                              host, query_type);
   int rv =
@@ -159,8 +152,8 @@ void HostResolver::MdnsListen(
 
   std::move(callback).Run(rv);
 #else
-  NOTREACHED();
-#endif  // BUILDFLAG(ENABLE_MDNS)
+  std::move(callback).Run(net::ERR_NOT_IMPLEMENTED);
+#endif  // BUILDFLAG(ENABLE_MDNS) && !BUILDFLAG(IS_WASM)
 }
 
 size_t HostResolver::GetNumOutstandingRequestsForTesting() const {

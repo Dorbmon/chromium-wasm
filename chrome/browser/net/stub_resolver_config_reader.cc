@@ -118,6 +118,12 @@ bool IsZTDNSEnabled() {
 // Check the AsyncDns field trial and return true if it should be enabled. On
 // Android this includes checking the Android version in the field trial.
 bool ShouldEnableAsyncDns() {
+#if BUILDFLAG(IS_WASM)
+  // Wasm resolves hostnames only by passing the original destination to the
+  // configured WISP gateway. Chromium's UDP/DoH-backed stub resolver is not
+  // part of that transport.
+  return false;
+#endif
 #if BUILDFLAG(IS_WIN)
   // On Windows if Zero Trust DNS is enabled on current device,
   // we should not use built-in resolver (async dns). It should
@@ -440,12 +446,14 @@ SecureDnsConfig StubResolverConfigReader::GetAndUpdateConfiguration(
   }
 
   if (update_network_service) {
+#if !BUILDFLAG(IS_WASM)
     content::GetNetworkService()->ConfigureStubHostResolver(
         GetInsecureStubResolverEnabled(), GetHappyEyeballsV3Enabled(),
         secure_dns_mode, doh_config, additional_dns_query_types_enabled,
         fallback_doh_nameservers,
         net::features::IsDnsPlatformSupported() &&
             base::FeatureList::IsEnabled(kChromeEnableDnsPlatform));
+#endif
   }
 
   return SecureDnsConfig(secure_dns_mode, std::move(doh_config),

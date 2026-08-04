@@ -801,7 +801,7 @@ void ShellContentBrowserClient::OnNetworkServiceCreated(
     network::mojom::NetworkService* network_service) {
   // TODO(bashi): Consider enabling this for Android. Excluded because the
   // built-in resolver may not work on older SDK versions.
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   if (base::FeatureList::IsEnabled(net::features::kAsyncDns)) {
     network_service->ConfigureStubHostResolver(
         /*insecure_dns_client_enabled=*/true,

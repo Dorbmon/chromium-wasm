@@ -25,11 +25,8 @@ class M3NetDnsSourceContractTest(unittest.TestCase):
         )
         dns_config = source("net/dns/dns_config_service_wasm.cc")
 
-        self.assertIn(
-            'if (is_wasm) {\n'
-            '    sources += [ "dns_config_service_wasm.cc" ]',
-            build,
-        )
+        self.assertIn('if (is_wasm) {', build)
+        self.assertIn('"dns_config_service_wasm.cc"', build)
         self.assertIn(
             'if (is_wasm) {\n'
             '      sources += [ "address_sorter_wasm.cc" ]',
