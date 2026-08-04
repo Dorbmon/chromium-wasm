@@ -11,6 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/native_ui_types.h"
 
 namespace ui {
@@ -30,18 +31,25 @@ class WasmWindowManager {
   void RemoveWindow(gfx::AcceleratedWidget widget, WasmWindow* window);
   WasmWindow* GetWindow(gfx::AcceleratedWidget widget);
   gfx::AcceleratedWidget GetAcceleratedWidgetAtScreenPoint(
-      const gfx::Point& point);
-  WasmWindow* GetWindowAtScreenPoint(const gfx::Point& point);
+      const gfx::Point& point_in_dip);
+  WasmWindow* GetWindowAtScreenPointInPixels(
+      const gfx::Point& point_in_pixels);
 
-  // The host delivers pointer coordinates in the single display's screen
-  // coordinate space. Keep the latest accepted coordinate here so both event
-  // routing and PlatformScreen observe the same cursor position.
-  void SetCursorScreenPoint(const gfx::Point& point);
+  // The Ozone event source receives host-canvas physical pixels, while the
+  // PlatformScreen API exposes screen positions in DIPs. Keep the one bounded
+  // display scale alongside pixel-bound hit testing so every conversion uses
+  // the same value during a resize notification.
+  void SetDeviceScaleFactor(float device_scale_factor);
+  // The host delivers pointer coordinates in physical pixels. Store the latest
+  // accepted coordinate as DIPs so a scale transition preserves the same
+  // logical hover for PlatformScreen until the next host record arrives.
+  void SetCursorScreenPointInPixels(const gfx::Point& point_in_pixels);
   // Marks the host cursor as outside the sole Wasm logical display. The
   // screen point must remain outside all roots until the next accepted host
   // pointer record, so Aura cannot synthesize a stale in-canvas hover move.
   void SetCursorOutsideDisplay();
   gfx::Point GetCursorScreenPoint() const;
+  gfx::Point GetCursorScreenPointInPixels() const;
 
   void SetPointerFocusedWindow(WasmWindow* window);
   WasmWindow* GetPointerFocusedWindow();
@@ -62,7 +70,8 @@ class WasmWindowManager {
   raw_ptr<WasmWindow> pointer_focused_window_ = nullptr;
   raw_ptr<WasmWindow> keyboard_focused_window_ = nullptr;
   raw_ptr<WasmWindow> pointer_capture_window_ = nullptr;
-  gfx::Point cursor_screen_point_;
+  gfx::PointF cursor_screen_point_in_dip_;
+  float device_scale_factor_ = 1.0f;
   base::ThreadChecker thread_checker_;
 };
 

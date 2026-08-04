@@ -44,7 +44,9 @@ WasmScreen::~WasmScreen() {
 }
 
 // static
-bool WasmScreen::UpdatePrimaryDisplayForHostResize(const gfx::Size& size) {
+bool WasmScreen::UpdatePrimaryDisplayForHostResize(
+    const gfx::Size& size,
+    float device_scale_factor) {
   WasmScreen* const screen = instance_;
   if (!screen) {
     return false;
@@ -52,8 +54,13 @@ bool WasmScreen::UpdatePrimaryDisplayForHostResize(const gfx::Size& size) {
 
   DCHECK_CALLED_ON_VALID_SEQUENCE(screen->sequence_checker_);
   CHECK(!size.IsEmpty());
+  CHECK(device_scale_factor == 1.0f || device_scale_factor == 2.0f);
+  // PlatformScreen exposes DIPs. Update the manager before observers can
+  // synchronously query cursor or widget-at-point state during this display
+  // transaction.
+  screen->window_manager_->SetDeviceScaleFactor(device_scale_factor);
   display::Display display = screen->GetPrimaryDisplay();
-  display.SetScaleAndBounds(1.0f, gfx::Rect(size));
+  display.SetScaleAndBounds(device_scale_factor, gfx::Rect(size));
   display.set_work_area(display.bounds());
   screen->display_list_.UpdateDisplay(display,
                                       display::DisplayList::Type::PRIMARY);

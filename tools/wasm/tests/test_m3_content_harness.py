@@ -591,6 +591,185 @@ class M3HostJavaScriptTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_host_resize_uses_logical_dips_and_bounded_dpr_backing_pixels(
+        self,
+    ) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable")
+        host_url = (
+            TOOLS_DIR / "host" / "content_shell_host.js"
+        ).resolve().as_uri()
+        with tempfile.TemporaryDirectory() as temporary:
+            mock_module = Path(temporary) / "m3_dpr_resize_module.mjs"
+            mock_module.write_text(
+                """
+export default async function createModule(options) {
+  options.onRuntimeInitialized();
+  globalThis.__chromiumWasmHostBridgeV1.reportReadiness({
+    protocol: 1,
+    shellReady: true,
+    surfaceReady: false,
+    firstVisuallyNonEmptyPaint: false,
+  });
+  return {
+    HEAPU8: new Uint8Array(new ArrayBuffer(64 * 1024)),
+    chromiumWasmHostCommands: {
+      chromium_wasm_host_resize: (width, height, devicePixelRatio) => {
+        globalThis.__m3DprResizeCalls.push({
+          width,
+          height,
+          devicePixelRatio,
+        });
+        return 1;
+      },
+      chromium_wasm_host_shutdown: () => {
+        queueMicrotask(() => {
+          globalThis.__chromiumWasmHostBridgeV1.reportProcessExit({
+            protocol: 1,
+            exitCode: 0,
+          });
+          options.onExit(0);
+        });
+        return 1;
+      },
+    },
+  };
+}
+""",
+                encoding="utf-8",
+            )
+            script = f"""
+globalThis.window = globalThis;
+globalThis.location = {{origin: "null"}};
+globalThis.crossOriginIsolated = true;
+globalThis.__m3DprResizeCalls = [];
+globalThis.addEventListener = () => {{}};
+globalThis.removeEventListener = () => {{}};
+globalThis.requestAnimationFrame =
+  (callback) => setTimeout(() => callback(performance.now()), 1);
+globalThis.cancelAnimationFrame = (handle) => clearTimeout(handle);
+class TestCanvas {{
+  constructor() {{
+    this.width = 800;
+    this.height = 600;
+    this.style = {{}};
+  }}
+  focus() {{
+    document.activeElement = this;
+  }}
+  toDataURL() {{
+    return "data:image/png;base64,iVBORw0KGgo=";
+  }}
+}}
+globalThis.HTMLCanvasElement = TestCanvas;
+globalThis.document = {{
+  activeElement: null,
+  baseURI: "file:///",
+  querySelector: () => null,
+}};
+
+const {{ChromiumWasmM3Host}} = await import({json.dumps(host_url)});
+const canvas = new TestCanvas();
+const host = new ChromiumWasmM3Host(canvas, {{
+  chromium: "c",
+  v8: "v",
+  emscripten: "e",
+  port: "p",
+}});
+await host.initialize({{modulePath: {json.dumps(mock_module.as_uri())}}});
+
+const oneX = await host.resize(800, 600, 1);
+const twoX = await host.resize(800, 600, 2);
+if (
+  oneX.ok !== true || oneX.width !== 800 || oneX.height !== 600 ||
+  oneX.devicePixelRatio !== 1 || oneX.physicalWidth !== 800 ||
+  oneX.physicalHeight !== 600 || twoX.ok !== true || twoX.width !== 800 ||
+  twoX.height !== 600 || twoX.devicePixelRatio !== 2 ||
+  twoX.physicalWidth !== 1600 || twoX.physicalHeight !== 1200 ||
+  canvas.width !== 1600 || canvas.height !== 1200 ||
+  canvas.style.width !== "800px" || canvas.style.height !== "600px"
+) {{
+  throw new Error("DPR resize did not preserve CSS dimensions and scale backing pixels");
+}}
+let legacyInputRejected = false;
+try {{
+  await host.injectInput({{type: "click", x: 570, y: 468, button: 0}});
+}} catch (error) {{
+  legacyInputRejected = String(error).includes(
+    "M3 input only supports devicePixelRatio 1");
+}}
+if (!legacyInputRejected) {{
+  throw new Error("legacy M3 direct input was not rejected at DPR 2");
+}}
+
+globalThis.__chromiumWasmHostBridgeV1.reportFrame({{
+  protocol: 1,
+  id: 1,
+  width: 1600,
+  height: 1200,
+  timestampMs: 1,
+}});
+const screenshot = await host.requestScreenshot();
+if (
+  screenshot.width !== 1600 || screenshot.height !== 1200 ||
+  screenshot.frame.width !== 1600 || screenshot.frame.height !== 1200
+) {{
+  throw new Error("DPR screenshot dimensions were not physical backing pixels");
+}}
+
+const restored = await host.resize(800, 600, 1);
+if (
+  restored.physicalWidth !== 800 || restored.physicalHeight !== 600 ||
+  canvas.width !== 800 || canvas.height !== 600 ||
+  canvas.style.width !== "800px" || canvas.style.height !== "600px"
+) {{
+  throw new Error("DPR resize did not restore the one-times backing store");
+}}
+
+for (const [args, expectedMessage] of [
+  [[800, 600, 1.5], "devicePixelRatio 1 or 2"],
+  [[800, 600, 3], "devicePixelRatio 1 or 2"],
+  [[8193, 1, 2], "physical canvas exceeds the host storage limit"],
+  [[2049, 2048, 2], "physical canvas exceeds the host storage limit"],
+]) {{
+  let rejected = false;
+  try {{
+    await host.resize(...args);
+  }} catch (error) {{
+    rejected = String(error).includes(expectedMessage);
+  }}
+  if (!rejected) {{
+    throw new Error("host accepted unsupported DPR resize " + JSON.stringify(args));
+  }}
+}}
+
+const expectedCalls = JSON.stringify([
+  {{width: 800, height: 600, devicePixelRatio: 1}},
+  {{width: 800, height: 600, devicePixelRatio: 2}},
+  {{width: 800, height: 600, devicePixelRatio: 1}},
+]);
+if (JSON.stringify(globalThis.__m3DprResizeCalls) !== expectedCalls) {{
+  throw new Error("host did not forward logical dimensions and the exact DPR");
+}}
+
+const shutdown = await host.shutdown();
+if (shutdown.complete !== true || shutdown.runtimeExitCode !== 0) {{
+  throw new Error("DPR resize host did not shut down cleanly");
+}}
+console.log("M3_DPR_RESIZE_CONTRACT:PASS");
+"""
+            completed = subprocess.run(
+                [node, "--input-type=module"],
+                input=script,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("M3_DPR_RESIZE_CONTRACT:PASS", completed.stdout)
+
     def test_heartbeat_window_ignores_pre_navigation_time(self) -> None:
         node = shutil.which("node")
         if node is None:

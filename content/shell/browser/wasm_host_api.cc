@@ -474,7 +474,9 @@ Shell* GetSingleShell() {
   return Shell::windows().front();
 }
 
-void ResizeOnUiThread(const gfx::Size& size) {
+void ResizeOnUiThread(const gfx::Size& logical_size,
+                      const gfx::Size& physical_size,
+                      float device_scale_factor) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   Shell* shell = GetSingleShell();
   if (!shell) {
@@ -483,7 +485,8 @@ void ResizeOnUiThread(const gfx::Size& size) {
 
   // Updating DisplayList notifies Aura synchronously. Do not retain the
   // Content Shell or Aura pointers across it.
-  if (!ui::WasmScreen::UpdatePrimaryDisplayForHostResize(size)) {
+  if (!ui::WasmScreen::UpdatePrimaryDisplayForHostResize(
+          physical_size, device_scale_factor)) {
     ReportFatal("M4 host resize has no live ozone_wasm screen");
     return;
   }
@@ -497,7 +500,7 @@ void ResizeOnUiThread(const gfx::Size& size) {
     ReportFatal("M3 Content Shell has no Aura host window");
     return;
   }
-  window->GetHost()->SetBoundsInPixels(gfx::Rect(size));
+  window->GetHost()->SetBoundsInPixels(gfx::Rect(physical_size));
 
   // Bounds observers may synchronously destroy the Aura host or its Shell.
   // Reacquire the sole shell before continuing the resize transaction.
@@ -505,8 +508,10 @@ void ResizeOnUiThread(const gfx::Size& size) {
   if (!shell) {
     return;
   }
-  shell->ResizeWebContentForTests(size);
-  GetWasmHostState().SetViewportSizeOnUiThread(size);
+  // Aura and the compositor use physical pixels above, while Blink's
+  // viewport stays in the host canvas's CSS-DIP coordinate space.
+  shell->ResizeWebContentForTests(logical_size);
+  GetWasmHostState().SetViewportSizeOnUiThread(physical_size);
 }
 
 void ClickOnUiThread(const gfx::Point& location) {
@@ -782,16 +787,28 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_resize(
     double device_pixel_ratio) {
   if (width <= 0 || width > content::kMaximumCanvasDimension || height <= 0 ||
       height > content::kMaximumCanvasDimension ||
-      device_pixel_ratio != 1.0) {
+      (device_pixel_ratio != 1.0 && device_pixel_ratio != 2.0)) {
+    return 0;
+  }
+  const int device_scale_factor = static_cast<int>(device_pixel_ratio);
+  const int64_t physical_width =
+      static_cast<int64_t>(width) * device_scale_factor;
+  const int64_t physical_height =
+      static_cast<int64_t>(height) * device_scale_factor;
+  if (physical_width > content::kMaximumCanvasDimension ||
+      physical_height > content::kMaximumCanvasDimension) {
     return 0;
   }
   const int64_t canvas_bytes =
-      static_cast<int64_t>(width) * static_cast<int64_t>(height) * 4;
+      physical_width * physical_height * 4;
   if (canvas_bytes * 2 > content::kMaximumCanvasStorageBytes) {
     return 0;
   }
   return content::PostHostCommand(base::BindOnce(
-             &content::ResizeOnUiThread, gfx::Size(width, height)))
+             &content::ResizeOnUiThread, gfx::Size(width, height),
+             gfx::Size(static_cast<int>(physical_width),
+                       static_cast<int>(physical_height)),
+             static_cast<float>(device_scale_factor)))
              ? 1
              : 0;
 }

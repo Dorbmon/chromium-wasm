@@ -108,8 +108,10 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
         self.assertIn("DCHECK_CURRENTLY_ON(BrowserThread::UI)", state)
         self.assertIn("gfx::Size viewport_size_;", state)
         self.assertIn(
-            "GetWasmHostState().SetViewportSizeOnUiThread(size)", resize
+            "GetWasmHostState().SetViewportSizeOnUiThread(physical_size)",
+            resize,
         )
+        self.assertIn("shell->ResizeWebContentForTests(logical_size)", resize)
         self.assertGreater(
             resize.index("SetViewportSizeOnUiThread"),
             resize.index("ResizeWebContentForTests"),
@@ -136,6 +138,13 @@ class M3ContentShellHostApiContractTest(unittest.TestCase):
 
         self.assertIn("chromium_wasm_host_click", host)
         self.assertIn("CLICK_POSTED", host)
+        self.assertIn("#currentDevicePixelRatio = 1;", host)
+        self.assertIn(
+            "if (this.#currentDevicePixelRatio !== 1)", host
+        )
+        self.assertIn(
+            'throw new Error("M3 input only supports devicePixelRatio 1")', host
+        )
         self.assertIn("widget->ForwardMouseEvent(mouse_down)", click)
         self.assertIn("widget->ForwardMouseEvent(mouse_up)", click)
         self.assertIn("web_contents->Focus()", click)

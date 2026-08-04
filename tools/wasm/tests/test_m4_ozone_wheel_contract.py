@@ -59,7 +59,9 @@ class M4OzoneWheelContractTest(unittest.TestCase):
             "std::isfinite(screen_location.x())",
             "std::isfinite(screen_location.y())",
             "(offset.x() == 0 && offset.y() == 0)",
+            "window_manager_->SetCursorScreenPointInPixels(root_location)",
             "window_manager_->GetPointerTarget(root_location)",
+            "location.Offset(-target->GetBoundsInPixels().x()",
             "MouseWheelEvent event(offset, location, root_location",
             "event.set_source_device_id(source_device_id)",
             "Event::DispatcherApi(&event).set_target(target)",
@@ -71,6 +73,10 @@ class M4OzoneWheelContractTest(unittest.TestCase):
             dispatch.index("Event::DispatcherApi(&event).set_target(target)"),
             dispatch.index("PlatformEventSource::DispatchEvent(&event)"),
         )
+        # Located wheel events use the physical root transform just like mouse
+        # events. Wheel deltas themselves retain DOM CSS-DIP units.
+        self.assertNotIn("GetBoundsInDIP()", dispatch)
+        self.assertNotIn("GetCursorScreenPoint()", dispatch)
 
     def test_host_wheel_abi_inverts_dom_sign_and_never_bypasses_ozone(
         self,
@@ -133,6 +139,9 @@ class M4OzoneWheelContractTest(unittest.TestCase):
             "event.deltaMode !== 0",
             "Number.isFinite(domDeltaX)",
             "Number.isFinite(domDeltaY)",
+            "WheelEvent pixel deltas are CSS-DIP units.",
+            "const accumulatedX = domDeltaX + this.#wheelResidualX;",
+            "const accumulatedY = domDeltaY + this.#wheelResidualY;",
             "Math.trunc(accumulatedX)",
             "Math.trunc(accumulatedY)",
             "this.#wheelResidualX",
@@ -145,6 +154,8 @@ class M4OzoneWheelContractTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, handler)
+        self.assertNotIn("domDeltaX * scaleX", handler)
+        self.assertNotIn("domDeltaY * scaleY", handler)
         self.assertLess(
             handler.index("record.queued = result === 1"),
             handler.index("this.#lastQueuedWheel = record"),

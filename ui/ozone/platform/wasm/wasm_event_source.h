@@ -61,9 +61,8 @@ class WasmPlatformEventSource final : public PlatformEventSource {
   raw_ptr<WasmWindowManager> window_manager_;
   base::ThreadChecker thread_checker_;
   base::TimeTicks last_mouse_event_time_;
-  gfx::Point last_mouse_root_location_;
   int last_mouse_source_device_id_ = ED_UNKNOWN_DEVICE;
-  bool has_last_mouse_root_location_ = false;
+  bool has_last_mouse_event_ = false;
 };
 
 std::unique_ptr<SystemInputInjector> CreateWasmSystemInputInjector(

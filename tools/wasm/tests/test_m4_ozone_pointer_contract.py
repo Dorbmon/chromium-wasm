@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Static contracts for the first trusted-DOM-pointer Ozone/Aura slice."""
+"""Static contracts for trusted physical-pixel DOM-pointer Ozone/Aura input."""
 
 from __future__ import annotations
 
@@ -102,9 +102,11 @@ class M4OzonePointerContractTest(unittest.TestCase):
             "PlatformEventSource::ShouldIgnoreNativePlatformEvents()",
             "std::isfinite(screen_location.x())",
             "std::isfinite(screen_location.y())",
-            "window_manager_->SetCursorScreenPoint(root_location)",
+            "const gfx::Point root_location = gfx::ToFlooredPoint(screen_location);",
+            "window_manager_->SetCursorScreenPointInPixels(root_location)",
             "window_manager_->GetPointerTarget(root_location)",
             "location.Offset(-target->GetBoundsInPixels().x()",
+            "MouseEvent event(type, location, root_location",
             "Event::DispatcherApi(&event).set_target(target)",
             "PlatformEventSource::DispatchEvent(&event)",
         ):
@@ -115,26 +117,95 @@ class M4OzonePointerContractTest(unittest.TestCase):
             dispatch.index("PlatformEventSource::DispatchEvent(&event)"),
         )
         self.assertLess(
-            dispatch.index("window_manager_->SetCursorScreenPoint(root_location)"),
+            dispatch.index(
+                "window_manager_->SetCursorScreenPointInPixels(root_location)"
+            ),
             dispatch.index("window_manager_->GetPointerTarget(root_location)"),
         )
+        # DOM event positions map into the physical canvas backing store. Aura
+        # applies the display transform when it forwards the native event, so
+        # the Ozone source must not pre-convert event coordinates to DIPs.
+        self.assertNotIn("GetBoundsInDIP()", dispatch)
+        self.assertNotIn("GetCursorScreenPoint()", dispatch)
 
-    def test_platform_screen_reads_the_shared_host_cursor_position(self) -> None:
+    def test_platform_screen_exposes_dips_while_hit_testing_stays_physical(
+        self,
+    ) -> None:
         manager_header = source("ui/ozone/platform/wasm/wasm_window_manager.h")
         manager = source("ui/ozone/platform/wasm/wasm_window_manager.cc")
         screen = source("ui/ozone/platform/wasm/wasm_screen.cc")
 
         for marker in (
-            "void SetCursorScreenPoint(const gfx::Point& point);",
+            "gfx::AcceleratedWidget GetAcceleratedWidgetAtScreenPoint(\n"
+            "      const gfx::Point& point_in_dip);",
+            "WasmWindow* GetWindowAtScreenPointInPixels(\n"
+            "      const gfx::Point& point_in_pixels);",
+            "void SetDeviceScaleFactor(float device_scale_factor);",
+            "void SetCursorScreenPointInPixels(const gfx::Point& point_in_pixels);",
             "void SetCursorOutsideDisplay();",
             "gfx::Point GetCursorScreenPoint() const;",
-            "gfx::Point cursor_screen_point_;",
+            "gfx::Point GetCursorScreenPointInPixels() const;",
+            "gfx::PointF cursor_screen_point_in_dip_;",
+            "float device_scale_factor_ = 1.0f;",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, manager_header)
-        self.assertIn("cursor_screen_point_ = point;", manager)
-        self.assertIn("cursor_screen_point_ = gfx::Point(-1, -1);", manager)
+
+        dip_widget_lookup = section(
+            manager,
+            "gfx::AcceleratedWidget WasmWindowManager::GetAcceleratedWidgetAtScreenPoint(",
+            "void WasmWindowManager::SetDeviceScaleFactor",
+        )
+        self.assertIn(
+            "gfx::ScalePoint(gfx::PointF(point_in_dip), device_scale_factor_)",
+            dip_widget_lookup,
+        )
+        self.assertIn(
+            "GetWindowAtScreenPointInPixels(point_in_pixels)",
+            dip_widget_lookup,
+        )
+        self.assertLess(
+            dip_widget_lookup.index("gfx::ScalePoint"),
+            dip_widget_lookup.index("GetWindowAtScreenPointInPixels"),
+        )
+
+        cursor_set = section(
+            manager,
+            "void WasmWindowManager::SetCursorScreenPointInPixels(",
+            "void WasmWindowManager::SetCursorOutsideDisplay",
+        )
+        self.assertIn("cursor_screen_point_in_dip_", cursor_set)
+        self.assertIn("1.0f / device_scale_factor_", cursor_set)
+        self.assertIn("gfx::ScalePoint", cursor_set)
+
+        cursor_dip = section(
+            manager,
+            "gfx::Point WasmWindowManager::GetCursorScreenPoint() const",
+            "gfx::Point WasmWindowManager::GetCursorScreenPointInPixels() const",
+        )
+        self.assertIn(
+            "gfx::ToFlooredPoint(cursor_screen_point_in_dip_)", cursor_dip
+        )
+        cursor_pixels = section(
+            manager,
+            "gfx::Point WasmWindowManager::GetCursorScreenPointInPixels() const",
+            "void WasmWindowManager::SetPointerFocusedWindow",
+        )
+        self.assertIn("cursor_screen_point_in_dip_.x() < 0", cursor_pixels)
+        self.assertIn("cursor_screen_point_in_dip_.y() < 0", cursor_pixels)
+        self.assertIn(
+            "gfx::ScalePoint(cursor_screen_point_in_dip_, device_scale_factor_)",
+            cursor_pixels,
+        )
+        self.assertIn(
+            "cursor_screen_point_in_dip_ = gfx::PointF(-1, -1);", manager
+        )
         self.assertIn("return window_manager_->GetCursorScreenPoint();", screen)
+        self.assertIn(
+            "return window_manager_->GetAcceleratedWidgetAtScreenPoint(point);",
+            screen,
+        )
+        self.assertNotIn("GetCursorScreenPointInPixels()", screen)
         self.assertNotIn(
             "Host cursor position is unsupported by the M4 pointer slice", screen
         )
@@ -210,13 +281,13 @@ class M4OzonePointerContractTest(unittest.TestCase):
 
         hit_test = section(
             manager,
-            "WasmWindow* WasmWindowManager::GetWindowAtScreenPoint",
+            "WasmWindow* WasmWindowManager::GetWindowAtScreenPointInPixels",
             "gfx::AcceleratedWidget\nWasmWindowManager::GetAcceleratedWidgetAtScreenPoint",
         )
         for marker in (
             "stacking_order_.rbegin()",
             "window->IsVisible()",
-            "GetBoundsInPixels().Contains(point)",
+            "GetBoundsInPixels().Contains(point_in_pixels)",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, hit_test)
@@ -228,10 +299,10 @@ class M4OzonePointerContractTest(unittest.TestCase):
         )
         self.assertIn("if (pointer_capture_window_)", pointer_target)
         self.assertIn("return pointer_capture_window_;", pointer_target)
-        self.assertIn("GetWindowAtScreenPoint(point)", pointer_target)
+        self.assertIn("GetWindowAtScreenPointInPixels(point)", pointer_target)
         self.assertLess(
             pointer_target.index("return pointer_capture_window_;"),
-            pointer_target.index("GetWindowAtScreenPoint(point)"),
+            pointer_target.index("GetWindowAtScreenPointInPixels(point)"),
         )
 
     def test_cursor_reaches_the_host_canvas_through_aura_and_ozone(self) -> None:
@@ -394,6 +465,20 @@ class M4OzonePointerContractTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, handler)
+
+        point_mapper = section(
+            host,
+            "  #canvasPointForPointerEvent(event) {",
+            "  #releaseM4PointerCapture",
+        )
+        for marker in (
+            "const contentWidth = this.#canvas.clientWidth;",
+            "const contentHeight = this.#canvas.clientHeight;",
+            "(cssX * this.#canvas.width) / contentWidth",
+            "(cssY * this.#canvas.height) / contentHeight",
+        ):
+            with self.subTest(point_mapper_marker=marker):
+                self.assertIn(marker, point_mapper)
 
         cancellation = section(
             host, "  #cancelActiveM4Pointer", "  #handleM4PointerEvent"

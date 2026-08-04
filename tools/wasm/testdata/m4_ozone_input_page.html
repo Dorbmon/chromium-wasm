@@ -97,6 +97,18 @@
 
     window.__chromiumWasmM4Probe = () => {
       const rect = link.getBoundingClientRect();
+      const displayGeometry = {
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        documentClientWidth: document.documentElement.clientWidth,
+        documentClientHeight: document.documentElement.clientHeight,
+        screenWidth: window.screen.width,
+        screenHeight: window.screen.height,
+        screenAvailWidth: window.screen.availWidth,
+        screenAvailHeight: window.screen.availHeight,
+        devicePixelRatio: window.devicePixelRatio,
+        twoDppx: window.matchMedia("(resolution: 2dppx)").matches,
+      };
       return JSON.stringify({
         protocol: 1,
         timerTicks,
@@ -106,6 +118,7 @@
         pointerMoveTrace,
         ready: document.readyState === "complete" && fontReady &&
             rect.width > 0,
+        displayGeometry,
         targetCenterX: Math.floor(rect.left + rect.width / 2),
         targetCenterY: Math.floor(rect.top + rect.height / 2),
         activationCount,

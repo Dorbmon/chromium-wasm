@@ -33,6 +33,7 @@ from m3_content_server import (
     M4_CASE,
     M4_SELECT_CASE,
     M4_RESIZE_CASE,
+    M4_DPR_CASE,
     M4_CONTEXT_MENU_CASE,
     M4_TOOLTIP_CASE,
     M4_SELECTION_CASE,
@@ -49,6 +50,7 @@ from m3_content_server import (
     m4_smoke_url,
     m4_select_smoke_url,
     m4_resize_smoke_url,
+    m4_dpr_smoke_url,
     m4_context_menu_smoke_url,
     m4_tooltip_smoke_url,
     m4_selection_smoke_url,
@@ -62,6 +64,7 @@ from m3_content_server import (
     validate_m4_result,
     validate_m4_select_result,
     validate_m4_resize_result,
+    validate_m4_dpr_result,
     validate_m4_context_menu_result,
     validate_m4_tooltip_result,
     validate_m4_selection_result,
@@ -435,6 +438,7 @@ def main() -> int:
             "pointer",
             "select",
             "resize",
+            "dpr",
             "context-menu",
             "tooltip",
             "selection",
@@ -483,6 +487,15 @@ def main() -> int:
         input_driver = (
             "host.resize 800x600 -> 640x480 -> 800x600 at DPR 1; "
             "no Chrome DevTools input"
+        )
+    elif args.input == "dpr":
+        case = M4_DPR_CASE
+        state_expression = "window.__chromiumWasmM4DprState || null"
+        expected_state = "awaiting-dom-dpr-pointer"
+        input_driver = (
+            "host.resize 800x600@1 -> 800x600@2, Chrome DevTools "
+            "CSS-space primary click mapped to physical backing pixels, "
+            "then host.resize 800x600@1"
         )
     elif args.input == "context-menu":
         case = M4_CONTEXT_MENU_CASE
@@ -681,6 +694,14 @@ def main() -> int:
                 module_name=args.module_name,
                 timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
             )
+        elif args.input == "dpr":
+            url = m4_dpr_smoke_url(
+                server,
+                token,
+                versions,
+                module_name=args.module_name,
+                timeout_seconds=min(30.0, max(1.0, args.timeout - 1.0)),
+            )
         elif args.input == "context-menu":
             # The native menu proof has six separately observed physical
             # phases, including pixel-derived overlay targeting.
@@ -859,7 +880,15 @@ def main() -> int:
         )
         stage = "measure_canvas"
         canvas_geometry = read_canvas_geometry(client)
-        if args.input == "primary-paste":
+        if args.input == "dpr":
+            click_x, click_y = canvas_point_position(
+                state,
+                canvas_geometry,
+                x_field="targetBackingX",
+                y_field="targetBackingY",
+                description="DPR backing target",
+            )
+        elif args.input == "primary-paste":
             click_x, click_y = canvas_point_position(
                 state,
                 canvas_geometry,
@@ -902,6 +931,9 @@ def main() -> int:
             click_x, click_y = canvas_click_position(state, canvas_geometry)
         if args.input == "pointer":
             stage = "dispatch_trusted_dom_pointer"
+            client.dispatch_primary_click(click_x, click_y)
+        elif args.input == "dpr":
+            stage = "dispatch_trusted_dom_dpr_pointer"
             client.dispatch_primary_click(click_x, click_y)
         elif args.input == "select":
             stage = "dispatch_trusted_dom_select_opener"
@@ -1503,6 +1535,9 @@ def main() -> int:
         stage = "validate_runtime_contract"
         if args.input == "pointer":
             validate_m4_result(result, expected_versions=versions)
+            input_key = "pointerInput"
+        elif args.input == "dpr":
+            validate_m4_dpr_result(result, expected_versions=versions)
             input_key = "pointerInput"
         elif args.input == "select":
             validate_m4_select_result(result, expected_versions=versions)

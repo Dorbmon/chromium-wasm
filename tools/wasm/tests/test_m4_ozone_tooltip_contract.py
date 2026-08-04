@@ -327,12 +327,12 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
 
         for marker in (
             "bool DispatchMouseExitEvent();",
-            "gfx::Point last_mouse_root_location_;",
             "int last_mouse_source_device_id_ = ED_UNKNOWN_DEVICE;",
-            "bool has_last_mouse_root_location_ = false;",
+            "bool has_last_mouse_event_ = false;",
             "bool DispatchWasmMouseExit();",
             "WasmWindow* TakePointerFocusedWindow();",
             "void SetCursorOutsideDisplay();",
+            "gfx::Point GetCursorScreenPointInPixels() const;",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, event_source_header + manager_header)
@@ -343,10 +343,12 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
             "bool WasmPlatformEventSource::DispatchMouseWheelEvent(",
         )
         for marker in (
-            "has_last_mouse_root_location_",
+            "has_last_mouse_event_",
             "window_manager_->TakePointerFocusedWindow()",
+            "window_manager_->GetCursorScreenPointInPixels()",
             "window_manager_->SetCursorOutsideDisplay()",
-            "has_last_mouse_root_location_ = false;",
+            "has_last_mouse_event_ = false;",
+            "location.Offset(-target->GetBoundsInPixels().x()",
             "EventType::kMouseExited",
             "NextMouseEventTime()",
             "event.set_source_device_id(last_mouse_source_device_id_);",
@@ -356,6 +358,10 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
                 self.assertIn(marker, dispatch_exit)
         self.assertLess(
             dispatch_exit.index("window_manager_->TakePointerFocusedWindow()"),
+            dispatch_exit.index("window_manager_->GetCursorScreenPointInPixels()"),
+        )
+        self.assertLess(
+            dispatch_exit.index("window_manager_->GetCursorScreenPointInPixels()"),
             dispatch_exit.index("window_manager_->SetCursorOutsideDisplay()"),
         )
         self.assertLess(
@@ -363,7 +369,10 @@ class M4OzoneTooltipContractTest(unittest.TestCase):
             dispatch_exit.index("PlatformEventSource::DispatchEvent(&event)"),
         )
         self.assertIn("pointer_focused_window_ = nullptr;", manager)
-        self.assertIn("cursor_screen_point_ = gfx::Point(-1, -1);", manager)
+        self.assertIn(
+            "cursor_screen_point_in_dip_ = gfx::PointF(-1, -1);", manager
+        )
+        self.assertNotIn("last_mouse_root_location_", event_source_header)
 
         exit_dispatch = section(
             api,

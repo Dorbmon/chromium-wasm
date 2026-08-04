@@ -28,6 +28,7 @@ M3_CASE = "content_shell_m3"
 M4_CASE = "ozone_pointer_m4"
 M4_SELECT_CASE = "ozone_select_m4"
 M4_RESIZE_CASE = "ozone_resize_m4"
+M4_DPR_CASE = "ozone_dpr_m4"
 M4_CONTEXT_MENU_CASE = "ozone_context_menu_m4"
 M4_TOOLTIP_CASE = "ozone_tooltip_m4"
 M4_SELECTION_CASE = "ozone_selection_m4"
@@ -44,6 +45,7 @@ M3_WIDTH = 800
 M3_HEIGHT = 600
 M4_RESIZE_NARROW_WIDTH = 640
 M4_RESIZE_NARROW_HEIGHT = 480
+M4_DPR_SCALE = 2
 M4_TOOLTIP_CLEAR_QUIESCENCE_MS = 750
 M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS = 250
 M3_MINIMUM_RUNTIME_MS = 3000
@@ -276,6 +278,7 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_CASE,
                 M4_SELECT_CASE,
                 M4_RESIZE_CASE,
+                M4_DPR_CASE,
                 M4_CONTEXT_MENU_CASE,
                 M4_TOOLTIP_CASE,
                 M4_SELECTION_CASE,
@@ -436,6 +439,38 @@ def m4_resize_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-resize-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m4_dpr_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    """Build the bounded 1x-to-2x DPR smoke URL."""
+
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M4_DPR_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            # This probe already records the target's trusted CSS pointer
+            # trace. Its additive display geometry proves the DPR transition.
+            "fixture": "/__m3__/m4-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],
@@ -2139,6 +2174,400 @@ def validate_m4_resize_result(
         raise M0Error("M4 resize host resize lifecycle is not exact")
     if not any("shutdown:complete" in line for line in host_logs):
         raise M0Error("M4 resize logs are missing clean shutdown")
+
+
+def validate_m4_dpr_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+) -> None:
+    """Validate bounded 1x/2x display scale and CSS pointer agreement."""
+
+    expected = {
+        "protocol": M3_PROTOCOL,
+        "case": M4_DPR_CASE,
+        "status": "pass",
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocused": True,
+        "failedChecks": [],
+        "error": None,
+    }
+    for field, expected_value in expected.items():
+        actual_value = result.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 DPR result {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+
+    versions = _require_dict(result.get("versions"), "M4 DPR versions")
+    if versions != expected_versions:
+        raise M0Error(
+            "M4 DPR version display mismatch: expected "
+            f"{expected_versions!r}, got {versions!r}"
+        )
+
+    def require_resize_call(
+        value: object, description: str, *, device_scale_factor: int
+    ) -> dict[str, Any]:
+        call = _require_dict(value, description)
+        expected_call = {
+            "ok": True,
+            "width": M3_WIDTH,
+            "height": M3_HEIGHT,
+            "devicePixelRatio": device_scale_factor,
+            "physicalWidth": M3_WIDTH * device_scale_factor,
+            "physicalHeight": M3_HEIGHT * device_scale_factor,
+        }
+        for field, expected_value in expected_call.items():
+            actual_value = call.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"{description} {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+        return call
+
+    def require_frame(
+        value: object, description: str, *, device_scale_factor: int
+    ) -> dict[str, Any]:
+        frame = _require_dict(value, description)
+        _require_safe_integer(frame.get("id"), f"{description} ID", minimum=1)
+        _require_number(
+            frame.get("timestampMs"), f"{description} timestamp", minimum=0
+        )
+        expected_size = {
+            "width": M3_WIDTH * device_scale_factor,
+            "height": M3_HEIGHT * device_scale_factor,
+        }
+        for field, expected_value in expected_size.items():
+            if frame.get(field) != expected_value:
+                raise M0Error(
+                    f"{description} {field} does not match the physical "
+                    "backing surface"
+                )
+        return frame
+
+    def require_geometry(
+        value: object, description: str, *, device_scale_factor: int
+    ) -> dict[str, Any]:
+        geometry = _require_dict(value, description)
+        expected_geometry = {
+            "innerWidth": M3_WIDTH,
+            "innerHeight": M3_HEIGHT,
+            "documentClientWidth": M3_WIDTH,
+            "documentClientHeight": M3_HEIGHT,
+            "screenWidth": M3_WIDTH,
+            "screenHeight": M3_HEIGHT,
+            "screenAvailWidth": M3_WIDTH,
+            "screenAvailHeight": M3_HEIGHT,
+            "twoDppx": device_scale_factor == M4_DPR_SCALE,
+        }
+        for field, expected_value in expected_geometry.items():
+            actual_value = geometry.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"{description} {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+        if _require_number(
+            geometry.get("devicePixelRatio"),
+            f"{description} device pixel ratio",
+        ) != device_scale_factor:
+            raise M0Error(
+                f"{description} device pixel ratio does not match the "
+                "bounded display scale"
+            )
+        return geometry
+
+    def require_canvas(
+        value: object, description: str, *, device_scale_factor: int
+    ) -> dict[str, Any]:
+        canvas = _require_dict(value, description)
+        expected_canvas = {
+            "clientWidth": M3_WIDTH,
+            "clientHeight": M3_HEIGHT,
+            "width": M3_WIDTH * device_scale_factor,
+            "height": M3_HEIGHT * device_scale_factor,
+            "styleWidth": f"{M3_WIDTH}px",
+            "styleHeight": f"{M3_HEIGHT}px",
+        }
+        for field, expected_value in expected_canvas.items():
+            actual_value = canvas.get(field)
+            if (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                raise M0Error(
+                    f"{description} {field} mismatch: expected "
+                    f"{expected_value!r}, got {actual_value!r}"
+                )
+        return canvas
+
+    readiness = _require_dict(result.get("readiness"), "M4 DPR readiness")
+    for field in (
+        "baseReady",
+        "runtimeInitialized",
+        "shellReady",
+        "surfaceReady",
+        "navigationCommitted",
+        "firstVisuallyNonEmptyPaint",
+        "pageReady",
+    ):
+        if readiness.get(field) is not True:
+            raise M0Error(f"M4 DPR readiness field {field} is not true")
+    if readiness.get("fatalErrors") != []:
+        raise M0Error("M4 DPR readiness reported fatal errors")
+    heartbeat = _require_dict(readiness.get("heartbeat"), "M4 DPR heartbeat")
+    if heartbeat.get("anchor") != "data-navigation-committed":
+        raise M0Error("M4 DPR heartbeat was not anchored to navigation")
+    _require_number(
+        heartbeat.get("elapsedMs"), "M4 DPR heartbeat elapsed time", minimum=0
+    )
+
+    final_page_probe = _require_dict(
+        readiness.get("pageProbe"), "M4 DPR final page probe"
+    )
+    for field, expected_value in {
+        "protocol": M3_PROTOCOL,
+        "fixture": "chromium-wasm-m4-ozone-pointer-v1",
+        "fontReady": True,
+        "ready": True,
+        "activationCount": 1,
+        "clickTrusted": True,
+        "resultText": "ACTIVATED",
+    }.items():
+        actual_value = final_page_probe.get(field)
+        if (
+            type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            raise M0Error(
+                f"M4 DPR final page probe {field} mismatch: expected "
+                f"{expected_value!r}, got {actual_value!r}"
+            )
+    _require_safe_integer(
+        final_page_probe.get("timerTicks"), "M4 DPR page timer ticks", minimum=3
+    )
+    final_geometry = require_geometry(
+        final_page_probe.get("displayGeometry"), "M4 DPR final geometry",
+        device_scale_factor=1,
+    )
+    final_frame = require_frame(
+        readiness.get("frame"), "M4 DPR final frame", device_scale_factor=1
+    )
+
+    resize_calls = result.get("resizeCalls")
+    if not isinstance(resize_calls, list) or len(resize_calls) != 3:
+        raise M0Error("M4 DPR calls are not the exact three-call sequence")
+    initial_call = require_resize_call(
+        resize_calls[0], "M4 DPR initial call", device_scale_factor=1
+    )
+    scaled_call = require_resize_call(
+        resize_calls[1], "M4 DPR scaled call",
+        device_scale_factor=M4_DPR_SCALE,
+    )
+    restored_call = require_resize_call(
+        resize_calls[2], "M4 DPR restored call", device_scale_factor=1
+    )
+
+    proof = _require_dict(result.get("dprProof"), "M4 DPR proof")
+    initial_proof = _require_dict(proof.get("initial"), "M4 DPR initial proof")
+    scaled_proof = _require_dict(proof.get("scaled"), "M4 DPR scaled proof")
+    input_proof = _require_dict(proof.get("input"), "M4 DPR input proof")
+    restored_proof = _require_dict(
+        proof.get("restored"), "M4 DPR restored proof"
+    )
+    if not _exact_json_value_equal(initial_proof.get("resize"), initial_call):
+        raise M0Error("M4 DPR initial proof does not retain its host call")
+    if not _exact_json_value_equal(scaled_proof.get("resize"), scaled_call):
+        raise M0Error("M4 DPR scaled proof does not retain its host call")
+    if not _exact_json_value_equal(restored_proof.get("resize"), restored_call):
+        raise M0Error("M4 DPR restored proof does not retain its host call")
+
+    initial_frame = require_frame(
+        initial_proof.get("frame"), "M4 DPR initial proof frame",
+        device_scale_factor=1,
+    )
+    scaled_frame = require_frame(
+        scaled_proof.get("frame"), "M4 DPR scaled proof frame",
+        device_scale_factor=M4_DPR_SCALE,
+    )
+    input_frame = require_frame(
+        input_proof.get("frame"), "M4 DPR input proof frame",
+        device_scale_factor=M4_DPR_SCALE,
+    )
+    restored_frame = require_frame(
+        restored_proof.get("frame"), "M4 DPR restored proof frame",
+        device_scale_factor=1,
+    )
+    if not (
+        initial_frame["id"] < scaled_frame["id"] < input_frame["id"]
+        < restored_frame["id"]
+    ):
+        raise M0Error("M4 DPR compositor frame IDs did not increase")
+    if not _exact_json_value_equal(final_frame, restored_frame):
+        raise M0Error("M4 DPR final frame differs from the restored proof")
+
+    initial_geometry = require_geometry(
+        initial_proof.get("geometry"), "M4 DPR initial proof geometry",
+        device_scale_factor=1,
+    )
+    scaled_geometry = require_geometry(
+        scaled_proof.get("geometry"), "M4 DPR scaled proof geometry",
+        device_scale_factor=M4_DPR_SCALE,
+    )
+    restored_geometry = require_geometry(
+        restored_proof.get("geometry"), "M4 DPR restored proof geometry",
+        device_scale_factor=1,
+    )
+    if not _exact_json_value_equal(final_geometry, restored_geometry):
+        raise M0Error("M4 DPR final geometry differs from the restored proof")
+    require_canvas(
+        initial_proof.get("canvas"), "M4 DPR initial canvas",
+        device_scale_factor=1,
+    )
+    require_canvas(
+        scaled_proof.get("canvas"), "M4 DPR scaled canvas",
+        device_scale_factor=M4_DPR_SCALE,
+    )
+    require_canvas(
+        restored_proof.get("canvas"), "M4 DPR restored canvas",
+        device_scale_factor=1,
+    )
+
+    target_css_x = _require_safe_integer(
+        scaled_proof.get("targetCssX"), "M4 DPR target CSS x", minimum=0,
+        maximum=M3_WIDTH - 1,
+    )
+    target_css_y = _require_safe_integer(
+        scaled_proof.get("targetCssY"), "M4 DPR target CSS y", minimum=0,
+        maximum=M3_HEIGHT - 1,
+    )
+    target_backing_x = _require_safe_integer(
+        scaled_proof.get("targetBackingX"), "M4 DPR target backing x",
+        minimum=0, maximum=M3_WIDTH * M4_DPR_SCALE - 1,
+    )
+    target_backing_y = _require_safe_integer(
+        scaled_proof.get("targetBackingY"), "M4 DPR target backing y",
+        minimum=0, maximum=M3_HEIGHT * M4_DPR_SCALE - 1,
+    )
+    if (
+        target_backing_x != target_css_x * M4_DPR_SCALE
+        or target_backing_y != target_css_y * M4_DPR_SCALE
+    ):
+        raise M0Error("M4 DPR target backing coordinates are not 2x CSS")
+    for field, expected_value in {
+        "targetCenterX": target_css_x,
+        "targetCenterY": target_css_y,
+    }.items():
+        if final_page_probe.get(field) != expected_value:
+            raise M0Error(
+                f"M4 DPR final page probe {field} differs from the "
+                "scaled CSS target"
+            )
+
+    input_page_probe = _require_dict(
+        input_proof.get("pageProbe"), "M4 DPR input page probe"
+    )
+    if (
+        input_page_probe.get("activationCount") != 1
+        or input_page_probe.get("clickTrusted") is not True
+        or input_page_probe.get("resultText") != "ACTIVATED"
+    ):
+        raise M0Error("M4 DPR input was not a trusted Blink activation")
+    require_geometry(
+        input_page_probe.get("displayGeometry"), "M4 DPR input geometry",
+        device_scale_factor=M4_DPR_SCALE,
+    )
+    trace = input_page_probe.get("pointerMoveTrace")
+    if not isinstance(trace, list) or not any(
+        record.get("type") == "pointermove"
+        and record.get("trusted") is True
+        and record.get("targetId") == "m4-link"
+        and record.get("clientX") == target_css_x
+        and record.get("clientY") == target_css_y
+        for record in trace
+        if isinstance(record, dict)
+    ):
+        raise M0Error("M4 DPR pointer did not arrive at the Blink CSS target")
+
+    pointer = _require_dict(input_proof.get("pointer"), "M4 DPR pointer")
+    if (
+        pointer.get("enabled") is not True
+        or _require_safe_integer(
+            pointer.get("trustedCount"), "M4 DPR trusted pointer count", minimum=2
+        ) < 2
+        or _require_safe_integer(
+            pointer.get("queuedCount"), "M4 DPR queued pointer count", minimum=2
+        ) < 2
+    ):
+        raise M0Error("M4 DPR did not accept the trusted host pointer stream")
+    last_queued = _require_dict(
+        pointer.get("lastQueued"), "M4 DPR last queued pointer"
+    )
+    if (
+        last_queued.get("type") != "up"
+        or last_queued.get("trusted") is not True
+        or last_queued.get("queued") is not True
+        or last_queued.get("x") != target_backing_x
+        or last_queued.get("y") != target_backing_y
+    ):
+        raise M0Error(
+            "M4 DPR host pointer was not recorded in physical backing pixels"
+        )
+    posted_frame = _require_safe_integer(
+        last_queued.get("frameIdBefore"), "M4 DPR pointer posted frame", minimum=1
+    )
+    if input_frame["id"] <= posted_frame:
+        raise M0Error("M4 DPR trusted pointer produced no later compositor frame")
+    if not _exact_json_value_equal(result.get("pointerInput"), pointer):
+        raise M0Error("M4 DPR result pointer input differs from input proof")
+
+    shutdown = _require_dict(result.get("shutdown"), "M4 DPR shutdown")
+    for field in ("ok", "accepted", "complete"):
+        if shutdown.get(field) is not True:
+            raise M0Error(f"M4 DPR shutdown field {field} is not true")
+    for field in ("exitCode", "runtimeExitCode"):
+        if _require_safe_integer(
+            shutdown.get(field), f"M4 DPR shutdown {field}"
+        ) != 0:
+            raise M0Error(f"M4 DPR shutdown {field} is not zero")
+
+    logs = _require_dict(result.get("logs"), "M4 DPR logs")
+    for stream in ("host", "stdout", "stderr"):
+        if not isinstance(logs.get(stream), list):
+            raise M0Error(f"M4 DPR {stream} log must be an array")
+    combined_logs = "\n".join(
+        str(line)
+        for stream in ("host", "stdout", "stderr")
+        for line in logs[stream]
+    )
+    if "abort:" in combined_logs.lower():
+        raise M0Error("M4 DPR logs contain a Wasm abort")
+    host_logs = [str(line) for line in logs["host"]]
+    resize_logs = [line for line in host_logs if line.startswith("resize:")]
+    expected_resize_logs = [
+        f"resize:{M3_WIDTH}x{M3_HEIGHT}@1",
+        f"resize:{M3_WIDTH}x{M3_HEIGHT}@{M4_DPR_SCALE}",
+        f"resize:{M3_WIDTH}x{M3_HEIGHT}@1",
+    ]
+    if resize_logs != expected_resize_logs:
+        raise M0Error("M4 DPR host resize lifecycle is not exact")
+    if not any("m4:pointer:listeners-attached" == line for line in host_logs):
+        raise M0Error("M4 DPR logs are missing pointer listener setup")
+    if not any("shutdown:complete" in line for line in host_logs):
+        raise M0Error("M4 DPR logs are missing clean shutdown")
 
 
 def validate_m4_context_menu_result(

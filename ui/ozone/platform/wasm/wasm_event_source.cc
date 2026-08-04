@@ -222,16 +222,15 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
   // Keep PlatformScreen's cursor state in sync with every accepted host
   // pointer record, including records outside a Wasm window or during capture.
   // Aura consults this state while dispatching normal mouse and drag events.
-  window_manager_->SetCursorScreenPoint(root_location);
+  window_manager_->SetCursorScreenPointInPixels(root_location);
   WasmWindow* target = window_manager_->GetPointerTarget(root_location);
   if (!target) {
     return false;
   }
 
   if (type != EventType::kMouseExited) {
-    last_mouse_root_location_ = root_location;
     last_mouse_source_device_id_ = source_device_id;
-    has_last_mouse_root_location_ = true;
+    has_last_mouse_event_ = true;
   }
 
   if (type == EventType::kMousePressed &&
@@ -254,20 +253,21 @@ bool WasmPlatformEventSource::DispatchMouseEvent(
 bool WasmPlatformEventSource::DispatchMouseExitEvent() {
   DCHECK(thread_checker_.CalledOnValidThread());
   if (PlatformEventSource::ShouldIgnoreNativePlatformEvents() ||
-      !has_last_mouse_root_location_) {
+      !has_last_mouse_event_) {
     return false;
   }
 
   // Clear the manager state before dispatch. Mouse exit processing can
   // synchronously reenter Aura and destroy the target window.
   WasmWindow* target = window_manager_->TakePointerFocusedWindow();
+  const gfx::Point root_location =
+      window_manager_->GetCursorScreenPointInPixels();
   window_manager_->SetCursorOutsideDisplay();
-  has_last_mouse_root_location_ = false;
+  has_last_mouse_event_ = false;
   if (!target || !target->IsVisible()) {
     return false;
   }
 
-  const gfx::Point root_location = last_mouse_root_location_;
   gfx::Point location = root_location;
   location.Offset(-target->GetBoundsInPixels().x(),
                   -target->GetBoundsInPixels().y());
@@ -293,7 +293,7 @@ bool WasmPlatformEventSource::DispatchMouseWheelEvent(
   }
 
   const gfx::Point root_location = gfx::ToFlooredPoint(screen_location);
-  window_manager_->SetCursorScreenPoint(root_location);
+  window_manager_->SetCursorScreenPointInPixels(root_location);
   WasmWindow* target = window_manager_->GetPointerTarget(root_location);
   if (!target) {
     return false;

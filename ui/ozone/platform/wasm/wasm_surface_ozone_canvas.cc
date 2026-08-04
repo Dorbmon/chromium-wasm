@@ -64,7 +64,8 @@ SkCanvas* WasmSurfaceOzoneCanvas::GetCanvas() {
 
 void WasmSurfaceOzoneCanvas::ResizeCanvas(const gfx::Size& viewport_size,
                                           float scale) {
-  CHECK_EQ(scale, 1.0f) << "M3 supports one fixed-density display";
+  CHECK(scale == 1.0f || scale == 2.0f)
+      << "ozone_wasm supports only 1x and 2x display scales";
   CHECK(!viewport_size.IsEmpty());
   CHECK_LE(viewport_size.width(), kMaximumCanvasDimension);
   CHECK_LE(viewport_size.height(), kMaximumCanvasDimension);

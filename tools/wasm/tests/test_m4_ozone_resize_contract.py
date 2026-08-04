@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Static contracts for the M4 1x Ozone resize and Blink reflow smoke."""
+"""Static contracts for bounded 1x/2x Ozone resize and Blink reflow."""
 
 from __future__ import annotations
 
@@ -26,7 +26,9 @@ class M4OzoneResizeContractTest(unittest.TestCase):
 
         for marker in (
             "base/sequence_checker.h",
-            "static bool UpdatePrimaryDisplayForHostResize(const gfx::Size& size);",
+            "static bool UpdatePrimaryDisplayForHostResize(",
+            "const gfx::Size& size,",
+            "float device_scale_factor);",
             "static WasmScreen* instance_;",
             "SEQUENCE_CHECKER(sequence_checker_);",
         ):
@@ -42,26 +44,34 @@ class M4OzoneResizeContractTest(unittest.TestCase):
             "if (!screen)",
             "DCHECK_CALLED_ON_VALID_SEQUENCE(screen->sequence_checker_)",
             "CHECK(!size.IsEmpty())",
+            "CHECK(device_scale_factor == 1.0f || device_scale_factor == 2.0f)",
+            "screen->window_manager_->SetDeviceScaleFactor(device_scale_factor)",
             "display::Display display = screen->GetPrimaryDisplay()",
-            "display.SetScaleAndBounds(1.0f, gfx::Rect(size))",
+            "display.SetScaleAndBounds(device_scale_factor, gfx::Rect(size))",
             "display.set_work_area(display.bounds())",
             "screen->display_list_.UpdateDisplay(",
             "display::DisplayList::Type::PRIMARY",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, update)
+        self.assertLess(
+            update.index("SetDeviceScaleFactor(device_scale_factor)"),
+            update.index("screen->display_list_.UpdateDisplay("),
+        )
 
         resize = section(
             api,
-            "void ResizeOnUiThread(const gfx::Size& size)",
+            "void ResizeOnUiThread(const gfx::Size& logical_size,",
             "void ClickOnUiThread",
         )
         for marker in (
-            "ui::WasmScreen::UpdatePrimaryDisplayForHostResize(size)",
+            "const gfx::Size& physical_size,",
+            "float device_scale_factor)",
+            "physical_size, device_scale_factor",
             'ReportFatal("M4 host resize has no live ozone_wasm screen")',
-            "window->GetHost()->SetBoundsInPixels(gfx::Rect(size))",
-            "shell->ResizeWebContentForTests(size)",
-            "GetWasmHostState().SetViewportSizeOnUiThread(size)",
+            "window->GetHost()->SetBoundsInPixels(gfx::Rect(physical_size))",
+            "shell->ResizeWebContentForTests(logical_size)",
+            "GetWasmHostState().SetViewportSizeOnUiThread(physical_size)",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, resize)
@@ -90,7 +100,53 @@ class M4OzoneResizeContractTest(unittest.TestCase):
             "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_resize(",
             "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_click",
         )
-        self.assertIn("device_pixel_ratio != 1.0", resize_export)
+        for marker in (
+            "(device_pixel_ratio != 1.0 && device_pixel_ratio != 2.0)",
+            "const int device_scale_factor = static_cast<int>(device_pixel_ratio);",
+            "const int64_t physical_width =",
+            "static_cast<int64_t>(width) * device_scale_factor",
+            "const int64_t physical_height =",
+            "static_cast<int64_t>(height) * device_scale_factor",
+            "physical_width > content::kMaximumCanvasDimension",
+            "physical_height > content::kMaximumCanvasDimension",
+            "physical_width * physical_height * 4",
+            "&content::ResizeOnUiThread, gfx::Size(width, height)",
+            "gfx::Size(static_cast<int>(physical_width)",
+            "static_cast<float>(device_scale_factor)",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, resize_export)
+
+    def test_host_keeps_css_dips_separate_from_the_physical_canvas(self) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        surface = source("ui/ozone/platform/wasm/wasm_surface_ozone_canvas.cc")
+
+        resize = section(
+            host,
+            "  async resize(width, height, devicePixelRatio = 1) {",
+            "  async loadURL(url) {",
+        )
+        for marker in (
+            "devicePixelRatio !== 1 && devicePixelRatio !== 2",
+            "const physicalWidth = width * devicePixelRatio;",
+            "const physicalHeight = height * devicePixelRatio;",
+            "physicalWidth * physicalHeight * 4 * 2 > 128 * 1024 * 1024",
+            "this.#canvas.width = physicalWidth;",
+            "this.#canvas.height = physicalHeight;",
+            "this.#canvas.style.width = `${width}px`;",
+            "this.#canvas.style.height = `${height}px`;",
+            "this.#currentDevicePixelRatio = devicePixelRatio;",
+            "physicalWidth,",
+            "physicalHeight,",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, resize)
+
+        resize_canvas = surface.split(
+            "void WasmSurfaceOzoneCanvas::ResizeCanvas(", 1
+        )[1]
+        self.assertIn("scale == 1.0f || scale == 2.0f", resize_canvas)
+        self.assertNotIn("CHECK_EQ(scale, 1.0f)", resize_canvas)
 
     def test_fixture_observes_only_native_viewport_resize_and_reflow(self) -> None:
         fixture = source("tools/wasm/testdata/m4_ozone_resize_page.html")

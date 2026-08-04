@@ -18,9 +18,9 @@ namespace ui {
 
 class WasmWindowManager;
 
-// The host exposes one 1x canvas-backed display. M4 updates its primary-display
-// geometry from the host resize transaction; multi-display and DPR changes
-// remain unsupported.
+// The host exposes one canvas-backed display. M4 updates its primary-display
+// geometry and bounded device scale from the host resize transaction;
+// multi-display remains unsupported.
 class WasmScreen final : public PlatformScreen {
  public:
   explicit WasmScreen(WasmWindowManager* window_manager);
@@ -30,9 +30,12 @@ class WasmScreen final : public PlatformScreen {
 
   ~WasmScreen() override;
 
-  // Updates the sole 1x display from the Content Shell host resize path. This
+  // Updates the sole display from the Content Shell host resize path. |size|
+  // is in physical pixels and |device_scale_factor| is currently 1 or 2. This
   // is UI-sequence-only and returns false while no Ozone screen is live.
-  static bool UpdatePrimaryDisplayForHostResize(const gfx::Size& size);
+  static bool UpdatePrimaryDisplayForHostResize(
+      const gfx::Size& size,
+      float device_scale_factor);
 
   // PlatformScreen:
   const std::vector<display::Display>& GetAllDisplays() const override;

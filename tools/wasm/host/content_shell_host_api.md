@@ -38,7 +38,10 @@ frame. After the trusted probe is observed, the runner forces a deterministic
 799×600 resize and restores 800×600; both transitions must present newer
 frames before capture. This avoids assuming that the periodic probe runs
 before the CLICKED paint. This legacy M3 click path remains an M3 regression
-control; it is not the M4 input path.
+control; it is not the M4 input path. `injectInput()` is explicitly limited to
+an active DPR-1 resize. It rejects at DPR 2 before calling the legacy click
+export because that M3-only coordinate contract has no scale conversion; M4
+pointer input is the supported scaled route.
 
 M4 adds `enableM4PointerInput()`, `enableM4WheelInput()`, the narrowly scoped
 `enableM4KeyboardInput()`, `enableM4FocusInput()`, and the bounded native
@@ -96,16 +99,38 @@ releases its temporary UTF-8 allocation immediately after the call. Runtime
 exports sequence-hop to Chromium's application thread and must not block the
 browser JavaScript main thread.
 
-The bounded resize API accepts dimensions in `[1, 16384]`, at most 128 MiB
-total for the Skia raster backing plus its RGBA presentation copy, and only
-device-pixel ratio 1. An M4 resize first updates ozone_wasm's single primary
-display and work area at that same scale, notifying normal display observers,
-then resizes Aura, Blink, and the software surface. The dedicated smoke drives
+The bounded resize API accepts integral logical CSS-DIP dimensions in
+`[1, 16384]` and an exact `devicePixelRatio` of `1` or `2`. It derives physical
+backing dimensions as `width * devicePixelRatio` and
+`height * devicePixelRatio`; each physical dimension must also be at most
+`16384`, and the Skia raster backing plus its RGBA presentation copy must total
+at most 128 MiB. The C ABI receives the logical dimensions and selected scale.
+After it accepts the operation, the host leaves the canvas CSS size at
+`width` × `height` and changes only its backing store to the derived physical
+size. The resolved result reports both forms:
+
+```js
+{
+  ok: true,
+  width: 800,                 // logical CSS DIPs
+  height: 600,
+  devicePixelRatio: 2,
+  physicalWidth: 1600,        // canvas backing pixels
+  physicalHeight: 1200,
+}
+```
+
+An M4 resize first updates ozone_wasm's single primary display and work area
+with physical bounds and the selected scale, notifying normal display
+observers, then resizes Aura and the software surface in physical pixels while
+keeping Blink's viewport in the requested logical CSS DIPs. Thus an
+800×600-at-2 resize presents a 1600×1200 backing frame without changing the
+page's 800×600 CSS viewport. The dedicated resize smoke drives
 800×600 → 640×480 → 800×600 through this API alone and requires trusted native
 `resize` events, matching `window`/`screen` geometry, a CSS two-column →
-one-column → two-column reflow, and newer compositor frames. DPR changes,
-multi-display topology, and popup coordinate scaling remain explicitly
-unsupported. `shutdown()` does not
+one-column → two-column reflow, and newer compositor frames. Arbitrary DPR
+values, automatic host-DPR monitoring, multi-display topology, and popup
+coordinate scaling remain explicitly unsupported. `shutdown()` does not
 resolve when the task is merely posted: it waits for `ContentMain` and the
 shell delegate to finish, then requires Emscripten's `onExit` after it has
 requested termination of every running and prewarmed pthread worker. Both
@@ -151,22 +176,28 @@ backing pixels, never outer-page CSS pixels. The host subtracts the canvas
 border and content origin from `clientX`/`clientY`, scales through
 `canvas.width / canvas.clientWidth` and its Y equivalent, then floors the
 result. Coordinates must be nonnegative; the UI-side task separately checks
-that they still fall within the current Wasm viewport.
+that they still fall within the current physical Wasm viewport. Aura's inverse
+root transform then maps them back to DIPs before Blink observes the event.
+This keeps a DPR-2 page's DOM `clientX`/`clientY` in its unchanged CSS
+coordinate space.
 
 `chromium_wasm_host_wheel` receives a trusted, cancelable, unmodified DOM
 `WheelEvent` with `deltaMode == DOM_DELTA_PIXEL` and no modifier keys. The host
 does not emulate page scrolling in JavaScript. It converts the DOM CSS-pixel
-deltas to physical backing-pixel deltas, retaining fractional residuals until
-an integral physical-pixel wheel command can be queued. A zero integral delta
-is deliberately buffered rather than reported as delivered. Non-pixel,
+deltas to integral CSS-DIP deltas, retaining fractional residuals until an
+integral CSS-DIP wheel command can be queued. Pointer positions remain physical
+backing pixels, but Aura's wheel offsets are DIP units and must not be scaled
+with those positions. A zero integral delta is deliberately buffered rather
+than reported as delivered. Non-pixel,
 untrusted, noncancelable, modified, out-of-canvas, invalid, and out-of-range
 wheel events are explicitly rejected.
 
-DOM wheel deltas are positive for right and down. The host passes that physical
-pixel convention unchanged to `chromium_wasm_host_wheel`; the C++ ABI boundary
-converts the sign exactly once before `SystemInputInjector::InjectMouseWheel`,
-whose Chromium convention is positive for left and up. This keeps Blink's
-observed DOM wheel delta in the original right/down convention.
+DOM wheel deltas are positive for right and down. The host passes that CSS-DIP
+convention unchanged to `chromium_wasm_host_wheel`; the C++ ABI
+boundary converts the sign exactly once before
+`SystemInputInjector::InjectMouseWheel`, whose Chromium convention is positive
+for left and up. This keeps Blink's observed DOM wheel delta in the original
+right/down convention at every supported DPR.
 
 `chromium_wasm_host_key` accepts exactly the bounded DOM code strings
 `"ArrowDown"`, `"KeyA"`, `"Backspace"`, `"ControlLeft"`, `"KeyC"`, and
@@ -478,6 +509,11 @@ bridge.reportProcessExit({
   exitCode: 0,
 });
 ```
+
+`reportFrame.width` and `reportFrame.height`, readiness frame matching, and the
+PNG dimensions returned by `requestScreenshot()` are physical canvas-backing
+pixels. They therefore report 1600×1200 after an 800×600 resize at DPR 2, even
+though the outer canvas CSS box and Blink's CSS viewport remain 800×600.
 
 Fatal runtime failures call `bridge.reportFatal(message)`. Wasm aborts,
 uncaught outer-page exceptions, and unhandled Promise rejections are also

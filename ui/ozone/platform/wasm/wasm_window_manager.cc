@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/check.h"
+#include "ui/gfx/geometry/point_conversions.h"
 #include "ui/ozone/platform/wasm/wasm_window.h"
 
 namespace ui {
@@ -51,29 +52,47 @@ WasmWindow* WasmWindowManager::GetWindow(gfx::AcceleratedWidget widget) {
   return windows_.Lookup(widget);
 }
 
-WasmWindow* WasmWindowManager::GetWindowAtScreenPoint(
-    const gfx::Point& point) {
+WasmWindow* WasmWindowManager::GetWindowAtScreenPointInPixels(
+    const gfx::Point& point_in_pixels) {
   DCHECK(thread_checker_.CalledOnValidThread());
   for (auto it = stacking_order_.rbegin(); it != stacking_order_.rend();
        ++it) {
     WasmWindow* window = *it;
-    if (window->IsVisible() && window->GetBoundsInPixels().Contains(point)) {
+    if (window->IsVisible() &&
+        window->GetBoundsInPixels().Contains(point_in_pixels)) {
       return window;
     }
   }
   return nullptr;
 }
 
-gfx::AcceleratedWidget
-WasmWindowManager::GetAcceleratedWidgetAtScreenPoint(
-    const gfx::Point& point) {
-  WasmWindow* window = GetWindowAtScreenPoint(point);
+gfx::AcceleratedWidget WasmWindowManager::GetAcceleratedWidgetAtScreenPoint(
+    const gfx::Point& point_in_dip) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  const gfx::Point point_in_pixels = gfx::ToFlooredPoint(
+      gfx::ScalePoint(gfx::PointF(point_in_dip), device_scale_factor_));
+  WasmWindow* window = GetWindowAtScreenPointInPixels(point_in_pixels);
   return window ? window->widget() : gfx::kNullAcceleratedWidget;
 }
 
-void WasmWindowManager::SetCursorScreenPoint(const gfx::Point& point) {
+void WasmWindowManager::SetDeviceScaleFactor(float device_scale_factor) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  cursor_screen_point_ = point;
+  CHECK(device_scale_factor == 1.0f || device_scale_factor == 2.0f);
+  // Store the cursor in DIPs so a DPR transition preserves a stationary hover
+  // until the host delivers its next physical-coordinate pointer record.
+  device_scale_factor_ = device_scale_factor;
+}
+
+void WasmWindowManager::SetCursorScreenPointInPixels(
+    const gfx::Point& point_in_pixels) {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  if (point_in_pixels.x() < 0 || point_in_pixels.y() < 0) {
+    cursor_screen_point_in_dip_ = gfx::PointF(point_in_pixels);
+    return;
+  }
+  cursor_screen_point_in_dip_ =
+      gfx::ScalePoint(gfx::PointF(point_in_pixels),
+                      1.0f / device_scale_factor_);
 }
 
 void WasmWindowManager::SetCursorOutsideDisplay() {
@@ -82,12 +101,23 @@ void WasmWindowManager::SetCursorOutsideDisplay() {
   // `pointerleave` has no in-display coordinate, so use a point outside that
   // display rather than retaining the last valid host point. Aura consults
   // PlatformScreen before synthesizing hover moves after layout changes.
-  cursor_screen_point_ = gfx::Point(-1, -1);
+  cursor_screen_point_in_dip_ = gfx::PointF(-1, -1);
 }
 
 gfx::Point WasmWindowManager::GetCursorScreenPoint() const {
   DCHECK(thread_checker_.CalledOnValidThread());
-  return cursor_screen_point_;
+  return gfx::ToFlooredPoint(cursor_screen_point_in_dip_);
+}
+
+gfx::Point WasmWindowManager::GetCursorScreenPointInPixels() const {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  // Preserve the outside-display sentinel rather than rescaling it.
+  if (cursor_screen_point_in_dip_.x() < 0 ||
+      cursor_screen_point_in_dip_.y() < 0) {
+    return gfx::ToFlooredPoint(cursor_screen_point_in_dip_);
+  }
+  return gfx::ToFlooredPoint(
+      gfx::ScalePoint(cursor_screen_point_in_dip_, device_scale_factor_));
 }
 
 void WasmWindowManager::SetPointerFocusedWindow(WasmWindow* window) {
@@ -157,7 +187,7 @@ WasmWindow* WasmWindowManager::GetPointerTarget(const gfx::Point& point) {
   if (pointer_capture_window_) {
     return pointer_capture_window_;
   }
-  WasmWindow* window = GetWindowAtScreenPoint(point);
+  WasmWindow* window = GetWindowAtScreenPointInPixels(point);
   SetPointerFocusedWindow(window);
   return window;
 }

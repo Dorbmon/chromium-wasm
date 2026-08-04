@@ -7,6 +7,7 @@ const M3_CASE = "content_shell_m3";
 const M4_CASE = "ozone_pointer_m4";
 const M4_SELECT_CASE = "ozone_select_m4";
 const M4_RESIZE_CASE = "ozone_resize_m4";
+const M4_DPR_CASE = "ozone_dpr_m4";
 const M4_CONTEXT_MENU_CASE = "ozone_context_menu_m4";
 const M4_TOOLTIP_CASE = "ozone_tooltip_m4";
 const M4_WHEEL_CASE = "ozone_wheel_m4";
@@ -21,6 +22,7 @@ const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
 const M4_RESIZE_FIXTURE = "chromium-wasm-m4-ozone-resize-v1";
+const M4_DPR_FIXTURE = "chromium-wasm-m4-ozone-pointer-v1";
 const M4_CONTEXT_MENU_FIXTURE =
   "chromium-wasm-m4-ozone-context-menu-v1";
 const M4_TOOLTIP_FIXTURE = "chromium-wasm-m4-ozone-tooltip-v1";
@@ -76,6 +78,7 @@ const M4_TOOLTIP_CLEAR_QUIESCENCE_MS = 750;
 const M4_TOOLTIP_RAPID_MOVE_MAX_GAP_MS = 250;
 const M4_RESIZE_NARROW_WIDTH = 640;
 const M4_RESIZE_NARROW_HEIGHT = 480;
+const M4_DPR_SCALE = 2;
 const FIXTURE_FONT_MARKER = "__M3_AHEM_WOFF2_BASE64__";
 const REQUIRED_RUNTIME_MS = 3000;
 const REQUIRED_TIMER_TICKS = 60;
@@ -575,6 +578,46 @@ function hasM4ResizeEvent(event, sequence, width, height, layoutMode) {
 function hasM4ResizeCall(call, width, height) {
   return call?.ok === true && call?.width === width &&
     call?.height === height && call?.devicePixelRatio === 1;
+}
+
+function hasM4DprGeometry(geometry, width, height, devicePixelRatio) {
+  if (!geometry || typeof geometry !== "object") {
+    return false;
+  }
+  return geometry.innerWidth === width && geometry.innerHeight === height &&
+    geometry.documentClientWidth === width &&
+    geometry.documentClientHeight === height &&
+    geometry.screenWidth === width && geometry.screenHeight === height &&
+    geometry.screenAvailWidth === width && geometry.screenAvailHeight === height &&
+    geometry.devicePixelRatio === devicePixelRatio &&
+    geometry.twoDppx === (devicePixelRatio === M4_DPR_SCALE);
+}
+
+function m4DprCanvasSnapshot(canvas) {
+  return {
+    clientWidth: canvas.clientWidth,
+    clientHeight: canvas.clientHeight,
+    width: canvas.width,
+    height: canvas.height,
+    styleWidth: canvas.style.width,
+    styleHeight: canvas.style.height,
+  };
+}
+
+function hasM4DprCanvasSnapshot(snapshot, width, height, devicePixelRatio) {
+  return snapshot?.clientWidth === width &&
+    snapshot?.clientHeight === height &&
+    snapshot?.width === width * devicePixelRatio &&
+    snapshot?.height === height * devicePixelRatio &&
+    snapshot?.styleWidth === `${width}px` &&
+    snapshot?.styleHeight === `${height}px`;
+}
+
+function hasM4DprResizeCall(call, width, height, devicePixelRatio) {
+  return call?.ok === true && call?.width === width &&
+    call?.height === height && call?.devicePixelRatio === devicePixelRatio &&
+    call?.physicalWidth === width * devicePixelRatio &&
+    call?.physicalHeight === height * devicePixelRatio;
 }
 
 function isM4CopyPasteShortcutCode(code) {
@@ -1409,6 +1452,7 @@ export class ChromiumWasmM3Host {
   #ozoneTextInputState = null;
   #ozoneTextInputReportSequence = 0;
   #frame = null;
+  #currentDevicePixelRatio = 1;
   #inputPostedAtFrameId = null;
   #interactionObservedAtFrameId = null;
   #processExit = null;
@@ -3044,22 +3088,20 @@ export class ChromiumWasmM3Host {
     }
     const domDeltaX = Number(event.deltaX);
     const domDeltaY = Number(event.deltaY);
-    const scaleX = this.#canvas.width / this.#canvas.clientWidth;
-    const scaleY = this.#canvas.height / this.#canvas.clientHeight;
     if (
       !Number.isFinite(domDeltaX) ||
-      !Number.isFinite(domDeltaY) ||
-      !Number.isFinite(scaleX) ||
-      !Number.isFinite(scaleY) ||
-      scaleX <= 0 || scaleY <= 0
+      !Number.isFinite(domDeltaY)
     ) {
       record.reason = "INVALID_DELTA";
       this.#recordWheel(record);
       this.#recordHost("m4:wheel:invalid-delta");
       return;
     }
-    const accumulatedX = domDeltaX * scaleX + this.#wheelResidualX;
-    const accumulatedY = domDeltaY * scaleY + this.#wheelResidualY;
+    // WheelEvent pixel deltas are CSS-DIP units. Located-event positions are
+    // physical backing pixels, but Aura's root transform does not rescale
+    // MouseWheelEvent offsets, so preserve DOM delta units here.
+    const accumulatedX = domDeltaX + this.#wheelResidualX;
+    const accumulatedY = domDeltaY + this.#wheelResidualY;
     const deltaX = Math.trunc(accumulatedX);
     const deltaY = Math.trunc(accumulatedY);
     if (
@@ -3771,8 +3813,18 @@ export class ChromiumWasmM3Host {
     this.#requireRunning("resize");
     checkInteger(width, "width", 1, 16384);
     checkInteger(height, "height", 1, 16384);
-    if (devicePixelRatio !== 1) {
-      throw new Error("M3 only supports devicePixelRatio 1");
+    if (devicePixelRatio !== 1 && devicePixelRatio !== 2) {
+      throw new Error("host only supports devicePixelRatio 1 or 2");
+    }
+    const physicalWidth = width * devicePixelRatio;
+    const physicalHeight = height * devicePixelRatio;
+    if (
+      !Number.isSafeInteger(physicalWidth) ||
+      !Number.isSafeInteger(physicalHeight) ||
+      physicalWidth > 16384 || physicalHeight > 16384 ||
+      physicalWidth * physicalHeight * 4 * 2 > 128 * 1024 * 1024
+    ) {
+      throw new Error("resize physical canvas exceeds the host storage limit");
     }
     const result = this.#callExport(
       "chromium_wasm_host_resize",
@@ -3783,12 +3835,22 @@ export class ChromiumWasmM3Host {
     if (result !== 1) {
       throw new Error(`runtime rejected resize with status ${String(result)}`);
     }
-    this.#canvas.width = width;
-    this.#canvas.height = height;
+    // The public dimensions are CSS DIPs. The canvas backing store and all
+    // Ozone input coordinates remain physical pixels at the selected scale.
+    this.#canvas.width = physicalWidth;
+    this.#canvas.height = physicalHeight;
     this.#canvas.style.width = `${width}px`;
     this.#canvas.style.height = `${height}px`;
+    this.#currentDevicePixelRatio = devicePixelRatio;
     this.#recordHost(`resize:${width}x${height}@${devicePixelRatio}`);
-    return {ok: true, width, height, devicePixelRatio};
+    return {
+      ok: true,
+      width,
+      height,
+      devicePixelRatio,
+      physicalWidth,
+      physicalHeight,
+    };
   }
 
   async loadURL(url) {
@@ -3813,6 +3875,9 @@ export class ChromiumWasmM3Host {
 
   async injectInput(event) {
     this.#requireRunning("injectInput");
+    if (this.#currentDevicePixelRatio !== 1) {
+      throw new Error("M3 input only supports devicePixelRatio 1");
+    }
     if (
       !event ||
       event.type !== "click" ||
@@ -4824,6 +4889,385 @@ async function runM4OzonePointerSmokeFromQuery() {
         result.cursor = result.readiness.ozoneCursor;
       } catch (diagnosticError) {
         result.error += `; readiness diagnostics: ${String(diagnosticError)}`;
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
+}
+
+async function runM4OzoneDprSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let readiness = null;
+  let dprProof = null;
+  let resizeCalls = [];
+  let result;
+
+  try {
+    if (parameters.get("case") !== M4_DPR_CASE) {
+      throw new Error("M4 DPR case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M4 DPR result token");
+    }
+    host = new ChromiumWasmM3Host(canvas, versions, {fixture: M4_DPR_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    const initialResize = await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    resizeCalls.push(clone(initialResize));
+    const fixtureURL = await buildFixtureDataURL(
+      parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.baseReady) {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness?.baseReady) {
+      throw new Error(
+        "M4 DPR base readiness timeout: " + JSON.stringify(readiness));
+    }
+    const initialGeometry = clone(readiness.pageProbe?.displayGeometry);
+    if (!hasM4DprGeometry(
+        initialGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1)) {
+      throw new Error(
+        "M4 DPR fixture has no initial logical 800x600 geometry: " +
+        JSON.stringify(initialGeometry));
+    }
+    const initialFrame = clone(readiness.frame);
+    if (
+      !Number.isSafeInteger(initialFrame?.id) || initialFrame.id < 1 ||
+      initialFrame.width !== DEFAULT_WIDTH || initialFrame.height !== DEFAULT_HEIGHT
+    ) {
+      throw new Error("M4 DPR initial compositor frame is invalid");
+    }
+    const initialCanvas = m4DprCanvasSnapshot(canvas);
+    if (!hasM4DprCanvasSnapshot(
+        initialCanvas, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1)) {
+      throw new Error("M4 DPR initial host canvas geometry is invalid");
+    }
+    const initialTargetX = Number(readiness.pageProbe?.targetCenterX);
+    const initialTargetY = Number(readiness.pageProbe?.targetCenterY);
+    checkInteger(initialTargetX, "M4 DPR initial target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(initialTargetY, "M4 DPR initial target y", 0, DEFAULT_HEIGHT - 1);
+
+    statusElement.textContent =
+      "M4 switching browser display from 800x600@1 to 800x600@2";
+    const scaledResize = await host.resize(
+      DEFAULT_WIDTH, DEFAULT_HEIGHT, M4_DPR_SCALE);
+    resizeCalls.push(clone(scaledResize));
+    let scaledGeometry = null;
+    let scaledFrame = null;
+    let scaledCanvas = null;
+    let logicalTargetX = null;
+    let logicalTargetY = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const candidateGeometry = readiness.pageProbe?.displayGeometry;
+      const candidateFrame = readiness.frame;
+      const candidateCanvas = m4DprCanvasSnapshot(canvas);
+      if (
+        candidateFrame?.id > initialFrame.id &&
+        candidateFrame.width === DEFAULT_WIDTH * M4_DPR_SCALE &&
+        candidateFrame.height === DEFAULT_HEIGHT * M4_DPR_SCALE &&
+        hasM4DprGeometry(
+            candidateGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, M4_DPR_SCALE) &&
+        hasM4DprCanvasSnapshot(
+            candidateCanvas, DEFAULT_WIDTH, DEFAULT_HEIGHT, M4_DPR_SCALE)
+      ) {
+        scaledGeometry = clone(candidateGeometry);
+        scaledFrame = clone(candidateFrame);
+        scaledCanvas = clone(candidateCanvas);
+        logicalTargetX = Number(readiness.pageProbe?.targetCenterX);
+        logicalTargetY = Number(readiness.pageProbe?.targetCenterY);
+        break;
+      }
+      await delay(50);
+    }
+    if (!scaledGeometry || !scaledFrame || !scaledCanvas) {
+      throw new Error(
+        "M4 DPR did not reach physical 1600x1200 at logical 800x600: " +
+        JSON.stringify(readiness));
+    }
+    checkInteger(
+      logicalTargetX, "M4 DPR logical target x", 0, DEFAULT_WIDTH - 1);
+    checkInteger(
+      logicalTargetY, "M4 DPR logical target y", 0, DEFAULT_HEIGHT - 1);
+    if (logicalTargetX !== initialTargetX || logicalTargetY !== initialTargetY) {
+      throw new Error("M4 DPR changed the fixture's logical CSS target");
+    }
+    const targetBackingX = logicalTargetX * M4_DPR_SCALE;
+    const targetBackingY = logicalTargetY * M4_DPR_SCALE;
+    checkInteger(
+      targetBackingX, "M4 DPR backing target x", 0,
+      DEFAULT_WIDTH * M4_DPR_SCALE - 1);
+    checkInteger(
+      targetBackingY, "M4 DPR backing target y", 0,
+      DEFAULT_HEIGHT * M4_DPR_SCALE - 1);
+    const listeners = host.enableM4PointerInput();
+    window.__chromiumWasmM4DprState = {
+      state: "awaiting-dom-dpr-pointer",
+      targetCssX: logicalTargetX,
+      targetCssY: logicalTargetY,
+      targetBackingX,
+      targetBackingY,
+      listeners: clone(listeners),
+      scaledFrame: clone(scaledFrame),
+      scaledCanvas: clone(scaledCanvas),
+    };
+    statusElement.textContent =
+      "M4 ready for trusted CSS-space pointer input at DPR 2";
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const pointer = readiness.pointerInput;
+      const lastQueued = pointer?.lastQueued;
+      if (
+        pointer?.queuedCount >= 2 && lastQueued?.type === "up" &&
+        lastQueued.x === targetBackingX && lastQueued.y === targetBackingY &&
+        readiness.pageProbe?.activationCount === 1 &&
+        readiness.pageProbe?.clickTrusted === true &&
+        readiness.pageProbe?.resultText === "ACTIVATED" &&
+        readiness.frame?.id > lastQueued.frameIdBefore &&
+        hasM4PointerLinkHover(
+            readiness.pageProbe, logicalTargetX, logicalTargetY)
+      ) {
+        break;
+      }
+      await delay(50);
+    }
+    const pointer = clone(readiness?.pointerInput);
+    const lastQueued = pointer?.lastQueued;
+    const inputFrame = clone(readiness?.frame);
+    const inputPageProbe = clone(readiness?.pageProbe);
+    if (
+      !pointer || pointer.queuedCount < 2 || lastQueued?.type !== "up" ||
+      lastQueued.x !== targetBackingX || lastQueued.y !== targetBackingY ||
+      inputPageProbe?.activationCount !== 1 ||
+      inputPageProbe?.clickTrusted !== true ||
+      inputPageProbe?.resultText !== "ACTIVATED" ||
+      !(inputFrame?.id > lastQueued.frameIdBefore) ||
+      !hasM4PointerLinkHover(
+          inputPageProbe, logicalTargetX, logicalTargetY)
+    ) {
+      throw new Error(
+        "M4 DPR trusted pointer coordinate agreement timeout: " +
+        JSON.stringify(readiness));
+    }
+    window.__chromiumWasmM4DprState = {
+      state: "input-delivered",
+      targetCssX: logicalTargetX,
+      targetCssY: logicalTargetY,
+      targetBackingX,
+      targetBackingY,
+      pointer: clone(pointer),
+      inputFrame: clone(inputFrame),
+      inputPageProbe: clone(inputPageProbe),
+    };
+
+    statusElement.textContent = "M4 restoring browser display to 800x600@1";
+    const restoredResize = await host.resize(
+      DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    resizeCalls.push(clone(restoredResize));
+    let restoredGeometry = null;
+    let restoredFrame = null;
+    let restoredCanvas = null;
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const candidateGeometry = readiness.pageProbe?.displayGeometry;
+      const candidateFrame = readiness.frame;
+      const candidateCanvas = m4DprCanvasSnapshot(canvas);
+      if (
+        candidateFrame?.id > inputFrame.id &&
+        candidateFrame.width === DEFAULT_WIDTH &&
+        candidateFrame.height === DEFAULT_HEIGHT &&
+        hasM4DprGeometry(
+            candidateGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1) &&
+        hasM4DprCanvasSnapshot(
+            candidateCanvas, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1)
+      ) {
+        restoredGeometry = clone(candidateGeometry);
+        restoredFrame = clone(candidateFrame);
+        restoredCanvas = clone(candidateCanvas);
+        break;
+      }
+      await delay(50);
+    }
+    if (!restoredGeometry || !restoredFrame || !restoredCanvas) {
+      throw new Error(
+        "M4 DPR did not restore physical 800x600 at logical 800x600: " +
+        JSON.stringify(readiness));
+    }
+    dprProof = {
+      initial: {
+        resize: clone(initialResize),
+        frame: clone(initialFrame),
+        geometry: clone(initialGeometry),
+        canvas: clone(initialCanvas),
+      },
+      scaled: {
+        resize: clone(scaledResize),
+        frame: clone(scaledFrame),
+        geometry: clone(scaledGeometry),
+        canvas: clone(scaledCanvas),
+        targetCssX: logicalTargetX,
+        targetCssY: logicalTargetY,
+        targetBackingX,
+        targetBackingY,
+      },
+      input: {
+        pointer: clone(pointer),
+        frame: clone(inputFrame),
+        pageProbe: clone(inputPageProbe),
+      },
+      restored: {
+        resize: clone(restoredResize),
+        frame: clone(restoredFrame),
+        geometry: clone(restoredGeometry),
+        canvas: clone(restoredCanvas),
+      },
+    };
+    window.__chromiumWasmM4DprState = {
+      state: "dpr-delivered",
+      dprProof: clone(dprProof),
+    };
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    const shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const hostResizeLogs = logs.host.filter((line) =>
+      line.startsWith("resize:"));
+    const expectedResizeLogs = [
+      `resize:${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}@1`,
+      `resize:${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}@${M4_DPR_SCALE}`,
+      `resize:${DEFAULT_WIDTH}x${DEFAULT_HEIGHT}@1`,
+    ];
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      baseReady: readiness.baseReady === true,
+      exactResizeCalls:
+        resizeCalls.length === 3 &&
+        hasM4DprResizeCall(
+            resizeCalls[0], DEFAULT_WIDTH, DEFAULT_HEIGHT, 1) &&
+        hasM4DprResizeCall(
+            resizeCalls[1], DEFAULT_WIDTH, DEFAULT_HEIGHT, M4_DPR_SCALE) &&
+        hasM4DprResizeCall(
+            resizeCalls[2], DEFAULT_WIDTH, DEFAULT_HEIGHT, 1),
+      logicalAndPhysicalGeometry:
+        hasM4DprGeometry(
+            initialGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1) &&
+        hasM4DprGeometry(
+            scaledGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, M4_DPR_SCALE) &&
+        hasM4DprGeometry(
+            restoredGeometry, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1),
+      canvasBackings:
+        hasM4DprCanvasSnapshot(
+            initialCanvas, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1) &&
+        hasM4DprCanvasSnapshot(
+            scaledCanvas, DEFAULT_WIDTH, DEFAULT_HEIGHT, M4_DPR_SCALE) &&
+        hasM4DprCanvasSnapshot(
+            restoredCanvas, DEFAULT_WIDTH, DEFAULT_HEIGHT, 1),
+      frameTransitions:
+        initialFrame.id < scaledFrame.id && scaledFrame.id < inputFrame.id &&
+        inputFrame.id < restoredFrame.id &&
+        initialFrame.width === DEFAULT_WIDTH &&
+        initialFrame.height === DEFAULT_HEIGHT &&
+        scaledFrame.width === DEFAULT_WIDTH * M4_DPR_SCALE &&
+        scaledFrame.height === DEFAULT_HEIGHT * M4_DPR_SCALE &&
+        restoredFrame.width === DEFAULT_WIDTH &&
+        restoredFrame.height === DEFAULT_HEIGHT,
+      coordinateAgreement:
+        pointer.trustedCount >= 2 && pointer.queuedCount >= 2 &&
+        lastQueued.type === "up" && lastQueued.x === targetBackingX &&
+        lastQueued.y === targetBackingY &&
+        inputPageProbe.activationCount === 1 &&
+        inputPageProbe.clickTrusted === true &&
+        inputPageProbe.resultText === "ACTIVATED" &&
+        hasM4PointerLinkHover(
+            inputPageProbe, logicalTargetX, logicalTargetY),
+      hostResizeLogs: JSON.stringify(hostResizeLogs) ===
+        JSON.stringify(expectedResizeLogs),
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_DPR_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      resizeCalls,
+      dprProof,
+      pointerInput: pointer,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M4_DPR_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      resizeCalls,
+      dprProof,
+      pointerInput: null,
+      logs: null,
+      shutdown: null,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+        result.pointerInput = result.readiness.pointerInput;
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " + String(diagnosticError);
       }
     }
   }
@@ -10171,6 +10615,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_RESIZE_CASE) {
     return runM4OzoneResizeSmokeFromQuery();
+  }
+  if (selectedCase === M4_DPR_CASE) {
+    return runM4OzoneDprSmokeFromQuery();
   }
   if (selectedCase === M4_CONTEXT_MENU_CASE) {
     return runM4OzoneContextMenuSmokeFromQuery();
