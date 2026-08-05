@@ -74,6 +74,8 @@ PUBLIC_ARTIFACT_PROVENANCE_KEYS = frozenset(
 PUBLIC_ARTIFACT_FILE_KEYS = frozenset(("sha256", "size"))
 PUBLIC_PROVENANCE_MAXIMUM_BYTES = 4096
 MAXIMUM_URL_BYTES = 2048
+M5_PUBLIC_GATEWAY_DENIED_PORT = 444
+M5_PUBLIC_GATEWAY_DENIED_PATH = "/.well-known/chromium-wasm-m5-wisp-denied"
 MAXIMUM_TIMER_GAP_MS = 250
 MINIMUM_HEARTBEAT_TIMER_TICKS = 2
 MINIMUM_HEARTBEAT_ANIMATION_FRAMES = 2
@@ -263,7 +265,9 @@ def _configured_public_url_variants(*values: str) -> tuple[str, ...]:
         except M0Error:
             pass
         try:
-            candidates.add(validate_public_probe_url(value))
+            probe_url = validate_public_probe_url(value)
+            candidates.add(probe_url)
+            candidates.add(_public_gateway_denied_url(probe_url))
         except M0Error:
             pass
     variants: set[str] = set()
@@ -327,6 +331,24 @@ def validate_public_probe_url(value: object) -> str:
         raise M0Error("public HTTPS probe URL violates the public-probe policy")
     return _canonical_public_url(
         parsed, scheme="https", port=port, default_port=443
+    )
+
+
+def _public_gateway_denied_url(value: str) -> str:
+    """Derive the native same-host denied preflight from a public probe."""
+
+    probe_url = validate_public_probe_url(value)
+    parsed = _split_public_url(probe_url, "public HTTPS probe URL")
+    if not parsed.hostname:
+        raise M0Error("public HTTPS probe URL has no hostname")
+    return urlunsplit(
+        (
+            "https",
+            f"{parsed.hostname}:{M5_PUBLIC_GATEWAY_DENIED_PORT}",
+            M5_PUBLIC_GATEWAY_DENIED_PATH,
+            "",
+            "",
+        )
     )
 
 
@@ -713,6 +735,10 @@ def expected_public_devtools_network_evidence(
         "wispHandshakeReady": True,
         "wispConfirmedStream": True,
         "wispDestinationMatched": True,
+        "wispDeniedRequest": True,
+        "wispDeniedLoadingFailed": True,
+        "wispDeniedRequestIdCorrelated": True,
+        "wispDeniedByAdministrator": True,
         "events": list(PUBLIC_DEVTOOLS_NETWORK_EVENTS),
     }
 
@@ -743,6 +769,10 @@ def validate_public_devtools_network_evidence(
         "wispHandshakeReady",
         "wispConfirmedStream",
         "wispDestinationMatched",
+        "wispDeniedRequest",
+        "wispDeniedLoadingFailed",
+        "wispDeniedRequestIdCorrelated",
+        "wispDeniedByAdministrator",
     ):
         if type(evidence[field]) is not bool:
             raise M0Error("public HTTPS DevTools Network log has invalid booleans")

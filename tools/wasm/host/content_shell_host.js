@@ -48,6 +48,9 @@ const M5_NETWORK_TEST_HOSTNAME = "a.test";
 const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
 const M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control";
 const M5_PUBLIC_HTTPS_MAX_URL_BYTES = 2048;
+const M5_PUBLIC_GATEWAY_DENIED_PORT = "444";
+const M5_PUBLIC_GATEWAY_DENIED_PATH =
+  "/.well-known/chromium-wasm-m5-wisp-denied";
 // The controlled M5 slow-stream fixture holds each acknowledged response
 // stage long enough to make a live Blink timer observation meaningful. Keep
 // these checks in the host contract as well as the Python runner so a stale
@@ -1608,6 +1611,10 @@ function hasM5PublicDevToolsNetworkLog(report) {
       report?.wispHandshakeReady === true &&
       report?.wispConfirmedStream === true &&
       report?.wispDestinationMatched === true &&
+      report?.wispDeniedRequest === true &&
+      report?.wispDeniedLoadingFailed === true &&
+      report?.wispDeniedRequestIdCorrelated === true &&
+      report?.wispDeniedByAdministrator === true &&
       Array.isArray(report?.events) &&
       report.events.length === M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER.length &&
       report.events.every((event, index) =>
@@ -2049,6 +2056,15 @@ function normalizeM5PublicHTTPSURL(value) {
       !parsed.pathname.startsWith("/")) {
     throw new Error("M5 public HTTPS URL violates the public-probe policy");
   }
+  return parsed.href;
+}
+
+function m5PublicGatewayDeniedURL(value) {
+  const parsed = new URL(normalizeM5PublicHTTPSURL(value));
+  parsed.port = M5_PUBLIC_GATEWAY_DENIED_PORT;
+  parsed.pathname = M5_PUBLIC_GATEWAY_DENIED_PATH;
+  parsed.search = "";
+  parsed.hash = "";
   return parsed.href;
 }
 
@@ -5351,6 +5367,10 @@ export class ChromiumWasmM3Host {
         wispHandshakeReady: true,
         wispConfirmedStream: true,
         wispDestinationMatched: true,
+        wispDeniedRequest: true,
+        wispDeniedLoadingFailed: true,
+        wispDeniedRequestIdCorrelated: true,
+        wispDeniedByAdministrator: true,
         events: [...M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER],
       };
       this.#recordHost("m5:public-devtools-network:complete");
@@ -13262,7 +13282,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
   const publicURL = parameters.get("m5_public_url");
   const expectedStatusValue = Number(parameters.get("m5_public_status"));
   const expectedProtocol = parameters.get("m5_public_protocol");
-  const publicRedactionVariants = m5PublicRedactionVariants([
+  let publicRedactionVariants = m5PublicRedactionVariants([
     relayEndpoint,
     publicURL,
   ]);
@@ -13288,6 +13308,12 @@ async function runM5PublicHttpsSmokeFromQuery() {
       throw new Error("missing M5 public WISP endpoint");
     }
     const testURL = normalizeM5PublicHTTPSURL(publicURL);
+    publicRedactionVariants = m5PublicRedactionVariants([
+      relayEndpoint,
+      publicURL,
+      testURL,
+      m5PublicGatewayDeniedURL(testURL),
+    ]);
     if (!Number.isSafeInteger(expectedStatusValue) ||
         expectedStatusValue < 100 || expectedStatusValue > 599) {
       throw new Error("M5 public HTTPS expected status is invalid");

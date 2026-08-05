@@ -101,6 +101,10 @@ def passing_result() -> dict[str, object]:
                 "wispHandshakeReady": True,
                 "wispConfirmedStream": True,
                 "wispDestinationMatched": True,
+                "wispDeniedRequest": True,
+                "wispDeniedLoadingFailed": True,
+                "wispDeniedRequestIdCorrelated": True,
+                "wispDeniedByAdministrator": True,
                 "events": [
                     "Network.requestWillBeSent:document",
                     "Network.responseReceived:document",
@@ -355,6 +359,10 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
             "wispHandshakeReady": False,
             "wispConfirmedStream": False,
             "wispDestinationMatched": False,
+            "wispDeniedRequest": False,
+            "wispDeniedLoadingFailed": False,
+            "wispDeniedRequestIdCorrelated": False,
+            "wispDeniedByAdministrator": False,
             "events": ["Network.requestWillBeSent:document"],
         }
         for field, value in invalid_values.items():
@@ -379,6 +387,30 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
                 trace[field] = value  # type: ignore[index]
                 self.assert_public_result_rejected(invalid)
+
+        for field in (
+            "wispDeniedRequest",
+            "wispDeniedLoadingFailed",
+            "wispDeniedRequestIdCorrelated",
+            "wispDeniedByAdministrator",
+        ):
+            for value in (1, "true"):
+                with self.subTest(denial_type_confusion=(field, value)):
+                    invalid = passing_result()
+                    trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
+                    trace[field] = value  # type: ignore[index]
+                    self.assert_public_result_rejected(invalid)
+
+            with self.subTest(denial_missing=field):
+                invalid = passing_result()
+                trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
+                del trace[field]  # type: ignore[index]
+                self.assert_public_result_rejected(invalid)
+
+        invalid = passing_result()
+        trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
+        trace["unexpectedDenialEvidence"] = True  # type: ignore[index]
+        self.assert_public_result_rejected(invalid)
 
         for field, value in (
             ("state", "complete"),
@@ -591,8 +623,16 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
         endpoint_authority = "relay.public.example.com:443"
         probe_hostname = "probe.public.example.com"
         probe_authority = "probe.public.example.com:443"
+        denied_probe_url = (
+            "https://probe.public.example.com:444/"
+            ".well-known/chromium-wasm-m5-wisp-denied"
+        )
+        denied_probe_authority = "probe.public.example.com:444"
         double_escaped_endpoint = quote(quote(PUBLIC_ENDPOINT, safe=""), safe="")
         double_escaped_probe = quote(quote(PUBLIC_PROBE_URL, safe=""), safe="")
+        double_escaped_denied_probe = quote(
+            quote(denied_probe_url, safe=""), safe=""
+        )
         with tempfile.TemporaryDirectory() as temporary:
             diagnostic_path = public_smoke.write_failure_diagnostics(
                 Path(temporary),
@@ -601,6 +641,7 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 context={
                     "endpoint": endpoint_query_value,
                     "escaped_probe": quote_plus(PUBLIC_PROBE_URL),
+                    "denied_probe": denied_probe_url,
                     "scheme_relative_probe": scheme_relative_probe,
                     "double_escaped_endpoint": double_escaped_endpoint,
                     "endpoint_hostname": endpoint_hostname,
@@ -616,9 +657,12 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 result={
                     "error": f"probe={PUBLIC_PROBE_URL}",
                     "endpoint": PUBLIC_ENDPOINT,
+                    "denied_probe": denied_probe_url,
                     "scheme_relative_probe": scheme_relative_probe,
                     "double_escaped_probe": double_escaped_probe,
+                    "double_escaped_denied_probe": double_escaped_denied_probe,
                     "probe_hostname": probe_hostname,
+                    "denied_probe_authority": denied_probe_authority,
                     probe_authority: "configured probe authority as a key",
                     PUBLIC_ENDPOINT: "configured endpoint appears as a key",
                 },
@@ -642,6 +686,11 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 endpoint_authority,
                 probe_hostname,
                 probe_authority,
+                denied_probe_url,
+                denied_probe_authority,
+                quote(denied_probe_url, safe=""),
+                quote_plus(denied_probe_url),
+                double_escaped_denied_probe,
             ):
                 with self.subTest(secret=secret):
                     self.assertNotIn(secret, serialized)
@@ -649,6 +698,36 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
             self.assertIsNone(
                 public_smoke.URL_LIKE_VALUE_PATTERN.search(serialized)
             )
+
+    def test_public_gateway_denial_variants_are_fully_redacted(self) -> None:
+        denied_url = public_smoke._public_gateway_denied_url(PUBLIC_PROBE_URL)
+        self.assertEqual(
+            denied_url,
+            "https://probe.public.example.com:444/"
+            ".well-known/chromium-wasm-m5-wisp-denied",
+        )
+        variants = public_smoke._configured_public_url_variants(
+            PUBLIC_ENDPOINT, PUBLIC_PROBE_URL
+        )
+        for value in (
+            denied_url,
+            "probe.public.example.com:444",
+            "//probe.public.example.com:444/"
+            ".well-known/chromium-wasm-m5-wisp-denied",
+            quote(denied_url, safe=""),
+            quote_plus(denied_url),
+            quote(quote(denied_url, safe=""), safe=""),
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, variants)
+                self.assertEqual(
+                    public_smoke._redact_text(
+                        value,
+                        endpoint=PUBLIC_ENDPOINT,
+                        probe_url=PUBLIC_PROBE_URL,
+                    ),
+                    "<redacted>",
+                )
 
     def test_public_case_is_an_explicit_result_server_case(self) -> None:
         self.assertIn(
@@ -693,16 +772,23 @@ const helpers = new Function(source.slice(start, end) +
     "\nreturn {m5PublicRedactionVariants, redactM5PublicRuntimeValue};")();
 const endpoint = "wss://relay.public.example.com/wisp/";
 const probe = "https://probe.public.example.com/static/public-v1";
+const denied =
+    "https://probe.public.example.com:444/.well-known/chromium-wasm-m5-wisp-denied";
 const redacted = helpers.redactM5PublicRuntimeValue({
   "relay.public.example.com:443": "probe.public.example.com",
-  nested: ["relay.public.example.com", "probe.public.example.com:443"],
-}, helpers.m5PublicRedactionVariants([endpoint, probe]));
+  "probe.public.example.com:444": denied,
+  nested: ["relay.public.example.com", "probe.public.example.com:443",
+    encodeURIComponent(denied)],
+}, helpers.m5PublicRedactionVariants([endpoint, probe, denied]));
 const serialized = JSON.stringify(redacted);
 for (const secret of [
   "relay.public.example.com",
   "relay.public.example.com:443",
   "probe.public.example.com",
   "probe.public.example.com:443",
+  "probe.public.example.com:444",
+  denied,
+  encodeURIComponent(denied),
 ]) {
   assert(!serialized.includes(secret), "host result leaked " + secret);
 }
@@ -822,6 +908,7 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
         self.assertIn("reportM5PublicNavigation(report)", host)
         self.assertIn("reportM5PublicNavigationError(report)", host)
         self.assertIn("m5PublicRedactionVariants", host)
+        self.assertIn("m5PublicGatewayDeniedURL(testURL)", host)
         self.assertIn("redactM5PublicRuntimeValue", host)
         self.assertIn("parsed.hostname", host)
         self.assertIn("redactM5PublicRuntimeValue(key, variants)", host)
@@ -864,9 +951,17 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
             "DevToolsAgentHost::GetOrCreateFor(web_contents)",
             'R"({"id":1,"method":"Network.enable"})"',
             "IsM5PublicHttpsUrl(request_url)",
+            "GURL::Replacements",
+            'replacements.SetPortStr("444")',
+            "ExecuteJavaScriptForTests",
+            "globalThis.fetch.apply(globalThis,",
+            '*resource_type != "Fetch"',
+            'params.FindString("errorText")',
+            'params.FindBool("canceled")',
             "Network.requestWillBeSent:document",
             "Network.responseReceived:document",
             "Network.loadingFinished:document",
+            "Network.loadingFailed",
             "expected_document_url.host(), static_cast<uint16_t>(port)",
             "request_url != expected_document_url_",
             "GetWasmWispTransportDiagnostics()",
@@ -879,6 +974,36 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
         self.assertIn(
             "diagnostics->completion_flags != "
             "net::kWasmWispDiagnosticAllRequired",
+            recorder,
+        )
+        preflight = recorder.split("bool BeginGatewayDenialPreflight(", 1)[1].split(
+            " private:", 1
+        )[0]
+        denied_failure = recorder.split(
+            "void RecordFailed(const base::DictValue& params) {", 1
+        )[1].split("\n  void AppendEvent", 1)[0]
+        self.assertIn("initial_diagnostics->completion_flags != 0", preflight)
+        self.assertIn("Phase::kWaitingForDeniedRequest", preflight)
+        self.assertLess(
+            preflight.index("BeginWasmWispTransportDiagnostics("),
+            preflight.index("ExecuteJavaScriptForTests"),
+        )
+        self.assertIn("Phase::kWaitingForDeniedFailure", denied_failure)
+        self.assertIn("Phase::kNavigationTaskPosted", denied_failure)
+        self.assertIn("kWasmWispDiagnosticHandshakeReady", denied_failure)
+        self.assertNotIn("kWasmWispDiagnosticStreamConfirmed", denied_failure)
+        self.assertLess(
+            denied_failure.index("denied_loading_failed_ = true"),
+            denied_failure.index("Phase::kNavigationTaskPosted"),
+        )
+        self.assertLess(
+            denied_failure.index("Phase::kNavigationTaskPosted"),
+            denied_failure.index("PostTask("),
+        )
+        self.assertIn("RunNavigationContinuation", recorder)
+        self.assertIn(
+            "phase_ = Phase::kWaitingForDocument;\n"
+            "    std::move(continuation).Run();",
             recorder,
         )
         for forbidden in (
@@ -936,10 +1061,19 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
         public_loader = api.split(
             "void LoadM5PublicUrlOnUiThread(GURL url) {", 1
         )[1].split("\n}\n\nvoid DeactivateHostWindowOnUiThread", 1)[0]
-        self.assertLess(
-            public_loader.index("BeginWispEvidenceWindow(\n          url)"),
-            public_loader.index("LoadUrlOnUiThread(std::move(url))"),
-        )
+        self.assertIn("BeginGatewayDenialPreflight", public_loader)
+        self.assertIn("base::BindOnce(&LoadUrlOnUiThread", public_loader)
+        self.assertNotIn("LoadUrlOnUiThread(std::move(url))", public_loader)
+        for marker in (
+            "Network.loadingFailed",
+            "kM5PublicGatewayDeniedPort",
+            "kM5PublicGatewayDeniedFailure",
+            "wispDeniedRequest",
+            "wispDeniedLoadingFailed",
+            "wispDeniedRequestIdCorrelated",
+            "wispDeniedByAdministrator",
+        ):
+            self.assertIn(marker, recorder + public_report)
         self.assertIn(
             "public HTTPS DevTools Network log does not contain the bounded ",
             runner,

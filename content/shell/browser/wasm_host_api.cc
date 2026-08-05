@@ -89,6 +89,8 @@ constexpr int kMaximumCanvasDimension = 16384;
 constexpr int64_t kMaximumCanvasStorageBytes = 128 * 1024 * 1024;
 constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr size_t kMaximumM5PublicUrlBytes = 2048;
+constexpr size_t kMaximumM5PublicPreflightScriptBytes =
+    kMaximumM5PublicUrlBytes + 1024;
 constexpr size_t kMaximumM5DevToolsProtocolMessageBytes = 64 * 1024;
 constexpr size_t kMaximumM5DevToolsReportBytes = 4096;
 constexpr int64_t kM5DownloadExpectedBytes = 512 * 1024;
@@ -110,6 +112,11 @@ constexpr std::string_view kM5NetworkLocalGatewayDeniedPath =
     "/m5/local-gateway-denied";
 constexpr int kM5NetworkLocalGatewayDeniedPort = 444;
 constexpr std::string_view kM5NetworkLocalGatewayDeniedFailure =
+    "net::ERR_BLOCKED_BY_ADMINISTRATOR";
+constexpr std::string_view kM5PublicGatewayDeniedPath =
+    "/.well-known/chromium-wasm-m5-wisp-denied";
+constexpr int kM5PublicGatewayDeniedPort = 444;
+constexpr std::string_view kM5PublicGatewayDeniedFailure =
     "net::ERR_BLOCKED_BY_ADMINISTRATOR";
 constexpr std::string_view kM5PublicSpecialUseHostnameSuffixes[] = {
     ".localhost",
@@ -654,10 +661,10 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
 // The public M5 executable uses a separate, deliberately narrower recorder.
 // Its single externally supplied document must produce genuine Chromium CDP
 // Network events, but no runtime-provided URL, request ID, header, cookie, or
-// payload may leave this process. The final report additionally proves that
-// the WISP bridge completed a WebSocket/WISP handshake and one TCP stream
-// after the public navigation's diagnostic boundary to that document's exact
-// hostname and port.
+// payload may leave this process. Before its permitted navigation, the
+// recorder makes a same-host non-443 Fetch that the gateway must deny. Its
+// diagnostic window then proves carrier/handshake setup for that denial and a
+// later stream matching that window's document-hostname-and-443 target.
 class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
  public:
   M5PublicDevToolsNetworkRecorder() = default;
@@ -689,18 +696,71 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     return state_ != State::kFailed;
   }
 
-  bool BeginWispEvidenceWindow(const GURL& expected_document_url) {
+  bool BeginGatewayDenialPreflight(WebContents* web_contents,
+                                   const GURL& expected_document_url,
+                                   base::OnceClosure continue_navigation) {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
     const int port = expected_document_url.EffectiveIntPort();
-    if (state_ != State::kEnabled || wisp_evidence_window_started_ ||
-        !IsM5PublicHttpsUrl(expected_document_url) || port <= 0 ||
-        port > std::numeric_limits<uint16_t>::max() ||
+    if (state_ != State::kEnabled ||
+        phase_ != Phase::kReadyForPreflight || preflight_started_ ||
+        !web_contents || !continue_navigation ||
+        !IsM5PublicHttpsUrl(expected_document_url) || port != 443) {
+      return false;
+    }
+    GURL::Replacements replacements;
+    replacements.SetPortStr("444");
+    replacements.SetPathStr(kM5PublicGatewayDeniedPath);
+    replacements.ClearQuery();
+    replacements.ClearRef();
+    const GURL denied_url =
+        expected_document_url.ReplaceComponents(replacements);
+    if (!denied_url.is_valid() || !denied_url.SchemeIs(url::kHttpsScheme) ||
+        denied_url.host() != expected_document_url.host() ||
+        denied_url.EffectiveIntPort() != kM5PublicGatewayDeniedPort ||
+        denied_url.path() != kM5PublicGatewayDeniedPath ||
+        denied_url.has_query() || denied_url.has_ref()) {
+      return false;
+    }
+    RenderFrameHost* frame = web_contents->GetPrimaryMainFrame();
+    if (!frame || !frame->IsRenderFrameLive()) {
+      return false;
+    }
+    base::ListValue arguments;
+    arguments.Append(denied_url.spec());
+    base::DictValue options;
+    options.Set("cache", "no-store");
+    options.Set("credentials", "omit");
+    options.Set("mode", "no-cors");
+    options.Set("redirect", "error");
+    arguments.Append(std::move(options));
+    const std::optional<std::string> serialized_arguments =
+        base::WriteJson(arguments);
+    if (!serialized_arguments ||
+        serialized_arguments->size() > kMaximumM5PublicPreflightScriptBytes) {
+      return false;
+    }
+    std::string script = "void globalThis.fetch.apply(globalThis,";
+    script.append(*serialized_arguments);
+    script.append(").catch(() => {});");
+    if (script.size() > kMaximumM5PublicPreflightScriptBytes ||
         !net::BeginWasmWispTransportDiagnostics(
             expected_document_url.host(), static_cast<uint16_t>(port))) {
       return false;
     }
+    const std::optional<net::WasmWispTransportDiagnostics> initial_diagnostics =
+        net::GetWasmWispTransportDiagnostics();
+    if (!initial_diagnostics || initial_diagnostics->completion_flags != 0) {
+      return false;
+    }
     expected_document_url_ = expected_document_url;
+    expected_denied_url_ = denied_url;
+    continue_navigation_ = std::move(continue_navigation);
+    preflight_started_ = true;
+    phase_ = Phase::kWaitingForDeniedRequest;
     wisp_evidence_window_started_ = true;
+    frame->ExecuteJavaScriptForTests(base::UTF8ToUTF16(script),
+                                     base::NullCallback(),
+                                     ISOLATED_WORLD_ID_GLOBAL);
     return true;
   }
 
@@ -711,6 +771,14 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     kEnabled,
     kComplete,
     kFailed,
+  };
+
+  enum class Phase {
+    kReadyForPreflight,
+    kWaitingForDeniedRequest,
+    kWaitingForDeniedFailure,
+    kNavigationTaskPosted,
+    kWaitingForDocument,
   };
 
   void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
@@ -750,6 +818,8 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
       RecordResponse(*params);
     } else if (*method == "Network.loadingFinished") {
       RecordFinished(*params);
+    } else if (*method == "Network.loadingFailed") {
+      RecordFailed(*params);
     }
   }
 
@@ -813,10 +883,31 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
 
   void RecordRequest(const base::DictValue& params) {
     std::string request_id;
+    const std::string* url = params.FindStringByDottedPath("request.url");
+    if (url && GURL(*url) == expected_denied_url_) {
+      const std::string* resource_type = params.FindString("type");
+      const std::string* id = params.FindString("requestId");
+      if (phase_ != Phase::kWaitingForDeniedRequest || denied_request_seen_ ||
+          !resource_type || !id ||
+          *resource_type != "Fetch" || id->empty() || id->size() > 256) {
+        Fail("received an invalid public gateway denial request");
+        return;
+      }
+      denied_request_seen_ = true;
+      denied_request_id_ = *id;
+      phase_ = Phase::kWaitingForDeniedFailure;
+      return;
+    }
+    if (url && GURL(*url) == expected_document_url_ &&
+        phase_ != Phase::kWaitingForDocument) {
+      Fail("received the public document before gateway denial");
+      return;
+    }
     if (!IsPublicDocumentRequest(params, &request_id)) {
       return;
     }
-    if (document_request_seen_ || !request_id_.empty()) {
+    if (phase_ != Phase::kWaitingForDocument || document_request_seen_ ||
+        !request_id_.empty()) {
       Fail("received a duplicate public document request event");
       return;
     }
@@ -826,10 +917,15 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   }
 
   void RecordResponse(const base::DictValue& params) {
+    const std::string* request_id = params.FindString("requestId");
+    if (!denied_request_id_.empty() && request_id &&
+        *request_id == denied_request_id_) {
+      Fail("public gateway accepted the denied request");
+      return;
+    }
     if (!document_request_seen_) {
       return;
     }
-    const std::string* request_id = params.FindString("requestId");
     if (!request_id || *request_id != request_id_) {
       return;
     }
@@ -850,10 +946,15 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   }
 
   void RecordFinished(const base::DictValue& params) {
+    const std::string* request_id = params.FindString("requestId");
+    if (!denied_request_id_.empty() && request_id &&
+        *request_id == denied_request_id_) {
+      Fail("public gateway finished the denied request");
+      return;
+    }
     if (!response_received_) {
       return;
     }
-    const std::string* request_id = params.FindString("requestId");
     if (!request_id || *request_id != request_id_) {
       return;
     }
@@ -866,6 +967,57 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     MaybeReportComplete();
   }
 
+  void RecordFailed(const base::DictValue& params) {
+    const std::string* request_id = params.FindString("requestId");
+    if (!request_id || *request_id != denied_request_id_) {
+      return;
+    }
+    const std::string* error_text = params.FindString("errorText");
+    const std::optional<bool> canceled = params.FindBool("canceled");
+    if (phase_ != Phase::kWaitingForDeniedFailure ||
+        denied_loading_failed_ || !error_text ||
+        *error_text != kM5PublicGatewayDeniedFailure || !canceled ||
+        *canceled) {
+      Fail("received an invalid public gateway denial failure");
+      return;
+    }
+    const std::optional<net::WasmWispTransportDiagnostics> diagnostics =
+        net::GetWasmWispTransportDiagnostics();
+    if (!diagnostics || diagnostics->completion_flags !=
+                            (net::kWasmWispDiagnosticWebSocketOpened |
+                             net::kWasmWispDiagnosticHandshakeReady)) {
+      Fail("public gateway denial did not establish only its WISP carrier");
+      return;
+    }
+    denied_loading_failed_ = true;
+    if (!continue_navigation_) {
+      Fail("public gateway denial has no navigation continuation");
+      return;
+    }
+    phase_ = Phase::kNavigationTaskPosted;
+    if (!base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE,
+            base::BindOnce(
+                &M5PublicDevToolsNetworkRecorder::RunNavigationContinuation,
+                weak_ptr_factory_.GetWeakPtr()))) {
+      Fail("could not post public navigation after gateway denial");
+    }
+  }
+
+  void RunNavigationContinuation() {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (state_ != State::kEnabled || phase_ != Phase::kNavigationTaskPosted) {
+      return;
+    }
+    base::OnceClosure continuation = std::move(continue_navigation_);
+    if (!continuation) {
+      Fail("public gateway denial has no navigation continuation");
+      return;
+    }
+    phase_ = Phase::kWaitingForDocument;
+    std::move(continuation).Run();
+  }
+
   void AppendEvent(std::string_view event) {
     if (events_.size() >= 3) {
       Fail("recorded too many public document events");
@@ -875,7 +1027,9 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   }
 
   void MaybeReportComplete() {
-    if (state_ != State::kEnabled || !document_request_seen_ ||
+    if (state_ != State::kEnabled || phase_ != Phase::kWaitingForDocument ||
+        !denied_request_seen_ ||
+        !denied_loading_failed_ || !document_request_seen_ ||
         !response_received_ || !loading_finished_ || events_.size() != 3) {
       return;
     }
@@ -906,6 +1060,10 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     report.Set("wispHandshakeReady", true);
     report.Set("wispConfirmedStream", true);
     report.Set("wispDestinationMatched", true);
+    report.Set("wispDeniedRequest", true);
+    report.Set("wispDeniedLoadingFailed", true);
+    report.Set("wispDeniedRequestIdCorrelated", true);
+    report.Set("wispDeniedByAdministrator", true);
     report.Set("events", std::move(events_));
     if (!Report(std::move(report))) {
       Fail("could not report the completed public network trace");
@@ -940,16 +1098,25 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   }
 
   State state_ = State::kCreated;
+  Phase phase_ = Phase::kReadyForPreflight;
   scoped_refptr<DevToolsAgentHost> agent_host_;
   bool document_request_seen_ = false;
   bool response_received_ = false;
   bool loading_finished_ = false;
+  bool preflight_started_ = false;
+  bool denied_request_seen_ = false;
+  bool denied_loading_failed_ = false;
   bool wisp_evidence_window_started_ = false;
   GURL expected_document_url_;
+  GURL expected_denied_url_;
   std::string request_id_;
+  std::string denied_request_id_;
+  base::OnceClosure continue_navigation_;
   int response_status_ = 0;
   std::string response_protocol_;
   base::ListValue events_;
+  base::WeakPtrFactory<M5PublicDevToolsNetworkRecorder> weak_ptr_factory_{
+      this};
 };
 
 // The original controlled M5 attachment check used Fetch's ReadableStream,
@@ -1955,13 +2122,15 @@ void LoadM5NetworkUrlOnUiThread(GURL url) {
 void LoadM5PublicUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
-  if (!state.m5_public_devtools_network_recorder ||
-      !state.m5_public_devtools_network_recorder->BeginWispEvidenceWindow(
-          url)) {
-    ReportFatal("could not start the M5 public WISP evidence window");
+  Shell* shell = GetSingleShell();
+  const GURL expected_url(url);
+  if (!shell || !state.m5_public_devtools_network_recorder ||
+      !state.m5_public_devtools_network_recorder->BeginGatewayDenialPreflight(
+          shell->web_contents(), expected_url,
+          base::BindOnce(&LoadUrlOnUiThread, std::move(url)))) {
+    ReportFatal("could not start the M5 public gateway-denial preflight");
     return;
   }
-  LoadUrlOnUiThread(std::move(url));
 }
 
 void DeactivateHostWindowOnUiThread() {
