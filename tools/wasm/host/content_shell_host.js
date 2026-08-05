@@ -76,6 +76,8 @@ const M5_DEVTOOLS_NETWORK_EVENT_ORDER = Object.freeze([
   "Network.requestWillBeSent:final",
   "Network.responseReceived:final",
   "Network.loadingFinished:final",
+  "Network.requestWillBeSent:reconnect",
+  "Network.loadingFailed:reconnect",
 ]);
 const M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER = Object.freeze([
   "Network.requestWillBeSent:document",
@@ -1524,6 +1526,10 @@ function hasM5DevToolsNetworkLog(report) {
       report?.responseReceived === true && report?.loadingFinished === true &&
       report?.requestIdCorrelated === true &&
       report?.responseStatus === 200 && report?.responseProtocol === "h2" &&
+      report?.reconnectRequest === true &&
+      report?.reconnectLoadingFailed === true &&
+      report?.reconnectRequestIdCorrelated === true &&
+      report?.reconnectInternetDisconnected === true &&
       Array.isArray(report?.events) &&
       report.events.length === M5_DEVTOOLS_NETWORK_EVENT_ORDER.length &&
       report.events.every(
@@ -5172,6 +5178,10 @@ export class ChromiumWasmM3Host {
         requestIdCorrelated: true,
         responseStatus: 200,
         responseProtocol: "h2",
+        reconnectRequest: true,
+        reconnectLoadingFailed: true,
+        reconnectRequestIdCorrelated: true,
+        reconnectInternetDisconnected: true,
         events: [...M5_DEVTOOLS_NETWORK_EVENT_ORDER],
       };
       this.#recordHost("m5:devtools-network:complete");

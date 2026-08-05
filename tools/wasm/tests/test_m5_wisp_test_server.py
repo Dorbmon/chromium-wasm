@@ -1029,7 +1029,16 @@ try {
         self.assertIn('requestPath === "/m5/reconnect-recovery"', source)
         self.assertIn("wispClosePacket(", source)
         self.assertIn("WISP_CLOSE_REASONS.NETWORK_ERROR", source)
-        self.assertIn("h2-reconnect-global-close", source)
+        reconnect_disconnect = source.split(
+            "function scheduleReconnectDisconnect(context) {", 1
+        )[1].split("\nfunction handleReconnectFirstChunkAck", 1)[0]
+        self.assertIn(
+            'relay.peer.close(1000, "m5-carrier-close")',
+            reconnect_disconnect,
+        )
+        self.assertIn("h2-reconnect-carrier-close", reconnect_disconnect)
+        self.assertNotIn("wispClosePacket(", reconnect_disconnect)
+        self.assertNotIn("relay.peer.destroy()", reconnect_disconnect)
         self.assertIn("h2-reconnect-stream-disconnected", source)
         self.assertIn("h2-reconnect-wisp-disconnected", source)
         self.assertIn("h2-reconnect-recovery", source)

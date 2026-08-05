@@ -198,6 +198,7 @@ const ERR_ACCESS_DENIED = -10;
 const ERR_INSUFFICIENT_RESOURCES = -12;
 const ERR_NOT_IMPLEMENTED = -11;
 const ERR_CONNECTION_CLOSED = -100;
+const ERR_CONNECTION_RESET = -101;
 const ERR_CONNECTION_REFUSED = -102;
 const ERR_INTERNET_DISCONNECTED = -106;
 
@@ -472,24 +473,34 @@ assert(transport.state(16) === 4 &&
     transport.error(16) === ERR_CONNECTION_CLOSED,
     'normal global close did not map to ERR_CONNECTION_CLOSED');
 
+// A WISP protocol network error remains distinct from an RFC 6455 carrier
+// close: it maps to ERR_CONNECTION_RESET, while the browser fixture covers
+// carrier close as ERR_INTERNET_DISCONNECTED end to end.
+reset(baseConfig());
+const globalNetworkErrorSocket = establish(17, 1);
+globalNetworkErrorSocket.emit(packet(TYPE_CLOSE, 0, new Uint8Array([0x03])));
+assert(transport.state(17) === 4 &&
+    transport.error(17) === ERR_CONNECTION_RESET,
+    'WISP network-error close did not map to ERR_CONNECTION_RESET');
+
 // Repeated close/reopen cycles while the host WebSocket cannot accept packets
 // cannot grow terminal control state without bound. The bridge makes the
 // connection terminal once its fixed control queue budget is exhausted.
 reset(baseConfig({maxStreams: 1}));
-const boundedControlSocket = establish(17, 1);
+const boundedControlSocket = establish(18, 1);
 boundedControlSocket.bufferedAmount = 64;
 const controlBudget = transport.config.maxControlQueueEntries;
 for (let index = 0; index < controlBudget; ++index) {
   assert(transport._queueControl({
     kind: 'test-control',
-    packet: packet(TYPE_CLOSE, 17, new Uint8Array([0x02])),
+    packet: packet(TYPE_CLOSE, 18, new Uint8Array([0x02])),
   }), 'bounded control entry was rejected early');
 }
 assert(!transport._queueControl({
   kind: 'test-control',
-  packet: packet(TYPE_CLOSE, 17, new Uint8Array([0x02])),
-}) && transport.state(17) === 4 &&
-    transport.error(17) === ERR_INSUFFICIENT_RESOURCES &&
+  packet: packet(TYPE_CLOSE, 18, new Uint8Array([0x02])),
+}) && transport.state(18) === 4 &&
+    transport.error(18) === ERR_INSUFFICIENT_RESOURCES &&
     boundedControlSocket.closed,
     'control queue overflow did not fail the connection explicitly');
 

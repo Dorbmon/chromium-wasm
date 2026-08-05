@@ -134,11 +134,17 @@ def passing_result() -> dict[str, object]:
                 "requestIdCorrelated": True,
                 "responseStatus": 200,
                 "responseProtocol": "h2",
+                "reconnectRequest": True,
+                "reconnectLoadingFailed": True,
+                "reconnectRequestIdCorrelated": True,
+                "reconnectInternetDisconnected": True,
                 "events": [
                     "Network.requestWillBeSent:redirect",
                     "Network.requestWillBeSent:final",
                     "Network.responseReceived:final",
                     "Network.loadingFinished:final",
+                    "Network.requestWillBeSent:reconnect",
+                    "Network.loadingFailed:reconnect",
                 ],
             },
             "heartbeat": {
@@ -391,7 +397,7 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 34, "event": "h2-reconnect-stream-first-chunk"},
             {"sequence": 35, "event": "h2-reconnect-first-chunk-ack"},
             {"sequence": 36, "event": "h2-reconnect-disconnect-requested"},
-            {"sequence": 37, "event": "h2-reconnect-global-close"},
+            {"sequence": 37, "event": "h2-reconnect-carrier-close"},
             {"sequence": 38, "event": "wisp-disconnected"},
             {"sequence": 39, "event": "h2-reconnect-stream-disconnected"},
             {"sequence": 40, "event": "h2-reconnect-wisp-disconnected"},
@@ -678,6 +684,10 @@ class M5ResultValidationTest(unittest.TestCase):
             ("requestIdCorrelated", False),
             ("responseStatus", 302),
             ("responseProtocol", "http/1.1"),
+            ("reconnectRequest", False),
+            ("reconnectLoadingFailed", False),
+            ("reconnectRequestIdCorrelated", False),
+            ("reconnectInternetDisconnected", False),
             ("events", ["Network.requestWillBeSent:final"]),
             ("url", "https://a.test:4443/m5/"),
             ("requestId", "1.2"),
@@ -1015,7 +1025,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             passing_relay_status(), relay_ready=relay_ready
         )
         # The peer teardown marker and the asynchronous H2 stream close can
-        # arrive in either order after the global WISP close.
+        # arrive in either order after the RFC 6455 carrier close.
         status = passing_relay_status()
         transcript = status["transcript"]
         assert isinstance(transcript, list)
@@ -1857,7 +1867,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             "h2-reconnect-stream-first-chunk",
             "h2-reconnect-first-chunk-ack",
             "h2-reconnect-disconnect-requested",
-            "h2-reconnect-global-close",
+            "h2-reconnect-carrier-close",
             "h2-reconnect-stream-disconnected",
             "h2-reconnect-wisp-disconnected",
             "h2-reconnect-recovery",
@@ -1881,7 +1891,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             "h2-reconnect-stream-first-chunk",
             "h2-reconnect-first-chunk-ack",
             "h2-reconnect-disconnect-requested",
-            "h2-reconnect-global-close",
+            "h2-reconnect-carrier-close",
             "h2-reconnect-stream-disconnected",
             "h2-reconnect-wisp-disconnected",
             "h2-reconnect-recovery",
@@ -1900,12 +1910,12 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
 
         for first_event, second_event, error in (
             (
-                "h2-reconnect-global-close",
+                "h2-reconnect-carrier-close",
                 "wisp-disconnected",
                 "relay reconnect events",
             ),
             (
-                "h2-reconnect-global-close",
+                "h2-reconnect-carrier-close",
                 "h2-reconnect-stream-disconnected",
                 "relay reconnect events",
             ),
@@ -1974,7 +1984,6 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             "h2-reconnect-stream-unexpected-close",
             "h2-reconnect-first-chunk-ack-rejected",
             "h2-reconnect-first-chunk-ack-session-mismatch",
-            "h2-reconnect-global-close-failed",
             "h2-reconnect-relay-selection-failed",
             "h2-reconnect-recovery-rejected",
             "h2-reconnect-recovery-session-mismatch",
@@ -1995,6 +2004,20 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
                     run_m5_wisp_smoke.validate_relay_transcript(
                         status, relay_ready=relay_ready
                     )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        transcript.append(
+            {
+                "sequence": len(transcript) + 1,
+                "event": "h2-reconnect-global-close",
+            }
+        )
+        with self.assertRaisesRegex(M0Error, "WISP global close"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
 
     def test_rejects_invalid_csp_connect_src_evidence(self) -> None:
         relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(

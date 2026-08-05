@@ -65,6 +65,8 @@ M5_DEVTOOLS_NETWORK_EVENT_ORDER = (
     "Network.requestWillBeSent:final",
     "Network.responseReceived:final",
     "Network.loadingFinished:final",
+    "Network.requestWillBeSent:reconnect",
+    "Network.loadingFailed:reconnect",
 )
 # The relay holds each post-ack response stage for this bounded interval. The
 # page must observe both elapsed time and its independent timer while Blink is
@@ -701,6 +703,10 @@ def validate_m5_result(
         "requestIdCorrelated": True,
         "responseStatus": 200,
         "responseProtocol": "h2",
+        "reconnectRequest": True,
+        "reconnectLoadingFailed": True,
+        "reconnectRequestIdCorrelated": True,
+        "reconnectInternetDisconnected": True,
         "events": list(M5_DEVTOOLS_NETWORK_EVENT_ORDER),
     }
     if devtools_network != expected_devtools_network:
@@ -1259,7 +1265,7 @@ def validate_relay_transcript(
         "h2-reconnect-stream-first-chunk",
         "h2-reconnect-first-chunk-ack",
         "h2-reconnect-disconnect-requested",
-        "h2-reconnect-global-close",
+        "h2-reconnect-carrier-close",
         "h2-reconnect-stream-disconnected",
         "h2-reconnect-wisp-disconnected",
         "h2-reconnect-recovery",
@@ -1315,7 +1321,7 @@ def validate_relay_transcript(
         "h2-reconnect-stream-first-chunk",
         "h2-reconnect-first-chunk-ack",
         "h2-reconnect-disconnect-requested",
-        "h2-reconnect-global-close",
+        "h2-reconnect-carrier-close",
         "h2-reconnect-stream-disconnected",
         "h2-reconnect-wisp-disconnected",
         "h2-reconnect-recovery",
@@ -1400,7 +1406,7 @@ def validate_relay_transcript(
         < event_names.index("h2-reconnect-stream-first-chunk")
         < event_names.index("h2-reconnect-first-chunk-ack")
         < event_names.index("h2-reconnect-disconnect-requested")
-        < event_names.index("h2-reconnect-global-close")
+        < event_names.index("h2-reconnect-carrier-close")
         < event_names.index("wisp-disconnected")
         < event_names.index("h2-reconnect-wisp-disconnected")
         < event_names.index("h2-reconnect-recovery")
@@ -1409,17 +1415,17 @@ def validate_relay_transcript(
         raise M0Error(
             "relay reconnect events are not between the large download and CORS"
         )
-    # Closing the WISP peer removes the H2 socket asynchronously. The old
-    # stream may therefore report its close before or after the explicit relay
-    # teardown marker, but it must be caused by the global close and finish
-    # before the page advances to its CORS check.
+    # Closing the RFC 6455 carrier removes the H2 socket asynchronously. The
+    # old stream may therefore report its close before or after the explicit
+    # relay teardown marker, but it must be caused by the carrier close and
+    # finish before the page advances to its CORS check.
     if not (
-        event_names.index("h2-reconnect-global-close")
+        event_names.index("h2-reconnect-carrier-close")
         < event_names.index("h2-reconnect-stream-disconnected")
         < event_names.index("h1-cors")
     ):
         raise M0Error(
-            "relay reconnect stream did not terminate after the global close "
+            "relay reconnect stream did not terminate after the carrier close "
             "and before CORS"
         )
     first_wisp_connected = event_names.index("wisp-connected")
@@ -1524,7 +1530,6 @@ def validate_relay_transcript(
         "h2-reconnect-stream-unexpected-close",
         "h2-reconnect-first-chunk-ack-rejected",
         "h2-reconnect-first-chunk-ack-session-mismatch",
-        "h2-reconnect-global-close-failed",
         "h2-reconnect-relay-selection-failed",
         "h2-reconnect-recovery-rejected",
         "h2-reconnect-recovery-session-mismatch",
@@ -1536,6 +1541,8 @@ def validate_relay_transcript(
                 "relay transcript unexpectedly contains reconnect failure "
                 f"event {event!r}"
             )
+    if "h2-reconnect-global-close" in events:
+        raise M0Error("relay reconnect unexpectedly emitted a WISP global close")
     for event in (
         "csp-connect-src-target-tcp-connect",
         "h1-csp-connect-src-target-request",

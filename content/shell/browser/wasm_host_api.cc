@@ -87,6 +87,10 @@ constexpr std::string_view kM5NetworkTestHostname = "a.test";
 constexpr std::string_view kM5NetworkTestPathPrefix = "/m5/";
 constexpr std::string_view kM5NetworkRedirectPath = "/m5/redirect-cookie";
 constexpr std::string_view kM5NetworkDocumentPath = "/m5/";
+constexpr std::string_view kM5NetworkReconnectStreamPath =
+    "/m5/reconnect-stream";
+constexpr std::string_view kM5NetworkReconnectFailure =
+    "net::ERR_INTERNET_DISCONNECTED";
 constexpr std::string_view kM5PublicSpecialUseHostnameSuffixes[] = {
     ".localhost",
     ".local",
@@ -333,6 +337,8 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
       RecordResponse(*params);
     } else if (*method == "Network.loadingFinished") {
       RecordFinished(*params);
+    } else if (*method == "Network.loadingFailed") {
+      RecordFailed(*params);
     }
   }
 
@@ -368,9 +374,10 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     }
   }
 
-  bool IsTargetDocumentRequest(const base::DictValue& params,
-                               std::string_view expected_path,
-                               std::string* request_id) {
+  bool IsTargetRequest(const base::DictValue& params,
+                       std::string_view expected_path,
+                       std::string_view expected_resource_type,
+                       std::string* request_id) {
     const std::string* url = params.FindStringByDottedPath("request.url");
     const std::string* resource_type = params.FindString("type");
     const std::string* id = params.FindString("requestId");
@@ -382,9 +389,9 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
         request_url.path() != expected_path) {
       return false;
     }
-    if (*resource_type != "Document" || id->empty() ||
+    if (*resource_type != expected_resource_type || id->empty() ||
         id->size() > 256) {
-      Fail("received an invalid controlled document request event");
+      Fail("received an invalid controlled request event");
       return false;
     }
     *request_id = *id;
@@ -393,7 +400,8 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
 
   void RecordRequest(const base::DictValue& params) {
     std::string request_id;
-    if (IsTargetDocumentRequest(params, kM5NetworkRedirectPath, &request_id)) {
+    if (IsTargetRequest(params, kM5NetworkRedirectPath, "Document",
+                        &request_id)) {
       if (redirect_request_seen_ || !request_id_.empty()) {
         Fail("received a duplicate redirect request event");
         return;
@@ -404,16 +412,30 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
       return;
     }
 
-    if (!IsTargetDocumentRequest(params, kM5NetworkDocumentPath, &request_id)) {
+    if (IsTargetRequest(params, kM5NetworkDocumentPath, "Document",
+                        &request_id)) {
+      if (!redirect_request_seen_ || final_request_seen_ ||
+          request_id != request_id_) {
+        Fail("final document request did not preserve the redirect request ID");
+        return;
+      }
+      final_request_seen_ = true;
+      AppendEvent("Network.requestWillBeSent:final");
       return;
     }
-    if (!redirect_request_seen_ || final_request_seen_ ||
-        request_id != request_id_) {
-      Fail("final document request did not preserve the redirect request ID");
+
+    if (!IsTargetRequest(params, kM5NetworkReconnectStreamPath, "Fetch",
+                         &request_id)) {
       return;
     }
-    final_request_seen_ = true;
-    AppendEvent("Network.requestWillBeSent:final");
+    if (!loading_finished_ || reconnect_request_seen_ ||
+        request_id == request_id_) {
+      Fail("received an invalid reconnect stream request event");
+      return;
+    }
+    reconnect_request_seen_ = true;
+    reconnect_request_id_ = std::move(request_id);
+    AppendEvent("Network.requestWillBeSent:reconnect");
   }
 
   void RecordResponse(const base::DictValue& params) {
@@ -456,9 +478,29 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     MaybeReportComplete();
   }
 
+  void RecordFailed(const base::DictValue& params) {
+    if (!reconnect_request_seen_) {
+      return;
+    }
+    const std::string* request_id = params.FindString("requestId");
+    if (!request_id || *request_id != reconnect_request_id_) {
+      return;
+    }
+    const std::string* error_text = params.FindString("errorText");
+    const std::optional<bool> canceled = params.FindBool("canceled");
+    if (reconnect_loading_failed_ || !error_text ||
+        *error_text != kM5NetworkReconnectFailure || !canceled || *canceled) {
+      Fail("received an invalid reconnect stream failure event");
+      return;
+    }
+    reconnect_loading_failed_ = true;
+    AppendEvent("Network.loadingFailed:reconnect");
+    MaybeReportComplete();
+  }
+
   void AppendEvent(std::string_view event) {
-    if (events_.size() >= 4) {
-      Fail("recorded too many controlled document events");
+    if (events_.size() >= 6) {
+      Fail("recorded too many controlled network events");
       return;
     }
     events_.Append(event);
@@ -467,7 +509,8 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   void MaybeReportComplete() {
     if (state_ != State::kEnabled || !redirect_request_seen_ ||
         !final_request_seen_ || !response_received_ || !loading_finished_ ||
-        events_.size() != 4) {
+        !reconnect_request_seen_ || !reconnect_loading_failed_ ||
+        events_.size() != 6) {
       return;
     }
 
@@ -483,6 +526,10 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     report.Set("requestIdCorrelated", true);
     report.Set("responseStatus", response_status_);
     report.Set("responseProtocol", response_protocol_);
+    report.Set("reconnectRequest", reconnect_request_seen_);
+    report.Set("reconnectLoadingFailed", reconnect_loading_failed_);
+    report.Set("reconnectRequestIdCorrelated", true);
+    report.Set("reconnectInternetDisconnected", true);
     report.Set("events", std::move(events_));
     if (!Report(std::move(report))) {
       Fail("could not report the completed controlled network trace");
@@ -520,7 +567,10 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   bool final_request_seen_ = false;
   bool response_received_ = false;
   bool loading_finished_ = false;
+  bool reconnect_request_seen_ = false;
+  bool reconnect_loading_failed_ = false;
   std::string request_id_;
+  std::string reconnect_request_id_;
   int response_status_ = 0;
   std::string response_protocol_;
   base::ListValue events_;

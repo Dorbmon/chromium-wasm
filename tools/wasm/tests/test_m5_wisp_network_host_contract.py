@@ -229,18 +229,24 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
             "Network.requestWillBeSent",
             "Network.responseReceived",
             "Network.loadingFinished",
+            "Network.loadingFailed",
         ):
             with self.subTest(event=event):
                 self.assertIn(event, recorder)
         self.assertIn("request_id != request_id_", recorder)
         self.assertIn("kM5NetworkRedirectPath", recorder)
         self.assertIn("kM5NetworkDocumentPath", recorder)
+        self.assertIn("kM5NetworkReconnectStreamPath", recorder)
+        self.assertIn("kM5NetworkReconnectFailure", recorder)
+        self.assertIn("RecordFailed", recorder)
+        self.assertIn("reconnectInternetDisconnected", recorder)
         self.assertIn("responseStatus", recorder)
         self.assertIn("responseProtocol", recorder)
         self.assertNotIn('report.Set("url"', recorder)
         self.assertNotIn('report.Set("requestId"', recorder)
         self.assertNotIn('report.Set("headers"', recorder)
         self.assertNotIn('report.Set("cookies"', recorder)
+        self.assertNotIn('report.Set("errorText"', recorder)
 
         self.assertIn("chromium_wasm_report_m5_devtools_network__proxy: 'sync'", bridge)
         self.assertIn("bridge.reportM5DevToolsNetwork", bridge)

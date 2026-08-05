@@ -73,10 +73,6 @@ const RECONNECT_STREAM_CONTENT_LENGTH =
 const RECONNECT_FIRST_CHUNK_ACK_BODY = "M5_WISP_RECONNECT_FIRST_CHUNK_ACK";
 const RECONNECT_RECOVERY_BODY = "M5_WISP_RECONNECT_RECOVERY";
 const RECONNECT_DISCONNECT_DELAY_MS = 100;
-// Give the WISP global CLOSE packet a bounded chance to reach the host
-// bridge before ending the RFC 6455 peer. This makes the transport's
-// connection-failure transition observable without retaining the relay.
-const RECONNECT_WEBSOCKET_CLOSE_DELAY_MS = 100;
 const RECONNECT_ACK_TIMEOUT_MS = 5000;
 const RECONNECT_RECOVERY_TIMEOUT_MS = 5000;
 const RECONNECT_STREAM_FAILURE_TIMEOUT_MS = 5000;
@@ -1295,10 +1291,6 @@ function clearReconnectTimers(context) {
     clearTimeout(context.reconnectDisconnectTimer);
     context.reconnectDisconnectTimer = null;
   }
-  if (context.reconnectWebSocketCloseTimer !== null) {
-    clearTimeout(context.reconnectWebSocketCloseTimer);
-    context.reconnectWebSocketCloseTimer = null;
-  }
 }
 
 function clearPendingReconnectRecovery(context) {
@@ -1742,41 +1734,18 @@ function scheduleReconnectDisconnect(context) {
     incrementBoundedCounter(context, "reconnectDisconnectRequests");
     context.transcript.add("h2-reconnect-disconnect-requested");
     const relay = relays[0];
-    // Close the WISP connection explicitly before ending the WebSocket. A
-    // raw WebSocket close alone may leave a pooled H2 session waiting for a
-    // transport poll; the global WISP CLOSE maps that pending stream to a
-    // concrete failure and causes a later stream to make a new WebSocket.
-    const globalClose = relay.peer.sendBinary(wispClosePacket(
-        0, WISP_CLOSE_REASONS.NETWORK_ERROR));
-    if (!globalClose.accepted) {
-      context.reconnectPhase = "unexpected-close";
-      incrementBoundedCounter(context, "reconnectUnexpectedCloses");
-      context.transcript.add("h2-reconnect-global-close-failed");
-      relay.peer.destroy();
-      relay.close();
-      return;
+    // The carrier itself is the failure under test. Do not send a WISP CLOSE:
+    // the browser's RFC 6455 close event must map the pending stream to
+    // ERR_INTERNET_DISCONNECTED. WebSocketPeer.close() writes a valid close
+    // frame then ends the socket; avoid an immediate destroy, which could turn
+    // this deliberate close into a browser error event instead.
+    context.transcript.add("h2-reconnect-carrier-close");
+    relay.peer.close(1000, "m5-carrier-close");
+    if (context.reconnectPhase === "disconnecting") {
+      context.reconnectPhase = "disconnected";
+      context.transcript.add("h2-reconnect-wisp-disconnected");
+      resolvePendingReconnectRecovery(context);
     }
-    context.transcript.add("h2-reconnect-global-close");
-    const closeWebSocket = () => {
-      if (!relay.closed) {
-        relay.peer.close(1012, "m5-reconnect");
-        // An upgraded socket is outside http.Server.close() ownership. Tear
-        // down the loopback peer after its bounded close-frame window so a
-        // non-cooperating client cannot retain the deliberately ended relay.
-        relay.peer.destroy();
-        relay.close();
-      }
-      if (context.reconnectPhase === "disconnecting") {
-        context.reconnectPhase = "disconnected";
-        context.transcript.add("h2-reconnect-wisp-disconnected");
-        resolvePendingReconnectRecovery(context);
-      }
-    };
-    context.reconnectWebSocketCloseTimer = setTimeout(() => {
-      context.reconnectWebSocketCloseTimer = null;
-      closeWebSocket();
-    }, RECONNECT_WEBSOCKET_CLOSE_DELAY_MS);
-    context.reconnectWebSocketCloseTimer.unref?.();
   };
   // The exact same-session ACK response is sent immediately after this timer
   // is armed. The bounded delay leaves it a response window before ending the
@@ -1875,10 +1844,10 @@ function handleReconnectRecovery(stream, context) {
     return;
   }
   if (context.reconnectPhase === "disconnecting") {
-    // The browser may receive the global WISP CLOSE and create its fresh
-    // session before the fixture's bounded WebSocket teardown fires. Hold
-    // that fresh request until the old relay is conclusively gone instead of
-    // turning a valid reconnect race into a 409 response.
+    // The browser may receive the carrier close and create its fresh session
+    // before this relay's old H2 stream reports its asynchronous teardown.
+    // Hold that fresh request until the old relay is conclusively gone instead
+    // of turning a valid reconnect race into a 409 response.
     holdReconnectRecovery(stream, context);
     return;
   }
@@ -2439,8 +2408,8 @@ function h2Page(context) {
 
     // The acknowledgement runs on the same H2 session as the partial body.
     // Its exact response proves the fixture received it before the delayed
-    // global WISP close is armed; a bounded wait prevents a stalled transport
-    // from being mislabeled as a reconnect.
+    // RFC 6455 carrier close is armed; a bounded wait prevents a stalled
+    // transport from being mislabeled as a reconnect.
     let ack = null;
     try {
       ack = await Promise.race([
@@ -3465,7 +3434,6 @@ async function start(options) {
     reconnectDisconnectTimer: null,
     reconnectPendingRecovery: null,
     reconnectStreamSession: null,
-    reconnectWebSocketCloseTimer: null,
     slowStreamPhase: "pre-stream",
     slowStreamResponse: null,
     slowStreamSession: null,
