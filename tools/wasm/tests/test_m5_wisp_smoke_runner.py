@@ -128,6 +128,8 @@ def passing_result() -> dict[str, object]:
                 "state": "complete",
                 "networkEnabled": True,
                 "redirectRequest": True,
+                "redirectIntermediateRequest": True,
+                "redirectHopCount": 2,
                 "finalRequest": True,
                 "responseReceived": True,
                 "loadingFinished": True,
@@ -144,6 +146,7 @@ def passing_result() -> dict[str, object]:
                 "reconnectInternetDisconnected": True,
                 "events": [
                     "Network.requestWillBeSent:redirect",
+                    "Network.requestWillBeSent:redirect-intermediate",
                     "Network.requestWillBeSent:final",
                     "Network.responseReceived:final",
                     "Network.loadingFinished:final",
@@ -177,9 +180,12 @@ def passing_result() -> dict[str, object]:
                 "ready": True,
                 "h2Fetch": True,
                 "h2Protocol": "h2",
+                "corsDeniedRequestStarted": True,
+                "corsDeniedResponseBlocked": True,
                 "corsFetch": True,
                 "webSocketEcho": True,
                 "altSvcH3Advertised": True,
+                "redirectHopCount": 2,
                 "redirected": True,
                 "cacheStored": True,
                 "cacheRevalidated": True,
@@ -293,9 +299,12 @@ def passing_relay_status() -> dict[str, object]:
         "localGatewayBlockedPortAttempts": 1,
         "udpPackets": 0,
         "relayErrors": 0,
+        "corsDeniedRequests": 1,
         "corsRequests": 1,
         "webSocketEchoes": 1,
         "redirectRequests": 1,
+        "redirectIntermediateRequests": 1,
+        "redirectIntermediateCookieValidations": 1,
         "redirectCookieValidations": 1,
         "cacheStore200s": 1,
         "cacheConditionalRequests": 1,
@@ -376,6 +385,7 @@ def passing_relay_status() -> dict[str, object]:
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
+            {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4445},
         ],
         "transcript": [
@@ -391,76 +401,79 @@ def passing_relay_status() -> dict[str, object]:
             },
             {"sequence": 8, "event": "h2-redirect"},
             {"sequence": 9, "event": "h2-redirect-cookie"},
-            {"sequence": 10, "event": "h2-page"},
-            {"sequence": 11, "event": "h2-page-cookie"},
-            {"sequence": 12, "event": "h2-resource"},
-            {"sequence": 13, "event": "local-gateway-443-request"},
-            {"sequence": 14, "event": "local-gateway-444-blocked"},
-            {"sequence": 15, "event": "h2-cache-store-200"},
-            {"sequence": 16, "event": "h2-cache-revalidate-304"},
-            {"sequence": 17, "event": "h2-csp-connect-src-proof"},
-            {"sequence": 18, "event": "h2-mixed-content-proof"},
-            {"sequence": 19, "event": "h2-cancel-stream-start"},
+            {"sequence": 10, "event": "h2-redirect-intermediate"},
+            {"sequence": 11, "event": "h2-redirect-intermediate-cookie"},
+            {"sequence": 12, "event": "h2-page"},
+            {"sequence": 13, "event": "h2-page-cookie"},
+            {"sequence": 14, "event": "h2-resource"},
+            {"sequence": 15, "event": "local-gateway-443-request"},
+            {"sequence": 16, "event": "local-gateway-444-blocked"},
+            {"sequence": 17, "event": "h2-cache-store-200"},
+            {"sequence": 18, "event": "h2-cache-revalidate-304"},
+            {"sequence": 19, "event": "h2-csp-connect-src-proof"},
+            {"sequence": 20, "event": "h2-mixed-content-proof"},
+            {"sequence": 21, "event": "h2-cancel-stream-start"},
             {
-                "sequence": 20,
+                "sequence": 22,
                 "event": "h2-cancel-stream-cancel-reset",
                 "rstCode": 8,
             },
-            {"sequence": 21, "event": "h2-cancel-stream-proof"},
-            {"sequence": 22, "event": "h2-slow-stream-start"},
-            {"sequence": 23, "event": "h2-slow-stream-first-stage"},
-            {
-                "sequence": 24,
-                "event": "h2-slow-stream-first-stage-ack",
-            },
-            {"sequence": 25, "event": "h2-slow-stream-second-stage"},
+            {"sequence": 23, "event": "h2-cancel-stream-proof"},
+            {"sequence": 24, "event": "h2-slow-stream-start"},
+            {"sequence": 25, "event": "h2-slow-stream-first-stage"},
             {
                 "sequence": 26,
+                "event": "h2-slow-stream-first-stage-ack",
+            },
+            {"sequence": 27, "event": "h2-slow-stream-second-stage"},
+            {
+                "sequence": 28,
                 "event": "h2-slow-stream-consumer-pause-ready",
             },
             {
-                "sequence": 27,
+                "sequence": 29,
                 "event": "h2-slow-stream-consumer-burst",
                 "bytes": 64 * 1024,
                 "backpressured": True,
             },
             {
-                "sequence": 28,
+                "sequence": 30,
                 "event": "h2-slow-stream-consumer-resume",
             },
             {
-                "sequence": 29,
+                "sequence": 31,
                 "event": "h2-slow-stream-second-stage-ack",
             },
-            {"sequence": 30, "event": "h2-slow-stream-third-stage"},
-            {"sequence": 31, "event": "h2-slow-stream-complete"},
-            {"sequence": 32, "event": "h2-slow-stream-proof"},
-            {"sequence": 33, "event": "h2-multiplex-pending"},
-            {"sequence": 34, "event": "h1-multiplex-pending"},
-            {"sequence": 35, "event": "wisp-multiplex-two-streams-live"},
-            {"sequence": 36, "event": "h2-multiplex-complete"},
-            {"sequence": 37, "event": "h1-multiplex-complete"},
-            {"sequence": 38, "event": "h2-large-download-start"},
-            {"sequence": 39, "event": "h2-large-download-complete"},
-            {"sequence": 40, "event": "h2-reconnect-stream-start"},
-            {"sequence": 41, "event": "h2-reconnect-stream-first-chunk"},
-            {"sequence": 42, "event": "h2-reconnect-first-chunk-ack"},
-            {"sequence": 43, "event": "h2-reconnect-disconnect-requested"},
-            {"sequence": 44, "event": "h2-reconnect-carrier-close"},
-            {"sequence": 45, "event": "wisp-disconnected"},
-            {"sequence": 46, "event": "h2-reconnect-stream-disconnected"},
-            {"sequence": 47, "event": "h2-reconnect-wisp-disconnected"},
-            {"sequence": 48, "event": "wisp-connected"},
-            {"sequence": 49, "event": "wisp-ready"},
+            {"sequence": 32, "event": "h2-slow-stream-third-stage"},
+            {"sequence": 33, "event": "h2-slow-stream-complete"},
+            {"sequence": 34, "event": "h2-slow-stream-proof"},
+            {"sequence": 35, "event": "h2-multiplex-pending"},
+            {"sequence": 36, "event": "h1-multiplex-pending"},
+            {"sequence": 37, "event": "wisp-multiplex-two-streams-live"},
+            {"sequence": 38, "event": "h2-multiplex-complete"},
+            {"sequence": 39, "event": "h1-multiplex-complete"},
+            {"sequence": 40, "event": "h2-large-download-start"},
+            {"sequence": 41, "event": "h2-large-download-complete"},
+            {"sequence": 42, "event": "h2-reconnect-stream-start"},
+            {"sequence": 43, "event": "h2-reconnect-stream-first-chunk"},
+            {"sequence": 44, "event": "h2-reconnect-first-chunk-ack"},
+            {"sequence": 45, "event": "h2-reconnect-disconnect-requested"},
+            {"sequence": 46, "event": "h2-reconnect-carrier-close"},
+            {"sequence": 47, "event": "wisp-disconnected"},
+            {"sequence": 48, "event": "h2-reconnect-stream-disconnected"},
+            {"sequence": 49, "event": "h2-reconnect-wisp-disconnected"},
+            {"sequence": 50, "event": "wisp-connected"},
+            {"sequence": 51, "event": "wisp-ready"},
             {
-                "sequence": 50,
+                "sequence": 52,
                 "event": "connect-open",
                 "destination": "a.test:4443",
             },
-            {"sequence": 51, "event": "h2-reconnect-recovery"},
-            {"sequence": 52, "event": "h1-cors"},
-            {"sequence": 53, "event": "h1-wss-echo"},
-            {"sequence": 54, "event": "tls-failure-tcp-connect"},
+            {"sequence": 53, "event": "h2-reconnect-recovery"},
+            {"sequence": 54, "event": "h1-cors-denied"},
+            {"sequence": 55, "event": "h1-cors"},
+            {"sequence": 56, "event": "h1-wss-echo"},
+            {"sequence": 57, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -727,6 +740,8 @@ class M5ResultValidationTest(unittest.TestCase):
             ("state", "enabled"),
             ("networkEnabled", False),
             ("redirectRequest", False),
+            ("redirectIntermediateRequest", False),
+            ("redirectHopCount", 1),
             ("finalRequest", False),
             ("responseReceived", False),
             ("loadingFinished", False),
@@ -800,6 +815,8 @@ class M5ResultValidationTest(unittest.TestCase):
     def test_rejects_missing_page_network_evidence(self) -> None:
         for field in (
             "h2Fetch",
+            "corsDeniedRequestStarted",
+            "corsDeniedResponseBlocked",
             "corsFetch",
             "webSocketEcho",
             "redirected",
@@ -847,6 +864,16 @@ class M5ResultValidationTest(unittest.TestCase):
                 page_probe[field] = False
                 with self.assertRaisesRegex(M0Error, field):
                     validate_passing_result(result)
+
+    def test_rejects_an_incorrect_redirect_hop_count(self) -> None:
+        result = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        page_probe = readiness["pageProbe"]
+        assert isinstance(page_probe, dict)
+        page_probe["redirectHopCount"] = 1
+        with self.assertRaisesRegex(M0Error, "redirectHopCount"):
+            validate_passing_result(result)
 
     def test_rejects_invalid_slow_stream_page_timing_evidence(self) -> None:
         for field, invalid_value in (
@@ -1389,9 +1416,23 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
                 status, relay_ready=relay_ready
             )
 
+        for field in (
+            "redirectIntermediateRequests",
+            "redirectIntermediateCookieValidations",
+        ):
+            with self.subTest(field=field):
+                status = passing_relay_status()
+                status[field] = 0
+                with self.assertRaisesRegex(M0Error, "redirect|intermediate"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
         for event_name in (
             "h2-redirect",
             "h2-redirect-cookie",
+            "h2-redirect-intermediate",
+            "h2-redirect-intermediate-cookie",
             "h2-page-cookie",
         ):
             with self.subTest(event_name=event_name):
@@ -1414,7 +1455,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
         redirect_index = next(
             index
             for index, entry in enumerate(transcript)
-            if entry.get("event") == "h2-redirect-cookie"
+            if entry.get("event") == "h2-redirect-intermediate-cookie"
         )
         page_index = next(
             index
@@ -1425,10 +1466,72 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             transcript[page_index],
             transcript[redirect_index],
         )
-        with self.assertRaisesRegex(M0Error, "before redirect cookie"):
+        with self.assertRaisesRegex(M0Error, "two-hop redirect chain"):
             run_m5_wisp_smoke.validate_relay_transcript(
                 status, relay_ready=relay_ready
             )
+
+    def test_rejects_invalid_cors_denial_evidence(self) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        for field, invalid_value, error in (
+            ("corsDeniedRequests", 0, "rejected CORS request"),
+            ("corsDeniedRequests", 2, "rejected CORS request"),
+            ("corsRequests", 0, "allowed CORS request"),
+            ("corsRequests", 2, "allowed CORS request"),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                status = passing_relay_status()
+                status[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, error):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for event_name in ("h1-cors-denied", "h1-cors"):
+            with self.subTest(event_name=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                status["transcript"] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for first_event, second_event in (
+            ("h1-cors-denied", "h1-cors"),
+            ("h1-cors", "h1-wss-echo"),
+        ):
+            with self.subTest(first_event=first_event, second_event=second_event):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                first_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == first_event
+                )
+                second_index = next(
+                    index
+                    for index, entry in enumerate(transcript)
+                    if entry.get("event") == second_event
+                )
+                transcript[first_index], transcript[second_index] = (
+                    transcript[second_index],
+                    transcript[first_index],
+                )
+                with self.assertRaisesRegex(
+                    M0Error, "denied then allowed CORS before WebSocket"
+                ):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
 
     def test_rejects_invalid_cache_revalidation_evidence(self) -> None:
         relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
@@ -1592,7 +1695,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             ),
             (
                 "h2-mixed-content-proof",
-                "h1-cors",
+                "h1-cors-denied",
                 "cancellation proof events are not between active mixed-content "
                 "proof and CORS",
             ),
@@ -1724,7 +1827,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             ("h2-mixed-content-proof", "h2-cancel-stream-start"),
             ("h2-cancel-stream-start", "h2-cancel-stream-cancel-reset"),
             ("h2-cancel-stream-cancel-reset", "h2-cancel-stream-proof"),
-            ("h2-cancel-stream-proof", "h1-cors"),
+            ("h2-cancel-stream-proof", "h1-cors-denied"),
         ):
             with self.subTest(first_event=first_event, second_event=second_event):
                 status = passing_relay_status()
@@ -2050,7 +2153,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
         for first_event, second_event in (
             ("h2-slow-stream-proof", "h2-large-download-start"),
             ("h2-large-download-start", "h2-large-download-complete"),
-            ("h2-large-download-complete", "h1-cors"),
+            ("h2-large-download-complete", "h1-cors-denied"),
         ):
             with self.subTest(first_event=first_event, second_event=second_event):
                 status = passing_relay_status()
@@ -2345,7 +2448,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
 
         for first_event, second_event in (
             ("h2-cache-revalidate-304", "h2-csp-connect-src-proof"),
-            ("h2-csp-connect-src-proof", "h1-cors"),
+            ("h2-csp-connect-src-proof", "h1-cors-denied"),
         ):
             with self.subTest(
                 first_event=first_event, second_event=second_event

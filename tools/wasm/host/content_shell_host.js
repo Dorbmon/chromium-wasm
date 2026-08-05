@@ -92,6 +92,7 @@ const M5_NAVIGATION_PHASE = Object.freeze({
 const M5_TLS_NAME_MISMATCH_NET_ERROR = -200;
 const M5_DEVTOOLS_NETWORK_EVENT_ORDER = Object.freeze([
   "Network.requestWillBeSent:redirect",
+  "Network.requestWillBeSent:redirect-intermediate",
   "Network.requestWillBeSent:final",
   "Network.responseReceived:final",
   "Network.loadingFinished:final",
@@ -1476,7 +1477,11 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       typeof pageProbe?.reconnectStreamErrorName === "string" &&
       typeof pageProbe?.reconnectRecovered === "boolean" &&
       typeof pageProbe?.reconnectRecoveryProtocol === "string" &&
+      typeof pageProbe?.corsDeniedRequestStarted === "boolean" &&
+      typeof pageProbe?.corsDeniedResponseBlocked === "boolean" &&
       typeof pageProbe?.corsFetch === "boolean" &&
+      Number.isSafeInteger(pageProbe?.redirectHopCount) &&
+      pageProbe.redirectHopCount >= 0 &&
       typeof pageProbe?.redirected === "boolean" &&
       typeof pageProbe?.webSocketEcho === "boolean" &&
       typeof pageProbe?.nonce === "string" && pageProbe.nonce.length > 0;
@@ -1486,7 +1491,7 @@ function hasM5NetworkPageProbe(pageProbe) {
   return isM5NetworkPageProbeIdentity(pageProbe) &&
       pageProbe?.ready === true &&
       pageProbe?.h2Fetch === true && pageProbe?.h2Protocol === "h2" &&
-      pageProbe?.redirected === true &&
+      pageProbe?.redirectHopCount === 2 && pageProbe?.redirected === true &&
       pageProbe?.cacheStored === true && pageProbe?.cacheRevalidated === true &&
       pageProbe?.cspConnectSrcBlocked === true &&
       pageProbe?.activeMixedContentBlocked === true &&
@@ -1536,6 +1541,8 @@ function hasM5NetworkPageProbe(pageProbe) {
       pageProbe?.reconnectStreamErrorName === "TypeError" &&
       pageProbe?.reconnectRecovered === true &&
       pageProbe?.reconnectRecoveryProtocol === "h2" &&
+      pageProbe?.corsDeniedRequestStarted === true &&
+      pageProbe?.corsDeniedResponseBlocked === true &&
       pageProbe?.corsFetch === true && pageProbe?.webSocketEcho === true &&
       pageProbe?.altSvcH3Advertised === true;
 }
@@ -1549,7 +1556,9 @@ function isM5DevToolsNetworkEnabled(report) {
 function hasM5DevToolsNetworkLog(report) {
   return report?.protocol === HOST_PROTOCOL &&
       report?.state === "complete" && report?.networkEnabled === true &&
-      report?.redirectRequest === true && report?.finalRequest === true &&
+      report?.redirectRequest === true &&
+      report?.redirectIntermediateRequest === true &&
+      report?.redirectHopCount === 2 && report?.finalRequest === true &&
       report?.responseReceived === true && report?.loadingFinished === true &&
       report?.requestIdCorrelated === true &&
       report?.responseStatus === 200 && report?.responseProtocol === "h2" &&
@@ -5301,6 +5310,8 @@ export class ChromiumWasmM3Host {
         state: "complete",
         networkEnabled: true,
         redirectRequest: true,
+        redirectIntermediateRequest: true,
+        redirectHopCount: 2,
         finalRequest: true,
         responseReceived: true,
         loadingFinished: true,
@@ -13123,7 +13134,8 @@ async function runM5WispNetworkSmokeFromQuery() {
           M5_TLS_NAME_MISMATCH_NET_ERROR &&
         tlsFailureReadiness.fatalErrors?.length === 0,
       fixture: hasM5NetworkPageProbe(pageProbe),
-      redirect: pageProbe.redirected === true,
+      redirect:
+        pageProbe.redirectHopCount === 2 && pageProbe.redirected === true,
       cache:
         pageProbe.cacheStored === true && pageProbe.cacheRevalidated === true,
       csp: pageProbe.cspConnectSrcBlocked === true,
@@ -13186,7 +13198,10 @@ async function runM5WispNetworkSmokeFromQuery() {
         pageProbe.reconnectRecovered === true &&
         pageProbe.reconnectRecoveryProtocol === "h2",
       http2: pageProbe.h2Fetch === true && pageProbe.h2Protocol === "h2",
-      cors: pageProbe.corsFetch === true,
+      cors:
+        pageProbe.corsDeniedRequestStarted === true &&
+        pageProbe.corsDeniedResponseBlocked === true &&
+        pageProbe.corsFetch === true,
       webSocket: pageProbe.webSocketEcho === true,
       altSvcH3Advertised: pageProbe.altSvcH3Advertised === true,
       shutdown:

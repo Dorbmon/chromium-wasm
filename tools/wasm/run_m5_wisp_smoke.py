@@ -62,6 +62,7 @@ M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control"
 M5_MIXED_CONTENT_TARGET_PATH = "/m5/mixed-content-target"
 M5_DEVTOOLS_NETWORK_EVENT_ORDER = (
     "Network.requestWillBeSent:redirect",
+    "Network.requestWillBeSent:redirect-intermediate",
     "Network.requestWillBeSent:final",
     "Network.responseReceived:final",
     "Network.loadingFinished:final",
@@ -697,6 +698,8 @@ def validate_m5_result(
         "state": "complete",
         "networkEnabled": True,
         "redirectRequest": True,
+        "redirectIntermediateRequest": True,
+        "redirectHopCount": 2,
         "finalRequest": True,
         "responseReceived": True,
         "loadingFinished": True,
@@ -784,9 +787,12 @@ def validate_m5_result(
         "ready": True,
         "h2Fetch": True,
         "h2Protocol": "h2",
+        "corsDeniedRequestStarted": True,
+        "corsDeniedResponseBlocked": True,
         "corsFetch": True,
         "webSocketEcho": True,
         "altSvcH3Advertised": True,
+        "redirectHopCount": 2,
         "redirected": True,
         "cacheStored": True,
         "cacheRevalidated": True,
@@ -1031,9 +1037,12 @@ def validate_relay_transcript(
         "localGatewayBlockedPortAttempts",
         "udpPackets",
         "relayErrors",
+        "corsDeniedRequests",
         "corsRequests",
         "webSocketEchoes",
         "redirectRequests",
+        "redirectIntermediateRequests",
+        "redirectIntermediateCookieValidations",
         "redirectCookieValidations",
         "cacheStore200s",
         "cacheConditionalRequests",
@@ -1119,13 +1128,19 @@ def validate_relay_transcript(
         raise M0Error("relay observed an unsupported UDP WISP request")
     if status["relayErrors"] != 0:
         raise M0Error("relay reported a WISP protocol or target error")
-    if status["corsRequests"] < 1:
-        raise M0Error("relay did not observe the inner CORS request")
+    if status["corsDeniedRequests"] != 1:
+        raise M0Error("relay did not observe exactly one rejected CORS request")
+    if status["corsRequests"] != 1:
+        raise M0Error("relay did not observe exactly one allowed CORS request")
     if status["webSocketEchoes"] < 1:
         raise M0Error("relay did not observe the inner WebSocket echo")
-    if status["redirectRequests"] < 1:
+    if status["redirectRequests"] != 1:
         raise M0Error("relay did not observe the M5 redirect request")
-    if status["redirectCookieValidations"] < 1:
+    if status["redirectIntermediateRequests"] != 1:
+        raise M0Error("relay did not observe the M5 redirect intermediate")
+    if status["redirectIntermediateCookieValidations"] != 1:
+        raise M0Error("relay did not validate the M5 intermediate redirect cookie")
+    if status["redirectCookieValidations"] != 1:
         raise M0Error("relay did not validate the M5 redirect cookie")
     for field, expected_value in (
         ("localGateway443StreamsOpened", 1),
@@ -1281,7 +1296,7 @@ def validate_relay_transcript(
             raise M0Error("relay observed a non-fixture WISP port")
     if (
         h2_count < 2
-        or h1_count < 3
+        or h1_count < 4
         or plaintext_http_control_count < 1
         or tls_failure_count < 1
     ):
@@ -1309,6 +1324,8 @@ def validate_relay_transcript(
         "h2-page",
         "h2-redirect",
         "h2-redirect-cookie",
+        "h2-redirect-intermediate",
+        "h2-redirect-intermediate-cookie",
         "h2-page-cookie",
         "h2-resource",
         "local-gateway-443-request",
@@ -1346,16 +1363,22 @@ def validate_relay_transcript(
         "h2-reconnect-stream-disconnected",
         "h2-reconnect-wisp-disconnected",
         "h2-reconnect-recovery",
+        "h1-cors-denied",
         "h1-cors",
         "h1-wss-echo",
         "tls-failure-tcp-connect",
     ):
         if event not in events:
             raise M0Error(f"relay transcript is missing {event!r}")
-    if event_names.index("h2-redirect-cookie") >= event_names.index(
-        "h2-page-cookie"
+    if not (
+        event_names.index("h2-redirect")
+        < event_names.index("h2-redirect-cookie")
+        < event_names.index("h2-redirect-intermediate")
+        < event_names.index("h2-redirect-intermediate-cookie")
+        < event_names.index("h2-page")
+        < event_names.index("h2-page-cookie")
     ):
-        raise M0Error("relay accepted the final page before redirect cookie")
+        raise M0Error("relay did not preserve the two-hop redirect chain")
     if event_names.index("h2-cache-store-200") >= event_names.index(
         "h2-cache-revalidate-304"
     ):
@@ -1368,7 +1391,7 @@ def validate_relay_transcript(
     if not (
         event_names.index("h2-cache-revalidate-304")
         < event_names.index(csp_proof_event)
-        < event_names.index("h1-cors")
+        < event_names.index("h1-cors-denied")
     ):
         raise M0Error(
             "relay CSP proof event is not between cache revalidation and CORS"
@@ -1545,7 +1568,7 @@ def validate_relay_transcript(
         < event_names.index("h2-cancel-stream-start")
         < event_names.index("h2-cancel-stream-cancel-reset")
         < event_names.index("h2-cancel-stream-proof")
-        < event_names.index("h1-cors")
+        < event_names.index("h1-cors-denied")
     ):
         raise M0Error(
             "relay cancellation proof events are not between active mixed-content "
@@ -1555,7 +1578,7 @@ def validate_relay_transcript(
         event_names.index("h2-slow-stream-proof")
         < event_names.index("h2-large-download-start")
         < event_names.index("h2-large-download-complete")
-        < event_names.index("h1-cors")
+        < event_names.index("h1-cors-denied")
     ):
         raise M0Error(
             "relay large download events are not between slow-stream proof "
@@ -1571,7 +1594,7 @@ def validate_relay_transcript(
         < event_names.index("wisp-disconnected")
         < event_names.index("h2-reconnect-wisp-disconnected")
         < event_names.index("h2-reconnect-recovery")
-        < event_names.index("h1-cors")
+        < event_names.index("h1-cors-denied")
     ):
         raise M0Error(
             "relay reconnect events are not between the large download and CORS"
@@ -1583,7 +1606,7 @@ def validate_relay_transcript(
     if not (
         event_names.index("h2-reconnect-carrier-close")
         < event_names.index("h2-reconnect-stream-disconnected")
-        < event_names.index("h1-cors")
+        < event_names.index("h1-cors-denied")
     ):
         raise M0Error(
             "relay reconnect stream did not terminate after the carrier close "
@@ -1640,11 +1663,19 @@ def validate_relay_transcript(
         < event_names.index("h2-slow-stream-third-stage")
         < event_names.index("h2-slow-stream-complete")
         < event_names.index("h2-slow-stream-proof")
-        < event_names.index("h1-cors")
+        < event_names.index("h1-cors-denied")
     ):
         raise M0Error(
             "relay slow stream stage events are not between cancellation "
             "proof and CORS"
+        )
+    if not (
+        event_names.index("h1-cors-denied")
+        < event_names.index("h1-cors")
+        < event_names.index("h1-wss-echo")
+    ):
+        raise M0Error(
+            "relay did not perform denied then allowed CORS before WebSocket"
         )
     if "local-gateway-443-route-rejected" in events:
         raise M0Error(

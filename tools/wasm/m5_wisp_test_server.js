@@ -39,6 +39,7 @@ const RESERVED_LOGICAL_PORTS = new Set([
 ]);
 const MAX_LOOPBACK_LISTEN_ATTEMPTS = 8;
 const REDIRECT_COOKIE_NAME = "m5_redirect";
+const REDIRECT_INTERMEDIATE_PATH = "/m5/redirect-cookie-continue";
 const CACHE_REVALIDATE_ETAG = '"m5-cache-revalidate-v1"';
 const CACHE_REVALIDATE_BODY = "M5_CACHE_REVALIDATE_OK";
 const CACHE_REVALIDATE_CACHE_CONTROL = "private, max-age=60, must-revalidate";
@@ -762,6 +763,7 @@ function statusSnapshot(context) {
     cspConnectSrcTargetRequests: context.stats.cspConnectSrcTargetRequests,
     cspConnectSrcTargetTcpConnections:
       context.stats.cspConnectSrcTargetTcpConnections,
+    corsDeniedRequests: context.stats.corsDeniedRequests,
     corsRequests: context.stats.corsRequests,
     h2Requests: {
       count: context.stats.h2Requests,
@@ -805,6 +807,9 @@ function statusSnapshot(context) {
     plaintextHttpControlTcpConnections:
       context.stats.plaintextHttpControlTcpConnections,
     redirectCookieValidations: context.stats.redirectCookieValidations,
+    redirectIntermediateCookieValidations:
+      context.stats.redirectIntermediateCookieValidations,
+    redirectIntermediateRequests: context.stats.redirectIntermediateRequests,
     redirectRequests: context.stats.redirectRequests,
     reconnectDisconnectRequests: context.stats.reconnectDisconnectRequests,
     reconnectFirstChunkAcks: context.stats.reconnectFirstChunkAcks,
@@ -2285,6 +2290,8 @@ function handleReconnectRecovery(stream, context) {
 
 function h2Page(context) {
   const h1CorsUrl = `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`;
+  const h1CorsDeniedUrl =
+      `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-denied`;
   const multiplexH1Url =
       `https://${TEST_HOSTNAME}:${context.h1Port}/m5/multiplex-h1`;
   const cspConnectSrcTargetUrl =
@@ -2350,6 +2357,7 @@ function h2Page(context) {
   const mixedContentProofURL =
       new URL("/m5/mixed-content-proof", location.href).href;
   const mixedContentTargetURL = ${JSON.stringify(mixedContentTargetUrl)};
+  const corsDeniedURL = ${JSON.stringify(h1CorsDeniedUrl)};
   const corsURL = ${JSON.stringify(h1CorsUrl)};
   const socketURL = ${JSON.stringify(webSocketUrl)};
   const navigationEntry = performance.getEntriesByType("navigation")[0];
@@ -2404,8 +2412,11 @@ function h2Page(context) {
     activeMixedContentCspAllowed: false,
     activeMixedContentErrorName: "",
     cspConnectSrcBlocked: false,
+    corsDeniedRequestStarted: false,
+    corsDeniedResponseBlocked: false,
     corsFetch: false,
-    redirected: navigationEntry?.redirectCount === 1,
+    redirectHopCount: navigationEntry?.redirectCount ?? -1,
+    redirected: navigationEntry?.redirectCount === 2,
     webSocketEcho: false,
     complete: false,
     failure: null,
@@ -3028,7 +3039,10 @@ function h2Page(context) {
     activeMixedContentErrorName: state.activeMixedContentErrorName,
     activeMixedContentTargetUrl: mixedContentTargetURL,
     cspConnectSrcBlocked: state.cspConnectSrcBlocked,
+    corsDeniedRequestStarted: state.corsDeniedRequestStarted,
+    corsDeniedResponseBlocked: state.corsDeniedResponseBlocked,
     corsFetch: state.corsFetch,
+    redirectHopCount: state.redirectHopCount,
     redirected: state.redirected,
     webSocketEcho: state.webSocketEcho,
     nonce,
@@ -3194,6 +3208,20 @@ function h2Page(context) {
         throw new Error("M5 WISP reconnect failed");
       }
 
+      state.corsDeniedRequestStarted = true;
+      try {
+        await fetch(corsDeniedURL, {
+          cache: "no-store",
+          credentials: "omit",
+          mode: "cors",
+        });
+      } catch (error) {
+        state.corsDeniedResponseBlocked = error?.name === "TypeError";
+      }
+      if (!state.corsDeniedResponseBlocked) {
+        throw new Error("M5 CORS denial did not reject the reached response");
+      }
+
       const corsResponse = await fetch(corsURL, {
         cache: "no-store",
         credentials: "omit",
@@ -3229,7 +3257,9 @@ function h2Page(context) {
           state.reconnectStreamFailed &&
           state.reconnectRecovered &&
           state.reconnectRecoveryProtocol === "h2" &&
-          state.corsFetch && state.redirected && state.webSocketEcho;
+          state.corsDeniedRequestStarted && state.corsDeniedResponseBlocked &&
+          state.corsFetch && state.redirectHopCount === 2 &&
+          state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
         "Chromium M5 local-gateway/redirect/cache/CSP/mixed/cancel/slow/multiplex/download/reconnect/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
@@ -3275,7 +3305,7 @@ function createH2Server(context, tlsMaterial) {
       context.stats.redirectRequests += 1;
       stream.respond(h2Headers({
         ":status": 302,
-        "location": "/m5/",
+        "location": REDIRECT_INTERMEDIATE_PATH,
         "set-cookie":
           `${REDIRECT_COOKIE_NAME}=${context.redirectCookieValue}; ` +
           "Secure; HttpOnly; SameSite=Strict; Path=/m5/",
@@ -3284,6 +3314,29 @@ function createH2Server(context, tlsMaterial) {
       // Never include the opaque cookie value in status or transcript data.
       context.transcript.add("h2-redirect");
       context.transcript.add("h2-redirect-cookie");
+      return;
+    }
+    if (requestPath === REDIRECT_INTERMEDIATE_PATH) {
+      if (!hasExpectedRedirectCookie(headers, context)) {
+        const body = Buffer.from("M5_REDIRECT_COOKIE_REJECTED");
+        stream.respond(h2Headers({
+          ":status": 403,
+          "content-length": String(body.length),
+          "content-type": "text/plain; charset=utf-8",
+        }));
+        stream.end(body);
+        context.transcript.add("h2-redirect-intermediate-cookie-rejected");
+        return;
+      }
+      context.stats.redirectIntermediateRequests += 1;
+      context.stats.redirectIntermediateCookieValidations += 1;
+      stream.respond(h2Headers({
+        ":status": 302,
+        "location": "/m5/",
+      }));
+      stream.end();
+      context.transcript.add("h2-redirect-intermediate");
+      context.transcript.add("h2-redirect-intermediate-cookie");
       return;
     }
     if (requestPath === "/m5/") {
@@ -3845,6 +3898,23 @@ function createH1Server(context, tlsMaterial) {
           context.stats.corsRequests += 1;
           return;
         }
+        if (request.method === "GET" && request.url === "/m5/cors-denied" &&
+            request.headers.origin === pageOrigin) {
+          const body = "M5_CORS_DENIED";
+          response.writeHead(200, {
+            "Cache-Control": "no-store",
+            "Connection": "close",
+            "Content-Length": Buffer.byteLength(body),
+            "Content-Type": "text/plain; charset=utf-8",
+            "Vary": "Origin",
+            "X-Content-Type-Options": "nosniff",
+            "X-M5-HTTP-Version": "http/1.1",
+          });
+          response.end(body);
+          context.transcript.add("h1-cors-denied");
+          context.stats.corsDeniedRequests += 1;
+          return;
+        }
         response.writeHead(404, {
           "Cache-Control": "no-store",
           "Content-Length": "0",
@@ -4025,6 +4095,7 @@ async function start(options) {
       slowStreamThirdStages: 0,
       slowStreamUnexpectedCloses: 0,
       corsRequests: 0,
+      corsDeniedRequests: 0,
       cspConnectSrcProofs: 0,
       cspConnectSrcTargetRequests: 0,
       cspConnectSrcTargetTcpConnections: 0,
@@ -4045,6 +4116,8 @@ async function start(options) {
       reconnectUnexpectedCloses: 0,
       reconnectUnexpectedRetries: 0,
       redirectCookieValidations: 0,
+      redirectIntermediateCookieValidations: 0,
+      redirectIntermediateRequests: 0,
       redirectRequests: 0,
       rejectedDestinations: 0,
       relayErrors: 0,

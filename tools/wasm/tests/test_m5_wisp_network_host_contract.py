@@ -149,6 +149,9 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         for marker in (
             "pageProbe?.h2Fetch === true",
             'pageProbe?.h2Protocol === "h2"',
+            "pageProbe?.corsDeniedRequestStarted === true",
+            "pageProbe?.corsDeniedResponseBlocked === true",
+            "pageProbe?.redirectHopCount === 2",
             "pageProbe?.redirected === true",
             "pageProbe?.cacheStored === true",
             "pageProbe?.cacheRevalidated === true",
@@ -264,6 +267,7 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
                 self.assertIn(event, recorder)
         self.assertIn("request_id != request_id_", recorder)
         self.assertIn("kM5NetworkRedirectPath", recorder)
+        self.assertIn("kM5NetworkRedirectIntermediatePath", recorder)
         self.assertIn("kM5NetworkDocumentPath", recorder)
         self.assertIn("kM5NetworkLocalGatewayDeniedPath", recorder)
         self.assertIn("kM5NetworkLocalGatewayDeniedPort", recorder)
@@ -273,7 +277,16 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         self.assertIn("kM5NetworkReconnectStreamPath", recorder)
         self.assertIn("kM5NetworkReconnectFailure", recorder)
         self.assertIn("RecordFailed", recorder)
+        self.assertIn("HasExpectedRedirectResponse", recorder)
+        self.assertIn('FindDict("redirectResponse")', recorder)
+        self.assertIn("redirect_intermediate_request_seen_", recorder)
+        self.assertIn("final_request_url_", recorder)
+        self.assertIn("response.url", recorder)
+        self.assertIn("*status != 200", recorder)
+        self.assertIn('*protocol != "h2"', recorder)
         for field in (
+            "redirectIntermediateRequest",
+            "redirectHopCount",
             "localGatewayBlockedRequest",
             "localGatewayBlockedLoadingFailed",
             "localGatewayBlockedRequestIdCorrelated",

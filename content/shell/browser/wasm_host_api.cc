@@ -102,6 +102,8 @@ constexpr std::string_view kM5DownloadMimeType = "application/octet-stream";
 constexpr std::string_view kM5NetworkTestHostname = "a.test";
 constexpr std::string_view kM5NetworkTestPathPrefix = "/m5/";
 constexpr std::string_view kM5NetworkRedirectPath = "/m5/redirect-cookie";
+constexpr std::string_view kM5NetworkRedirectIntermediatePath =
+    "/m5/redirect-cookie-continue";
 constexpr std::string_view kM5NetworkDocumentPath = "/m5/";
 constexpr std::string_view kM5LargeDownloadPath = "/m5/large-download";
 constexpr std::string_view kM5NetworkReconnectStreamPath =
@@ -439,28 +441,71 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
                            request_id);
   }
 
+  bool HasExpectedRedirectResponse(const base::DictValue& params,
+                                   const GURL& expected_url) {
+    const base::DictValue* redirect_response =
+        params.FindDict("redirectResponse");
+    const std::string* redirect_url =
+        redirect_response ? redirect_response->FindString("url") : nullptr;
+    const std::optional<int> redirect_status =
+        redirect_response ? redirect_response->FindInt("status")
+                          : std::nullopt;
+    return redirect_url && redirect_status && *redirect_status == 302 &&
+           GURL(*redirect_url) == expected_url;
+  }
+
+  bool IsGetRequest(const base::DictValue& params) {
+    const std::string* method =
+        params.FindStringByDottedPath("request.method");
+    return method && *method == "GET";
+  }
+
   void RecordRequest(const base::DictValue& params) {
     std::string request_id;
     if (IsTargetRequest(params, kM5NetworkRedirectPath, "Document",
                         &request_id)) {
-      if (redirect_request_seen_ || !request_id_.empty()) {
+      const std::string* url = params.FindStringByDottedPath("request.url");
+      if (redirect_request_seen_ || !request_id_.empty() || !url ||
+          !IsGetRequest(params) || params.FindDict("redirectResponse")) {
         Fail("received a duplicate redirect request event");
         return;
       }
       redirect_request_seen_ = true;
       request_id_ = std::move(request_id);
+      redirect_request_url_ = GURL(*url);
       AppendEvent("Network.requestWillBeSent:redirect");
+      return;
+    }
+
+    if (IsTargetRequest(params, kM5NetworkRedirectIntermediatePath, "Document",
+                        &request_id)) {
+      const std::string* url = params.FindStringByDottedPath("request.url");
+      if (!redirect_request_seen_ || redirect_intermediate_request_seen_ ||
+          !url || request_id != request_id_ || !IsGetRequest(params) ||
+          !HasExpectedRedirectResponse(params, redirect_request_url_)) {
+        Fail("redirect intermediate request did not preserve the redirect "
+             "request ID and response");
+        return;
+      }
+      redirect_intermediate_request_seen_ = true;
+      redirect_intermediate_request_url_ = GURL(*url);
+      AppendEvent("Network.requestWillBeSent:redirect-intermediate");
       return;
     }
 
     if (IsTargetRequest(params, kM5NetworkDocumentPath, "Document",
                         &request_id)) {
-      if (!redirect_request_seen_ || final_request_seen_ ||
-          request_id != request_id_) {
-        Fail("final document request did not preserve the redirect request ID");
+      const std::string* url = params.FindStringByDottedPath("request.url");
+      if (!redirect_request_seen_ || !redirect_intermediate_request_seen_ ||
+          final_request_seen_ || !url || request_id != request_id_ ||
+          !IsGetRequest(params) ||
+          !HasExpectedRedirectResponse(params,
+                                       redirect_intermediate_request_url_)) {
+        Fail("final document request did not preserve the redirect chain");
         return;
       }
       final_request_seen_ = true;
+      final_request_url_ = GURL(*url);
       AppendEvent("Network.requestWillBeSent:final");
       return;
     }
@@ -507,8 +552,11 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
         params.FindIntByDottedPath("response.status");
     const std::string* protocol =
         params.FindStringByDottedPath("response.protocol");
-    if (response_received_ || !status || !protocol || protocol->empty() ||
-        protocol->size() > 32) {
+    const std::string* response_url =
+        params.FindStringByDottedPath("response.url");
+    if (response_received_ || !status || *status != 200 || !protocol ||
+        *protocol != "h2" || !response_url ||
+        GURL(*response_url) != final_request_url_) {
       Fail("received an invalid final document response event");
       return;
     }
@@ -570,7 +618,7 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   }
 
   void AppendEvent(std::string_view event) {
-    if (events_.size() >= 6) {
+    if (events_.size() >= 7) {
       Fail("recorded too many controlled network events");
       return;
     }
@@ -579,11 +627,12 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
 
   void MaybeReportComplete() {
     if (state_ != State::kEnabled || !redirect_request_seen_ ||
-        !final_request_seen_ || !response_received_ || !loading_finished_ ||
+        !redirect_intermediate_request_seen_ || !final_request_seen_ ||
+        !response_received_ || !loading_finished_ ||
         !local_gateway_blocked_request_seen_ ||
         !local_gateway_blocked_loading_failed_ ||
         !reconnect_request_seen_ || !reconnect_loading_failed_ ||
-        events_.size() != 6) {
+        events_.size() != 7) {
       return;
     }
 
@@ -593,6 +642,9 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     report.Set("state", "complete");
     report.Set("networkEnabled", true);
     report.Set("redirectRequest", redirect_request_seen_);
+    report.Set("redirectIntermediateRequest",
+               redirect_intermediate_request_seen_);
+    report.Set("redirectHopCount", 2);
     report.Set("finalRequest", final_request_seen_);
     report.Set("responseReceived", response_received_);
     report.Set("loadingFinished", loading_finished_);
@@ -643,6 +695,7 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   State state_ = State::kCreated;
   scoped_refptr<DevToolsAgentHost> agent_host_;
   bool redirect_request_seen_ = false;
+  bool redirect_intermediate_request_seen_ = false;
   bool final_request_seen_ = false;
   bool response_received_ = false;
   bool loading_finished_ = false;
@@ -653,6 +706,9 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   std::string request_id_;
   std::string local_gateway_blocked_request_id_;
   std::string reconnect_request_id_;
+  GURL redirect_request_url_;
+  GURL redirect_intermediate_request_url_;
+  GURL final_request_url_;
   int response_status_ = 0;
   std::string response_protocol_;
   base::ListValue events_;

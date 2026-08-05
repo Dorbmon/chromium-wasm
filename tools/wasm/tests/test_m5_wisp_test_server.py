@@ -318,6 +318,10 @@ try {
   }
   const cookiePair = setCookie.split(";", 1)[0];
   const [cookieName] = cookiePair.split("=", 1);
+  const intermediateWithoutCookie = await get(redirected.headers.location);
+  const intermediate = await get(redirected.headers.location, {
+    cookie: cookiePair,
+  });
   const wrongCookie = await get("/m5/", {
     cookie: `${cookieName}=wrong-value`,
   });
@@ -336,6 +340,11 @@ try {
     finalStatus: finalPage.headers[":status"],
     initialBody: rejected.body,
     initialStatus: rejected.headers[":status"],
+    intermediateBody: intermediate.body,
+    intermediateLocation: intermediate.headers.location,
+    intermediateStatus: intermediate.headers[":status"],
+    intermediateWithoutCookieBody: intermediateWithoutCookie.body,
+    intermediateWithoutCookieStatus: intermediateWithoutCookie.headers[":status"],
     redirectLocation: redirected.headers.location,
     redirectStatus: redirected.headers[":status"],
     statusContainsCookie: statusText.includes(cookiePair),
@@ -973,9 +982,12 @@ try {
         self.assertIn("tls-failure-tcp-connect", source)
         self.assertIn("tls-failure-http-request", source)
         self.assertIn("REDIRECT_COOKIE_NAME", source)
+        self.assertIn("REDIRECT_INTERMEDIATE_PATH", source)
         self.assertIn("HttpOnly", source)
         self.assertIn("SameSite=Strict", source)
         self.assertIn("h2-redirect-cookie", source)
+        self.assertIn("h2-redirect-intermediate", source)
+        self.assertIn("h2-redirect-intermediate-cookie", source)
         self.assertIn("h2-page-cookie", source)
         self.assertIn("CACHE_REVALIDATE_ETAG", source)
         self.assertIn("h2-cache-store-200", source)
@@ -996,6 +1008,10 @@ try {
         self.assertIn('phase: "https-fixture"', source)
         self.assertIn("activeMixedContentCspAllowed", source)
         self.assertIn('activeMixedContentErrorName !== "TypeError"', source)
+        self.assertIn("corsDeniedRequestStarted", source)
+        self.assertIn("corsDeniedResponseBlocked", source)
+        self.assertIn('request.url === "/m5/cors-denied"', source)
+        self.assertIn("h1-cors-denied", source)
         self.assertIn("h2-mixed-content-proof", source)
         self.assertIn("CANCEL_STREAM_FIRST_CHUNK", source)
         self.assertIn("CANCEL_STREAM_PROOF_BODY", source)
@@ -1178,6 +1194,19 @@ try {
             self.assertIn("X-M5-HTTP-Version: http/1.1", header)
             self.assertEqual(body, b"M5_CORS_OK")
 
+        denied_connection, denied_url = self._tls_connection("http1Url")
+        with denied_connection:
+            denied_connection.sendall(
+                b"GET /m5/cors-denied HTTP/1.1\r\n" +
+                f"Host: a.test:{denied_url.port}\r\n".encode("ascii") +
+                f"Origin: https://a.test:{urlsplit(self.metadata['httpsUrl']).port}\r\n".encode("ascii") +
+                b"Connection: close\r\n\r\n")
+            header, body = read_http_headers(denied_connection)
+            self.assertIn("HTTP/1.1 200", header)
+            self.assertIn("X-M5-HTTP-Version: http/1.1", header)
+            self.assertNotIn("Access-Control-Allow-Origin:", header)
+            self.assertEqual(body, b"M5_CORS_DENIED")
+
         self.assertEqual(self._h2_resource(), b"M5_H2_OK")
 
         wss_connection, wss_url = self._tls_connection("webSocketUrl")
@@ -1207,6 +1236,7 @@ try {
         self.assertTrue(status["ready"])
         self.assertEqual(status["h2Requests"]["protocol"], "h2")
         self.assertGreaterEqual(status["h2Requests"]["count"], 1)
+        self.assertEqual(status["corsDeniedRequests"], 1)
         self.assertEqual(status["corsRequests"], 1)
         self.assertEqual(status["webSocketEchoes"], 1)
         self.assertEqual(status["cacheStore200s"], 0)
@@ -1230,6 +1260,8 @@ try {
         self.assertEqual(status["plaintextHttpControlRequests"], 0)
         self.assertEqual(status["plaintextHttpControlProofs"], 0)
         self.assertEqual(status["redirectRequests"], 0)
+        self.assertEqual(status["redirectIntermediateRequests"], 0)
+        self.assertEqual(status["redirectIntermediateCookieValidations"], 0)
         self.assertEqual(status["redirectCookieValidations"], 0)
         self.assertEqual(status["tlsMismatchTcpConnections"], 0)
         self.assertEqual(status["tlsMismatchHttpStreams"], 0)
@@ -1471,8 +1503,18 @@ try {
             evidence["initialBody"], "M5_REDIRECT_COOKIE_REJECTED"
         )
         self.assertEqual(evidence["redirectStatus"], 302)
-        self.assertEqual(evidence["redirectLocation"], "/m5/")
+        self.assertEqual(
+            evidence["redirectLocation"], "/m5/redirect-cookie-continue"
+        )
         self.assertEqual(evidence["cookieName"], "m5_redirect")
+        self.assertEqual(evidence["intermediateWithoutCookieStatus"], 403)
+        self.assertEqual(
+            evidence["intermediateWithoutCookieBody"],
+            "M5_REDIRECT_COOKIE_REJECTED",
+        )
+        self.assertEqual(evidence["intermediateStatus"], 302)
+        self.assertEqual(evidence["intermediateLocation"], "/m5/")
+        self.assertEqual(evidence["intermediateBody"], "")
         self.assertEqual(evidence["wrongCookieStatus"], 403)
         self.assertEqual(
             evidence["wrongCookieBody"], "M5_REDIRECT_COOKIE_REJECTED"
@@ -1509,6 +1551,8 @@ try {
 
         status = self._status()
         self.assertEqual(status["redirectRequests"], 1)
+        self.assertEqual(status["redirectIntermediateRequests"], 1)
+        self.assertEqual(status["redirectIntermediateCookieValidations"], 1)
         self.assertEqual(status["redirectCookieValidations"], 1)
         events = [
             entry.get("event")
@@ -1516,8 +1560,15 @@ try {
             if isinstance(entry, dict)
         ]
         self.assertEqual(events.count("h2-page-cookie-rejected"), 2)
+        self.assertEqual(
+            events.count("h2-redirect-intermediate-cookie-rejected"), 1
+        )
         self.assertLess(
             events.index("h2-redirect-cookie"),
+            events.index("h2-redirect-intermediate"),
+        )
+        self.assertLess(
+            events.index("h2-redirect-intermediate-cookie"),
             events.index("h2-page-cookie"),
         )
 
