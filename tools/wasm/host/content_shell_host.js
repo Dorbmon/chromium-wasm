@@ -60,6 +60,22 @@ const M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS = 2;
 const M5_SLOW_STREAM_MIN_HOST_TIMER_TICKS = 2;
 const M5_SLOW_STREAM_MIN_HOST_ANIMATION_FRAMES = 2;
 const M5_LARGE_DOWNLOAD_BYTES = 512 * 1024;
+const M5_DOWNLOAD_REPORT_KEYS = Object.freeze([
+  "protocol",
+  "state",
+  "singleDownload",
+  "navigationSource",
+  "responseStatusMatched",
+  "contentDispositionMatched",
+  "mimeTypeMatched",
+  "allDataSaved",
+  "targetPathDetermined",
+  "targetDirectoryMatched",
+  "interruptReasonNone",
+  "totalBytes",
+  "receivedBytes",
+  "filePatternVerified",
+]);
 const M5_PUBLIC_MIN_HEARTBEAT_TIMER_TICKS = 2;
 const M5_PUBLIC_MIN_HEARTBEAT_ANIMATION_FRAMES = 2;
 const M5_NAVIGATION_PHASE = Object.freeze({
@@ -1439,13 +1455,8 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       pageProbe.slowStreamConsumerPauseTimerTicks >= 0 &&
       Number.isSafeInteger(pageProbe?.slowStreamTimerTicksWhileWaiting) &&
       pageProbe.slowStreamTimerTicksWhileWaiting >= 0 &&
-      typeof pageProbe?.largeDownloadStarted === "boolean" &&
-      typeof pageProbe?.largeDownloadContentDisposition === "boolean" &&
-      typeof pageProbe?.largeDownloadComplete === "boolean" &&
-      Number.isSafeInteger(pageProbe?.largeDownloadBytes) &&
-      pageProbe.largeDownloadBytes >= 0 &&
-      Number.isSafeInteger(pageProbe?.largeDownloadReaderChunks) &&
-      pageProbe.largeDownloadReaderChunks >= 0 &&
+      typeof pageProbe?.largeDownloadNavigationRequested === "boolean" &&
+      typeof pageProbe?.largeDownloadNativeComplete === "boolean" &&
       typeof pageProbe?.reconnectStreamStarted === "boolean" &&
       typeof pageProbe?.reconnectFirstChunkReceived === "boolean" &&
       typeof pageProbe?.reconnectFirstChunkAck === "boolean" &&
@@ -1496,11 +1507,8 @@ function hasM5NetworkPageProbe(pageProbe) {
         M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS &&
       pageProbe?.slowStreamTimerTicksWhileWaiting >=
         M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING &&
-      pageProbe?.largeDownloadStarted === true &&
-      pageProbe?.largeDownloadContentDisposition === true &&
-      pageProbe?.largeDownloadComplete === true &&
-      pageProbe?.largeDownloadBytes === M5_LARGE_DOWNLOAD_BYTES &&
-      pageProbe?.largeDownloadReaderChunks >= 1 &&
+      pageProbe?.largeDownloadNavigationRequested === true &&
+      pageProbe?.largeDownloadNativeComplete === true &&
       pageProbe?.reconnectStreamStarted === true &&
       pageProbe?.reconnectFirstChunkReceived === true &&
       pageProbe?.reconnectFirstChunkAck === true &&
@@ -1534,6 +1542,31 @@ function hasM5DevToolsNetworkLog(report) {
       report.events.length === M5_DEVTOOLS_NETWORK_EVENT_ORDER.length &&
       report.events.every(
         (event, index) => event === M5_DEVTOOLS_NETWORK_EVENT_ORDER[index]);
+}
+
+function hasM5DownloadManagerLog(report) {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    return false;
+  }
+  const keys = Object.keys(report);
+  if (keys.length !== M5_DOWNLOAD_REPORT_KEYS.length ||
+      !keys.every((key) => M5_DOWNLOAD_REPORT_KEYS.includes(key))) {
+    return false;
+  }
+  return report.protocol === HOST_PROTOCOL &&
+      report.state === "complete" &&
+      report.singleDownload === true &&
+      report.navigationSource === true &&
+      report.responseStatusMatched === true &&
+      report.contentDispositionMatched === true &&
+      report.mimeTypeMatched === true &&
+      report.allDataSaved === true &&
+      report.targetPathDetermined === true &&
+      report.targetDirectoryMatched === true &&
+      report.interruptReasonNone === true &&
+      report.totalBytes === M5_LARGE_DOWNLOAD_BYTES &&
+      report.receivedBytes === M5_LARGE_DOWNLOAD_BYTES &&
+      report.filePatternVerified === true;
 }
 
 function isM5PublicDevToolsNetworkEnabled(report) {
@@ -1677,6 +1710,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportM5DevToolsNetwork(report) {
     deliverBridgeReport("_reportM5DevToolsNetwork", [report]);
+  },
+  reportM5Download(report) {
+    deliverBridgeReport("_reportM5Download", [report]);
   },
   reportM5PublicDevToolsNetwork(report) {
     deliverBridgeReport("_reportM5PublicDevToolsNetwork", [report]);
@@ -2064,6 +2100,7 @@ export class ChromiumWasmM3Host {
   #m5NetworkNavigationCount = 0;
   #m5NetworkPhase = M5_NAVIGATION_PHASE.NONE;
   #m5DevToolsNetwork = null;
+  #m5Download = null;
   #m5PublicDevToolsNetwork = null;
   #m5PublicNetworkTestActive = false;
   #m5PublicNavigationFinished = false;
@@ -4568,7 +4605,8 @@ export class ChromiumWasmM3Host {
         this.#m5NetworkNavigationCount !== 2 ||
         this.#navigation.committed !== true ||
         this.#navigation.scheme !== "https" ||
-        !hasM5NetworkPageProbe(this.#pageProbe)
+        !hasM5NetworkPageProbe(this.#pageProbe) ||
+        !hasM5DownloadManagerLog(this.#m5Download)
       ) {
         throw new Error(
           "M5 TLS rejection navigation requires an initial HTTPS fixture " +
@@ -4813,6 +4851,7 @@ export class ChromiumWasmM3Host {
       devtoolsNetwork: this.#m5DevToolsNetwork
         ? clone(this.#m5DevToolsNetwork)
         : null,
+      m5Download: this.#m5Download ? clone(this.#m5Download) : null,
       publicDevtoolsNetwork: this.#m5PublicDevToolsNetwork
         ? clone(this.#m5PublicDevToolsNetwork)
         : null,
@@ -5156,6 +5195,45 @@ export class ChromiumWasmM3Host {
     }
   }
 
+  _reportM5Download(value) {
+    try {
+      const report = asReport(value, "M5 DownloadManager report");
+      if (
+        this.#fixture !== M5_NETWORK_FIXTURE ||
+        !this.#m5NetworkTestActive ||
+        this.#m5NetworkNavigationCount !== 2 ||
+        this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.HTTPS_FIXTURE ||
+        this.#m5Download !== null ||
+        !hasM5DownloadManagerLog(report)
+      ) {
+        throw new Error("M5 DownloadManager report is invalid or out of order");
+      }
+      // Persist a fixed canonical summary only. The native recorder validates
+      // the URL, raw headers, target path, and file contents internally, so
+      // none of those potentially sensitive values enter host diagnostics.
+      this.#m5Download = {
+        protocol: HOST_PROTOCOL,
+        state: "complete",
+        singleDownload: true,
+        navigationSource: true,
+        responseStatusMatched: true,
+        contentDispositionMatched: true,
+        mimeTypeMatched: true,
+        allDataSaved: true,
+        targetPathDetermined: true,
+        targetDirectoryMatched: true,
+        interruptReasonNone: true,
+        totalBytes: M5_LARGE_DOWNLOAD_BYTES,
+        receivedBytes: M5_LARGE_DOWNLOAD_BYTES,
+        filePatternVerified: true,
+      };
+      this.#recordHost("m5:download-manager:complete");
+    } catch (error) {
+      this._reportFatal(
+        `invalid M5 DownloadManager report: ${String(error)}`);
+    }
+  }
+
   _reportM5DevToolsNetwork(value) {
     try {
       const report = asReport(value, "M5 DevTools Network report");
@@ -5278,6 +5356,10 @@ export class ChromiumWasmM3Host {
         this.#m5NetworkPhase !== M5_NAVIGATION_PHASE.HTTPS_FIXTURE
       ) {
         throw new Error("M5 page probe is not armed for the HTTPS fixture");
+      }
+      if (report.ready === true && !hasM5DownloadManagerLog(this.#m5Download)) {
+        throw new Error(
+          "M5 page completion requires native DownloadManager evidence");
       }
       this.#pageProbe = clone(report);
     } catch (error) {
@@ -12919,7 +13001,8 @@ async function runM5WispNetworkSmokeFromQuery() {
             readiness.heartbeat);
       }
       if (readiness.baseReady && hasM5NetworkPageProbe(readiness.pageProbe) &&
-          hasM5DevToolsNetworkLog(readiness.devtoolsNetwork)) {
+          hasM5DevToolsNetworkLog(readiness.devtoolsNetwork) &&
+          hasM5DownloadManagerLog(readiness.m5Download)) {
         slowStreamHeartbeat = makeM5SlowStreamHostHeartbeat(
             slowStreamHeartbeatStart,
             snapshotM5SlowStreamHostHeartbeat(readiness.heartbeat));
@@ -12930,6 +13013,7 @@ async function runM5WispNetworkSmokeFromQuery() {
     if (!readiness || !readiness.baseReady ||
         !hasM5NetworkPageProbe(readiness.pageProbe) ||
         !hasM5DevToolsNetworkLog(readiness.devtoolsNetwork) ||
+        !hasM5DownloadManagerLog(readiness.m5Download) ||
         !hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat)) {
       throw new Error(
           "M5 WISP HTTPS fixture did not complete: " +
@@ -12986,6 +13070,7 @@ async function runM5WispNetworkSmokeFromQuery() {
       devtoolsNetwork:
         isM5DevToolsNetworkEnabled(devtoolsNetworkEnabled) &&
         hasM5DevToolsNetworkLog(readiness.devtoolsNetwork),
+      downloadManager: hasM5DownloadManagerLog(readiness.m5Download),
       tlsNameMismatch:
         tlsFailureNavigationResult?.ok === true &&
         tlsFailureReadiness.navigation?.committed === false &&
@@ -13034,11 +13119,9 @@ async function runM5WispNetworkSmokeFromQuery() {
       slowStreamHostHeartbeat:
         hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat),
       largeDownload:
-        pageProbe.largeDownloadStarted === true &&
-        pageProbe.largeDownloadContentDisposition === true &&
-        pageProbe.largeDownloadComplete === true &&
-        pageProbe.largeDownloadBytes === M5_LARGE_DOWNLOAD_BYTES &&
-        pageProbe.largeDownloadReaderChunks >= 1,
+        pageProbe.largeDownloadNavigationRequested === true &&
+        pageProbe.largeDownloadNativeComplete === true &&
+        hasM5DownloadManagerLog(readiness.m5Download),
       reconnect:
         pageProbe.reconnectStreamStarted === true &&
         pageProbe.reconnectFirstChunkReceived === true &&

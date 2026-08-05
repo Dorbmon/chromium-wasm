@@ -333,6 +333,24 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // Attachment downloads have a browser-owned completion path. The native
+  // recorder emits only its fixed, redacted DownloadManager summary here;
+  // never let a URL, filesystem path, GUID, or raw response header cross the
+  // Wasm host boundary.
+  chromium_wasm_report_m5_download__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_download__proxy: 'sync',
+  chromium_wasm_report_m5_download: (report) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportM5Download !== 'function') {
+      return 0;
+    }
+    bridge.reportM5Download(UTF8ToString(report));
+    return 1;
+  },
+
   // The external/public M5 lane uses the same in-process protocol boundary,
   // but exposes only a fixed, redacted document and WISP-completion summary.
   chromium_wasm_report_m5_public_devtools_network__deps: [

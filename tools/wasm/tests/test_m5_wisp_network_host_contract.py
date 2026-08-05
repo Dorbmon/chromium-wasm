@@ -112,12 +112,14 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
 
         self.assertIn("reportM5Navigation(report)", host)
         self.assertIn("reportM5NavigationError(report)", host)
+        self.assertIn("reportM5Download(report)", host)
         self.assertIn("reportM5PageProbe(report)", host)
         self.assertIn("reportM5PlaintextHttpControlNavigation(report)", host)
         self.assertIn("reportM5PlaintextHttpControlNavigationError(report)", host)
         self.assertIn("reportM5PlaintextHttpControlPageProbe(report)", host)
         self.assertIn("_reportM5Navigation(value)", host)
         self.assertIn("_reportM5NavigationError(value)", host)
+        self.assertIn("_reportM5Download(value)", host)
         self.assertIn("_reportM5PageProbe(value)", host)
         self.assertIn("_reportM5PlaintextHttpControlNavigation(value)", host)
         self.assertIn("_reportM5PlaintextHttpControlNavigationError(value)", host)
@@ -184,13 +186,9 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
             "snapshotM5SlowStreamHostHeartbeat",
             "makeM5SlowStreamHostHeartbeat",
             "hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat)",
-            "pageProbe?.largeDownloadStarted === true",
-            "pageProbe?.largeDownloadContentDisposition === true",
-            "pageProbe?.largeDownloadComplete === true",
-            "Number.isSafeInteger(pageProbe?.largeDownloadBytes)",
-            "Number.isSafeInteger(pageProbe?.largeDownloadReaderChunks)",
-            "pageProbe?.largeDownloadBytes === M5_LARGE_DOWNLOAD_BYTES",
-            "pageProbe?.largeDownloadReaderChunks >= 1",
+            "pageProbe?.largeDownloadNavigationRequested === true",
+            "pageProbe?.largeDownloadNativeComplete === true",
+            "hasM5DownloadManagerLog(readiness.m5Download)",
             "pageProbe?.reconnectStreamStarted === true",
             "pageProbe?.reconnectFirstChunkReceived === true",
             "pageProbe?.reconnectFirstChunkAck === true",
@@ -256,6 +254,7 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         self.assertIn("hasM5DevToolsNetworkLog", host)
         self.assertIn("m5:devtools-network:enabled", host)
         self.assertIn("m5:devtools-network:complete", host)
+        self.assertIn("m5:download-manager:complete", host)
         self.assertLess(
             m5_smoke.index("M5 DevTools Network.enable did not complete"),
             m5_smoke.index("loadM5PlaintextHttpControlURL"),
@@ -267,6 +266,83 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         self.assertIn("M5 DevTools Network log", runner)
         self.assertIn("m5:devtools-network:enabled", runner)
         self.assertIn("m5:devtools-network:complete", runner)
+        self.assertIn("M5 DownloadManager log", runner)
+        self.assertIn("m5:download-manager:complete", runner)
+
+    def test_m5_attachment_download_uses_download_manager_not_fetch(self) -> None:
+        bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")
+        fixture = source("tools/wasm/m5_wisp_test_server.js")
+        host = source("tools/wasm/host/content_shell_host.js")
+        host_api = source("content/shell/browser/wasm_host_api.cc")
+        runner = source("tools/wasm/run_m5_wisp_smoke.py")
+        recorder = host_api.split(
+            "class M5DownloadRecorder final : public DownloadManager::Observer,",
+            1,
+        )[1].split("\nvoid ReportTextInputDelivery", 1)[0]
+        m5_loader = host_api.split(
+            "EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_url(", 1
+        )[1].split(
+            "EMSCRIPTEN_KEEPALIVE int "
+            "chromium_wasm_host_load_m5_plaintext_http_control_url(",
+            1,
+        )[0]
+
+        self.assertIn('document.createElement("iframe")', fixture)
+        self.assertIn("frame.src = largeDownloadURL", fixture)
+        self.assertIn("largeDownloadNavigationRequested", fixture)
+        self.assertIn("largeDownloadNativeComplete", fixture)
+        self.assertIn("__chromiumWasmM5NativeDownloadComplete", fixture)
+        self.assertNotIn("fetch(largeDownloadURL", fixture)
+        self.assertNotIn("verifyLargeDownload", fixture)
+
+        for marker in (
+            "DownloadManager::Observer",
+            "download::DownloadItem::Observer",
+            "SetDownloadBehaviorForTesting",
+            "DownloadSource::NAVIGATION",
+            "GetOriginalUrl",
+            "GetTargetFilePath",
+            "GetTotalBytes",
+            "GetReceivedBytes",
+            "AllDataSaved",
+            "DOWNLOAD_INTERRUPT_REASON_NONE",
+            "PostTaskAndReplyWithResult",
+            "HasExpectedM5DownloadFileContents",
+            "OnDownloadDestroyed",
+            "OnDownloadDropped",
+            "ManagerGoingDown",
+            "ArmForFixtureUrl",
+            "DeprecatedGetOriginAsURL",
+            "expected_fixture_origin_",
+            "chromium_wasm_report_m5_download",
+            "__chromiumWasmM5NativeDownloadComplete",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, recorder)
+        self.assertIn("ReadAtCurrentPosAndCheck", host_api)
+        self.assertNotIn("GetSuggestedFilename", recorder)
+        for raw_field in ("url", "path", "guid", "headers", "error"):
+            with self.subTest(raw_field=raw_field):
+                self.assertNotIn(f'report.Set("{raw_field}"', recorder)
+
+        self.assertIn("LoadM5NetworkUrlOnUiThread", m5_loader)
+
+        self.assertIn(
+            "chromium_wasm_report_m5_download__proxy: 'sync'", bridge
+        )
+        self.assertIn("bridge.reportM5Download", bridge)
+        self.assertIn("reportM5Download(report)", host)
+        self.assertIn("_reportM5Download(value)", host)
+        self.assertIn("hasM5DownloadManagerLog", host)
+        self.assertIn("M5_DOWNLOAD_REPORT_KEYS", host)
+        self.assertIn(
+            "M5 page completion requires native DownloadManager evidence", host
+        )
+        self.assertIn("hasM5DownloadManagerLog(this.#m5Download)", host)
+        self.assertIn("hasM5DownloadManagerLog(readiness.m5Download)", host)
+        self.assertIn("M5 DownloadManager log", runner)
+        self.assertIn("filePatternVerified", runner)
+        self.assertIn("m5:download-manager:complete", runner)
 
     def test_emscripten_bridge_cannot_relabel_m5_as_data_navigation(self) -> None:
         bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")

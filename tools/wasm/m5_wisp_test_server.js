@@ -1585,8 +1585,9 @@ function writeLargeDownload(context, stream) {
     try {
       stream.end();
     } catch (_) {
-      // Blink's byte-exact EOF check is required independently by the page
-      // and runner, so a failed end cannot turn this into a passing download.
+      // Chromium's native DownloadManager validates the target file and byte
+      // pattern before it releases the page workflow, so a failed end cannot
+      // turn this into a passing attachment download.
       context.largeDownloadPhase = "unexpected-close";
       incrementBoundedCounter(context, "largeDownloadUnexpectedCloses");
       context.transcript.add("h2-large-download-unexpected-close");
@@ -1912,9 +1913,6 @@ function h2Page(context) {
   const slowStreamConsumerBurstBytes = ${SLOW_STREAM_CONSUMER_BURST_BYTES};
   const slowStreamConsumerBurstByte = ${SLOW_STREAM_CONSUMER_BURST_BYTE};
   const slowStreamConsumerPauseMs = 150;
-  const largeDownloadBytes = ${LARGE_DOWNLOAD_BYTES};
-  const largeDownloadContentDisposition =
-      ${JSON.stringify(LARGE_DOWNLOAD_CONTENT_DISPOSITION)};
   const reconnectStreamFirstChunk =
       ${JSON.stringify(RECONNECT_STREAM_FIRST_CHUNK)};
   const mixedContentProofURL =
@@ -1952,11 +1950,8 @@ function h2Page(context) {
     slowStreamConsumerPauseElapsedMs: 0,
     slowStreamConsumerPauseTimerTicks: 0,
     slowStreamTimerTicksWhileWaiting: 0,
-    largeDownloadStarted: false,
-    largeDownloadContentDisposition: false,
-    largeDownloadComplete: false,
-    largeDownloadBytes: 0,
-    largeDownloadReaderChunks: 0,
+    largeDownloadNavigationRequested: false,
+    largeDownloadNativeComplete: false,
     reconnectStreamStarted: false,
     reconnectFirstChunkReceived: false,
     reconnectFirstChunkAck: false,
@@ -1976,6 +1971,24 @@ function h2Page(context) {
     failure: null,
   };
   const status = document.querySelector("#m5-status");
+  let resolveNativeDownloadComplete = null;
+  const nativeDownloadComplete = new Promise((resolve) => {
+    resolveNativeDownloadComplete = resolve;
+  });
+
+  // This page only requests the attachment navigation. Chromium's native M5
+  // DownloadManager observer validates the response, target file, and byte
+  // pattern before invoking this resolver. Keeping the resolver one-shot
+  // makes the following reconnect causally depend on that browser-owned path.
+  window.__chromiumWasmM5NativeDownloadComplete = () => {
+    if (!state.largeDownloadNavigationRequested ||
+        state.largeDownloadNativeComplete || !resolveNativeDownloadComplete) {
+      return false;
+    }
+    state.largeDownloadNativeComplete = true;
+    resolveNativeDownloadComplete();
+    return true;
+  };
   setInterval(() => { state.timerTicks += 1; }, 25);
 
   function nextHopProtocol(url) {
@@ -2324,48 +2337,17 @@ function h2Page(context) {
     return finish();
   }
 
-  async function verifyLargeDownload() {
-    const result = {
-      started: false,
-      contentDisposition: false,
-      complete: false,
-      bytes: 0,
-      readerChunks: 0,
-    };
-    const response = await fetch(largeDownloadURL, {
-      cache: "no-store",
-      credentials: "omit",
-    });
-    result.started = response.ok && !!response.body &&
-        response.headers.get("content-length") === String(largeDownloadBytes);
-    result.contentDisposition = response.headers.get("content-disposition") ===
-        largeDownloadContentDisposition;
-    state.largeDownloadStarted = result.started;
-    state.largeDownloadContentDisposition = result.contentDisposition;
-    if (!result.started || !result.contentDisposition) {
-      return result;
-    }
-    const reader = response.body.getReader();
-    while (result.bytes < largeDownloadBytes) {
-      const next = await reader.read();
-      if (next.done || next.value.length === 0 ||
-          result.bytes + next.value.length > largeDownloadBytes) {
-        return result;
-      }
-      for (let index = 0; index < next.value.length; ++index) {
-        if (next.value[index] !== ((result.bytes + index) & 0xff)) {
-          return result;
-        }
-      }
-      result.bytes += next.value.length;
-      result.readerChunks += 1;
-      state.largeDownloadBytes = result.bytes;
-      state.largeDownloadReaderChunks = result.readerChunks;
-    }
-    const completion = await reader.read();
-    result.complete = completion.done === true;
-    state.largeDownloadComplete = result.complete;
-    return result;
+  async function requestLargeDownload() {
+    const frame = document.createElement("iframe");
+    frame.hidden = true;
+    frame.setAttribute("aria-hidden", "true");
+    // Do not use Fetch or an anchor download attribute here. The attachment
+    // response must become a navigation-owned DownloadItem in Chromium.
+    state.largeDownloadNavigationRequested = true;
+    frame.src = largeDownloadURL;
+    document.body.appendChild(frame);
+    await nativeDownloadComplete;
+    return state.largeDownloadNativeComplete;
   }
 
   async function verifyWispReconnect() {
@@ -2514,11 +2496,8 @@ function h2Page(context) {
     slowStreamConsumerPauseTimerTicks:
         state.slowStreamConsumerPauseTimerTicks,
     slowStreamTimerTicksWhileWaiting: state.slowStreamTimerTicksWhileWaiting,
-    largeDownloadStarted: state.largeDownloadStarted,
-    largeDownloadContentDisposition: state.largeDownloadContentDisposition,
-    largeDownloadComplete: state.largeDownloadComplete,
-    largeDownloadBytes: state.largeDownloadBytes,
-    largeDownloadReaderChunks: state.largeDownloadReaderChunks,
+    largeDownloadNavigationRequested: state.largeDownloadNavigationRequested,
+    largeDownloadNativeComplete: state.largeDownloadNativeComplete,
     reconnectStreamStarted: state.reconnectStreamStarted,
     reconnectFirstChunkReceived: state.reconnectFirstChunkReceived,
     reconnectFirstChunkAck: state.reconnectFirstChunkAck,
@@ -2658,19 +2637,8 @@ function h2Page(context) {
         throw new Error("M5 slow producer/consumer stream failed");
       }
 
-      const largeDownloadResult = await verifyLargeDownload();
-      state.largeDownloadStarted = largeDownloadResult.started;
-      state.largeDownloadContentDisposition =
-          largeDownloadResult.contentDisposition;
-      state.largeDownloadComplete = largeDownloadResult.complete;
-      state.largeDownloadBytes = largeDownloadResult.bytes;
-      state.largeDownloadReaderChunks = largeDownloadResult.readerChunks;
-      if (!state.largeDownloadStarted ||
-          !state.largeDownloadContentDisposition ||
-          !state.largeDownloadComplete ||
-          state.largeDownloadBytes !== largeDownloadBytes ||
-          state.largeDownloadReaderChunks < 1) {
-        throw new Error("M5 large download stream failed");
+      if (!await requestLargeDownload()) {
+        throw new Error("M5 native attachment download did not complete");
       }
 
       const reconnectResult = await verifyWispReconnect();
@@ -2711,11 +2679,8 @@ function h2Page(context) {
           state.slowStreamConsumerPauseStarted &&
           state.slowStreamConsumerBurstRead &&
           state.slowStreamConsumerResume &&
-          state.largeDownloadStarted &&
-          state.largeDownloadContentDisposition &&
-          state.largeDownloadComplete &&
-          state.largeDownloadBytes === largeDownloadBytes &&
-          state.largeDownloadReaderChunks >= 1 &&
+          state.largeDownloadNavigationRequested &&
+          state.largeDownloadNativeComplete &&
           state.reconnectStreamStarted &&
           state.reconnectFirstChunkReceived &&
           state.reconnectFirstChunkAck &&

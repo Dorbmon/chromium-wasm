@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -18,6 +20,8 @@
 
 #include "base/check.h"
 #include "base/containers/span.h"
+#include "base/files/file.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -33,8 +37,11 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
+#include "components/download/public/common/download_item.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/download_manager.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -42,6 +49,7 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/shell/browser/shell.h"
+#include "content/shell/browser/shell_download_manager_delegate.h"
 #include "emscripten/emscripten.h"
 #include "emscripten/heap.h"
 #include "net/base/net_errors.h"
@@ -83,10 +91,17 @@ constexpr size_t kMaximumDataUrlBytes = 8 * 1024 * 1024;
 constexpr size_t kMaximumM5PublicUrlBytes = 2048;
 constexpr size_t kMaximumM5DevToolsProtocolMessageBytes = 64 * 1024;
 constexpr size_t kMaximumM5DevToolsReportBytes = 4096;
+constexpr int64_t kM5DownloadExpectedBytes = 512 * 1024;
+constexpr size_t kM5DownloadValidationChunkBytes = 16 * 1024;
+constexpr int kM5DownloadResponseCode = 200;
+constexpr std::string_view kM5DownloadContentDisposition =
+    "attachment; filename=\"m5-large-download.bin\"";
+constexpr std::string_view kM5DownloadMimeType = "application/octet-stream";
 constexpr std::string_view kM5NetworkTestHostname = "a.test";
 constexpr std::string_view kM5NetworkTestPathPrefix = "/m5/";
 constexpr std::string_view kM5NetworkRedirectPath = "/m5/redirect-cookie";
 constexpr std::string_view kM5NetworkDocumentPath = "/m5/";
+constexpr std::string_view kM5LargeDownloadPath = "/m5/large-download";
 constexpr std::string_view kM5NetworkReconnectStreamPath =
     "/m5/reconnect-stream";
 constexpr std::string_view kM5NetworkReconnectFailure =
@@ -224,6 +239,7 @@ extern "C" int chromium_wasm_report_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_navigation();
 extern "C" int chromium_wasm_report_m5_navigation_error(int net_error);
 extern "C" int chromium_wasm_report_m5_devtools_network(const char* report);
+extern "C" int chromium_wasm_report_m5_download(const char* report);
 extern "C" int chromium_wasm_report_m5_public_devtools_network(
     const char* report);
 extern "C" int chromium_wasm_report_m5_page_probe(const char* probe);
@@ -877,6 +893,313 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   base::ListValue events_;
 };
 
+// The original controlled M5 attachment check used Fetch's ReadableStream,
+// which intentionally bypasses Chromium's DownloadManager. Keep the wire-side
+// relay accounting, but require this separate test-only observer to prove that
+// an attachment navigation reached the browser download stack, was written to
+// its selected profile destination, and retained the fixture byte pattern.
+bool HasExpectedM5DownloadFileContents(const base::FilePath& target_path) {
+  base::File file(target_path,
+                  base::File::FLAG_OPEN | base::File::FLAG_READ);
+  if (!file.IsValid() || file.GetLength() != kM5DownloadExpectedBytes) {
+    return false;
+  }
+
+  std::array<uint8_t, kM5DownloadValidationChunkBytes> bytes;
+  size_t offset = 0;
+  while (offset < static_cast<size_t>(kM5DownloadExpectedBytes)) {
+    const size_t bytes_to_read = std::min(
+        bytes.size(), static_cast<size_t>(kM5DownloadExpectedBytes) - offset);
+    if (!file.ReadAtCurrentPosAndCheck(
+            base::span(bytes).first(bytes_to_read))) {
+      return false;
+    }
+    for (size_t index = 0; index < bytes_to_read; ++index) {
+      if (bytes[index] != static_cast<uint8_t>((offset + index) & 0xff)) {
+        return false;
+      }
+    }
+    offset += bytes_to_read;
+  }
+  return true;
+}
+
+class M5DownloadRecorder final : public DownloadManager::Observer,
+                                 public download::DownloadItem::Observer {
+ public:
+  M5DownloadRecorder() = default;
+
+  M5DownloadRecorder(const M5DownloadRecorder&) = delete;
+  M5DownloadRecorder& operator=(const M5DownloadRecorder&) = delete;
+
+  ~M5DownloadRecorder() override { Detach(); }
+
+  bool Start(WebContents* web_contents) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (!web_contents || manager_ || state_ != State::kCreated) {
+      return false;
+    }
+
+    BrowserContext* browser_context = web_contents->GetBrowserContext();
+    if (!browser_context || browser_context->GetPath().empty()) {
+      return false;
+    }
+    DownloadManager* manager = browser_context->GetDownloadManager();
+    auto* delegate = static_cast<ShellDownloadManagerDelegate*>(
+        browser_context->GetDownloadManagerDelegate());
+    if (!manager || !delegate) {
+      return false;
+    }
+
+    download_directory_ =
+        browser_context->GetPath().AppendASCII("wasm-m5-download-manager");
+    delegate->SetDownloadBehaviorForTesting(download_directory_);
+    web_contents_ = web_contents->GetWeakPtr();
+    manager_ = manager;
+    manager_->AddObserver(this);
+    state_ = State::kWaiting;
+    return true;
+  }
+
+  // The M5 host exposes the dynamically allocated fixture URL only through
+  // its narrow navigation export. Bind the attachment to the first controlled
+  // fixture origin before the page can request it, rather than accepting any
+  // a.test port. Later M5 navigations include the intentional TLS-mismatch
+  // endpoint, so they must not overwrite that binding.
+  bool ArmForFixtureUrl(const GURL& fixture_url) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (expected_fixture_origin_.is_valid()) {
+      return true;
+    }
+    if (state_ != State::kWaiting || !IsM5NetworkTestUrl(fixture_url)) {
+      return false;
+    }
+    expected_fixture_origin_ = fixture_url.DeprecatedGetOriginAsURL();
+    return expected_fixture_origin_.is_valid();
+  }
+
+ private:
+  enum class State {
+    kCreated,
+    kWaiting,
+    kValidatingFile,
+    kNotifyingFixture,
+    kComplete,
+    kFailed,
+  };
+
+  // DownloadManager::Observer:
+  void OnDownloadCreated(DownloadManager* manager,
+                         download::DownloadItem* item) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (manager != manager_ || !item || state_ != State::kWaiting || item_) {
+      Fail("received an unexpected attachment download");
+      return;
+    }
+    if (!IsExpectedDownloadUrl(item->GetOriginalUrl()) ||
+        !IsExpectedDownloadUrl(item->GetURL()) ||
+        item->GetOriginalUrl() != item->GetURL()) {
+      Fail("attachment download did not use the controlled route");
+      return;
+    }
+    item_ = item;
+    item_->AddObserver(this);
+    ObserveDownload();
+  }
+
+  void OnDownloadDropped(DownloadManager* manager) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (manager == manager_ && state_ != State::kFailed) {
+      Fail("attachment navigation was dropped before DownloadItem creation");
+    }
+  }
+
+  void ManagerGoingDown(DownloadManager* manager) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (manager != manager_) {
+      return;
+    }
+    manager_ = nullptr;
+    if (state_ != State::kComplete && state_ != State::kFailed) {
+      Fail("download manager stopped before attachment completion");
+    }
+  }
+
+  // download::DownloadItem::Observer:
+  void OnDownloadUpdated(download::DownloadItem* item) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (item != item_) {
+      Fail("received an update for an unexpected attachment download");
+      return;
+    }
+    ObserveDownload();
+  }
+
+  void OnDownloadDestroyed(download::DownloadItem* item) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (item != item_) {
+      return;
+    }
+    item->RemoveObserver(this);
+    item_ = nullptr;
+    if (state_ != State::kComplete && state_ != State::kFailed) {
+      Fail("attachment download was destroyed before completion");
+    }
+  }
+
+  bool IsExpectedDownloadUrl(const GURL& url) const {
+    return expected_fixture_origin_.is_valid() && IsM5NetworkTestUrl(url) &&
+           url.DeprecatedGetOriginAsURL() == expected_fixture_origin_ &&
+           url.path() == kM5LargeDownloadPath;
+  }
+
+  bool IsExpectedCompletedDownload(download::DownloadItem* item) const {
+    if (item->GetDownloadSource() != download::DownloadSource::NAVIGATION ||
+        item->GetState() != download::DownloadItem::COMPLETE ||
+        !item->AllDataSaved() ||
+        item->GetLastReason() != download::DOWNLOAD_INTERRUPT_REASON_NONE ||
+        item->GetContentDisposition() != kM5DownloadContentDisposition ||
+        item->GetMimeType() != kM5DownloadMimeType ||
+        item->GetTotalBytes() != kM5DownloadExpectedBytes ||
+        item->GetReceivedBytes() != kM5DownloadExpectedBytes ||
+        item->GetTargetFilePath().empty() ||
+        item->GetTargetFilePath().DirName() != download_directory_) {
+      return false;
+    }
+    const scoped_refptr<const net::HttpResponseHeaders>& response_headers =
+        item->GetResponseHeaders();
+    return response_headers &&
+           response_headers->response_code() == kM5DownloadResponseCode;
+  }
+
+  void ObserveDownload() {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (state_ != State::kWaiting || !item_) {
+      return;
+    }
+    if (item_->GetState() == download::DownloadItem::IN_PROGRESS) {
+      return;
+    }
+    if (item_->GetState() != download::DownloadItem::COMPLETE ||
+        !IsExpectedCompletedDownload(item_)) {
+      Fail("attachment download did not satisfy the native completion checks");
+      return;
+    }
+
+    const base::FilePath target_path = item_->GetTargetFilePath();
+    state_ = State::kValidatingFile;
+    DownloadManager::GetTaskRunner()->PostTaskAndReplyWithResult(
+        FROM_HERE,
+        base::BindOnce(&HasExpectedM5DownloadFileContents, target_path),
+        base::BindOnce(&M5DownloadRecorder::OnFileValidated,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void OnFileValidated(bool contents_valid) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (state_ != State::kValidatingFile) {
+      return;
+    }
+    if (!contents_valid) {
+      Fail("attachment download file did not match the fixture pattern");
+      return;
+    }
+    if (!ReportComplete()) {
+      Fail("host rejected the attachment download report");
+      return;
+    }
+    if (!NotifyFixture()) {
+      Fail("could not notify the fixture about attachment completion");
+    }
+  }
+
+  bool ReportComplete() {
+    base::DictValue report;
+    report.Set("protocol", 1);
+    report.Set("state", "complete");
+    report.Set("singleDownload", true);
+    report.Set("navigationSource", true);
+    report.Set("responseStatusMatched", true);
+    report.Set("contentDispositionMatched", true);
+    report.Set("mimeTypeMatched", true);
+    report.Set("allDataSaved", true);
+    report.Set("targetPathDetermined", true);
+    report.Set("targetDirectoryMatched", true);
+    report.Set("interruptReasonNone", true);
+    report.Set("totalBytes", static_cast<int>(kM5DownloadExpectedBytes));
+    report.Set("receivedBytes",
+               static_cast<int>(kM5DownloadExpectedBytes));
+    report.Set("filePatternVerified", true);
+    const std::optional<std::string> serialized = base::WriteJson(report);
+    return serialized && !serialized->empty() &&
+           serialized->size() <= kMaximumM5DevToolsReportBytes &&
+           chromium_wasm_report_m5_download(serialized->c_str()) == 1;
+  }
+
+  bool NotifyFixture() {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (!web_contents_) {
+      return false;
+    }
+    RenderFrameHost* frame = web_contents_->GetPrimaryMainFrame();
+    if (!frame || !frame->IsRenderFrameLive()) {
+      return false;
+    }
+    state_ = State::kNotifyingFixture;
+    frame->ExecuteJavaScriptForTests(
+        u"window.__chromiumWasmM5NativeDownloadComplete ? "
+        u"window.__chromiumWasmM5NativeDownloadComplete() : false",
+        base::BindOnce(&M5DownloadRecorder::OnFixtureNotified,
+                       weak_ptr_factory_.GetWeakPtr()),
+        ISOLATED_WORLD_ID_GLOBAL);
+    return true;
+  }
+
+  void OnFixtureNotified(base::Value result) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (state_ != State::kNotifyingFixture) {
+      return;
+    }
+    if (!result.is_bool() || !result.GetBool()) {
+      Fail("fixture did not accept native attachment completion");
+      return;
+    }
+    state_ = State::kComplete;
+  }
+
+  void Fail(std::string_view reason) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (state_ == State::kFailed) {
+      return;
+    }
+    state_ = State::kFailed;
+    ReportFatal("M5 DownloadManager attachment recorder: " +
+                std::string(reason));
+  }
+
+  void Detach() {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    weak_ptr_factory_.InvalidateWeakPtrs();
+    if (item_) {
+      item_->RemoveObserver(this);
+      item_ = nullptr;
+    }
+    if (manager_) {
+      manager_->RemoveObserver(this);
+      manager_ = nullptr;
+    }
+    web_contents_ = nullptr;
+  }
+
+  State state_ = State::kCreated;
+  raw_ptr<DownloadManager> manager_ = nullptr;
+  raw_ptr<download::DownloadItem> item_ = nullptr;
+  base::FilePath download_directory_;
+  GURL expected_fixture_origin_;
+  base::WeakPtr<WebContents> web_contents_;
+  base::WeakPtrFactory<M5DownloadRecorder> weak_ptr_factory_{this};
+};
+
 void ReportTextInputDelivery(const ui::WasmTextInputRecord& record,
                              bool accepted) {
   if (chromium_wasm_report_ozone_text_input_delivery(
@@ -1253,6 +1576,7 @@ class WasmHostState {
 
   std::unique_ptr<WasmHostObserver> observer;
   std::unique_ptr<M5DevToolsNetworkRecorder> m5_devtools_network_recorder;
+  std::unique_ptr<M5DownloadRecorder> m5_download_recorder;
   std::unique_ptr<M5PublicDevToolsNetworkRecorder>
       m5_public_devtools_network_recorder;
 
@@ -1558,6 +1882,17 @@ void LoadUrlOnUiThread(GURL url) {
   }
 }
 
+void LoadM5NetworkUrlOnUiThread(GURL url) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  if (!state.m5_download_recorder ||
+      !state.m5_download_recorder->ArmForFixtureUrl(url)) {
+    ReportFatal("could not bind the M5 attachment recorder to its fixture");
+    return;
+  }
+  LoadUrlOnUiThread(std::move(url));
+}
+
 void LoadM5PublicUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
@@ -1665,6 +2000,12 @@ void InitializeWasmHostApi() {
       ReportFatal("could not start the M5 DevTools Network recorder");
       return;
     }
+    state.m5_download_recorder = std::make_unique<M5DownloadRecorder>();
+    if (!state.m5_download_recorder->Start(shell->web_contents())) {
+      state.m5_download_recorder.reset();
+      ReportFatal("could not start the M5 DownloadManager recorder");
+      return;
+    }
   }
   if (IsWasmM5PublicNetworkTestModeEnabled()) {
     state.m5_public_devtools_network_recorder =
@@ -1694,6 +2035,7 @@ void EnableWasmM5PublicNetworkTestModeForTesting() {
 void ShutdownWasmHostApi() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
+  state.m5_download_recorder.reset();
   state.m5_public_devtools_network_recorder.reset();
   state.m5_devtools_network_recorder.reset();
   state.observer.reset();
@@ -1873,7 +2215,8 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_url(const char* test_url) {
     return 0;
   }
   return content::PostHostCommand(
-             base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             base::BindOnce(&content::LoadM5NetworkUrlOnUiThread,
+                            std::move(url)))
              ? 1
              : 0;
 }

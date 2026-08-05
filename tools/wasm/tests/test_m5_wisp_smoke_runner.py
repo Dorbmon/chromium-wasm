@@ -147,6 +147,22 @@ def passing_result() -> dict[str, object]:
                     "Network.loadingFailed:reconnect",
                 ],
             },
+            "m5Download": {
+                "protocol": 1,
+                "state": "complete",
+                "singleDownload": True,
+                "navigationSource": True,
+                "responseStatusMatched": True,
+                "contentDispositionMatched": True,
+                "mimeTypeMatched": True,
+                "allDataSaved": True,
+                "targetPathDetermined": True,
+                "targetDirectoryMatched": True,
+                "interruptReasonNone": True,
+                "totalBytes": 512 * 1024,
+                "receivedBytes": 512 * 1024,
+                "filePatternVerified": True,
+            },
             "heartbeat": {
                 "anchor": "m5-https-navigation-committed",
                 "elapsedMs": 10,
@@ -183,11 +199,8 @@ def passing_result() -> dict[str, object]:
                 "slowStreamConsumerPauseElapsedMs": 100,
                 "slowStreamConsumerPauseTimerTicks": 4,
                 "slowStreamTimerTicksWhileWaiting": 8,
-                "largeDownloadStarted": True,
-                "largeDownloadContentDisposition": True,
-                "largeDownloadComplete": True,
-                "largeDownloadBytes": 512 * 1024,
-                "largeDownloadReaderChunks": 32,
+                "largeDownloadNavigationRequested": True,
+                "largeDownloadNativeComplete": True,
                 "reconnectStreamStarted": True,
                 "reconnectFirstChunkReceived": True,
                 "reconnectFirstChunkAck": True,
@@ -221,6 +234,7 @@ def passing_result() -> dict[str, object]:
                 "navigation:requested:m5-plaintext-http-control",
                 "navigation:committed:m5-plaintext-http-control",
                 "navigation:requested:m5-https",
+                "m5:download-manager:complete",
                 "m5:devtools-network:complete",
                 "navigation:requested:m5-https-tls-failure",
                 "navigation:failed:m5-https:-200",
@@ -712,6 +726,38 @@ class M5ResultValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "Network.enable"):
             validate_passing_result(result)
 
+    def test_rejects_incomplete_or_unredacted_download_manager_evidence(
+        self,
+    ) -> None:
+        for field, invalid_value in (
+            ("state", "enabled"),
+            ("singleDownload", False),
+            ("navigationSource", False),
+            ("responseStatusMatched", False),
+            ("contentDispositionMatched", False),
+            ("mimeTypeMatched", False),
+            ("allDataSaved", False),
+            ("targetPathDetermined", False),
+            ("targetDirectoryMatched", False),
+            ("interruptReasonNone", False),
+            ("totalBytes", 0),
+            ("receivedBytes", 0),
+            ("filePatternVerified", False),
+            ("url", "https://a.test:4443/m5/large-download"),
+            ("path", "/profile/wasm-m5-download-manager/file"),
+            ("guid", "not-a-guid"),
+            ("headers", {"content-disposition": "attachment"}),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                result = passing_result()
+                readiness = result["readiness"]
+                assert isinstance(readiness, dict)
+                download = readiness["m5Download"]
+                assert isinstance(download, dict)
+                download[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, "DownloadManager"):
+                    validate_passing_result(result)
+
     def test_rejects_missing_page_network_evidence(self) -> None:
         for field in (
             "h2Fetch",
@@ -733,9 +779,8 @@ class M5ResultValidationTest(unittest.TestCase):
             "slowStreamConsumerPauseStarted",
             "slowStreamConsumerBurstRead",
             "slowStreamConsumerResume",
-            "largeDownloadStarted",
-            "largeDownloadContentDisposition",
-            "largeDownloadComplete",
+            "largeDownloadNavigationRequested",
+            "largeDownloadNativeComplete",
             "reconnectStreamStarted",
             "reconnectFirstChunkReceived",
             "reconnectFirstChunkAck",
@@ -814,26 +859,6 @@ class M5ResultValidationTest(unittest.TestCase):
                 assert isinstance(heartbeat, dict)
                 heartbeat[field] = invalid_value
                 with self.assertRaisesRegex(M0Error, "slow-stream host heartbeat"):
-                    validate_passing_result(result)
-
-    def test_rejects_invalid_large_download_page_evidence(self) -> None:
-        for field, invalid_value in (
-            ("largeDownloadBytes", 0),
-            ("largeDownloadBytes", 512 * 1024 - 1),
-            ("largeDownloadBytes", 512 * 1024 + 1),
-            ("largeDownloadBytes", True),
-            ("largeDownloadReaderChunks", 0),
-            ("largeDownloadReaderChunks", -1),
-            ("largeDownloadReaderChunks", True),
-        ):
-            with self.subTest(field=field, invalid_value=invalid_value):
-                result = passing_result()
-                readiness = result["readiness"]
-                assert isinstance(readiness, dict)
-                page_probe = readiness["pageProbe"]
-                assert isinstance(page_probe, dict)
-                page_probe[field] = invalid_value
-                with self.assertRaisesRegex(M0Error, field):
                     validate_passing_result(result)
 
     def test_rejects_invalid_cancel_stream_page_evidence(self) -> None:

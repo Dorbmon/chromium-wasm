@@ -714,6 +714,30 @@ def validate_m5_result(
             "M5 DevTools Network log does not contain the bounded Chromium "
             "CDP request/response/completion trace"
         )
+    m5_download = _require_dict(
+        readiness.get("m5Download"), "M5 DownloadManager log"
+    )
+    expected_m5_download = {
+        "protocol": 1,
+        "state": "complete",
+        "singleDownload": True,
+        "navigationSource": True,
+        "responseStatusMatched": True,
+        "contentDispositionMatched": True,
+        "mimeTypeMatched": True,
+        "allDataSaved": True,
+        "targetPathDetermined": True,
+        "targetDirectoryMatched": True,
+        "interruptReasonNone": True,
+        "totalBytes": M5_LARGE_DOWNLOAD_BYTES,
+        "receivedBytes": M5_LARGE_DOWNLOAD_BYTES,
+        "filePatternVerified": True,
+    }
+    if m5_download != expected_m5_download:
+        raise M0Error(
+            "M5 DownloadManager log does not contain the fixed native "
+            "attachment completion evidence"
+        )
     heartbeat = _require_dict(readiness.get("heartbeat"), "M5 heartbeat")
     if heartbeat.get("anchor") != "m5-https-navigation-committed":
         raise M0Error("M5 heartbeat was not anchored to HTTPS navigation")
@@ -776,9 +800,8 @@ def validate_m5_result(
         "slowStreamConsumerPauseStarted": True,
         "slowStreamConsumerBurstRead": True,
         "slowStreamConsumerResume": True,
-        "largeDownloadStarted": True,
-        "largeDownloadContentDisposition": True,
-        "largeDownloadComplete": True,
+        "largeDownloadNavigationRequested": True,
+        "largeDownloadNativeComplete": True,
         "reconnectStreamStarted": True,
         "reconnectFirstChunkReceived": True,
         "reconnectFirstChunkAck": True,
@@ -829,20 +852,6 @@ def validate_m5_result(
                 f"M5 page probe {field} must be an integer at least "
                 f"{minimum}, got {actual!r}"
             )
-    if page_probe.get("largeDownloadBytes") != M5_LARGE_DOWNLOAD_BYTES:
-        raise M0Error(
-            "M5 page probe largeDownloadBytes does not match the controlled "
-            "large download size"
-        )
-    large_download_reader_chunks = page_probe.get("largeDownloadReaderChunks")
-    if (
-        type(large_download_reader_chunks) is not int
-        or large_download_reader_chunks < 1
-    ):
-        raise M0Error(
-            "M5 page probe largeDownloadReaderChunks must record byte-stream "
-            "consumption"
-        )
     if page_probe.get("activeMixedContentTargetUrl") != mixed_content_target_url:
         raise M0Error(
             "M5 page probe activeMixedContentTargetUrl does not match the "
@@ -904,6 +913,7 @@ def validate_m5_result(
         "navigation:requested:m5-plaintext-http-control",
         "navigation:committed:m5-plaintext-http-control",
         "navigation:requested:m5-https",
+        "m5:download-manager:complete",
         "m5:devtools-network:complete",
         "navigation:requested:m5-https-tls-failure",
         "navigation:failed:m5-https:-200",
@@ -920,6 +930,7 @@ def validate_m5_result(
         < host_logs.index("navigation:requested:m5-plaintext-http-control")
         < host_logs.index("navigation:committed:m5-plaintext-http-control")
         < host_logs.index("navigation:requested:m5-https")
+        < host_logs.index("m5:download-manager:complete")
         < host_logs.index("m5:devtools-network:complete")
         < host_logs.index("navigation:requested:m5-https-tls-failure")
         < host_logs.index("navigation:failed:m5-https:-200")
