@@ -11,6 +11,8 @@ import copy
 from collections import deque
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -417,6 +419,10 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
             "https://Probe.Public.Example.Com:443/static/public-v1"
         )
         scheme_relative_probe = "//probe.public.example.com/static/public-v1"
+        endpoint_hostname = "relay.public.example.com"
+        endpoint_authority = "relay.public.example.com:443"
+        probe_hostname = "probe.public.example.com"
+        probe_authority = "probe.public.example.com:443"
         double_escaped_endpoint = quote(quote(PUBLIC_ENDPOINT, safe=""), safe="")
         double_escaped_probe = quote(quote(PUBLIC_PROBE_URL, safe=""), safe="")
         with tempfile.TemporaryDirectory() as temporary:
@@ -429,6 +435,8 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                     "escaped_probe": quote_plus(PUBLIC_PROBE_URL),
                     "scheme_relative_probe": scheme_relative_probe,
                     "double_escaped_endpoint": double_escaped_endpoint,
+                    "endpoint_hostname": endpoint_hostname,
+                    endpoint_authority: "configured endpoint authority as a key",
                     PUBLIC_PROBE_URL: "configured probe appears as a key",
                 },
                 browser_path=None,
@@ -442,6 +450,8 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                     "endpoint": PUBLIC_ENDPOINT,
                     "scheme_relative_probe": scheme_relative_probe,
                     "double_escaped_probe": double_escaped_probe,
+                    "probe_hostname": probe_hostname,
+                    probe_authority: "configured probe authority as a key",
                     PUBLIC_ENDPOINT: "configured endpoint appears as a key",
                 },
                 public_wisp_endpoint=endpoint_query_value,
@@ -460,6 +470,10 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 scheme_relative_probe,
                 double_escaped_endpoint,
                 double_escaped_probe,
+                endpoint_hostname,
+                endpoint_authority,
+                probe_hostname,
+                probe_authority,
             ):
                 with self.subTest(secret=secret):
                     self.assertNotIn(secret, serialized)
@@ -481,6 +495,63 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
 
 
 class PublicHttpsSourceContractTest(unittest.TestCase):
+    def test_public_host_redacts_configured_hostname_and_authority_forms(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            pinned_node = (
+                Path(__file__).resolve().parents[3]
+                / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+            )
+            node = str(pinned_node) if pinned_node.is_file() else None
+        if node is None:
+            self.skipTest("Node is unavailable")
+
+        host = (
+            Path(__file__).resolve().parents[1] / "host/content_shell_host.js"
+        )
+        script = r"""
+import fs from "node:fs";
+
+const assert = (condition, message) => {
+  if (!condition) {
+    throw new Error(message);
+  }
+};
+const source = fs.readFileSync(__HOST_PATH__, "utf8");
+const start = source.indexOf("function m5PublicRedactionVariants(values) {");
+const end = source.indexOf("\nexport class ChromiumWasmM3Host", start);
+assert(start >= 0 && end > start, "public redaction helpers were not found");
+const helpers = new Function(source.slice(start, end) +
+    "\nreturn {m5PublicRedactionVariants, redactM5PublicRuntimeValue};")();
+const endpoint = "wss://relay.public.example.com/wisp/";
+const probe = "https://probe.public.example.com/static/public-v1";
+const redacted = helpers.redactM5PublicRuntimeValue({
+  "relay.public.example.com:443": "probe.public.example.com",
+  nested: ["relay.public.example.com", "probe.public.example.com:443"],
+}, helpers.m5PublicRedactionVariants([endpoint, probe]));
+const serialized = JSON.stringify(redacted);
+for (const secret of [
+  "relay.public.example.com",
+  "relay.public.example.com:443",
+  "probe.public.example.com",
+  "probe.public.example.com:443",
+]) {
+  assert(!serialized.includes(secret), "host result leaked " + secret);
+}
+assert(serialized.includes("<redacted-url>"),
+    "host result did not replace sensitive authority forms");
+console.log("M5_PUBLIC_HOST_REDACTION:PASS");
+""".replace("__HOST_PATH__", json.dumps(str(host)))
+        completed = subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("M5_PUBLIC_HOST_REDACTION:PASS", completed.stdout)
+
     def test_public_target_is_test_only_and_never_uses_the_controlled_root(self) -> None:
         build = source("content/shell/BUILD.gn")
         target = build.split(
@@ -584,6 +655,8 @@ class PublicHttpsSourceContractTest(unittest.TestCase):
         self.assertIn("reportM5PublicNavigationError(report)", host)
         self.assertIn("m5PublicRedactionVariants", host)
         self.assertIn("redactM5PublicRuntimeValue", host)
+        self.assertIn("parsed.hostname", host)
+        self.assertIn("redactM5PublicRuntimeValue(key, variants)", host)
         self.assertIn("publicFrame", host)
         self.assertIn("M5_PUBLIC_HTTPS_FIXTURE", host)
         self.assertIn("m5PublicNavigationFinished", host)

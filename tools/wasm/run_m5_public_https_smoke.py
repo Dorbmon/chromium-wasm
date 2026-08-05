@@ -178,7 +178,7 @@ def _canonical_public_url(
 
 
 def _url_redaction_variants(value: str) -> tuple[str, ...]:
-    """Return raw, scheme-relative, and bounded escaped URL forms."""
+    """Return URL, hostname, and bounded escaped forms of a public input."""
 
     if not value:
         return ()
@@ -188,11 +188,30 @@ def _url_redaction_variants(value: str) -> tuple[str, ...]:
     except ValueError:
         parsed = None
     if parsed is not None and parsed.scheme and parsed.netloc:
+        raw_authority = parsed.netloc.rsplit("@", maxsplit=1)[-1]
+        if raw_authority:
+            forms.add(raw_authority)
         forms.add(
             urlunsplit(
                 ("", parsed.netloc, parsed.path, parsed.query, parsed.fragment)
             )
         )
+        if parsed.hostname:
+            hostname = parsed.hostname
+            forms.add(hostname)
+            default_port = 443 if parsed.scheme in ("https", "wss") else None
+            try:
+                port = parsed.port
+            except ValueError:
+                port = None
+            if port is not None:
+                forms.add(f"{hostname}:{port}")
+            elif default_port is not None:
+                # Browser/network diagnostics may make a default TLS port
+                # explicit even when it was omitted in the input URL.
+                forms.add(f"{hostname}:{default_port}")
+                if raw_authority:
+                    forms.add(f"{raw_authority}:{default_port}")
 
     variants: set[str] = set()
     for form in forms:
@@ -212,20 +231,19 @@ def _url_redaction_variants(value: str) -> tuple[str, ...]:
     return tuple(sorted(variants, key=len, reverse=True))
 
 
-def _configured_public_url_variants(
-    endpoint: str, probe_url: str
-) -> tuple[str, ...]:
-    """Collect every bounded form of the two runtime-only inputs."""
+def _configured_public_url_variants(*values: str) -> tuple[str, ...]:
+    """Collect every bounded URL and authority form of runtime-only inputs."""
 
-    candidates = {endpoint, probe_url}
-    try:
-        candidates.add(validate_public_wisp_endpoint(endpoint))
-    except M0Error:
-        pass
-    try:
-        candidates.add(validate_public_probe_url(probe_url))
-    except M0Error:
-        pass
+    candidates = set(values)
+    for value in values:
+        try:
+            candidates.add(validate_public_wisp_endpoint(value))
+        except M0Error:
+            pass
+        try:
+            candidates.add(validate_public_probe_url(value))
+        except M0Error:
+            pass
     variants: set[str] = set()
     for candidate in candidates:
         variants.update(_url_redaction_variants(candidate))
@@ -704,13 +722,13 @@ def _assert_redacted_public_text(
     probe_url: str,
     description: str,
 ) -> None:
-    """Ensure no raw or URL-like public-network value crosses a boundary."""
+    """Ensure no raw public URL, hostname, or URL-like value crosses a boundary."""
 
     if any(
         rendered in value
         for rendered in _configured_public_url_variants(endpoint, probe_url)
     ):
-        raise M0Error(f"{description} leaked a configured URL")
+        raise M0Error(f"{description} leaked a configured public input")
     if URL_LIKE_VALUE_PATTERN.search(value):
         raise M0Error(f"{description} contains an unredacted URL")
 

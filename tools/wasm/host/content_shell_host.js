@@ -2007,6 +2007,20 @@ function m5PublicRedactionVariants(values) {
       const canonical = new URL(value).href;
       variants.add(canonical);
       variants.add(encodeURIComponent(canonical));
+      const parsed = new URL(canonical);
+      if (parsed.hostname) {
+        variants.add(parsed.hostname);
+        variants.add(encodeURIComponent(parsed.hostname));
+        const defaultPort =
+          parsed.protocol === "https:" || parsed.protocol === "wss:" ?
+            "443" : "";
+        const port = parsed.port || defaultPort;
+        if (port) {
+          const authority = `${parsed.hostname}:${port}`;
+          variants.add(authority);
+          variants.add(encodeURIComponent(authority));
+        }
+      }
     } catch (_) {
       // The outer runner handles malformed inputs. Preserve its raw value in
       // the redaction set even when it cannot be canonicalized here.
@@ -2033,7 +2047,7 @@ function redactM5PublicRuntimeValue(value, variants) {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-      key,
+      redactM5PublicRuntimeValue(key, variants),
       redactM5PublicRuntimeValue(item, variants),
     ]));
   }

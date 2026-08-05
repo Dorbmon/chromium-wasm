@@ -26,7 +26,6 @@ import secrets
 import subprocess
 import sys
 from typing import Any
-from urllib.parse import quote, quote_plus
 
 from m0_common import M0Error, REPO_ROOT, parse_timeout
 from m3_content_server import M5_PUBLIC_HTTPS_CASE
@@ -379,17 +378,12 @@ def _assert_redacted_artifact(
     """Defend the wrapper's no-runtime-input persistence boundary."""
 
     serialized = json.dumps(artifact, ensure_ascii=False, sort_keys=True)
-    inputs = [config.public_wisp_endpoint] + [
-        probe.public_probe_url for probe in config.probes
-    ]
-    for value in inputs:
-        for rendered in (
-            value,
-            quote(value, safe=""),
-            quote_plus(value),
-        ):
-            if rendered and rendered in serialized:
-                raise M0Error("public HTTPS suite artifact leaked a configured URL")
+    for rendered in public_smoke._configured_public_url_variants(
+        config.public_wisp_endpoint,
+        *(probe.public_probe_url for probe in config.probes),
+    ):
+        if rendered and rendered in serialized:
+            raise M0Error("public HTTPS suite artifact leaked a configured public input")
     if public_smoke.URL_LIKE_VALUE_PATTERN.search(serialized):
         raise M0Error("public HTTPS suite artifact contains an unredacted URL")
 

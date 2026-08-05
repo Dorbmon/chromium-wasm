@@ -632,13 +632,16 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         failure_serialized = failure.read_text(encoding="utf-8")
         serialized = success_serialized + failure_serialized
         self.assertEqual(success, failure)
-        for value in (
+        for rendered in public_smoke._configured_public_url_variants(
             PUBLIC_ENDPOINT,
             *[probe.public_probe_url for probe in self.config.probes],
         ):
-            for rendered in (value, quote(value, safe=""), quote_plus(value)):
-                with self.subTest(rendered=rendered):
-                    self.assertNotIn(rendered, serialized)
+            with self.subTest(rendered=rendered):
+                self.assertNotIn(rendered, serialized)
+        with self.assertRaises(M0Error):
+            public_suite._assert_redacted_artifact(
+                {"diagnostic": "relay.public.example.com:443"}, self.config
+            )
         self.assertIsNone(public_smoke.URL_LIKE_VALUE_PATTERN.search(serialized))
         success_artifact = json.loads(success_serialized)
         self.assertEqual(success_artifact["status"], "pass")
