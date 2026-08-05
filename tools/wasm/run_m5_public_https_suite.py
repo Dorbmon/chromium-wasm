@@ -27,8 +27,15 @@ import subprocess
 import sys
 from typing import Any
 
-from m0_common import M0Error, REPO_ROOT, parse_timeout
+from m0_common import (
+    M0Error,
+    REPO_ROOT,
+    checked_output,
+    load_manifest,
+    parse_timeout,
+)
 from m3_content_server import M5_PUBLIC_HTTPS_CASE
+from run_content_shell_smoke import manifest_versions
 import run_m5_public_https_smoke as public_smoke
 
 
@@ -217,6 +224,14 @@ def load_public_suite_config(manifest_path: Path) -> PublicSuiteConfig:
     )
 
 
+def public_suite_versions() -> dict[str, str]:
+    """Take one local build-identity snapshot for every child in this suite."""
+
+    return manifest_versions(
+        load_manifest(), checked_output(["git", "rev-parse", "HEAD"])
+    )
+
+
 def public_probe_command(
     config: PublicSuiteConfig,
     probe: PublicProbe,
@@ -259,7 +274,10 @@ def public_probe_command(
 
 
 def _child_devtools_evidence(
-    completed: subprocess.CompletedProcess[str], probe: PublicProbe
+    completed: subprocess.CompletedProcess[str],
+    probe: PublicProbe,
+    *,
+    expected_versions: dict[str, str],
 ) -> dict[str, Any] | None:
     """Accept one internally validated, fixed child proof and no contradiction."""
 
@@ -267,6 +285,9 @@ def _child_devtools_evidence(
     stderr = completed.stderr if isinstance(completed.stderr, str) else ""
     pass_marker = f"{public_smoke.SENTINEL}:PASS"
     fail_prefix = f"{public_smoke.SENTINEL}:FAIL"
+    provenance_marker = f"{public_smoke.SENTINEL}:PROVENANCE"
+    provenance_prefix = f"{public_smoke.SENTINEL}:PROVENANCE "
+    evidence_marker = f"{public_smoke.SENTINEL}:EVIDENCE"
     evidence_prefix = f"{public_smoke.SENTINEL}:EVIDENCE "
     stdout_lines = stdout.splitlines()
     stderr_lines = stderr.splitlines()
@@ -279,12 +300,34 @@ def _child_devtools_evidence(
         for line in (*stripped_stdout_lines, *stripped_stderr_lines)
     ):
         return None
+    malformed_records = (
+        (
+            line.startswith(provenance_marker)
+            and not line.startswith(provenance_prefix)
+        )
+        or (
+            line.startswith(evidence_marker)
+            and not line.startswith(evidence_prefix)
+        )
+        or (line.startswith(pass_marker) and line != pass_marker)
+        for line in (*stripped_stdout_lines, *stripped_stderr_lines)
+    )
+    if any(malformed_records):
+        return None
     if (
         sum(line == pass_marker for line in stripped_stdout_lines) != 1
         or any(line == pass_marker for line in stripped_stderr_lines)
+        or any(
+            line.startswith(provenance_prefix) for line in stripped_stderr_lines
+        )
         or any(line.startswith(evidence_prefix) for line in stripped_stderr_lines)
     ):
         return None
+    provenance_indices = [
+        index
+        for index, line in enumerate(stripped_stdout_lines)
+        if line.startswith(provenance_prefix)
+    ]
     evidence_indices = [
         index
         for index, line in enumerate(stripped_stdout_lines)
@@ -296,15 +339,27 @@ def _child_devtools_evidence(
         if line == pass_marker
     )
     if (
-        len(evidence_indices) != 1
+        len(provenance_indices) != 1
+        or len(evidence_indices) != 1
+        or not stdout_lines[provenance_indices[0]].startswith(provenance_prefix)
         or not stdout_lines[evidence_indices[0]].startswith(evidence_prefix)
-        or evidence_indices[0] >= pass_index
+        or stdout_lines[pass_index] != pass_marker
+        or not (
+            provenance_indices[0] < evidence_indices[0] < pass_index
+        )
     ):
         return None
     try:
+        provenance = json.loads(
+            stdout_lines[provenance_indices[0]][len(provenance_prefix) :],
+            object_pairs_hook=_reject_duplicate_evidence_keys,
+        )
         evidence = json.loads(
             stdout_lines[evidence_indices[0]][len(evidence_prefix) :],
             object_pairs_hook=_reject_duplicate_evidence_keys,
+        )
+        public_smoke.validate_public_provenance(
+            provenance, expected_versions=expected_versions
         )
         return public_smoke.validate_public_devtools_network_evidence(
             evidence,
@@ -322,6 +377,7 @@ def run_public_suite(
     out_dir: Path,
     module_name: str,
     diagnostics_dir: Path,
+    expected_versions: dict[str, str],
     no_sandbox: bool,
     timeout: float,
 ) -> tuple[PublicProbeEvidence, ...]:
@@ -332,6 +388,11 @@ def run_public_suite(
     browser process before the child can perform its normal cleanup.
     """
 
+    public_smoke.public_provenance(expected_versions)
+    validated_versions = {
+        key: expected_versions[key]
+        for key in public_smoke.PUBLIC_PROVENANCE_VERSION_KEYS
+    }
     successful_evidence: list[PublicProbeEvidence] = []
     for ordinal, probe in enumerate(config.probes, start=1):
         command = public_probe_command(
@@ -358,7 +419,9 @@ def run_public_suite(
             raise PublicSuiteProbeError(
                 ordinal, "could not start", tuple(successful_evidence)
             ) from exc
-        evidence = _child_devtools_evidence(completed, probe)
+        evidence = _child_devtools_evidence(
+            completed, probe, expected_versions=validated_versions
+        )
         if evidence is None:
             raise PublicSuiteProbeError(
                 ordinal, "did not pass", tuple(successful_evidence)
@@ -444,7 +507,9 @@ def write_suite_success_artifact(
     *,
     evidence: tuple[PublicProbeEvidence, ...],
     config: PublicSuiteConfig,
+    versions: dict[str, str],
 ) -> Path:
+    provenance = public_smoke.public_provenance(versions)
     _validate_evidence_prefix(
         evidence,
         config,
@@ -454,6 +519,7 @@ def write_suite_success_artifact(
         "schema_version": 1,
         "runner": "run_m5_public_https_suite.py",
         "case": M5_PUBLIC_HTTPS_CASE,
+        "versions": provenance["versions"],
         "status": "pass",
         "probe_count": len(config.probes),
         "probes": _serialize_evidence(evidence),
@@ -467,7 +533,9 @@ def write_suite_failure_artifact(
     *,
     error: PublicSuiteProbeError,
     config: PublicSuiteConfig,
+    versions: dict[str, str],
 ) -> Path:
+    provenance = public_smoke.public_provenance(versions)
     if type(error.ordinal) is not int or not 1 <= error.ordinal <= len(config.probes):
         raise M0Error("public HTTPS suite failed probe ordinal is invalid")
     _validate_evidence_prefix(
@@ -479,6 +547,7 @@ def write_suite_failure_artifact(
         "schema_version": 1,
         "runner": "run_m5_public_https_suite.py",
         "case": M5_PUBLIC_HTTPS_CASE,
+        "versions": provenance["versions"],
         "status": "fail",
         "probe_count": len(config.probes),
         "completedProbes": _serialize_evidence(error.successful_evidence),
@@ -490,9 +559,17 @@ def write_suite_failure_artifact(
 
 
 def write_preflight_failure_artifact(
-    diagnostics_dir: Path, *, failure: str
+    diagnostics_dir: Path,
+    *,
+    failure: str,
+    versions: dict[str, str] | None = None,
 ) -> Path:
-    """Replace this fresh run's result with a safe failure before config exists."""
+    """Replace this fresh run's result with a safe preflight failure.
+
+    A configuration rejection intentionally has no version map: it did not
+    reach the public-suite build-identity snapshot. Later infrastructure
+    failures retain the trusted snapshot through the optional argument.
+    """
 
     artifact: dict[str, object] = {
         "schema_version": 1,
@@ -501,6 +578,8 @@ def write_preflight_failure_artifact(
         "status": "fail",
         "failure": failure,
     }
+    if versions is not None:
+        artifact["versions"] = public_smoke.public_provenance(versions)["versions"]
     if public_smoke.URL_LIKE_VALUE_PATTERN.search(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True)
     ):
@@ -583,6 +662,25 @@ def main() -> int:
         )
         return 1
 
+    versions: dict[str, str] | None = None
+    try:
+        versions = public_suite_versions()
+    except (M0Error, OSError, ValueError, UnicodeError):
+        try:
+            write_preflight_failure_artifact(
+                run_diagnostics_dir, failure="runner_infrastructure_failure"
+            )
+        except (M0Error, OSError, ValueError, UnicodeError):
+            pass
+        print(
+            f"{SENTINEL}:FAIL run={run_diagnostics_dir.name}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+
+    assert versions is not None
+
     try:
         # The public children are invoked below by run_public_suite. This safe
         # progress marker contains no runtime-only configuration values.
@@ -597,6 +695,7 @@ def main() -> int:
             out_dir=out_dir,
             module_name=args.module_name,
             diagnostics_dir=run_diagnostics_dir,
+            expected_versions=versions,
             no_sandbox=args.no_sandbox,
             timeout=args.timeout_per_probe,
         )
@@ -604,6 +703,7 @@ def main() -> int:
             run_diagnostics_dir,
             evidence=evidence,
             config=config,
+            versions=versions,
         )
         # Once the atomic pass artifact exists it is authoritative. A closed
         # report pipe cannot turn that completed run into a contradictory
@@ -628,6 +728,7 @@ def main() -> int:
                 run_diagnostics_dir,
                 error=exc,
                 config=config,
+                versions=versions,
             )
         except (M0Error, OSError, ValueError, UnicodeError):
             pass
@@ -642,7 +743,9 @@ def main() -> int:
         # persist it still cannot be reported as a passed public suite.
         try:
             write_preflight_failure_artifact(
-                run_diagnostics_dir, failure="runner_infrastructure_failure"
+                run_diagnostics_dir,
+                failure="runner_infrastructure_failure",
+                versions=versions,
             )
         except (M0Error, OSError, ValueError, UnicodeError):
             pass

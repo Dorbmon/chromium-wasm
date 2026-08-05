@@ -30,6 +30,12 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 PUBLIC_ENDPOINT = "wss://relay.public.example.com/wisp/"
+VERSIONS = {
+    "chromium": "chromium-revision",
+    "v8": "v8-revision",
+    "emscripten": "emscripten-revision",
+    "port": "port-revision",
+}
 PUBLIC_PROBES = (
     {
         "public_probe_url": "https://first.public.example.com/static/one",
@@ -281,10 +287,9 @@ class PublicSuiteManifestTest(unittest.TestCase):
             diagnostics_dir.glob("run-*/m5-public-https-suite-result.json")
         )
         self.assertEqual(len(artifacts), 1)
-        self.assertEqual(
-            json.loads(artifacts[0].read_text(encoding="utf-8"))["failure"],
-            "invalid_manifest",
-        )
+        artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
+        self.assertEqual(artifact["failure"], "invalid_manifest")
+        self.assertNotIn("versions", artifact)
 
 
 class PublicSuiteExecutionTest(unittest.TestCase):
@@ -314,6 +319,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             public_devtools_network=self.evidence(self.config.probes[ordinal - 1]),
         )
 
+    def provenance(self) -> dict[str, object]:
+        return public_smoke.public_provenance(VERSIONS)
+
     def completed(
         self,
         probe: public_suite.PublicProbe,
@@ -324,6 +332,12 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         if stdout is None:
             stdout = "\n".join(
                 (
+                    f"{public_smoke.SENTINEL}:PROVENANCE "
+                    + json.dumps(
+                        self.provenance(),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                     f"{public_smoke.SENTINEL}:EVIDENCE "
                     + json.dumps(
                         self.evidence(probe),
@@ -402,6 +416,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 out_dir=self.out_dir,
                 module_name="public-module",
                 diagnostics_dir=self.diagnostics_dir,
+                expected_versions=VERSIONS,
                 no_sandbox=False,
                 timeout=120.0,
             )
@@ -432,6 +447,39 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             str(self.diagnostics_dir / "probe-002"),
         )
 
+    def test_runner_rejects_invalid_versions_before_starting_a_child(self) -> None:
+        with mock.patch.object(public_suite.subprocess, "run") as run:
+            with self.assertRaises(M0Error):
+                public_suite.run_public_suite(
+                    self.config,
+                    browser=None,
+                    out_dir=self.out_dir,
+                    module_name="public-module",
+                    diagnostics_dir=self.diagnostics_dir,
+                    expected_versions={**VERSIONS, "port": True},
+                    no_sandbox=False,
+                    timeout=120.0,
+                )
+        run.assert_not_called()
+
+    def test_suite_version_snapshot_uses_the_local_manifest_and_head(self) -> None:
+        manifest: dict[str, object] = {"sentinel": "manifest"}
+        with (
+            mock.patch.object(
+                public_suite, "load_manifest", return_value=manifest
+            ) as load_manifest,
+            mock.patch.object(
+                public_suite, "checked_output", return_value="port-revision"
+            ) as checked_output,
+            mock.patch.object(
+                public_suite, "manifest_versions", return_value=VERSIONS
+            ) as manifest_versions,
+        ):
+            self.assertEqual(public_suite.public_suite_versions(), VERSIONS)
+        load_manifest.assert_called_once_with()
+        checked_output.assert_called_once_with(["git", "rev-parse", "HEAD"])
+        manifest_versions.assert_called_once_with(manifest, "port-revision")
+
     def test_runner_fails_fast_and_never_exposes_child_output(self) -> None:
         raw_child_output = " ".join(
             (
@@ -459,6 +507,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     out_dir=self.out_dir,
                     module_name="public-module",
                     diagnostics_dir=self.diagnostics_dir,
+                    expected_versions=VERSIONS,
                     no_sandbox=False,
                     timeout=120.0,
                 )
@@ -478,6 +527,8 @@ class PublicSuiteExecutionTest(unittest.TestCase):
     def test_runner_requires_exactly_one_child_pass_sentinel(self) -> None:
         duplicate_marker = "\n".join(
             (
+                f"{public_smoke.SENTINEL}:PROVENANCE "
+                + json.dumps(self.provenance(), sort_keys=True, separators=(",", ":")),
                 f"{public_smoke.SENTINEL}:EVIDENCE "
                 + json.dumps(self.evidence(self.config.probes[0])),
                 f"{public_smoke.SENTINEL}:PASS",
@@ -496,24 +547,40 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     out_dir=self.out_dir,
                     module_name="public-module",
                     diagnostics_dir=self.diagnostics_dir,
+                    expected_versions=VERSIONS,
                     no_sandbox=False,
                     timeout=120.0,
                 )
         self.assertEqual(raised.exception.ordinal, 1)
 
-    def test_runner_rejects_contradictory_or_missing_child_evidence(self) -> None:
+    def test_runner_rejects_contradictory_or_missing_child_records(self) -> None:
+        valid_provenance = self.provenance()
         valid_evidence = self.evidence(self.config.probes[0])
 
         def encoded(value: object) -> str:
             return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
-        def child_stdout(value: str, *, pass_first: bool = False) -> str:
+        def provenance_line(value: str) -> str:
+            return f"{public_smoke.SENTINEL}:PROVENANCE {value}"
+
+        def evidence_line(value: str) -> str:
+            return f"{public_smoke.SENTINEL}:EVIDENCE {value}"
+
+        def child_stdout(
+            evidence_value: str,
+            *,
+            provenance_value: str | None = None,
+            pass_first: bool = False,
+        ) -> str:
+            if provenance_value is None:
+                provenance_value = encoded(valid_provenance)
             lines = (
+                provenance_line(provenance_value),
+                evidence_line(evidence_value),
                 f"{public_smoke.SENTINEL}:PASS",
-                f"{public_smoke.SENTINEL}:EVIDENCE {value}",
             )
-            if not pass_first:
-                lines = tuple(reversed(lines))
+            if pass_first:
+                lines = (lines[-1], *lines[:-1])
             return "\n".join(lines)
 
         wrong_status = copy.deepcopy(valid_evidence)
@@ -529,22 +596,171 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         duplicated_protocol = encoded(valid_evidence).replace(
             '"protocol":1', '"protocol":true,"protocol":1', 1
         )
+        stale_provenance = public_smoke.public_provenance(
+            {**VERSIONS, "port": "stale-port-revision"}
+        )
+        expanded_provenance = {
+            **valid_provenance,
+            "url": "https://forbidden.example.net/",
+        }
+        boolean_provenance_protocol = {
+            **valid_provenance,
+            "protocol": True,
+        }
+        boolean_provenance_version = public_smoke.public_provenance(VERSIONS)
+        boolean_provenance_version["versions"]["port"] = True
+        duplicated_provenance_protocol = encoded(valid_provenance).replace(
+            '"protocol":1', '"protocol":true,"protocol":1', 1
+        )
+        valid_provenance_encoded = encoded(valid_provenance)
+        duplicated_provenance_version = valid_provenance_encoded.replace(
+            '"port":"port-revision"',
+            '"port":"other-port-revision","port":"port-revision"',
+            1,
+        )
+        valid_evidence_encoded = encoded(valid_evidence)
         cases = (
             (
                 "failure_in_stdout",
                 "\n".join(
                     (
-                        f"{public_smoke.SENTINEL}:EVIDENCE {encoded(valid_evidence)}",
+                        provenance_line(valid_provenance_encoded),
+                        evidence_line(valid_evidence_encoded),
                         f"{public_smoke.SENTINEL}:FAIL reason=contradiction",
                         f"{public_smoke.SENTINEL}:PASS",
                     )
                 ),
                 "",
             ),
-            ("missing_evidence", f"{public_smoke.SENTINEL}:PASS", ""),
             (
-                "pass_before_evidence",
-                child_stdout(encoded(valid_evidence), pass_first=True),
+                "missing_provenance",
+                "\n".join(
+                    (
+                        evidence_line(valid_evidence_encoded),
+                        f"{public_smoke.SENTINEL}:PASS",
+                    )
+                ),
+                "",
+            ),
+            (
+                "malformed_provenance_marker",
+                "\n".join(
+                    (
+                        f"{public_smoke.SENTINEL}:PROVENANCE"
+                        f"{valid_provenance_encoded}",
+                        evidence_line(valid_evidence_encoded),
+                        f"{public_smoke.SENTINEL}:PASS",
+                    )
+                ),
+                "",
+            ),
+            (
+                "missing_evidence",
+                "\n".join(
+                    (
+                        provenance_line(valid_provenance_encoded),
+                        f"{public_smoke.SENTINEL}:PASS",
+                    )
+                ),
+                "",
+            ),
+            (
+                "pass_before_records",
+                child_stdout(valid_evidence_encoded, pass_first=True),
+                "",
+            ),
+            (
+                "provenance_after_evidence",
+                "\n".join(
+                    (
+                        evidence_line(valid_evidence_encoded),
+                        provenance_line(valid_provenance_encoded),
+                        f"{public_smoke.SENTINEL}:PASS",
+                    )
+                ),
+                "",
+            ),
+            (
+                "duplicate_provenance",
+                child_stdout(valid_evidence_encoded)
+                + "\n"
+                + provenance_line(valid_provenance_encoded),
+                "",
+            ),
+            (
+                "extra_malformed_provenance",
+                child_stdout(valid_evidence_encoded)
+                + "\n"
+                + f"{public_smoke.SENTINEL}:PROVENANCEunexpected",
+                "",
+            ),
+            (
+                "indented_provenance",
+                "\n".join(
+                    (
+                        f"  {provenance_line(valid_provenance_encoded)}",
+                        evidence_line(valid_evidence_encoded),
+                        f"{public_smoke.SENTINEL}:PASS",
+                    )
+                ),
+                "",
+            ),
+            (
+                "duplicate_provenance_version_key",
+                child_stdout(
+                    valid_evidence_encoded,
+                    provenance_value=duplicated_provenance_version,
+                ),
+                "",
+            ),
+            (
+                "provenance_in_stderr",
+                child_stdout(valid_evidence_encoded),
+                provenance_line(valid_provenance_encoded),
+            ),
+            (
+                "indented_provenance_in_stderr",
+                child_stdout(valid_evidence_encoded),
+                f"  {provenance_line(valid_provenance_encoded)}",
+            ),
+            (
+                "stale_provenance",
+                child_stdout(
+                    valid_evidence_encoded,
+                    provenance_value=encoded(stale_provenance),
+                ),
+                "",
+            ),
+            (
+                "expanded_provenance",
+                child_stdout(
+                    valid_evidence_encoded,
+                    provenance_value=encoded(expanded_provenance),
+                ),
+                "",
+            ),
+            (
+                "boolean_provenance_protocol",
+                child_stdout(
+                    valid_evidence_encoded,
+                    provenance_value=encoded(boolean_provenance_protocol),
+                ),
+                "",
+            ),
+            (
+                "boolean_provenance_version",
+                child_stdout(
+                    valid_evidence_encoded,
+                    provenance_value=encoded(boolean_provenance_version),
+                ),
+                "",
+            ),
+            (
+                "duplicate_provenance_key",
+                child_stdout(
+                    valid_evidence_encoded,
+                    provenance_value=duplicated_provenance_protocol,
+                ),
                 "",
             ),
             ("wrong_status", child_stdout(encoded(wrong_status)), ""),
@@ -552,22 +768,30 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             ("extra_field", child_stdout(encoded(extra_field)), ""),
             ("numeric_boolean", child_stdout(encoded(numeric_boolean)), ""),
             ("boolean_protocol", child_stdout(encoded(boolean_protocol)), ""),
-            ("duplicate_key", child_stdout(duplicated_protocol), ""),
+            ("duplicate_evidence_key", child_stdout(duplicated_protocol), ""),
             (
                 "evidence_in_stderr",
-                child_stdout(encoded(valid_evidence)),
-                f"{public_smoke.SENTINEL}:EVIDENCE {encoded(valid_evidence)}",
+                child_stdout(valid_evidence_encoded),
+                evidence_line(valid_evidence_encoded),
             ),
             (
                 "indented_evidence_in_stderr",
-                child_stdout(encoded(valid_evidence)),
-                f"  {public_smoke.SENTINEL}:EVIDENCE {encoded(valid_evidence)}",
+                child_stdout(valid_evidence_encoded),
+                f"  {evidence_line(valid_evidence_encoded)}",
             ),
             (
                 "indented_extra_evidence_in_stdout",
-                child_stdout(encoded(valid_evidence))
+                child_stdout(valid_evidence_encoded)
                 + "\n"
-                + f"  {public_smoke.SENTINEL}:EVIDENCE {encoded(valid_evidence)}",
+                + f"  {evidence_line(valid_evidence_encoded)}",
+                "",
+            ),
+            (
+                "indented_pass",
+                child_stdout(valid_evidence_encoded).replace(
+                    f"{public_smoke.SENTINEL}:PASS",
+                    f"  {public_smoke.SENTINEL}:PASS",
+                ),
                 "",
             ),
         )
@@ -587,11 +811,12 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                             out_dir=self.out_dir,
                             module_name="public-module",
                             diagnostics_dir=self.diagnostics_dir,
+                            expected_versions=VERSIONS,
                             no_sandbox=False,
                             timeout=120.0,
                         )
 
-        valid_stdout = child_stdout(encoded(valid_evidence))
+        valid_stdout = child_stdout(valid_evidence_encoded)
         with mock.patch.object(
             public_suite.subprocess,
             "run",
@@ -608,6 +833,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     out_dir=self.out_dir,
                     module_name="public-module",
                     diagnostics_dir=self.diagnostics_dir,
+                    expected_versions=VERSIONS,
                     no_sandbox=False,
                     timeout=120.0,
                 )
@@ -620,6 +846,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             self.diagnostics_dir,
             evidence=evidence,
             config=self.config,
+            versions=VERSIONS,
         )
         success_serialized = success.read_text(encoding="utf-8")
         failure = public_suite.write_suite_failure_artifact(
@@ -628,6 +855,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 2, "did not pass", evidence[:1]
             ),
             config=self.config,
+            versions=VERSIONS,
         )
         failure_serialized = failure.read_text(encoding="utf-8")
         serialized = success_serialized + failure_serialized
@@ -645,6 +873,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         self.assertIsNone(public_smoke.URL_LIKE_VALUE_PATTERN.search(serialized))
         success_artifact = json.loads(success_serialized)
         self.assertEqual(success_artifact["status"], "pass")
+        self.assertEqual(success_artifact["versions"], VERSIONS)
         self.assertEqual(
             success_artifact["probes"],
             [
@@ -660,6 +889,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         )
         failure_artifact = json.loads(failure_serialized)
         self.assertEqual(failure_artifact["status"], "fail")
+        self.assertEqual(failure_artifact["versions"], VERSIONS)
         self.assertEqual(failure_artifact["failedProbeOrdinal"], 2)
 
     def test_artifact_writers_reject_incomplete_or_misaligned_evidence(self) -> None:
@@ -670,6 +900,23 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 self.diagnostics_dir,
                 evidence=(first,),
                 config=self.config,
+                versions=VERSIONS,
+            )
+        with self.assertRaises(M0Error):
+            public_suite.write_suite_success_artifact(
+                self.diagnostics_dir,
+                evidence=(first, second),
+                config=self.config,
+                versions={**VERSIONS, "port": True},
+            )
+        with self.assertRaises(M0Error):
+            public_suite.write_suite_failure_artifact(
+                self.diagnostics_dir,
+                error=public_suite.PublicSuiteProbeError(
+                    2, "did not pass", (first,)
+                ),
+                config=self.config,
+                versions={**VERSIONS, "port": True},
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_success_artifact(
@@ -682,6 +929,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     second,
                 ),
                 config=self.config,
+                versions=VERSIONS,
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_failure_artifact(
@@ -690,6 +938,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     True, "did not pass", ()
                 ),
                 config=self.config,
+                versions=VERSIONS,
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_failure_artifact(
@@ -698,6 +947,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     2, "did not pass", (second,)
                 ),
                 config=self.config,
+                versions=VERSIONS,
             )
         type_confused_network = copy.deepcopy(
             second.public_devtools_network
@@ -714,6 +964,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     ),
                 ),
                 config=self.config,
+                versions=VERSIONS,
             )
 
     def test_fresh_run_directory_never_reuses_a_stale_artifact(self) -> None:
@@ -756,6 +1007,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             mock.patch.object(sys, "argv", arguments),
             mock.patch.object(
                 public_suite, "run_public_suite", return_value=evidence
+            ) as run,
+            mock.patch.object(
+                public_suite, "public_suite_versions", return_value=VERSIONS
             ),
             mock.patch.object(
                 public_suite.secrets, "token_hex", return_value="success"
@@ -765,6 +1019,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         ):
             self.assertEqual(public_suite.main(), 0)
         self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(run.call_args.kwargs["expected_versions"], VERSIONS)
         self.assertEqual(
             stdout.getvalue().splitlines(),
             [
@@ -778,10 +1033,11 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             diagnostics_dir.glob("run-*/m5-public-https-suite-result.json")
         )
         self.assertEqual(len(successful_artifacts), 1)
-        self.assertEqual(
-            json.loads(successful_artifacts[0].read_text(encoding="utf-8"))["status"],
-            "pass",
+        success_artifact = json.loads(
+            successful_artifacts[0].read_text(encoding="utf-8")
         )
+        self.assertEqual(success_artifact["status"], "pass")
+        self.assertEqual(success_artifact["versions"], VERSIONS)
 
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -793,6 +1049,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 side_effect=public_suite.PublicSuiteProbeError(
                     2, "did not pass", evidence[:1]
                 ),
+            ) as run,
+            mock.patch.object(
+                public_suite, "public_suite_versions", return_value=VERSIONS
             ),
             mock.patch.object(
                 public_suite.secrets, "token_hex", return_value="failure"
@@ -809,6 +1068,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             stderr.getvalue().splitlines(),
             [f"{public_suite.SENTINEL}:FAIL run=run-failure probe=2"],
         )
+        self.assertEqual(run.call_args.kwargs["expected_versions"], VERSIONS)
         all_artifacts = list(
             diagnostics_dir.glob("run-*/m5-public-https-suite-result.json")
         )
@@ -819,7 +1079,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             if json.loads(artifact.read_text(encoding="utf-8"))["status"] == "fail"
         )
         serialized = failure_artifact.read_text(encoding="utf-8")
-        self.assertEqual(json.loads(serialized)["status"], "fail")
+        failure_result = json.loads(serialized)
+        self.assertEqual(failure_result["status"], "fail")
+        self.assertEqual(failure_result["versions"], VERSIONS)
         for value in (
             PUBLIC_ENDPOINT,
             *[probe.public_probe_url for probe in self.config.probes],
@@ -864,6 +1126,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 ],
             ),
             mock.patch.object(public_suite.secrets, "token_hex", return_value="raw"),
+            mock.patch.object(
+                public_suite, "public_suite_versions", return_value=VERSIONS
+            ),
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
         ):
@@ -909,6 +1174,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 public_suite, "run_public_suite", return_value=evidence
             ),
             mock.patch.object(
+                public_suite, "public_suite_versions", return_value=VERSIONS
+            ),
+            mock.patch.object(
                 public_suite.secrets, "token_hex", return_value="reporting"
             ),
             contextlib.redirect_stdout(stdout),
@@ -917,9 +1185,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         artifact = next(
             diagnostics_dir.glob("run-*/m5-public-https-suite-result.json")
         )
-        self.assertEqual(
-            json.loads(artifact.read_text(encoding="utf-8"))["status"], "pass"
-        )
+        reporting_artifact = json.loads(artifact.read_text(encoding="utf-8"))
+        self.assertEqual(reporting_artifact["status"], "pass")
+        self.assertEqual(reporting_artifact["versions"], VERSIONS)
 
 
 class PublicSuiteSourceContractTest(unittest.TestCase):
@@ -936,7 +1204,11 @@ class PublicSuiteSourceContractTest(unittest.TestCase):
         self.assertIn("shell=False", suite_source)
         self.assertIn("_child_devtools_evidence", suite_source)
         self.assertIn("_reject_duplicate_evidence_keys", suite_source)
+        self.assertIn("public_suite_versions", suite_source)
         self.assertIn("fail_prefix", suite_source)
+        self.assertIn("provenance_prefix", suite_source)
+        self.assertIn("validate_public_provenance", suite_source)
+        self.assertIn('"versions": provenance["versions"]', suite_source)
         self.assertIn("create_run_diagnostics_directory", suite_source)
         self.assertIn("run-{secrets.token_hex(12)}", suite_source)
         self.assertIn(
@@ -949,6 +1221,10 @@ class PublicSuiteSourceContractTest(unittest.TestCase):
         self.assertNotIn('parser.add_argument("--public-probe-url"', suite_source)
         self.assertIn("expected_public_devtools_network_evidence", single_probe_source)
         self.assertIn("validate_public_devtools_network_evidence", single_probe_source)
+        self.assertIn("PUBLIC_PROVENANCE_PROTOCOL", single_probe_source)
+        self.assertIn("public_provenance", single_probe_source)
+        self.assertIn("validate_public_provenance", single_probe_source)
+        self.assertIn('f"{SENTINEL}:PROVENANCE "', single_probe_source)
         self.assertIn('f"{SENTINEL}:EVIDENCE "', single_probe_source)
         self.assertIn("tempfile.TemporaryDirectory(", single_probe_source)
         self.assertIn("prefix=\"chromium-wasm-m5-public-\"", single_probe_source)

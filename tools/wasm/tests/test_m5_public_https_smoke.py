@@ -413,6 +413,75 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 expected_status=True, expected_protocol="h2"
             )
 
+    def test_public_provenance_is_fixed_and_type_sensitive(self) -> None:
+        provenance = public_smoke.public_provenance(VERSIONS)
+        self.assertEqual(
+            provenance,
+            {
+                "protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL,
+                "versions": VERSIONS,
+            },
+        )
+        self.assertEqual(
+            public_smoke.validate_public_provenance(
+                provenance, expected_versions=VERSIONS
+            ),
+            provenance,
+        )
+
+        stale_versions = {**VERSIONS, "port": "stale-port-revision"}
+        invalid_provenance = (
+            ("missing_field", {"protocol": 1}),
+            (
+                "extra_field",
+                {**provenance, "unexpected": "not allowed"},
+            ),
+            (
+                "boolean_protocol",
+                {**provenance, "protocol": True},
+            ),
+            (
+                "float_protocol",
+                {**provenance, "protocol": 1.0},
+            ),
+            (
+                "missing_version",
+                {
+                    "protocol": 1,
+                    "versions": {
+                        key: value
+                        for key, value in VERSIONS.items()
+                        if key != "port"
+                    },
+                },
+            ),
+            (
+                "extra_version",
+                {
+                    "protocol": 1,
+                    "versions": {**VERSIONS, "unexpected": "not allowed"},
+                },
+            ),
+            (
+                "empty_version",
+                {"protocol": 1, "versions": {**VERSIONS, "port": ""}},
+            ),
+            (
+                "boolean_version",
+                {"protocol": 1, "versions": {**VERSIONS, "port": True}},
+            ),
+            ("stale_versions", {"protocol": 1, "versions": stale_versions}),
+        )
+        for name, value in invalid_provenance:
+            with self.subTest(name=name):
+                with self.assertRaises(M0Error):
+                    public_smoke.validate_public_provenance(
+                        value, expected_versions=VERSIONS
+                    )
+
+        with self.assertRaises(M0Error):
+            public_smoke.public_provenance({**VERSIONS, "port": True})
+
     def test_failure_diagnostics_redact_runtime_only_inputs(self) -> None:
         endpoint_query_value = (
             "wss://Relay.Public.Example.Com:443/wisp/"
@@ -781,6 +850,9 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
         self.assertIn("Chromium CDP and WISP completion trace", runner)
         self.assertIn("PUBLIC_DEVTOOLS_NETWORK_EVENTS", runner)
         self.assertIn("expected_public_devtools_network_evidence", runner)
+        self.assertIn("PUBLIC_PROVENANCE_PROTOCOL", runner)
+        self.assertIn("validate_public_provenance", runner)
+        self.assertIn('f"{SENTINEL}:PROVENANCE "', runner)
         self.assertIn('f"{SENTINEL}:EVIDENCE "', runner)
         self.assertIn("_is_safe_public_url_string", runner)
 

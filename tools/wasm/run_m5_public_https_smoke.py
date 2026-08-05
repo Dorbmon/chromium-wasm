@@ -50,6 +50,10 @@ from run_m5_wisp_smoke import verify_no_private_key_pem_artifacts
 
 
 SENTINEL = "CHROMIUM_WASM_M5_PUBLIC_HTTPS"
+PUBLIC_PROVENANCE_PROTOCOL = 1
+PUBLIC_PROVENANCE_VERSION_KEYS = frozenset(
+    ("chromium", "v8", "emscripten", "port")
+)
 DEFAULT_MODULE_NAME = "content_shell_wasm_m5_public_test"
 MAXIMUM_URL_BYTES = 2048
 MAXIMUM_TIMER_GAP_MS = 250
@@ -415,6 +419,57 @@ def _exact_json_value_equal(actual: object, expected: object) -> bool:
             for actual_item, expected_item in zip(actual, expected)
         )
     return actual == expected
+
+
+def public_provenance(versions: object) -> dict[str, Any]:
+    """Return the fixed build identity record allowed to leave a child run."""
+
+    if (
+        type(versions) is not dict
+        or set(versions) != PUBLIC_PROVENANCE_VERSION_KEYS
+        or any(
+            type(versions[key]) is not str or not versions[key]
+            for key in PUBLIC_PROVENANCE_VERSION_KEYS
+        )
+    ):
+        raise M0Error("public HTTPS provenance versions are invalid")
+    return {
+        "protocol": PUBLIC_PROVENANCE_PROTOCOL,
+        "versions": {
+            key: versions[key] for key in sorted(PUBLIC_PROVENANCE_VERSION_KEYS)
+        },
+    }
+
+
+def validate_public_provenance(
+    provenance: object, *, expected_versions: object
+) -> dict[str, Any]:
+    """Reject an expanded, type-coerced, or stale child provenance record."""
+
+    expected_provenance = public_provenance(expected_versions)
+    if type(provenance) is not dict or set(provenance) != {
+        "protocol",
+        "versions",
+    }:
+        raise M0Error("public HTTPS provenance has an invalid schema")
+    if (
+        _require_int(provenance["protocol"], "public HTTPS provenance protocol")
+        != PUBLIC_PROVENANCE_PROTOCOL
+    ):
+        raise M0Error("public HTTPS provenance protocol mismatch")
+    reported_versions = provenance["versions"]
+    if (
+        type(reported_versions) is not dict
+        or set(reported_versions) != PUBLIC_PROVENANCE_VERSION_KEYS
+        or any(
+            type(reported_versions[key]) is not str or not reported_versions[key]
+            for key in PUBLIC_PROVENANCE_VERSION_KEYS
+        )
+    ):
+        raise M0Error("public HTTPS provenance versions are invalid")
+    if not _exact_json_value_equal(provenance, expected_provenance):
+        raise M0Error("public HTTPS provenance versions mismatch")
+    return expected_provenance
 
 
 def expected_public_devtools_network_evidence(
@@ -1000,6 +1055,15 @@ def main() -> int:
             result,
             expected_status=args.expected_status,
             expected_protocol=args.expected_protocol,
+        )
+        print(
+            f"{SENTINEL}:PROVENANCE "
+            + json.dumps(
+                public_provenance(versions),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
         )
         print(
             f"{SENTINEL}:EVIDENCE "
