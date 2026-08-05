@@ -265,9 +265,24 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         self.assertIn("request_id != request_id_", recorder)
         self.assertIn("kM5NetworkRedirectPath", recorder)
         self.assertIn("kM5NetworkDocumentPath", recorder)
+        self.assertIn("kM5NetworkLocalGatewayDeniedPath", recorder)
+        self.assertIn("kM5NetworkLocalGatewayDeniedPort", recorder)
+        self.assertIn("kM5NetworkLocalGatewayDeniedFailure", recorder)
+        self.assertIn("IsTargetRequestAtPort", recorder)
+        self.assertIn("EffectiveIntPort() != expected_port", recorder)
         self.assertIn("kM5NetworkReconnectStreamPath", recorder)
         self.assertIn("kM5NetworkReconnectFailure", recorder)
         self.assertIn("RecordFailed", recorder)
+        for field in (
+            "localGatewayBlockedRequest",
+            "localGatewayBlockedLoadingFailed",
+            "localGatewayBlockedRequestIdCorrelated",
+            "localGatewayBlockedByAdministrator",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, recorder)
+                self.assertIn(field, host)
+                self.assertIn(field, runner)
         self.assertIn("reconnectInternetDisconnected", recorder)
         self.assertIn("responseStatus", recorder)
         self.assertIn("responseProtocol", recorder)

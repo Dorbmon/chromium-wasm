@@ -106,6 +106,11 @@ constexpr std::string_view kM5NetworkReconnectStreamPath =
     "/m5/reconnect-stream";
 constexpr std::string_view kM5NetworkReconnectFailure =
     "net::ERR_INTERNET_DISCONNECTED";
+constexpr std::string_view kM5NetworkLocalGatewayDeniedPath =
+    "/m5/local-gateway-denied";
+constexpr int kM5NetworkLocalGatewayDeniedPort = 444;
+constexpr std::string_view kM5NetworkLocalGatewayDeniedFailure =
+    "net::ERR_BLOCKED_BY_ADMINISTRATOR";
 constexpr std::string_view kM5PublicSpecialUseHostnameSuffixes[] = {
     ".localhost",
     ".local",
@@ -414,6 +419,19 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     return true;
   }
 
+  bool IsTargetRequestAtPort(const base::DictValue& params,
+                             std::string_view expected_path,
+                             std::string_view expected_resource_type,
+                             int expected_port,
+                             std::string* request_id) {
+    const std::string* url = params.FindStringByDottedPath("request.url");
+    if (!url || GURL(*url).EffectiveIntPort() != expected_port) {
+      return false;
+    }
+    return IsTargetRequest(params, expected_path, expected_resource_type,
+                           request_id);
+  }
+
   void RecordRequest(const base::DictValue& params) {
     std::string request_id;
     if (IsTargetRequest(params, kM5NetworkRedirectPath, "Document",
@@ -440,12 +458,28 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
       return;
     }
 
+    if (IsTargetRequestAtPort(params, kM5NetworkLocalGatewayDeniedPath,
+                              "Fetch", kM5NetworkLocalGatewayDeniedPort,
+                              &request_id)) {
+      if (local_gateway_blocked_request_seen_ || request_id == request_id_ ||
+          (!reconnect_request_id_.empty() &&
+           request_id == reconnect_request_id_)) {
+        Fail("received an invalid local gateway denial request event");
+        return;
+      }
+      local_gateway_blocked_request_seen_ = true;
+      local_gateway_blocked_request_id_ = std::move(request_id);
+      return;
+    }
+
     if (!IsTargetRequest(params, kM5NetworkReconnectStreamPath, "Fetch",
                          &request_id)) {
       return;
     }
     if (!loading_finished_ || reconnect_request_seen_ ||
-        request_id == request_id_) {
+        request_id == request_id_ ||
+        (!local_gateway_blocked_request_id_.empty() &&
+         request_id == local_gateway_blocked_request_id_)) {
       Fail("received an invalid reconnect stream request event");
       return;
     }
@@ -495,11 +529,25 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   }
 
   void RecordFailed(const base::DictValue& params) {
-    if (!reconnect_request_seen_) {
+    const std::string* request_id = params.FindString("requestId");
+    if (!request_id) {
       return;
     }
-    const std::string* request_id = params.FindString("requestId");
-    if (!request_id || *request_id != reconnect_request_id_) {
+    if (local_gateway_blocked_request_seen_ &&
+        *request_id == local_gateway_blocked_request_id_) {
+      const std::string* error_text = params.FindString("errorText");
+      const std::optional<bool> canceled = params.FindBool("canceled");
+      if (local_gateway_blocked_loading_failed_ || !error_text ||
+          *error_text != kM5NetworkLocalGatewayDeniedFailure || !canceled ||
+          *canceled) {
+        Fail("received an invalid local gateway denial failure event");
+        return;
+      }
+      local_gateway_blocked_loading_failed_ = true;
+      MaybeReportComplete();
+      return;
+    }
+    if (!reconnect_request_seen_ || *request_id != reconnect_request_id_) {
       return;
     }
     const std::string* error_text = params.FindString("errorText");
@@ -525,6 +573,8 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   void MaybeReportComplete() {
     if (state_ != State::kEnabled || !redirect_request_seen_ ||
         !final_request_seen_ || !response_received_ || !loading_finished_ ||
+        !local_gateway_blocked_request_seen_ ||
+        !local_gateway_blocked_loading_failed_ ||
         !reconnect_request_seen_ || !reconnect_loading_failed_ ||
         events_.size() != 6) {
       return;
@@ -542,6 +592,12 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     report.Set("requestIdCorrelated", true);
     report.Set("responseStatus", response_status_);
     report.Set("responseProtocol", response_protocol_);
+    report.Set("localGatewayBlockedRequest",
+               local_gateway_blocked_request_seen_);
+    report.Set("localGatewayBlockedLoadingFailed",
+               local_gateway_blocked_loading_failed_);
+    report.Set("localGatewayBlockedRequestIdCorrelated", true);
+    report.Set("localGatewayBlockedByAdministrator", true);
     report.Set("reconnectRequest", reconnect_request_seen_);
     report.Set("reconnectLoadingFailed", reconnect_loading_failed_);
     report.Set("reconnectRequestIdCorrelated", true);
@@ -583,9 +639,12 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   bool final_request_seen_ = false;
   bool response_received_ = false;
   bool loading_finished_ = false;
+  bool local_gateway_blocked_request_seen_ = false;
+  bool local_gateway_blocked_loading_failed_ = false;
   bool reconnect_request_seen_ = false;
   bool reconnect_loading_failed_ = false;
   std::string request_id_;
+  std::string local_gateway_blocked_request_id_;
   std::string reconnect_request_id_;
   int response_status_ = 0;
   std::string response_protocol_;

@@ -1550,6 +1550,10 @@ function hasM5DevToolsNetworkLog(report) {
       report?.responseReceived === true && report?.loadingFinished === true &&
       report?.requestIdCorrelated === true &&
       report?.responseStatus === 200 && report?.responseProtocol === "h2" &&
+      report?.localGatewayBlockedRequest === true &&
+      report?.localGatewayBlockedLoadingFailed === true &&
+      report?.localGatewayBlockedRequestIdCorrelated === true &&
+      report?.localGatewayBlockedByAdministrator === true &&
       report?.reconnectRequest === true &&
       report?.reconnectLoadingFailed === true &&
       report?.reconnectRequestIdCorrelated === true &&
@@ -5287,6 +5291,10 @@ export class ChromiumWasmM3Host {
         requestIdCorrelated: true,
         responseStatus: 200,
         responseProtocol: "h2",
+        localGatewayBlockedRequest: true,
+        localGatewayBlockedLoadingFailed: true,
+        localGatewayBlockedRequestIdCorrelated: true,
+        localGatewayBlockedByAdministrator: true,
         reconnectRequest: true,
         reconnectLoadingFailed: true,
         reconnectRequestIdCorrelated: true,
