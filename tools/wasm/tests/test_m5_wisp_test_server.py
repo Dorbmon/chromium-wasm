@@ -951,7 +951,20 @@ try {
         self.assertIn('import http2 from "node:http2"', source)
         self.assertIn("WISP_STREAM_OPEN_CONFIRMATION_EXTENSION", source)
         self.assertIn("payload[0] !== 0x01", source)
-        self.assertIn("host: LOOPBACK_HOST", source)
+        self.assertIn("destinationRoutes: new Map()", source)
+        self.assertIn("function addDestinationRoute", source)
+        self.assertIn("hostname !== TEST_HOSTNAME", source)
+        self.assertIn("destinationRouteKey(hostname, port)", source)
+        self.assertIn("host: route.connectHost", source)
+        self.assertIn("port: route.connectPort", source)
+        self.assertIn("LOCAL_GATEWAY_HTTPS_PORT", source)
+        self.assertIn("LOCAL_GATEWAY_BLOCKED_PORT", source)
+        self.assertIn("RESERVED_LOGICAL_PORTS", source)
+        self.assertIn("MAX_LOOPBACK_LISTEN_ATTEMPTS", source)
+        self.assertIn("RESERVED_LOGICAL_PORTS.has(address.port)", source)
+        self.assertIn("local-gateway-443-request", source)
+        self.assertIn("local-gateway-444-blocked", source)
+        self.assertNotIn("allowedPorts", source)
         self.assertIn("MAX_WEBSOCKET_MESSAGE_BYTES", source)
         self.assertIn(
             "window.__chromiumWasmM5Probe = () => JSON.stringify({", source)
@@ -1200,6 +1213,9 @@ try {
         self.assertEqual(status["cacheConditionalRequests"], 0)
         self.assertEqual(status["cacheNotModified304s"], 0)
         self.assertEqual(status["cacheUnexpectedRequests"], 0)
+        self.assertEqual(status["localGateway443Requests"], 0)
+        self.assertEqual(status["localGateway443StreamsOpened"], 0)
+        self.assertEqual(status["localGatewayBlockedPortAttempts"], 0)
         self.assertEqual(status["cspConnectSrcProofs"], 0)
         self.assertEqual(status["cspConnectSrcTargetTcpConnections"], 0)
         self.assertEqual(status["cspConnectSrcTargetRequests"], 0)
@@ -1946,6 +1962,48 @@ try {
         self.assertEqual((packet_type, stream_id), (0x03, 7))
         self.assertEqual(struct.unpack("<I", credit)[0], 64)
 
+        # The fixed public-looking HTTPS authority is a logical WISP route,
+        # not a listener on port 443. The relay must map only this exact
+        # a.test destination to its ephemeral H2 loopback backend.
+        local_gateway = (
+            bytes([0x01]) + struct.pack("<H", 443) + b"a.test"
+        )
+        send_websocket_frame(
+            raw, 0x02, wisp_packet(0x01, 12, local_gateway)
+        )
+        finished, opcode, payload = read_websocket_frame(connection)
+        self.assertTrue(finished)
+        self.assertEqual(opcode, 0x02)
+        packet_type, stream_id, credit = parse_wisp_packet(payload)
+        self.assertEqual((packet_type, stream_id), (0x03, 12))
+        self.assertEqual(struct.unpack("<I", credit)[0], 64)
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = self._status()
+            if status["localGateway443StreamsOpened"] >= 1:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("logical port 443 did not open the mapped WISP stream")
+        self.assertIn(
+            {"hostname": "a.test", "port": 443},
+            status["requestedDestinations"],
+        )
+        self.assertEqual(status["localGateway443Requests"], 0)
+
+        blocked_gateway = (
+            bytes([0x01]) + struct.pack("<H", 444) + b"a.test"
+        )
+        send_websocket_frame(
+            raw, 0x02, wisp_packet(0x01, 13, blocked_gateway)
+        )
+        finished, opcode, payload = read_websocket_frame(connection)
+        self.assertTrue(finished)
+        self.assertEqual(opcode, 0x02)
+        packet_type, stream_id, reason = parse_wisp_packet(payload)
+        self.assertEqual((packet_type, stream_id, reason), (0x04, 13, b"H"))
+
         plaintext_control_port = urlsplit(
             self.metadata["plaintextHttpControlUrl"]
         ).port
@@ -2035,6 +2093,12 @@ try {
             {"hostname": "a.test", "port": h2_port},
             status["requestedDestinations"])
         self.assertIn(
+            {"hostname": "a.test", "port": 443},
+            status["requestedDestinations"])
+        self.assertNotIn(
+            {"hostname": "a.test", "port": 444},
+            status["requestedDestinations"])
+        self.assertIn(
             {"hostname": "a.test", "port": plaintext_control_port},
             status["requestedDestinations"])
         self.assertGreaterEqual(
@@ -2048,9 +2112,18 @@ try {
         )
         self.assertGreaterEqual(status["tlsMismatchTcpConnections"], 1)
         self.assertEqual(status["tlsMismatchHttpStreams"], 0)
-        self.assertGreaterEqual(status["rejectedDestinations"], 2)
+        self.assertEqual(status["localGateway443StreamsOpened"], 1)
+        self.assertEqual(status["localGateway443Requests"], 0)
+        self.assertEqual(status["localGatewayBlockedPortAttempts"], 1)
+        self.assertGreaterEqual(status["rejectedDestinations"], 3)
         self.assertEqual(status["udpPackets"], 1)
         self.assertEqual(status["relayErrors"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(events.count("local-gateway-444-blocked"), 1)
 
 
 if __name__ == "__main__":

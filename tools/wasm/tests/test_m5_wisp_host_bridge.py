@@ -196,6 +196,7 @@ const TYPE_INFO = 0x05;
 const EXT_OPEN_CONFIRMATION = 0x05;
 const ERR_ACCESS_DENIED = -10;
 const ERR_INSUFFICIENT_RESOURCES = -12;
+const ERR_BLOCKED_BY_ADMINISTRATOR = -22;
 const ERR_NOT_IMPLEMENTED = -11;
 const ERR_CONNECTION_CLOSED = -100;
 const ERR_CONNECTION_RESET = -101;
@@ -428,6 +429,10 @@ assert(transport.state(7) === 3 && transport.error(7) === 0,
 socket.emit(packet(TYPE_CLOSE, 8, new Uint8Array([0x44])));
 assert(transport.state(8) === 4 && transport.error(8) === ERR_CONNECTION_REFUSED,
     'WISP refusal was not translated to ERR_CONNECTION_REFUSED');
+socket.emit(packet(TYPE_CLOSE, 9, new Uint8Array([0x48])));
+assert(transport.state(9) === 4 &&
+    transport.error(9) === ERR_BLOCKED_BY_ADMINISTRATOR,
+    'WISP blocked close was not translated to ERR_BLOCKED_BY_ADMINISTRATOR');
 
 // Inbound overflow terminates only that stream with a client error CLOSE.
 reset(baseConfig({maxInboundStreamBytes: 3}));

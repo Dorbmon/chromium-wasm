@@ -221,6 +221,10 @@ def passing_result() -> dict[str, object]:
                 ),
                 "activeMixedContentErrorName": "TypeError",
                 "activeMixedContentCspAllowed": True,
+                "localGatewayMappedRequestStarted": True,
+                "localGatewayMappedResponse": True,
+                "localGatewayBlockedRequestStarted": True,
+                "localGatewayBlocked": True,
                 "nonce": "fixed-test-nonce",
             },
         },
@@ -279,7 +283,10 @@ def passing_relay_status() -> dict[str, object]:
         "ready": True,
         "activeWispSessions": 1,
         "wispSessions": 2,
-        "rejectedDestinations": 0,
+        "rejectedDestinations": 1,
+        "localGateway443StreamsOpened": 1,
+        "localGateway443Requests": 1,
+        "localGatewayBlockedPortAttempts": 1,
         "udpPackets": 0,
         "relayErrors": 0,
         "corsRequests": 1,
@@ -360,6 +367,7 @@ def passing_relay_status() -> dict[str, object]:
         "requestedDestinations": [
             {"hostname": "a.test", "port": 4446},
             {"hostname": "a.test", "port": 4443},
+            {"hostname": "a.test", "port": 443},
             {"hostname": "a.test", "port": 4443},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
@@ -382,71 +390,73 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 10, "event": "h2-page"},
             {"sequence": 11, "event": "h2-page-cookie"},
             {"sequence": 12, "event": "h2-resource"},
-            {"sequence": 13, "event": "h2-cache-store-200"},
-            {"sequence": 14, "event": "h2-cache-revalidate-304"},
-            {"sequence": 15, "event": "h2-csp-connect-src-proof"},
-            {"sequence": 16, "event": "h2-mixed-content-proof"},
-            {"sequence": 17, "event": "h2-cancel-stream-start"},
+            {"sequence": 13, "event": "local-gateway-443-request"},
+            {"sequence": 14, "event": "local-gateway-444-blocked"},
+            {"sequence": 15, "event": "h2-cache-store-200"},
+            {"sequence": 16, "event": "h2-cache-revalidate-304"},
+            {"sequence": 17, "event": "h2-csp-connect-src-proof"},
+            {"sequence": 18, "event": "h2-mixed-content-proof"},
+            {"sequence": 19, "event": "h2-cancel-stream-start"},
             {
-                "sequence": 18,
+                "sequence": 20,
                 "event": "h2-cancel-stream-cancel-reset",
                 "rstCode": 8,
             },
-            {"sequence": 19, "event": "h2-cancel-stream-proof"},
-            {"sequence": 20, "event": "h2-slow-stream-start"},
-            {"sequence": 21, "event": "h2-slow-stream-first-stage"},
-            {
-                "sequence": 22,
-                "event": "h2-slow-stream-first-stage-ack",
-            },
-            {"sequence": 23, "event": "h2-slow-stream-second-stage"},
+            {"sequence": 21, "event": "h2-cancel-stream-proof"},
+            {"sequence": 22, "event": "h2-slow-stream-start"},
+            {"sequence": 23, "event": "h2-slow-stream-first-stage"},
             {
                 "sequence": 24,
+                "event": "h2-slow-stream-first-stage-ack",
+            },
+            {"sequence": 25, "event": "h2-slow-stream-second-stage"},
+            {
+                "sequence": 26,
                 "event": "h2-slow-stream-consumer-pause-ready",
             },
             {
-                "sequence": 25,
+                "sequence": 27,
                 "event": "h2-slow-stream-consumer-burst",
                 "bytes": 64 * 1024,
                 "backpressured": True,
             },
             {
-                "sequence": 26,
+                "sequence": 28,
                 "event": "h2-slow-stream-consumer-resume",
             },
             {
-                "sequence": 27,
+                "sequence": 29,
                 "event": "h2-slow-stream-second-stage-ack",
             },
-            {"sequence": 28, "event": "h2-slow-stream-third-stage"},
-            {"sequence": 29, "event": "h2-slow-stream-complete"},
-            {"sequence": 30, "event": "h2-slow-stream-proof"},
-            {"sequence": 31, "event": "h2-multiplex-pending"},
-            {"sequence": 32, "event": "h1-multiplex-pending"},
-            {"sequence": 33, "event": "wisp-multiplex-two-streams-live"},
-            {"sequence": 34, "event": "h2-multiplex-complete"},
-            {"sequence": 35, "event": "h1-multiplex-complete"},
-            {"sequence": 36, "event": "h2-large-download-start"},
-            {"sequence": 37, "event": "h2-large-download-complete"},
-            {"sequence": 38, "event": "h2-reconnect-stream-start"},
-            {"sequence": 39, "event": "h2-reconnect-stream-first-chunk"},
-            {"sequence": 40, "event": "h2-reconnect-first-chunk-ack"},
-            {"sequence": 41, "event": "h2-reconnect-disconnect-requested"},
-            {"sequence": 42, "event": "h2-reconnect-carrier-close"},
-            {"sequence": 43, "event": "wisp-disconnected"},
-            {"sequence": 44, "event": "h2-reconnect-stream-disconnected"},
-            {"sequence": 45, "event": "h2-reconnect-wisp-disconnected"},
-            {"sequence": 46, "event": "wisp-connected"},
-            {"sequence": 47, "event": "wisp-ready"},
+            {"sequence": 30, "event": "h2-slow-stream-third-stage"},
+            {"sequence": 31, "event": "h2-slow-stream-complete"},
+            {"sequence": 32, "event": "h2-slow-stream-proof"},
+            {"sequence": 33, "event": "h2-multiplex-pending"},
+            {"sequence": 34, "event": "h1-multiplex-pending"},
+            {"sequence": 35, "event": "wisp-multiplex-two-streams-live"},
+            {"sequence": 36, "event": "h2-multiplex-complete"},
+            {"sequence": 37, "event": "h1-multiplex-complete"},
+            {"sequence": 38, "event": "h2-large-download-start"},
+            {"sequence": 39, "event": "h2-large-download-complete"},
+            {"sequence": 40, "event": "h2-reconnect-stream-start"},
+            {"sequence": 41, "event": "h2-reconnect-stream-first-chunk"},
+            {"sequence": 42, "event": "h2-reconnect-first-chunk-ack"},
+            {"sequence": 43, "event": "h2-reconnect-disconnect-requested"},
+            {"sequence": 44, "event": "h2-reconnect-carrier-close"},
+            {"sequence": 45, "event": "wisp-disconnected"},
+            {"sequence": 46, "event": "h2-reconnect-stream-disconnected"},
+            {"sequence": 47, "event": "h2-reconnect-wisp-disconnected"},
+            {"sequence": 48, "event": "wisp-connected"},
+            {"sequence": 49, "event": "wisp-ready"},
             {
-                "sequence": 48,
+                "sequence": 50,
                 "event": "connect-open",
                 "destination": "a.test:4443",
             },
-            {"sequence": 49, "event": "h2-reconnect-recovery"},
-            {"sequence": 50, "event": "h1-cors"},
-            {"sequence": 51, "event": "h1-wss-echo"},
-            {"sequence": 52, "event": "tls-failure-tcp-connect"},
+            {"sequence": 51, "event": "h2-reconnect-recovery"},
+            {"sequence": 52, "event": "h1-cors"},
+            {"sequence": 53, "event": "h1-wss-echo"},
+            {"sequence": 54, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -815,6 +825,10 @@ class M5ResultValidationTest(unittest.TestCase):
             "cspConnectSrcBlocked",
             "activeMixedContentBlocked",
             "activeMixedContentCspAllowed",
+            "localGatewayMappedRequestStarted",
+            "localGatewayMappedResponse",
+            "localGatewayBlockedRequestStarted",
+            "localGatewayBlocked",
         ):
             with self.subTest(field=field):
                 result = passing_result()
@@ -1178,6 +1192,126 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
             transcript[live_index],
         )
         with self.assertRaisesRegex(M0Error, "multiplex proof"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+    def test_rejects_incomplete_or_unredacted_local_gateway_evidence(
+        self,
+    ) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        for field, invalid_value in (
+            ("localGateway443StreamsOpened", 0),
+            ("localGateway443StreamsOpened", 2),
+            ("localGateway443Requests", 0),
+            ("localGateway443Requests", 2),
+            ("localGatewayBlockedPortAttempts", 0),
+            ("localGatewayBlockedPortAttempts", 2),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                status = passing_relay_status()
+                status[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, field):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        for rejected_destinations in (0, 2):
+            with self.subTest(rejected_destinations=rejected_destinations):
+                status = passing_relay_status()
+                status["rejectedDestinations"] = rejected_destinations
+                with self.assertRaisesRegex(
+                    M0Error, "controlled local gateway port"
+                ):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        destinations = status["requestedDestinations"]
+        assert isinstance(destinations, list)
+        destinations[:] = [
+            destination
+            for destination in destinations
+            if destination.get("port") != 443
+        ]
+        with self.assertRaisesRegex(M0Error, "mapped local gateway 443 stream"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        destinations = status["requestedDestinations"]
+        assert isinstance(destinations, list)
+        destinations.append({"hostname": "a.test", "port": 444})
+        with self.assertRaisesRegex(M0Error, "blocked local gateway port"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        for event_name in (
+            "local-gateway-443-request",
+            "local-gateway-444-blocked",
+        ):
+            with self.subTest(missing_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript[:] = [
+                    entry
+                    for entry in transcript
+                    if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, event_name):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        transcript.append(
+            {"sequence": 55, "event": "local-gateway-443-request"}
+        )
+        with self.assertRaisesRegex(M0Error, "exactly one"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        mapping_entry = next(
+            entry
+            for entry in transcript
+            if entry.get("event") == "local-gateway-443-request"
+        )
+        mapping_entry["destination"] = "a.test:443"
+        with self.assertRaisesRegex(M0Error, "non-redacted"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        mapping_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "local-gateway-443-request"
+        )
+        blocked_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "local-gateway-444-blocked"
+        )
+        transcript[mapping_index], transcript[blocked_index] = (
+            transcript[blocked_index],
+            transcript[mapping_index],
+        )
+        with self.assertRaisesRegex(M0Error, "mapping proof"):
             run_m5_wisp_smoke.validate_relay_transcript(
                 status, relay_ready=relay_ready
             )
@@ -1991,7 +2125,7 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
         status = passing_relay_status()
         destinations = status["requestedDestinations"]
         assert isinstance(destinations, list)
-        destinations.pop(2)
+        destinations.pop(1)
         with self.assertRaisesRegex(
             M0Error, "all fixed M5 destination streams"
         ):

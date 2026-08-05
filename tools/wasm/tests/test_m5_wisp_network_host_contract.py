@@ -157,6 +157,10 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
             "pageProbe?.activeMixedContentTargetUrl",
             "pageProbe?.activeMixedContentErrorName === \"TypeError\"",
             "pageProbe?.activeMixedContentCspAllowed === true",
+            "pageProbe?.localGatewayMappedRequestStarted === true",
+            "pageProbe?.localGatewayMappedResponse === true",
+            "pageProbe?.localGatewayBlockedRequestStarted === true",
+            "pageProbe?.localGatewayBlocked === true",
             "pageProbe?.cancelStreamStarted === true",
             "pageProbe?.cancelStreamReceivedFirstChunk === true",
             "pageProbe?.cancelStreamAborted === true",
@@ -207,6 +211,29 @@ class M5WispNetworkHostContractTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, host)
+
+    def test_m5_local_gateway_page_probe_fields_are_controlled_only(self) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        controlled_smoke = host.split(
+            "async function runM5WispNetworkSmokeFromQuery() {", 1
+        )[1].split("\nasync function runM5PublicHttpsSmokeFromQuery()", 1)[0]
+        public_smoke = host.split(
+            "async function runM5PublicHttpsSmokeFromQuery() {", 1
+        )[1].split("\nexport async function runContentShellSmokeFromQuery()", 1)[0]
+
+        for field in (
+            "localGatewayMappedRequestStarted",
+            "localGatewayMappedResponse",
+            "localGatewayBlockedRequestStarted",
+            "localGatewayBlocked",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(
+                    f'typeof pageProbe?.{field} === "boolean"', host
+                )
+                self.assertIn(f"pageProbe?.{field} === true", host)
+                self.assertIn(f"pageProbe.{field} === true", controlled_smoke)
+                self.assertNotIn(field, public_smoke)
 
     def test_m5_devtools_network_trace_is_in_process_bounded_and_required(
         self,

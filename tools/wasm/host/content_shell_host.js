@@ -1429,6 +1429,10 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       typeof pageProbe?.activeMixedContentTargetUrl === "string" &&
       typeof pageProbe?.activeMixedContentErrorName === "string" &&
       typeof pageProbe?.activeMixedContentCspAllowed === "boolean" &&
+      typeof pageProbe?.localGatewayMappedRequestStarted === "boolean" &&
+      typeof pageProbe?.localGatewayMappedResponse === "boolean" &&
+      typeof pageProbe?.localGatewayBlockedRequestStarted === "boolean" &&
+      typeof pageProbe?.localGatewayBlocked === "boolean" &&
       typeof pageProbe?.cancelStreamStarted === "boolean" &&
       typeof pageProbe?.cancelStreamReceivedFirstChunk === "boolean" &&
       typeof pageProbe?.cancelStreamAborted === "boolean" &&
@@ -1486,6 +1490,10 @@ function hasM5NetworkPageProbe(pageProbe) {
       pageProbe.activeMixedContentTargetUrl.length > 0 &&
       pageProbe?.activeMixedContentErrorName === "TypeError" &&
       pageProbe?.activeMixedContentCspAllowed === true &&
+      pageProbe?.localGatewayMappedRequestStarted === true &&
+      pageProbe?.localGatewayMappedResponse === true &&
+      pageProbe?.localGatewayBlockedRequestStarted === true &&
+      pageProbe?.localGatewayBlocked === true &&
       pageProbe?.cancelStreamStarted === true &&
       pageProbe?.cancelStreamReceivedFirstChunk === true &&
       pageProbe?.cancelStreamAborted === true &&
@@ -13097,6 +13105,11 @@ async function runM5WispNetworkSmokeFromQuery() {
         pageProbe.activeMixedContentTargetUrl.length > 0 &&
         pageProbe.activeMixedContentErrorName === "TypeError" &&
         pageProbe.activeMixedContentCspAllowed === true,
+      localGateway:
+        pageProbe.localGatewayMappedRequestStarted === true &&
+        pageProbe.localGatewayMappedResponse === true &&
+        pageProbe.localGatewayBlockedRequestStarted === true &&
+        pageProbe.localGatewayBlocked === true,
       cancellation:
         pageProbe.cancelStreamStarted === true &&
         pageProbe.cancelStreamReceivedFirstChunk === true &&

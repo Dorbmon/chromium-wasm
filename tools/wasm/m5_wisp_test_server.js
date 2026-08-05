@@ -26,6 +26,18 @@ const FIXTURE = "chromium-wasm-m5-network-v1";
 const WISP_PATH = "/wisp/";
 const STATUS_PATH = "/status";
 const TEST_HOSTNAME = "a.test";
+// The controlled local-gateway proof deliberately presents an ordinary
+// HTTPS authority to Chromium while keeping the actual target listener on an
+// ephemeral loopback port. The relay owns this exact logical-destination
+// mapping; it never forwards an arbitrary a.test port.
+const LOCAL_GATEWAY_HTTPS_PORT = 443;
+const LOCAL_GATEWAY_BLOCKED_PORT = 444;
+const LOCAL_GATEWAY_PROBE_BODY = "M5_LOCAL_GATEWAY_443_OK";
+const RESERVED_LOGICAL_PORTS = new Set([
+  LOCAL_GATEWAY_HTTPS_PORT,
+  LOCAL_GATEWAY_BLOCKED_PORT,
+]);
+const MAX_LOOPBACK_LISTEN_ATTEMPTS = 8;
 const REDIRECT_COOKIE_NAME = "m5_redirect";
 const CACHE_REVALIDATE_ETAG = '"m5-cache-revalidate-v1"';
 const CACHE_REVALIDATE_BODY = "M5_CACHE_REVALIDATE_OK";
@@ -179,24 +191,44 @@ function parseArguments(argv) {
 
 function listenLoopback(server) {
   return new Promise((resolve, reject) => {
-    const onError = (error) => {
-      server.off("listening", onListening);
-      reject(error);
+    let attempts = 0;
+    const beginListen = () => {
+      attempts += 1;
+      const onError = (error) => {
+        server.off("listening", onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        const address = server.address();
+        if (!address || typeof address === "string" ||
+            address.address !== LOOPBACK_HOST ||
+            !Number.isSafeInteger(address.port) || address.port < 1 ||
+            address.port > 65535) {
+          reject(new Error("test server did not bind an IPv4 loopback port"));
+          return;
+        }
+        if (!RESERVED_LOGICAL_PORTS.has(address.port)) {
+          resolve(address.port);
+          return;
+        }
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          if (attempts >= MAX_LOOPBACK_LISTEN_ATTEMPTS) {
+            reject(new Error("test server repeatedly selected a reserved port"));
+            return;
+          }
+          beginListen();
+        });
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen({host: LOOPBACK_HOST, port: 0, exclusive: true});
     };
-    const onListening = () => {
-      server.off("error", onError);
-      const address = server.address();
-      if (!address || typeof address === "string" ||
-          address.address !== LOOPBACK_HOST || !Number.isSafeInteger(address.port) ||
-          address.port < 1 || address.port > 65535) {
-        reject(new Error("test server did not bind an IPv4 loopback port"));
-        return;
-      }
-      resolve(address.port);
-    };
-    server.once("error", onError);
-    server.once("listening", onListening);
-    server.listen({host: LOOPBACK_HOST, port: 0, exclusive: true});
+    beginListen();
   });
 }
 
@@ -678,6 +710,30 @@ function appendRequestedDestination(context, hostname, port) {
   context.stats.requestedDestinations.push({hostname, port});
 }
 
+function destinationRouteKey(hostname, port) {
+  return `${hostname}:${port}`;
+}
+
+function addDestinationRoute(context, hostname, logicalPort, connectPort,
+                             kind) {
+  if (hostname !== TEST_HOSTNAME ||
+      !Number.isSafeInteger(logicalPort) || logicalPort < 1 ||
+      logicalPort > 65535 || !Number.isSafeInteger(connectPort) ||
+      connectPort < 1 || connectPort > 65535 ||
+      typeof kind !== "string" || kind.length === 0) {
+    fail("invalid loopback WISP destination route");
+  }
+  const key = destinationRouteKey(hostname, logicalPort);
+  if (context.destinationRoutes.has(key)) {
+    fail("duplicate loopback WISP destination route");
+  }
+  context.destinationRoutes.set(key, {
+    connectHost: LOOPBACK_HOST,
+    connectPort,
+    kind,
+  });
+}
+
 function incrementBoundedCounter(context, name) {
   context.stats[name] = Math.min(
       context.stats[name] + 1, MAX_TEST_COUNTER);
@@ -720,6 +776,10 @@ function statusSnapshot(context) {
     largeDownloadRequests: context.stats.largeDownloadRequests,
     largeDownloadUnexpectedCloses:
       context.stats.largeDownloadUnexpectedCloses,
+    localGateway443Requests: context.stats.localGateway443Requests,
+    localGateway443StreamsOpened: context.stats.localGateway443StreamsOpened,
+    localGatewayBlockedPortAttempts:
+      context.stats.localGatewayBlockedPortAttempts,
     multiplexBarrierReleases: context.stats.multiplexBarrierReleases,
     multiplexBarrierTimeouts: context.stats.multiplexBarrierTimeouts,
     multiplexBothStreamsOpen: context.stats.multiplexBothStreamsOpen,
@@ -895,10 +955,22 @@ class WispRelay {
     }
     const port = payload.readUInt16LE(1);
     const hostname = decodeHostname(payload.subarray(3));
-    if (!hostname || !this.context.allowedPorts.has(port)) {
+    const route = hostname ? this.context.destinationRoutes.get(
+        destinationRouteKey(hostname, port)) : null;
+    if (!route) {
       this.context.stats.rejectedDestinations += 1;
       this._sendPacket(wispClosePacket(streamId, WISP_CLOSE_REASONS.BLOCKED));
-      this.context.transcript.add("connect-rejected", {streamId, port});
+      if (hostname === TEST_HOSTNAME && port === LOCAL_GATEWAY_BLOCKED_PORT) {
+        incrementBoundedCounter(
+            this.context, "localGatewayBlockedPortAttempts");
+        // Keep the controlled status record destination-free. The test's
+        // fixed 444 attempt is proven by this event plus the absence of a
+        // requested-destination record, rather than by serializing a client
+        // supplied hostname or URL.
+        this.context.transcript.add("local-gateway-444-blocked");
+      } else {
+        this.context.transcript.add("connect-rejected", {streamId, port});
+      }
       return;
     }
     // The mixed-content target deliberately shares this exact cleartext
@@ -914,8 +986,8 @@ class WispRelay {
     }
 
     const socket = net.connect({
-      host: LOOPBACK_HOST,
-      port,
+      host: route.connectHost,
+      port: route.connectPort,
       allowHalfOpen: false,
     });
     socket.setNoDelay(true);
@@ -923,6 +995,7 @@ class WispRelay {
     const stream = {
       id: streamId,
       port,
+      routeKind: route.kind,
       socket,
       state: "connecting",
       closeSent: false,
@@ -947,6 +1020,10 @@ class WispRelay {
         return;
       }
       stream.state = "open";
+      if (stream.routeKind === "local-gateway-443") {
+        incrementBoundedCounter(
+            this.context, "localGateway443StreamsOpened");
+      }
       this.context.transcript.add("connect-open", {
         streamId,
         destination: `${TEST_HOSTNAME}:${port}`,
@@ -1168,7 +1245,12 @@ function multiplexTargetKey(destinationPort, sourcePort) {
 }
 
 function isMultiplexTargetPort(context, port) {
-  return port === context.h2Port || port === context.h1Port;
+  // The fixed logical HTTPS route uses the same source-port correlation as
+  // the multiplex lane. The target listener remains the H2 fixture, but the
+  // WISP stream's destination port must stay 443 so the handler can prove the
+  // relay performed its explicit mapping.
+  return port === context.h2Port || port === context.h1Port ||
+      port === LOCAL_GATEWAY_HTTPS_PORT;
 }
 
 function registerMultiplexTargetStream(context, relay, stream) {
@@ -1441,6 +1523,42 @@ function handleMultiplexH2Request(stream, context) {
     stream.once("close", callback);
     stream.once("error", callback);
   });
+}
+
+function handleLocalGatewayProbe(stream, context) {
+  const pageOrigin = `https://${TEST_HOSTNAME}:${context.h2Port}`;
+  const record = correlatedMultiplexTargetStream(
+      context, LOCAL_GATEWAY_HTTPS_PORT, stream.session?.socket?.remotePort);
+  const accepted = !!record &&
+      record.stream.routeKind === "local-gateway-443";
+  if (!accepted) {
+    const body = Buffer.from("M5_LOCAL_GATEWAY_ROUTE_REJECTED");
+    stream.respond(h2Headers({
+      ":status": 409,
+      "access-control-allow-origin": pageOrigin,
+      "content-length": String(body.length),
+      "content-type": "text/plain; charset=utf-8",
+      "vary": "Origin",
+    }));
+    stream.end(body);
+    context.transcript.add("local-gateway-443-route-rejected");
+    return;
+  }
+  const body = Buffer.from(LOCAL_GATEWAY_PROBE_BODY);
+  incrementBoundedCounter(context, "localGateway443Requests");
+  stream.respond(h2Headers({
+    ":status": 200,
+    "access-control-allow-origin": pageOrigin,
+    "access-control-expose-headers":
+      "x-m5-http-version, x-m5-local-gateway",
+    "content-length": String(body.length),
+    "content-type": "text/plain; charset=utf-8",
+    "vary": "Origin",
+    "x-m5-http-version": "h2",
+    "x-m5-local-gateway": "mapped-443",
+  }));
+  stream.end(body);
+  context.transcript.add("local-gateway-443-request");
 }
 
 function handleMultiplexH1Request(request, response, context) {
@@ -2193,6 +2311,10 @@ function h2Page(context) {
       new URL("/m5/csp-connect-src-proof", location.href).href;
   const cspConnectSrcTargetURL = ${JSON.stringify(cspConnectSrcTargetUrl)};
   const h2ResourceURL = new URL("/m5/h2-resource", location.href).href;
+  const localGatewayProbeURL = ${JSON.stringify(
+      `https://${TEST_HOSTNAME}:${LOCAL_GATEWAY_HTTPS_PORT}/m5/local-gateway-probe`)};
+  const localGatewayDeniedURL = ${JSON.stringify(
+      `https://${TEST_HOSTNAME}:${LOCAL_GATEWAY_BLOCKED_PORT}/m5/local-gateway-denied`)};
   const cancelStreamURL = new URL("/m5/cancel-stream", location.href).href;
   const cancelStreamProofURL =
       new URL("/m5/cancel-proof", location.href).href;
@@ -2238,6 +2360,10 @@ function h2Page(context) {
     h2Fetch: false,
     h2Protocol: "",
     altSvcH3Advertised: false,
+    localGatewayMappedRequestStarted: false,
+    localGatewayMappedResponse: false,
+    localGatewayBlockedRequestStarted: false,
+    localGatewayBlocked: false,
     cacheStored: false,
     cacheRevalidated: false,
     cancelStreamStarted: false,
@@ -2406,6 +2532,47 @@ function h2Page(context) {
       cspAllowed: !cspConnectSrcViolation,
       errorName,
     };
+  }
+
+  async function verifyLocalGatewayRoute() {
+    const result = {
+      mappedRequestStarted: false,
+      mappedResponse: false,
+      blockedRequestStarted: false,
+      blocked: false,
+    };
+    result.mappedRequestStarted = true;
+    state.localGatewayMappedRequestStarted = true;
+    try {
+      const response = await fetch(localGatewayProbeURL, {
+        cache: "no-store",
+        credentials: "omit",
+        mode: "cors",
+      });
+      const body = await response.text();
+      result.mappedResponse = response.ok && body ===
+          ${JSON.stringify(LOCAL_GATEWAY_PROBE_BODY)} &&
+          response.headers.get("x-m5-http-version") === "h2" &&
+          response.headers.get("x-m5-local-gateway") === "mapped-443";
+    } catch (_) {
+      // Record the failed fixed mapping below. The result is deliberately a
+      // boolean so the host never receives a target URL or transport detail.
+    }
+    state.localGatewayMappedResponse = result.mappedResponse;
+
+    result.blockedRequestStarted = true;
+    state.localGatewayBlockedRequestStarted = true;
+    try {
+      await fetch(localGatewayDeniedURL, {
+        cache: "no-store",
+        credentials: "omit",
+        mode: "cors",
+      });
+    } catch (error) {
+      result.blocked = error?.name === "TypeError";
+    }
+    state.localGatewayBlocked = result.blocked;
+    return result;
   }
 
   async function verifyCancelStream() {
@@ -2811,6 +2978,11 @@ function h2Page(context) {
     timerTicks: state.timerTicks,
     h2Fetch: state.h2Fetch,
     h2Protocol: state.h2Protocol,
+    localGatewayMappedRequestStarted: state.localGatewayMappedRequestStarted,
+    localGatewayMappedResponse: state.localGatewayMappedResponse,
+    localGatewayBlockedRequestStarted:
+        state.localGatewayBlockedRequestStarted,
+    localGatewayBlocked: state.localGatewayBlocked,
     cacheStored: state.cacheStored,
     cacheRevalidated: state.cacheRevalidated,
     cancelStreamStarted: state.cancelStreamStarted,
@@ -2875,6 +3047,14 @@ function h2Page(context) {
           state.h2Protocol === "h2";
       state.altSvcH3Advertised =
           /(?:^|,)\\s*h3=/.test(h2Response.headers.get("alt-svc") || "");
+
+      const localGatewayResult = await verifyLocalGatewayRoute();
+      if (!localGatewayResult.mappedRequestStarted ||
+          !localGatewayResult.mappedResponse ||
+          !localGatewayResult.blockedRequestStarted ||
+          !localGatewayResult.blocked) {
+        throw new Error("M5 local WISP gateway route proof failed");
+      }
 
       // Fetch the first response with reload so this page always creates a
       // cache entry. The second request must revalidate that entry instead of
@@ -3023,6 +3203,10 @@ function h2Page(context) {
           await corsResponse.text() === "M5_CORS_OK";
       state.webSocketEcho = await echoNonce();
       state.complete = state.h2Fetch && state.altSvcH3Advertised &&
+          state.localGatewayMappedRequestStarted &&
+          state.localGatewayMappedResponse &&
+          state.localGatewayBlockedRequestStarted &&
+          state.localGatewayBlocked &&
           state.cacheStored && state.cacheRevalidated &&
           state.cspConnectSrcBlocked && state.activeMixedContentBlocked &&
           state.cancelStreamStarted && state.cancelStreamReceivedFirstChunk &&
@@ -3047,7 +3231,7 @@ function h2Page(context) {
           state.reconnectRecoveryProtocol === "h2" &&
           state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/multiplex/download/reconnect/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 local-gateway/redirect/cache/CSP/mixed/cancel/slow/multiplex/download/reconnect/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -3125,6 +3309,9 @@ function createH2Server(context, tlsMaterial) {
           TEST_HOSTNAME + ":" + context.h1Port + " wss://" +
           TEST_HOSTNAME + ":" + context.h1Port + " http://" +
           TEST_HOSTNAME + ":" + context.plaintextHttpControlPort +
+          " https://" + TEST_HOSTNAME + ":" +
+          LOCAL_GATEWAY_HTTPS_PORT + " https://" + TEST_HOSTNAME + ":" +
+          LOCAL_GATEWAY_BLOCKED_PORT +
           "; base-uri 'none'; object-src 'none'; script-src 'unsafe-inline'; " +
           "style-src 'unsafe-inline'",
       }));
@@ -3350,6 +3537,10 @@ function createH2Server(context, tlsMaterial) {
     }
     if (requestPath === "/m5/reconnect-recovery") {
       handleReconnectRecovery(stream, context);
+      return;
+    }
+    if (requestPath === "/m5/local-gateway-probe") {
+      handleLocalGatewayProbe(stream, context);
       return;
     }
     if (requestPath === "/m5/h2-resource") {
@@ -3755,7 +3946,7 @@ async function start(options) {
   const tlsMaterial = fs.readFileSync(TEST_CERTIFICATE_PATH);
   const tlsFailureMaterial = fs.readFileSync(TLS_FAILURE_CERTIFICATE_PATH);
   const context = {
-    allowedPorts: new Set(),
+    destinationRoutes: new Map(),
     cancelStreamPendingProofs: new Set(),
     cancelStreamPhase: "pre-cancel",
     cancelStreamSession: null,
@@ -3804,6 +3995,9 @@ async function start(options) {
       largeDownloadCompletions: 0,
       largeDownloadRequests: 0,
       largeDownloadUnexpectedCloses: 0,
+      localGateway443Requests: 0,
+      localGateway443StreamsOpened: 0,
+      localGatewayBlockedPortAttempts: 0,
       multiplexBarrierReleases: 0,
       multiplexBarrierTimeouts: 0,
       multiplexBothStreamsOpen: false,
@@ -3882,11 +4076,22 @@ async function start(options) {
       await listenLoopback(plaintextHttpControlServer);
   context.tlsFailurePort = await listenLoopback(tlsFailureServer);
   context.wispPort = await listenLoopback(wispServer);
-  context.allowedPorts.add(context.h2Port);
-  context.allowedPorts.add(context.h1Port);
-  context.allowedPorts.add(context.cspConnectSrcTargetPort);
-  context.allowedPorts.add(context.plaintextHttpControlPort);
-  context.allowedPorts.add(context.tlsFailurePort);
+  addDestinationRoute(
+      context, TEST_HOSTNAME, context.h2Port, context.h2Port, "h2");
+  addDestinationRoute(
+      context, TEST_HOSTNAME, context.h1Port, context.h1Port, "h1");
+  addDestinationRoute(
+      context, TEST_HOSTNAME, context.cspConnectSrcTargetPort,
+      context.cspConnectSrcTargetPort, "csp-connect-src");
+  addDestinationRoute(
+      context, TEST_HOSTNAME, context.plaintextHttpControlPort,
+      context.plaintextHttpControlPort, "plaintext-control");
+  addDestinationRoute(
+      context, TEST_HOSTNAME, context.tlsFailurePort, context.tlsFailurePort,
+      "tls-failure");
+  addDestinationRoute(
+      context, TEST_HOSTNAME, LOCAL_GATEWAY_HTTPS_PORT, context.h2Port,
+      "local-gateway-443");
   context.transcript.add("fixture-ready", {
     cspConnectSrcTargetPort: context.cspConnectSrcTargetPort,
     h1Port: context.h1Port,

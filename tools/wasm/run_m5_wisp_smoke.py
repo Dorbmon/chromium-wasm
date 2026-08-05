@@ -819,6 +819,10 @@ def validate_m5_result(
         "activeMixedContentBlocked": True,
         "activeMixedContentErrorName": "TypeError",
         "activeMixedContentCspAllowed": True,
+        "localGatewayMappedRequestStarted": True,
+        "localGatewayMappedResponse": True,
+        "localGatewayBlockedRequestStarted": True,
+        "localGatewayBlocked": True,
     }
     for field, expected_value in expected_probe.items():
         actual = page_probe.get(field)
@@ -1018,6 +1022,9 @@ def validate_relay_transcript(
         "activeWispSessions",
         "wispSessions",
         "rejectedDestinations",
+        "localGateway443StreamsOpened",
+        "localGateway443Requests",
+        "localGatewayBlockedPortAttempts",
         "udpPackets",
         "relayErrors",
         "corsRequests",
@@ -1100,8 +1107,10 @@ def validate_relay_transcript(
         raise M0Error("relay does not retain exactly one recovered WISP session")
     if status["wispSessions"] != 2:
         raise M0Error("relay did not observe one WISP disconnect and fresh reconnect")
-    if status["rejectedDestinations"] != 0:
-        raise M0Error("relay rejected a destination during the M5 fixture")
+    if status["rejectedDestinations"] != 1:
+        raise M0Error(
+            "relay did not reject exactly the controlled local gateway port"
+        )
     if status["udpPackets"] != 0:
         raise M0Error("relay observed an unsupported UDP WISP request")
     if status["relayErrors"] != 0:
@@ -1115,6 +1124,9 @@ def validate_relay_transcript(
     if status["redirectCookieValidations"] < 1:
         raise M0Error("relay did not validate the M5 redirect cookie")
     for field, expected_value in (
+        ("localGateway443StreamsOpened", 1),
+        ("localGateway443Requests", 1),
+        ("localGatewayBlockedPortAttempts", 1),
         ("cacheStore200s", 1),
         ("cacheConditionalRequests", 1),
         ("cacheNotModified304s", 1),
@@ -1237,6 +1249,7 @@ def validate_relay_transcript(
     h1_count = 0
     plaintext_http_control_count = 0
     tls_failure_count = 0
+    local_gateway_443_count = 0
     for destination in destinations:
         if not isinstance(destination, dict):
             raise M0Error("relay destination is not an object")
@@ -1245,7 +1258,14 @@ def validate_relay_transcript(
         port = destination.get("port")
         if type(port) is not int:
             raise M0Error("relay destination port is not an integer")
-        if port == h2_port:
+        if port == 444:
+            raise M0Error(
+                "relay recorded blocked local gateway port as an accepted "
+                "WISP destination"
+            )
+        if port == 443:
+            local_gateway_443_count += 1
+        elif port == h2_port:
             h2_count += 1
         elif port == h1_port:
             h1_count += 1
@@ -1262,6 +1282,10 @@ def validate_relay_transcript(
         or tls_failure_count < 1
     ):
         raise M0Error("relay did not observe all fixed M5 destination streams")
+    if local_gateway_443_count != 1:
+        raise M0Error(
+            "relay did not observe exactly one mapped local gateway 443 stream"
+        )
 
     transcript = status.get("transcript")
     if not isinstance(transcript, list) or not transcript:
@@ -1283,6 +1307,8 @@ def validate_relay_transcript(
         "h2-redirect-cookie",
         "h2-page-cookie",
         "h2-resource",
+        "local-gateway-443-request",
+        "local-gateway-444-blocked",
         "h2-cache-store-200",
         "h2-cache-revalidate-304",
         "h2-csp-connect-src-proof",
@@ -1347,6 +1373,8 @@ def validate_relay_transcript(
         "h1-plaintext-http-control",
         "h1-plaintext-http-control-proof",
         "plaintext-http-control-phase-complete",
+        "local-gateway-443-request",
+        "local-gateway-444-blocked",
         "h2-mixed-content-proof",
         "h2-cancel-stream-start",
         "h2-cancel-stream-cancel-reset",
@@ -1390,6 +1418,41 @@ def validate_relay_transcript(
                 f"relay transcript must contain exactly {expected_count} "
                 f"{event!r} events"
             )
+    local_gateway_events = (
+        "local-gateway-443-request",
+        "local-gateway-444-blocked",
+    )
+    local_gateway_entries = {
+        event: next(
+            entry
+            for entry in event_entries
+            if entry.get("event") == event
+        )
+        for event in local_gateway_events
+    }
+    for event, entry in local_gateway_entries.items():
+        if set(entry) != {"sequence", "event"}:
+            raise M0Error(
+                "relay local gateway event "
+                f"{event!r} exposes non-redacted fields"
+            )
+    if event_names.index("local-gateway-443-request") >= event_names.index(
+        "local-gateway-444-blocked"
+    ):
+        raise M0Error(
+            "relay local gateway mapping proof did not precede its blocked "
+            "port proof"
+        )
+    if not (
+        event_names.index("h2-resource")
+        < event_names.index("local-gateway-443-request")
+        < event_names.index("local-gateway-444-blocked")
+        < event_names.index("h2-cache-store-200")
+    ):
+        raise M0Error(
+            "relay local gateway proof is not between the H2 resource and "
+            "cache store"
+        )
     cancel_reset_entry = next(
         entry
         for entry in transcript
@@ -1578,6 +1641,11 @@ def validate_relay_transcript(
         raise M0Error(
             "relay slow stream stage events are not between cancellation "
             "proof and CORS"
+        )
+    if "local-gateway-443-route-rejected" in events:
+        raise M0Error(
+            "relay transcript unexpectedly contains a local gateway mapping "
+            "failure"
         )
     for event in (
         "h2-cancel-stream-rejected",
