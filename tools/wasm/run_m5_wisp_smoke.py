@@ -800,6 +800,10 @@ def validate_m5_result(
         "slowStreamConsumerPauseStarted": True,
         "slowStreamConsumerBurstRead": True,
         "slowStreamConsumerResume": True,
+        "multiplexRequestsStarted": True,
+        "multiplexH2Response": True,
+        "multiplexH1Response": True,
+        "multiplexComplete": True,
         "largeDownloadNavigationRequested": True,
         "largeDownloadNativeComplete": True,
         "reconnectStreamStarted": True,
@@ -1004,6 +1008,8 @@ def validate_relay_transcript(
         raise M0Error("relay cancel stream phase did not observe an HTTP/2 CANCEL")
     if status.get("slowStreamPhase") != "complete":
         raise M0Error("relay slow stream phase did not complete")
+    if status.get("multiplexPhase") != "complete":
+        raise M0Error("relay multiplex stream phase did not complete")
     if status.get("largeDownloadPhase") != "complete":
         raise M0Error("relay large download phase did not complete")
     if status.get("reconnectPhase") != "recovered":
@@ -1035,6 +1041,14 @@ def validate_relay_transcript(
         "largeDownloadCompletions",
         "largeDownloadRequests",
         "largeDownloadUnexpectedCloses",
+        "multiplexBarrierReleases",
+        "multiplexBarrierTimeouts",
+        "multiplexCorrelationFailures",
+        "multiplexDistinctWispStreamCount",
+        "multiplexH1Requests",
+        "multiplexH2Requests",
+        "multiplexResponses",
+        "multiplexUnexpectedCloses",
         "reconnectDisconnectRequests",
         "reconnectFirstChunkAcks",
         "reconnectFirstChunks",
@@ -1076,6 +1090,12 @@ def validate_relay_transcript(
         value = status.get(field)
         if type(value) is not int or value < 0:
             raise M0Error(f"relay transcript {field} is not a nonnegative int")
+    for field in (
+        "multiplexBothStreamsOpen",
+        "multiplexSharedCarrier",
+    ):
+        if type(status.get(field)) is not bool:
+            raise M0Error(f"relay transcript {field} is not a boolean")
     if status.get("activeWispSessions") != 1:
         raise M0Error("relay does not retain exactly one recovered WISP session")
     if status["wispSessions"] != 2:
@@ -1111,6 +1131,14 @@ def validate_relay_transcript(
         ("largeDownloadCompletions", 1),
         ("largeDownloadRequests", 1),
         ("largeDownloadUnexpectedCloses", 0),
+        ("multiplexBarrierReleases", 1),
+        ("multiplexBarrierTimeouts", 0),
+        ("multiplexCorrelationFailures", 0),
+        ("multiplexDistinctWispStreamCount", 2),
+        ("multiplexH1Requests", 1),
+        ("multiplexH2Requests", 1),
+        ("multiplexResponses", 2),
+        ("multiplexUnexpectedCloses", 0),
         ("reconnectDisconnectRequests", 1),
         ("reconnectFirstChunkAcks", 1),
         ("reconnectFirstChunks", 1),
@@ -1150,6 +1178,9 @@ def validate_relay_transcript(
                 f"relay {field} mismatch: expected exactly "
                 f"{expected_value}, got {status[field]}"
             )
+    for field in ("multiplexBothStreamsOpen", "multiplexSharedCarrier"):
+        if status[field] is not True:
+            raise M0Error(f"relay {field} did not prove live multiplexing")
     if status["slowStreamStageDelayMs"] < M5_SLOW_STREAM_MIN_ELAPSED_MS:
         raise M0Error(
             "relay slowStreamStageDelayMs is shorter than the controlled "
@@ -1226,7 +1257,7 @@ def validate_relay_transcript(
             raise M0Error("relay observed a non-fixture WISP port")
     if (
         h2_count < 2
-        or h1_count < 2
+        or h1_count < 3
         or plaintext_http_control_count < 1
         or tls_failure_count < 1
     ):
@@ -1270,6 +1301,11 @@ def validate_relay_transcript(
         "h2-slow-stream-third-stage",
         "h2-slow-stream-complete",
         "h2-slow-stream-proof",
+        "h2-multiplex-pending",
+        "h1-multiplex-pending",
+        "wisp-multiplex-two-streams-live",
+        "h2-multiplex-complete",
+        "h1-multiplex-complete",
         "h2-large-download-start",
         "h2-large-download-complete",
         "h2-reconnect-stream-start",
@@ -1326,6 +1362,11 @@ def validate_relay_transcript(
         "h2-slow-stream-third-stage",
         "h2-slow-stream-complete",
         "h2-slow-stream-proof",
+        "h2-multiplex-pending",
+        "h1-multiplex-pending",
+        "wisp-multiplex-two-streams-live",
+        "h2-multiplex-complete",
+        "h1-multiplex-complete",
         "h2-large-download-start",
         "h2-large-download-complete",
         "h2-reconnect-stream-start",
@@ -1377,6 +1418,48 @@ def validate_relay_transcript(
         raise M0Error(
             "relay slow-stream consumer burst did not observe H2 write "
             "backpressure"
+        )
+    multiplex_events = (
+        "h2-multiplex-pending",
+        "h1-multiplex-pending",
+        "wisp-multiplex-two-streams-live",
+        "h2-multiplex-complete",
+        "h1-multiplex-complete",
+    )
+    multiplex_entries = {
+        event: next(
+            entry
+            for entry in event_entries
+            if entry.get("event") == event
+        )
+        for event in multiplex_events
+    }
+    for event, entry in multiplex_entries.items():
+        if set(entry) != {"sequence", "event"}:
+            raise M0Error(
+                f"relay multiplex event {event!r} exposes non-redacted fields"
+            )
+    multiplex_pending_indices = [
+        event_names.index("h2-multiplex-pending"),
+        event_names.index("h1-multiplex-pending"),
+    ]
+    multiplex_completion_indices = [
+        event_names.index("h2-multiplex-complete"),
+        event_names.index("h1-multiplex-complete"),
+    ]
+    multiplex_live_index = event_names.index("wisp-multiplex-two-streams-live")
+    if not (
+        event_names.index("h2-slow-stream-proof")
+        < min(multiplex_pending_indices)
+        <= max(multiplex_pending_indices)
+        < multiplex_live_index
+        < min(multiplex_completion_indices)
+        <= max(multiplex_completion_indices)
+        < event_names.index("h2-large-download-start")
+    ):
+        raise M0Error(
+            "relay multiplex proof is not held between slow-stream proof and "
+            "large download start"
         )
     if not (
         event_names.index("plaintext-http-control-tcp-connect")
@@ -1525,6 +1608,19 @@ def validate_relay_transcript(
         if event in events:
             raise M0Error(
                 "relay transcript unexpectedly contains slow-stream failure "
+                f"event {event!r}"
+            )
+    for event in (
+        "h2-multiplex-correlation-failed",
+        "h1-multiplex-correlation-failed",
+        "wisp-multiplex-correlation-failed",
+        "wisp-multiplex-barrier-timeout",
+        "h2-multiplex-unexpected-close",
+        "h1-multiplex-unexpected-close",
+    ):
+        if event in events:
+            raise M0Error(
+                "relay transcript unexpectedly contains multiplex failure "
                 f"event {event!r}"
             )
     for event in (

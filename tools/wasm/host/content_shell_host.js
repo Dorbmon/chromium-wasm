@@ -1455,6 +1455,10 @@ function isM5NetworkPageProbeIdentity(pageProbe) {
       pageProbe.slowStreamConsumerPauseTimerTicks >= 0 &&
       Number.isSafeInteger(pageProbe?.slowStreamTimerTicksWhileWaiting) &&
       pageProbe.slowStreamTimerTicksWhileWaiting >= 0 &&
+      typeof pageProbe?.multiplexRequestsStarted === "boolean" &&
+      typeof pageProbe?.multiplexH2Response === "boolean" &&
+      typeof pageProbe?.multiplexH1Response === "boolean" &&
+      typeof pageProbe?.multiplexComplete === "boolean" &&
       typeof pageProbe?.largeDownloadNavigationRequested === "boolean" &&
       typeof pageProbe?.largeDownloadNativeComplete === "boolean" &&
       typeof pageProbe?.reconnectStreamStarted === "boolean" &&
@@ -1507,6 +1511,10 @@ function hasM5NetworkPageProbe(pageProbe) {
         M5_SLOW_STREAM_MIN_CONSUMER_PAUSE_TIMER_TICKS &&
       pageProbe?.slowStreamTimerTicksWhileWaiting >=
         M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING &&
+      pageProbe?.multiplexRequestsStarted === true &&
+      pageProbe?.multiplexH2Response === true &&
+      pageProbe?.multiplexH1Response === true &&
+      pageProbe?.multiplexComplete === true &&
       pageProbe?.largeDownloadNavigationRequested === true &&
       pageProbe?.largeDownloadNativeComplete === true &&
       pageProbe?.reconnectStreamStarted === true &&
@@ -13118,6 +13126,11 @@ async function runM5WispNetworkSmokeFromQuery() {
           M5_SLOW_STREAM_MIN_TIMER_TICKS_WHILE_WAITING,
       slowStreamHostHeartbeat:
         hasM5SlowStreamHostHeartbeat(slowStreamHeartbeat),
+      multiplex:
+        pageProbe.multiplexRequestsStarted === true &&
+        pageProbe.multiplexH2Response === true &&
+        pageProbe.multiplexH1Response === true &&
+        pageProbe.multiplexComplete === true,
       largeDownload:
         pageProbe.largeDownloadNavigationRequested === true &&
         pageProbe.largeDownloadNativeComplete === true &&

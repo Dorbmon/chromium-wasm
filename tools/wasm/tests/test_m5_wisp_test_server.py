@@ -1018,6 +1018,20 @@ try {
         self.assertIn("stream.session === context.slowStreamSession", source)
         self.assertIn("h2-slow-stream-first-stage-ack", source)
         self.assertIn("h2-slow-stream-proof", source)
+        self.assertIn("MULTIPLEX_H2_BODY", source)
+        self.assertIn("MULTIPLEX_H1_BODY", source)
+        self.assertIn('requestPath === "/m5/multiplex-h2"', source)
+        self.assertIn('request.url === "/m5/multiplex-h1"', source)
+        self.assertIn("Promise.all([h2Request, h1Request])", source)
+        self.assertIn("registerMultiplexTargetStream", source)
+        self.assertIn("correlatedMultiplexTargetStream", source)
+        self.assertIn("wisp-multiplex-two-streams-live", source)
+        self.assertIn("multiplexDistinctWispStreamCount", source)
+        self.assertIn("multiplexSharedCarrier", source)
+        self.assertIn("multiplexBothStreamsOpen", source)
+        self.assertIn("MULTIPLEX_BARRIER_TIMEOUT_MS", source)
+        self.assertIn("${lane}-multiplex-pending", source)
+        self.assertIn("${pending.lane}-multiplex-complete", source)
         self.assertIn("LARGE_DOWNLOAD_BYTES", source)
         self.assertIn('requestPath === "/m5/large-download"', source)
         self.assertIn("writeLargeDownload", source)
@@ -1206,6 +1220,31 @@ try {
         self.assertEqual(status["relayErrors"], 0)
         self.assertNotIn("m5_redirect=", json.dumps(status))
         self.assertNotIn("PRIVATE KEY", json.dumps(status))
+
+    def test_multiplex_h1_requires_a_correlated_wisp_target_stream(self) -> None:
+        connection, h1_url = self._tls_connection("http1Url")
+        page_origin = f"https://a.test:{urlsplit(self.metadata['httpsUrl']).port}"
+        with connection:
+            connection.sendall(
+                b"GET /m5/multiplex-h1 HTTP/1.1\r\n" +
+                f"Host: a.test:{h1_url.port}\r\n".encode("ascii") +
+                f"Origin: {page_origin}\r\n".encode("ascii") +
+                b"Connection: close\r\n\r\n")
+            header, body = read_http_response(connection)
+        self.assertIn("HTTP/1.1 409", header)
+        self.assertEqual(body, b"M5_WISP_MULTIPLEX_REJECTED")
+
+        status = self._status()
+        self.assertEqual(status["multiplexPhase"], "correlation-failed")
+        self.assertEqual(status["multiplexCorrelationFailures"], 1)
+        self.assertEqual(status["multiplexH1Requests"], 0)
+        self.assertEqual(status["multiplexResponses"], 0)
+        events = {
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        }
+        self.assertIn("h1-multiplex-correlation-failed", events)
 
     def test_csp_connect_src_target_is_tls_and_cors_readable(self) -> None:
         connection, target_url = self._tls_connection("cspConnectSrcTargetUrl")

@@ -63,6 +63,13 @@ const LARGE_DOWNLOAD_CHUNK_COUNT =
     LARGE_DOWNLOAD_BYTES / LARGE_DOWNLOAD_CHUNK_BYTES;
 const LARGE_DOWNLOAD_CONTENT_DISPOSITION =
     'attachment; filename="m5-large-download.bin"';
+// The multiplex lane holds one H2 and one cross-origin H1 response until the
+// relay has privately correlated both target connections to distinct live WISP
+// streams on its one already-open carrier.  The fixed bodies are intentionally
+// small: the proof is stream overlap, not response throughput.
+const MULTIPLEX_H2_BODY = "M5_WISP_MULTIPLEX_H2";
+const MULTIPLEX_H1_BODY = "M5_WISP_MULTIPLEX_H1";
+const MULTIPLEX_BARRIER_TIMEOUT_MS = 5 * 1000;
 // Reconnect coverage deliberately terminates an already-delivered H2 body.
 // The page must observe that partial stream fail, then make a separate
 // recovery request on a fresh WISP WebSocket and H2 session. Keeping one byte
@@ -713,6 +720,18 @@ function statusSnapshot(context) {
     largeDownloadRequests: context.stats.largeDownloadRequests,
     largeDownloadUnexpectedCloses:
       context.stats.largeDownloadUnexpectedCloses,
+    multiplexBarrierReleases: context.stats.multiplexBarrierReleases,
+    multiplexBarrierTimeouts: context.stats.multiplexBarrierTimeouts,
+    multiplexBothStreamsOpen: context.stats.multiplexBothStreamsOpen,
+    multiplexCorrelationFailures: context.stats.multiplexCorrelationFailures,
+    multiplexDistinctWispStreamCount:
+      context.stats.multiplexDistinctWispStreamCount,
+    multiplexH1Requests: context.stats.multiplexH1Requests,
+    multiplexH2Requests: context.stats.multiplexH2Requests,
+    multiplexPhase: context.multiplexPhase,
+    multiplexResponses: context.stats.multiplexResponses,
+    multiplexSharedCarrier: context.stats.multiplexSharedCarrier,
+    multiplexUnexpectedCloses: context.stats.multiplexUnexpectedCloses,
     mixedContentProofs: context.stats.mixedContentProofs,
     mixedContentTargetPostControlRequests:
       context.stats.mixedContentTargetPostControlRequests,
@@ -774,6 +793,7 @@ class WispRelay {
     this.peer = peer;
     this.context = context;
     this.onClosed = onClosed;
+    this.carrierId = context.nextCarrierId++;
     this.phase = "awaiting-info";
     this.streams = new Map();
     this.inboundFrames = 0;
@@ -909,6 +929,7 @@ class WispRelay {
       targetOutput: [],
       targetOutputBytes: 0,
       inboundBlocked: false,
+      multiplexTargetKey: null,
       blockedBytes: 0,
       blockedFrames: 0,
       targetClosed: false,
@@ -930,6 +951,11 @@ class WispRelay {
         streamId,
         destination: `${TEST_HOSTNAME}:${port}`,
       });
+      // Register before granting the client stream credit. Chromium cannot
+      // deliver TLS or HTTP bytes to this target before the WISP CONTINUE, so
+      // the held multiplex handlers can correlate the target-side peer port
+      // without a race or an observable stream identifier.
+      registerMultiplexTargetStream(this.context, this, stream);
       this._sendPacket(wispContinuePacket(streamId, STREAM_PACKET_CREDIT));
     });
     socket.on("data", (bytes) => this._receiveTargetData(stream, bytes));
@@ -1099,6 +1125,7 @@ class WispRelay {
       return;
     }
     this.streams.delete(stream.id);
+    unregisterMultiplexTargetStream(this.context, stream);
     if (stream.blockedBytes > 0 || stream.blockedFrames > 0) {
       this._consumeIngress(stream, stream.blockedBytes, stream.blockedFrames);
     }
@@ -1136,6 +1163,58 @@ class WispRelay {
   }
 }
 
+function multiplexTargetKey(destinationPort, sourcePort) {
+  return `${destinationPort}:${sourcePort}`;
+}
+
+function isMultiplexTargetPort(context, port) {
+  return port === context.h2Port || port === context.h1Port;
+}
+
+function registerMultiplexTargetStream(context, relay, stream) {
+  if (!isMultiplexTargetPort(context, stream.port) ||
+      !Number.isSafeInteger(stream.socket.localPort)) {
+    return;
+  }
+  const key = multiplexTargetKey(stream.port, stream.socket.localPort);
+  const existing = context.wispTargetStreamsBySourcePort.get(key);
+  // A live outgoing TCP connection has a unique local port. Preserve the
+  // original mapping on an impossible collision so a target request becomes a
+  // deterministic correlation failure instead of being attributed to the
+  // wrong WISP stream.
+  if (existing && existing.stream !== stream) {
+    return;
+  }
+  context.wispTargetStreamsBySourcePort.set(key, {relay, stream});
+  stream.multiplexTargetKey = key;
+}
+
+function unregisterMultiplexTargetStream(context, stream) {
+  const key = stream.multiplexTargetKey;
+  if (!key) {
+    return;
+  }
+  const record = context.wispTargetStreamsBySourcePort.get(key);
+  if (record?.stream === stream) {
+    context.wispTargetStreamsBySourcePort.delete(key);
+  }
+  stream.multiplexTargetKey = null;
+}
+
+function correlatedMultiplexTargetStream(context, destinationPort, sourcePort) {
+  if (!Number.isSafeInteger(sourcePort)) {
+    return null;
+  }
+  const record = context.wispTargetStreamsBySourcePort.get(
+      multiplexTargetKey(destinationPort, sourcePort));
+  if (!record || record.stream.port !== destinationPort ||
+      record.stream.state !== "open" || record.relay.closed ||
+      record.relay.streams.get(record.stream.id) !== record.stream) {
+    return null;
+  }
+  return record;
+}
+
 function writeJson(response, status, body) {
   const json = JSON.stringify(body);
   response.writeHead(status, {
@@ -1157,6 +1236,232 @@ function h2Headers(extra = {}) {
     "alt-svc": 'h3=":443"; ma=60',
     ...extra,
   };
+}
+
+function writeMultiplexH2Response(stream, accepted) {
+  if (stream.destroyed || stream.closed) {
+    return false;
+  }
+  const body = Buffer.from(accepted ? MULTIPLEX_H2_BODY :
+      "M5_WISP_MULTIPLEX_REJECTED");
+  try {
+    stream.respond(h2Headers({
+      ":status": accepted ? 200 : 409,
+      "content-length": String(body.length),
+      "content-type": "text/plain; charset=utf-8",
+      "x-m5-wisp-multiplex": accepted ? "complete" : "rejected",
+    }));
+    stream.end(body);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function writeMultiplexH1Response(response, pageOrigin, accepted) {
+  if (response.destroyed || response.writableEnded) {
+    return false;
+  }
+  const body = accepted ? MULTIPLEX_H1_BODY : "M5_WISP_MULTIPLEX_REJECTED";
+  try {
+    response.writeHead(accepted ? 200 : 409, {
+      "Access-Control-Allow-Origin": pageOrigin,
+      "Cache-Control": "no-store",
+      // Do not let the later CORS fetch or inner WebSocket reuse this held
+      // connection. They remain independent fixed M5 transport checks.
+      "Connection": "close",
+      "Content-Length": String(Buffer.byteLength(body)),
+      "Content-Type": "text/plain; charset=utf-8",
+      "Vary": "Origin",
+      "X-Content-Type-Options": "nosniff",
+      "X-M5-Wisp-Multiplex": accepted ? "complete" : "rejected",
+    });
+    response.end(body);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function clearMultiplexPending(context, pending) {
+  if (context.multiplexPending.get(pending.lane) !== pending) {
+    return false;
+  }
+  context.multiplexPending.delete(pending.lane);
+  clearTimeout(pending.timeout);
+  pending.timeout = null;
+  return true;
+}
+
+function discardMultiplexPending(context) {
+  for (const pending of [...context.multiplexPending.values()]) {
+    clearMultiplexPending(context, pending);
+    pending.released = true;
+  }
+}
+
+function failMultiplexBarrier(context, phase, event, counterName) {
+  if (context.multiplexPhase === "complete" ||
+      context.multiplexPhase === "barrier-timeout" ||
+      context.multiplexPhase === "correlation-failed" ||
+      context.multiplexPhase === "unexpected-close") {
+    return;
+  }
+  context.multiplexPhase = phase;
+  incrementBoundedCounter(context, counterName);
+  context.transcript.add(event);
+  for (const pending of [...context.multiplexPending.values()]) {
+    clearMultiplexPending(context, pending);
+    pending.released = true;
+    pending.respond(false);
+  }
+}
+
+function rejectMultiplexRequest(context, lane, respond) {
+  if (context.multiplexPhase !== "complete") {
+    failMultiplexBarrier(
+        context, "correlation-failed", `${lane}-multiplex-correlation-failed`,
+        "multiplexCorrelationFailures");
+  }
+  respond(false);
+}
+
+function releaseMultiplexBarrier(context) {
+  if (context.multiplexPhase !== "awaiting-streams" ||
+      context.multiplexPending.size !== 2) {
+    return;
+  }
+  const h2Pending = context.multiplexPending.get("h2");
+  const h1Pending = context.multiplexPending.get("h1");
+  if (!h2Pending || !h1Pending) {
+    return;
+  }
+  const h2Record = h2Pending.record;
+  const h1Record = h1Pending.record;
+  const bothStreamsOpen = [h2Record, h1Record].every((record) =>
+    record.relay.streams.get(record.stream.id) === record.stream &&
+    record.stream.state === "open");
+  const sameCarrier = h2Record.relay === h1Record.relay &&
+      h2Record.relay.carrierId === h1Record.relay.carrierId;
+  const distinctStreams = h2Record.stream.id !== h1Record.stream.id;
+  const distinctTargets = h2Record.stream.port === context.h2Port &&
+      h1Record.stream.port === context.h1Port &&
+      context.h2Port !== context.h1Port;
+  // The first WISP carrier is deliberately still alive here. The only second
+  // carrier in this fixture is created later by the reconnect lane.
+  if (!bothStreamsOpen || !sameCarrier || !distinctStreams ||
+      !distinctTargets || context.relays.size !== 1) {
+    failMultiplexBarrier(
+        context, "correlation-failed", "wisp-multiplex-correlation-failed",
+        "multiplexCorrelationFailures");
+    return;
+  }
+
+  context.stats.multiplexDistinctWispStreamCount = 2;
+  context.stats.multiplexSharedCarrier = true;
+  context.stats.multiplexBothStreamsOpen = true;
+  context.multiplexPhase = "releasing";
+  incrementBoundedCounter(context, "multiplexBarrierReleases");
+  // This intentionally reveals only fixed assertions. Stream IDs, source
+  // ports, and carrier identity remain private relay bookkeeping.
+  context.transcript.add("wisp-multiplex-two-streams-live");
+
+  const pendings = [h2Pending, h1Pending];
+  for (const pending of pendings) {
+    clearMultiplexPending(context, pending);
+    pending.released = true;
+  }
+  let responses = 0;
+  for (const pending of pendings) {
+    if (!pending.respond(true)) {
+      context.multiplexPhase = "unexpected-close";
+      incrementBoundedCounter(context, "multiplexUnexpectedCloses");
+      context.transcript.add(`${pending.lane}-multiplex-unexpected-close`);
+      return;
+    }
+    responses += 1;
+    incrementBoundedCounter(context, "multiplexResponses");
+    context.transcript.add(`${pending.lane}-multiplex-complete`);
+  }
+  if (responses === 2) {
+    context.multiplexPhase = "complete";
+  }
+}
+
+function holdMultiplexRequest(context, lane, record, respond, observeClose) {
+  if (context.multiplexPhase !== "pre-multiplex" &&
+      context.multiplexPhase !== "awaiting-streams") {
+    rejectMultiplexRequest(context, lane, respond);
+    return;
+  }
+  if (context.multiplexPending.has(lane)) {
+    rejectMultiplexRequest(context, lane, respond);
+    return;
+  }
+  const pending = {lane, record, respond, released: false, timeout: null};
+  context.multiplexPending.set(lane, pending);
+  context.multiplexPhase = "awaiting-streams";
+  incrementBoundedCounter(context, lane === "h2" ?
+      "multiplexH2Requests" : "multiplexH1Requests");
+  context.transcript.add(`${lane}-multiplex-pending`);
+  pending.timeout = setTimeout(() => {
+    if (context.multiplexPending.get(lane) !== pending) {
+      return;
+    }
+    failMultiplexBarrier(
+        context, "barrier-timeout", "wisp-multiplex-barrier-timeout",
+        "multiplexBarrierTimeouts");
+  }, MULTIPLEX_BARRIER_TIMEOUT_MS);
+  pending.timeout.unref?.();
+
+  let closeObserved = false;
+  observeClose(() => {
+    if (closeObserved || pending.released ||
+        context.multiplexPending.get(lane) !== pending) {
+      return;
+    }
+    closeObserved = true;
+    failMultiplexBarrier(
+        context, "unexpected-close", `${lane}-multiplex-unexpected-close`,
+        "multiplexUnexpectedCloses");
+  });
+  releaseMultiplexBarrier(context);
+}
+
+function handleMultiplexH2Request(stream, context) {
+  const record = correlatedMultiplexTargetStream(
+      context, context.h2Port, stream.session?.socket?.remotePort);
+  const respond = (accepted) => writeMultiplexH2Response(stream, accepted);
+  if (!record) {
+    rejectMultiplexRequest(context, "h2", respond);
+    return;
+  }
+  holdMultiplexRequest(context, "h2", record, respond, (callback) => {
+    stream.once("aborted", callback);
+    stream.once("close", callback);
+    stream.once("error", callback);
+  });
+}
+
+function handleMultiplexH1Request(request, response, context) {
+  const pageOrigin = `https://${TEST_HOSTNAME}:${context.h2Port}`;
+  const respond = (accepted) =>
+    writeMultiplexH1Response(response, pageOrigin, accepted);
+  if (request.headers.origin !== pageOrigin) {
+    rejectMultiplexRequest(context, "h1", respond);
+    return;
+  }
+  const record = correlatedMultiplexTargetStream(
+      context, context.h1Port, request.socket.remotePort);
+  if (!record) {
+    rejectMultiplexRequest(context, "h1", respond);
+    return;
+  }
+  holdMultiplexRequest(context, "h1", record, respond, (callback) => {
+    request.once("aborted", callback);
+    request.once("close", callback);
+    request.once("error", callback);
+  });
 }
 
 function respondToCancelStreamProof(stream, context, accepted) {
@@ -1862,6 +2167,8 @@ function handleReconnectRecovery(stream, context) {
 
 function h2Page(context) {
   const h1CorsUrl = `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`;
+  const multiplexH1Url =
+      `https://${TEST_HOSTNAME}:${context.h1Port}/m5/multiplex-h1`;
   const cspConnectSrcTargetUrl =
       `https://${TEST_HOSTNAME}:${context.cspConnectSrcTargetPort}/` +
       "m5/csp-connect-src-target";
@@ -1902,6 +2209,9 @@ function h2Page(context) {
       new URL("/m5/slow-stream-consumer-resume", location.href).href;
   const slowStreamProofURL =
       new URL("/m5/slow-stream-proof", location.href).href;
+  const multiplexH2URL =
+      new URL("/m5/multiplex-h2", location.href).href;
+  const multiplexH1URL = ${JSON.stringify(multiplexH1Url)};
   const largeDownloadURL = new URL("/m5/large-download", location.href).href;
   const reconnectStreamURL =
       new URL("/m5/reconnect-stream", location.href).href;
@@ -1950,6 +2260,10 @@ function h2Page(context) {
     slowStreamConsumerPauseElapsedMs: 0,
     slowStreamConsumerPauseTimerTicks: 0,
     slowStreamTimerTicksWhileWaiting: 0,
+    multiplexRequestsStarted: false,
+    multiplexH2Response: false,
+    multiplexH1Response: false,
+    multiplexComplete: false,
     largeDownloadNavigationRequested: false,
     largeDownloadNativeComplete: false,
     reconnectStreamStarted: false,
@@ -2350,6 +2664,33 @@ function h2Page(context) {
     return state.largeDownloadNativeComplete;
   }
 
+  async function verifyWispMultiplex() {
+    // Start both Fetches before awaiting either one. The two fixture handlers
+    // hold their bodies until the relay has proved distinct, simultaneously
+    // open WISP streams on its current WebSocket carrier.
+    const h2Request = fetch(multiplexH2URL, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    const h1Request = fetch(multiplexH1URL, {
+      cache: "no-store",
+      credentials: "omit",
+      mode: "cors",
+    });
+    state.multiplexRequestsStarted = true;
+    const [h2Response, h1Response] = await Promise.all([h2Request, h1Request]);
+    const [h2Body, h1Body] = await Promise.all([
+      h2Response.text(),
+      h1Response.text(),
+    ]);
+    return {
+      h2Response: h2Response.ok && h2Body ===
+          ${JSON.stringify(MULTIPLEX_H2_BODY)},
+      h1Response: h1Response.ok && h1Body ===
+          ${JSON.stringify(MULTIPLEX_H1_BODY)},
+    };
+  }
+
   async function verifyWispReconnect() {
     const result = {
       started: false,
@@ -2496,6 +2837,10 @@ function h2Page(context) {
     slowStreamConsumerPauseTimerTicks:
         state.slowStreamConsumerPauseTimerTicks,
     slowStreamTimerTicksWhileWaiting: state.slowStreamTimerTicksWhileWaiting,
+    multiplexRequestsStarted: state.multiplexRequestsStarted,
+    multiplexH2Response: state.multiplexH2Response,
+    multiplexH1Response: state.multiplexH1Response,
+    multiplexComplete: state.multiplexComplete,
     largeDownloadNavigationRequested: state.largeDownloadNavigationRequested,
     largeDownloadNativeComplete: state.largeDownloadNativeComplete,
     reconnectStreamStarted: state.reconnectStreamStarted,
@@ -2637,6 +2982,15 @@ function h2Page(context) {
         throw new Error("M5 slow producer/consumer stream failed");
       }
 
+      const multiplexResult = await verifyWispMultiplex();
+      state.multiplexH2Response = multiplexResult.h2Response;
+      state.multiplexH1Response = multiplexResult.h1Response;
+      state.multiplexComplete = state.multiplexRequestsStarted &&
+          state.multiplexH2Response && state.multiplexH1Response;
+      if (!state.multiplexComplete) {
+        throw new Error("M5 live WISP multiplex stream proof failed");
+      }
+
       if (!await requestLargeDownload()) {
         throw new Error("M5 native attachment download did not complete");
       }
@@ -2679,6 +3033,9 @@ function h2Page(context) {
           state.slowStreamConsumerPauseStarted &&
           state.slowStreamConsumerBurstRead &&
           state.slowStreamConsumerResume &&
+          state.multiplexRequestsStarted &&
+          state.multiplexH2Response && state.multiplexH1Response &&
+          state.multiplexComplete &&
           state.largeDownloadNavigationRequested &&
           state.largeDownloadNativeComplete &&
           state.reconnectStreamStarted &&
@@ -2690,7 +3047,7 @@ function h2Page(context) {
           state.reconnectRecoveryProtocol === "h2" &&
           state.corsFetch && state.redirected && state.webSocketEcho;
       status.textContent = state.complete ?
-        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/download/reconnect/TCP/H2/CORS/WebSocket checks passed." :
+        "Chromium M5 redirect/cache/CSP/mixed/cancel/slow/multiplex/download/reconnect/TCP/H2/CORS/WebSocket checks passed." :
         "Chromium M5 network checks did not complete.";
     } catch (_) {
       state.failure = "network-check-failed";
@@ -2973,6 +3330,10 @@ function createH2Server(context, tlsMaterial) {
     }
     if (requestPath === "/m5/slow-stream-proof") {
       handleSlowStreamProof(stream, context);
+      return;
+    }
+    if (requestPath === "/m5/multiplex-h2") {
+      handleMultiplexH2Request(stream, context);
       return;
     }
     if (requestPath === "/m5/large-download") {
@@ -3268,6 +3629,10 @@ function createH1Server(context, tlsMaterial) {
   const server = https.createServer({cert: tlsMaterial, key: tlsMaterial},
       (request, response) => {
         const pageOrigin = `https://${TEST_HOSTNAME}:${context.h2Port}`;
+        if (request.method === "GET" && request.url === "/m5/multiplex-h1") {
+          handleMultiplexH1Request(request, response, context);
+          return;
+        }
         if (request.method === "GET" && request.url === "/m5/cors-resource" &&
             request.headers.origin === pageOrigin) {
           const body = "M5_CORS_OK";
@@ -3395,6 +3760,9 @@ async function start(options) {
     cancelStreamPhase: "pre-cancel",
     cancelStreamSession: null,
     largeDownloadPhase: "pre-download",
+    multiplexPending: new Map(),
+    multiplexPhase: "pre-multiplex",
+    nextCarrierId: 1,
     reconnectPhase: "pre-reconnect",
     reconnectDisconnectTimer: null,
     reconnectPendingRecovery: null,
@@ -3436,6 +3804,16 @@ async function start(options) {
       largeDownloadCompletions: 0,
       largeDownloadRequests: 0,
       largeDownloadUnexpectedCloses: 0,
+      multiplexBarrierReleases: 0,
+      multiplexBarrierTimeouts: 0,
+      multiplexBothStreamsOpen: false,
+      multiplexCorrelationFailures: 0,
+      multiplexDistinctWispStreamCount: 0,
+      multiplexH1Requests: 0,
+      multiplexH2Requests: 0,
+      multiplexResponses: 0,
+      multiplexSharedCarrier: false,
+      multiplexUnexpectedCloses: 0,
       slowStreamCompletedStreams: 0,
       slowStreamConsumerBurstBytes: 0,
       slowStreamConsumerBurstWrites: 0,
@@ -3486,6 +3864,7 @@ async function start(options) {
     tlsFailurePort: 0,
     tlsFailureSockets: new Set(),
     transcript: new Transcript(),
+    wispTargetStreamsBySourcePort: new Map(),
     wispSockets: new Set(),
   };
   const h2Server = createH2Server(context, tlsMaterial);
@@ -3581,6 +3960,7 @@ async function start(options) {
     context.cancelStreamPendingProofs.clear();
     clearSlowStreamStageTimer(context);
     clearSlowStreamStageAckTimeout(context);
+    discardMultiplexPending(context);
     clearReconnectTimers(context);
     clearPendingReconnectRecovery(context);
     for (const session of context.h2Sessions) {

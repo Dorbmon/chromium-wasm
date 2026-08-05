@@ -199,6 +199,10 @@ def passing_result() -> dict[str, object]:
                 "slowStreamConsumerPauseElapsedMs": 100,
                 "slowStreamConsumerPauseTimerTicks": 4,
                 "slowStreamTimerTicksWhileWaiting": 8,
+                "multiplexRequestsStarted": True,
+                "multiplexH2Response": True,
+                "multiplexH1Response": True,
+                "multiplexComplete": True,
                 "largeDownloadNavigationRequested": True,
                 "largeDownloadNativeComplete": True,
                 "reconnectStreamStarted": True,
@@ -301,6 +305,17 @@ def passing_relay_status() -> dict[str, object]:
         "largeDownloadCompletions": 1,
         "largeDownloadRequests": 1,
         "largeDownloadUnexpectedCloses": 0,
+        "multiplexPhase": "complete",
+        "multiplexBarrierReleases": 1,
+        "multiplexBarrierTimeouts": 0,
+        "multiplexBothStreamsOpen": True,
+        "multiplexCorrelationFailures": 0,
+        "multiplexDistinctWispStreamCount": 2,
+        "multiplexH1Requests": 1,
+        "multiplexH2Requests": 1,
+        "multiplexResponses": 2,
+        "multiplexSharedCarrier": True,
+        "multiplexUnexpectedCloses": 0,
         "reconnectPhase": "recovered",
         "reconnectDisconnectRequests": 1,
         "reconnectFirstChunkAcks": 1,
@@ -346,6 +361,7 @@ def passing_relay_status() -> dict[str, object]:
             {"hostname": "a.test", "port": 4446},
             {"hostname": "a.test", "port": 4443},
             {"hostname": "a.test", "port": 4443},
+            {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4444},
             {"hostname": "a.test", "port": 4445},
@@ -405,27 +421,32 @@ def passing_relay_status() -> dict[str, object]:
             {"sequence": 28, "event": "h2-slow-stream-third-stage"},
             {"sequence": 29, "event": "h2-slow-stream-complete"},
             {"sequence": 30, "event": "h2-slow-stream-proof"},
-            {"sequence": 31, "event": "h2-large-download-start"},
-            {"sequence": 32, "event": "h2-large-download-complete"},
-            {"sequence": 33, "event": "h2-reconnect-stream-start"},
-            {"sequence": 34, "event": "h2-reconnect-stream-first-chunk"},
-            {"sequence": 35, "event": "h2-reconnect-first-chunk-ack"},
-            {"sequence": 36, "event": "h2-reconnect-disconnect-requested"},
-            {"sequence": 37, "event": "h2-reconnect-carrier-close"},
-            {"sequence": 38, "event": "wisp-disconnected"},
-            {"sequence": 39, "event": "h2-reconnect-stream-disconnected"},
-            {"sequence": 40, "event": "h2-reconnect-wisp-disconnected"},
-            {"sequence": 41, "event": "wisp-connected"},
-            {"sequence": 42, "event": "wisp-ready"},
+            {"sequence": 31, "event": "h2-multiplex-pending"},
+            {"sequence": 32, "event": "h1-multiplex-pending"},
+            {"sequence": 33, "event": "wisp-multiplex-two-streams-live"},
+            {"sequence": 34, "event": "h2-multiplex-complete"},
+            {"sequence": 35, "event": "h1-multiplex-complete"},
+            {"sequence": 36, "event": "h2-large-download-start"},
+            {"sequence": 37, "event": "h2-large-download-complete"},
+            {"sequence": 38, "event": "h2-reconnect-stream-start"},
+            {"sequence": 39, "event": "h2-reconnect-stream-first-chunk"},
+            {"sequence": 40, "event": "h2-reconnect-first-chunk-ack"},
+            {"sequence": 41, "event": "h2-reconnect-disconnect-requested"},
+            {"sequence": 42, "event": "h2-reconnect-carrier-close"},
+            {"sequence": 43, "event": "wisp-disconnected"},
+            {"sequence": 44, "event": "h2-reconnect-stream-disconnected"},
+            {"sequence": 45, "event": "h2-reconnect-wisp-disconnected"},
+            {"sequence": 46, "event": "wisp-connected"},
+            {"sequence": 47, "event": "wisp-ready"},
             {
-                "sequence": 43,
+                "sequence": 48,
                 "event": "connect-open",
                 "destination": "a.test:4443",
             },
-            {"sequence": 44, "event": "h2-reconnect-recovery"},
-            {"sequence": 45, "event": "h1-cors"},
-            {"sequence": 46, "event": "h1-wss-echo"},
-            {"sequence": 47, "event": "tls-failure-tcp-connect"},
+            {"sequence": 49, "event": "h2-reconnect-recovery"},
+            {"sequence": 50, "event": "h1-cors"},
+            {"sequence": 51, "event": "h1-wss-echo"},
+            {"sequence": 52, "event": "tls-failure-tcp-connect"},
         ],
     }
 
@@ -779,6 +800,10 @@ class M5ResultValidationTest(unittest.TestCase):
             "slowStreamConsumerPauseStarted",
             "slowStreamConsumerBurstRead",
             "slowStreamConsumerResume",
+            "multiplexRequestsStarted",
+            "multiplexH2Response",
+            "multiplexH1Response",
+            "multiplexComplete",
             "largeDownloadNavigationRequested",
             "largeDownloadNativeComplete",
             "reconnectStreamStarted",
@@ -1071,6 +1096,91 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
         run_m5_wisp_smoke.validate_relay_transcript(
             status, relay_ready=relay_ready
         )
+
+    def test_rejects_incomplete_or_unredacted_multiplex_evidence(self) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        for field, invalid_value in (
+            ("multiplexPhase", "awaiting-streams"),
+            ("multiplexBarrierReleases", 0),
+            ("multiplexBarrierTimeouts", 1),
+            ("multiplexBothStreamsOpen", False),
+            ("multiplexCorrelationFailures", 1),
+            ("multiplexDistinctWispStreamCount", 1),
+            ("multiplexH1Requests", 0),
+            ("multiplexH2Requests", 0),
+            ("multiplexResponses", 1),
+            ("multiplexSharedCarrier", False),
+            ("multiplexUnexpectedCloses", 1),
+            ("multiplexResponses", True),
+        ):
+            with self.subTest(field=field, invalid_value=invalid_value):
+                status = passing_relay_status()
+                status[field] = invalid_value
+                with self.assertRaisesRegex(M0Error, "multiplex"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        live_entry = next(
+            entry
+            for entry in transcript
+            if entry.get("event") == "wisp-multiplex-two-streams-live"
+        )
+        live_entry["carrierId"] = 1
+        with self.assertRaisesRegex(M0Error, "non-redacted"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
+
+    def test_rejects_missing_or_misordered_multiplex_transcript(self) -> None:
+        relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
+            RELAY_READY_LINE
+        )
+        for event_name in (
+            "h2-multiplex-pending",
+            "h1-multiplex-pending",
+            "wisp-multiplex-two-streams-live",
+            "h2-multiplex-complete",
+            "h1-multiplex-complete",
+        ):
+            with self.subTest(missing_event=event_name):
+                status = passing_relay_status()
+                transcript = status["transcript"]
+                assert isinstance(transcript, list)
+                transcript[:] = [
+                    entry for entry in transcript if entry.get("event") != event_name
+                ]
+                with self.assertRaisesRegex(M0Error, "missing|exactly one"):
+                    run_m5_wisp_smoke.validate_relay_transcript(
+                        status, relay_ready=relay_ready
+                    )
+
+        status = passing_relay_status()
+        transcript = status["transcript"]
+        assert isinstance(transcript, list)
+        live_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "wisp-multiplex-two-streams-live"
+        )
+        completion_index = next(
+            index
+            for index, entry in enumerate(transcript)
+            if entry.get("event") == "h2-multiplex-complete"
+        )
+        transcript[live_index], transcript[completion_index] = (
+            transcript[completion_index],
+            transcript[live_index],
+        )
+        with self.assertRaisesRegex(M0Error, "multiplex proof"):
+            run_m5_wisp_smoke.validate_relay_transcript(
+                status, relay_ready=relay_ready
+            )
 
     def test_rejects_unexpected_destination_and_udp(self) -> None:
         relay_ready = run_m5_wisp_smoke.parse_relay_ready_line(
@@ -1818,7 +1928,9 @@ class M5RelayTranscriptValidationTest(unittest.TestCase):
                     transcript[second_index],
                     transcript[first_index],
                 )
-                with self.assertRaisesRegex(M0Error, "large download events"):
+                with self.assertRaisesRegex(
+                    M0Error, "multiplex proof|large download events"
+                ):
                     run_m5_wisp_smoke.validate_relay_transcript(
                         status, relay_ready=relay_ready
                     )
