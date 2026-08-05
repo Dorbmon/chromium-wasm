@@ -124,6 +124,7 @@ mergeInto(LibraryManager.library, {
     confirmedStreamCount: 0,
     diagnosticEvidenceEpoch: 0,
     diagnosticEvidenceWindowEpoch: null,
+    diagnosticEvidenceWindowTarget: null,
     diagnosticEvidenceWindowConfirmed: false,
     handshakeTimer: null,
     flushTimer: null,
@@ -151,6 +152,7 @@ mergeInto(LibraryManager.library, {
       this.confirmedStreamCount = 0;
       this.diagnosticEvidenceEpoch = 0;
       this.diagnosticEvidenceWindowEpoch = null;
+      this.diagnosticEvidenceWindowTarget = null;
       this.diagnosticEvidenceWindowConfirmed = false;
       this.handshakeTimer = null;
       this.flushTimer = null;
@@ -186,12 +188,21 @@ mergeInto(LibraryManager.library, {
       return flags;
     },
 
-    beginDiagnosticsEvidenceWindow() {
+    beginDiagnosticsEvidenceWindow(hostnamePointer, hostnameLength, port) {
       if (!this._readConfig()) {
+        return 0;
+      }
+      const hostname = this._readHostname(hostnamePointer, hostnameLength);
+      if (hostname === null || !Number.isSafeInteger(port) || port <= 0 ||
+          port > 65535) {
         return 0;
       }
       this.diagnosticEvidenceEpoch += 1;
       this.diagnosticEvidenceWindowEpoch = this.diagnosticEvidenceEpoch;
+      this.diagnosticEvidenceWindowTarget = Object.freeze({
+        hostname: hostname.toLowerCase(),
+        port,
+      });
       this.diagnosticEvidenceWindowConfirmed = false;
       return 1;
     },
@@ -825,9 +836,12 @@ mergeInto(LibraryManager.library, {
       if (stream.state === this.states.connecting) {
         stream.state = this.states.open;
         this.confirmedStreamCount += 1;
-        if (this.diagnosticEvidenceWindowEpoch !== null &&
+        const target = this.diagnosticEvidenceWindowTarget;
+        if (target !== null &&
             stream.diagnosticEvidenceEpoch ===
-                this.diagnosticEvidenceWindowEpoch) {
+                this.diagnosticEvidenceWindowEpoch &&
+            stream.hostname.toLowerCase() === target.hostname &&
+            stream.port === target.port) {
           this.diagnosticEvidenceWindowConfirmed = true;
         }
         this._clearTimer(stream.openTimer);
@@ -1212,8 +1226,10 @@ mergeInto(LibraryManager.library, {
     '$ChromiumWasmWispTransport',
   ],
   chromium_wasm_wisp_diagnostics_begin_evidence_window__proxy: 'sync',
-  chromium_wasm_wisp_diagnostics_begin_evidence_window: () =>
-    ChromiumWasmWispTransport.beginDiagnosticsEvidenceWindow(),
+  chromium_wasm_wisp_diagnostics_begin_evidence_window: (
+      hostnamePointer, hostnameLength, port) =>
+    ChromiumWasmWispTransport.beginDiagnosticsEvidenceWindow(
+        hostnamePointer, hostnameLength, port),
 
   chromium_wasm_wisp_diagnostics_completion_flags__deps: [
     '$ChromiumWasmWispTransport',

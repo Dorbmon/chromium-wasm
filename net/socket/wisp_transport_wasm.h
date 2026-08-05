@@ -47,12 +47,14 @@ struct WasmWispTransportDiagnostics {
 // not an invitation to fall back to host fetch() or native sockets.
 NET_EXPORT bool IsWasmWispTransportConfigured();
 
-// Starts a private diagnostic evidence window. Until a TCP stream is confirmed
-// after this call, GetWasmWispTransportDiagnostics() omits the stream-confirmed
-// bit even when an earlier stream completed. This is intended for a bounded
+// Starts a private diagnostic evidence window for |hostname| and |port|.
+// Until a matching TCP stream is confirmed after this call,
+// GetWasmWispTransportDiagnostics() omits the stream-confirmed bit even when
+// an earlier or unrelated stream completed. This is intended for a bounded
 // test to tie transport evidence to one subsequent navigation; it never
 // exposes a stream count, endpoint, destination, or payload.
-NET_EXPORT bool BeginWasmWispTransportDiagnostics();
+NET_EXPORT bool BeginWasmWispTransportDiagnostics(std::string_view hostname,
+                                                  uint16_t port);
 
 // Returns nullopt if the host has no configured WISP transport or returned an
 // invalid diagnostic state. Callers must treat this as failed transport

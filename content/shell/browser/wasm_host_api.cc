@@ -581,7 +581,8 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
 // Network events, but no runtime-provided URL, request ID, header, cookie, or
 // payload may leave this process. The final report additionally proves that
 // the WISP bridge completed a WebSocket/WISP handshake and one TCP stream
-// after the public navigation's diagnostic boundary.
+// after the public navigation's diagnostic boundary to that document's exact
+// hostname and port.
 class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
  public:
   M5PublicDevToolsNetworkRecorder() = default;
@@ -613,12 +614,17 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     return state_ != State::kFailed;
   }
 
-  bool BeginWispEvidenceWindow() {
+  bool BeginWispEvidenceWindow(const GURL& expected_document_url) {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    const int port = expected_document_url.EffectiveIntPort();
     if (state_ != State::kEnabled || wisp_evidence_window_started_ ||
-        !net::BeginWasmWispTransportDiagnostics()) {
+        !IsM5PublicHttpsUrl(expected_document_url) || port <= 0 ||
+        port > std::numeric_limits<uint16_t>::max() ||
+        !net::BeginWasmWispTransportDiagnostics(
+            expected_document_url.host(), static_cast<uint16_t>(port))) {
       return false;
     }
+    expected_document_url_ = expected_document_url;
     wisp_evidence_window_started_ = true;
     return true;
   }
@@ -712,6 +718,11 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     }
     const GURL request_url(*url);
     if (!IsM5PublicHttpsUrl(request_url)) {
+      return false;
+    }
+    if (!expected_document_url_.is_valid() ||
+        request_url != expected_document_url_) {
+      Fail("received a public document request for an unexpected destination");
       return false;
     }
     const std::string* resource_type = params.FindString("type");
@@ -819,6 +830,7 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     report.Set("wispWebSocketOpened", true);
     report.Set("wispHandshakeReady", true);
     report.Set("wispConfirmedStream", true);
+    report.Set("wispDestinationMatched", true);
     report.Set("events", std::move(events_));
     if (!Report(std::move(report))) {
       Fail("could not report the completed public network trace");
@@ -858,6 +870,7 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   bool response_received_ = false;
   bool loading_finished_ = false;
   bool wisp_evidence_window_started_ = false;
+  GURL expected_document_url_;
   std::string request_id_;
   int response_status_ = 0;
   std::string response_protocol_;
@@ -1549,7 +1562,8 @@ void LoadM5PublicUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
   if (!state.m5_public_devtools_network_recorder ||
-      !state.m5_public_devtools_network_recorder->BeginWispEvidenceWindow()) {
+      !state.m5_public_devtools_network_recorder->BeginWispEvidenceWindow(
+          url)) {
     ReportFatal("could not start the M5 public WISP evidence window");
     return;
   }

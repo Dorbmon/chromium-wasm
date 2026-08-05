@@ -1554,6 +1554,7 @@ function hasM5PublicDevToolsNetworkLog(report) {
       report?.wispWebSocketOpened === true &&
       report?.wispHandshakeReady === true &&
       report?.wispConfirmedStream === true &&
+      report?.wispDestinationMatched === true &&
       Array.isArray(report?.events) &&
       report.events.length === M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER.length &&
       report.events.every((event, index) =>
@@ -5247,6 +5248,7 @@ export class ChromiumWasmM3Host {
         wispWebSocketOpened: true,
         wispHandshakeReady: true,
         wispConfirmedStream: true,
+        wispDestinationMatched: true,
         events: [...M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER],
       };
       this.#recordHost("m5:public-devtools-network:complete");

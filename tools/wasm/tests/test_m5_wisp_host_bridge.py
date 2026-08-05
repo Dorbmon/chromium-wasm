@@ -67,7 +67,7 @@ class M5WispHostBridgeTest(unittest.TestCase):
             "this._isLoopbackHost(endpoint.hostname)",
             "this._requiresUnsupportedAuthentication",
             "diagnosticsCompletionFlags()",
-            "beginDiagnosticsEvidenceWindow()",
+            "beginDiagnosticsEvidenceWindow(hostnamePointer, hostnameLength, port)",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, source)
@@ -354,7 +354,9 @@ assert(secondConnect[0] === TYPE_CONNECT && getU32(secondConnect, 1) === 8 &&
     secondConnect[6] === 251 && secondConnect[7] === 32 &&
     new TextDecoder().decode(secondConnect.subarray(8)) === 'second.test',
     'multiplexed CONNECT did not preserve port and hostname');
-assert(transport.beginDiagnosticsEvidenceWindow() === 1,
+const diagnosticTargetLength = writeHostname('target.test');
+assert(transport.beginDiagnosticsEvidenceWindow(
+    64, diagnosticTargetLength, 443) === 1,
     'WISP diagnostics did not start an evidence window');
 assert(transport.diagnosticsCompletionFlags() === 0x03,
     'WISP diagnostics accepted a stream confirmed before its evidence window');
@@ -363,12 +365,18 @@ assert(transport.state(8) === 2 && FakeWebSocket.instances.length === 1,
     'multiplexed stream created another WebSocket or never opened');
 assert(transport.diagnosticsCompletionFlags() === 0x03,
     'WISP diagnostics accepted a pre-window stream confirmed afterward');
-const thirdHostnameLength = writeHostname('third.test');
-assert(transport.open(9, 64, thirdHostnameLength, 443) === 1,
+const mismatchedHostnameLength = writeHostname('third.test');
+assert(transport.open(9, 64, mismatchedHostnameLength, 443) === 1,
     'post-window stream was not multiplexed on the singleton WebSocket');
 socket.emit(continuation(9, 1));
+assert(transport.diagnosticsCompletionFlags() === 0x03,
+    'WISP diagnostics accepted a mismatched post-window destination');
+const matchingTargetLength = writeHostname('TARGET.TEST');
+assert(transport.open(10, 64, matchingTargetLength, 443) === 1,
+    'matching post-window stream was not multiplexed on the singleton WebSocket');
+socket.emit(continuation(10, 1));
 assert(transport.diagnosticsCompletionFlags() === 0x07,
-    'WISP diagnostics did not require a post-window stream confirmation');
+    'WISP diagnostics did not require a matching post-window stream confirmation');
 
 // DATA writes are copied, packet-bounded, credit-gated, and queue-bounded.
 heap.set(new Uint8Array([1, 2, 3, 4]), 256);

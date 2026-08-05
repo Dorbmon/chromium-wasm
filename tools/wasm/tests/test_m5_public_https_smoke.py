@@ -92,6 +92,7 @@ def passing_result() -> dict[str, object]:
                 "wispWebSocketOpened": True,
                 "wispHandshakeReady": True,
                 "wispConfirmedStream": True,
+                "wispDestinationMatched": True,
                 "events": [
                     "Network.requestWillBeSent:document",
                     "Network.responseReceived:document",
@@ -345,6 +346,7 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
             "wispWebSocketOpened": False,
             "wispHandshakeReady": False,
             "wispConfirmedStream": False,
+            "wispDestinationMatched": False,
             "events": ["Network.requestWillBeSent:document"],
         }
         for field, value in invalid_values.items():
@@ -699,9 +701,11 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
             "Network.requestWillBeSent:document",
             "Network.responseReceived:document",
             "Network.loadingFinished:document",
-            "BeginWasmWispTransportDiagnostics()",
+            "expected_document_url.host(), static_cast<uint16_t>(port)",
+            "request_url != expected_document_url_",
             "GetWasmWispTransportDiagnostics()",
             "kWasmWispDiagnosticAllRequired",
+            "wispDestinationMatched",
             "chromium_wasm_report_m5_public_devtools_network",
         ):
             with self.subTest(recorder_marker=marker):
@@ -741,15 +745,18 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
             "kWasmWispDiagnosticWebSocketOpened = 1 << 0",
             "kWasmWispDiagnosticHandshakeReady = 1 << 1",
             "kWasmWispDiagnosticStreamConfirmed = 1 << 2",
-            "BeginWasmWispTransportDiagnostics()",
+            "BeginWasmWispTransportDiagnostics(std::string_view hostname,",
             "GetWasmWispTransportDiagnostics()",
             "chromium_wasm_wisp_diagnostics_completion_flags()",
-            "chromium_wasm_wisp_diagnostics_begin_evidence_window()",
+            "chromium_wasm_wisp_diagnostics_begin_evidence_window(\n    const char* hostname,",
             "IsValidDiagnosticFlags",
             "diagnosticsCompletionFlags()",
-            "beginDiagnosticsEvidenceWindow()",
+            "beginDiagnosticsEvidenceWindow(hostnamePointer, hostnameLength, port)",
             "diagnosticEvidenceEpoch: this.diagnosticEvidenceEpoch",
             "this.diagnosticEvidenceWindowEpoch = this.diagnosticEvidenceEpoch",
+            "diagnosticEvidenceWindowTarget",
+            "stream.hostname.toLowerCase() === target.hostname",
+            "stream.port === target.port",
             "this.diagnosticEvidenceWindowConfirmed = true",
             "this.webSocketOpenCount += 1",
             "this.readyConnectionCount += 1",
@@ -764,7 +771,7 @@ console.log("M5_PUBLIC_HOST_REDACTION:PASS");
             "void LoadM5PublicUrlOnUiThread(GURL url) {", 1
         )[1].split("\n}\n\nvoid DeactivateHostWindowOnUiThread", 1)[0]
         self.assertLess(
-            public_loader.index("BeginWispEvidenceWindow()"),
+            public_loader.index("BeginWispEvidenceWindow(\n          url)"),
             public_loader.index("LoadUrlOnUiThread(std::move(url))"),
         )
         self.assertIn(

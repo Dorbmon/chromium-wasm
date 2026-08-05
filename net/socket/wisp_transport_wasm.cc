@@ -19,7 +19,10 @@ namespace {
 extern "C" {
 
 int chromium_wasm_wisp_stream_is_configured();
-int chromium_wasm_wisp_diagnostics_begin_evidence_window();
+int chromium_wasm_wisp_diagnostics_begin_evidence_window(
+    const char* hostname,
+    int hostname_length,
+    uint16_t port);
 int chromium_wasm_wisp_diagnostics_completion_flags();
 int chromium_wasm_wisp_stream_open(uint32_t stream_id,
                                    const char* hostname,
@@ -62,9 +65,16 @@ bool IsWasmWispTransportConfigured() {
   return chromium_wasm_wisp_stream_is_configured() == 1;
 }
 
-bool BeginWasmWispTransportDiagnostics() {
-  return IsWasmWispTransportConfigured() &&
-         chromium_wasm_wisp_diagnostics_begin_evidence_window() == 1;
+bool BeginWasmWispTransportDiagnostics(std::string_view hostname,
+                                       uint16_t port) {
+  if (!IsWasmWispTransportConfigured() || hostname.empty() || port == 0 ||
+      hostname.size() >
+          static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return false;
+  }
+
+  return chromium_wasm_wisp_diagnostics_begin_evidence_window(
+             hostname.data(), static_cast<int>(hostname.size()), port) == 1;
 }
 
 std::optional<WasmWispTransportDiagnostics>

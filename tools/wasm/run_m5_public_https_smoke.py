@@ -442,6 +442,7 @@ def expected_public_devtools_network_evidence(
         "wispWebSocketOpened": True,
         "wispHandshakeReady": True,
         "wispConfirmedStream": True,
+        "wispDestinationMatched": True,
         "events": list(PUBLIC_DEVTOOLS_NETWORK_EVENTS),
     }
 
@@ -471,6 +472,7 @@ def validate_public_devtools_network_evidence(
         "wispWebSocketOpened",
         "wispHandshakeReady",
         "wispConfirmedStream",
+        "wispDestinationMatched",
     ):
         if type(evidence[field]) is not bool:
             raise M0Error("public HTTPS DevTools Network log has invalid booleans")
