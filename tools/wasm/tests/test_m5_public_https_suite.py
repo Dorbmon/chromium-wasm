@@ -198,6 +198,21 @@ class PublicSuiteManifestTest(unittest.TestCase):
                 with self.assertRaises(M0Error):
                     public_suite.load_public_suite_config(self.write_manifest(payload))
 
+    def test_manifest_requires_both_http_protocols(self) -> None:
+        for protocol in ("h2", "http/1.1"):
+            with self.subTest(protocol=protocol):
+                payload = manifest_payload()
+                probes = payload["probes"]
+                assert isinstance(probes, list)
+                for probe in probes:
+                    probe["expected_protocol"] = protocol
+                with self.assertRaisesRegex(
+                    M0Error, "must cover h2 and http/1.1"
+                ):
+                    public_suite.load_public_suite_config(
+                        self.write_manifest(payload)
+                    )
+
     def test_manifest_file_boundary_rejects_repo_missing_bad_encoding_and_duplicates(
         self,
     ) -> None:

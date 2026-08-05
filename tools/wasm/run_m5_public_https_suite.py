@@ -43,6 +43,7 @@ SENTINEL = "CHROMIUM_WASM_M5_PUBLIC_HTTPS_SUITE"
 MANIFEST_SCHEMA_VERSION = 1
 MINIMUM_PUBLIC_PROBES = 2
 MAXIMUM_PUBLIC_PROBES = 4
+REQUIRED_PUBLIC_PROTOCOLS = frozenset(("h2", "http/1.1"))
 MAXIMUM_MANIFEST_BYTES = 16 * 1024
 DEFAULT_MODULE_NAME = public_smoke.DEFAULT_MODULE_NAME
 DEFAULT_DIAGNOSTICS_DIRECTORY = "diagnostics-m5-public-https-suite"
@@ -218,6 +219,8 @@ def load_public_suite_config(manifest_path: Path) -> PublicSuiteConfig:
                 expected_protocol=expected_protocol,
             )
         )
+    if {probe.expected_protocol for probe in probes} != REQUIRED_PUBLIC_PROTOCOLS:
+        raise M0Error("public HTTPS suite probes must cover h2 and http/1.1")
     return PublicSuiteConfig(
         public_wisp_endpoint=public_wisp_endpoint,
         probes=tuple(probes),
