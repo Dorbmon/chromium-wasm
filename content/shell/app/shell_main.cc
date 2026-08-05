@@ -11,13 +11,15 @@
 
 extern "C" int chromium_wasm_report_process_exit(int exit_code);
 
-#if defined(CONTENT_SHELL_WASM_M5_TEST)
+#if defined(CONTENT_SHELL_WASM_M5_TEST) || \
+    defined(CONTENT_SHELL_WASM_M5_CONTROLLED_PREFLIGHT_TEST)
 // Only the controlled M5 target supplies this header. GN's include checker
 // does not evaluate the target-specific preprocessor definition.
 #include "content/shell/app/wasm_m5_test_trust.h"  // nogncheck
 #endif
 
 #if defined(CONTENT_SHELL_WASM_M5_TEST) || \
+    defined(CONTENT_SHELL_WASM_M5_CONTROLLED_PREFLIGHT_TEST) || \
     defined(CONTENT_SHELL_WASM_M5_PUBLIC_TEST)
 #include "content/shell/browser/wasm_host_api.h"
 #endif
@@ -117,6 +119,11 @@ int main(int argc, const char** argv) {
   // test-only initializer.
   content::InstallWasmM5TestTrustRoot();
   content::EnableWasmM5NetworkTestModeForTesting();
+#elif defined(CONTENT_SHELL_WASM_M5_CONTROLLED_PREFLIGHT_TEST)
+  // This isolated local lane installs the same test root, but it enables only
+  // its fixed gateway-denial preflight mode rather than the full fixture.
+  content::InstallWasmM5TestTrustRoot();
+  content::EnableWasmM5ControlledPreflightTestModeForTesting();
 #elif defined(CONTENT_SHELL_WASM_M5_PUBLIC_TEST)
   // This separate test-only binary deliberately relies on Chromium's bundled
   // Chrome Root Store. It does not install the controlled-fixture root.

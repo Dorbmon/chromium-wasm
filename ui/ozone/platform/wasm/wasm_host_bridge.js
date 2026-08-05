@@ -351,6 +351,67 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // The local controlled preflight lane is separate from both the broad M5
+  // fixture and the external/public probe. Its native side owns the fixed
+  // document destination, so no URL crosses this bridge.
+  chromium_wasm_report_m5_controlled_preflight_devtools_network__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_controlled_preflight_devtools_network__proxy: 'sync',
+  chromium_wasm_report_m5_controlled_preflight_devtools_network: (report) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportM5ControlledPreflightDevToolsNetwork !== 'function') {
+      return 0;
+    }
+    bridge.reportM5ControlledPreflightDevToolsNetwork(UTF8ToString(report));
+    return 1;
+  },
+
+  chromium_wasm_report_m5_controlled_preflight_navigation__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_m5_controlled_preflight_navigation__proxy: 'sync',
+  chromium_wasm_report_m5_controlled_preflight_navigation: (
+      responseCode, protocol, protocolLength) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportM5ControlledPreflightNavigation !== 'function' ||
+        !Number.isSafeInteger(protocolLength) || protocolLength < 0 ||
+        protocolLength > 128) {
+      return 0;
+    }
+    bridge.reportM5ControlledPreflightNavigation({
+      protocol: ChromiumWasmHostBridge.version,
+      committed: true,
+      scheme: 'https',
+      responseCode,
+      connectionProtocol: UTF8ToString(protocol, protocolLength),
+    });
+    return 1;
+  },
+
+  chromium_wasm_report_m5_controlled_preflight_navigation_error__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_m5_controlled_preflight_navigation_error__proxy: 'sync',
+  chromium_wasm_report_m5_controlled_preflight_navigation_error: (netError) => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportM5ControlledPreflightNavigationError !== 'function') {
+      return 0;
+    }
+    bridge.reportM5ControlledPreflightNavigationError({
+      protocol: ChromiumWasmHostBridge.version,
+      committed: false,
+      scheme: 'https',
+      netError,
+    });
+    return 1;
+  },
+
   // The external/public M5 lane uses the same in-process protocol boundary,
   // but exposes only a fixed, redacted document and WISP-completion summary.
   chromium_wasm_report_m5_public_devtools_network__deps: [

@@ -866,7 +866,10 @@ if (is_android) {
   # dedicated M5 TLS test executable; it is never an embedded runtime asset.
   action("generate_wasm_m5_test_root_cert") {
     testonly = true
-    visibility = [ ":content_shell_wasm_m5_test" ]
+    visibility = [
+      ":content_shell_wasm_m5_test",
+      ":content_shell_wasm_m5_controlled_preflight_test",
+    ]
     script = "//net/data/ssl/scripts/generate-fuzzer-cert-include.py"
     sources = [ "//net/data/ssl/certificates/root_ca_cert.pem" ]
     outputs = [ "$target_gen_dir/app/wasm_m5_test_root_cert.inc" ]
@@ -920,6 +923,34 @@ if (is_android) {
   }
 
   # This executable is intentionally distinct from the controlled M5 fixture.
+  # It proves the native gateway-denial preflight in isolation so the broader
+  # controlled fixture's recorder cannot consume the same denial events.
+  executable("content_shell_wasm_m5_controlled_preflight_test") {
+    testonly = true
+    sources = [
+      "app/shell_main.cc",
+      "app/wasm_m5_test_trust.cc",
+      "app/wasm_m5_test_trust.h",
+    ]
+    inputs = [
+      "$root_out_dir/content_shell.pak",
+      "$root_out_dir/icudtl.dat",
+    ]
+    configs += [ ":content_shell_wasm_assets" ]
+    defines = [ "CONTENT_SHELL_WASM_M5_CONTROLLED_PREFLIGHT_TEST=1" ]
+    deps = [
+      ":content_shell_app",
+      ":content_shell_lib",
+      ":generate_wasm_m5_test_root_cert",
+      ":pak",
+      "//base",
+      "//content/public/app",
+      "//net",
+      "//third_party/icu:icudata",
+    ]
+  }
+
+  # This executable is intentionally distinct from the controlled fixture.
   # It retains Chromium's Chrome Root Store and opens one opt-in, externally
   # provisioned public HTTPS probe through WISP. The runner supplies neither a
   # gateway endpoint nor a probe URL at build time, and neither is embedded in

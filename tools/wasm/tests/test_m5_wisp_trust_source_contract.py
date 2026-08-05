@@ -50,10 +50,12 @@ class M5WispTrustSourceContractTest(unittest.TestCase):
         )
 
         self.assertIn("testonly = true", certificate_action)
-        self.assertIn(
-            'visibility = [ ":content_shell_wasm_m5_test" ]',
-            certificate_action,
-        )
+        for target in (
+            '":content_shell_wasm_m5_test"',
+            '":content_shell_wasm_m5_controlled_preflight_test"',
+        ):
+            with self.subTest(target=target):
+                self.assertIn(target, certificate_action)
         self.assertIn(
             'script = "//net/data/ssl/scripts/'
             'generate-fuzzer-cert-include.py"',

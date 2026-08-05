@@ -21,6 +21,7 @@ const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
 const M5_NETWORK_CASE = "wisp_network_m5";
+const M5_CONTROLLED_PREFLIGHT_CASE = "wisp_controlled_preflight_m5";
 const M5_PUBLIC_HTTPS_CASE = "wisp_public_https_m5";
 const M4_FIXTURE = "chromium-wasm-m4-ozone-pointer-v2";
 const M4_SELECT_FIXTURE = "chromium-wasm-m4-ozone-select-v1";
@@ -43,6 +44,8 @@ const M4_FOCUS_RETENTION_FIXTURE =
   "chromium-wasm-m4-ozone-focus-retention-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
+const M5_CONTROLLED_PREFLIGHT_FIXTURE =
+  "chromium-wasm-m5-controlled-preflight-v1";
 const M5_PUBLIC_HTTPS_FIXTURE = "chromium-wasm-m5-public-https-v1";
 const M5_NETWORK_TEST_HOSTNAME = "a.test";
 const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
@@ -81,6 +84,8 @@ const M5_DOWNLOAD_REPORT_KEYS = Object.freeze([
 ]);
 const M5_PUBLIC_MIN_HEARTBEAT_TIMER_TICKS = 2;
 const M5_PUBLIC_MIN_HEARTBEAT_ANIMATION_FRAMES = 2;
+const M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_TIMER_TICKS = 2;
+const M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_ANIMATION_FRAMES = 2;
 const M5_NAVIGATION_PHASE = Object.freeze({
   NONE: "none",
   PLAINTEXT_HTTP_CONTROL: "plaintext-http-control",
@@ -103,6 +108,26 @@ const M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER = Object.freeze([
   "Network.requestWillBeSent:document",
   "Network.responseReceived:document",
   "Network.loadingFinished:document",
+]);
+const M5_CONTROLLED_PREFLIGHT_DEVTOOLS_NETWORK_REPORT_KEYS = Object.freeze([
+  "protocol",
+  "state",
+  "networkEnabled",
+  "documentRequest",
+  "responseReceived",
+  "loadingFinished",
+  "requestIdCorrelated",
+  "responseStatus",
+  "responseProtocol",
+  "wispWebSocketOpened",
+  "wispHandshakeReady",
+  "wispConfirmedStream",
+  "wispDestinationMatched",
+  "wispDeniedRequest",
+  "wispDeniedLoadingFailed",
+  "wispDeniedRequestIdCorrelated",
+  "wispDeniedByAdministrator",
+  "events",
 ]);
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
@@ -1630,6 +1655,42 @@ function hasM5PublicDevToolsNetworkLog(report) {
         event === M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER[index]);
 }
 
+function hasExactReportKeys(report, expectedKeys) {
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    return false;
+  }
+  const keys = Object.keys(report);
+  return keys.length === expectedKeys.length &&
+      keys.every((key) => expectedKeys.includes(key));
+}
+
+function isM5ControlledPreflightDevToolsNetworkEnabled(report) {
+  return hasExactReportKeys(report, [
+    "protocol", "state", "networkEnabled", "events",
+  ]) && report.protocol === HOST_PROTOCOL && report.state === "enabled" &&
+      report.networkEnabled === true && Array.isArray(report.events) &&
+      report.events.length === 0;
+}
+
+function hasM5ControlledPreflightDevToolsNetworkLog(report) {
+  return hasExactReportKeys(
+      report, M5_CONTROLLED_PREFLIGHT_DEVTOOLS_NETWORK_REPORT_KEYS) &&
+      report.protocol === HOST_PROTOCOL && report.state === "complete" &&
+      report.networkEnabled === true && report.documentRequest === true &&
+      report.responseReceived === true && report.loadingFinished === true &&
+      report.requestIdCorrelated === true && report.responseStatus === 200 &&
+      report.responseProtocol === "h2" && report.wispWebSocketOpened === true &&
+      report.wispHandshakeReady === true && report.wispConfirmedStream === true &&
+      report.wispDestinationMatched === true && report.wispDeniedRequest === true &&
+      report.wispDeniedLoadingFailed === true &&
+      report.wispDeniedRequestIdCorrelated === true &&
+      report.wispDeniedByAdministrator === true &&
+      Array.isArray(report.events) &&
+      report.events.length === M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER.length &&
+      report.events.every((event, index) =>
+        event === M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER[index]);
+}
+
 function snapshotM5SlowStreamHostHeartbeat(heartbeat) {
   if (heartbeat?.anchor !== "m5-https-navigation-committed" ||
       !Number.isFinite(heartbeat?.elapsedMs) || heartbeat.elapsedMs < 0 ||
@@ -1749,6 +1810,15 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportM5Download(report) {
     deliverBridgeReport("_reportM5Download", [report]);
+  },
+  reportM5ControlledPreflightDevToolsNetwork(report) {
+    deliverBridgeReport("_reportM5ControlledPreflightDevToolsNetwork", [report]);
+  },
+  reportM5ControlledPreflightNavigation(report) {
+    deliverBridgeReport("_reportM5ControlledPreflightNavigation", [report]);
+  },
+  reportM5ControlledPreflightNavigationError(report) {
+    deliverBridgeReport("_reportM5ControlledPreflightNavigationError", [report]);
   },
   reportM5PublicDevToolsNetwork(report) {
     deliverBridgeReport("_reportM5PublicDevToolsNetwork", [report]);
@@ -2146,6 +2216,9 @@ export class ChromiumWasmM3Host {
   #m5NetworkPhase = M5_NAVIGATION_PHASE.NONE;
   #m5DevToolsNetwork = null;
   #m5Download = null;
+  #m5ControlledPreflightDevToolsNetwork = null;
+  #m5ControlledPreflightActive = false;
+  #m5ControlledPreflightNavigationFinished = false;
   #m5PublicDevToolsNetwork = null;
   #m5PublicNetworkTestActive = false;
   #m5PublicNavigationFinished = false;
@@ -4672,6 +4745,50 @@ export class ChromiumWasmM3Host {
     });
   }
 
+  async runM5ControlledPreflight() {
+    this.#requireRunning("runM5ControlledPreflight");
+    if (this.#fixture !== M5_CONTROLLED_PREFLIGHT_FIXTURE) {
+      throw new Error("M5 controlled preflight is not fixture-scoped");
+    }
+    if (!this.#wispConfigured) {
+      throw new Error("M5 controlled preflight requires a WISP configuration");
+    }
+    if (!isM5ControlledPreflightDevToolsNetworkEnabled(
+            this.#m5ControlledPreflightDevToolsNetwork)) {
+      throw new Error(
+        "M5 controlled preflight requires Network.enable evidence");
+    }
+    if (this.#m5ControlledPreflightActive ||
+        this.#m5ControlledPreflightNavigationFinished) {
+      throw new Error("M5 controlled preflight permits exactly one run");
+    }
+    const previousNavigation = this.#navigation;
+    const previousPageProbe = this.#pageProbe;
+    this.#m5ControlledPreflightActive = true;
+    this.#navigation = {};
+    this.#pageProbe = {};
+    let result;
+    try {
+      result = this.#callExport(
+        "chromium_wasm_host_run_m5_controlled_preflight", "number", [], []);
+    } catch (error) {
+      this.#m5ControlledPreflightActive = false;
+      this.#navigation = previousNavigation;
+      this.#pageProbe = previousPageProbe;
+      throw error;
+    }
+    if (result !== 1) {
+      this.#m5ControlledPreflightActive = false;
+      this.#navigation = previousNavigation;
+      this.#pageProbe = previousPageProbe;
+      throw new Error(
+        "runtime rejected M5 controlled preflight with status " +
+        String(result));
+    }
+    this.#recordHost("navigation:requested:m5-controlled-preflight");
+    return {ok: true, scheme: "https"};
+  }
+
   async loadM5PublicHTTPSURL(url) {
     this.#requireRunning("loadM5PublicHTTPSURL");
     if (!this.#wispConfigured) {
@@ -4897,6 +5014,10 @@ export class ChromiumWasmM3Host {
         ? clone(this.#m5DevToolsNetwork)
         : null,
       m5Download: this.#m5Download ? clone(this.#m5Download) : null,
+      controlledPreflightDevtoolsNetwork:
+        this.#m5ControlledPreflightDevToolsNetwork
+          ? clone(this.#m5ControlledPreflightDevToolsNetwork)
+          : null,
       publicDevtoolsNetwork: this.#m5PublicDevToolsNetwork
         ? clone(this.#m5PublicDevToolsNetwork)
         : null,
@@ -5138,6 +5259,135 @@ export class ChromiumWasmM3Host {
       this.#resetHeartbeatWindow("m5-https-navigation-committed");
     } catch (error) {
       this._reportFatal(`invalid M5 navigation report: ${String(error)}`);
+    }
+  }
+
+  _reportM5ControlledPreflightNavigation(value) {
+    try {
+      const report = asReport(value, "M5 controlled preflight navigation report");
+      if (
+        this.#fixture !== M5_CONTROLLED_PREFLIGHT_FIXTURE ||
+        !this.#m5ControlledPreflightActive ||
+        !hasExactReportKeys(report, [
+          "protocol", "committed", "scheme", "responseCode",
+          "connectionProtocol",
+        ]) ||
+        report.protocol !== HOST_PROTOCOL || report.committed !== true ||
+        report.scheme !== "https" || report.responseCode !== 200 ||
+        report.connectionProtocol !== "h2"
+      ) {
+        throw new Error("M5 controlled preflight navigation identity mismatch");
+      }
+      this.#navigation = {
+        committed: true,
+        scheme: "https",
+        responseCode: 200,
+        connectionProtocol: "h2",
+      };
+      this.#m5ControlledPreflightActive = false;
+      this.#m5ControlledPreflightNavigationFinished = true;
+      this.#resetHeartbeatWindow("m5-controlled-preflight-navigation-committed");
+      this.#recordHost("navigation:committed:m5-controlled-preflight");
+    } catch (error) {
+      this.#m5ControlledPreflightActive = false;
+      this.#m5ControlledPreflightNavigationFinished = true;
+      this._reportFatal(
+        "invalid M5 controlled preflight navigation report: " + String(error));
+    }
+  }
+
+  _reportM5ControlledPreflightNavigationError(value) {
+    try {
+      const report = asReport(
+        value, "M5 controlled preflight navigation failure report");
+      if (
+        this.#fixture !== M5_CONTROLLED_PREFLIGHT_FIXTURE ||
+        !this.#m5ControlledPreflightActive ||
+        !hasExactReportKeys(report, [
+          "protocol", "committed", "scheme", "netError",
+        ]) ||
+        report.protocol !== HOST_PROTOCOL || report.committed !== false ||
+        report.scheme !== "https" || !Number.isSafeInteger(report.netError) ||
+        report.netError === 0
+      ) {
+        throw new Error(
+          "M5 controlled preflight navigation failure identity mismatch");
+      }
+      this.#navigation = {
+        committed: false,
+        scheme: "https",
+        netError: report.netError,
+      };
+      this.#m5ControlledPreflightActive = false;
+      this.#m5ControlledPreflightNavigationFinished = true;
+      this.#resetHeartbeatWindow("m5-controlled-preflight-navigation-failed");
+      this.#recordHost("navigation:failed:m5-controlled-preflight");
+    } catch (error) {
+      this.#m5ControlledPreflightActive = false;
+      this.#m5ControlledPreflightNavigationFinished = true;
+      this._reportFatal(
+        "invalid M5 controlled preflight navigation failure report: " +
+        String(error));
+    }
+  }
+
+  _reportM5ControlledPreflightDevToolsNetwork(value) {
+    try {
+      const report = asReport(
+        value, "M5 controlled preflight DevTools Network report");
+      if (this.#fixture !== M5_CONTROLLED_PREFLIGHT_FIXTURE) {
+        throw new Error(
+          "M5 controlled preflight DevTools Network report is not fixture-scoped");
+      }
+      if (isM5ControlledPreflightDevToolsNetworkEnabled(report)) {
+        if (this.#m5ControlledPreflightDevToolsNetwork !== null) {
+          throw new Error(
+            "M5 controlled preflight DevTools Network enable report is duplicated");
+        }
+        this.#m5ControlledPreflightDevToolsNetwork = {
+          protocol: HOST_PROTOCOL,
+          state: "enabled",
+          networkEnabled: true,
+          events: [],
+        };
+        this.#recordHost("m5:controlled-preflight-devtools-network:enabled");
+        return;
+      }
+      if (!hasM5ControlledPreflightDevToolsNetworkLog(report) ||
+          this.#m5ControlledPreflightDevToolsNetwork?.state !== "enabled" ||
+          (!this.#m5ControlledPreflightActive &&
+           !this.#m5ControlledPreflightNavigationFinished)) {
+        throw new Error(
+          "M5 controlled preflight DevTools Network report is invalid or " +
+          "out of order");
+      }
+      // Keep only fixed, URL-free evidence. Native code validates request
+      // identity and the WISP diagnostic epoch before calling this bridge.
+      this.#m5ControlledPreflightDevToolsNetwork = {
+        protocol: HOST_PROTOCOL,
+        state: "complete",
+        networkEnabled: true,
+        documentRequest: true,
+        responseReceived: true,
+        loadingFinished: true,
+        requestIdCorrelated: true,
+        responseStatus: 200,
+        responseProtocol: "h2",
+        wispWebSocketOpened: true,
+        wispHandshakeReady: true,
+        wispConfirmedStream: true,
+        wispDestinationMatched: true,
+        wispDeniedRequest: true,
+        wispDeniedLoadingFailed: true,
+        wispDeniedRequestIdCorrelated: true,
+        wispDeniedByAdministrator: true,
+        events: [...M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER],
+      };
+      this.#recordHost("m5:controlled-preflight-devtools-network:complete");
+    } catch (error) {
+      this._reportFatal(
+        "invalid M5 controlled preflight DevTools Network report: " +
+        String(error));
     }
   }
 
@@ -13280,6 +13530,253 @@ async function runM5WispNetworkSmokeFromQuery() {
   return result;
 }
 
+async function runM5ControlledPreflightSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const relayEndpoint = parameters.get("wisp_endpoint");
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  const redactionVariants = m5PublicRedactionVariants([relayEndpoint]);
+  let host = null;
+  let initialFrame = null;
+  let controlledPreflightFrame = null;
+  let navigationResult = null;
+  let controlledPreflightDevtoolsNetworkEnabled = null;
+  let readiness = null;
+  let shutdown = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M5_CONTROLLED_PREFLIGHT_CASE) {
+      throw new Error("M5 controlled preflight case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M5 controlled preflight result token");
+    }
+    if (!relayEndpoint) {
+      throw new Error("missing M5 controlled preflight WISP endpoint");
+    }
+
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M5_CONTROLLED_PREFLIGHT_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+      wisp: {
+        version: WISP_CONFIGURATION_VERSION,
+        endpoint: relayEndpoint,
+        subprotocol: "wisp",
+      },
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    while (performance.now() < deadline) {
+      const candidate = await host.readiness();
+      if (Number.isSafeInteger(candidate.frame?.id) &&
+          candidate.frame.id >= 1 &&
+          candidate.frame.width === DEFAULT_WIDTH &&
+          candidate.frame.height === DEFAULT_HEIGHT) {
+        initialFrame = clone(candidate.frame);
+        break;
+      }
+      await delay(25);
+    }
+    if (!initialFrame) {
+      throw new Error(
+        "M5 controlled preflight runtime did not present the initial shell frame");
+    }
+
+    while (performance.now() < deadline) {
+      const candidate = await host.readiness();
+      if (isM5ControlledPreflightDevToolsNetworkEnabled(
+              candidate.controlledPreflightDevtoolsNetwork)) {
+        controlledPreflightDevtoolsNetworkEnabled =
+          candidate.controlledPreflightDevtoolsNetwork;
+        break;
+      }
+      await delay(25);
+    }
+    if (!controlledPreflightDevtoolsNetworkEnabled) {
+      throw new Error(
+        "M5 controlled preflight DevTools Network.enable did not complete");
+    }
+
+    navigationResult = await host.runM5ControlledPreflight();
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      const heartbeat = readiness.heartbeat;
+      if (readiness.navigation?.committed === true &&
+          readiness.navigation?.scheme === "https" &&
+          readiness.navigation?.responseCode === 200 &&
+          readiness.navigation?.connectionProtocol === "h2" &&
+          readiness.firstVisuallyNonEmptyPaint === true &&
+          Number.isSafeInteger(readiness.frame?.id) &&
+          readiness.frame.id > initialFrame.id &&
+          readiness.frame?.width === DEFAULT_WIDTH &&
+          readiness.frame?.height === DEFAULT_HEIGHT &&
+          hasM5ControlledPreflightDevToolsNetworkLog(
+            readiness.controlledPreflightDevtoolsNetwork) &&
+          heartbeat?.anchor ===
+            "m5-controlled-preflight-navigation-committed" &&
+          heartbeat.timerDelta >=
+            M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_TIMER_TICKS &&
+          heartbeat.animationFrameDelta >=
+            M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_ANIMATION_FRAMES &&
+          heartbeat.maxTimerGapMs <= MAXIMUM_TIMER_GAP_MS &&
+          readiness.fatalErrors?.length === 0) {
+        controlledPreflightFrame = clone(readiness.frame);
+        break;
+      }
+      if (readiness.navigation?.committed === false &&
+          readiness.navigation?.scheme === "https") {
+        break;
+      }
+      await delay(50);
+    }
+    if (!readiness || readiness.navigation?.committed !== true ||
+        readiness.navigation?.scheme !== "https" ||
+        readiness.navigation?.responseCode !== 200 ||
+        readiness.navigation?.connectionProtocol !== "h2" ||
+        readiness.firstVisuallyNonEmptyPaint !== true ||
+        !Number.isSafeInteger(controlledPreflightFrame?.id) ||
+        controlledPreflightFrame.id <= initialFrame.id ||
+        controlledPreflightFrame.width !== DEFAULT_WIDTH ||
+        controlledPreflightFrame.height !== DEFAULT_HEIGHT ||
+        !hasM5ControlledPreflightDevToolsNetworkLog(
+          readiness.controlledPreflightDevtoolsNetwork) ||
+        readiness.heartbeat?.anchor !==
+          "m5-controlled-preflight-navigation-committed" ||
+        readiness.heartbeat?.timerDelta <
+          M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_TIMER_TICKS ||
+        readiness.heartbeat?.animationFrameDelta <
+          M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_ANIMATION_FRAMES ||
+        readiness.heartbeat?.maxTimerGapMs > MAXIMUM_TIMER_GAP_MS ||
+        readiness.fatalErrors?.length !== 0) {
+      throw new Error("M5 controlled preflight navigation did not complete");
+    }
+
+    const shutdownTimeoutMs = Math.max(
+      1000, Math.min(60000, deadline - performance.now()));
+    shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      initialFrame: initialFrame !== null,
+      postNavigationFrame:
+        controlledPreflightFrame !== null &&
+        controlledPreflightFrame.id > initialFrame.id &&
+        controlledPreflightFrame.width === DEFAULT_WIDTH &&
+        controlledPreflightFrame.height === DEFAULT_HEIGHT,
+      wispConfigured: logs.host.includes("initialize:wisp-configured"),
+      controlledPreflightNavigation:
+        navigationResult?.ok === true &&
+        readiness.navigation?.committed === true &&
+        readiness.navigation?.scheme === "https" &&
+        readiness.navigation?.responseCode === 200 &&
+        readiness.navigation?.connectionProtocol === "h2" &&
+        readiness.fatalErrors?.length === 0,
+      controlledPreflightDevtoolsNetwork:
+        isM5ControlledPreflightDevToolsNetworkEnabled(
+          controlledPreflightDevtoolsNetworkEnabled) &&
+        hasM5ControlledPreflightDevToolsNetworkLog(
+          readiness.controlledPreflightDevtoolsNetwork),
+      hostResponsive:
+        readiness.heartbeat?.anchor ===
+          "m5-controlled-preflight-navigation-committed" &&
+        readiness.heartbeat?.timerDelta >=
+          M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_TIMER_TICKS &&
+        readiness.heartbeat?.animationFrameDelta >=
+          M5_CONTROLLED_PREFLIGHT_MIN_HEARTBEAT_ANIMATION_FRAMES &&
+        readiness.heartbeat?.maxTimerGapMs <= MAXIMUM_TIMER_GAP_MS,
+      shutdown:
+        shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M5_CONTROLLED_PREFLIGHT_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      initialFrame,
+      controlledPreflightFrame,
+      navigationResult,
+      controlledPreflightDevtoolsNetworkEnabled,
+      readiness,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : "failed checks: " + failedChecks.join(", "),
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M5_CONTROLLED_PREFLIGHT_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      initialFrame,
+      controlledPreflightFrame,
+      navigationResult,
+      controlledPreflightDevtoolsNetworkEnabled,
+      readiness: null,
+      logs: null,
+      shutdown,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += "; diagnostics: " + String(diagnosticError);
+      }
+      try {
+        result.readiness = await host.readiness();
+      } catch (diagnosticError) {
+        result.error += "; readiness diagnostics: " +
+          String(diagnosticError);
+      }
+      try {
+        if (shutdown === null) {
+          shutdown = await host.shutdown(1000);
+          result.shutdown = shutdown;
+        }
+      } catch (shutdownError) {
+        result.error += "; shutdown diagnostics: " + String(shutdownError);
+      }
+    }
+  }
+
+  const redactedResult = redactM5PublicRuntimeValue(result, redactionVariants);
+  root.dataset.state = redactedResult.status;
+  statusElement.textContent = JSON.stringify(redactedResult, null, 2);
+  await postResult(token, redactedResult);
+  return redactedResult;
+}
+
 async function runM5PublicHttpsSmokeFromQuery() {
   const parameters = new URLSearchParams(location.search);
   const versions = {
@@ -13596,6 +14093,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M5_NETWORK_CASE) {
     return runM5WispNetworkSmokeFromQuery();
+  }
+  if (selectedCase === M5_CONTROLLED_PREFLIGHT_CASE) {
+    return runM5ControlledPreflightSmokeFromQuery();
   }
   if (selectedCase === M5_PUBLIC_HTTPS_CASE) {
     return runM5PublicHttpsSmokeFromQuery();

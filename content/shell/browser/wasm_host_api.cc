@@ -112,6 +112,8 @@ constexpr std::string_view kM5NetworkReconnectFailure =
     "net::ERR_INTERNET_DISCONNECTED";
 constexpr std::string_view kM5NetworkLocalGatewayDeniedPath =
     "/m5/local-gateway-denied";
+constexpr std::string_view kM5NetworkLocalGatewayProbePath =
+    "/m5/local-gateway-probe";
 constexpr int kM5NetworkLocalGatewayDeniedPort = 444;
 constexpr std::string_view kM5NetworkLocalGatewayDeniedFailure =
     "net::ERR_BLOCKED_BY_ADMINISTRATOR";
@@ -178,12 +180,22 @@ std::atomic_bool& GetWasmM5PublicNetworkTestMode() {
   return enabled;
 }
 
+std::atomic_bool& GetWasmM5ControlledPreflightTestMode() {
+  static std::atomic_bool enabled(false);
+  return enabled;
+}
+
 bool IsWasmM5NetworkTestModeEnabled() {
   return GetWasmM5NetworkTestMode().load(std::memory_order_relaxed);
 }
 
 bool IsWasmM5PublicNetworkTestModeEnabled() {
   return GetWasmM5PublicNetworkTestMode().load(std::memory_order_relaxed);
+}
+
+bool IsWasmM5ControlledPreflightTestModeEnabled() {
+  return GetWasmM5ControlledPreflightTestMode().load(
+      std::memory_order_relaxed);
 }
 
 bool IsM5NetworkTestUrl(const GURL& candidate_url) {
@@ -237,11 +249,28 @@ bool IsM5PublicHttpsUrl(const GURL& candidate_url) {
          IsM5PublicDnsHostname(host);
 }
 
+// This local, controlled lane has a single canonical document URL. GURL
+// canonicalizes an explicitly written default HTTPS port away, so use the
+// effective port rather than requiring has_port(). It intentionally does not
+// share the broader controlled-fixture predicate: the ordinary M5 recorder
+// must not consume this lane's gateway-denial preflight events.
+bool IsM5ControlledPreflightUrl(const GURL& candidate_url) {
+  return IsWasmM5ControlledPreflightTestModeEnabled() &&
+         candidate_url.is_valid() &&
+         candidate_url.SchemeIs(url::kHttpsScheme) &&
+         candidate_url.host() == kM5NetworkTestHostname &&
+         candidate_url.EffectiveIntPort() == 443 &&
+         !candidate_url.has_username() && !candidate_url.has_password() &&
+         !candidate_url.has_query() && !candidate_url.has_ref() &&
+         candidate_url.path() == kM5NetworkLocalGatewayProbePath;
+}
+
 bool IsObservedWasmHostUrl(const GURL& candidate_url) {
   return candidate_url.SchemeIs(url::kDataScheme) ||
          IsM5NetworkTestUrl(candidate_url) ||
          IsM5PlaintextHttpControlUrl(candidate_url) ||
-         IsM5PublicHttpsUrl(candidate_url);
+         IsM5PublicHttpsUrl(candidate_url) ||
+         IsM5ControlledPreflightUrl(candidate_url);
 }
 
 extern "C" int chromium_wasm_report_readiness(
@@ -256,6 +285,8 @@ extern "C" int chromium_wasm_report_m5_devtools_network(const char* report);
 extern "C" int chromium_wasm_report_m5_download(const char* report);
 extern "C" int chromium_wasm_report_m5_public_devtools_network(
     const char* report);
+extern "C" int chromium_wasm_report_m5_controlled_preflight_devtools_network(
+    const char* report);
 extern "C" int chromium_wasm_report_m5_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation();
 extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation_error(
@@ -269,6 +300,12 @@ extern "C" int chromium_wasm_report_m5_public_navigation(
     int protocol_length);
 extern "C" int chromium_wasm_report_m5_public_navigation_error(
     const char* url,
+    int net_error);
+extern "C" int chromium_wasm_report_m5_controlled_preflight_navigation(
+    int response_code,
+    const char* protocol,
+    int protocol_length);
+extern "C" int chromium_wasm_report_m5_controlled_preflight_navigation_error(
     int net_error);
 extern "C" int chromium_wasm_report_fatal(const char* message);
 extern "C" int chromium_wasm_report_ozone_text_input_delivery(
@@ -723,7 +760,13 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
 // later stream matching that window's document-hostname-and-443 target.
 class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
  public:
-  M5PublicDevToolsNetworkRecorder() = default;
+  enum class Lane {
+    kPublic,
+    kControlledPreflight,
+  };
+
+  explicit M5PublicDevToolsNetworkRecorder(Lane lane = Lane::kPublic)
+      : lane_(lane) {}
 
   M5PublicDevToolsNetworkRecorder(const M5PublicDevToolsNetworkRecorder&) =
       delete;
@@ -760,20 +803,20 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     if (state_ != State::kEnabled ||
         phase_ != Phase::kReadyForPreflight || preflight_started_ ||
         !web_contents || !continue_navigation ||
-        !IsM5PublicHttpsUrl(expected_document_url) || port != 443) {
+        !IsExpectedDocumentUrl(expected_document_url) || port != 443) {
       return false;
     }
     GURL::Replacements replacements;
     replacements.SetPortStr("444");
-    replacements.SetPathStr(kM5PublicGatewayDeniedPath);
+    replacements.SetPathStr(GatewayDeniedPath());
     replacements.ClearQuery();
     replacements.ClearRef();
     const GURL denied_url =
         expected_document_url.ReplaceComponents(replacements);
     if (!denied_url.is_valid() || !denied_url.SchemeIs(url::kHttpsScheme) ||
         denied_url.host() != expected_document_url.host() ||
-        denied_url.EffectiveIntPort() != kM5PublicGatewayDeniedPort ||
-        denied_url.path() != kM5PublicGatewayDeniedPath ||
+        denied_url.EffectiveIntPort() != GatewayDeniedPort() ||
+        denied_url.path() != GatewayDeniedPath() ||
         denied_url.has_query() || denied_url.has_ref()) {
       return false;
     }
@@ -911,6 +954,30 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     }
   }
 
+  bool IsExpectedDocumentUrl(const GURL& candidate_url) const {
+    return lane_ == Lane::kPublic ? IsM5PublicHttpsUrl(candidate_url)
+                                  : IsM5ControlledPreflightUrl(candidate_url);
+  }
+
+  std::string_view GatewayDeniedPath() const {
+    return lane_ == Lane::kPublic ? kM5PublicGatewayDeniedPath
+                                  : kM5NetworkLocalGatewayDeniedPath;
+  }
+
+  int GatewayDeniedPort() const {
+    return lane_ == Lane::kPublic ? kM5PublicGatewayDeniedPort
+                                  : kM5NetworkLocalGatewayDeniedPort;
+  }
+
+  std::string_view GatewayDeniedFailure() const {
+    return lane_ == Lane::kPublic ? kM5PublicGatewayDeniedFailure
+                                  : kM5NetworkLocalGatewayDeniedFailure;
+  }
+
+  std::string_view LaneLabel() const {
+    return lane_ == Lane::kPublic ? "public" : "controlled preflight";
+  }
+
   bool IsPublicDocumentRequest(const base::DictValue& params,
                                std::string* request_id) {
     const std::string* url = params.FindStringByDottedPath("request.url");
@@ -918,7 +985,9 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
       return false;
     }
     const GURL request_url(*url);
-    if (!IsM5PublicHttpsUrl(request_url)) {
+    if ((lane_ == Lane::kPublic && !IsM5PublicHttpsUrl(request_url)) ||
+        (lane_ == Lane::kControlledPreflight &&
+         !IsM5ControlledPreflightUrl(request_url))) {
       return false;
     }
     if (!expected_document_url_.is_valid() ||
@@ -1032,7 +1101,7 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     const std::optional<bool> canceled = params.FindBool("canceled");
     if (phase_ != Phase::kWaitingForDeniedFailure ||
         denied_loading_failed_ || !error_text ||
-        *error_text != kM5PublicGatewayDeniedFailure || !canceled ||
+        *error_text != GatewayDeniedFailure() || !canceled ||
         *canceled) {
       Fail("received an invalid public gateway denial failure");
       return;
@@ -1132,8 +1201,11 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
         serialized->size() > kMaximumM5DevToolsReportBytes) {
       return false;
     }
-    return chromium_wasm_report_m5_public_devtools_network(
-               serialized->c_str()) == 1;
+    return lane_ == Lane::kPublic
+               ? chromium_wasm_report_m5_public_devtools_network(
+                     serialized->c_str()) == 1
+               : chromium_wasm_report_m5_controlled_preflight_devtools_network(
+                     serialized->c_str()) == 1;
   }
 
   void Fail(std::string_view reason) {
@@ -1141,8 +1213,8 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
       return;
     }
     state_ = State::kFailed;
-    ReportFatal("M5 public DevTools Network recorder: " +
-                std::string(reason));
+    ReportFatal("M5 " + std::string(LaneLabel()) +
+                " DevTools Network recorder: " + std::string(reason));
   }
 
   void Detach() {
@@ -1153,6 +1225,7 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     agent_host->DetachClient(this);
   }
 
+  Lane lane_ = Lane::kPublic;
   State state_ = State::kCreated;
   Phase phase_ = Phase::kReadyForPreflight;
   scoped_refptr<DevToolsAgentHost> agent_host_;
@@ -1603,6 +1676,14 @@ class WasmHostObserver final : public WebContentsObserver {
       // misclassified as the one allowed public probe.
       m5_public_navigation_handle_ = navigation_handle;
     }
+    if (IsM5ControlledPreflightUrl(navigation_handle->GetURL())) {
+      if (m5_controlled_preflight_navigation_finished_ ||
+          m5_controlled_preflight_navigation_handle_) {
+        ReportFatal("unexpected additional M5 controlled preflight navigation");
+        return;
+      }
+      m5_controlled_preflight_navigation_handle_ = navigation_handle;
+    }
   }
 
   void DidFinishNavigation(NavigationHandle* navigation_handle) override {
@@ -1615,6 +1696,8 @@ class WasmHostObserver final : public WebContentsObserver {
     const net::Error net_error = navigation_handle->GetNetErrorCode();
     const bool is_m5_public_navigation =
         m5_public_navigation_handle_ == navigation_handle;
+    const bool is_m5_controlled_preflight_navigation =
+        m5_controlled_preflight_navigation_handle_ == navigation_handle;
     if (is_m5_public_navigation) {
       m5_public_navigation_handle_ = nullptr;
       m5_public_navigation_finished_ = true;
@@ -1622,6 +1705,10 @@ class WasmHostObserver final : public WebContentsObserver {
         ReportFatal("M5 public HTTPS navigation URL exceeded its bound");
         return;
       }
+    }
+    if (is_m5_controlled_preflight_navigation) {
+      m5_controlled_preflight_navigation_handle_ = nullptr;
+      m5_controlled_preflight_navigation_finished_ = true;
     }
     if (is_m5_public_navigation &&
         (net_error != net::OK || !navigation_handle->HasCommitted() ||
@@ -1633,6 +1720,18 @@ class WasmHostObserver final : public WebContentsObserver {
               url_spec.c_str(), report_error) != 1) {
         ReportFatal("host rejected the failed M5 public HTTPS navigation "
                     "report");
+      }
+      return;
+    }
+    if (is_m5_controlled_preflight_navigation &&
+        (net_error != net::OK || !navigation_handle->HasCommitted() ||
+         navigation_handle->IsErrorPage())) {
+      const int report_error =
+          net_error == net::OK ? net::ERR_FAILED : static_cast<int>(net_error);
+      if (chromium_wasm_report_m5_controlled_preflight_navigation_error(
+              report_error) != 1) {
+        ReportFatal("host rejected the failed M5 controlled preflight "
+                    "navigation report");
       }
       return;
     }
@@ -1678,6 +1777,20 @@ class WasmHostObserver final : public WebContentsObserver {
       }
       return;
     }
+    if (is_m5_controlled_preflight_navigation) {
+      const net::HttpResponseHeaders* headers =
+          navigation_handle->GetResponseHeaders();
+      const int response_code = headers ? headers->response_code() : 0;
+      const std::string_view protocol = net::HttpConnectionInfoToString(
+          navigation_handle->GetConnectionInfo());
+      if (chromium_wasm_report_m5_controlled_preflight_navigation(
+              response_code, protocol.data(),
+              static_cast<int>(protocol.size())) != 1) {
+        ReportFatal("host rejected the committed M5 controlled preflight "
+                    "navigation report");
+      }
+      return;
+    }
     if (IsM5PlaintextHttpControlUrl(navigation_url) &&
         chromium_wasm_report_m5_plaintext_http_control_navigation() != 1) {
       ReportFatal(
@@ -1698,7 +1811,8 @@ class WasmHostObserver final : public WebContentsObserver {
     }
     // A public page is not a deterministic fixture and therefore exposes no
     // privileged page probe. Its navigation metadata is reported above.
-    if (m5_public_navigation_finished_) {
+    if (m5_public_navigation_finished_ ||
+        m5_controlled_preflight_navigation_finished_) {
       return;
     }
     ProbePage();
@@ -1721,6 +1835,7 @@ class WasmHostObserver final : public WebContentsObserver {
     probe_timer_.Stop();
     probe_in_flight_ = false;
     m5_public_navigation_handle_ = nullptr;
+    m5_controlled_preflight_navigation_handle_ = nullptr;
     weak_ptr_factory_.InvalidateWeakPtrs();
     Observe(nullptr);
   }
@@ -1786,6 +1901,9 @@ class WasmHostObserver final : public WebContentsObserver {
   bool probe_in_flight_ = false;
   raw_ptr<NavigationHandle> m5_public_navigation_handle_ = nullptr;
   bool m5_public_navigation_finished_ = false;
+  raw_ptr<NavigationHandle> m5_controlled_preflight_navigation_handle_ =
+      nullptr;
+  bool m5_controlled_preflight_navigation_finished_ = false;
   uint64_t navigation_generation_ = 0;
   base::RepeatingTimer probe_timer_;
   base::WeakPtrFactory<WasmHostObserver> weak_ptr_factory_{this};
@@ -1861,6 +1979,8 @@ class WasmHostState {
   std::unique_ptr<M5DownloadRecorder> m5_download_recorder;
   std::unique_ptr<M5PublicDevToolsNetworkRecorder>
       m5_public_devtools_network_recorder;
+  std::unique_ptr<M5PublicDevToolsNetworkRecorder>
+      m5_controlled_preflight_devtools_network_recorder;
 
  private:
   bool IsM4KeyTransitionAllowedLocked(ui::DomCode physical_key,
@@ -2175,6 +2295,21 @@ void LoadM5NetworkUrlOnUiThread(GURL url) {
   LoadUrlOnUiThread(std::move(url));
 }
 
+void LoadM5ControlledPreflightOnUiThread() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  Shell* shell = GetSingleShell();
+  GURL expected_url("https://a.test/m5/local-gateway-probe");
+  if (!IsM5ControlledPreflightUrl(expected_url) || !shell ||
+      !state.m5_controlled_preflight_devtools_network_recorder ||
+      !state.m5_controlled_preflight_devtools_network_recorder
+           ->BeginGatewayDenialPreflight(
+               shell->web_contents(), expected_url,
+               base::BindOnce(&LoadUrlOnUiThread, std::move(expected_url)))) {
+    ReportFatal("could not start the M5 controlled gateway-denial preflight");
+  }
+}
+
 void LoadM5PublicUrlOnUiThread(GURL url) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
@@ -2301,6 +2436,19 @@ void InitializeWasmHostApi() {
       return;
     }
   }
+  if (IsWasmM5ControlledPreflightTestModeEnabled()) {
+    state.m5_controlled_preflight_devtools_network_recorder =
+        std::make_unique<M5PublicDevToolsNetworkRecorder>(
+            M5PublicDevToolsNetworkRecorder::Lane::kControlledPreflight);
+    if (!state.m5_controlled_preflight_devtools_network_recorder->Start(
+            shell->web_contents())) {
+      state.m5_controlled_preflight_devtools_network_recorder.reset();
+      ReportFatal(
+          "could not start the M5 controlled preflight DevTools Network "
+          "recorder");
+      return;
+    }
+  }
   if (chromium_wasm_report_readiness(
           /*shell_ready=*/1, /*surface_ready=*/-1,
           /*first_visually_nonempty_paint=*/-1) != 1) {
@@ -2316,10 +2464,16 @@ void EnableWasmM5PublicNetworkTestModeForTesting() {
   GetWasmM5PublicNetworkTestMode().store(true, std::memory_order_relaxed);
 }
 
+void EnableWasmM5ControlledPreflightTestModeForTesting() {
+  GetWasmM5ControlledPreflightTestMode().store(true,
+                                                std::memory_order_relaxed);
+}
+
 void ShutdownWasmHostApi() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
   state.m5_download_recorder.reset();
+  state.m5_controlled_preflight_devtools_network_recorder.reset();
   state.m5_public_devtools_network_recorder.reset();
   state.m5_devtools_network_recorder.reset();
   state.observer.reset();
@@ -2520,6 +2674,16 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_plaintext_http_control_url(
   }
   return content::PostHostCommand(
              base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_run_m5_controlled_preflight() {
+  if (!content::IsWasmM5ControlledPreflightTestModeEnabled()) {
+    return 0;
+  }
+  return content::PostHostCommand(
+             base::BindOnce(&content::LoadM5ControlledPreflightOnUiThread))
              ? 1
              : 0;
 }
