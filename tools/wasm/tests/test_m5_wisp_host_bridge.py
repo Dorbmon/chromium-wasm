@@ -36,6 +36,8 @@ class M5WispHostBridgeTest(unittest.TestCase):
 
         for symbol in (
             "chromium_wasm_wisp_stream_is_configured",
+            "chromium_wasm_wisp_diagnostics_begin_evidence_window",
+            "chromium_wasm_wisp_diagnostics_completion_flags",
             "chromium_wasm_wisp_stream_open",
             "chromium_wasm_wisp_stream_state",
             "chromium_wasm_wisp_stream_error",
@@ -64,6 +66,8 @@ class M5WispHostBridgeTest(unittest.TestCase):
             "growMemViews();",
             "this._isLoopbackHost(endpoint.hostname)",
             "this._requiresUnsupportedAuthentication",
+            "diagnosticsCompletionFlags()",
+            "beginDiagnosticsEvidenceWindow()",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, source)
@@ -284,7 +288,11 @@ function establish(id, credit = 2) {
       'bridge must use the configured endpoint');
   assert(socket.subprotocol === 'wisp',
       'bridge must request a WebSocket subprotocol for WISP v2');
+  assert(transport.diagnosticsCompletionFlags() === 0,
+      'WISP diagnostics claimed a WebSocket before its open event');
   socket.open();
+  assert(transport.diagnosticsCompletionFlags() === 0x01,
+      'WISP diagnostics did not observe the WebSocket open event');
   assert(socket.sent.length === 0,
       'client INFO must wait for server INFO');
   socket.emit(info([{id: EXT_OPEN_CONFIRMATION, metadata: new Uint8Array()}]));
@@ -295,6 +303,8 @@ function establish(id, credit = 2) {
       '2,1,5,0,0,0,0',
       'client INFO must advertise stream-open confirmation with no metadata');
   socket.emit(continuation(0, credit));
+  assert(transport.diagnosticsCompletionFlags() === 0x03,
+      'WISP diagnostics did not observe the completed handshake');
   const connect = socket.sent.at(-1);
   assert(connect[0] === TYPE_CONNECT && getU32(connect, 1) === id,
       'global CONTINUE must release the queued TCP CONNECT');
@@ -304,6 +314,8 @@ function establish(id, credit = 2) {
   assert(transport.state(id) === 1,
       'stream must remain connecting before its open confirmation');
   socket.emit(continuation(id, credit));
+  assert(transport.diagnosticsCompletionFlags() === 0x07,
+      'WISP diagnostics did not observe the confirmed TCP stream');
   assert(transport.state(id) === 2,
       'stream CONTINUE must complete the native Connect contract');
   return socket;
@@ -341,9 +353,21 @@ assert(secondConnect[0] === TYPE_CONNECT && getU32(secondConnect, 1) === 8 &&
     secondConnect[6] === 251 && secondConnect[7] === 32 &&
     new TextDecoder().decode(secondConnect.subarray(8)) === 'second.test',
     'multiplexed CONNECT did not preserve port and hostname');
+assert(transport.beginDiagnosticsEvidenceWindow() === 1,
+    'WISP diagnostics did not start an evidence window');
+assert(transport.diagnosticsCompletionFlags() === 0x03,
+    'WISP diagnostics accepted a stream confirmed before its evidence window');
 socket.emit(continuation(8, 1));
 assert(transport.state(8) === 2 && FakeWebSocket.instances.length === 1,
     'multiplexed stream created another WebSocket or never opened');
+assert(transport.diagnosticsCompletionFlags() === 0x03,
+    'WISP diagnostics accepted a pre-window stream confirmed afterward');
+const thirdHostnameLength = writeHostname('third.test');
+assert(transport.open(9, 64, thirdHostnameLength, 443) === 1,
+    'post-window stream was not multiplexed on the singleton WebSocket');
+socket.emit(continuation(9, 1));
+assert(transport.diagnosticsCompletionFlags() === 0x07,
+    'WISP diagnostics did not require a post-window stream confirmation');
 
 // DATA writes are copied, packet-bounded, credit-gated, and queue-bounded.
 heap.set(new Uint8Array([1, 2, 3, 4]), 256);

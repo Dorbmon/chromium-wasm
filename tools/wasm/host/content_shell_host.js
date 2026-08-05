@@ -77,6 +77,11 @@ const M5_DEVTOOLS_NETWORK_EVENT_ORDER = Object.freeze([
   "Network.responseReceived:final",
   "Network.loadingFinished:final",
 ]);
+const M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER = Object.freeze([
+  "Network.requestWillBeSent:document",
+  "Network.responseReceived:document",
+  "Network.loadingFinished:document",
+]);
 const M4_KEYBOARD_DOM_CODE = "ArrowDown";
 const M4_PRINTABLE_KEY_DOM_CODE = "KeyA";
 const M4_PRINTABLE_KEY_DOM_KEY = "a";
@@ -1525,6 +1530,30 @@ function hasM5DevToolsNetworkLog(report) {
         (event, index) => event === M5_DEVTOOLS_NETWORK_EVENT_ORDER[index]);
 }
 
+function isM5PublicDevToolsNetworkEnabled(report) {
+  return report?.protocol === HOST_PROTOCOL &&
+      report?.state === "enabled" && report?.networkEnabled === true &&
+      Array.isArray(report?.events) && report.events.length === 0;
+}
+
+function hasM5PublicDevToolsNetworkLog(report) {
+  return report?.protocol === HOST_PROTOCOL &&
+      report?.state === "complete" && report?.networkEnabled === true &&
+      report?.documentRequest === true && report?.responseReceived === true &&
+      report?.loadingFinished === true && report?.requestIdCorrelated === true &&
+      Number.isSafeInteger(report?.responseStatus) &&
+      report.responseStatus >= 100 && report.responseStatus <= 599 &&
+      (report.responseProtocol === "h2" ||
+       report.responseProtocol === "http/1.1") &&
+      report?.wispWebSocketOpened === true &&
+      report?.wispHandshakeReady === true &&
+      report?.wispConfirmedStream === true &&
+      Array.isArray(report?.events) &&
+      report.events.length === M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER.length &&
+      report.events.every((event, index) =>
+        event === M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER[index]);
+}
+
 function snapshotM5SlowStreamHostHeartbeat(heartbeat) {
   if (heartbeat?.anchor !== "m5-https-navigation-committed" ||
       !Number.isFinite(heartbeat?.elapsedMs) || heartbeat.elapsedMs < 0 ||
@@ -1641,6 +1670,9 @@ globalThis.__chromiumWasmHostBridgeV1 = Object.freeze({
   },
   reportM5DevToolsNetwork(report) {
     deliverBridgeReport("_reportM5DevToolsNetwork", [report]);
+  },
+  reportM5PublicDevToolsNetwork(report) {
+    deliverBridgeReport("_reportM5PublicDevToolsNetwork", [report]);
   },
   reportM5PublicNavigation(report) {
     deliverBridgeReport("_reportM5PublicNavigation", [report]);
@@ -2011,6 +2043,7 @@ export class ChromiumWasmM3Host {
   #m5NetworkNavigationCount = 0;
   #m5NetworkPhase = M5_NAVIGATION_PHASE.NONE;
   #m5DevToolsNetwork = null;
+  #m5PublicDevToolsNetwork = null;
   #m5PublicNetworkTestActive = false;
   #m5PublicNavigationFinished = false;
   #m5PublicExpectedURL = null;
@@ -4540,6 +4573,9 @@ export class ChromiumWasmM3Host {
     if (!this.#wispConfigured) {
       throw new Error("M5 public navigation requires a WISP configuration");
     }
+    if (!isM5PublicDevToolsNetworkEnabled(this.#m5PublicDevToolsNetwork)) {
+      throw new Error("M5 public navigation requires Network.enable evidence");
+    }
     const publicURL = normalizeM5PublicHTTPSURL(url);
     if (this.#m5PublicNetworkTestActive || this.#m5PublicNavigationFinished) {
       throw new Error("M5 public navigation permits exactly one URL");
@@ -4755,6 +4791,9 @@ export class ChromiumWasmM3Host {
       pageProbe: clone(this.#pageProbe),
       devtoolsNetwork: this.#m5DevToolsNetwork
         ? clone(this.#m5DevToolsNetwork)
+        : null,
+      publicDevtoolsNetwork: this.#m5PublicDevToolsNetwork
+        ? clone(this.#m5PublicDevToolsNetwork)
         : null,
       ozoneFocusState: this.#ozoneFocusState
         ? clone(this.#ozoneFocusState)
@@ -5138,6 +5177,58 @@ export class ChromiumWasmM3Host {
       this.#recordHost("m5:devtools-network:complete");
     } catch (error) {
       this._reportFatal(`invalid M5 DevTools Network report: ${String(error)}`);
+    }
+  }
+
+  _reportM5PublicDevToolsNetwork(value) {
+    try {
+      const report = asReport(value, "M5 public DevTools Network report");
+      if (this.#fixture !== M5_PUBLIC_HTTPS_FIXTURE) {
+        throw new Error("M5 public DevTools Network report is not fixture-scoped");
+      }
+      if (isM5PublicDevToolsNetworkEnabled(report)) {
+        if (this.#m5PublicDevToolsNetwork !== null) {
+          throw new Error("M5 public DevTools Network enable report is duplicated");
+        }
+        this.#m5PublicDevToolsNetwork = {
+          protocol: HOST_PROTOCOL,
+          state: "enabled",
+          networkEnabled: true,
+          events: [],
+        };
+        this.#recordHost("m5:public-devtools-network:enabled");
+        return;
+      }
+      if (!hasM5PublicDevToolsNetworkLog(report) ||
+          this.#m5PublicDevToolsNetwork?.state !== "enabled" ||
+          (!this.#m5PublicNetworkTestActive &&
+           !this.#m5PublicNavigationFinished)) {
+        throw new Error(
+          "M5 public DevTools Network report is invalid or out of order");
+      }
+      // Preserve a fixed summary only. The C++ recorder performs request-ID
+      // correlation internally and validates the atomic WISP completion
+      // bitmask; public results must never contain a URL, hostname, endpoint,
+      // raw CDP message, header, cookie, request ID, or payload.
+      this.#m5PublicDevToolsNetwork = {
+        protocol: HOST_PROTOCOL,
+        state: "complete",
+        networkEnabled: true,
+        documentRequest: true,
+        responseReceived: true,
+        loadingFinished: true,
+        requestIdCorrelated: true,
+        responseStatus: report.responseStatus,
+        responseProtocol: report.responseProtocol,
+        wispWebSocketOpened: true,
+        wispHandshakeReady: true,
+        wispConfirmedStream: true,
+        events: [...M5_PUBLIC_DEVTOOLS_NETWORK_EVENT_ORDER],
+      };
+      this.#recordHost("m5:public-devtools-network:complete");
+    } catch (error) {
+      this._reportFatal(
+        `invalid M5 public DevTools Network report: ${String(error)}`);
     }
   }
 
@@ -13038,6 +13129,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
   let initialFrame = null;
   let publicFrame = null;
   let navigationResult = null;
+  let publicDevtoolsNetworkEnabled = null;
   let readiness = null;
   let shutdown = null;
   let result;
@@ -13091,6 +13183,21 @@ async function runM5PublicHttpsSmokeFromQuery() {
         "M5 public HTTPS runtime did not present the initial shell frame");
     }
 
+    // The public test binary attaches a bounded in-process DevTools client at
+    // startup. Do not let the one permitted public navigation race
+    // Network.enable, otherwise the requested evidence could miss it.
+    while (performance.now() < deadline) {
+      const candidate = await host.readiness();
+      if (isM5PublicDevToolsNetworkEnabled(candidate.publicDevtoolsNetwork)) {
+        publicDevtoolsNetworkEnabled = candidate.publicDevtoolsNetwork;
+        break;
+      }
+      await delay(25);
+    }
+    if (!publicDevtoolsNetworkEnabled) {
+      throw new Error("M5 public DevTools Network.enable did not complete");
+    }
+
     navigationResult = await host.loadM5PublicHTTPSURL(testURL);
     while (performance.now() < deadline) {
       readiness = await host.readiness();
@@ -13104,6 +13211,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
           readiness.frame.id > initialFrame.id &&
           readiness.frame?.width === DEFAULT_WIDTH &&
           readiness.frame?.height === DEFAULT_HEIGHT &&
+          hasM5PublicDevToolsNetworkLog(readiness.publicDevtoolsNetwork) &&
           heartbeat?.anchor === "m5-public-https-navigation-committed" &&
           heartbeat.timerDelta >= M5_PUBLIC_MIN_HEARTBEAT_TIMER_TICKS &&
           heartbeat.animationFrameDelta >=
@@ -13128,6 +13236,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
         publicFrame.id <= initialFrame.id ||
         publicFrame.width !== DEFAULT_WIDTH ||
         publicFrame.height !== DEFAULT_HEIGHT ||
+        !hasM5PublicDevToolsNetworkLog(readiness.publicDevtoolsNetwork) ||
         readiness.heartbeat?.anchor !==
           "m5-public-https-navigation-committed" ||
         readiness.heartbeat?.timerDelta <
@@ -13160,6 +13269,9 @@ async function runM5PublicHttpsSmokeFromQuery() {
         readiness.navigation?.responseCode === expectedStatusValue &&
         readiness.navigation?.connectionProtocol === expectedProtocol &&
         readiness.fatalErrors?.length === 0,
+      publicDevtoolsNetwork:
+        isM5PublicDevToolsNetworkEnabled(publicDevtoolsNetworkEnabled) &&
+        hasM5PublicDevToolsNetworkLog(readiness.publicDevtoolsNetwork),
       hostResponsive:
         readiness.heartbeat?.anchor ===
           "m5-public-https-navigation-committed" &&
@@ -13187,6 +13299,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
       initialFrame,
       publicFrame,
       navigationResult,
+      publicDevtoolsNetworkEnabled,
       readiness,
       logs,
       shutdown,
@@ -13206,6 +13319,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
       initialFrame,
       publicFrame,
       navigationResult,
+      publicDevtoolsNetworkEnabled,
       readiness: null,
       logs: null,
       shutdown,

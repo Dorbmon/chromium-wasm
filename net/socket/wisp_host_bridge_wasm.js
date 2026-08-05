@@ -119,6 +119,12 @@ mergeInto(LibraryManager.library, {
     websocket: null,
     phase: 0,
     connectionGeneration: 0,
+    webSocketOpenCount: 0,
+    readyConnectionCount: 0,
+    confirmedStreamCount: 0,
+    diagnosticEvidenceEpoch: 0,
+    diagnosticEvidenceWindowEpoch: null,
+    diagnosticEvidenceWindowConfirmed: false,
     handshakeTimer: null,
     flushTimer: null,
 
@@ -140,6 +146,12 @@ mergeInto(LibraryManager.library, {
       this.websocket = null;
       this.phase = this.phases.idle;
       this.connectionGeneration += 1;
+      this.webSocketOpenCount = 0;
+      this.readyConnectionCount = 0;
+      this.confirmedStreamCount = 0;
+      this.diagnosticEvidenceEpoch = 0;
+      this.diagnosticEvidenceWindowEpoch = null;
+      this.diagnosticEvidenceWindowConfirmed = false;
       this.handshakeTimer = null;
       this.flushTimer = null;
       if (websocket && typeof websocket.close === 'function') {
@@ -153,6 +165,35 @@ mergeInto(LibraryManager.library, {
 
     isConfigured() {
       return this._readConfig() ? 1 : 0;
+    },
+
+    diagnosticsCompletionFlags() {
+      if (!this._readConfig()) {
+        return -1;
+      }
+      let flags = 0;
+      if (this.webSocketOpenCount > 0) {
+        flags |= 1;
+      }
+      if (this.readyConnectionCount > 0) {
+        flags |= 2;
+      }
+      if (this.confirmedStreamCount > 0 &&
+          (this.diagnosticEvidenceWindowEpoch === null ||
+           this.diagnosticEvidenceWindowConfirmed)) {
+        flags |= 4;
+      }
+      return flags;
+    },
+
+    beginDiagnosticsEvidenceWindow() {
+      if (!this._readConfig()) {
+        return 0;
+      }
+      this.diagnosticEvidenceEpoch += 1;
+      this.diagnosticEvidenceWindowEpoch = this.diagnosticEvidenceEpoch;
+      this.diagnosticEvidenceWindowConfirmed = false;
+      return 1;
     },
 
     open(streamId, hostnamePointer, hostnameLength, port) {
@@ -183,6 +224,7 @@ mergeInto(LibraryManager.library, {
         connectQueued: false,
         connectSent: false,
         closedLocally: false,
+        diagnosticEvidenceEpoch: this.diagnosticEvidenceEpoch,
         openTimer: null,
       };
       this.streams.set(id, stream);
@@ -584,6 +626,7 @@ mergeInto(LibraryManager.library, {
       if (!this._isCurrentConnection(generation, websocket)) {
         return;
       }
+      this.webSocketOpenCount += 1;
       this.phase = this.phases.awaitingServerInfo;
       this._clearTimer(this.handshakeTimer);
       this.handshakeTimer = this._scheduleTimer(() => {
@@ -752,6 +795,7 @@ mergeInto(LibraryManager.library, {
         this._clearTimer(this.handshakeTimer);
         this.handshakeTimer = null;
         this.phase = this.phases.ready;
+        this.readyConnectionCount += 1;
         for (const stream of this.streams.values()) {
           if (stream.state === this.states.connecting) {
             this._queueConnect(stream);
@@ -780,6 +824,12 @@ mergeInto(LibraryManager.library, {
       stream.remoteCredit = bufferRemaining;
       if (stream.state === this.states.connecting) {
         stream.state = this.states.open;
+        this.confirmedStreamCount += 1;
+        if (this.diagnosticEvidenceWindowEpoch !== null &&
+            stream.diagnosticEvidenceEpoch ===
+                this.diagnosticEvidenceWindowEpoch) {
+          this.diagnosticEvidenceWindowConfirmed = true;
+        }
         this._clearTimer(stream.openTimer);
         stream.openTimer = null;
       }
@@ -1157,6 +1207,20 @@ mergeInto(LibraryManager.library, {
   chromium_wasm_wisp_stream_is_configured__proxy: 'sync',
   chromium_wasm_wisp_stream_is_configured: () =>
     ChromiumWasmWispTransport.isConfigured(),
+
+  chromium_wasm_wisp_diagnostics_begin_evidence_window__deps: [
+    '$ChromiumWasmWispTransport',
+  ],
+  chromium_wasm_wisp_diagnostics_begin_evidence_window__proxy: 'sync',
+  chromium_wasm_wisp_diagnostics_begin_evidence_window: () =>
+    ChromiumWasmWispTransport.beginDiagnosticsEvidenceWindow(),
+
+  chromium_wasm_wisp_diagnostics_completion_flags__deps: [
+    '$ChromiumWasmWispTransport',
+  ],
+  chromium_wasm_wisp_diagnostics_completion_flags__proxy: 'sync',
+  chromium_wasm_wisp_diagnostics_completion_flags: () =>
+    ChromiumWasmWispTransport.diagnosticsCompletionFlags(),
 
   chromium_wasm_wisp_stream_open__deps: ['$ChromiumWasmWispTransport'],
   chromium_wasm_wisp_stream_open__proxy: 'sync',

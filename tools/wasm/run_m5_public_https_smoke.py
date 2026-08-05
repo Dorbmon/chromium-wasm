@@ -351,6 +351,17 @@ def validate_public_result(
     )
     if navigation_result != {"ok": True, "scheme": "https"}:
         raise M0Error("public HTTPS navigation result is invalid")
+    public_devtools_network_enabled = _require_dict(
+        result.get("publicDevtoolsNetworkEnabled"),
+        "public HTTPS DevTools Network enable",
+    )
+    if public_devtools_network_enabled != {
+        "protocol": 1,
+        "state": "enabled",
+        "networkEnabled": True,
+        "events": [],
+    }:
+        raise M0Error("public HTTPS DevTools Network.enable is invalid")
     readiness = _require_dict(result.get("readiness"), "public HTTPS readiness")
     navigation = _require_dict(
         readiness.get("navigation"), "public HTTPS navigation evidence"
@@ -366,6 +377,33 @@ def validate_public_result(
         raise M0Error("public HTTPS page did not paint")
     if readiness.get("fatalErrors") != []:
         raise M0Error("public HTTPS readiness reported fatal errors")
+    public_devtools_network = _require_dict(
+        readiness.get("publicDevtoolsNetwork"),
+        "public HTTPS DevTools Network log",
+    )
+    if public_devtools_network != {
+        "protocol": 1,
+        "state": "complete",
+        "networkEnabled": True,
+        "documentRequest": True,
+        "responseReceived": True,
+        "loadingFinished": True,
+        "requestIdCorrelated": True,
+        "responseStatus": expected_status,
+        "responseProtocol": expected_protocol,
+        "wispWebSocketOpened": True,
+        "wispHandshakeReady": True,
+        "wispConfirmedStream": True,
+        "events": [
+            "Network.requestWillBeSent:document",
+            "Network.responseReceived:document",
+            "Network.loadingFinished:document",
+        ],
+    }:
+        raise M0Error(
+            "public HTTPS DevTools Network log does not contain the bounded "
+            "Chromium CDP and WISP completion trace"
+        )
     heartbeat = _require_dict(
         readiness.get("heartbeat"), "public HTTPS host heartbeat"
     )
@@ -395,16 +433,20 @@ def validate_public_result(
         raise M0Error("public HTTPS host logs must be an array")
     for marker in (
         "initialize:wisp-configured",
+        "m5:public-devtools-network:enabled",
         "navigation:requested:m5-public-https",
         "navigation:committed:m5-public-https",
+        "m5:public-devtools-network:complete",
         "shutdown:complete",
     ):
         if host_logs.count(marker) != 1:
             raise M0Error(f"public HTTPS host logs need one {marker!r}")
     if not (
         host_logs.index("initialize:wisp-configured")
+        < host_logs.index("m5:public-devtools-network:enabled")
         < host_logs.index("navigation:requested:m5-public-https")
         < host_logs.index("navigation:committed:m5-public-https")
+        < host_logs.index("m5:public-devtools-network:complete")
         < host_logs.index("shutdown:complete")
     ):
         raise M0Error("public HTTPS host log ordering is invalid")

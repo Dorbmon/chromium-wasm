@@ -19,6 +19,8 @@ namespace {
 extern "C" {
 
 int chromium_wasm_wisp_stream_is_configured();
+int chromium_wasm_wisp_diagnostics_begin_evidence_window();
+int chromium_wasm_wisp_diagnostics_completion_flags();
 int chromium_wasm_wisp_stream_open(uint32_t stream_id,
                                    const char* hostname,
                                    int hostname_length,
@@ -40,6 +42,10 @@ bool IsValidStreamId(uint32_t stream_id) {
   return stream_id != 0;
 }
 
+bool IsValidDiagnosticFlags(int value) {
+  return value >= 0 && (value & ~net::kWasmWispDiagnosticAllRequired) == 0;
+}
+
 int NormalizeByteResult(int result, int capacity) {
   if (result < 0)
     return result;
@@ -54,6 +60,25 @@ namespace net {
 
 bool IsWasmWispTransportConfigured() {
   return chromium_wasm_wisp_stream_is_configured() == 1;
+}
+
+bool BeginWasmWispTransportDiagnostics() {
+  return IsWasmWispTransportConfigured() &&
+         chromium_wasm_wisp_diagnostics_begin_evidence_window() == 1;
+}
+
+std::optional<WasmWispTransportDiagnostics>
+GetWasmWispTransportDiagnostics() {
+  if (!IsWasmWispTransportConfigured())
+    return std::nullopt;
+
+  WasmWispTransportDiagnostics diagnostics = {
+      chromium_wasm_wisp_diagnostics_completion_flags(),
+  };
+  if (!IsValidDiagnosticFlags(diagnostics.completion_flags)) {
+    return std::nullopt;
+  }
+  return diagnostics;
 }
 
 bool OpenWasmWispStream(uint32_t stream_id,

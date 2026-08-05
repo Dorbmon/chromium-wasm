@@ -62,6 +62,12 @@ def passing_result() -> dict[str, object]:
             "timestampMs": 2,
         },
         "navigationResult": {"ok": True, "scheme": "https"},
+        "publicDevtoolsNetworkEnabled": {
+            "protocol": 1,
+            "state": "enabled",
+            "networkEnabled": True,
+            "events": [],
+        },
         "readiness": {
             "firstVisuallyNonEmptyPaint": True,
             "fatalErrors": [],
@@ -70,6 +76,25 @@ def passing_result() -> dict[str, object]:
                 "scheme": "https",
                 "responseCode": 200,
                 "connectionProtocol": "h2",
+            },
+            "publicDevtoolsNetwork": {
+                "protocol": 1,
+                "state": "complete",
+                "networkEnabled": True,
+                "documentRequest": True,
+                "responseReceived": True,
+                "loadingFinished": True,
+                "requestIdCorrelated": True,
+                "responseStatus": 200,
+                "responseProtocol": "h2",
+                "wispWebSocketOpened": True,
+                "wispHandshakeReady": True,
+                "wispConfirmedStream": True,
+                "events": [
+                    "Network.requestWillBeSent:document",
+                    "Network.responseReceived:document",
+                    "Network.loadingFinished:document",
+                ],
             },
             "heartbeat": {
                 "anchor": "m5-public-https-navigation-committed",
@@ -81,8 +106,10 @@ def passing_result() -> dict[str, object]:
         "logs": {
             "host": [
                 "initialize:wisp-configured",
+                "m5:public-devtools-network:enabled",
                 "navigation:requested:m5-public-https",
                 "navigation:committed:m5-public-https",
+                "m5:public-devtools-network:complete",
                 "shutdown:complete",
             ],
             "stdout": [],
@@ -196,6 +223,17 @@ class PublicInputValidationTest(unittest.TestCase):
 
 
 class PublicSmokeRunnerContractTest(unittest.TestCase):
+    def assert_public_result_rejected(self, result: dict[str, object]) -> None:
+        with self.assertRaises(M0Error):
+            public_smoke.validate_public_result(
+                result,
+                expected_versions=VERSIONS,
+                expected_status=200,
+                expected_protocol="h2",
+                public_wisp_endpoint=PUBLIC_ENDPOINT,
+                public_probe_url=PUBLIC_PROBE_URL,
+            )
+
     def test_smoke_url_carries_runtime_only_inputs_to_the_local_host(self) -> None:
         url = public_smoke.public_smoke_url(
             FakeServer(),
@@ -236,51 +274,64 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
 
         invalid_protocol = passing_result()
         invalid_protocol["readiness"]["navigation"]["connectionProtocol"] = "h3"  # type: ignore[index]
-        with self.assertRaises(M0Error):
-            public_smoke.validate_public_result(
-                invalid_protocol,
-                expected_versions=VERSIONS,
-                expected_status=200,
-                expected_protocol="h2",
-                public_wisp_endpoint=PUBLIC_ENDPOINT,
-                public_probe_url=PUBLIC_PROBE_URL,
-            )
+        self.assert_public_result_rejected(invalid_protocol)
 
         stale_frame = passing_result()
         stale_frame["publicFrame"]["id"] = 1  # type: ignore[index]
-        with self.assertRaises(M0Error):
-            public_smoke.validate_public_result(
-                stale_frame,
-                expected_versions=VERSIONS,
-                expected_status=200,
-                expected_protocol="h2",
-                public_wisp_endpoint=PUBLIC_ENDPOINT,
-                public_probe_url=PUBLIC_PROBE_URL,
-            )
+        self.assert_public_result_rejected(stale_frame)
 
         leaked_endpoint = passing_result()
         leaked_endpoint["logs"]["stderr"].append(PUBLIC_ENDPOINT)  # type: ignore[index]
-        with self.assertRaises(M0Error):
-            public_smoke.validate_public_result(
-                leaked_endpoint,
-                expected_versions=VERSIONS,
-                expected_status=200,
-                expected_protocol="h2",
-                public_wisp_endpoint=PUBLIC_ENDPOINT,
-                public_probe_url=PUBLIC_PROBE_URL,
-            )
+        self.assert_public_result_rejected(leaked_endpoint)
 
         escaped_probe = passing_result()
         escaped_probe["logs"]["stdout"].append(quote(PUBLIC_PROBE_URL, safe=""))  # type: ignore[index]
-        with self.assertRaises(M0Error):
-            public_smoke.validate_public_result(
-                escaped_probe,
-                expected_versions=VERSIONS,
-                expected_status=200,
-                expected_protocol="h2",
-                public_wisp_endpoint=PUBLIC_ENDPOINT,
-                public_probe_url=PUBLIC_PROBE_URL,
-            )
+        self.assert_public_result_rejected(escaped_probe)
+
+    def test_public_result_requires_complete_cdp_and_wisp_evidence(self) -> None:
+        invalid_values = {
+            "networkEnabled": False,
+            "documentRequest": False,
+            "responseReceived": False,
+            "loadingFinished": False,
+            "requestIdCorrelated": False,
+            "responseStatus": 201,
+            "responseProtocol": "http/1.1",
+            "wispWebSocketOpened": False,
+            "wispHandshakeReady": False,
+            "wispConfirmedStream": False,
+            "events": ["Network.requestWillBeSent:document"],
+        }
+        for field, value in invalid_values.items():
+            with self.subTest(field=field):
+                invalid = passing_result()
+                trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
+                trace[field] = value  # type: ignore[index]
+                self.assert_public_result_rejected(invalid)
+
+        for field, value in (
+            ("state", "complete"),
+            ("networkEnabled", False),
+            ("events", ["Network.enable"]),
+            ("url", PUBLIC_PROBE_URL),
+            ("requestId", "leaked-request-id"),
+        ):
+            with self.subTest(enable_field=field):
+                invalid = passing_result()
+                enabled = invalid["publicDevtoolsNetworkEnabled"]
+                enabled[field] = value  # type: ignore[index]
+                self.assert_public_result_rejected(invalid)
+
+        for field, value in (
+            ("url", PUBLIC_PROBE_URL),
+            ("requestId", "leaked-request-id"),
+            ("headers", {"x-test": "forbidden"}),
+        ):
+            with self.subTest(trace_field=field):
+                invalid = passing_result()
+                trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
+                trace[field] = value  # type: ignore[index]
+                self.assert_public_result_rejected(invalid)
 
     def test_failure_diagnostics_redact_runtime_only_inputs(self) -> None:
         endpoint_query_value = (
@@ -455,6 +506,108 @@ class PublicHttpsSourceContractTest(unittest.TestCase):
         self.assertGreaterEqual(runner.count("required=True"), 4)
         self.assertIn('"<redacted>"', runner)
         self.assertNotIn("m5_wisp_test_server", runner)
+
+    def test_public_cdp_trace_requires_the_atomic_wisp_completion_proof(self) -> None:
+        api = source("content/shell/browser/wasm_host_api.cc")
+        host = source("tools/wasm/host/content_shell_host.js")
+        host_bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")
+        transport_header = source("net/socket/wisp_transport_wasm.h")
+        transport = source("net/socket/wisp_transport_wasm.cc")
+        wisp_bridge = source("net/socket/wisp_host_bridge_wasm.js")
+        runner = source("tools/wasm/run_m5_public_https_smoke.py")
+
+        recorder = api.split(
+            "class M5PublicDevToolsNetworkRecorder final : "
+            "public DevToolsAgentHostClient {",
+            1,
+        )[1].split("\nvoid ReportTextInputDelivery", 1)[0]
+        public_report = host.split(
+            "_reportM5PublicDevToolsNetwork(value) {", 1
+        )[1].split("\n  _reportM5PageProbe", 1)[0]
+        public_smoke = host.split(
+            "async function runM5PublicHttpsSmokeFromQuery() {", 1
+        )[1].split("\nexport async function runContentShellSmokeFromQuery", 1)[0]
+
+        for marker in (
+            "DevToolsAgentHost::GetOrCreateFor(web_contents)",
+            'R"({"id":1,"method":"Network.enable"})"',
+            "IsM5PublicHttpsUrl(request_url)",
+            "Network.requestWillBeSent:document",
+            "Network.responseReceived:document",
+            "Network.loadingFinished:document",
+            "BeginWasmWispTransportDiagnostics()",
+            "GetWasmWispTransportDiagnostics()",
+            "kWasmWispDiagnosticAllRequired",
+            "chromium_wasm_report_m5_public_devtools_network",
+        ):
+            with self.subTest(recorder_marker=marker):
+                self.assertIn(marker, recorder)
+        self.assertIn(
+            "diagnostics->completion_flags != "
+            "net::kWasmWispDiagnosticAllRequired",
+            recorder,
+        )
+        for forbidden in (
+            'report.Set("url"',
+            'report.Set("requestId"',
+            'report.Set("headers"',
+            'report.Set("cookies"',
+            "request_url.spec()",
+        ):
+            with self.subTest(recorder_forbidden=forbidden):
+                self.assertNotIn(forbidden, recorder)
+
+        self.assertIn(
+            "chromium_wasm_report_m5_public_devtools_network__proxy: 'sync'",
+            host_bridge,
+        )
+        self.assertIn("reportM5PublicDevToolsNetwork(report)", host)
+        self.assertIn("isM5PublicDevToolsNetworkEnabled", host)
+        self.assertIn("hasM5PublicDevToolsNetworkLog", host)
+        self.assertIn("m5:public-devtools-network:enabled", public_report)
+        self.assertIn("m5:public-devtools-network:complete", public_report)
+        self.assertIn("publicDevtoolsNetworkEnabled", public_smoke)
+        self.assertLess(
+            public_smoke.index("isM5PublicDevToolsNetworkEnabled("),
+            public_smoke.index("loadM5PublicHTTPSURL(testURL)"),
+        )
+        self.assertIn("hasM5PublicDevToolsNetworkLog", public_smoke)
+
+        for marker in (
+            "kWasmWispDiagnosticWebSocketOpened = 1 << 0",
+            "kWasmWispDiagnosticHandshakeReady = 1 << 1",
+            "kWasmWispDiagnosticStreamConfirmed = 1 << 2",
+            "BeginWasmWispTransportDiagnostics()",
+            "GetWasmWispTransportDiagnostics()",
+            "chromium_wasm_wisp_diagnostics_completion_flags()",
+            "chromium_wasm_wisp_diagnostics_begin_evidence_window()",
+            "IsValidDiagnosticFlags",
+            "diagnosticsCompletionFlags()",
+            "beginDiagnosticsEvidenceWindow()",
+            "diagnosticEvidenceEpoch: this.diagnosticEvidenceEpoch",
+            "this.diagnosticEvidenceWindowEpoch = this.diagnosticEvidenceEpoch",
+            "this.diagnosticEvidenceWindowConfirmed = true",
+            "this.webSocketOpenCount += 1",
+            "this.readyConnectionCount += 1",
+            "this.confirmedStreamCount += 1",
+        ):
+            with self.subTest(wisp_marker=marker):
+                self.assertIn(
+                    marker,
+                    transport_header + transport + wisp_bridge,
+                )
+        public_loader = api.split(
+            "void LoadM5PublicUrlOnUiThread(GURL url) {", 1
+        )[1].split("\n}\n\nvoid DeactivateHostWindowOnUiThread", 1)[0]
+        self.assertLess(
+            public_loader.index("BeginWispEvidenceWindow()"),
+            public_loader.index("LoadUrlOnUiThread(std::move(url))"),
+        )
+        self.assertIn(
+            "public HTTPS DevTools Network log does not contain the bounded ",
+            runner,
+        )
+        self.assertIn("Chromium CDP and WISP completion trace", runner)
 
 
 if __name__ == "__main__":

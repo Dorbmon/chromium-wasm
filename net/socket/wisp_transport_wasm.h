@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <string_view>
 
 #include "net/base/net_export.h"
@@ -25,10 +26,40 @@ enum class WasmWispStreamState : int {
   kFailed = 4,
 };
 
+// A bounded, redacted snapshot of the browser-side WISP bridge. The bit flags
+// deliberately carry no endpoint, destination, stream ID, or payload data.
+// They exist for a public-network smoke to prove the configured WebSocket
+// completed a WISP handshake and confirmed at least one TCP stream.
+constexpr int kWasmWispDiagnosticWebSocketOpened = 1 << 0;
+constexpr int kWasmWispDiagnosticHandshakeReady = 1 << 1;
+constexpr int kWasmWispDiagnosticStreamConfirmed = 1 << 2;
+constexpr int kWasmWispDiagnosticAllRequired =
+    kWasmWispDiagnosticWebSocketOpened |
+    kWasmWispDiagnosticHandshakeReady |
+    kWasmWispDiagnosticStreamConfirmed;
+
+struct WasmWispTransportDiagnostics {
+  int completion_flags;
+};
+
 // Returns whether the host supplied a valid, deliberately configured WISP
 // endpoint. A missing endpoint is an explicit unsupported-network condition,
 // not an invitation to fall back to host fetch() or native sockets.
 NET_EXPORT bool IsWasmWispTransportConfigured();
+
+// Starts a private diagnostic evidence window. Until a TCP stream is confirmed
+// after this call, GetWasmWispTransportDiagnostics() omits the stream-confirmed
+// bit even when an earlier stream completed. This is intended for a bounded
+// test to tie transport evidence to one subsequent navigation; it never
+// exposes a stream count, endpoint, destination, or payload.
+NET_EXPORT bool BeginWasmWispTransportDiagnostics();
+
+// Returns nullopt if the host has no configured WISP transport or returned an
+// invalid diagnostic state. Callers must treat this as failed transport
+// evidence rather than fabricating a successful snapshot. After an evidence
+// window begins, the stream-confirmed bit proves a post-window TCP confirmation.
+NET_EXPORT std::optional<WasmWispTransportDiagnostics>
+GetWasmWispTransportDiagnostics();
 
 // Opens one multiplexed TCP stream. |hostname| is copied by the host bridge
 // before this call returns. A true return means that the bridge accepted the

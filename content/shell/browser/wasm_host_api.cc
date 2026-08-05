@@ -47,6 +47,7 @@
 #include "net/base/net_errors.h"
 #include "net/http/http_connection_info.h"
 #include "net/http/http_response_headers.h"
+#include "net/socket/wisp_transport_wasm.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/window.h"
@@ -219,6 +220,8 @@ extern "C" int chromium_wasm_report_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_navigation();
 extern "C" int chromium_wasm_report_m5_navigation_error(int net_error);
 extern "C" int chromium_wasm_report_m5_devtools_network(const char* report);
+extern "C" int chromium_wasm_report_m5_public_devtools_network(
+    const char* report);
 extern "C" int chromium_wasm_report_m5_page_probe(const char* probe);
 extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation();
 extern "C" int chromium_wasm_report_m5_plaintext_http_control_navigation_error(
@@ -517,6 +520,294 @@ class M5DevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   bool final_request_seen_ = false;
   bool response_received_ = false;
   bool loading_finished_ = false;
+  std::string request_id_;
+  int response_status_ = 0;
+  std::string response_protocol_;
+  base::ListValue events_;
+};
+
+// The public M5 executable uses a separate, deliberately narrower recorder.
+// Its single externally supplied document must produce genuine Chromium CDP
+// Network events, but no runtime-provided URL, request ID, header, cookie, or
+// payload may leave this process. The final report additionally proves that
+// the WISP bridge completed a WebSocket/WISP handshake and one TCP stream
+// after the public navigation's diagnostic boundary.
+class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
+ public:
+  M5PublicDevToolsNetworkRecorder() = default;
+
+  M5PublicDevToolsNetworkRecorder(const M5PublicDevToolsNetworkRecorder&) =
+      delete;
+  M5PublicDevToolsNetworkRecorder& operator=(
+      const M5PublicDevToolsNetworkRecorder&) = delete;
+
+  ~M5PublicDevToolsNetworkRecorder() override { Detach(); }
+
+  bool Start(WebContents* web_contents) {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (!web_contents || agent_host_ || state_ != State::kCreated) {
+      return false;
+    }
+
+    agent_host_ = DevToolsAgentHost::GetOrCreateFor(web_contents);
+    if (!agent_host_ || !agent_host_->AttachClient(this)) {
+      agent_host_ = nullptr;
+      return false;
+    }
+
+    state_ = State::kEnabling;
+    static constexpr char kEnableNetworkCommand[] =
+        R"({"id":1,"method":"Network.enable"})";
+    agent_host_->DispatchProtocolMessage(
+        this, base::byte_span_from_cstring(kEnableNetworkCommand));
+    return state_ != State::kFailed;
+  }
+
+  bool BeginWispEvidenceWindow() {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (state_ != State::kEnabled || wisp_evidence_window_started_ ||
+        !net::BeginWasmWispTransportDiagnostics()) {
+      return false;
+    }
+    wisp_evidence_window_started_ = true;
+    return true;
+  }
+
+ private:
+  enum class State {
+    kCreated,
+    kEnabling,
+    kEnabled,
+    kComplete,
+    kFailed,
+  };
+
+  void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
+                               base::span<const uint8_t> message) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (agent_host != agent_host_.get() || state_ == State::kFailed ||
+        state_ == State::kComplete) {
+      return;
+    }
+    if (message.size() > kMaximumM5DevToolsProtocolMessageBytes) {
+      Fail("received an oversized protocol message");
+      return;
+    }
+
+    const std::string_view message_text(
+        reinterpret_cast<const char*>(message.data()), message.size());
+    std::optional<base::Value> value = base::JSONReader::Read(
+        message_text, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    if (!value || !value->is_dict()) {
+      Fail("received a malformed protocol message");
+      return;
+    }
+    const base::DictValue& parsed = value->GetDict();
+    if (const std::optional<int> id = parsed.FindInt("id")) {
+      HandleCommandResponse(*id, parsed);
+      return;
+    }
+
+    const std::string* method = parsed.FindString("method");
+    const base::DictValue* params = parsed.FindDict("params");
+    if (!method || !params || state_ != State::kEnabled) {
+      return;
+    }
+    if (*method == "Network.requestWillBeSent") {
+      RecordRequest(*params);
+    } else if (*method == "Network.responseReceived") {
+      RecordResponse(*params);
+    } else if (*method == "Network.loadingFinished") {
+      RecordFinished(*params);
+    }
+  }
+
+  void AgentHostClosed(DevToolsAgentHost* agent_host) override {
+    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    if (agent_host != agent_host_.get()) {
+      return;
+    }
+    agent_host_ = nullptr;
+    if (state_ != State::kComplete && state_ != State::kFailed) {
+      Fail("closed before the public network trace completed");
+    }
+  }
+
+  void HandleCommandResponse(int id, const base::DictValue& response) {
+    if (id != 1) {
+      return;
+    }
+    if (state_ != State::kEnabling || response.FindDict("error") ||
+        !response.FindDict("result")) {
+      Fail("Network.enable was rejected");
+      return;
+    }
+
+    state_ = State::kEnabled;
+    base::DictValue report;
+    report.Set("protocol", 1);
+    report.Set("state", "enabled");
+    report.Set("networkEnabled", true);
+    report.Set("events", base::ListValue());
+    if (!Report(std::move(report))) {
+      Fail("could not report Network.enable");
+    }
+  }
+
+  bool IsPublicDocumentRequest(const base::DictValue& params,
+                               std::string* request_id) {
+    const std::string* url = params.FindStringByDottedPath("request.url");
+    if (!url) {
+      return false;
+    }
+    const GURL request_url(*url);
+    if (!IsM5PublicHttpsUrl(request_url)) {
+      return false;
+    }
+    const std::string* resource_type = params.FindString("type");
+    const std::string* id = params.FindString("requestId");
+    if (!resource_type || !id || *resource_type != "Document" ||
+        id->empty() || id->size() > 256) {
+      Fail("received an invalid public document request event");
+      return false;
+    }
+    *request_id = *id;
+    return true;
+  }
+
+  void RecordRequest(const base::DictValue& params) {
+    std::string request_id;
+    if (!IsPublicDocumentRequest(params, &request_id)) {
+      return;
+    }
+    if (document_request_seen_ || !request_id_.empty()) {
+      Fail("received a duplicate public document request event");
+      return;
+    }
+    document_request_seen_ = true;
+    request_id_ = std::move(request_id);
+    AppendEvent("Network.requestWillBeSent:document");
+  }
+
+  void RecordResponse(const base::DictValue& params) {
+    if (!document_request_seen_) {
+      return;
+    }
+    const std::string* request_id = params.FindString("requestId");
+    if (!request_id || *request_id != request_id_) {
+      return;
+    }
+    const std::string* resource_type = params.FindString("type");
+    const std::optional<int> status =
+        params.FindIntByDottedPath("response.status");
+    const std::string* protocol =
+        params.FindStringByDottedPath("response.protocol");
+    if (response_received_ || !resource_type || *resource_type != "Document" ||
+        !status || !protocol || protocol->empty() || protocol->size() > 32) {
+      Fail("received an invalid public document response event");
+      return;
+    }
+    response_received_ = true;
+    response_status_ = *status;
+    response_protocol_ = *protocol;
+    AppendEvent("Network.responseReceived:document");
+  }
+
+  void RecordFinished(const base::DictValue& params) {
+    if (!response_received_) {
+      return;
+    }
+    const std::string* request_id = params.FindString("requestId");
+    if (!request_id || *request_id != request_id_) {
+      return;
+    }
+    if (loading_finished_) {
+      Fail("received a duplicate public document completion event");
+      return;
+    }
+    loading_finished_ = true;
+    AppendEvent("Network.loadingFinished:document");
+    MaybeReportComplete();
+  }
+
+  void AppendEvent(std::string_view event) {
+    if (events_.size() >= 3) {
+      Fail("recorded too many public document events");
+      return;
+    }
+    events_.Append(event);
+  }
+
+  void MaybeReportComplete() {
+    if (state_ != State::kEnabled || !document_request_seen_ ||
+        !response_received_ || !loading_finished_ || events_.size() != 3) {
+      return;
+    }
+    if (!wisp_evidence_window_started_) {
+      Fail("public document completed before its WISP evidence window started");
+      return;
+    }
+    const std::optional<net::WasmWispTransportDiagnostics> diagnostics =
+        net::GetWasmWispTransportDiagnostics();
+    if (!diagnostics ||
+        diagnostics->completion_flags != net::kWasmWispDiagnosticAllRequired) {
+      Fail("public document did not complete a WISP WebSocket and TCP stream");
+      return;
+    }
+
+    state_ = State::kComplete;
+    base::DictValue report;
+    report.Set("protocol", 1);
+    report.Set("state", "complete");
+    report.Set("networkEnabled", true);
+    report.Set("documentRequest", document_request_seen_);
+    report.Set("responseReceived", response_received_);
+    report.Set("loadingFinished", loading_finished_);
+    report.Set("requestIdCorrelated", true);
+    report.Set("responseStatus", response_status_);
+    report.Set("responseProtocol", response_protocol_);
+    report.Set("wispWebSocketOpened", true);
+    report.Set("wispHandshakeReady", true);
+    report.Set("wispConfirmedStream", true);
+    report.Set("events", std::move(events_));
+    if (!Report(std::move(report))) {
+      Fail("could not report the completed public network trace");
+    }
+  }
+
+  bool Report(base::DictValue report) {
+    const std::optional<std::string> serialized = base::WriteJson(report);
+    if (!serialized || serialized->empty() ||
+        serialized->size() > kMaximumM5DevToolsReportBytes) {
+      return false;
+    }
+    return chromium_wasm_report_m5_public_devtools_network(
+               serialized->c_str()) == 1;
+  }
+
+  void Fail(std::string_view reason) {
+    if (state_ == State::kFailed) {
+      return;
+    }
+    state_ = State::kFailed;
+    ReportFatal("M5 public DevTools Network recorder: " +
+                std::string(reason));
+  }
+
+  void Detach() {
+    if (!agent_host_) {
+      return;
+    }
+    scoped_refptr<DevToolsAgentHost> agent_host = std::move(agent_host_);
+    agent_host->DetachClient(this);
+  }
+
+  State state_ = State::kCreated;
+  scoped_refptr<DevToolsAgentHost> agent_host_;
+  bool document_request_seen_ = false;
+  bool response_received_ = false;
+  bool loading_finished_ = false;
+  bool wisp_evidence_window_started_ = false;
   std::string request_id_;
   int response_status_ = 0;
   std::string response_protocol_;
@@ -899,6 +1190,8 @@ class WasmHostState {
 
   std::unique_ptr<WasmHostObserver> observer;
   std::unique_ptr<M5DevToolsNetworkRecorder> m5_devtools_network_recorder;
+  std::unique_ptr<M5PublicDevToolsNetworkRecorder>
+      m5_public_devtools_network_recorder;
 
  private:
   bool IsM4KeyTransitionAllowedLocked(ui::DomCode physical_key,
@@ -1202,6 +1495,17 @@ void LoadUrlOnUiThread(GURL url) {
   }
 }
 
+void LoadM5PublicUrlOnUiThread(GURL url) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  if (!state.m5_public_devtools_network_recorder ||
+      !state.m5_public_devtools_network_recorder->BeginWispEvidenceWindow()) {
+    ReportFatal("could not start the M5 public WISP evidence window");
+    return;
+  }
+  LoadUrlOnUiThread(std::move(url));
+}
+
 void DeactivateHostWindowOnUiThread() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   Shell* shell = GetSingleShell();
@@ -1298,6 +1602,16 @@ void InitializeWasmHostApi() {
       return;
     }
   }
+  if (IsWasmM5PublicNetworkTestModeEnabled()) {
+    state.m5_public_devtools_network_recorder =
+        std::make_unique<M5PublicDevToolsNetworkRecorder>();
+    if (!state.m5_public_devtools_network_recorder->Start(
+            shell->web_contents())) {
+      state.m5_public_devtools_network_recorder.reset();
+      ReportFatal("could not start the M5 public DevTools Network recorder");
+      return;
+    }
+  }
   if (chromium_wasm_report_readiness(
           /*shell_ready=*/1, /*surface_ready=*/-1,
           /*first_visually_nonempty_paint=*/-1) != 1) {
@@ -1316,6 +1630,7 @@ void EnableWasmM5PublicNetworkTestModeForTesting() {
 void ShutdownWasmHostApi() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
+  state.m5_public_devtools_network_recorder.reset();
   state.m5_devtools_network_recorder.reset();
   state.observer.reset();
   state.SetInputInjector(nullptr);
@@ -1533,7 +1848,7 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_load_m5_public_url(
     return 0;
   }
   return content::PostHostCommand(
-             base::BindOnce(&content::LoadUrlOnUiThread, std::move(url)))
+             base::BindOnce(&content::LoadM5PublicUrlOnUiThread, std::move(url)))
              ? 1
              : 0;
 }
