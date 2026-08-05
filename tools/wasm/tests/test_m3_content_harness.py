@@ -311,6 +311,93 @@ class M3ServerTest(unittest.TestCase):
             symlink.unlink(missing_ok=True)
             outside.unlink(missing_ok=True)
 
+    def test_server_uses_an_immutable_opt_in_artifact_snapshot(self) -> None:
+        snapshots = {
+            "content_shell_wasm.js": b"original JavaScript",
+            "content_shell_wasm.wasm": b"original Wasm",
+        }
+        state = m3_content_server.M3ServerState(
+            token="test-token",
+            out_dir=self.out_dir.resolve(),
+            module_name="content_shell_wasm",
+            result_queue=self.results,
+            artifact_snapshots={
+                artifact_name: bytes(contents)
+                for artifact_name, contents in snapshots.items()
+            },
+        )
+        snapshots["content_shell_wasm.js"] = b"caller mutation"
+        (self.out_dir / "content_shell_wasm.js").unlink()
+        contents = m3_content_server._artifact_contents_for_request(
+            state,
+            "/__m3__/artifacts/content_shell_wasm.js",
+        )
+        self.assertEqual(
+            contents,
+            (b"original JavaScript", "text/javascript; charset=utf-8"),
+        )
+
+    def test_server_uses_an_immutable_opt_in_host_snapshot(self) -> None:
+        static_snapshots = {
+            "/": b"original host HTML",
+            "/__m3__/": b"original host HTML",
+            "/__m3__/content_shell_host.js": b"original host JavaScript",
+        }
+        state = m3_content_server.M3ServerState(
+            token="test-token",
+            out_dir=self.out_dir.resolve(),
+            module_name="content_shell_wasm",
+            result_queue=self.results,
+            static_snapshots={
+                request_path: bytes(contents)
+                for request_path, contents in static_snapshots.items()
+            },
+        )
+        static_snapshots["/__m3__/content_shell_host.js"] = b"caller mutation"
+        contents = m3_content_server._static_contents_for_request(
+            state,
+            "/__m3__/content_shell_host.js",
+            Path("content_shell_host.js"),
+        )
+        self.assertEqual(
+            contents,
+            (
+                b"original host JavaScript",
+                "text/javascript; charset=utf-8",
+            ),
+        )
+
+    def test_server_rejects_invalid_artifact_snapshots(self) -> None:
+        with self.assertRaises(M0Error):
+            m3_content_server.create_m3_server(
+                "127.0.0.1",
+                0,
+                self.out_dir,
+                "test-token",
+                self.results,
+                artifact_snapshots={"other.wasm": b"forbidden"},
+            )
+        with self.assertRaises(M0Error):
+            m3_content_server.create_m3_server(
+                "127.0.0.1",
+                0,
+                self.out_dir,
+                "test-token",
+                self.results,
+                artifact_snapshots={
+                    "content_shell_wasm.js": b"partial snapshot"
+                },
+            )
+        with self.assertRaises(M0Error):
+            m3_content_server.create_m3_server(
+                "127.0.0.1",
+                0,
+                self.out_dir,
+                "test-token",
+                self.results,
+                static_snapshots={"/__m3__/": b"partial host snapshot"},
+            )
+
     def test_result_endpoint_is_tokened_and_one_shot(self) -> None:
         payload = {
             "protocol": 1,

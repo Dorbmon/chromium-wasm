@@ -36,6 +36,14 @@ VERSIONS = {
     "emscripten": "emscripten-revision",
     "port": "port-revision",
 }
+PUBLIC_ARTIFACTS = {
+    "argsGnSha256": "a" * 64,
+    "hostHtml": {"sha256": "b" * 64, "size": 123},
+    "hostJavaScript": {"sha256": "c" * 64, "size": 456},
+    "javascript": {"sha256": "d" * 64, "size": 1234},
+    "module": public_smoke.DEFAULT_MODULE_NAME,
+    "wasm": {"sha256": "e" * 64, "size": 5678},
+}
 PUBLIC_PROBES = (
     {
         "public_probe_url": "https://first.public.example.com/static/one",
@@ -335,7 +343,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         )
 
     def provenance(self) -> dict[str, object]:
-        return public_smoke.public_provenance(VERSIONS)
+        return public_smoke.public_provenance(VERSIONS, PUBLIC_ARTIFACTS)
 
     def completed(
         self,
@@ -377,6 +385,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             out_dir=self.out_dir,
             module_name="content_shell_wasm_m5_public_test",
             diagnostics_dir=self.diagnostics_dir,
+            expected_provenance=self.provenance(),
             no_sandbox=True,
             timeout=121.5,
         )
@@ -388,6 +397,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             out_dir=self.out_dir,
             module_name="content_shell_wasm_m5_public_test",
             diagnostics_dir=self.diagnostics_dir,
+            expected_provenance=self.provenance(),
             no_sandbox=True,
             timeout=121.5,
         )
@@ -405,6 +415,10 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         )
         self.assertEqual(command_value(first, "--expected-status"), "200")
         self.assertEqual(command_value(first, "--expected-protocol"), "h2")
+        self.assertEqual(
+            json.loads(command_value(first, "--expected-provenance")),
+            self.provenance(),
+        )
         self.assertEqual(
             command_value(first, "--diagnostics-dir"),
             str(self.diagnostics_dir / "probe-001"),
@@ -431,7 +445,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 out_dir=self.out_dir,
                 module_name="public-module",
                 diagnostics_dir=self.diagnostics_dir,
-                expected_versions=VERSIONS,
+                expected_provenance=self.provenance(),
                 no_sandbox=False,
                 timeout=120.0,
             )
@@ -468,18 +482,22 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 public_suite.run_public_suite(
                     self.config,
                     browser=None,
-                    out_dir=self.out_dir,
-                    module_name="public-module",
-                    diagnostics_dir=self.diagnostics_dir,
-                    expected_versions={**VERSIONS, "port": True},
+                out_dir=self.out_dir,
+                module_name="public-module",
+                diagnostics_dir=self.diagnostics_dir,
+                expected_provenance={
+                    **self.provenance(),
+                    "versions": {**VERSIONS, "port": True},
+                },
                     no_sandbox=False,
                     timeout=120.0,
                 )
         run.assert_not_called()
 
-    def test_suite_version_snapshot_uses_the_local_manifest_and_head(self) -> None:
-        manifest: dict[str, object] = {"sentinel": "manifest"}
+    def test_prepare_rebuilds_and_records_the_exact_public_artifacts(self) -> None:
+        manifest: dict[str, object] = {"m3_content_gn_args": []}
         with (
+            mock.patch.object(public_suite, "_require_clean_public_checkout") as clean,
             mock.patch.object(
                 public_suite, "load_manifest", return_value=manifest
             ) as load_manifest,
@@ -489,11 +507,128 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             mock.patch.object(
                 public_suite, "manifest_versions", return_value=VERSIONS
             ) as manifest_versions,
+            mock.patch.object(
+                public_suite, "_validate_public_build_configuration"
+            ) as validate_configuration,
+            mock.patch.object(public_suite, "_force_public_artifact_rebuild") as rebuild,
+            mock.patch.object(
+                public_smoke,
+                "public_artifact_provenance",
+                return_value=PUBLIC_ARTIFACTS,
+            ) as artifacts,
         ):
-            self.assertEqual(public_suite.public_suite_versions(), VERSIONS)
-        load_manifest.assert_called_once_with()
-        checked_output.assert_called_once_with(["git", "rev-parse", "HEAD"])
-        manifest_versions.assert_called_once_with(manifest, "port-revision")
+            provenance = public_suite.prepare_public_suite_provenance(
+                self.out_dir, public_smoke.DEFAULT_MODULE_NAME
+            )
+
+        self.assertEqual(provenance, self.provenance())
+        self.assertEqual(clean.call_count, 2)
+        self.assertEqual(load_manifest.call_count, 2)
+        self.assertEqual(checked_output.call_count, 2)
+        self.assertEqual(manifest_versions.call_count, 2)
+        validate_configuration.assert_has_calls(
+            [
+                mock.call(
+                    self.out_dir, manifest, public_smoke.DEFAULT_MODULE_NAME
+                ),
+                mock.call(
+                    self.out_dir, manifest, public_smoke.DEFAULT_MODULE_NAME
+                ),
+            ]
+        )
+        rebuild.assert_called_once_with(self.out_dir)
+        artifacts.assert_called_once_with(
+            self.out_dir, public_smoke.DEFAULT_MODULE_NAME
+        )
+
+    def test_forced_rebuild_cleans_then_relinks_the_dedicated_public_target(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            public_suite, "_run_public_build_command"
+        ) as run_command:
+            public_suite._force_public_artifact_rebuild(self.out_dir)
+
+        resolved_out_dir = self.out_dir.resolve()
+        self.assertEqual(
+            run_command.call_args_list,
+            [
+                mock.call(
+                    [
+                        str(public_suite.NINJA_PATH),
+                        "-C",
+                        str(resolved_out_dir),
+                        "-t",
+                        "clean",
+                        public_suite.PUBLIC_BUILD_TARGET,
+                    ]
+                ),
+                mock.call(
+                    [
+                        str(public_suite.AUTONINJA_PATH),
+                        "-C",
+                        str(resolved_out_dir),
+                        public_suite.PUBLIC_BUILD_TARGET,
+                    ]
+                ),
+            ],
+        )
+
+    def test_dirty_checkout_blocks_public_build_before_a_child_can_start(
+        self,
+    ) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["git", "status"],
+            returncode=0,
+            stdout=" M content/shell/browser/wasm_host_api.cc\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            public_suite.subprocess, "run", return_value=completed
+        ) as run:
+            with self.assertRaises(M0Error):
+                public_suite._require_clean_public_checkout()
+        self.assertEqual(
+            run.call_args.args[0],
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+        )
+
+    def test_public_build_command_rejects_a_failed_relink(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["ninja"], returncode=1, stdout="failure", stderr="failure"
+        )
+        with mock.patch.object(
+            public_suite.subprocess, "run", return_value=completed
+        ):
+            with self.assertRaises(M0Error):
+                public_suite._run_public_build_command(["ninja"])
+
+    def test_final_provenance_verification_rejects_changed_artifacts(self) -> None:
+        changed_artifacts = copy.deepcopy(PUBLIC_ARTIFACTS)
+        changed_artifacts["wasm"]["sha256"] = "d" * 64
+        manifest: dict[str, object] = {"m3_content_gn_args": []}
+        with (
+            mock.patch.object(public_suite, "_require_clean_public_checkout"),
+            mock.patch.object(public_suite, "load_manifest", return_value=manifest),
+            mock.patch.object(
+                public_suite, "checked_output", return_value="port-revision"
+            ),
+            mock.patch.object(
+                public_suite, "manifest_versions", return_value=VERSIONS
+            ),
+            mock.patch.object(public_suite, "_validate_public_build_configuration"),
+            mock.patch.object(
+                public_smoke,
+                "public_artifact_provenance",
+                return_value=changed_artifacts,
+            ),
+        ):
+            with self.assertRaises(M0Error):
+                public_suite.verify_public_suite_provenance(
+                    self.provenance(),
+                    self.out_dir,
+                    public_smoke.DEFAULT_MODULE_NAME,
+                )
 
     def test_runner_fails_fast_and_never_exposes_child_output(self) -> None:
         raw_child_output = " ".join(
@@ -519,10 +654,10 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 public_suite.run_public_suite(
                     self.config,
                     browser=None,
-                    out_dir=self.out_dir,
-                    module_name="public-module",
-                    diagnostics_dir=self.diagnostics_dir,
-                    expected_versions=VERSIONS,
+                out_dir=self.out_dir,
+                module_name="public-module",
+                diagnostics_dir=self.diagnostics_dir,
+                expected_provenance=self.provenance(),
                     no_sandbox=False,
                     timeout=120.0,
                 )
@@ -559,10 +694,10 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 public_suite.run_public_suite(
                     self.config,
                     browser=None,
-                    out_dir=self.out_dir,
-                    module_name="public-module",
-                    diagnostics_dir=self.diagnostics_dir,
-                    expected_versions=VERSIONS,
+                out_dir=self.out_dir,
+                module_name="public-module",
+                diagnostics_dir=self.diagnostics_dir,
+                expected_provenance=self.provenance(),
                     no_sandbox=False,
                     timeout=120.0,
                 )
@@ -612,7 +747,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             '"protocol":1', '"protocol":true,"protocol":1', 1
         )
         stale_provenance = public_smoke.public_provenance(
-            {**VERSIONS, "port": "stale-port-revision"}
+            {**VERSIONS, "port": "stale-port-revision"}, PUBLIC_ARTIFACTS
         )
         expanded_provenance = {
             **valid_provenance,
@@ -622,10 +757,17 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             **valid_provenance,
             "protocol": True,
         }
-        boolean_provenance_version = public_smoke.public_provenance(VERSIONS)
+        boolean_provenance_version = public_smoke.public_provenance(
+            VERSIONS, PUBLIC_ARTIFACTS
+        )
         boolean_provenance_version["versions"]["port"] = True
         duplicated_provenance_protocol = encoded(valid_provenance).replace(
-            '"protocol":1', '"protocol":true,"protocol":1', 1
+            f'"protocol":{public_smoke.PUBLIC_PROVENANCE_PROTOCOL}',
+            (
+                '"protocol":true,"protocol":'
+                f"{public_smoke.PUBLIC_PROVENANCE_PROTOCOL}"
+            ),
+            1,
         )
         valid_provenance_encoded = encoded(valid_provenance)
         duplicated_provenance_version = valid_provenance_encoded.replace(
@@ -826,7 +968,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                             out_dir=self.out_dir,
                             module_name="public-module",
                             diagnostics_dir=self.diagnostics_dir,
-                            expected_versions=VERSIONS,
+                            expected_provenance=self.provenance(),
                             no_sandbox=False,
                             timeout=120.0,
                         )
@@ -848,7 +990,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     out_dir=self.out_dir,
                     module_name="public-module",
                     diagnostics_dir=self.diagnostics_dir,
-                    expected_versions=VERSIONS,
+                    expected_provenance=self.provenance(),
                     no_sandbox=False,
                     timeout=120.0,
                 )
@@ -861,7 +1003,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             self.diagnostics_dir,
             evidence=evidence,
             config=self.config,
-            versions=VERSIONS,
+            provenance=self.provenance(),
         )
         success_serialized = success.read_text(encoding="utf-8")
         failure = public_suite.write_suite_failure_artifact(
@@ -870,7 +1012,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 2, "did not pass", evidence[:1]
             ),
             config=self.config,
-            versions=VERSIONS,
+            provenance=self.provenance(),
         )
         failure_serialized = failure.read_text(encoding="utf-8")
         serialized = success_serialized + failure_serialized
@@ -887,8 +1029,10 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             )
         self.assertIsNone(public_smoke.URL_LIKE_VALUE_PATTERN.search(serialized))
         success_artifact = json.loads(success_serialized)
+        self.assertEqual(success_artifact["schema_version"], 2)
         self.assertEqual(success_artifact["status"], "pass")
         self.assertEqual(success_artifact["versions"], VERSIONS)
+        self.assertEqual(success_artifact["provenance"], self.provenance())
         self.assertEqual(
             success_artifact["probes"],
             [
@@ -903,8 +1047,10 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             ],
         )
         failure_artifact = json.loads(failure_serialized)
+        self.assertEqual(failure_artifact["schema_version"], 2)
         self.assertEqual(failure_artifact["status"], "fail")
         self.assertEqual(failure_artifact["versions"], VERSIONS)
+        self.assertEqual(failure_artifact["provenance"], self.provenance())
         self.assertEqual(failure_artifact["failedProbeOrdinal"], 2)
 
     def test_artifact_writers_reject_incomplete_or_misaligned_evidence(self) -> None:
@@ -915,14 +1061,17 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 self.diagnostics_dir,
                 evidence=(first,),
                 config=self.config,
-                versions=VERSIONS,
+                provenance=self.provenance(),
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_success_artifact(
                 self.diagnostics_dir,
                 evidence=(first, second),
                 config=self.config,
-                versions={**VERSIONS, "port": True},
+                provenance={
+                    **self.provenance(),
+                    "versions": {**VERSIONS, "port": True},
+                },
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_failure_artifact(
@@ -931,7 +1080,10 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     2, "did not pass", (first,)
                 ),
                 config=self.config,
-                versions={**VERSIONS, "port": True},
+                provenance={
+                    **self.provenance(),
+                    "versions": {**VERSIONS, "port": True},
+                },
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_success_artifact(
@@ -944,7 +1096,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     second,
                 ),
                 config=self.config,
-                versions=VERSIONS,
+                provenance=self.provenance(),
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_failure_artifact(
@@ -953,7 +1105,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     True, "did not pass", ()
                 ),
                 config=self.config,
-                versions=VERSIONS,
+                provenance=self.provenance(),
             )
         with self.assertRaises(M0Error):
             public_suite.write_suite_failure_artifact(
@@ -962,7 +1114,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     2, "did not pass", (second,)
                 ),
                 config=self.config,
-                versions=VERSIONS,
+                provenance=self.provenance(),
             )
         type_confused_network = copy.deepcopy(
             second.public_devtools_network
@@ -979,7 +1131,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                     ),
                 ),
                 config=self.config,
-                versions=VERSIONS,
+                provenance=self.provenance(),
             )
 
     def test_fresh_run_directory_never_reuses_a_stale_artifact(self) -> None:
@@ -1024,7 +1176,14 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 public_suite, "run_public_suite", return_value=evidence
             ) as run,
             mock.patch.object(
-                public_suite, "public_suite_versions", return_value=VERSIONS
+                public_suite,
+                "prepare_public_suite_provenance",
+                return_value=self.provenance(),
+            ),
+            mock.patch.object(
+                public_suite,
+                "verify_public_suite_provenance",
+                return_value=self.provenance(),
             ),
             mock.patch.object(
                 public_suite.secrets, "token_hex", return_value="success"
@@ -1034,7 +1193,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         ):
             self.assertEqual(public_suite.main(), 0)
         self.assertEqual(stderr.getvalue(), "")
-        self.assertEqual(run.call_args.kwargs["expected_versions"], VERSIONS)
+        self.assertEqual(
+            run.call_args.kwargs["expected_provenance"], self.provenance()
+        )
         self.assertEqual(
             stdout.getvalue().splitlines(),
             [
@@ -1066,7 +1227,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 ),
             ) as run,
             mock.patch.object(
-                public_suite, "public_suite_versions", return_value=VERSIONS
+                public_suite,
+                "prepare_public_suite_provenance",
+                return_value=self.provenance(),
             ),
             mock.patch.object(
                 public_suite.secrets, "token_hex", return_value="failure"
@@ -1083,7 +1246,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             stderr.getvalue().splitlines(),
             [f"{public_suite.SENTINEL}:FAIL run=run-failure probe=2"],
         )
-        self.assertEqual(run.call_args.kwargs["expected_versions"], VERSIONS)
+        self.assertEqual(
+            run.call_args.kwargs["expected_provenance"], self.provenance()
+        )
         all_artifacts = list(
             diagnostics_dir.glob("run-*/m5-public-https-suite-result.json")
         )
@@ -1097,6 +1262,7 @@ class PublicSuiteExecutionTest(unittest.TestCase):
         failure_result = json.loads(serialized)
         self.assertEqual(failure_result["status"], "fail")
         self.assertEqual(failure_result["versions"], VERSIONS)
+        self.assertEqual(failure_result["provenance"], self.provenance())
         for value in (
             PUBLIC_ENDPOINT,
             *[probe.public_probe_url for probe in self.config.probes],
@@ -1142,7 +1308,9 @@ class PublicSuiteExecutionTest(unittest.TestCase):
             ),
             mock.patch.object(public_suite.secrets, "token_hex", return_value="raw"),
             mock.patch.object(
-                public_suite, "public_suite_versions", return_value=VERSIONS
+                public_suite,
+                "prepare_public_suite_provenance",
+                return_value=self.provenance(),
             ),
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
@@ -1189,7 +1357,14 @@ class PublicSuiteExecutionTest(unittest.TestCase):
                 public_suite, "run_public_suite", return_value=evidence
             ),
             mock.patch.object(
-                public_suite, "public_suite_versions", return_value=VERSIONS
+                public_suite,
+                "prepare_public_suite_provenance",
+                return_value=self.provenance(),
+            ),
+            mock.patch.object(
+                public_suite,
+                "verify_public_suite_provenance",
+                return_value=self.provenance(),
             ),
             mock.patch.object(
                 public_suite.secrets, "token_hex", return_value="reporting"
@@ -1219,7 +1394,10 @@ class PublicSuiteSourceContractTest(unittest.TestCase):
         self.assertIn("shell=False", suite_source)
         self.assertIn("_child_devtools_evidence", suite_source)
         self.assertIn("_reject_duplicate_evidence_keys", suite_source)
-        self.assertIn("public_suite_versions", suite_source)
+        self.assertIn("prepare_public_suite_provenance", suite_source)
+        self.assertIn("verify_public_suite_provenance", suite_source)
+        self.assertIn("_force_public_artifact_rebuild", suite_source)
+        self.assertIn("artifact_snapshots", single_probe_source)
         self.assertIn("fail_prefix", suite_source)
         self.assertIn("provenance_prefix", suite_source)
         self.assertIn("validate_public_provenance", suite_source)

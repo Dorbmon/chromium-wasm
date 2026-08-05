@@ -31,6 +31,7 @@ from m0_common import (
     M0Error,
     REPO_ROOT,
     checked_output,
+    gn_args_text,
     load_manifest,
     parse_timeout,
 )
@@ -47,6 +48,9 @@ REQUIRED_PUBLIC_PROTOCOLS = frozenset(("h2", "http/1.1"))
 MAXIMUM_MANIFEST_BYTES = 16 * 1024
 DEFAULT_MODULE_NAME = public_smoke.DEFAULT_MODULE_NAME
 DEFAULT_DIAGNOSTICS_DIRECTORY = "diagnostics-m5-public-https-suite"
+PUBLIC_BUILD_TARGET = DEFAULT_MODULE_NAME
+NINJA_PATH = REPO_ROOT / "third_party/depot_tools/ninja"
+AUTONINJA_PATH = REPO_ROOT / "third_party/depot_tools/autoninja"
 
 
 @dataclass(frozen=True)
@@ -227,11 +231,138 @@ def load_public_suite_config(manifest_path: Path) -> PublicSuiteConfig:
     )
 
 
-def public_suite_versions() -> dict[str, str]:
-    """Take one local build-identity snapshot for every child in this suite."""
+def _run_public_build_command(command: list[str]) -> None:
+    """Run a local build command without exposing its output to suite logs."""
 
-    return manifest_versions(
-        load_manifest(), checked_output(["git", "rev-parse", "HEAD"])
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            shell=False,
+            text=True,
+        )
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise M0Error("could not start the public HTTPS artifact rebuild") from exc
+    if completed.returncode != 0:
+        raise M0Error("public HTTPS artifact rebuild failed")
+
+
+def _require_clean_public_checkout() -> None:
+    """Reject source changes that a recorded public build identity omits."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=normal"],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            shell=False,
+            text=True,
+        )
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise M0Error("could not inspect the public HTTPS source state") from exc
+    if completed.returncode != 0 or completed.stdout:
+        raise M0Error("public HTTPS suite requires a clean source checkout")
+
+
+def _expected_public_args_gn(manifest: dict[str, Any]) -> bytes:
+    try:
+        return gn_args_text(manifest, "m3_content_gn_args").encode("utf-8")
+    except (KeyError, TypeError, ValueError, UnicodeError) as exc:
+        raise M0Error("public HTTPS GN args are invalid") from exc
+
+
+def _validate_public_build_configuration(
+    out_dir: Path, manifest: dict[str, Any], module_name: str
+) -> None:
+    if module_name != DEFAULT_MODULE_NAME:
+        raise M0Error("public HTTPS suite requires its dedicated module")
+    args_gn = out_dir.resolve() / "args.gn"
+    if args_gn.is_symlink() or not args_gn.is_file():
+        raise M0Error("public HTTPS GN args are unavailable")
+    if args_gn.read_bytes() != _expected_public_args_gn(manifest):
+        raise M0Error("public HTTPS GN args do not match the pinned M3 build")
+
+
+def _force_public_artifact_rebuild(out_dir: Path) -> None:
+    """Relink the paired public JS/Wasm outputs even when Ninja says clean."""
+
+    if not NINJA_PATH.is_file() or not AUTONINJA_PATH.is_file():
+        raise M0Error("public HTTPS build tools are unavailable")
+    resolved_out_dir = out_dir.resolve()
+    _run_public_build_command(
+        [
+            str(NINJA_PATH),
+            "-C",
+            str(resolved_out_dir),
+            "-t",
+            "clean",
+            PUBLIC_BUILD_TARGET,
+        ]
+    )
+    _run_public_build_command(
+        [str(AUTONINJA_PATH), "-C", str(resolved_out_dir), PUBLIC_BUILD_TARGET]
+    )
+
+
+def prepare_public_suite_provenance(
+    out_dir: Path, module_name: str
+) -> dict[str, Any]:
+    """Build and identify exactly the Wasm payload the public suite may test."""
+
+    _require_clean_public_checkout()
+    manifest = load_manifest()
+    versions = manifest_versions(
+        manifest, checked_output(["git", "rev-parse", "HEAD"])
+    )
+    _validate_public_build_configuration(out_dir, manifest, module_name)
+    _force_public_artifact_rebuild(out_dir)
+
+    # A source, manifest, or GN-args change while the build ran invalidates the
+    # result rather than allowing the child lanes to inherit ambiguous outputs.
+    _require_clean_public_checkout()
+    final_manifest = load_manifest()
+    final_versions = manifest_versions(
+        final_manifest, checked_output(["git", "rev-parse", "HEAD"])
+    )
+    _validate_public_build_configuration(out_dir, final_manifest, module_name)
+    if versions != final_versions:
+        raise M0Error("public HTTPS build identity changed during rebuild")
+    return public_smoke.public_provenance(
+        versions, public_smoke.public_artifact_provenance(out_dir, module_name)
+    )
+
+
+def verify_public_suite_provenance(
+    expected_provenance: object, out_dir: Path, module_name: str
+) -> dict[str, Any]:
+    """Ensure a would-be pass still describes the original rebuilt payload."""
+
+    _require_clean_public_checkout()
+    manifest = load_manifest()
+    versions = manifest_versions(
+        manifest, checked_output(["git", "rev-parse", "HEAD"])
+    )
+    _validate_public_build_configuration(out_dir, manifest, module_name)
+    artifacts = public_smoke.public_artifact_provenance(out_dir, module_name)
+    return public_smoke.validate_public_provenance(
+        expected_provenance,
+        expected_versions=versions,
+        expected_artifacts=artifacts,
+    )
+
+
+def _validated_self_public_provenance(provenance: object) -> dict[str, Any]:
+    """Validate a provenance record before using fields from it as expectations."""
+
+    if type(provenance) is not dict:
+        raise M0Error("public HTTPS provenance is invalid")
+    return public_smoke.validate_public_provenance(
+        provenance,
+        expected_versions=provenance.get("versions"),
+        expected_artifacts=provenance.get("artifacts"),
     )
 
 
@@ -244,6 +375,7 @@ def public_probe_command(
     out_dir: Path,
     module_name: str,
     diagnostics_dir: Path,
+    expected_provenance: dict[str, Any],
     no_sandbox: bool,
     timeout: float,
 ) -> list[str]:
@@ -256,6 +388,10 @@ def public_probe_command(
         str(out_dir),
         "--module-name",
         module_name,
+        "--expected-provenance",
+        json.dumps(
+            expected_provenance, sort_keys=True, separators=(",", ":")
+        ),
         "--public-wisp-endpoint",
         config.public_wisp_endpoint,
         "--public-probe-url",
@@ -280,7 +416,7 @@ def _child_devtools_evidence(
     completed: subprocess.CompletedProcess[str],
     probe: PublicProbe,
     *,
-    expected_versions: dict[str, str],
+    expected_provenance: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Accept one internally validated, fixed child proof and no contradiction."""
 
@@ -362,7 +498,9 @@ def _child_devtools_evidence(
             object_pairs_hook=_reject_duplicate_evidence_keys,
         )
         public_smoke.validate_public_provenance(
-            provenance, expected_versions=expected_versions
+            provenance,
+            expected_versions=expected_provenance["versions"],
+            expected_artifacts=expected_provenance["artifacts"],
         )
         return public_smoke.validate_public_devtools_network_evidence(
             evidence,
@@ -380,7 +518,7 @@ def run_public_suite(
     out_dir: Path,
     module_name: str,
     diagnostics_dir: Path,
-    expected_versions: dict[str, str],
+    expected_provenance: dict[str, Any],
     no_sandbox: bool,
     timeout: float,
 ) -> tuple[PublicProbeEvidence, ...]:
@@ -391,11 +529,9 @@ def run_public_suite(
     browser process before the child can perform its normal cleanup.
     """
 
-    public_smoke.public_provenance(expected_versions)
-    validated_versions = {
-        key: expected_versions[key]
-        for key in public_smoke.PUBLIC_PROVENANCE_VERSION_KEYS
-    }
+    expected_provenance = _validated_self_public_provenance(
+        expected_provenance
+    )
     successful_evidence: list[PublicProbeEvidence] = []
     for ordinal, probe in enumerate(config.probes, start=1):
         command = public_probe_command(
@@ -406,6 +542,7 @@ def run_public_suite(
             out_dir=out_dir,
             module_name=module_name,
             diagnostics_dir=diagnostics_dir,
+            expected_provenance=expected_provenance,
             no_sandbox=no_sandbox,
             timeout=timeout,
         )
@@ -423,7 +560,7 @@ def run_public_suite(
                 ordinal, "could not start", tuple(successful_evidence)
             ) from exc
         evidence = _child_devtools_evidence(
-            completed, probe, expected_versions=validated_versions
+            completed, probe, expected_provenance=expected_provenance
         )
         if evidence is None:
             raise PublicSuiteProbeError(
@@ -510,18 +647,19 @@ def write_suite_success_artifact(
     *,
     evidence: tuple[PublicProbeEvidence, ...],
     config: PublicSuiteConfig,
-    versions: dict[str, str],
+    provenance: dict[str, Any],
 ) -> Path:
-    provenance = public_smoke.public_provenance(versions)
+    provenance = _validated_self_public_provenance(provenance)
     _validate_evidence_prefix(
         evidence,
         config,
         expected_ordinals=tuple(range(1, len(config.probes) + 1)),
     )
     artifact: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "runner": "run_m5_public_https_suite.py",
         "case": M5_PUBLIC_HTTPS_CASE,
+        "provenance": provenance,
         "versions": provenance["versions"],
         "status": "pass",
         "probe_count": len(config.probes),
@@ -536,9 +674,9 @@ def write_suite_failure_artifact(
     *,
     error: PublicSuiteProbeError,
     config: PublicSuiteConfig,
-    versions: dict[str, str],
+    provenance: dict[str, Any],
 ) -> Path:
-    provenance = public_smoke.public_provenance(versions)
+    provenance = _validated_self_public_provenance(provenance)
     if type(error.ordinal) is not int or not 1 <= error.ordinal <= len(config.probes):
         raise M0Error("public HTTPS suite failed probe ordinal is invalid")
     _validate_evidence_prefix(
@@ -547,9 +685,10 @@ def write_suite_failure_artifact(
         expected_ordinals=tuple(range(1, error.ordinal)),
     )
     artifact: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "runner": "run_m5_public_https_suite.py",
         "case": M5_PUBLIC_HTTPS_CASE,
+        "provenance": provenance,
         "versions": provenance["versions"],
         "status": "fail",
         "probe_count": len(config.probes),
@@ -565,7 +704,7 @@ def write_preflight_failure_artifact(
     diagnostics_dir: Path,
     *,
     failure: str,
-    versions: dict[str, str] | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> Path:
     """Replace this fresh run's result with a safe preflight failure.
 
@@ -575,14 +714,16 @@ def write_preflight_failure_artifact(
     """
 
     artifact: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "runner": "run_m5_public_https_suite.py",
         "case": M5_PUBLIC_HTTPS_CASE,
         "status": "fail",
         "failure": failure,
     }
-    if versions is not None:
-        artifact["versions"] = public_smoke.public_provenance(versions)["versions"]
+    if provenance is not None:
+        provenance = _validated_self_public_provenance(provenance)
+        artifact["provenance"] = provenance
+        artifact["versions"] = provenance["versions"]
     if public_smoke.URL_LIKE_VALUE_PATTERN.search(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True)
     ):
@@ -665,9 +806,11 @@ def main() -> int:
         )
         return 1
 
-    versions: dict[str, str] | None = None
+    provenance: dict[str, Any] | None = None
     try:
-        versions = public_suite_versions()
+        provenance = prepare_public_suite_provenance(
+            out_dir, args.module_name
+        )
     except (M0Error, OSError, ValueError, UnicodeError):
         try:
             write_preflight_failure_artifact(
@@ -682,7 +825,7 @@ def main() -> int:
         )
         return 1
 
-    assert versions is not None
+    assert provenance is not None
 
     try:
         # The public children are invoked below by run_public_suite. This safe
@@ -698,15 +841,18 @@ def main() -> int:
             out_dir=out_dir,
             module_name=args.module_name,
             diagnostics_dir=run_diagnostics_dir,
-            expected_versions=versions,
+            expected_provenance=provenance,
             no_sandbox=args.no_sandbox,
             timeout=args.timeout_per_probe,
+        )
+        verify_public_suite_provenance(
+            provenance, out_dir, args.module_name
         )
         write_suite_success_artifact(
             run_diagnostics_dir,
             evidence=evidence,
             config=config,
-            versions=versions,
+            provenance=provenance,
         )
         # Once the atomic pass artifact exists it is authoritative. A closed
         # report pipe cannot turn that completed run into a contradictory
@@ -731,7 +877,7 @@ def main() -> int:
                 run_diagnostics_dir,
                 error=exc,
                 config=config,
-                versions=versions,
+                provenance=provenance,
             )
         except (M0Error, OSError, ValueError, UnicodeError):
             pass
@@ -748,7 +894,7 @@ def main() -> int:
             write_preflight_failure_artifact(
                 run_diagnostics_dir,
                 failure="runner_infrastructure_failure",
-                versions=versions,
+                provenance=provenance,
             )
         except (M0Error, OSError, ValueError, UnicodeError):
             pass

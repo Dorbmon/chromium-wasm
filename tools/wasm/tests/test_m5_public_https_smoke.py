@@ -36,6 +36,14 @@ VERSIONS = {
 }
 PUBLIC_ENDPOINT = "wss://relay.public.example.com/wisp/"
 PUBLIC_PROBE_URL = "https://probe.public.example.com/static/public-v1"
+PUBLIC_ARTIFACTS = {
+    "argsGnSha256": "a" * 64,
+    "hostHtml": {"sha256": "b" * 64, "size": 123},
+    "hostJavaScript": {"sha256": "c" * 64, "size": 456},
+    "javascript": {"sha256": "d" * 64, "size": 1234},
+    "module": public_smoke.DEFAULT_MODULE_NAME,
+    "wasm": {"sha256": "e" * 64, "size": 5678},
+}
 
 
 class FakeServer:
@@ -414,24 +422,30 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
             )
 
     def test_public_provenance_is_fixed_and_type_sensitive(self) -> None:
-        provenance = public_smoke.public_provenance(VERSIONS)
+        provenance = public_smoke.public_provenance(VERSIONS, PUBLIC_ARTIFACTS)
         self.assertEqual(
             provenance,
             {
+                "artifacts": PUBLIC_ARTIFACTS,
                 "protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL,
                 "versions": VERSIONS,
             },
         )
         self.assertEqual(
             public_smoke.validate_public_provenance(
-                provenance, expected_versions=VERSIONS
+                provenance,
+                expected_versions=VERSIONS,
+                expected_artifacts=PUBLIC_ARTIFACTS,
             ),
             provenance,
         )
 
         stale_versions = {**VERSIONS, "port": "stale-port-revision"}
         invalid_provenance = (
-            ("missing_field", {"protocol": 1}),
+            (
+                "missing_field",
+                {"protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL},
+            ),
             (
                 "extra_field",
                 {**provenance, "unexpected": "not allowed"},
@@ -447,7 +461,8 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
             (
                 "missing_version",
                 {
-                    "protocol": 1,
+                    "protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL,
+                    "artifacts": PUBLIC_ARTIFACTS,
                     "versions": {
                         key: value
                         for key, value in VERSIONS.items()
@@ -458,29 +473,111 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
             (
                 "extra_version",
                 {
-                    "protocol": 1,
+                    "protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL,
+                    "artifacts": PUBLIC_ARTIFACTS,
                     "versions": {**VERSIONS, "unexpected": "not allowed"},
                 },
             ),
             (
                 "empty_version",
-                {"protocol": 1, "versions": {**VERSIONS, "port": ""}},
+                {
+                    "protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL,
+                    "artifacts": PUBLIC_ARTIFACTS,
+                    "versions": {**VERSIONS, "port": ""},
+                },
             ),
             (
                 "boolean_version",
-                {"protocol": 1, "versions": {**VERSIONS, "port": True}},
+                {
+                    "protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL,
+                    "artifacts": PUBLIC_ARTIFACTS,
+                    "versions": {**VERSIONS, "port": True},
+                },
             ),
-            ("stale_versions", {"protocol": 1, "versions": stale_versions}),
+            (
+                "stale_versions",
+                {
+                    "protocol": public_smoke.PUBLIC_PROVENANCE_PROTOCOL,
+                    "artifacts": PUBLIC_ARTIFACTS,
+                    "versions": stale_versions,
+                },
+            ),
+            (
+                "invalid_artifact_size",
+                {
+                    **provenance,
+                    "artifacts": {
+                        **PUBLIC_ARTIFACTS,
+                        "wasm": {"sha256": "c" * 64, "size": True},
+                    },
+                },
+            ),
         )
         for name, value in invalid_provenance:
             with self.subTest(name=name):
                 with self.assertRaises(M0Error):
                     public_smoke.validate_public_provenance(
-                        value, expected_versions=VERSIONS
+                        value,
+                        expected_versions=VERSIONS,
+                        expected_artifacts=PUBLIC_ARTIFACTS,
                     )
 
         with self.assertRaises(M0Error):
-            public_smoke.public_provenance({**VERSIONS, "port": True})
+            public_smoke.public_provenance(
+                {**VERSIONS, "port": True}, PUBLIC_ARTIFACTS
+            )
+
+    def test_public_artifact_snapshot_binds_the_served_module_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            out_dir = Path(temporary)
+            module = public_smoke.DEFAULT_MODULE_NAME
+            (out_dir / "args.gn").write_bytes(b"public-gn-args\n")
+            (out_dir / f"{module}.js").write_bytes(b"public JavaScript")
+            (out_dir / f"{module}.wasm").write_bytes(b"public Wasm")
+
+            artifacts, snapshots, static_snapshots = (
+                public_smoke.snapshot_public_artifacts(out_dir)
+            )
+            provenance = public_smoke.public_provenance(VERSIONS, artifacts)
+            self.assertEqual(
+                public_smoke.validate_public_provenance(
+                    provenance,
+                    expected_versions=VERSIONS,
+                    expected_artifacts=artifacts,
+                ),
+                provenance,
+            )
+            (out_dir / f"{module}.wasm").write_bytes(b"replacement Wasm")
+            self.assertEqual(
+                snapshots[f"{module}.wasm"], b"public Wasm"
+            )
+            self.assertEqual(
+                static_snapshots["/__m3__/content_shell_host.js"],
+                (m3_content_server.M3_HOST_DIR / "content_shell_host.js").read_bytes(),
+            )
+            self.assertNotEqual(
+                public_smoke.public_artifact_provenance(out_dir), artifacts
+            )
+
+    def test_expected_public_provenance_rejects_duplicate_or_oversized_input(
+        self,
+    ) -> None:
+        serialized = json.dumps(
+            public_smoke.public_provenance(VERSIONS, PUBLIC_ARTIFACTS),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.assertEqual(
+            public_smoke.parse_expected_public_provenance(serialized),
+            json.loads(serialized),
+        )
+        for value in (
+            '{"protocol":2,"protocol":2}',
+            "x" * (public_smoke.PUBLIC_PROVENANCE_MAXIMUM_BYTES + 1),
+        ):
+            with self.subTest(value=value[:16]):
+                with self.assertRaises(M0Error):
+                    public_smoke.parse_expected_public_provenance(value)
 
     def test_failure_diagnostics_redact_runtime_only_inputs(self) -> None:
         endpoint_query_value = (

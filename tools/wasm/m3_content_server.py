@@ -79,6 +79,9 @@ M3_MAXIMUM_TIMER_GAP_MS = 250
 M3_MAX_RESULT_BYTES = 8 * 1024 * 1024
 M3_HOST_DIR = Path(__file__).with_name("host")
 M3_TESTDATA_DIR = Path(__file__).with_name("testdata")
+M3_HOST_SNAPSHOT_PATHS = frozenset(
+    ("/", "/__m3__/", "/__m3__/content_shell_host.js")
+)
 M3_AHEM_FONT = (
     REPO_ROOT / "third_party" / "blink" / "web_tests" / "resources"
     / "Ahem.woff2"
@@ -163,6 +166,14 @@ class M3ServerState:
     verbose: bool = False
     result_received: bool = False
     result_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Public M5 can supply immutable copies of the executable module files.
+    # Keeping this opt-in leaves the ordinary M3/M4 development server able to
+    # serve current output files while preventing a public proof run from
+    # observing an artifact changed after its build identity was captured.
+    artifact_snapshots: dict[str, bytes] = field(default_factory=dict)
+    # The public M5 host page and loader bridge are part of the executable
+    # harness, so its opt-in snapshot pins them alongside the Wasm module.
+    static_snapshots: dict[str, bytes] = field(default_factory=dict)
 
 
 def accept_result(
@@ -212,9 +223,9 @@ def _parse_result_payload(payload: bytes) -> dict[str, Any] | None:
     return result
 
 
-def _artifact_for_request(
+def _artifact_name_for_request(
     state: M3ServerState, request_path: str
-) -> Path | None:
+) -> str | None:
     prefix = "/__m3__/artifacts/"
     if not request_path.startswith(prefix):
         return None
@@ -226,6 +237,15 @@ def _artifact_for_request(
         or requested_name.startswith(f"{state.module_name}.")
     ):
         return None
+    return requested_name
+
+
+def _artifact_for_request(
+    state: M3ServerState, request_path: str
+) -> Path | None:
+    requested_name = _artifact_name_for_request(state, request_path)
+    if requested_name is None:
+        return None
     artifact = state.out_dir / requested_name
     if not artifact.is_file():
         return None
@@ -233,6 +253,50 @@ def _artifact_for_request(
     if resolved_artifact.parent != state.out_dir:
         return None
     return resolved_artifact
+
+
+def _artifact_contents_for_request(
+    state: M3ServerState, request_path: str
+) -> tuple[bytes, str] | None:
+    """Resolve one allowed module request to its pinned or live bytes."""
+
+    artifact_name = _artifact_name_for_request(state, request_path)
+    if artifact_name is None:
+        return None
+    snapshot = state.artifact_snapshots.get(artifact_name)
+    if snapshot is not None:
+        return (
+            snapshot,
+            CONTENT_TYPES.get(
+                Path(artifact_name).suffix, "application/octet-stream"
+            ),
+        )
+    artifact = _artifact_for_request(state, request_path)
+    if artifact is None:
+        return None
+    return (
+        artifact.read_bytes(),
+        CONTENT_TYPES.get(artifact.suffix, "application/octet-stream"),
+    )
+
+
+def _static_contents_for_request(
+    state: M3ServerState, request_path: str, static_path: Path
+) -> tuple[bytes, str] | None:
+    """Resolve one local host resource to its pinned or live bytes."""
+
+    snapshot = state.static_snapshots.get(request_path)
+    if snapshot is not None:
+        return (
+            snapshot,
+            CONTENT_TYPES.get(static_path.suffix, "text/html; charset=utf-8"),
+        )
+    if not static_path.is_file():
+        return None
+    return (
+        static_path.read_bytes(),
+        CONTENT_TYPES.get(static_path.suffix, "application/octet-stream"),
+    )
 
 
 class M3RequestHandler(BaseHTTPRequestHandler):
@@ -297,25 +361,22 @@ class M3RequestHandler(BaseHTTPRequestHandler):
         }
         static_path = static_paths.get(request_path)
         if static_path is not None:
-            if not static_path.is_file():
+            static_contents = _static_contents_for_request(
+                self.state, request_path, static_path
+            )
+            if static_contents is None:
                 self.send_error(404)
                 return
-            self._send_bytes(
-                static_path.read_bytes(),
-                CONTENT_TYPES.get(
-                    static_path.suffix, "application/octet-stream"
-                ),
-            )
+            self._send_bytes(*static_contents)
             return
 
-        artifact = _artifact_for_request(self.state, request_path)
-        if artifact is None:
+        artifact_contents = _artifact_contents_for_request(
+            self.state, request_path
+        )
+        if artifact_contents is None:
             self.send_error(404)
             return
-        self._send_bytes(
-            artifact.read_bytes(),
-            CONTENT_TYPES.get(artifact.suffix, "application/octet-stream"),
-        )
+        self._send_bytes(*artifact_contents)
 
     def do_POST(self) -> None:
         request_path = urlsplit(self.path).path
@@ -362,13 +423,39 @@ def create_m3_server(
     *,
     module_name: str = "content_shell_wasm",
     verbose: bool = False,
+    artifact_snapshots: dict[str, bytes] | None = None,
+    static_snapshots: dict[str, bytes] | None = None,
 ) -> M3HTTPServer:
     resolved_out_dir = out_dir.resolve()
-    for artifact_name in (f"{module_name}.js", f"{module_name}.wasm"):
+    required_artifact_names = (
+        f"{module_name}.js",
+        f"{module_name}.wasm",
+    )
+    for artifact_name in required_artifact_names:
         if not (resolved_out_dir / artifact_name).is_file():
             raise M0Error(
                 f"{artifact_name} is missing from the output directory"
             )
+    snapshots = artifact_snapshots or {}
+    if (
+        not isinstance(snapshots, dict)
+        or (snapshots and set(snapshots) != set(required_artifact_names))
+        or any(type(contents) is not bytes for contents in snapshots.values())
+    ):
+        raise M0Error("M3 artifact snapshots are invalid")
+    static_snapshot_values = static_snapshots or {}
+    if (
+        not isinstance(static_snapshot_values, dict)
+        or (
+            static_snapshot_values
+            and set(static_snapshot_values) != M3_HOST_SNAPSHOT_PATHS
+        )
+        or any(
+            type(contents) is not bytes
+            for contents in static_snapshot_values.values()
+        )
+    ):
+        raise M0Error("M3 host snapshots are invalid")
     if not M3_AHEM_FONT.is_file():
         raise M0Error(f"M3 Ahem font is missing: {M3_AHEM_FONT}")
     state = M3ServerState(
@@ -377,6 +464,14 @@ def create_m3_server(
         module_name=module_name,
         result_queue=result_queue,
         verbose=verbose,
+        artifact_snapshots={
+            artifact_name: bytes(contents)
+            for artifact_name, contents in snapshots.items()
+        },
+        static_snapshots={
+            request_path: bytes(contents)
+            for request_path, contents in static_snapshot_values.items()
+        },
     )
     return M3HTTPServer((bind, port), state)
 

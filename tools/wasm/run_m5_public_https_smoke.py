@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import hashlib
 import ipaddress
 import json
 from pathlib import Path
@@ -38,7 +39,12 @@ from m0_common import (
     parse_timeout,
     print_context,
 )
-from m3_content_server import M5_PUBLIC_HTTPS_CASE, create_m3_server
+from m3_content_server import (
+    M3_HOST_DIR,
+    M3_HOST_SNAPSHOT_PATHS,
+    M5_PUBLIC_HTTPS_CASE,
+    create_m3_server,
+)
 from run_browser_smoke import (
     browser_command,
     drain_stream,
@@ -50,11 +56,23 @@ from run_m5_wisp_smoke import verify_no_private_key_pem_artifacts
 
 
 SENTINEL = "CHROMIUM_WASM_M5_PUBLIC_HTTPS"
-PUBLIC_PROVENANCE_PROTOCOL = 1
+PUBLIC_PROVENANCE_PROTOCOL = 2
 PUBLIC_PROVENANCE_VERSION_KEYS = frozenset(
     ("chromium", "v8", "emscripten", "port")
 )
 DEFAULT_MODULE_NAME = "content_shell_wasm_m5_public_test"
+PUBLIC_ARTIFACT_PROVENANCE_KEYS = frozenset(
+    (
+        "argsGnSha256",
+        "hostHtml",
+        "hostJavaScript",
+        "javascript",
+        "module",
+        "wasm",
+    )
+)
+PUBLIC_ARTIFACT_FILE_KEYS = frozenset(("sha256", "size"))
+PUBLIC_PROVENANCE_MAXIMUM_BYTES = 4096
 MAXIMUM_URL_BYTES = 2048
 MAXIMUM_TIMER_GAP_MS = 250
 MINIMUM_HEARTBEAT_TIMER_TICKS = 2
@@ -421,7 +439,167 @@ def _exact_json_value_equal(actual: object, expected: object) -> bool:
     return actual == expected
 
 
-def public_provenance(versions: object) -> dict[str, Any]:
+def _is_lower_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validated_public_artifact_file(
+    value: object, description: str
+) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != PUBLIC_ARTIFACT_FILE_KEYS:
+        raise M0Error(f"{description} has an invalid schema")
+    size = value["size"]
+    if type(size) is not int or size <= 0:
+        raise M0Error(f"{description} size is invalid")
+    if not _is_lower_sha256(value["sha256"]):
+        raise M0Error(f"{description} SHA-256 is invalid")
+    return {"sha256": value["sha256"], "size": size}
+
+
+def validate_public_artifact_provenance(artifacts: object) -> dict[str, Any]:
+    """Validate the fixed module identity safe to retain in public reports."""
+
+    if type(artifacts) is not dict or set(artifacts) != (
+        PUBLIC_ARTIFACT_PROVENANCE_KEYS
+    ):
+        raise M0Error("public HTTPS artifact provenance has an invalid schema")
+    if artifacts["module"] != DEFAULT_MODULE_NAME:
+        raise M0Error("public HTTPS artifact provenance module is invalid")
+    if not _is_lower_sha256(artifacts["argsGnSha256"]):
+        raise M0Error("public HTTPS artifact provenance GN args hash is invalid")
+    return {
+        "argsGnSha256": artifacts["argsGnSha256"],
+        "hostHtml": _validated_public_artifact_file(
+            artifacts["hostHtml"], "public HTTPS host HTML"
+        ),
+        "hostJavaScript": _validated_public_artifact_file(
+            artifacts["hostJavaScript"], "public HTTPS host JavaScript"
+        ),
+        "javascript": _validated_public_artifact_file(
+            artifacts["javascript"], "public HTTPS JavaScript artifact"
+        ),
+        "module": artifacts["module"],
+        "wasm": _validated_public_artifact_file(
+            artifacts["wasm"], "public HTTPS Wasm artifact"
+        ),
+    }
+
+
+def _public_artifact_path(out_dir: Path, artifact_name: str) -> Path:
+    resolved_out_dir = out_dir.resolve()
+    artifact = resolved_out_dir / artifact_name
+    if (
+        artifact.is_symlink()
+        or not artifact.is_file()
+        or artifact.resolve().parent != resolved_out_dir
+    ):
+        raise M0Error(f"public HTTPS artifact {artifact_name} is unavailable")
+    return artifact
+
+
+def _public_host_path(host_name: str) -> Path:
+    resolved_host_dir = M3_HOST_DIR.resolve()
+    host_path = resolved_host_dir / host_name
+    if (
+        host_path.is_symlink()
+        or not host_path.is_file()
+        or host_path.resolve().parent != resolved_host_dir
+    ):
+        raise M0Error(f"public HTTPS host file {host_name} is unavailable")
+    return host_path
+
+
+def _public_artifact_record(contents: bytes) -> dict[str, Any]:
+    if not contents:
+        raise M0Error("public HTTPS artifact is empty")
+    return {
+        "sha256": hashlib.sha256(contents).hexdigest(),
+        "size": len(contents),
+    }
+
+
+def _public_args_gn_sha256(out_dir: Path) -> str:
+    args_gn = _public_artifact_path(out_dir, "args.gn")
+    contents = args_gn.read_bytes()
+    if not contents:
+        raise M0Error("public HTTPS GN args are empty")
+    return hashlib.sha256(contents).hexdigest()
+
+
+def public_artifact_provenance(
+    out_dir: Path, module_name: str = DEFAULT_MODULE_NAME
+) -> dict[str, Any]:
+    """Hash the exact public module pair without trusting a file timestamp."""
+
+    if module_name != DEFAULT_MODULE_NAME:
+        raise M0Error("public HTTPS runner requires its dedicated module")
+    return validate_public_artifact_provenance(
+        {
+            "argsGnSha256": _public_args_gn_sha256(out_dir),
+            "hostHtml": _public_artifact_record(
+                _public_host_path("content_shell.html").read_bytes()
+            ),
+            "hostJavaScript": _public_artifact_record(
+                _public_host_path("content_shell_host.js").read_bytes()
+            ),
+            "javascript": _public_artifact_record(
+                _public_artifact_path(out_dir, f"{module_name}.js").read_bytes()
+            ),
+            "module": module_name,
+            "wasm": _public_artifact_record(
+                _public_artifact_path(out_dir, f"{module_name}.wasm").read_bytes()
+            ),
+        }
+    )
+
+
+def snapshot_public_artifacts(
+    out_dir: Path, module_name: str = DEFAULT_MODULE_NAME
+) -> tuple[dict[str, Any], dict[str, bytes], dict[str, bytes]]:
+    """Capture the module and host harness bytes this public child will serve.
+
+    The server receives these bytes rather than rereading live output or host
+    source files, which binds successful browser execution to the recorded
+    digest even if a concurrent build or edit replaces a file mid-run.
+    """
+
+    if module_name != DEFAULT_MODULE_NAME:
+        raise M0Error("public HTTPS runner requires its dedicated module")
+    javascript_name = f"{module_name}.js"
+    wasm_name = f"{module_name}.wasm"
+    snapshots = {
+        javascript_name: _public_artifact_path(out_dir, javascript_name).read_bytes(),
+        wasm_name: _public_artifact_path(out_dir, wasm_name).read_bytes(),
+    }
+    host_html = _public_host_path("content_shell.html").read_bytes()
+    host_javascript = _public_host_path("content_shell_host.js").read_bytes()
+    static_snapshots = {
+        "/": host_html,
+        "/__m3__/": host_html,
+        "/__m3__/content_shell_host.js": host_javascript,
+    }
+    if set(static_snapshots) != M3_HOST_SNAPSHOT_PATHS:
+        raise M0Error("public HTTPS host snapshot paths are invalid")
+    artifacts = validate_public_artifact_provenance(
+        {
+            "argsGnSha256": _public_args_gn_sha256(out_dir),
+            "hostHtml": _public_artifact_record(host_html),
+            "hostJavaScript": _public_artifact_record(host_javascript),
+            "javascript": _public_artifact_record(snapshots[javascript_name]),
+            "module": module_name,
+            "wasm": _public_artifact_record(snapshots[wasm_name]),
+        }
+    )
+    return artifacts, snapshots, static_snapshots
+
+
+def public_provenance(
+    versions: object, artifacts: object
+) -> dict[str, Any]:
     """Return the fixed build identity record allowed to leave a child run."""
 
     if (
@@ -434,6 +612,7 @@ def public_provenance(versions: object) -> dict[str, Any]:
     ):
         raise M0Error("public HTTPS provenance versions are invalid")
     return {
+        "artifacts": validate_public_artifact_provenance(artifacts),
         "protocol": PUBLIC_PROVENANCE_PROTOCOL,
         "versions": {
             key: versions[key] for key in sorted(PUBLIC_PROVENANCE_VERSION_KEYS)
@@ -442,12 +621,18 @@ def public_provenance(versions: object) -> dict[str, Any]:
 
 
 def validate_public_provenance(
-    provenance: object, *, expected_versions: object
+    provenance: object,
+    *,
+    expected_versions: object,
+    expected_artifacts: object,
 ) -> dict[str, Any]:
     """Reject an expanded, type-coerced, or stale child provenance record."""
 
-    expected_provenance = public_provenance(expected_versions)
+    expected_provenance = public_provenance(
+        expected_versions, expected_artifacts
+    )
     if type(provenance) is not dict or set(provenance) != {
+        "artifacts",
         "protocol",
         "versions",
     }:
@@ -467,9 +652,39 @@ def validate_public_provenance(
         )
     ):
         raise M0Error("public HTTPS provenance versions are invalid")
+    validate_public_artifact_provenance(provenance["artifacts"])
     if not _exact_json_value_equal(provenance, expected_provenance):
-        raise M0Error("public HTTPS provenance versions mismatch")
+        raise M0Error("public HTTPS provenance mismatch")
     return expected_provenance
+
+
+def parse_expected_public_provenance(value: object) -> dict[str, Any]:
+    """Decode a bounded, duplicate-key-free suite provenance argument."""
+
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > PUBLIC_PROVENANCE_MAXIMUM_BYTES
+    ):
+        raise M0Error("public HTTPS expected provenance is invalid")
+
+    def reject_duplicate_keys(
+        pairs: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, nested_value in pairs:
+            if key in result:
+                raise ValueError("duplicate public HTTPS provenance key")
+            result[key] = nested_value
+        return result
+
+    try:
+        parsed = json.loads(value, object_pairs_hook=reject_duplicate_keys)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise M0Error("public HTTPS expected provenance is invalid") from exc
+    if not isinstance(parsed, dict):
+        raise M0Error("public HTTPS expected provenance is invalid")
+    return parsed
 
 
 def expected_public_devtools_network_evidence(
@@ -892,6 +1107,10 @@ def main() -> int:
     )
     parser.add_argument("--module-name", default=DEFAULT_MODULE_NAME)
     parser.add_argument(
+        "--expected-provenance",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--public-wisp-endpoint",
         required=True,
         help="credential-free external wss:// gateway; never persisted",
@@ -946,6 +1165,9 @@ def main() -> int:
     browser_stderr: deque[str] = deque(maxlen=300)
     browser_stderr_thread: threading.Thread | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
+    artifact_provenance: dict[str, Any] | None = None
+    artifact_snapshots: dict[str, bytes] | None = None
+    static_snapshots: dict[str, bytes] | None = None
     result: dict[str, Any] | None = None
     context: dict[str, object] | None = None
     stage = "validate_inputs"
@@ -989,6 +1211,21 @@ def main() -> int:
         result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         stage = "verify_test_artifacts"
         verify_no_private_key_pem_artifacts(out_dir, args.module_name)
+        stage = "snapshot_public_artifacts"
+        (
+            artifact_provenance,
+            artifact_snapshots,
+            static_snapshots,
+        ) = snapshot_public_artifacts(out_dir, args.module_name)
+        if args.expected_provenance is not None:
+            expected_provenance = parse_expected_public_provenance(
+                args.expected_provenance
+            )
+            validate_public_provenance(
+                expected_provenance,
+                expected_versions=versions,
+                expected_artifacts=artifact_provenance,
+            )
         stage = "create_host_server"
         server = create_m3_server(
             "127.0.0.1",
@@ -997,6 +1234,8 @@ def main() -> int:
             token,
             result_queue,
             module_name=args.module_name,
+            artifact_snapshots=artifact_snapshots,
+            static_snapshots=static_snapshots,
         )
         server_thread = threading.Thread(
             target=server.serve_forever,
@@ -1056,10 +1295,11 @@ def main() -> int:
             expected_status=args.expected_status,
             expected_protocol=args.expected_protocol,
         )
+        assert artifact_provenance is not None
         print(
             f"{SENTINEL}:PROVENANCE "
             + json.dumps(
-                public_provenance(versions),
+                public_provenance(versions, artifact_provenance),
                 sort_keys=True,
                 separators=(",", ":"),
             ),
