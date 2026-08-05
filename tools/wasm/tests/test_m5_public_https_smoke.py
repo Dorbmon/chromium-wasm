@@ -156,6 +156,11 @@ class PublicInputValidationTest(unittest.TestCase):
             "wss://relay.public.example.com/wisp/?token=forbidden",
             "wss://relay.public.example.com/wisp/#fragment",
             "wss://relay.public.example.com:invalid/wisp/",
+            "wss://relay.public.example.com/wisp/\x00",
+            "wss://relay.public.example.com/wisp/\ud800",
+            "wss://relay.public.example.com/wisp/ with-space",
+            "wss://relay.public.example.com/wisp/%00",
+            "wss://relay.public.example.com/wisp/%20",
         ):
             with self.subTest(endpoint=endpoint):
                 with self.assertRaises(M0Error):
@@ -192,6 +197,11 @@ class PublicInputValidationTest(unittest.TestCase):
             "https://probe.public.example.com:invalid/static/public-v1",
             "https://probe.public.example.com/static/../public-v1",
             "https://probe.public.example.com/static/%2e%2e/public-v1",
+            "https://probe.public.example.com/static/public-v1\x00",
+            "https://probe.public.example.com/static/public-v1\ud800",
+            "https://probe.public.example.com/static/public v1",
+            "https://probe.public.example.com/static/public%00v1",
+            "https://probe.public.example.com/static/public%20v1",
         ):
             with self.subTest(probe_url=probe_url):
                 with self.assertRaises(M0Error):
@@ -288,6 +298,39 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
         escaped_probe["logs"]["stdout"].append(quote(PUBLIC_PROBE_URL, safe=""))  # type: ignore[index]
         self.assert_public_result_rejected(escaped_probe)
 
+        for leaked_value in (
+            "//probe.public.example.com/static/public-v1",
+            quote(quote(PUBLIC_PROBE_URL, safe=""), safe=""),
+        ):
+            with self.subTest(leaked_value=leaked_value):
+                invalid = passing_result()
+                invalid["logs"]["stdout"].append(leaked_value)  # type: ignore[index]
+                self.assert_public_result_rejected(invalid)
+
+    def test_public_result_rejects_type_coerced_control_fields(self) -> None:
+        mutations = (
+            (("protocol",), True),
+            (("initialFrame", "width"), 800.0),
+            (("publicFrame", "height"), 600.0),
+            (("navigationResult", "ok"), 1),
+            (("publicDevtoolsNetworkEnabled", "protocol"), True),
+            (("publicDevtoolsNetworkEnabled", "networkEnabled"), 1),
+            (("readiness", "navigation", "committed"), 1),
+            (("readiness", "navigation", "responseCode"), 200.0),
+            (("shutdown", "exitCode"), False),
+            (("shutdown", "runtimeExitCode"), False),
+            (("readiness", "fatalErrors"), ()),
+            (("failedChecks",), ()),
+        )
+        for path, value in mutations:
+            with self.subTest(path=path):
+                invalid = passing_result()
+                target: dict[str, object] = invalid
+                for field in path[:-1]:
+                    target = target[field]  # type: ignore[assignment]
+                target[path[-1]] = value
+                self.assert_public_result_rejected(invalid)
+
     def test_public_result_requires_complete_cdp_and_wisp_evidence(self) -> None:
         invalid_values = {
             "networkEnabled": False,
@@ -304,6 +347,22 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
         }
         for field, value in invalid_values.items():
             with self.subTest(field=field):
+                invalid = passing_result()
+                trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
+                trace[field] = value  # type: ignore[index]
+                self.assert_public_result_rejected(invalid)
+
+        type_confusions = (
+            ("protocol", True),
+            ("responseStatus", True),
+            ("networkEnabled", 1),
+            ("documentRequest", 1),
+            ("state", 1),
+            ("responseProtocol", 1),
+            ("events", ["Network.requestWillBeSent:document", 1]),
+        )
+        for field, value in type_confusions:
+            with self.subTest(type_confusion=field):
                 invalid = passing_result()
                 trace = invalid["readiness"]["publicDevtoolsNetwork"]  # type: ignore[index]
                 trace[field] = value  # type: ignore[index]
@@ -333,6 +392,23 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 trace[field] = value  # type: ignore[index]
                 self.assert_public_result_rejected(invalid)
 
+    def test_public_cdp_evidence_summary_is_fixed_and_redacted(self) -> None:
+        evidence = public_smoke.public_devtools_network_evidence(
+            passing_result(), expected_status=200, expected_protocol="h2"
+        )
+        self.assertEqual(
+            evidence,
+            public_smoke.expected_public_devtools_network_evidence(
+                expected_status=200, expected_protocol="h2"
+            ),
+        )
+        serialized = json.dumps(evidence, sort_keys=True)
+        self.assertIsNone(public_smoke.URL_LIKE_VALUE_PATTERN.search(serialized))
+        with self.assertRaises(M0Error):
+            public_smoke.expected_public_devtools_network_evidence(
+                expected_status=True, expected_protocol="h2"
+            )
+
     def test_failure_diagnostics_redact_runtime_only_inputs(self) -> None:
         endpoint_query_value = (
             "wss://Relay.Public.Example.Com:443/wisp/"
@@ -340,6 +416,9 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
         probe_query_value = (
             "https://Probe.Public.Example.Com:443/static/public-v1"
         )
+        scheme_relative_probe = "//probe.public.example.com/static/public-v1"
+        double_escaped_endpoint = quote(quote(PUBLIC_ENDPOINT, safe=""), safe="")
+        double_escaped_probe = quote(quote(PUBLIC_PROBE_URL, safe=""), safe="")
         with tempfile.TemporaryDirectory() as temporary:
             diagnostic_path = public_smoke.write_failure_diagnostics(
                 Path(temporary),
@@ -348,6 +427,9 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 context={
                     "endpoint": endpoint_query_value,
                     "escaped_probe": quote_plus(PUBLIC_PROBE_URL),
+                    "scheme_relative_probe": scheme_relative_probe,
+                    "double_escaped_endpoint": double_escaped_endpoint,
+                    PUBLIC_PROBE_URL: "configured probe appears as a key",
                 },
                 browser_path=None,
                 browser_version=None,
@@ -358,6 +440,9 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 result={
                     "error": f"probe={PUBLIC_PROBE_URL}",
                     "endpoint": PUBLIC_ENDPOINT,
+                    "scheme_relative_probe": scheme_relative_probe,
+                    "double_escaped_probe": double_escaped_probe,
+                    PUBLIC_ENDPOINT: "configured endpoint appears as a key",
                 },
                 public_wisp_endpoint=endpoint_query_value,
                 public_probe_url=probe_query_value,
@@ -372,10 +457,16 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 quote(PUBLIC_PROBE_URL, safe=""),
                 quote_plus(PUBLIC_ENDPOINT),
                 quote_plus(PUBLIC_PROBE_URL),
+                scheme_relative_probe,
+                double_escaped_endpoint,
+                double_escaped_probe,
             ):
                 with self.subTest(secret=secret):
                     self.assertNotIn(secret, serialized)
             self.assertIn("<redacted>", serialized)
+            self.assertIsNone(
+                public_smoke.URL_LIKE_VALUE_PATTERN.search(serialized)
+            )
 
     def test_public_case_is_an_explicit_result_server_case(self) -> None:
         self.assertIn(
@@ -608,6 +699,10 @@ class PublicHttpsSourceContractTest(unittest.TestCase):
             runner,
         )
         self.assertIn("Chromium CDP and WISP completion trace", runner)
+        self.assertIn("PUBLIC_DEVTOOLS_NETWORK_EVENTS", runner)
+        self.assertIn("expected_public_devtools_network_evidence", runner)
+        self.assertIn('f"{SENTINEL}:EVIDENCE "', runner)
+        self.assertIn("_is_safe_public_url_string", runner)
 
 
 if __name__ == "__main__":

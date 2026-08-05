@@ -66,9 +66,24 @@ PUBLIC_SPECIAL_USE_HOSTNAME_SUFFIXES = (
     ".home.arpa",
 )
 URL_LIKE_VALUE_PATTERN = re.compile(
-    r"\b(?:https?|wss)(?:://|%3a%2f%2f)[^\s\"'<>]*",
+    r"(?<![A-Za-z0-9])(?:"
+    r"(?:https?|wss)(?:://|:%2f%2f|:%252f%252f|%3a%2f%2f|%253a%252f%252f)"
+    r"|//"
+    r")[^\s\"'<>]*",
     re.IGNORECASE,
 )
+URL_REDACTION_ENCODING_DEPTH = 2
+PUBLIC_DEVTOOLS_NETWORK_EVENTS = (
+    "Network.requestWillBeSent:document",
+    "Network.responseReceived:document",
+    "Network.loadingFinished:document",
+)
+
+
+def _is_safe_public_url_string(value: str) -> bool:
+    """Keep runtime-only URLs safe for argv, query, and redaction boundaries."""
+
+    return value.isascii() and all("!" <= character <= "~" for character in value)
 
 
 def _validated_port(parsed: Any, description: str) -> int | None:
@@ -142,6 +157,10 @@ def _has_noncanonical_path(path: str) -> bool:
     return (
         "\\" in decoded_path
         or any(
+            not character.isascii() or not "!" <= character <= "~"
+            for character in decoded_path
+        )
+        or any(
             component in (".", "..")
             for component in decoded_path.split("/")
         )
@@ -158,11 +177,68 @@ def _canonical_public_url(
     return urlunsplit((scheme, netloc, parsed.path, "", ""))
 
 
+def _url_redaction_variants(value: str) -> tuple[str, ...]:
+    """Return raw, scheme-relative, and bounded escaped URL forms."""
+
+    if not value:
+        return ()
+    forms = {value}
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.scheme and parsed.netloc:
+        forms.add(
+            urlunsplit(
+                ("", parsed.netloc, parsed.path, parsed.query, parsed.fragment)
+            )
+        )
+
+    variants: set[str] = set()
+    for form in forms:
+        frontier = {form}
+        for depth in range(URL_REDACTION_ENCODING_DEPTH + 1):
+            variants.update(frontier)
+            if depth == URL_REDACTION_ENCODING_DEPTH:
+                break
+            encoded: set[str] = set()
+            for candidate in frontier:
+                try:
+                    encoded.add(quote(candidate, safe=""))
+                    encoded.add(quote_plus(candidate, safe=""))
+                except UnicodeError:
+                    continue
+            frontier = encoded
+    return tuple(sorted(variants, key=len, reverse=True))
+
+
+def _configured_public_url_variants(
+    endpoint: str, probe_url: str
+) -> tuple[str, ...]:
+    """Collect every bounded form of the two runtime-only inputs."""
+
+    candidates = {endpoint, probe_url}
+    try:
+        candidates.add(validate_public_wisp_endpoint(endpoint))
+    except M0Error:
+        pass
+    try:
+        candidates.add(validate_public_probe_url(probe_url))
+    except M0Error:
+        pass
+    variants: set[str] = set()
+    for candidate in candidates:
+        variants.update(_url_redaction_variants(candidate))
+    return tuple(sorted(variants, key=len, reverse=True))
+
+
 def validate_public_wisp_endpoint(value: object) -> str:
     """Accept one credential-free external WSS endpoint, never a local relay."""
 
     if not isinstance(value, str) or not value:
         raise M0Error("public WISP endpoint must be a nonempty string")
+    if not _is_safe_public_url_string(value):
+        raise M0Error("public WISP endpoint contains unsupported characters")
     if len(value.encode("utf-8")) > MAXIMUM_URL_BYTES:
         raise M0Error("public WISP endpoint is too long")
     parsed = _split_public_url(value, "public WISP endpoint")
@@ -190,6 +266,8 @@ def validate_public_probe_url(value: object) -> str:
 
     if not isinstance(value, str) or not value:
         raise M0Error("public HTTPS probe URL must be a nonempty string")
+    if not _is_safe_public_url_string(value):
+        raise M0Error("public HTTPS probe URL contains unsupported characters")
     if len(value.encode("utf-8")) > MAXIMUM_URL_BYTES:
         raise M0Error("public HTTPS probe URL is too long")
     parsed = _split_public_url(value, "public HTTPS probe URL")
@@ -242,9 +320,12 @@ def public_smoke_url(
 
     endpoint = validate_public_wisp_endpoint(public_wisp_endpoint)
     probe_url = validate_public_probe_url(public_probe_url)
-    if expected_protocol not in ("h2", "http/1.1"):
+    if type(expected_protocol) is not str or expected_protocol not in (
+        "h2",
+        "http/1.1",
+    ):
         raise M0Error("public HTTPS expected protocol is invalid")
-    if not 100 <= expected_status <= 599:
+    if type(expected_status) is not int or not 100 <= expected_status <= 599:
         raise M0Error("public HTTPS expected status is invalid")
     host, port = server.server_address[:2]
     query = urlencode(
@@ -293,9 +374,117 @@ def _require_int(value: object, description: str) -> int:
 
 
 def _require_string(value: object, description: str) -> str:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise M0Error(f"{description} must be a string")
     return value
+
+
+def _exact_json_value_equal(actual: object, expected: object) -> bool:
+    """Compare JSON-shaped values without Python bool/int coercion."""
+
+    if type(actual) is not type(expected):
+        return False
+    if type(actual) is dict:
+        if set(actual) != set(expected):
+            return False
+        return all(
+            _exact_json_value_equal(actual[key], expected[key])
+            for key in actual
+        )
+    if type(actual) is list:
+        return len(actual) == len(expected) and all(
+            _exact_json_value_equal(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected)
+        )
+    return actual == expected
+
+
+def expected_public_devtools_network_evidence(
+    *, expected_status: int, expected_protocol: str
+) -> dict[str, Any]:
+    """Return the only public-CDP summary that may leave the inner host."""
+
+    if type(expected_status) is not int or not 100 <= expected_status <= 599:
+        raise M0Error("public HTTPS expected status is invalid")
+    if type(expected_protocol) is not str or expected_protocol not in (
+        "h2",
+        "http/1.1",
+    ):
+        raise M0Error("public HTTPS expected protocol is invalid")
+    return {
+        "protocol": 1,
+        "state": "complete",
+        "networkEnabled": True,
+        "documentRequest": True,
+        "responseReceived": True,
+        "loadingFinished": True,
+        "requestIdCorrelated": True,
+        "responseStatus": expected_status,
+        "responseProtocol": expected_protocol,
+        "wispWebSocketOpened": True,
+        "wispHandshakeReady": True,
+        "wispConfirmedStream": True,
+        "events": list(PUBLIC_DEVTOOLS_NETWORK_EVENTS),
+    }
+
+
+def validate_public_devtools_network_evidence(
+    evidence: object,
+    *,
+    expected_status: int,
+    expected_protocol: str,
+) -> dict[str, Any]:
+    """Reject type-coerced or expanded public CDP evidence before comparing."""
+
+    expected_evidence = expected_public_devtools_network_evidence(
+        expected_status=expected_status, expected_protocol=expected_protocol
+    )
+    if type(evidence) is not dict or set(evidence) != set(expected_evidence):
+        raise M0Error("public HTTPS DevTools Network log has an invalid schema")
+    for field in ("protocol", "responseStatus"):
+        if type(evidence[field]) is not int:
+            raise M0Error("public HTTPS DevTools Network log has invalid integers")
+    for field in (
+        "networkEnabled",
+        "documentRequest",
+        "responseReceived",
+        "loadingFinished",
+        "requestIdCorrelated",
+        "wispWebSocketOpened",
+        "wispHandshakeReady",
+        "wispConfirmedStream",
+    ):
+        if type(evidence[field]) is not bool:
+            raise M0Error("public HTTPS DevTools Network log has invalid booleans")
+    for field in ("state", "responseProtocol"):
+        _require_string(
+            evidence[field], "public HTTPS DevTools Network log string field"
+        )
+    events = evidence["events"]
+    if type(events) is not list or any(type(event) is not str for event in events):
+        raise M0Error("public HTTPS DevTools Network log has invalid events")
+    if evidence != expected_evidence:
+        raise M0Error(
+            "public HTTPS DevTools Network log does not contain the bounded "
+            "Chromium CDP and WISP completion trace"
+        )
+    return expected_evidence
+
+
+def public_devtools_network_evidence(
+    result: dict[str, Any],
+    *,
+    expected_status: int,
+    expected_protocol: str,
+) -> dict[str, Any]:
+    """Extract and recheck the fixed, redacted public CDP/WISP evidence."""
+
+    readiness = _require_dict(result.get("readiness"), "public HTTPS readiness")
+    return validate_public_devtools_network_evidence(
+        readiness.get("publicDevtoolsNetwork"),
+        expected_status=expected_status,
+        expected_protocol=expected_protocol,
+    )
 
 
 def validate_public_result(
@@ -309,9 +498,11 @@ def validate_public_result(
 ) -> None:
     """Validate only redacted public-network evidence from the inner browser."""
 
-    canonical_endpoint = validate_public_wisp_endpoint(public_wisp_endpoint)
-    canonical_probe_url = validate_public_probe_url(public_probe_url)
-    if result.get("protocol") != 1:
+    if not isinstance(result, dict):
+        raise M0Error("public HTTPS result must be an object")
+    validate_public_wisp_endpoint(public_wisp_endpoint)
+    validate_public_probe_url(public_probe_url)
+    if _require_int(result.get("protocol"), "public HTTPS result protocol") != 1:
         raise M0Error("public HTTPS result protocol mismatch")
     if result.get("case") != M5_PUBLIC_HTTPS_CASE:
         raise M0Error("public HTTPS result case mismatch")
@@ -320,7 +511,7 @@ def validate_public_result(
     for field in ("crossOriginIsolated", "sharedArrayBuffer", "canvasFocused"):
         if _require_bool(result.get(field), f"public HTTPS {field}") is not True:
             raise M0Error(f"public HTTPS {field} is false")
-    if result.get("versions") != expected_versions:
+    if not _exact_json_value_equal(result.get("versions"), expected_versions):
         raise M0Error("public HTTPS versions mismatch")
     initial_frame = _require_dict(
         result.get("initialFrame"), "public HTTPS initial frame"
@@ -330,8 +521,14 @@ def validate_public_result(
     )
     if (
         initial_frame_id < 1
-        or initial_frame.get("width") != 800
-        or initial_frame.get("height") != 600
+        or _require_int(
+            initial_frame.get("width"), "public HTTPS initial frame width"
+        )
+        != 800
+        or _require_int(
+            initial_frame.get("height"), "public HTTPS initial frame height"
+        )
+        != 600
     ):
         raise M0Error("public HTTPS initial frame is invalid")
     public_frame = _require_dict(
@@ -342,68 +539,60 @@ def validate_public_result(
     )
     if (
         public_frame_id <= initial_frame_id
-        or public_frame.get("width") != 800
-        or public_frame.get("height") != 600
+        or _require_int(
+            public_frame.get("width"), "public HTTPS post-navigation frame width"
+        )
+        != 800
+        or _require_int(
+            public_frame.get("height"), "public HTTPS post-navigation frame height"
+        )
+        != 600
     ):
         raise M0Error("public HTTPS post-navigation frame is invalid")
     navigation_result = _require_dict(
         result.get("navigationResult"), "public HTTPS navigation result"
     )
-    if navigation_result != {"ok": True, "scheme": "https"}:
+    if not _exact_json_value_equal(
+        navigation_result, {"ok": True, "scheme": "https"}
+    ):
         raise M0Error("public HTTPS navigation result is invalid")
     public_devtools_network_enabled = _require_dict(
         result.get("publicDevtoolsNetworkEnabled"),
         "public HTTPS DevTools Network enable",
     )
-    if public_devtools_network_enabled != {
-        "protocol": 1,
-        "state": "enabled",
-        "networkEnabled": True,
-        "events": [],
-    }:
+    if not _exact_json_value_equal(
+        public_devtools_network_enabled,
+        {
+            "protocol": 1,
+            "state": "enabled",
+            "networkEnabled": True,
+            "events": [],
+        },
+    ):
         raise M0Error("public HTTPS DevTools Network.enable is invalid")
     readiness = _require_dict(result.get("readiness"), "public HTTPS readiness")
     navigation = _require_dict(
         readiness.get("navigation"), "public HTTPS navigation evidence"
     )
-    if navigation != {
-        "committed": True,
-        "scheme": "https",
-        "responseCode": expected_status,
-        "connectionProtocol": expected_protocol,
-    }:
+    if not _exact_json_value_equal(
+        navigation,
+        {
+            "committed": True,
+            "scheme": "https",
+            "responseCode": expected_status,
+            "connectionProtocol": expected_protocol,
+        },
+    ):
         raise M0Error("public HTTPS navigation metadata is invalid")
     if readiness.get("firstVisuallyNonEmptyPaint") is not True:
         raise M0Error("public HTTPS page did not paint")
-    if readiness.get("fatalErrors") != []:
+    if not _exact_json_value_equal(readiness.get("fatalErrors"), []):
         raise M0Error("public HTTPS readiness reported fatal errors")
-    public_devtools_network = _require_dict(
-        readiness.get("publicDevtoolsNetwork"),
-        "public HTTPS DevTools Network log",
+    public_devtools_network_evidence(
+        result,
+        expected_status=expected_status,
+        expected_protocol=expected_protocol,
     )
-    if public_devtools_network != {
-        "protocol": 1,
-        "state": "complete",
-        "networkEnabled": True,
-        "documentRequest": True,
-        "responseReceived": True,
-        "loadingFinished": True,
-        "requestIdCorrelated": True,
-        "responseStatus": expected_status,
-        "responseProtocol": expected_protocol,
-        "wispWebSocketOpened": True,
-        "wispHandshakeReady": True,
-        "wispConfirmedStream": True,
-        "events": [
-            "Network.requestWillBeSent:document",
-            "Network.responseReceived:document",
-            "Network.loadingFinished:document",
-        ],
-    }:
-        raise M0Error(
-            "public HTTPS DevTools Network log does not contain the bounded "
-            "Chromium CDP and WISP completion trace"
-        )
     heartbeat = _require_dict(
         readiness.get("heartbeat"), "public HTTPS host heartbeat"
     )
@@ -454,27 +643,31 @@ def validate_public_result(
     if (
         shutdown.get("ok") is not True
         or shutdown.get("complete") is not True
-        or shutdown.get("exitCode") != 0
-        or shutdown.get("runtimeExitCode") != 0
+        or _require_int(
+            shutdown.get("exitCode"), "public HTTPS shutdown exit code"
+        )
+        != 0
+        or _require_int(
+            shutdown.get("runtimeExitCode"),
+            "public HTTPS runtime shutdown exit code",
+        )
+        != 0
     ):
         raise M0Error("public HTTPS shutdown is invalid")
-    if result.get("failedChecks") != [] or result.get("error") is not None:
+    if (
+        not _exact_json_value_equal(result.get("failedChecks"), [])
+        or result.get("error") is not None
+    ):
         raise M0Error("public HTTPS result contains a failed check")
 
     # The outer host receives the raw inputs only long enough to configure
     # Emscripten. Do not let them escape back into a result artifact.
-    serialized = json.dumps(result, ensure_ascii=False, sort_keys=True)
-    for secret in (
-        public_wisp_endpoint,
-        public_probe_url,
-        canonical_endpoint,
-        canonical_probe_url,
-    ):
-        for rendered in (secret, quote(secret, safe=""), quote_plus(secret)):
-            if rendered and rendered in serialized:
-                raise M0Error("public HTTPS result leaked a configured URL")
-    if URL_LIKE_VALUE_PATTERN.search(serialized):
-        raise M0Error("public HTTPS result contains an unredacted URL")
+    _assert_redacted_public_text(
+        json.dumps(result, ensure_ascii=False, sort_keys=True),
+        endpoint=public_wisp_endpoint,
+        probe_url=public_probe_url,
+        description="public HTTPS result",
+    )
 
 
 def wait_for_result(
@@ -499,33 +692,42 @@ def wait_for_result(
 
 def _redact_text(value: str, *, endpoint: str, probe_url: str) -> str:
     result = value
-    candidates = [endpoint, probe_url]
-    try:
-        candidates.append(validate_public_wisp_endpoint(endpoint))
-    except M0Error:
-        pass
-    try:
-        candidates.append(validate_public_probe_url(probe_url))
-    except M0Error:
-        pass
-    for secret in candidates:
-        for rendered in (secret, quote(secret, safe=""), quote_plus(secret)):
-            if rendered:
-                result = result.replace(rendered, "<redacted>")
+    for rendered in _configured_public_url_variants(endpoint, probe_url):
+        result = result.replace(rendered, "<redacted>")
     return URL_LIKE_VALUE_PATTERN.sub("<redacted-url>", result)
+
+
+def _assert_redacted_public_text(
+    value: str,
+    *,
+    endpoint: str,
+    probe_url: str,
+    description: str,
+) -> None:
+    """Ensure no raw or URL-like public-network value crosses a boundary."""
+
+    if any(
+        rendered in value
+        for rendered in _configured_public_url_variants(endpoint, probe_url)
+    ):
+        raise M0Error(f"{description} leaked a configured URL")
+    if URL_LIKE_VALUE_PATTERN.search(value):
+        raise M0Error(f"{description} contains an unredacted URL")
 
 
 def _redact_value(value: Any, *, endpoint: str, probe_url: str) -> Any:
     if isinstance(value, str):
         return _redact_text(value, endpoint=endpoint, probe_url=probe_url)
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [
             _redact_value(item, endpoint=endpoint, probe_url=probe_url)
             for item in value
         ]
     if isinstance(value, dict):
         return {
-            str(key): _redact_value(
+            _redact_text(
+                str(key), endpoint=endpoint, probe_url=probe_url
+            ): _redact_value(
                 item, endpoint=endpoint, probe_url=probe_url
             )
             for key, item in value.items()
@@ -586,9 +788,16 @@ def write_failure_diagnostics(
             result, endpoint=public_wisp_endpoint, probe_url=public_probe_url
         ),
     }
+    serialized = json.dumps(diagnostic, indent=2, sort_keys=True)
+    _assert_redacted_public_text(
+        serialized,
+        endpoint=public_wisp_endpoint,
+        probe_url=public_probe_url,
+        description="public HTTPS failure diagnostics",
+    )
     temporary_path = diagnostic_path.with_suffix(".json.tmp")
     temporary_path.write_text(
-        json.dumps(diagnostic, indent=2, sort_keys=True) + "\n",
+        serialized + "\n",
         encoding="utf-8",
     )
     temporary_path.replace(diagnostic_path)
@@ -767,6 +976,16 @@ def main() -> int:
             public_wisp_endpoint=public_wisp_endpoint,
             public_probe_url=public_probe_url,
         )
+        evidence = public_devtools_network_evidence(
+            result,
+            expected_status=args.expected_status,
+            expected_protocol=args.expected_protocol,
+        )
+        print(
+            f"{SENTINEL}:EVIDENCE "
+            + json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
         print(f"{SENTINEL}:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
@@ -798,7 +1017,7 @@ def main() -> int:
                 file=sys.stderr,
                 flush=True,
             )
-        except (OSError, TypeError, ValueError) as diagnostic_error:
+        except (M0Error, OSError, TypeError, ValueError) as diagnostic_error:
             print(
                 f"{SENTINEL}:DIAGNOSTICS_FAIL reason={diagnostic_error}",
                 file=sys.stderr,

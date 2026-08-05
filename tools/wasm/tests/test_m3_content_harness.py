@@ -325,6 +325,29 @@ class M3ServerTest(unittest.TestCase):
             m3_content_server.accept_result(self.state, payload)
         )
 
+    def test_result_payload_rejects_duplicate_keys_and_bool_protocol(self) -> None:
+        valid_payload = (
+            b'{"protocol":1,"case":"wisp_public_https_m5","status":"pass"}'
+        )
+        self.assertEqual(
+            m3_content_server._parse_result_payload(valid_payload),
+            {
+                "protocol": 1,
+                "case": "wisp_public_https_m5",
+                "status": "pass",
+            },
+        )
+        for payload in (
+            b'{"protocol":true,"case":"wisp_public_https_m5"}',
+            (
+                b'{"protocol":1,"case":"wisp_public_https_m5",'
+                b'"readiness":{"publicDevtoolsNetwork":{'
+                b'"responseStatus":201,"responseStatus":200}}}'
+            ),
+        ):
+            with self.subTest(payload=payload):
+                self.assertIsNone(m3_content_server._parse_result_payload(payload))
+
 
 class M3ResultValidationTest(unittest.TestCase):
     @classmethod

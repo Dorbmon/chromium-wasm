@@ -180,6 +180,38 @@ def is_supported_result_case(value: object) -> bool:
     return isinstance(value, str) and value in M3_RESULT_CASES
 
 
+def _reject_duplicate_result_object_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    """Keep JSON result validation from silently collapsing duplicate fields."""
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON result object key")
+        result[key] = value
+    return result
+
+
+def _parse_result_payload(payload: bytes) -> dict[str, Any] | None:
+    """Decode one bounded host result before it enters the one-shot queue."""
+
+    try:
+        result = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_result_object_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if (
+        not isinstance(result, dict)
+        or type(result.get("protocol")) is not int
+        or result.get("protocol") != M3_PROTOCOL
+    ):
+        return None
+    return result
+
+
 def _artifact_for_request(
     state: M3ServerState, request_path: str
 ) -> Path | None:
@@ -299,16 +331,8 @@ class M3RequestHandler(BaseHTTPRequestHandler):
         if length <= 0 or length > M3_MAX_RESULT_BYTES:
             self.send_error(413)
             return
-        try:
-            result = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self.send_error(400)
-            return
-        if (
-            not isinstance(result, dict)
-            or result.get("protocol") != M3_PROTOCOL
-            or not is_supported_result_case(result.get("case"))
-        ):
+        result = _parse_result_payload(self.rfile.read(length))
+        if result is None or not is_supported_result_case(result.get("case")):
             self.send_error(400)
             return
         if not accept_result(self.state, result):
