@@ -593,6 +593,16 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
                 public_smoke.public_artifact_provenance(out_dir), artifacts
             )
 
+    def test_public_runner_uses_the_fontless_immutable_host_mode(self) -> None:
+        runner = source("tools/wasm/run_m5_public_https_smoke.py")
+        create_host_server = runner.split(
+            'stage = "create_host_server"', 1
+        )[1].split("server_thread = threading.Thread", 1)[0]
+
+        self.assertIn("artifact_snapshots=artifact_snapshots", create_host_server)
+        self.assertIn("static_snapshots=static_snapshots", create_host_server)
+        self.assertIn("require_ahem_font=False", create_host_server)
+
     def test_expected_public_provenance_rejects_duplicate_or_oversized_input(
         self,
     ) -> None:

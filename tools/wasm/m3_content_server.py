@@ -427,6 +427,7 @@ def create_m3_server(
     verbose: bool = False,
     artifact_snapshots: dict[str, bytes] | None = None,
     static_snapshots: dict[str, bytes] | None = None,
+    require_ahem_font: bool = True,
 ) -> M3HTTPServer:
     resolved_out_dir = out_dir.resolve()
     required_artifact_names = (
@@ -458,7 +459,17 @@ def create_m3_server(
         )
     ):
         raise M0Error("M3 host snapshots are invalid")
-    if not M3_AHEM_FONT.is_file():
+    if type(require_ahem_font) is not bool:
+        raise M0Error("M3 Ahem font requirement is invalid")
+    if not require_ahem_font and (
+        set(snapshots) != set(required_artifact_names)
+        or set(static_snapshot_values) != M3_HOST_SNAPSHOT_PATHS
+    ):
+        raise M0Error(
+            "M3 Ahem font may be omitted only for complete immutable "
+            "artifact and host snapshots"
+        )
+    if require_ahem_font and not M3_AHEM_FONT.is_file():
         raise M0Error(f"M3 Ahem font is missing: {M3_AHEM_FONT}")
     state = M3ServerState(
         token=token,

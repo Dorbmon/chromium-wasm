@@ -1270,6 +1270,7 @@ def main() -> int:
             module_name=args.module_name,
             artifact_snapshots=artifact_snapshots,
             static_snapshots=static_snapshots,
+            require_ahem_font=False,
         )
         server_thread = threading.Thread(
             target=server.serve_forever,

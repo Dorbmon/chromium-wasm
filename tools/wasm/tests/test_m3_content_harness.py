@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 
 
@@ -397,6 +398,61 @@ class M3ServerTest(unittest.TestCase):
                 self.results,
                 static_snapshots={"/__m3__/": b"partial host snapshot"},
             )
+
+    def test_server_omits_ahem_only_for_complete_immutable_snapshots(
+        self,
+    ) -> None:
+        artifact_snapshots = {
+            "content_shell_wasm.js": b"immutable JavaScript",
+            "content_shell_wasm.wasm": b"immutable Wasm",
+        }
+        static_snapshots = {
+            "/": b"immutable host HTML",
+            "/__m3__/": b"immutable host HTML",
+            "/__m3__/content_shell_host.js": b"immutable host JavaScript",
+        }
+        missing_font = self.out_dir / "missing-Ahem.woff2"
+
+        with mock.patch.object(
+            m3_content_server, "M3_AHEM_FONT", missing_font
+        ):
+            with self.assertRaisesRegex(M0Error, "M3 Ahem font is missing"):
+                m3_content_server.create_m3_server(
+                    "127.0.0.1",
+                    0,
+                    self.out_dir,
+                    "test-token",
+                    self.results,
+                )
+            with self.assertRaisesRegex(
+                M0Error, "complete immutable artifact and host snapshots"
+            ):
+                m3_content_server.create_m3_server(
+                    "127.0.0.1",
+                    0,
+                    self.out_dir,
+                    "test-token",
+                    self.results,
+                    require_ahem_font=False,
+                )
+            with mock.patch.object(
+                m3_content_server, "M3HTTPServer", autospec=True
+            ) as server_class:
+                server = m3_content_server.create_m3_server(
+                    "127.0.0.1",
+                    0,
+                    self.out_dir,
+                    "test-token",
+                    self.results,
+                    artifact_snapshots=artifact_snapshots,
+                    static_snapshots=static_snapshots,
+                    require_ahem_font=False,
+                )
+
+        self.assertIs(server, server_class.return_value)
+        state = server_class.call_args.args[1]
+        self.assertEqual(state.artifact_snapshots, artifact_snapshots)
+        self.assertEqual(state.static_snapshots, static_snapshots)
 
     def test_result_endpoint_is_tokened_and_one_shot(self) -> None:
         payload = {
