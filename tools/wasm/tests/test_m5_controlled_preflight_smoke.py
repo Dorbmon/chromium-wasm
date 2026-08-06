@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 import copy
+from collections import deque
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -101,6 +104,9 @@ def passing_result() -> dict[str, object]:
         "logs": {
             "host": [
                 "initialize:wisp-configured",
+                "initialize:factory-resolved",
+                "navigation:requested:data",
+                "m5:controlled-preflight-devtools-network:start-requested",
                 "m5:controlled-preflight-devtools-network:enabled",
                 "navigation:requested:m5-controlled-preflight",
                 "navigation:committed:m5-controlled-preflight",
@@ -155,7 +161,425 @@ def passing_relay_status() -> dict[str, object]:
     }
 
 
+def debug_cdp_snapshot() -> dict[str, object]:
+    return {
+        "state": "captured",
+        "page": {
+            "ready_state": "complete",
+            "root_state": "running",
+            "cross_origin_isolated": True,
+            "shared_array_buffer": True,
+            "host_present": True,
+            "canvas_present": True,
+            "canvas_focused": True,
+        },
+        "host": {
+            "logs_available": True,
+            "host_log_count": 5,
+            "stdout_line_count": 1,
+            "stderr_line_count": 2,
+            "fatal_log_count": 0,
+            "markers": {
+                "initialize_start": True,
+                "wisp_configured": True,
+                "runtime_initialized": True,
+                "factory_resolved": True,
+                "initialize_complete": False,
+            },
+            "stdout_markers": {
+                "loading_workers": 1,
+                "worker_error": 0,
+                "wasm": 1,
+                "abort": 0,
+                "error": 0,
+            },
+            "stderr_markers": {
+                "loading_workers": 0,
+                "worker_error": 1,
+                "wasm": 0,
+                "abort": 0,
+                "error": 1,
+            },
+            "phases": {
+                "resize": True,
+                "bootstrap_requested": True,
+                "network_preparation_requested": True,
+                "network_enabled": True,
+                "preflight_requested": False,
+                "preflight_committed": False,
+                "shutdown_accepted": False,
+                "shutdown_complete": False,
+                "shutdown_failed": False,
+                "process_exit": False,
+                "runtime_exit": False,
+            },
+            "fatal_markers": {
+                "controlled_preflight": 1,
+                "devtools_network": 1,
+                "recorder_start_failed": 0,
+                "agent_host_closed": 0,
+                "gateway_denial": 0,
+                "primary_frame_not_live": 0,
+                "wisp_evidence_window_rejected": 0,
+                "wisp_initial_diagnostics_not_clean": 0,
+                "early_exit": 0,
+                "shutdown": 0,
+                "wisp": 0,
+                "socket": 0,
+                "uncaught": 0,
+                "invalid": 1,
+            },
+            "readiness": {
+                "available": False,
+                "runtime_initialized": False,
+                "shell_ready": False,
+                "surface_ready": False,
+                "navigation_committed": False,
+                "first_visually_non_empty_paint": False,
+                "fatal_error_count": 0,
+                "frame_present": False,
+            },
+        },
+        "resources": {
+            "wasm": 1,
+            "javascript": 2,
+            "blob": 1,
+            "other": 0,
+        },
+    }
+
+
+class FakeDebugBrowser:
+    def __init__(self, return_code: int | None = None) -> None:
+        self.return_code = return_code
+
+    def poll(self) -> int | None:
+        return self.return_code
+
+
+class FakeDebugClient:
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.closed = False
+        self.expression = ""
+
+    def evaluate(self, expression: str) -> object:
+        self.expression = expression
+        return self.value
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeProcess:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.stdout = object()
+        self.stderr = object()
+
+    def poll(self) -> None:
+        return None
+
+
+class FakeThread:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    def start(self) -> None:
+        pass
+
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
+
+
+class FakeRunningServer:
+    server_address = ("127.0.0.1", 38123)
+
+    def serve_forever(self) -> None:
+        pass
+
+    def shutdown(self) -> None:
+        pass
+
+    def server_close(self) -> None:
+        pass
+
+
 class M5ControlledPreflightSmokeTest(unittest.TestCase):
+    def test_shared_browser_command_captures_worker_diagnostics(self) -> None:
+        command = run_m5_wisp_smoke.m5_browser_command(
+            Path("/test/browser"),
+            "/test/profile",
+            "http://127.0.0.1:38123/__m3__/",
+            no_sandbox=True,
+        )
+
+        self.assertIn("--enable-logging=stderr", command)
+        self.assertIn("--no-sandbox", command)
+        self.assertIn(
+            f"--window-size={run_m5_wisp_smoke.M5_BROWSER_WINDOW_SIZE}",
+            command,
+        )
+
+    def test_debug_cdp_switches_are_loopback_only(self) -> None:
+        switches = controlled_smoke.controlled_preflight_debug_cdp_switches(40123)
+
+        self.assertEqual(
+            switches,
+            [
+                "--remote-allow-origins=http://localhost",
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=40123",
+            ],
+        )
+        self.assertNotIn("0.0.0.0", " ".join(switches))
+        with self.assertRaises(M0Error):
+            controlled_smoke.controlled_preflight_debug_cdp_switches(0)
+
+    def test_debug_cdp_snapshot_is_strictly_redacted(self) -> None:
+        raw = debug_cdp_snapshot()
+        raw["unrecognized"] = "wss://private.invalid/secret"
+        raw["page"]["ready_state"] = "https://private.invalid/secret"  # type: ignore[index]
+        raw["host"]["host_log_count"] = 9999  # type: ignore[index]
+        raw["host"]["stdout_markers"]["unrecognized"] = (  # type: ignore[index]
+            "https://private.invalid/secret"
+        )
+
+        snapshot = controlled_smoke.sanitize_controlled_preflight_debug_snapshot(raw)
+        serialized = json.dumps(snapshot, sort_keys=True)
+
+        self.assertEqual(snapshot["state"], "captured")
+        self.assertEqual(snapshot["page"]["ready_state"], "other")  # type: ignore[index]
+        self.assertEqual(
+            snapshot["host"]["host_log_count"],  # type: ignore[index]
+            controlled_smoke.DEBUG_CDP_MAXIMUM_COUNT,
+        )
+        self.assertNotIn("://", serialized)
+        self.assertNotIn("private.invalid", serialized)
+
+    def test_debug_cdp_capture_closes_client_and_preserves_only_schema(self) -> None:
+        client = FakeDebugClient(debug_cdp_snapshot())
+        with mock.patch.object(
+            controlled_smoke, "wait_for_page_client", return_value=client
+        ) as wait_for_client:
+            snapshot = controlled_smoke.capture_controlled_preflight_debug_snapshot(
+                browser=FakeDebugBrowser(),
+                debug_port=40123,
+                host_url_prefix="http://127.0.0.1:38123/__m3__/",
+        )
+
+        self.assertTrue(client.closed)
+        self.assertIn("await host.logs()", client.expression)
+        self.assertIn("await host.readiness()", client.expression)
+        self.assertEqual(snapshot["state"], "captured")
+        self.assertTrue(snapshot["host"]["markers"]["factory_resolved"])  # type: ignore[index]
+        self.assertEqual(wait_for_client.call_args.args[:2], (40123, "http://127.0.0.1:38123/__m3__/"))
+
+    def test_debug_cdp_capture_classifies_target_unavailability(self) -> None:
+        with mock.patch.object(
+            controlled_smoke,
+            "wait_for_page_client",
+            side_effect=M0Error("unavailable: ws://private.invalid/"),
+        ):
+            snapshot = controlled_smoke.capture_controlled_preflight_debug_snapshot(
+                browser=FakeDebugBrowser(),
+                debug_port=40123,
+                host_url_prefix="http://127.0.0.1:38123/__m3__/",
+            )
+
+        self.assertEqual(snapshot, {"state": "target_unavailable"})
+
+    def test_failure_diagnostics_store_only_the_redacted_cdp_subtree(self) -> None:
+        raw = debug_cdp_snapshot()
+        raw["page"]["root_state"] = "wss://private.invalid/secret"  # type: ignore[index]
+        snapshot = controlled_smoke.sanitize_controlled_preflight_debug_snapshot(raw)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = controlled_smoke.write_failure_diagnostics(
+                Path(temporary),
+                stage="wait_for_result",
+                error=M0Error("timeout"),
+                result=None,
+                relay_status=None,
+                relay_capture_state="unavailable",
+                browser_stderr=deque(),
+                relay_stderr=deque(),
+                debug_cdp=snapshot,
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["debug_cdp"], snapshot)
+        self.assertNotIn("://", json.dumps(payload["debug_cdp"]))
+        self.assertEqual(payload["relay_status"], {"state": "unavailable"})
+
+    def test_failure_diagnostics_redact_relay_status(self) -> None:
+        relay_status = passing_relay_status()
+        relay_status["requestedDestinations"].append(  # type: ignore[index]
+            {"hostname": "private.invalid", "port": 5678}
+        )
+        relay_status["transcript"].append(  # type: ignore[index]
+            {
+                "sequence": 7,
+                "event": "wss://private.invalid/secret",
+                "destination": "private.invalid:5678",
+            }
+        )
+        relay_status["h2Requests"] = {  # type: ignore[index]
+            "protocol": "https://private.invalid/secret",
+            "count": 9999,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = controlled_smoke.write_failure_diagnostics(
+                Path(temporary),
+                stage="wait_for_result",
+                error=M0Error("timeout"),
+                result=None,
+                relay_status=relay_status,
+                relay_capture_state="captured",
+                browser_stderr=deque(),
+                relay_stderr=deque(),
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        snapshot = payload["relay_status"]
+        serialized = json.dumps(snapshot, sort_keys=True)
+        self.assertEqual(snapshot["state"], "captured")
+        self.assertEqual(snapshot["h2"]["protocol"], "other")
+        self.assertEqual(
+            snapshot["h2"]["request_count"],  # type: ignore[index]
+            controlled_smoke.DEBUG_CDP_MAXIMUM_COUNT,
+        )
+        self.assertEqual(
+            snapshot["requested_destinations"]["a_test_443_count"],  # type: ignore[index]
+            1,
+        )
+        self.assertNotIn("://", serialized)
+        self.assertNotIn("private.invalid", serialized)
+
+    def test_main_captures_relay_before_failure_cleanup(self) -> None:
+        relay = FakeProcess("relay")
+        browser = FakeProcess("browser")
+        server = FakeRunningServer()
+        events: list[str] = []
+        captured_diagnostics: dict[str, object] = {}
+
+        def fake_fetch_relay_transcript(
+            transcript_url: str, *, timeout_seconds: float
+        ) -> dict[str, object]:
+            self.assertEqual(transcript_url, relay_ready().transcript_url)
+            self.assertEqual(timeout_seconds, 2.0)
+            events.append("fetch_relay")
+            return passing_relay_status()
+
+        def fake_stop_browser(process: FakeProcess) -> None:
+            events.append(f"stop_{process.name}")
+
+        def fake_write_failure_diagnostics(
+            diagnostics_dir: Path, **kwargs: object
+        ) -> Path:
+            del diagnostics_dir
+            events.append("write_diagnostics")
+            captured_diagnostics.update(kwargs)
+            return Path("/tmp/m5-controlled-preflight-failure.json")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "run_m5_controlled_preflight_smoke.py",
+                        "--out-dir",
+                        temporary,
+                        "--timeout",
+                        "1",
+                    ],
+                ),
+                mock.patch.object(controlled_smoke, "load_manifest", return_value={}),
+                mock.patch.object(
+                    controlled_smoke, "checked_output", return_value="head"
+                ),
+                mock.patch.object(
+                    controlled_smoke, "manifest_versions", return_value=VERSIONS
+                ),
+                mock.patch.object(controlled_smoke, "print_context"),
+                mock.patch.object(
+                    controlled_smoke,
+                    "find_browser",
+                    return_value=(Path("/browser"), "browser-version"),
+                ),
+                mock.patch.object(
+                    controlled_smoke, "find_node", return_value=Path("/node")
+                ),
+                mock.patch.object(
+                    controlled_smoke, "verify_no_private_key_pem_artifacts"
+                ),
+                mock.patch.object(
+                    controlled_smoke, "create_m3_server", return_value=server
+                ),
+                mock.patch.object(
+                    controlled_smoke.threading, "Thread", FakeThread
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "m5_host_origin",
+                    return_value="http://127.0.0.1:38123",
+                ),
+                mock.patch.object(
+                    controlled_smoke, "relay_command", return_value=["relay"]
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "wait_for_relay_ready",
+                    return_value=relay_ready(),
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "controlled_preflight_smoke_url",
+                    return_value="http://127.0.0.1:38123/__m3__/?test",
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "m5_browser_command",
+                    return_value=["browser"],
+                ),
+                mock.patch.object(
+                    controlled_smoke.subprocess,
+                    "Popen",
+                    side_effect=[relay, browser],
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "wait_for_result",
+                    side_effect=M0Error("timeout"),
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "fetch_relay_transcript",
+                    side_effect=fake_fetch_relay_transcript,
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "stop_browser",
+                    side_effect=fake_stop_browser,
+                ),
+                mock.patch.object(
+                    controlled_smoke,
+                    "write_failure_diagnostics",
+                    side_effect=fake_write_failure_diagnostics,
+                ),
+            ):
+                self.assertEqual(controlled_smoke.main(), 1)
+
+        self.assertLess(events.index("fetch_relay"), events.index("stop_browser"))
+        self.assertLess(
+            events.index("fetch_relay"), events.index("stop_relay")
+        )
+        self.assertEqual(captured_diagnostics["relay_capture_state"], "captured")
+        self.assertEqual(
+            captured_diagnostics["relay_status"], passing_relay_status()
+        )
+
     def test_smoke_url_has_only_transport_and_metadata_inputs(self) -> None:
         url = controlled_smoke.controlled_preflight_smoke_url(
             FakeServer(), "result-token", VERSIONS, relay_ready=relay_ready()

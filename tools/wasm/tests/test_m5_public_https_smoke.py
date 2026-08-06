@@ -121,6 +121,8 @@ def passing_result() -> dict[str, object]:
         "logs": {
             "host": [
                 "initialize:wisp-configured",
+                "navigation:requested:data",
+                "m5:public-devtools-network:start-requested",
                 "m5:public-devtools-network:enabled",
                 "navigation:requested:m5-public-https",
                 "navigation:committed:m5-public-https",

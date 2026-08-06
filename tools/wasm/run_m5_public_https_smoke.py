@@ -942,6 +942,8 @@ def validate_public_result(
         raise M0Error("public HTTPS host logs must be an array")
     for marker in (
         "initialize:wisp-configured",
+        "navigation:requested:data",
+        "m5:public-devtools-network:start-requested",
         "m5:public-devtools-network:enabled",
         "navigation:requested:m5-public-https",
         "navigation:committed:m5-public-https",
@@ -952,6 +954,8 @@ def validate_public_result(
             raise M0Error(f"public HTTPS host logs need one {marker!r}")
     if not (
         host_logs.index("initialize:wisp-configured")
+        < host_logs.index("navigation:requested:data")
+        < host_logs.index("m5:public-devtools-network:start-requested")
         < host_logs.index("m5:public-devtools-network:enabled")
         < host_logs.index("navigation:requested:m5-public-https")
         < host_logs.index("navigation:committed:m5-public-https")

@@ -765,6 +765,18 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     kControlledPreflight,
   };
 
+  // Keep failed test-only preflight starts diagnosable without surfacing a
+  // destination, endpoint, CDP payload, or transport state to the host.
+  enum class PreflightStartFailure {
+    kNone,
+    kPreconditionsNotMet,
+    kDeniedUrlInvalid,
+    kPrimaryFrameNotLive,
+    kScriptConstructionFailed,
+    kWispEvidenceWindowRejected,
+    kWispInitialDiagnosticsNotClean,
+  };
+
   explicit M5PublicDevToolsNetworkRecorder(Lane lane = Lane::kPublic)
       : lane_(lane) {}
 
@@ -799,11 +811,14 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
                                    const GURL& expected_document_url,
                                    base::OnceClosure continue_navigation) {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    last_preflight_start_failure_ = PreflightStartFailure::kNone;
     const int port = expected_document_url.EffectiveIntPort();
     if (state_ != State::kEnabled ||
         phase_ != Phase::kReadyForPreflight || preflight_started_ ||
         !web_contents || !continue_navigation ||
         !IsExpectedDocumentUrl(expected_document_url) || port != 443) {
+      last_preflight_start_failure_ =
+          PreflightStartFailure::kPreconditionsNotMet;
       return false;
     }
     GURL::Replacements replacements;
@@ -818,10 +833,13 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
         denied_url.EffectiveIntPort() != GatewayDeniedPort() ||
         denied_url.path() != GatewayDeniedPath() ||
         denied_url.has_query() || denied_url.has_ref()) {
+      last_preflight_start_failure_ = PreflightStartFailure::kDeniedUrlInvalid;
       return false;
     }
     RenderFrameHost* frame = web_contents->GetPrimaryMainFrame();
     if (!frame || !frame->IsRenderFrameLive()) {
+      last_preflight_start_failure_ =
+          PreflightStartFailure::kPrimaryFrameNotLive;
       return false;
     }
     base::ListValue arguments;
@@ -829,13 +847,18 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     base::DictValue options;
     options.Set("cache", "no-store");
     options.Set("credentials", "omit");
-    options.Set("mode", "no-cors");
+    // Blink requires no-cors Fetches to use redirect: "follow". Keep this
+    // simple GET CORS-mode request so the fixed native redirect containment
+    // below remains in effect while the gateway denial is still reached.
+    options.Set("mode", "cors");
     options.Set("redirect", "error");
     arguments.Append(std::move(options));
     const std::optional<std::string> serialized_arguments =
         base::WriteJson(arguments);
     if (!serialized_arguments ||
         serialized_arguments->size() > kMaximumM5PublicPreflightScriptBytes) {
+      last_preflight_start_failure_ =
+          PreflightStartFailure::kScriptConstructionFailed;
       return false;
     }
     std::string script = "void globalThis.fetch.apply(globalThis,";
@@ -844,11 +867,15 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
     if (script.size() > kMaximumM5PublicPreflightScriptBytes ||
         !net::BeginWasmWispTransportDiagnostics(
             expected_document_url.host(), static_cast<uint16_t>(port))) {
+      last_preflight_start_failure_ =
+          PreflightStartFailure::kWispEvidenceWindowRejected;
       return false;
     }
     const std::optional<net::WasmWispTransportDiagnostics> initial_diagnostics =
         net::GetWasmWispTransportDiagnostics();
     if (!initial_diagnostics || initial_diagnostics->completion_flags != 0) {
+      last_preflight_start_failure_ =
+          PreflightStartFailure::kWispInitialDiagnosticsNotClean;
       return false;
     }
     expected_document_url_ = expected_document_url;
@@ -861,6 +888,26 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
                                      base::NullCallback(),
                                      ISOLATED_WORLD_ID_GLOBAL);
     return true;
+  }
+
+  std::string_view LastPreflightStartFailure() const {
+    switch (last_preflight_start_failure_) {
+      case PreflightStartFailure::kNone:
+        return "none";
+      case PreflightStartFailure::kPreconditionsNotMet:
+        return "preconditions-not-met";
+      case PreflightStartFailure::kDeniedUrlInvalid:
+        return "denied-url-invalid";
+      case PreflightStartFailure::kPrimaryFrameNotLive:
+        return "primary-frame-not-live";
+      case PreflightStartFailure::kScriptConstructionFailed:
+        return "script-construction-failed";
+      case PreflightStartFailure::kWispEvidenceWindowRejected:
+        return "wisp-evidence-window-rejected";
+      case PreflightStartFailure::kWispInitialDiagnosticsNotClean:
+        return "wisp-initial-diagnostics-not-clean";
+    }
+    return "invalid";
   }
 
  private:
@@ -1236,6 +1283,8 @@ class M5PublicDevToolsNetworkRecorder final : public DevToolsAgentHostClient {
   bool denied_request_seen_ = false;
   bool denied_loading_failed_ = false;
   bool wisp_evidence_window_started_ = false;
+  PreflightStartFailure last_preflight_start_failure_ =
+      PreflightStartFailure::kNone;
   GURL expected_document_url_;
   GURL expected_denied_url_;
   std::string request_id_;
@@ -2295,18 +2344,90 @@ void LoadM5NetworkUrlOnUiThread(GURL url) {
   LoadUrlOnUiThread(std::move(url));
 }
 
+void PrepareM5ControlledPreflightDevToolsNetworkRecorderOnUiThread() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  Shell* shell = GetSingleShell();
+  if (!shell || state.m5_controlled_preflight_devtools_network_recorder) {
+    ReportFatal(
+        "could not prepare the M5 controlled preflight DevTools Network "
+        "recorder");
+    return;
+  }
+  if (!shell->web_contents()->GetLastCommittedURL().SchemeIs(
+          url::kDataScheme)) {
+    ReportFatal(
+        "M5 controlled preflight DevTools Network recorder requires a "
+        "committed data bootstrap");
+    return;
+  }
+  RenderFrameHost* frame = shell->web_contents()->GetPrimaryMainFrame();
+  if (!frame || !frame->IsRenderFrameLive()) {
+    ReportFatal(
+        "M5 controlled preflight DevTools Network recorder requires a live "
+        "primary frame");
+    return;
+  }
+
+  auto recorder = std::make_unique<M5PublicDevToolsNetworkRecorder>(
+      M5PublicDevToolsNetworkRecorder::Lane::kControlledPreflight);
+  if (!recorder->Start(shell->web_contents())) {
+    ReportFatal(
+        "could not start the M5 controlled preflight DevTools Network "
+        "recorder");
+    return;
+  }
+  state.m5_controlled_preflight_devtools_network_recorder =
+      std::move(recorder);
+}
+
+void PrepareM5PublicDevToolsNetworkRecorderOnUiThread() {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  WasmHostState& state = GetWasmHostState();
+  Shell* shell = GetSingleShell();
+  if (!shell || state.m5_public_devtools_network_recorder) {
+    ReportFatal("could not prepare the M5 public DevTools Network recorder");
+    return;
+  }
+  if (!shell->web_contents()->GetLastCommittedURL().SchemeIs(
+          url::kDataScheme)) {
+    ReportFatal(
+        "M5 public DevTools Network recorder requires a committed data "
+        "bootstrap");
+    return;
+  }
+  RenderFrameHost* frame = shell->web_contents()->GetPrimaryMainFrame();
+  if (!frame || !frame->IsRenderFrameLive()) {
+    ReportFatal(
+        "M5 public DevTools Network recorder requires a live primary frame");
+    return;
+  }
+
+  auto recorder = std::make_unique<M5PublicDevToolsNetworkRecorder>();
+  if (!recorder->Start(shell->web_contents())) {
+    ReportFatal("could not start the M5 public DevTools Network recorder");
+    return;
+  }
+  state.m5_public_devtools_network_recorder = std::move(recorder);
+}
+
 void LoadM5ControlledPreflightOnUiThread() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   WasmHostState& state = GetWasmHostState();
   Shell* shell = GetSingleShell();
   GURL expected_url("https://a.test/m5/local-gateway-probe");
   if (!IsM5ControlledPreflightUrl(expected_url) || !shell ||
-      !state.m5_controlled_preflight_devtools_network_recorder ||
-      !state.m5_controlled_preflight_devtools_network_recorder
-           ->BeginGatewayDenialPreflight(
-               shell->web_contents(), expected_url,
-               base::BindOnce(&LoadUrlOnUiThread, std::move(expected_url)))) {
+      !state.m5_controlled_preflight_devtools_network_recorder) {
     ReportFatal("could not start the M5 controlled gateway-denial preflight");
+    return;
+  }
+  M5PublicDevToolsNetworkRecorder* recorder =
+      state.m5_controlled_preflight_devtools_network_recorder.get();
+  if (!recorder->BeginGatewayDenialPreflight(
+          shell->web_contents(), expected_url,
+          base::BindOnce(&LoadUrlOnUiThread, expected_url))) {
+    ReportFatal("could not start the M5 controlled gateway-denial preflight: " +
+                std::string(recorder->LastPreflightStartFailure()));
   }
 }
 
@@ -2315,12 +2436,17 @@ void LoadM5PublicUrlOnUiThread(GURL url) {
   WasmHostState& state = GetWasmHostState();
   Shell* shell = GetSingleShell();
   const GURL expected_url(url);
-  if (!shell || !state.m5_public_devtools_network_recorder ||
-      !state.m5_public_devtools_network_recorder->BeginGatewayDenialPreflight(
-          shell->web_contents(), expected_url,
-          base::BindOnce(&LoadUrlOnUiThread, std::move(url)))) {
+  if (!shell || !state.m5_public_devtools_network_recorder) {
     ReportFatal("could not start the M5 public gateway-denial preflight");
     return;
+  }
+  M5PublicDevToolsNetworkRecorder* recorder =
+      state.m5_public_devtools_network_recorder.get();
+  if (!recorder->BeginGatewayDenialPreflight(
+          shell->web_contents(), expected_url,
+          base::BindOnce(&LoadUrlOnUiThread, expected_url))) {
+    ReportFatal("could not start the M5 public gateway-denial preflight: " +
+                std::string(recorder->LastPreflightStartFailure()));
   }
 }
 
@@ -2423,29 +2549,6 @@ void InitializeWasmHostApi() {
     if (!state.m5_download_recorder->Start(shell->web_contents())) {
       state.m5_download_recorder.reset();
       ReportFatal("could not start the M5 DownloadManager recorder");
-      return;
-    }
-  }
-  if (IsWasmM5PublicNetworkTestModeEnabled()) {
-    state.m5_public_devtools_network_recorder =
-        std::make_unique<M5PublicDevToolsNetworkRecorder>();
-    if (!state.m5_public_devtools_network_recorder->Start(
-            shell->web_contents())) {
-      state.m5_public_devtools_network_recorder.reset();
-      ReportFatal("could not start the M5 public DevTools Network recorder");
-      return;
-    }
-  }
-  if (IsWasmM5ControlledPreflightTestModeEnabled()) {
-    state.m5_controlled_preflight_devtools_network_recorder =
-        std::make_unique<M5PublicDevToolsNetworkRecorder>(
-            M5PublicDevToolsNetworkRecorder::Lane::kControlledPreflight);
-    if (!state.m5_controlled_preflight_devtools_network_recorder->Start(
-            shell->web_contents())) {
-      state.m5_controlled_preflight_devtools_network_recorder.reset();
-      ReportFatal(
-          "could not start the M5 controlled preflight DevTools Network "
-          "recorder");
       return;
     }
   }
@@ -2684,6 +2787,27 @@ EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_run_m5_controlled_preflight() {
   }
   return content::PostHostCommand(
              base::BindOnce(&content::LoadM5ControlledPreflightOnUiThread))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int
+chromium_wasm_host_prepare_m5_controlled_preflight() {
+  if (!content::IsWasmM5ControlledPreflightTestModeEnabled()) {
+    return 0;
+  }
+  return content::PostHostCommand(base::BindOnce(
+             &content::PrepareM5ControlledPreflightDevToolsNetworkRecorderOnUiThread))
+             ? 1
+             : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int chromium_wasm_host_prepare_m5_public_url() {
+  if (!content::IsWasmM5PublicNetworkTestModeEnabled()) {
+    return 0;
+  }
+  return content::PostHostCommand(base::BindOnce(
+             &content::PrepareM5PublicDevToolsNetworkRecorderOnUiThread))
              ? 1
              : 0;
 }

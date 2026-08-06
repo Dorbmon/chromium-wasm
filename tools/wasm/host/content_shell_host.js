@@ -47,6 +47,12 @@ const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
 const M5_CONTROLLED_PREFLIGHT_FIXTURE =
   "chromium-wasm-m5-controlled-preflight-v1";
 const M5_PUBLIC_HTTPS_FIXTURE = "chromium-wasm-m5-public-https-v1";
+// A fresh Content Shell has an initial about:blank primary frame that may not
+// yet be renderer-live. Both M5 gateway preflight lanes inject their bounded
+// Blink fetch through that frame, so commit this inert, fixed document first.
+// It cannot create a WISP connection or carry a test-controlled destination.
+const M5_GATEWAY_PREFLIGHT_BOOTSTRAP_DATA_URL =
+  "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Cmeta%20charset%3Dutf-8%3E%3Ctitle%3EM5%20bootstrap%3C%2Ftitle%3E";
 const M5_NETWORK_TEST_HOSTNAME = "a.test";
 const M5_NETWORK_TEST_PATH_PREFIX = "/m5/";
 const M5_PLAINTEXT_HTTP_CONTROL_PATH = "/m5/plaintext-control";
@@ -1870,6 +1876,20 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function awaitM5GatewayPreflightBootstrap(host, deadline) {
+  await host.loadURL(M5_GATEWAY_PREFLIGHT_BOOTSTRAP_DATA_URL);
+  while (performance.now() < deadline) {
+    const readiness = await host.readiness();
+    if (readiness.navigation?.committed === true &&
+        readiness.navigation?.scheme === "data" &&
+        readiness.fatalErrors?.length === 0) {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error("M5 gateway preflight bootstrap data navigation did not commit");
+}
+
 function encodeBytesBase64(bytes) {
   let binary = "";
   const chunkSize = 0x4000;
@@ -2217,9 +2237,11 @@ export class ChromiumWasmM3Host {
   #m5DevToolsNetwork = null;
   #m5Download = null;
   #m5ControlledPreflightDevToolsNetwork = null;
+  #m5ControlledPreflightPreparationRequested = false;
   #m5ControlledPreflightActive = false;
   #m5ControlledPreflightNavigationFinished = false;
   #m5PublicDevToolsNetwork = null;
+  #m5PublicDevToolsNetworkPreparationRequested = false;
   #m5PublicNetworkTestActive = false;
   #m5PublicNavigationFinished = false;
   #m5PublicExpectedURL = null;
@@ -4583,6 +4605,10 @@ export class ChromiumWasmM3Host {
       throw new Error("M3 module loader has no default factory export");
     }
     this.#module = await namespace.default(moduleOptions);
+    // The factory resolves before this continuation runs. Keep a fixed marker
+    // so the loopback-only M5 failure diagnostics can distinguish a pthread
+    // bootstrap stall from a native-main-thread stall without exposing inputs.
+    this.#recordHost("initialize:factory-resolved");
     this.#initialLinearMemoryBytes =
       this.#sampleLinearMemoryBytes("initial");
     this.#module.chromiumWasmHostBridge =
@@ -4745,6 +4771,39 @@ export class ChromiumWasmM3Host {
     });
   }
 
+  async prepareM5ControlledPreflight() {
+    this.#requireRunning("prepareM5ControlledPreflight");
+    if (this.#fixture !== M5_CONTROLLED_PREFLIGHT_FIXTURE) {
+      throw new Error("M5 controlled preflight is not fixture-scoped");
+    }
+    if (!this.#wispConfigured) {
+      throw new Error("M5 controlled preflight requires a WISP configuration");
+    }
+    if (this.#navigation.committed !== true ||
+        this.#navigation.scheme !== "data") {
+      throw new Error(
+        "M5 controlled preflight DevTools preparation requires a committed " +
+        "data bootstrap");
+    }
+    if (this.#m5ControlledPreflightPreparationRequested ||
+        this.#m5ControlledPreflightDevToolsNetwork !== null ||
+        this.#m5ControlledPreflightActive ||
+        this.#m5ControlledPreflightNavigationFinished) {
+      throw new Error(
+        "M5 controlled preflight DevTools preparation permits exactly one run");
+    }
+    const result = this.#callExport(
+      "chromium_wasm_host_prepare_m5_controlled_preflight", "number", [], []);
+    if (result !== 1) {
+      throw new Error(
+        "runtime rejected M5 controlled preflight DevTools preparation with " +
+        "status " + String(result));
+    }
+    this.#m5ControlledPreflightPreparationRequested = true;
+    this.#recordHost("m5:controlled-preflight-devtools-network:start-requested");
+    return {ok: true};
+  }
+
   async runM5ControlledPreflight() {
     this.#requireRunning("runM5ControlledPreflight");
     if (this.#fixture !== M5_CONTROLLED_PREFLIGHT_FIXTURE) {
@@ -4753,10 +4812,11 @@ export class ChromiumWasmM3Host {
     if (!this.#wispConfigured) {
       throw new Error("M5 controlled preflight requires a WISP configuration");
     }
-    if (!isM5ControlledPreflightDevToolsNetworkEnabled(
+    if (!this.#m5ControlledPreflightPreparationRequested ||
+        !isM5ControlledPreflightDevToolsNetworkEnabled(
             this.#m5ControlledPreflightDevToolsNetwork)) {
       throw new Error(
-        "M5 controlled preflight requires Network.enable evidence");
+        "M5 controlled preflight requires prepared Network.enable evidence");
     }
     if (this.#m5ControlledPreflightActive ||
         this.#m5ControlledPreflightNavigationFinished) {
@@ -4789,13 +4849,46 @@ export class ChromiumWasmM3Host {
     return {ok: true, scheme: "https"};
   }
 
+  async prepareM5PublicHTTPSNavigation() {
+    this.#requireRunning("prepareM5PublicHTTPSNavigation");
+    if (this.#fixture !== M5_PUBLIC_HTTPS_FIXTURE) {
+      throw new Error("M5 public navigation is not fixture-scoped");
+    }
+    if (!this.#wispConfigured) {
+      throw new Error("M5 public navigation requires a WISP configuration");
+    }
+    if (this.#navigation.committed !== true ||
+        this.#navigation.scheme !== "data") {
+      throw new Error(
+        "M5 public DevTools preparation requires a committed data bootstrap");
+    }
+    if (this.#m5PublicDevToolsNetworkPreparationRequested ||
+        this.#m5PublicDevToolsNetwork !== null ||
+        this.#m5PublicNetworkTestActive || this.#m5PublicNavigationFinished) {
+      throw new Error(
+        "M5 public DevTools preparation permits exactly one run");
+    }
+    const result = this.#callExport(
+      "chromium_wasm_host_prepare_m5_public_url", "number", [], []);
+    if (result !== 1) {
+      throw new Error(
+        "runtime rejected M5 public DevTools preparation with status " +
+        String(result));
+    }
+    this.#m5PublicDevToolsNetworkPreparationRequested = true;
+    this.#recordHost("m5:public-devtools-network:start-requested");
+    return {ok: true};
+  }
+
   async loadM5PublicHTTPSURL(url) {
     this.#requireRunning("loadM5PublicHTTPSURL");
     if (!this.#wispConfigured) {
       throw new Error("M5 public navigation requires a WISP configuration");
     }
-    if (!isM5PublicDevToolsNetworkEnabled(this.#m5PublicDevToolsNetwork)) {
-      throw new Error("M5 public navigation requires Network.enable evidence");
+    if (!this.#m5PublicDevToolsNetworkPreparationRequested ||
+        !isM5PublicDevToolsNetworkEnabled(this.#m5PublicDevToolsNetwork)) {
+      throw new Error(
+        "M5 public navigation requires prepared Network.enable evidence");
     }
     const publicURL = normalizeM5PublicHTTPSURL(url);
     if (this.#m5PublicNetworkTestActive || this.#m5PublicNavigationFinished) {
@@ -13597,6 +13690,9 @@ async function runM5ControlledPreflightSmokeFromQuery() {
         "M5 controlled preflight runtime did not present the initial shell frame");
     }
 
+    await awaitM5GatewayPreflightBootstrap(host, deadline);
+    await host.prepareM5ControlledPreflight();
+
     while (performance.now() < deadline) {
       const candidate = await host.readiness();
       if (isM5ControlledPreflightDevToolsNetworkEnabled(
@@ -13864,9 +13960,11 @@ async function runM5PublicHttpsSmokeFromQuery() {
         "M5 public HTTPS runtime did not present the initial shell frame");
     }
 
-    // The public test binary attaches a bounded in-process DevTools client at
-    // startup. Do not let the one permitted public navigation race
-    // Network.enable, otherwise the requested evidence could miss it.
+    await awaitM5GatewayPreflightBootstrap(host, deadline);
+    await host.prepareM5PublicHTTPSNavigation();
+
+    // Do not let the one permitted public navigation race Network.enable,
+    // otherwise the requested evidence could miss it.
     while (performance.now() < deadline) {
       const candidate = await host.readiness();
       if (isM5PublicDevToolsNetworkEnabled(candidate.publicDevtoolsNetwork)) {

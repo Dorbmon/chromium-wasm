@@ -434,10 +434,18 @@ def m5_smoke_url(
 def m5_browser_command(
     browser: Path, profile: str, url: str, *, no_sandbox: bool
 ) -> list[str]:
-    """Launch a viewport that contains the entire fixed host canvas."""
+    """Launch a viewport that contains the entire fixed host canvas.
+
+    Keep browser-side JavaScript and pthread bootstrap diagnostics in the
+    runner's bounded stderr capture.  A failed Emscripten worker can otherwise
+    leave module initialization pending until the outer smoke timeout.
+    """
 
     command = browser_command(browser, profile, url, no_sandbox=no_sandbox)
-    command[1:1] = [f"--window-size={M5_BROWSER_WINDOW_SIZE}"]
+    command[1:1] = [
+        "--enable-logging=stderr",
+        f"--window-size={M5_BROWSER_WINDOW_SIZE}",
+    ]
     return command
 
 

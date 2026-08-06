@@ -70,6 +70,21 @@ class M5ControlledPreflightSourceContractTest(unittest.TestCase):
         self.assertNotIn("IsM5NetworkTestUrl", predicate)
         self.assertIn('GURL expected_url("https://a.test/m5/local-gateway-probe")', loader)
         self.assertIn("BeginGatewayDenialPreflight", loader)
+        preflight = api.split("bool BeginGatewayDenialPreflight(", 1)[1].split(
+            "\n private:", 1
+        )[0]
+        self.assertIn('options.Set("mode", "cors");', preflight)
+        self.assertIn('options.Set("redirect", "error");', preflight)
+        self.assertNotIn('options.Set("mode", "no-cors");', preflight)
+        self.assertIn("LastPreflightStartFailure", api)
+        for marker in (
+            "primary-frame-not-live",
+            "wisp-evidence-window-rejected",
+            "wisp-initial-diagnostics-not-clean",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, api)
+        self.assertNotIn("std::move(expected_url)", loader)
         self.assertIn("IsWasmM5ControlledPreflightTestModeEnabled()", export)
         self.assertIn("LoadM5ControlledPreflightOnUiThread", export)
         self.assertNotIn("const char*", export)
@@ -100,22 +115,76 @@ class M5ControlledPreflightSourceContractTest(unittest.TestCase):
         self.assertNotIn("UTF8ToString(url)", controlled_bridge)
         self.assertIn("reportM5ControlledPreflightNavigation", controlled_bridge)
         self.assertIn("reportM5ControlledPreflightDevToolsNetwork", host)
+        self.assertIn("prepareM5ControlledPreflight()", host)
         self.assertIn("runM5ControlledPreflight()", host)
         self.assertIn("controlledPreflightDevtoolsNetwork", host)
         self.assertIn("M5_CONTROLLED_PREFLIGHT_CASE", host)
 
-    def test_controlled_mode_does_not_start_legacy_fixture_recorders(self) -> None:
+    def test_controlled_preflight_bootstraps_a_live_renderer_before_fetch(self) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        controlled_smoke = host.split(
+            "async function runM5ControlledPreflightSmokeFromQuery() {", 1
+        )[1].split("\nasync function runM5PublicHttpsSmokeFromQuery", 1)[0]
+        public_smoke = host.split(
+            "async function runM5PublicHttpsSmokeFromQuery() {", 1
+        )[1].split("\nexport async function runContentShellSmokeFromQuery", 1)[0]
+
+        self.assertIn("M5_GATEWAY_PREFLIGHT_BOOTSTRAP_DATA_URL", host)
+        self.assertIn("awaitM5GatewayPreflightBootstrap", host)
+        self.assertIn("readiness.navigation?.scheme === \"data\"", host)
+        self.assertLess(
+            controlled_smoke.index("await awaitM5GatewayPreflightBootstrap"),
+            controlled_smoke.index("prepareM5ControlledPreflight()"),
+        )
+        self.assertLess(
+            controlled_smoke.index("prepareM5ControlledPreflight()"),
+            controlled_smoke.index("runM5ControlledPreflight()"),
+        )
+        self.assertLess(
+            public_smoke.index("await awaitM5GatewayPreflightBootstrap"),
+            public_smoke.index("prepareM5PublicHTTPSNavigation()"),
+        )
+        self.assertLess(
+            public_smoke.index("prepareM5PublicHTTPSNavigation()"),
+            public_smoke.index("loadM5PublicHTTPSURL(testURL)"),
+        )
+
+    def test_public_and_controlled_recorders_start_after_live_bootstrap(self) -> None:
         api = source("content/shell/browser/wasm_host_api.cc")
+        host = source("tools/wasm/host/content_shell_host.js")
         initialization = api.split("void InitializeWasmHostApi() {", 1)[1].split(
             "\nvoid EnableWasmM5NetworkTestModeForTesting", 1
         )[0]
-        controlled_block = initialization.split(
-            "if (IsWasmM5ControlledPreflightTestModeEnabled()) {", 1
-        )[1].split("\n  if (chromium_wasm_report_readiness", 1)[0]
+        controlled_prepare = api.split(
+            "void PrepareM5ControlledPreflightDevToolsNetworkRecorderOnUiThread() {",
+            1,
+        )[1].split("\n}\n\nvoid PrepareM5PublicDevToolsNetworkRecorderOnUiThread", 1)[0]
+        public_prepare = api.split(
+            "void PrepareM5PublicDevToolsNetworkRecorderOnUiThread() {", 1
+        )[1].split("\n}\n\nvoid LoadM5ControlledPreflightOnUiThread", 1)[0]
 
-        self.assertIn("M5PublicDevToolsNetworkRecorder", controlled_block)
-        self.assertNotIn("M5DevToolsNetworkRecorder", controlled_block)
-        self.assertNotIn("M5DownloadRecorder", controlled_block)
+        self.assertNotIn("IsWasmM5PublicNetworkTestModeEnabled", initialization)
+        self.assertNotIn(
+            "IsWasmM5ControlledPreflightTestModeEnabled", initialization
+        )
+        for preparation in (controlled_prepare, public_prepare):
+            with self.subTest(preparation=preparation[:40]):
+                self.assertIn("RenderFrameHost* frame", preparation)
+                self.assertIn("GetLastCommittedURL().SchemeIs", preparation)
+                self.assertIn("url::kDataScheme", preparation)
+                self.assertIn("frame->IsRenderFrameLive()", preparation)
+                self.assertIn("M5PublicDevToolsNetworkRecorder", preparation)
+                self.assertIn("recorder->Start(shell->web_contents())", preparation)
+        self.assertIn("Lane::kControlledPreflight", controlled_prepare)
+        self.assertNotIn("Lane::kControlledPreflight", public_prepare)
+        self.assertIn(
+            "chromium_wasm_host_prepare_m5_controlled_preflight", api
+        )
+        self.assertIn("chromium_wasm_host_prepare_m5_public_url", api)
+        self.assertIn(
+            "m5:controlled-preflight-devtools-network:start-requested", host
+        )
+        self.assertIn("m5:public-devtools-network:start-requested", host)
 
     def test_shell_main_installs_the_controlled_root_before_content_main(self) -> None:
         shell_main = source("content/shell/app/shell_main.cc")
