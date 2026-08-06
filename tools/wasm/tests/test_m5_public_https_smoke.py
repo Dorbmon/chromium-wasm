@@ -290,6 +290,9 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
 
     def test_public_result_requires_redacted_h2_navigation_evidence(self) -> None:
         result = passing_result()
+        # performance.now()-derived timer gaps are JSON numbers, not
+        # necessarily integral milliseconds.
+        result["readiness"]["heartbeat"]["maxTimerGapMs"] = 25.5  # type: ignore[index]
         public_smoke.validate_public_result(
             result,
             expected_versions=VERSIONS,

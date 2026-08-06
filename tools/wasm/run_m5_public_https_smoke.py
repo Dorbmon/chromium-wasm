@@ -19,6 +19,7 @@ from collections import deque
 import hashlib
 import ipaddress
 import json
+import math
 from pathlib import Path
 import queue
 import re
@@ -433,6 +434,19 @@ def _require_int(value: object, description: str) -> int:
     if type(value) is not int:
         raise M0Error(f"{description} must be an int")
     return value
+
+
+def _require_nonnegative_finite_number(value: object, description: str) -> float:
+    """Require a JSON number suitable for a host-side millisecond duration."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise M0Error(f"{description} must be a nonnegative finite number")
+    return float(value)
 
 
 def _require_string(value: object, description: str) -> str:
@@ -929,7 +943,7 @@ def validate_public_result(
             "public HTTPS heartbeat animation-frame delta",
         )
         < MINIMUM_HEARTBEAT_ANIMATION_FRAMES
-        or _require_int(
+        or _require_nonnegative_finite_number(
             heartbeat.get("maxTimerGapMs"),
             "public HTTPS heartbeat maximum timer gap",
         )
