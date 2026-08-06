@@ -448,6 +448,20 @@ assert(transport.state(9) === 4 &&
     transport.error(9) === ERR_BLOCKED_BY_ADMINISTRATOR,
     'WISP blocked close was not translated to ERR_BLOCKED_BY_ADMINISTRATOR');
 
+// Terminal stream errors discard received bytes because the native socket
+// reports its error before it can read them. Orderly EOF intentionally keeps
+// queued bytes available to the native reader.
+reset(baseConfig({maxInboundStreamBytes: 3, maxInboundBytes: 3}));
+const failedCloseSocket = establish(19, 1);
+failedCloseSocket.emit(packet(TYPE_DATA, 19, new Uint8Array([1, 2, 3])));
+assert(transport.available(19) === 3 && transport.totalInboundBytes === 3,
+    'terminal-close setup did not fill the bounded inbound queue');
+failedCloseSocket.emit(packet(TYPE_CLOSE, 19, new Uint8Array([0x03])));
+assert(transport.state(19) === 4 &&
+    transport.error(19) === ERR_CONNECTION_RESET &&
+    transport.available(19) === 0 && transport.totalInboundBytes === 0,
+    'terminal stream error retained unread inbound bytes');
+
 // Inbound overflow terminates only that stream with a client error CLOSE.
 reset(baseConfig({maxInboundStreamBytes: 3}));
 const overflowSocket = establish(11, 1);
@@ -489,6 +503,30 @@ assert(transport.state(14) === 4 &&
 const replacementSocket = openStream(15);
 assert(replacementSocket !== disconnectedSocket && FakeWebSocket.instances.length === 2,
     'new stream after disconnect did not create a fresh WISP WebSocket');
+
+// A carrier failure must release every failed stream's inbound budget so a
+// fresh WISP carrier can receive data immediately after reconnecting.
+reset(baseConfig({maxInboundStreamBytes: 3, maxInboundBytes: 3}));
+const retainedInboundSocket = establish(20, 1);
+retainedInboundSocket.emit(packet(TYPE_DATA, 20, new Uint8Array([1, 2, 3])));
+assert(transport.available(20) === 3 && transport.totalInboundBytes === 3,
+    'carrier-close setup did not fill the bounded inbound queue');
+retainedInboundSocket.close();
+assert(transport.state(20) === 4 &&
+    transport.error(20) === ERR_INTERNET_DISCONNECTED &&
+    transport.available(20) === 0 && transport.totalInboundBytes === 0,
+    'carrier failure retained unread inbound bytes');
+const freshInboundSocket = openStream(21);
+freshInboundSocket.open();
+freshInboundSocket.emit(info([
+  {id: EXT_OPEN_CONFIRMATION, metadata: new Uint8Array()},
+]));
+freshInboundSocket.emit(continuation(0, 1));
+freshInboundSocket.emit(continuation(21, 1));
+freshInboundSocket.emit(packet(TYPE_DATA, 21, new Uint8Array([9])));
+assert(transport.state(21) === 2 && transport.available(21) === 1 &&
+    transport.totalInboundBytes === 1,
+    'fresh WISP carrier could not use released inbound capacity');
 
 // A connection-level normal CLOSE is terminal for every multiplexed stream
 // and must preserve the distinction between an orderly closure and a generic

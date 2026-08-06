@@ -242,7 +242,7 @@ mergeInto(LibraryManager.library, {
 
       if (!this._ensureConnection()) {
         this._failStream(stream, this.errors.connectionFailed,
-                         /*closeReason=*/null, /*clearInbound=*/true);
+                         /*closeReason=*/null);
         return 1;
       }
       if (this.phase === this.phases.ready) {
@@ -683,8 +683,7 @@ mergeInto(LibraryManager.library, {
             this.streams.get(streamId) : null;
         if (stream) {
           this._failStream(stream, this.errors.messageTooBig,
-                           this.closeReasons.clientReceiveError,
-                           /*clearInbound=*/true);
+                           this.closeReasons.clientReceiveError);
         } else {
           this._rejectHandshake(this.errors.messageTooBig);
         }
@@ -837,8 +836,7 @@ mergeInto(LibraryManager.library, {
           (stream.state !== this.states.connecting &&
            stream.state !== this.states.open)) {
         this._failStream(stream, this.errors.failed,
-                         this.closeReasons.clientReceiveError,
-                         /*clearInbound=*/true);
+                         this.closeReasons.clientReceiveError);
         return;
       }
       stream.remoteCredit = bufferRemaining;
@@ -877,8 +875,7 @@ mergeInto(LibraryManager.library, {
           this.totalInboundBytes + payload.length >
               this.config.maxInboundBytes) {
         this._failStream(stream, this.errors.insufficientResources,
-                         this.closeReasons.clientReceiveError,
-                         /*clearInbound=*/true);
+                         this.closeReasons.clientReceiveError);
         return;
       }
       if (payload.length === 0) {
@@ -920,7 +917,7 @@ mergeInto(LibraryManager.library, {
       this._failStream(stream,
                        error === this.errors.ok ? this.errors.connectionFailed :
                                                   error,
-                       /*closeReason=*/null, /*clearInbound=*/false);
+                       /*closeReason=*/null);
     },
 
     _errorForCloseReason(closeReason) {
@@ -1030,8 +1027,7 @@ mergeInto(LibraryManager.library, {
               if (stream.state === this.states.connecting &&
                   this.streams.get(stream.id) === stream) {
                 this._failStream(stream, this.errors.connectionTimedOut,
-                                 this.closeReasons.voluntary,
-                                 /*clearInbound=*/true);
+                                 this.closeReasons.voluntary);
               }
             }, this.config.streamOpenTimeoutMs);
           }
@@ -1098,7 +1094,7 @@ mergeInto(LibraryManager.library, {
       return false;
     },
 
-    _failStream(stream, error, closeReason, clearInbound) {
+    _failStream(stream, error, closeReason) {
       if (!stream || stream.closedLocally || stream.state === this.states.failed) {
         return;
       }
@@ -1107,9 +1103,10 @@ mergeInto(LibraryManager.library, {
       stream.state = this.states.failed;
       stream.error = error;
       this._discardOutbound(stream);
-      if (clearInbound) {
-        this._discardInbound(stream);
-      }
+      // TCPSocketWasm observes terminal failure before it can consume queued
+      // data. Retaining it would permanently charge the global inbound quota
+      // until the socket owner happens to close the failed stream.
+      this._discardInbound(stream);
       this._removeQueuedConnect(stream.id);
       if (closeReason !== null && stream.connectSent &&
           this.phase === this.phases.ready) {
@@ -1136,6 +1133,7 @@ mergeInto(LibraryManager.library, {
           stream.state = this.states.failed;
           stream.error = error;
           this._discardOutbound(stream);
+          this._discardInbound(stream);
         }
       }
       if (closeSocket && websocket && typeof websocket.close === 'function') {
