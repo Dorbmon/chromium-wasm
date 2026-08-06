@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "public_wisp_endpoint": "wss://gateway.example.invalid/wisp/",
+  "probes": [
+    {
+      "public_probe_url": "https://site-h2.example.invalid/m5-h2",
+      "expected_status": 200,
+      "expected_protocol": "h2"
+    },
+    {
+      "public_probe_url": "https://site-http1.example.invalid/m5-http1",
+      "expected_status": 200,
+      "expected_protocol": "http/1.1"
+    }
+  ]
+}
