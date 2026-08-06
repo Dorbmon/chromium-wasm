@@ -59,6 +59,69 @@ Each probe object must contain exactly `public_probe_url`, `expected_status`,
 and `expected_protocol`. URLs and hostnames must be unique. `expected_status`
 is always `200`; `expected_protocol` is either `h2` or `http/1.1`.
 
+## Loopback gateway and public WSS forwarder
+
+`m5_public_wisp_gateway.js` is a separate public-lane gateway; do not deploy
+or modify the controlled `m5_wisp_test_server.js` fixture for this purpose.
+The gateway is deliberately a plain HTTP Upgrade listener bound only to
+`127.0.0.1`. A WSS-capable external forwarder terminates public TLS and passes
+the WebSocket Upgrade to that loopback listener. This keeps the public WSS
+endpoint and any operator credentials out of the checkout and gateway config.
+
+Create a second, operator-controlled configuration file outside the checkout.
+Its exact schema is:
+
+```json
+{
+  "schema_version": 1,
+  "approved_hosts": [
+    "probe-h2.example.invalid",
+    "probe-http1.example.invalid"
+  ],
+  "listen_port": 0,
+  "limits": {
+    "max_sessions": 8,
+    "max_streams_per_session": 32,
+    "max_data_payload_bytes": 16384,
+    "max_stream_queue_bytes": 131072,
+    "max_session_queue_bytes": 524288,
+    "max_websocket_buffer_bytes": 524288,
+    "handshake_timeout_ms": 15000,
+    "connect_timeout_ms": 15000,
+    "idle_timeout_ms": 120000,
+    "global_packet_credit": 1024,
+    "stream_packet_credit": 64
+  }
+}
+```
+
+The names above are deliberately invalid documentation placeholders; replace
+them with the manifest's project-controlled public DNS hostnames. `limits` and
+`listen_port` are optional, but no other fields are accepted. The gateway
+allows raw TCP only to an approved hostname at port `443`; it returns a WISP
+`BLOCKED` close before connecting for port `444`, every other port, UDP, a
+malformed hostname, or an unapproved hostname.
+
+Start it locally with:
+
+```bash
+third_party/emsdk/node/22.16.0_64bit/bin/node \
+  tools/wasm/m5_public_wisp_gateway.js \
+  --config /absolute/operator-controlled/m5-public-wisp-gateway.json
+```
+
+The one-line bootstrap record contains only a loopback
+`http://127.0.0.1:<port>` origin and `/wisp/` path. It has no status endpoint
+or target-bearing diagnostics. Point an operator-managed Cloudflare Quick
+Tunnel (or equivalent WSS-capable forwarder) at that exact local HTTP origin.
+For a Quick Tunnel, the upstream form is
+`cloudflared tunnel --url http://127.0.0.1:<port>`; retain its printed public
+hostname privately and use `wss://<runtime-host>/wisp/` only in the external
+suite manifest. The forwarder must preserve `/wisp/`, `Upgrade`, `Connection`,
+the exact `Sec-WebSocket-Protocol: wisp` negotiation, and the original
+`Origin` header. The local gateway accepts only
+`http://127.0.0.1:<nonzero-port>` Origins.
+
 ## Protocol lanes
 
 The `h2` probe starts the inner Wasm Chromium normally. For the `http/1.1`
