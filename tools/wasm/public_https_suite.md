@@ -16,7 +16,9 @@ probe URL, credential, or completed diagnostics artifact to this repository.
 - Two to four project-controlled, publicly trusted HTTPS documents on distinct
   DNS hostnames. Each document must be a direct, nonredirecting `200` response
   at the default HTTPS port. Together, the documents must cover `h2` and
-  `http/1.1`.
+  `http/1.1`. The `http/1.1` lane must have a live Chromium response that
+  reports `http/1.1`; advertising only `h2` from that origin does not satisfy
+  the evidence gate.
 - Gateway policy that permits TCP port 443 to every probe hostname and rejects
   TCP port 444 for those same hostnames. The runner verifies the denial before
   it starts the allowed navigation.
@@ -56,6 +58,16 @@ The external JSON file is limited to 16 KiB and has exactly these fields:
 Each probe object must contain exactly `public_probe_url`, `expected_status`,
 and `expected_protocol`. URLs and hostnames must be unique. `expected_status`
 is always `200`; `expected_protocol` is either `h2` or `http/1.1`.
+
+## Protocol lanes
+
+The `h2` probe starts the inner Wasm Chromium normally. For the `http/1.1`
+probe, the host starts a fresh inner Wasm Chromium instance with
+`--disable-http2` supplied to its Emscripten module factory before Chromium
+starts. This is intentionally not an argument to the outer browser that hosts
+the page. The run still requires the inner Chromium CDP record to report the
+configured protocol exactly, together with the WISP completion evidence; a
+host-browser response or a synthetic protocol label cannot satisfy the gate.
 
 ## Run
 

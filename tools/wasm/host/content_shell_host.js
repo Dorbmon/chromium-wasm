@@ -4524,6 +4524,7 @@ export class ChromiumWasmM3Host {
     modulePath,
     readyTimeoutMs = DEFAULT_RUNTIME_REGISTRATION_TIMEOUT_MS,
     wisp = undefined,
+    m5PublicDisableHttp2 = undefined,
   }) {
     if (this.#lifecycle !== "new") {
       throw new Error("initialize may only be called once");
@@ -4540,6 +4541,16 @@ export class ChromiumWasmM3Host {
       readyTimeoutMs > 60000
     ) {
       throw new Error("initialize readyTimeoutMs is out of range");
+    }
+    if (m5PublicDisableHttp2 !== undefined &&
+        this.#fixture !== M5_PUBLIC_HTTPS_FIXTURE) {
+      throw new Error(
+          "M5 public HTTP/2 disable option is only available for the " +
+          "public HTTPS fixture");
+    }
+    if (m5PublicDisableHttp2 !== undefined &&
+        typeof m5PublicDisableHttp2 !== "boolean") {
+      throw new Error("M5 public HTTP/2 disable option must be a boolean");
     }
     const resolvedModule = new URL(modulePath, document.baseURI);
     if (resolvedModule.origin !== location.origin) {
@@ -4596,6 +4607,12 @@ export class ChromiumWasmM3Host {
     if (wispConfiguration) {
       moduleOptions.chromiumWasmWisp = wispConfiguration;
       this.#recordHost("initialize:wisp-configured");
+    }
+    // The public HTTP/1.1 lane must exercise Chromium's own network stack,
+    // not the outer browser that hosts the Wasm module. Keep this argument
+    // fixture-scoped and set it before Emscripten starts Chromium.
+    if (m5PublicDisableHttp2 === true) {
+      moduleOptions.arguments = ["--disable-http2"];
     }
     // Keep the main module on its original URL so Emscripten resolves and
     // streams the large Wasm binary with the same origin and base URL. Only
@@ -13929,6 +13946,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
     if (expectedProtocol !== "h2" && expectedProtocol !== "http/1.1") {
       throw new Error("M5 public HTTPS expected protocol is invalid");
     }
+    const m5PublicDisableHttp2 = expectedProtocol === "http/1.1";
 
     host = new ChromiumWasmM3Host(
         canvas, versions, {fixture: M5_PUBLIC_HTTPS_FIXTURE});
@@ -13942,6 +13960,7 @@ async function runM5PublicHttpsSmokeFromQuery() {
         endpoint: relayEndpoint,
         subprotocol: "wisp",
       },
+      ...(m5PublicDisableHttp2 ? {m5PublicDisableHttp2: true} : {}),
     });
     await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
     while (performance.now() < deadline) {

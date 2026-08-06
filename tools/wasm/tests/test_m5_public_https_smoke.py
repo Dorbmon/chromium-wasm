@@ -754,6 +754,230 @@ class PublicSmokeRunnerContractTest(unittest.TestCase):
 
 
 class PublicHttpsSourceContractTest(unittest.TestCase):
+    def test_public_h1_switch_reaches_only_the_inner_wasm_module(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            pinned_node = (
+                Path(__file__).resolve().parents[3]
+                / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+            )
+            node = str(pinned_node) if pinned_node.is_file() else None
+        if node is None:
+            self.skipTest("Node is unavailable")
+
+        host_url = (
+            Path(__file__).resolve().parents[1] / "host/content_shell_host.js"
+        ).resolve().as_uri()
+        with tempfile.TemporaryDirectory() as temporary:
+            mock_module = Path(temporary) / "m5_public_h1_module.mjs"
+            mock_module.write_text(
+                """
+export default async function createModule(options) {
+  const hasArguments = Object.prototype.hasOwnProperty.call(
+      options, "arguments");
+  globalThis.__m5PublicModuleOptions.push({
+    hasArguments,
+    arguments: hasArguments ? Array.from(options.arguments) : null,
+  });
+  options.onRuntimeInitialized();
+  globalThis.__chromiumWasmHostBridgeV1.reportReadiness({
+    protocol: 1,
+    shellReady: true,
+    surfaceReady: false,
+    firstVisuallyNonEmptyPaint: false,
+  });
+  const module = {
+    HEAPU8: new Uint8Array(new ArrayBuffer(64 * 1024)),
+    chromiumWasmHostCommands: {
+      chromium_wasm_host_shutdown: () => {
+        queueMicrotask(() => {
+          globalThis.__chromiumWasmHostBridgeV1.reportProcessExit({
+            protocol: 1,
+            exitCode: 0,
+          });
+          options.onExit(0);
+        });
+        return 1;
+      },
+    },
+  };
+  return module;
+}
+""",
+                encoding="utf-8",
+            )
+            script = f"""
+globalThis.window = globalThis;
+globalThis.location = {{origin: "null"}};
+globalThis.crossOriginIsolated = true;
+globalThis.__m5PublicModuleOptions = [];
+globalThis.addEventListener = () => {{}};
+globalThis.removeEventListener = () => {{}};
+globalThis.setInterval = () => 0;
+globalThis.clearInterval = () => {{}};
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {{}};
+class TestCanvas {{
+  constructor() {{
+    this.width = 800;
+    this.height = 600;
+    this.style = {{}};
+  }}
+  focus() {{
+    document.activeElement = this;
+  }}
+}}
+globalThis.HTMLCanvasElement = TestCanvas;
+globalThis.document = {{
+  activeElement: null,
+  baseURI: "file:///",
+  querySelector: () => null,
+}};
+
+const assert = (condition, message) => {{
+  if (!condition) {{
+    throw new Error(message);
+  }}
+}};
+const {{ChromiumWasmM3Host}} = await import({json.dumps(host_url)});
+const versions = {{chromium: "c", v8: "v", emscripten: "e", port: "p"}};
+
+async function initializePublic(options) {{
+  const host = new ChromiumWasmM3Host(
+      new TestCanvas(), versions,
+      {{fixture: "chromium-wasm-m5-public-https-v1"}});
+  await host.initialize({{
+    modulePath: {json.dumps(mock_module.as_uri())},
+    ...options,
+  }});
+  const shutdown = await host.shutdown(1000);
+  assert(shutdown.ok === true && shutdown.complete === true,
+      "public mock runtime did not shut down");
+}}
+
+await initializePublic({{m5PublicDisableHttp2: true}});
+await initializePublic({{}});
+const [h1, h2] = globalThis.__m5PublicModuleOptions;
+assert(h1.hasArguments === true,
+    "HTTP/1.1 inner module did not receive arguments");
+assert(JSON.stringify(h1.arguments) === JSON.stringify(["--disable-http2"]),
+    "HTTP/1.1 inner module received unexpected arguments");
+assert(h2.hasArguments === false && h2.arguments === null,
+    "HTTP/2 inner module unexpectedly received arguments");
+console.log("M5_PUBLIC_INNER_HTTP1_ARGUMENT:PASS");
+"""
+            completed = subprocess.run(
+                [node, "--input-type=module"],
+                input=script,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(
+            "M5_PUBLIC_INNER_HTTP1_ARGUMENT:PASS", completed.stdout
+        )
+
+    def test_public_h1_switch_rejects_nonpublic_host_initialization(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            pinned_node = (
+                Path(__file__).resolve().parents[3]
+                / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+            )
+            node = str(pinned_node) if pinned_node.is_file() else None
+        if node is None:
+            self.skipTest("Node is unavailable")
+
+        host_url = (
+            Path(__file__).resolve().parents[1] / "host/content_shell_host.js"
+        ).resolve().as_uri()
+        script = f"""
+globalThis.window = globalThis;
+globalThis.location = {{origin: "null"}};
+globalThis.crossOriginIsolated = true;
+globalThis.addEventListener = () => {{}};
+globalThis.removeEventListener = () => {{}};
+globalThis.setInterval = () => 0;
+globalThis.clearInterval = () => {{}};
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {{}};
+class TestCanvas {{
+  focus() {{
+    document.activeElement = this;
+  }}
+}}
+globalThis.HTMLCanvasElement = TestCanvas;
+globalThis.document = {{
+  activeElement: null,
+  baseURI: "file:///",
+  querySelector: () => null,
+}};
+
+const {{ChromiumWasmM3Host}} = await import({json.dumps(host_url)});
+const host = new ChromiumWasmM3Host(new TestCanvas(), {{
+  chromium: "c",
+  v8: "v",
+  emscripten: "e",
+  port: "p",
+}});
+let rejected = false;
+try {{
+  await host.initialize({{
+    modulePath: "file:///unused-m5-public-h1-module.mjs",
+    m5PublicDisableHttp2: true,
+  }});
+}} catch (error) {{
+  rejected = String(error).includes(
+      "only available for the public HTTPS fixture");
+}}
+if (!rejected) {{
+  throw new Error("nonpublic host accepted the M5 public HTTP/1.1 switch");
+}}
+console.log("M5_PUBLIC_INNER_HTTP1_SCOPE:PASS");
+"""
+        completed = subprocess.run(
+            [node, "--input-type=module"],
+            input=script,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("M5_PUBLIC_INNER_HTTP1_SCOPE:PASS", completed.stdout)
+
+    def test_public_h1_switch_is_scoped_to_the_inner_runtime(self) -> None:
+        host = source("tools/wasm/host/content_shell_host.js")
+        runner = source("tools/wasm/run_m5_public_https_smoke.py")
+        initialize = host.split("  async initialize({", 1)[1].split(
+            "\n  async resize", 1
+        )[0]
+        public_smoke = host.split(
+            "async function runM5PublicHttpsSmokeFromQuery() {", 1
+        )[1].split("\nexport async function runContentShellSmokeFromQuery", 1)[0]
+
+        self.assertIn("m5PublicDisableHttp2 = undefined", initialize)
+        self.assertIn("this.#fixture !== M5_PUBLIC_HTTPS_FIXTURE", initialize)
+        self.assertIn(
+            '"M5 public HTTP/2 disable option must be a boolean"', initialize
+        )
+        self.assertIn('moduleOptions.arguments = ["--disable-http2"]', initialize)
+        self.assertLess(
+            initialize.index('moduleOptions.arguments = ["--disable-http2"]'),
+            initialize.index("namespace.default(moduleOptions)"),
+        )
+        self.assertIn(
+            'const m5PublicDisableHttp2 = expectedProtocol === "http/1.1";',
+            public_smoke,
+        )
+        self.assertIn(
+            "...(m5PublicDisableHttp2 ? {m5PublicDisableHttp2: true} : {}),",
+            public_smoke,
+        )
+        self.assertNotIn("--disable-http2", runner)
+
     def test_public_host_redacts_configured_hostname_and_authority_forms(self) -> None:
         node = shutil.which("node")
         if node is None:
