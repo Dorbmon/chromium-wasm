@@ -637,6 +637,15 @@ mergeInto(LibraryManager.library, {
       if (!this._isCurrentConnection(generation, websocket)) {
         return;
       }
+      // Supplying a requested subprotocol does not require a server to select
+      // one. WISP framing is valid only after the exact configured protocol
+      // was negotiated, so do not treat an otherwise-open carrier as usable
+      // when the upgrade omitted it.
+      if (websocket.protocol !== this.config.subprotocol) {
+        this._failConnection(this.errors.notImplemented,
+                             /*closeSocket=*/true);
+        return;
+      }
       this.webSocketOpenCount += 1;
       this.phase = this.phases.awaitingServerInfo;
       this._clearTimer(this.handshakeTimer);

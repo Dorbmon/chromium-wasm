@@ -109,6 +109,7 @@ class FakeWebSocket {
   constructor(endpoint, subprotocol) {
     this.endpoint = endpoint;
     this.subprotocol = subprotocol;
+    this.protocol = subprotocol;
     this.readyState = 0;
     this.bufferedAmount = 0;
     this.sent = [];
@@ -342,6 +343,19 @@ assert(transport.isConfigured() === 0, 'endpoint query accepted');
 reset(baseConfig({token: 'must-not-be-used', maxDataFrameBytes: 16,
                   maxWebSocketBufferedBytes: 64}));
 assert(transport.isConfigured() === 0, 'credential config field accepted');
+
+// A server may accept an RFC 6455 upgrade while omitting the requested
+// Sec-WebSocket-Protocol. That carrier is not a WISP v2 transport.
+reset(baseConfig());
+const omittedSubprotocolSocket = openStream(6);
+omittedSubprotocolSocket.protocol = '';
+omittedSubprotocolSocket.open();
+assert(transport.state(6) === 4 &&
+    transport.error(6) === ERR_NOT_IMPLEMENTED &&
+    omittedSubprotocolSocket.closed,
+    'missing negotiated WISP subprotocol was accepted');
+assert(transport.diagnosticsCompletionFlags() === 0,
+    'missing negotiated WISP subprotocol recorded a live carrier');
 
 // Handshake, stream-open confirmation, and multiplexed hostname TCP CONNECT.
 reset(baseConfig());
