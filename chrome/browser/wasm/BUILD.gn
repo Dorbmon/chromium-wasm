@@ -197,6 +197,18 @@ source_set("wasm_browser_animation_features") {
   ]
 }
 
+# The tab feature definitions are platform-neutral, but their normal owner is
+# admitted only on native desktop platforms. Source-select the definitions for
+# the future Wasm BrowserView while keeping unsupported Tab Search entry points
+# default-off until their complete Views/WebUI surface exists.
+source_set("wasm_tabs_features") {
+  public = [ "../ui/tabs/features.h" ]
+
+  sources = [ "../ui/tabs/features.cc" ]
+
+  public_deps = [ "//base" ]
+}
+
 # This is only the real ActionManager root-registration lifetime. It remains
 # unlinked until a selected browser/controller slice can initialize supported
 # actions and expose them to Views without inert controls.

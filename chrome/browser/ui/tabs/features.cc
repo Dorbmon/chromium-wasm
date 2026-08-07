@@ -6,7 +6,7 @@
 
 #include "base/feature_list.h"
 #include "base/time/time.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "build/build_config.h"
 
 namespace tabs {
 
@@ -93,7 +93,15 @@ BASE_FEATURE_PARAM(base::TimeDelta,
 
 BASE_FEATURE(kTabSelectionByPointer, base::FEATURE_ENABLED_BY_DEFAULT);
 
+#if BUILDFLAG(IS_WASM)
+// Tab Search requires its own bubble and WebUI lifecycle, which is not part of
+// the first Wasm browser-window slice. Keep the default entry point off until
+// that complete surface is source-selected.
+BASE_FEATURE(kHorizontalTabStripComboButton,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
 BASE_FEATURE(kHorizontalTabStripComboButton, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 BASE_FEATURE_PARAM(bool,
                    kHorizontalTabStripComboButtonShowStartOnly,
                    &kHorizontalTabStripComboButton,

@@ -51,7 +51,6 @@ if (!is_android) {
       "features.h",
     ]
     public_deps = [ "//base" ]
-    deps = [ "//chrome/browser/ui:ui_features" ]
   }
 
   source_set("tab_menu") {
