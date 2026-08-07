@@ -14,6 +14,8 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/animations/side_panel_animations.h"
 #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views_impl.h"
 #include "ui/views/view.h"
 
 #if !BUILDFLAG(IS_WASM)
@@ -22,10 +24,12 @@
 
 class BrowserWindowFeatures::Impl {
  public:
-  explicit Impl(
-      std::unique_ptr<BrowserAnimationController> browser_animation_controller)
-      : browser_animation_controller_(std::move(browser_animation_controller)) {
+  Impl(std::unique_ptr<BrowserAnimationController> browser_animation_controller,
+       std::unique_ptr<BrowserElements> browser_elements)
+      : browser_animation_controller_(std::move(browser_animation_controller)),
+        browser_elements_(std::move(browser_elements)) {
     CHECK(browser_animation_controller_);
+    CHECK(browser_elements_);
   }
 
   void InitPostBrowserViewConstruction(views::View* browser_view) {
@@ -33,6 +37,14 @@ class BrowserWindowFeatures::Impl {
     CHECK(!browser_view_initialized_);
     CHECK(browser_animation_controller_);
 
+    auto* const provider =
+        browser_elements_->AsA<BrowserElementsViewsImpl>();
+    CHECK(provider);
+    provider->Init(browser_view);
+
+    // Active-contents WebView retrieval is deliberately not admitted here: it
+    // requires BrowserView-specific wiring, which is outside this P2
+    // lifecycle.
     browser_animation_controller_->set_browser_view(browser_view);
     browser_animation_controller_->AddAnimationProvider(
         std::make_unique<SidePanelAnimations>());
@@ -42,11 +54,18 @@ class BrowserWindowFeatures::Impl {
   }
 
   void TearDownPreBrowserWindowDestruction() {
+    if (browser_elements_) {
+      auto* const provider = browser_elements_->AsA<BrowserElementsViews>();
+      CHECK(provider);
+      provider->TearDown();
+      browser_elements_.reset();
+    }
     browser_animation_controller_.reset();
   }
 
  private:
   std::unique_ptr<BrowserAnimationController> browser_animation_controller_;
+  std::unique_ptr<BrowserElements> browser_elements_;
   bool browser_view_initialized_ = false;
 };
 
@@ -59,7 +78,9 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
 
   impl_ = std::make_unique<Impl>(
       GetUserDataFactory().CreateInstance<BrowserAnimationController>(*browser,
-                                                                      *browser));
+                                                                      *browser),
+      GetUserDataFactory().CreateInstance<BrowserElementsViewsImpl>(*browser,
+                                                                     *browser));
 }
 
 void BrowserWindowFeatures::InitPostBrowserViewConstruction(

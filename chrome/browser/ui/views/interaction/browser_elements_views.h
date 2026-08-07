@@ -15,9 +15,12 @@
 #include "ui/base/identifier/typed_identifier.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/safe_castable.h"
-#include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/view.h"
+
+namespace views {
+class WebView;
+}
 
 DECLARE_TYPED_IDENTIFIER_VALUE(ui::ElementIdentifier,
                                views::WebView,

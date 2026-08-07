@@ -198,9 +198,10 @@ source_set("wasm_browser_animation_features") {
 }
 
 # BrowserWindowFeatures normally owns the complete desktop window-controller
-# graph.  The first Wasm implementation owns only the real animation UDD
-# lifecycle required before BrowserView construction, and intentionally remains
-# unlinked from chrome_wasm until the remaining controller lifecycle exists.
+# graph. The first Wasm implementation owns only the real animation and
+# BrowserElements UDD lifecycles required before BrowserView construction, and
+# intentionally remains unlinked from chrome_wasm until the remaining
+# controller lifecycle exists.
 source_set("wasm_browser_window_features") {
   sources = [
     "wasm_browser_window_features.cc",
@@ -215,6 +216,7 @@ source_set("wasm_browser_window_features") {
     ":wasm_browser_animation_features",
     "//base",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/views/interaction:impl",
     "//ui/base/identifier",
     "//ui/base/interaction",
     "//ui/base/unowned_user_data",

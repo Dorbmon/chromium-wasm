@@ -141,7 +141,9 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         self.assertIsNotNone(pimpl_match)
         self.assertNotIn("desktop_browser_window_capabilities_", pimpl_match.group())
 
-    def test_animation_lifecycle_is_real_and_ordered(self) -> None:
+    def test_animation_and_browser_elements_lifecycles_are_real_and_ordered(
+        self,
+    ) -> None:
         implementation = source(
             "chrome/browser/wasm/wasm_browser_window_features.cc"
         )
@@ -159,9 +161,38 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         )
         self.assertRegex(
             implementation,
+            r"GetUserDataFactory\(\)\.CreateInstance<"
+            r"BrowserElementsViewsImpl>\(\*browser,\s*\*browser\)",
+        )
+        self.assertRegex(
+            implementation,
             r"BrowserWindowFeatures::InitPostBrowserViewConstruction\(\s*"
             r"views::View\* browser_view",
         )
+        self.assertIn(
+            "std::unique_ptr<BrowserElements> browser_elements_;",
+            implementation,
+        )
+        elements_init = implementation.index(
+            "browser_elements_->AsA<BrowserElementsViewsImpl>()"
+        )
+        animation_view_set = implementation.index(
+            "browser_animation_controller_->set_browser_view"
+        )
+        self.assertLess(elements_init, animation_view_set)
+        self.assertRegex(
+            implementation,
+            r"browser_elements_->AsA<BrowserElementsViewsImpl>\(\)[\s\S]*?"
+            r"CHECK\(provider\);[\s\S]*?provider->Init\(browser_view\);",
+        )
+        self.assertIn("provider->Init(browser_view);", implementation)
+        self.assertIn(
+            "Active-contents WebView retrieval is deliberately not admitted here",
+            implementation,
+        )
+        self.assertNotIn("AddRetrievalCallback", implementation)
+        self.assertNotIn("kActiveContentsWebViewRetrievalId", implementation)
+        self.assertNotIn("BrowserView::", implementation)
         self.assertIn("browser_animation_controller_->set_browser_view", implementation)
 
         side_panel = implementation.index("std::make_unique<SidePanelAnimations>()")
@@ -169,6 +200,21 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         initialized = implementation.index("browser_view_initialized_ = true")
         self.assertLess(side_panel, tab_strip)
         self.assertLess(tab_strip, initialized)
+        elements_teardown = implementation.index(
+            "browser_elements_->AsA<BrowserElementsViews>()"
+        )
+        elements_reset = implementation.index("browser_elements_.reset();")
+        animation_reset = implementation.index(
+            "browser_animation_controller_.reset();"
+        )
+        self.assertLess(elements_teardown, elements_reset)
+        self.assertLess(elements_reset, animation_reset)
+        self.assertRegex(
+            implementation,
+            r"browser_elements_->AsA<BrowserElementsViews>\(\)[\s\S]*?"
+            r"CHECK\(provider\);[\s\S]*?provider->TearDown\(\);",
+        )
+        self.assertIn("provider->TearDown();", implementation)
         self.assertIn("browser_animation_controller_.reset();", implementation)
         self.assertIn("CHECK(!impl_);", implementation)
         self.assertIn("CHECK(!browser_view_initialized_);", implementation)
@@ -207,7 +253,14 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
 
     def test_source_selection_is_narrow_and_remains_unwired(self) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")
+        interaction_build = source(
+            "chrome/browser/ui/views/interaction/BUILD.gn"
+        )
+        interaction_header = source(
+            "chrome/browser/ui/views/interaction/browser_elements_views.h"
+        )
         target = _source_set_body(wasm_build, "wasm_browser_window_features")
+        interaction_target = _source_set_body(interaction_build, "interaction")
         features_target = _source_set_body(
             wasm_build, "wasm_browser_animation_features"
         )
@@ -238,6 +291,24 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         self.assertIn("350", features_source)
         self.assertNotIn("ui_features.cc", features_target)
         self.assertNotIn("//chrome/browser/ui:ui_features", features_target)
+        self.assertRegex(
+            interaction_build,
+            r"if \(!is_wasm\) \{\s*source_set\(\"browser_tests\"\)",
+        )
+        self.assertIn(
+            "namespace views {\nclass WebView;\n}", interaction_header
+        )
+        self.assertNotIn(
+            '#include "ui/views/controls/webview/webview.h"',
+            interaction_header,
+        )
+        self.assertIn(
+            "DECLARE_TYPED_IDENTIFIER_VALUE(ui::ElementIdentifier,\n"
+            "                               views::WebView,\n"
+            "                               kActiveContentsWebViewRetrievalId);",
+            interaction_header,
+        )
+        self.assertNotIn('"//ui/views/controls/webview",', interaction_target)
 
         for filename in (
             "wasm_browser_window_features.cc",
@@ -254,6 +325,7 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
             '":wasm_browser_animation_features",',
             '"//base",',
             '"//chrome/browser/ui/browser_window",',
+            '"//chrome/browser/ui/views/interaction:impl",',
             '"//ui/base/identifier",',
             '"//ui/base/interaction",',
             '"//ui/base/unowned_user_data",',
@@ -268,6 +340,10 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
             "//chrome/browser/ui:ui_features",
             "//chrome/browser/ui/animation:animation",
             "//chrome/browser/ui/views/animations:animations",
+            '"//chrome/browser/ui/interaction",',
+            '"//chrome/browser/ui/views/interaction",',
+            '"//chrome/browser/ui:browser_element_identifiers",',
+            '"//ui/views/controls/webview",',
             "//chrome/browser/ui/browser_window/internal",
             "//chrome/browser/history",
             "//chrome/common:constants",
