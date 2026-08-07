@@ -512,6 +512,7 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     deps = [
       ":wasm_packed_resources",
       "//chrome/app:generated_resources",
+      "//chrome/browser/wasm:wasm_browser_views_platform",
       "//chrome/browser/wasm:wasm_chrome_main_delegate",
       "//chrome/browser/wasm:wasm_chrome_result_codes",
       "//chrome/common:buildflags",

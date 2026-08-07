@@ -967,7 +967,11 @@ component("views") {
           "//ui/base:ozone_buildflags",
         ]
       }
-      if (is_linux || is_fuchsia) {
+      # Wasm uses the platform-neutral Aura/Ozone desktop host.  Do not select
+      # the Linux-specific window-manager implementation just because the
+      # generic host is historically built there.
+      if (is_linux || is_fuchsia ||
+          (is_wasm && enable_chromium_wasm_chrome)) {
         public += [
           "widget/desktop_aura/desktop_window_tree_host_platform.h",
           "widget/desktop_aura/window_move_client_platform.h",

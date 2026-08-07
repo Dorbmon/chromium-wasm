@@ -121,6 +121,53 @@ source_set("wasm_browser_collection") {
   ]
 }
 
+# The browser's Aura frame is a platform boundary, not part of the monolithic
+# desktop //chrome/browser/ui:ui target.  Keep the Wasm desktop-host
+# implementation source-selected so later BrowserWidget work can use the
+# generic Ozone PlatformWindow without importing Linux/X11/Wayland code.
+source_set("wasm_browser_views_platform") {
+  public = [
+    "../ui/views/frame/browser_desktop_window_tree_host.h",
+    "../ui/views/frame/browser_desktop_window_tree_host_wasm.h",
+  ]
+
+  sources = [ "../ui/views/frame/browser_desktop_window_tree_host_wasm.cc" ]
+
+  public_deps = [ "//ui/views" ]
+}
+
+# BrowserAnimationController itself is platform-neutral, but its desktop
+# target is intentionally admitted only on native desktop builds. Select its
+# real controller/provider implementation independently for the Wasm Chrome
+# UI so BrowserWindowFeatures can install it before BrowserView construction
+# without importing the desktop //chrome/browser/ui:ui aggregate.
+source_set("wasm_browser_animation") {
+  public = [
+    "../ui/animation/browser_animation_controller.h",
+    "../ui/animation/browser_animation_provider.h",
+    "../ui/animation/browser_animation_provider_internal.h",
+    "../ui/animation/browser_animation_types.h",
+  ]
+
+  sources = [
+    "../ui/animation/browser_animation_controller.cc",
+    "../ui/animation/browser_animation_provider.cc",
+    "../ui/animation/browser_animation_provider_internal.cc",
+  ]
+
+  public_deps = [
+    "//base",
+    "//ui/base/identifier",
+    "//ui/base/unowned_user_data",
+    "//ui/gfx/animation",
+  ]
+
+  deps = [
+    "//chrome/browser/ui/browser_window",
+    "//ui/views",
+  ]
+}
+
 # Browser ownership is a keyed service. Its normal implementation is embedded
 # in the desktop UI aggregate and initializes History before a Profile exists.
 # The Wasm variant preserves collection/ownership semantics but leaves History
