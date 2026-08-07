@@ -197,6 +197,22 @@ source_set("wasm_browser_animation_features") {
   ]
 }
 
+# This is only the real ActionManager root-registration lifetime. It remains
+# unlinked until a selected browser/controller slice can initialize supported
+# actions and expose them to Views without inert controls.
+source_set("wasm_browser_actions") {
+  public = [ "../ui/browser_actions.h" ]
+
+  sources = [ "wasm_browser_actions.cc" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [
+    "//chrome/browser/ui/browser_window",
+    "//ui/actions",
+  ]
+}
+
 # A future Wasm BrowserView requires real fullscreen/window-feature UDD
 # policy, without admitting desktop BrowserActions, commands, web-app, or
 # history graphs. Fullscreen follows the real BrowserWindow state; immersive
