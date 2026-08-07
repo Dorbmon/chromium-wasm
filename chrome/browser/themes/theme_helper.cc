@@ -149,22 +149,7 @@ bool ThemeHelper::ShouldUseNativeFrame(
 }
 
 int ThemeHelper::GetDefaultDisplayProperty(int id) const {
-  switch (id) {
-    case TP::NTP_BACKGROUND_ALIGNMENT:
-      return TP::ALIGN_CENTER;
-
-    case TP::NTP_BACKGROUND_TILING:
-      return TP::NO_REPEAT;
-
-    case TP::NTP_LOGO_ALTERNATE:
-      return 0;
-
-    case TP::SHOULD_FILL_BACKGROUND_TAB_COLOR:
-      return 1;
-
-    default:
-      return -1;
-  }
+  return TP::GetDefaultDisplayProperty(id);
 }
 
 // static

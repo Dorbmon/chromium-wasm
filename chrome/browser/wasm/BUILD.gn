@@ -136,6 +136,19 @@ source_set("wasm_browser_views_platform") {
   public_deps = [ "//ui/views" ]
 }
 
+# The desktop themes aggregate owns ThemeService and profile-backed custom
+# themes.  A first Wasm browser window instead has a fixed default provider
+# backed by the already-initialized ResourceBundle.  Keep it un-wired until
+# BrowserWidget's real lifetime is source-selected.
+source_set("wasm_default_theme_provider") {
+  public = [ "wasm_default_theme_provider.h" ]
+  sources = [ "wasm_default_theme_provider.cc" ]
+
+  deps = [ "//chrome/browser/themes:theme_properties" ]
+
+  public_deps = [ "//ui/base" ]
+}
+
 # BrowserAnimationController itself is platform-neutral, but its desktop
 # target is intentionally admitted only on native desktop builds. Select its
 # real controller/provider implementation independently for the Wasm Chrome

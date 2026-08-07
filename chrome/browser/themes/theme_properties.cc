@@ -4,15 +4,12 @@
 
 #include "chrome/browser/themes/theme_properties.h"
 
-#include <memory>
 #include <optional>
 
+#include "base/notreached.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "build/build_config.h"
-#include "chrome/browser/themes/browser_theme_pack.h"
 #include "ui/gfx/color_palette.h"
-#include "ui/native_theme/native_theme.h"
 
 namespace {
 
@@ -251,6 +248,26 @@ color_utils::HSL ThemeProperties::GetDefaultTint(int id,
   }
 
   return {-1, -1, -1};
+}
+
+// static
+int ThemeProperties::GetDefaultDisplayProperty(int id) {
+  switch (id) {
+    case NTP_BACKGROUND_ALIGNMENT:
+      return ALIGN_CENTER;
+
+    case NTP_BACKGROUND_TILING:
+      return NO_REPEAT;
+
+    case NTP_LOGO_ALTERNATE:
+      return 0;
+
+    case SHOULD_FILL_BACKGROUND_TAB_COLOR:
+      return 1;
+
+    default:
+      return -1;
+  }
 }
 
 // static

@@ -231,6 +231,10 @@ class ThemeProperties {
                                          bool incognito,
                                          bool dark_mode = false);
 
+  // Returns the default value for a themeable display property, or -1 if the
+  // property does not have a default value.
+  static int GetDefaultDisplayProperty(int id);
+
   // Returns the default color for the given color |id| COLOR_* enum value.
   // Returns gfx::kPlaceholderColor if |id| is invalid.
   static SkColor GetDefaultColor(int id, bool incognito);
