@@ -196,7 +196,7 @@ class TestingBrowserProcess
   resource_coordinator::ResourceCoordinatorParts* resource_coordinator_parts()
       override;
   SerialPolicyAllowedPorts* serial_policy_allowed_ports() override;
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   HidSystemTrayIcon* hid_system_tray_icon() override;
   void set_hid_system_tray_icon_for_test(
       std::unique_ptr<HidSystemTrayIcon> icon) override;
@@ -366,8 +366,10 @@ class TestingBrowserProcess
   std::unique_ptr<SerialPolicyAllowedPorts> serial_policy_allowed_ports_;
   std::unique_ptr<activity_reporter::ActivityReporter> activity_reporter_;
 #if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_WASM)
   std::unique_ptr<HidSystemTrayIcon> hid_system_tray_icon_;
   std::unique_ptr<UsbSystemTrayIcon> usb_system_tray_icon_;
+#endif
   std::unique_ptr<component_updater::ComponentUpdateService> component_updater_;
   BuildState build_state_;
 #endif

@@ -268,6 +268,15 @@ if (!enable_pseudolocales) {
   platform_pak_locales -= pseudolocales
 }
 
+# The initial Chrome Wasm bundle embeds only the default locale. Keep this
+# separate from platform_pak_locales: Grit's desktop source files declare the
+# complete locale catalog and must generate the outputs they advertise, even
+# when the final Wasm repack selects one locale.
+chromium_wasm_pak_locales = []
+if (is_wasm && enable_chromium_wasm_chrome) {
+  chromium_wasm_pak_locales += [ "en-US" ]
+}
+
 if (is_apple) {
   # Same as the locales list but in the format Mac expects for output files:
   # it uses underscores instead of hyphens, and "en" instead of "en-US".

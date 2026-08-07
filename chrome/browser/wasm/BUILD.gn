@@ -1,0 +1,273 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Source-selected browser resources for the Wasm Chrome embedding.  The
+# desktop //chrome/browser:resources aggregate deliberately collects every
+# browser WebUI and native integration resource, including services that do
+# not have a Wasm implementation.  Keep the common browser frame resources
+# available without making that aggregate part of the Wasm dependency graph.
+
+import("//chrome/common/features.gni")
+import("//tools/grit/grit_rule.gni")
+
+assert(is_wasm && enable_chromium_wasm_chrome)
+
+grit("browser_resources") {
+  source = "../browser_resources.grd"
+
+  use_brotli = true
+
+  defines = chrome_grit_defines
+  defines += [ "enable_src_internal=$enable_src_internal" ]
+
+  if (enable_hangout_services_extension) {
+    defines += [ "enable_hangout_services_extension" ]
+  }
+
+  output_dir = "$root_gen_dir/chrome"
+  outputs = [
+    "grit/browser_resources.h",
+    "browser_resources.pak",
+  ]
+}
+
+# The frame and tab strip use the placeholder/icon resources even before
+# extension-backed application icons are supported.  This is intentionally a
+# direct Grit target rather than a dependency on the desktop resource group.
+grit("app_icon_resources") {
+  source = "../resources/app_icon/app_icon_resources.grd"
+  defines = chrome_grit_defines
+  outputs = [
+    "grit/app_icon_resources.h",
+    "grit/app_icon_resources_map.cc",
+    "grit/app_icon_resources_map.h",
+    "app_icon_resources_100_percent.pak",
+    "app_icon_resources_200_percent.pak",
+  ]
+  output_dir = "$root_gen_dir/chrome"
+}
+
+# The desktop //chrome/common:constants target brings platform path providers
+# and Chrome services that are not in the initial Wasm source closure. Own the
+# narrowly supported Chrome path keys here instead.
+source_set("wasm_chrome_paths") {
+  sources = [
+    "../../common/chrome_paths.h",
+    "../../common/chrome_paths_internal.h",
+    "../../common/chrome_paths_wasm.cc",
+    "wasm_chrome_paths.cc",
+  ]
+
+  deps = [ "//base" ]
+
+  public_deps = [
+    "//build:branding_buildflags",
+    "//extensions/buildflags",
+    "//third_party/widevine/cdm:buildflags",
+  ]
+}
+
+# Chrome's result-code implementation is two files, but the desktop
+# //chrome/common aggregate also owns crash reporting, component updates, and
+# other native integrations. Keep exit-code translation independently
+# selectable for the Wasm entry point and browser lifecycle.
+source_set("wasm_chrome_result_codes") {
+  sources = [
+    "../../common/chrome_result_codes.cc",
+    "../../common/chrome_result_codes.h",
+  ]
+
+  deps = [ "//base" ]
+  public_deps = [ "//content/public/common:result_codes" ]
+}
+
+# ResourceBundle is the sole bridge between Content and Chrome's curated Wasm
+# PAKs. Unsupported desktop facilities retain ContentClient's explicit empty
+# defaults rather than entering the source closure through ChromeContentClient.
+source_set("wasm_chrome_content_client") {
+  sources = [
+    "wasm_chrome_content_client.cc",
+    "wasm_chrome_content_client.h",
+  ]
+
+  deps = [ "//ui/base" ]
+  public_deps = [ "//content/public/common" ]
+}
+
+# The desktop collection implementation is owned by GlobalFeatures, whose
+# source closure includes services unavailable to the first Wasm Chrome window.
+# Select only the real collection/event machinery and route its singleton
+# accessor through the Wasm browser-process owner instead.
+source_set("wasm_browser_collection") {
+  sources = [
+    "../ui/browser_window/internal/browser_collection.cc",
+    "../ui/browser_window/internal/global_browser_collection_platform_delegate_non_android.cc",
+    "wasm_global_browser_collection.cc",
+    "wasm_global_browser_collection.h",
+  ]
+
+  public_deps = [ "//chrome/browser/ui/browser_window" ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//components/sessions:session_id",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/base/unowned_user_data",
+    "//ui/gfx",
+  ]
+}
+
+# Browser ownership is a keyed service. Its normal implementation is embedded
+# in the desktop UI aggregate and initializes History before a Profile exists.
+# The Wasm variant preserves collection/ownership semantics but leaves History
+# outside this blank-window lifecycle boundary until its database-backed slice
+# is source-selected.
+source_set("wasm_browser_manager") {
+  public = [
+    "../ui/browser_manager_service.h",
+    "../ui/browser_manager_service_factory.h",
+    "wasm_browser_manager.h",
+  ]
+
+  sources = [
+    "wasm_browser_manager_service.cc",
+    "wasm_browser_manager_service_factory.cc",
+    "wasm_profile_browser_collection.cc",
+  ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//components/keyed_service/content",
+    "//components/keyed_service/core",
+  ]
+
+  deps = [
+    ":wasm_browser_collection",
+    "//chrome/browser/profiles:profile",
+  ]
+}
+
+# This is deliberately separate from //chrome/browser:browser_process_impl.
+# The Wasm embedding owns only the process state that has an explicit Wasm
+# implementation, and receives its real profile/network objects from later
+# startup slices.
+source_set("wasm_browser_process") {
+  sources = [
+    "../browser_process.cc",
+    "../browser_process.h",
+    "wasm_browser_process.cc",
+    "wasm_browser_process.h",
+  ]
+
+  deps = [
+    ":wasm_browser_collection",
+    "//base",
+    "//chrome/common:buildflags",
+    "//components/os_crypt/async/browser:key_provider_interface",
+    "//components/prefs",
+    "//components/safe_browsing:buildflags",
+    "//components/supervised_user/core/browser:device_parental_controls",
+    "//media:media_buildflags",
+    "//services/network/public/cpp",
+    "//ui/base/unowned_user_data",
+  ]
+}
+
+# A production Profile implementation with an explicitly volatile backing
+# store. It deliberately selects Profile and ProfileKey directly instead of
+# the desktop profiles/misc aggregate, which owns services not available in
+# the first Wasm Chrome browser process.
+source_set("wasm_profile") {
+  sources = [
+    "wasm_profile.cc",
+    "wasm_profile.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_key",
+    "//chrome/common:pref_names",
+    "//components/keyed_service/content",
+    "//components/keyed_service/core",
+    "//components/pref_registry",
+    "//components/prefs",
+    "//components/profile_metrics",
+    "//components/user_prefs",
+    "//content/public/browser",
+    "//url",
+  ]
+}
+
+# Content owns the main browser loop, while this small Wasm-owned part owns
+# only the resources and process/profile objects that have an explicit web
+# implementation. Do not replace this with ChromeBrowserMainPartsWasm: that
+# class inherits the desktop startup graph.
+source_set("wasm_browser_main_parts") {
+  sources = [
+    "wasm_browser_main_parts.cc",
+    "wasm_browser_main_parts.h",
+  ]
+
+  deps = [
+    ":wasm_browser_manager",
+    ":wasm_browser_process",
+    ":wasm_chrome_paths",
+    ":wasm_chrome_result_codes",
+    ":wasm_profile",
+    "//base",
+    "//content/public/browser",
+    "//content/public/common",
+    "//ui/base",
+    "//ui/ozone",
+  ]
+}
+
+# This intentionally begins with ContentBrowserClient rather than the desktop
+# ChromeContentBrowserClient. Chrome browser services enter its graph only
+# after their Wasm lifecycle and shutdown ordering have been selected.
+source_set("wasm_content_browser_client") {
+  sources = [
+    "wasm_content_browser_client.cc",
+    "wasm_content_browser_client.h",
+  ]
+
+  deps = [
+    ":wasm_browser_main_parts",
+    "//base",
+    "//components/embedder_support:user_agent",
+    "//content/public/browser",
+    "//url",
+  ]
+}
+
+# The ContentMain entry delegate for the browser-only Wasm module. Keep its
+# dependencies direct so desktop startup orchestration cannot re-enter the
+# source-selected M6 target through an aggregate.
+source_set("wasm_chrome_main_delegate") {
+  sources = [
+    "wasm_chrome_main_delegate.cc",
+    "wasm_chrome_main_delegate.h",
+  ]
+
+  deps = [
+    ":wasm_chrome_content_client",
+    ":wasm_chrome_paths",
+    ":wasm_chrome_result_codes",
+    ":wasm_content_browser_client",
+    "//base",
+    "//components/content_settings/core/common",
+    "//components/memory_system",
+    "//components/network_session_configurator/common",
+    "//content/public/app",
+    "//content/public/common",
+    "//ui/base",
+    "//ui/gl",
+    "//ui/ozone",
+  ]
+}

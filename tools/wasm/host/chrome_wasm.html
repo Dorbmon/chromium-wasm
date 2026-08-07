@@ -1,0 +1,115 @@
+<!doctype html>
+<!--
+  Copyright 2026 The Chromium Authors
+  Use of this source code is governed by a BSD-style license that can be
+  found in the LICENSE file.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm Chrome foundation</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      background: #10141b;
+      color: #dbe7f5;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(800px, 1fr) 320px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    #browser-canvas {
+      display: block;
+      width: 800px;
+      height: 600px;
+      border: 1px solid #53657d;
+      background: #000;
+      outline: none;
+    }
+
+    #browser-canvas:focus {
+      border-color: #72ddf7;
+    }
+
+    aside {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid #53657d;
+      background: #171e28;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 4px 12px;
+      margin: 0 0 12px;
+    }
+
+    dt {
+      color: #8da9c4;
+    }
+
+    dd {
+      min-width: 0;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      max-height: 420px;
+      margin: 0;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    main[data-state="pass"] h1 {
+      color: #80ed99;
+    }
+
+    main[data-state="fail"] h1 {
+      color: #ff758f;
+    }
+  </style>
+</head>
+<body>
+  <main id="chrome-root" data-state="running">
+    <canvas
+      id="browser-canvas"
+      width="800"
+      height="600"
+      tabindex="0"
+      aria-label="Chromium Chrome output"></canvas>
+    <aside aria-label="Chrome foundation loader diagnostics">
+      <h1>Chromium Wasm Chrome foundation</h1>
+      <dl id="versions"></dl>
+      <pre id="chrome-status">Starting Chrome foundation…</pre>
+    </aside>
+  </main>
+  <script type="module">
+    import {runChromeWasmFoundationFromQuery} from "/__m6__/chrome_wasm_host.js";
+
+    runChromeWasmFoundationFromQuery().catch((error) => {
+      document.querySelector("#chrome-root").dataset.state = "fail";
+      document.querySelector("#chrome-status").textContent =
+        `HOST FAILURE: ${String(error)}`;
+    });
+  </script>
+</body>
+</html>

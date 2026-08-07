@@ -112,7 +112,9 @@ if (is_win) {
 group("assert_no_deps") {
   deps = []
 
-  if (is_android) {
+  if (enable_chromium_wasm_chrome && is_wasm) {
+    deps += [ ":chrome_wasm" ]
+  } else if (is_android) {
     deps += [ "//chrome/android:chrome_public_apk" ]
   } else {
     deps += [ ":chrome" ]
@@ -128,7 +130,9 @@ group("assert_no_deps") {
   assert_no_deps = [ "//chrome/installer/util:strings" ]
 }
 
-if (!is_android && !is_mac) {
+# chrome_initial owns the normal desktop PAK graph. The Wasm executable has a
+# separate entry point and deliberately curated assets below.
+if (!is_android && !is_mac && !(is_wasm && enable_chromium_wasm_chrome)) {
   group("chrome") {
     public_deps = [ ":chrome_initial" ]
     data_deps = [ ":chrome_initial" ]
@@ -395,6 +399,129 @@ if (!is_android && !is_mac) {
     }
   }
 }  # !is_android && !is_mac
+
+if (is_wasm && enable_chromium_wasm_chrome) {
+  assert(use_aura)
+  assert(use_ozone)
+  assert(toolkit_views)
+
+  # Keep the first Wasm Chrome bundle deliberately small and explicit. The
+  # desktop :packed_resources target aggregates onboarding, native integration,
+  # and many WebUIs whose backing services are intentionally unavailable in
+  # this port.
+  chrome_repack_wasm_percent("wasm_packed_resources_100_percent") {
+    percent = "100"
+    output_dir = root_out_dir
+    mark_as_data = true
+  }
+
+  chrome_repack_wasm_percent("wasm_packed_resources_200_percent") {
+    percent = "200"
+    output_dir = root_out_dir
+    mark_as_data = true
+  }
+
+  chrome_repack_wasm_locales("wasm_packed_resources_locales") {
+    input_locales = chromium_wasm_pak_locales
+    output_locales = chromium_wasm_pak_locales
+    output_dir = "$root_out_dir/locales"
+    mark_as_data = true
+  }
+
+  repack("wasm_packed_resources_extra") {
+    # These PAKs cover the Chrome frame, blank content, standard network error
+    # pages, and the initial version page. Additional internal pages join this
+    # list only with their backing Wasm service boundary.
+    sources = [
+      "$root_gen_dir/chrome/browser_resources.pak",
+      "$root_gen_dir/chrome/chrome_unscaled_resources.pak",
+      "$root_gen_dir/chrome/common_resources.pak",
+      "$root_gen_dir/components/components_resources.pak",
+      "$root_gen_dir/components/version_ui_resources.pak",
+      "$root_gen_dir/content/content_resources.pak",
+      "$root_gen_dir/mojo/public/js/mojo_bindings_resources.pak",
+      "$root_gen_dir/net/net_resources.pak",
+      "$root_gen_dir/third_party/blink/public/resources/blink_resources.pak",
+      "$root_gen_dir/third_party/blink/public/strings/permission_element_generated_strings.pak",
+      "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
+      "$root_gen_dir/ui/webui/resources/webui_resources.pak",
+    ]
+    output = "$root_out_dir/resources.pak"
+    mark_as_data = true
+    deps = [
+      "//chrome/app/theme:chrome_unscaled_resources",
+      "//chrome/browser/wasm:browser_resources",
+      "//chrome/common:resources",
+      "//components/resources:components_resources",
+      "//components/webui/version/resources",
+      "//content:content_resources",
+      "//mojo/public/js:resources",
+      "//net:net_resources",
+      "//third_party/blink/public:resources",
+      "//third_party/blink/public/strings:permission_element_generated_strings",
+      "//ui/resources:ui_lottie_resources_grd",
+      "//ui/webui/resources",
+    ]
+  }
+
+  group("wasm_packed_resources") {
+    public_deps = [
+      ":wasm_packed_resources_100_percent",
+      ":wasm_packed_resources_200_percent",
+      ":wasm_packed_resources_extra",
+      ":wasm_packed_resources_locales",
+    ]
+  }
+
+  config("chrome_wasm_assets") {
+    ldflags = [
+      "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8",
+      "-sSTACK_SIZE=2097152",
+      "--embed-file=" +
+          rebase_path("$root_out_dir/chrome_100_percent.pak", root_build_dir) +
+          "@/assets/chrome_100_percent.pak",
+      "--embed-file=" +
+          rebase_path("$root_out_dir/chrome_200_percent.pak", root_build_dir) +
+          "@/assets/chrome_200_percent.pak",
+      "--embed-file=" +
+          rebase_path("$root_out_dir/resources.pak", root_build_dir) +
+          "@/assets/resources.pak",
+      "--embed-file=" +
+          rebase_path("$root_out_dir/locales/en-US.pak", root_build_dir) +
+          "@/assets/locales/en-US.pak",
+      "--embed-file=" +
+          rebase_path("$root_out_dir/icudtl.dat", root_build_dir) +
+          "@/assets/icudtl.dat",
+    ]
+  }
+
+  executable("chrome_wasm") {
+    sources = [
+      "app/chrome_exe_main_aura.cc",
+      "app/chrome_main.h",
+      "app/chrome_main_wasm.cc",
+    ]
+    inputs = [
+      "$root_out_dir/chrome_100_percent.pak",
+      "$root_out_dir/chrome_200_percent.pak",
+      "$root_out_dir/resources.pak",
+      "$root_out_dir/locales/en-US.pak",
+      "$root_out_dir/icudtl.dat",
+    ]
+    configs += [ ":chrome_wasm_assets" ]
+    deps = [
+      ":wasm_packed_resources",
+      "//chrome/app:generated_resources",
+      "//chrome/browser/wasm:wasm_chrome_main_delegate",
+      "//chrome/browser/wasm:wasm_chrome_result_codes",
+      "//chrome/common:buildflags",
+      "//content/public/app",
+      "//content/public/common",
+      "//third_party/icu:icudata",
+      "//ui/ozone",
+    ]
+  }
+}
 
 if (is_win) {
   shared_library("chrome_dll") {
@@ -1429,48 +1556,62 @@ if (is_win) {
 }
 
 group("dependencies") {
-  public_deps = [
-    "//build:branding_buildflags",
-    "//build:chromeos_buildflags",
-    "//chrome/browser",
-    "//chrome/browser:buildflags",
-    "//chrome/browser:shell_integration",
-    "//chrome/browser/diagnostics",
-    "//chrome/browser/policy:path_parser",
-    "//chrome/child",
-    "//chrome/common",
-    "//chrome/gpu",
-    "//chrome/renderer",
-    "//chrome/utility",
-    "//components/crash/core/app",
-    "//components/devtools/devtools_pipe",
-    "//components/memory_system",
-    "//components/startup_metric_utils",
-    "//components/sync",
-    "//components/upload_list",
-    "//components/variations/service",
-    "//components/webui/about",
-    "//content/public/child",
-    "//pdf",
-    "//services/tracing/public/cpp",
-    "//third_party/blink/public:blink_devtools_frontend_resources",
-    "//third_party/blink/public:blink_devtools_inspector_resources",
-    "//v8:v8_headers",
-  ]
-
-  if (enable_printing) {
-    public_deps += [ "//printing" ]
-  }
-
-  if (is_chromeos) {
-    public_deps += [
-      "//ash/constants",
-      "//chrome/browser/ash/boot_times_recorder",
-      "//chrome/browser/ash/dbus",
-      "//chrome/browser/ash/schedqos",
-      "//chromeos/ash/components/memory",
-      "//chromeos/dbus/constants",
+  if (is_wasm && enable_chromium_wasm_chrome) {
+    # Keep this compatibility group source-selected as well: GN resolves the
+    # labels in every target declared in this file, even when chrome_wasm is
+    # the only requested output. Selecting the desktop aggregate here would
+    # otherwise reintroduce policy, diagnostics, and test-only native graphs.
+    public_deps = [
+      "//build:branding_buildflags",
+      "//chrome/browser/wasm:wasm_chrome_main_delegate",
     ]
+  } else {
+    public_deps = [
+      "//build:branding_buildflags",
+      "//build:chromeos_buildflags",
+      "//chrome/browser",
+      "//chrome/browser:buildflags",
+      "//chrome/browser:shell_integration",
+      "//chrome/browser/diagnostics",
+      "//chrome/browser/policy:path_parser",
+      "//chrome/child",
+      "//chrome/common",
+      "//chrome/gpu",
+      "//chrome/renderer",
+      "//chrome/utility",
+      "//components/devtools/devtools_pipe",
+      "//components/memory_system",
+      "//components/startup_metric_utils",
+      "//components/sync",
+      "//components/upload_list",
+      "//components/variations/service",
+      "//components/webui/about",
+      "//content/public/child",
+      "//pdf",
+      "//services/tracing/public/cpp",
+      "//third_party/blink/public:blink_devtools_frontend_resources",
+      "//third_party/blink/public:blink_devtools_inspector_resources",
+      "//v8:v8_headers",
+    ]
+
+    if (!is_wasm) {
+      public_deps += [ "//components/crash/core/app" ]
+    }
+
+    if (enable_printing) {
+      public_deps += [ "//printing" ]
+    }
+
+    if (is_chromeos) {
+      public_deps += [
+        "//ash/constants",
+        "//chrome/browser/ash/boot_times_recorder",
+        "//chrome/browser/ash/dbus",
+        "//chrome/browser/ash/schedqos",
+        "//chromeos/ash/components/memory",
+        "//chromeos/dbus/constants",
+      ]
+    }
   }
 }
 
@@ -1521,23 +1662,40 @@ copy("visual_elements_resources") {
 }
 
 group("resources") {
-  public_deps = [
-    "//chrome/browser:resources",
-    "//chrome/common:resources",
-    "//chrome/renderer:resources",
-  ]
+  if (is_wasm && enable_chromium_wasm_chrome) {
+    public_deps = [
+      "//chrome/browser/wasm:browser_resources",
+      "//chrome/common:resources",
+      "//chrome/renderer:resources",
+    ]
+  } else {
+    public_deps = [
+      "//chrome/browser:resources",
+      "//chrome/common:resources",
+      "//chrome/renderer:resources",
+    ]
+  }
 }
 
 group("extra_resources") {
-  # Deps should be same as those in chrome_extra_paks() within chrome_paks.gni.
-  public_deps = [
-    "//chrome/browser/resources",
-    "//components/autofill/core/browser:autofill_address_rewriter_resources",
-    "//components/autofill/core/browser:autofill_alternative_state_name_map_resources",
-  ]
+  # The desktop aggregate includes WebUIs whose native service boundaries do
+  # not exist in Wasm. Keep callers of this compatibility group on the
+  # explicitly curated M6 assets instead.
+  if (is_wasm && enable_chromium_wasm_chrome) {
+    public_deps = [ ":wasm_packed_resources" ]
+  } else {
+    # Deps should be same as those in chrome_extra_paks() within
+    # chrome_paks.gni.
+    public_deps = [
+      "//chrome/browser/resources",
+      "//components/autofill/core/browser:autofill_address_rewriter_resources",
+      "//components/autofill/core/browser:autofill_alternative_state_name_map_resources",
+    ]
+  }
 }
 
-if (is_chrome_branded && !is_android) {
+if (is_chrome_branded && !is_android &&
+    !(is_wasm && enable_chromium_wasm_chrome)) {
   if (!is_mac) {
     _preinstalled_apps_target_type = "copy"
   } else {
@@ -1566,7 +1724,7 @@ if (is_chrome_branded && !is_android) {
   }
 }
 
-if (!is_android) {
+if (!is_android && !(is_wasm && enable_chromium_wasm_chrome)) {
   chrome_paks("packed_resources") {
     if (is_mac) {
       output_dir = "$root_gen_dir/repack"
@@ -1587,11 +1745,13 @@ if (!is_android) {
   }
 }
 
-repack("browser_tests_pak") {
-  testonly = true
-  sources = [ "$root_gen_dir/chrome/webui_test_resources.pak" ]
-  output = "$root_out_dir/browser_tests.pak"
-  deps = [ "//chrome/test/data/webui:resources" ]
+if (!(is_wasm && enable_chromium_wasm_chrome)) {
+  repack("browser_tests_pak") {
+    testonly = true
+    sources = [ "$root_gen_dir/chrome/webui_test_resources.pak" ]
+    output = "$root_out_dir/browser_tests.pak"
+    deps = [ "//chrome/test/data/webui:resources" ]
+  }
 }
 
 group("strings") {

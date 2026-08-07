@@ -258,6 +258,42 @@ class ManifestTest(unittest.TestCase):
                 self.assertIn(expected, arguments)
         self.assertNotIn("toolkit_views =", arguments)
 
+    def test_manifest_has_reproducible_m6_chrome_args(self) -> None:
+        manifest = load_manifest()
+        arguments = gn_args_text(manifest, "m6_chrome_gn_args")
+        for expected in (
+            "enable_chromium_wasm_v8 = true\n",
+            "enable_chromium_wasm_content = true\n",
+            "enable_chromium_wasm_chrome = true\n",
+            "use_aura = true\n",
+            "use_ozone = true\n",
+            "toolkit_views = true\n",
+            "enable_hidpi = true\n",
+            "enable_supervised_users = false\n",
+            "enable_background_contents = false\n",
+            "enable_background_mode = false\n",
+            "enable_downgrade_processing = false\n",
+            "enable_session_service = false\n",
+            "enable_chrome_notifications = false\n",
+            "enable_message_center = false\n",
+            "enable_platform_experience = false\n",
+            "enable_updater = false\n",
+            "enable_update_notifications = false\n",
+            "enterprise_watermark = false\n",
+            "chrome_root_store_cert_management_ui = false\n",
+            "enable_webui_certificate_viewer = false\n",
+            "enable_extensions = false\n",
+            "enable_library_cdms = false\n",
+            "enable_widevine = false\n",
+            "enable_printing = false\n",
+            "enable_oop_printing = false\n",
+            'v8_target_cpu = "arm"\n',
+            "v8_target_is_simulator = true\n",
+            "v8_jitless = true\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, arguments)
+
     def test_m3_safe_browsing_stops_before_platform_resource_generation(
         self,
     ) -> None:
@@ -467,9 +503,16 @@ class BootstrapTest(unittest.TestCase):
                 ),
                 gn_args_text(manifest, "m3_content_gn_args"),
             )
+            self.assertEqual(
+                (generated_root / "out/wasm-chrome-m6/args.gn").read_text(
+                    encoding="utf-8"
+                ),
+                gn_args_text(manifest, "m6_chrome_gn_args"),
+            )
             self.assertIn(
                 "build_with_chromium = !enable_chromium_wasm_port || "
-                "enable_chromium_wasm_content\n",
+                "enable_chromium_wasm_content || "
+                "enable_chromium_wasm_chrome\n",
                 (
                     generated_root / "build/config/gclient_args.gni"
                 ).read_text(encoding="utf-8"),

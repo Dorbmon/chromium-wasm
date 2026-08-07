@@ -14,7 +14,6 @@
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "components/keyed_service/core/keyed_service.h"
 
-class Browser;
 class BrowserWindowInterface;
 class Profile;
 
@@ -37,12 +36,12 @@ class BrowserManagerService : public KeyedService,
   size_t GetSize() const override;
 
   // Adds a new Browser to be owned by the service.
-  void AddBrowser(std::unique_ptr<Browser> browser);
+  void AddBrowser(std::unique_ptr<BrowserWindowInterface> browser);
 
   // Destroys `browser` if owned and managed by the service. It is expected that
   // `browser` has first emitted a did-close event and `OnBrowserClosed()` is
   // called before `DeleteBrowser()`.
-  void DeleteBrowser(Browser* browser);
+  void DeleteBrowser(BrowserWindowInterface* browser);
 
   // Adds a new unowned Browser created by unit tests.
   // TODO(crbug.com/417766643): Remove this once all use of Browser in unit

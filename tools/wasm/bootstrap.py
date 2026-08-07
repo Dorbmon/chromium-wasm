@@ -2256,6 +2256,11 @@ def ensure_generated_configuration(
             REPO_ROOT / "out/wasm-content-m3/args.gn",
             gn_args_text(manifest, "m3_content_gn_args"),
         ),
+        (
+            "generated M6 Chrome GN args",
+            REPO_ROOT / "out/wasm-chrome-m6/args.gn",
+            gn_args_text(manifest, "m6_chrome_gn_args"),
+        ),
     )
 
     if install:

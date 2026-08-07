@@ -28,6 +28,12 @@ grit_strings("platform_locale_settings") {
     } else {
       source = "locale_settings_chromiumos.grd"
     }
+  } else if (is_wasm) {
+    # This is resource data only: it seeds Blink's generic desktop font
+    # preferences and does not opt WebAssembly into any POSIX runtime API.
+    # The initial M6 host has no native font service, so retain the generic
+    # open-source desktop fallback list until a host-font contract exists.
+    source = "locale_settings_linux.grd"
   } else if (is_posix) {
     # All other POSIX systems use the Linux one.
     source = "locale_settings_linux.grd"

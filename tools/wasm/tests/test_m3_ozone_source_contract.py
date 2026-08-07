@@ -26,7 +26,9 @@ class M3OzoneSourceContractTest(unittest.TestCase):
         self.assertIn("ozone_auto_platforms = use_ozone && !is_wasm", config)
         self.assertIn('ozone_platform = "wasm"', config)
         self.assertIn(
-            "ozone_platform_wasm = is_wasm && enable_chromium_wasm_content",
+            "ozone_platform_wasm =\n"
+            "      is_wasm && (enable_chromium_wasm_content || "
+            "enable_chromium_wasm_chrome)",
             config,
         )
         self.assertIn("if (ozone_platform_wasm)", ozone)

@@ -8,7 +8,9 @@ import("//build/toolchain/toolchain.gni")
 declare_args() {
   # Indicates if Ozone is enabled. Ozone is a low-level library layer for Linux
   # that does not require X11.
-  use_ozone = is_chromeos || is_fuchsia || is_linux
+  use_ozone = is_chromeos || is_fuchsia || is_linux ||
+              (is_wasm &&
+               (enable_chromium_wasm_content || enable_chromium_wasm_chrome))
 }
 
 declare_args() {
@@ -36,7 +38,8 @@ declare_args() {
 declare_args() {
   # The platform that will used at runtime by default. This can be overridden
   # with the command line flag --ozone-platform=<platform>.
-  if (is_wasm && enable_chromium_wasm_content) {
+  if (is_wasm &&
+      (enable_chromium_wasm_content || enable_chromium_wasm_chrome)) {
     ozone_platform = "wasm"
   } else {
     ozone_platform = ""
@@ -61,7 +64,8 @@ declare_args() {
   ozone_platform_wayland = false
 
   # Compile the WebAssembly host-canvas platform.
-  ozone_platform_wasm = is_wasm && enable_chromium_wasm_content
+  ozone_platform_wasm =
+      is_wasm && (enable_chromium_wasm_content || enable_chromium_wasm_chrome)
 
   if (ozone_auto_platforms) {
     # Use headless as the default platform unless modified below.

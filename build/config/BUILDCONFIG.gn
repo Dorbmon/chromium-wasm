@@ -132,6 +132,11 @@ declare_args() {
   # M0-M2 graph from a full Chromium M3 graph.
   enable_chromium_wasm_content = false
 
+  # Enables the M6 single-process Chrome Views graph. This deliberately stays
+  # separate from the Content Shell gate so desktop Chrome sources are never
+  # selected by an earlier milestone.
+  enable_chromium_wasm_chrome = false
+
   # Set to enable the official build level of optimization. This has nothing
   # to do with branding, but enables an additional level of optimization above
   # release (!is_debug). This might be better expressed as a tri-state

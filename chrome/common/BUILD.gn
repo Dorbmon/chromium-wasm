@@ -21,7 +21,10 @@ import("//testing/libfuzzer/fuzzer_test.gni")
 import("//third_party/widevine/cdm/widevine.gni")
 import("//tools/grit/grit_rule.gni")
 
-assert(enable_supervised_users)
+# The Wasm Chrome target deliberately does not expose Family Link. Keep the
+# desktop invariant everywhere else while allowing its explicitly curated
+# source closure to leave the unsupported feature disabled.
+assert(enable_supervised_users || (is_wasm && enable_chromium_wasm_chrome))
 assert(!is_fuchsia, "Fuchsia shouldn't use anything in //chrome")
 
 fuzzer_test("ini_parser_fuzzer") {
@@ -614,6 +617,31 @@ static_library("constants") {
       "//third_party/widevine/cdm:headers",
     ]
   }
+}
+
+# Profile's base API uses only inline preference-name declarations. The full
+# :constants target also owns Chrome path registration and other platform
+# constants; expose the header prerequisites separately for the source-selected
+# Wasm profile.
+source_set("pref_names") {
+  public = [ "pref_names.h" ]
+  sources = [
+    "pref_font_script_names-inl.h",
+    "pref_font_webkit_names.h",
+  ]
+
+  public_deps = [
+    ":buildflags",
+    "//build:branding_buildflags",
+    "//components/compose:buildflags",
+    "//components/offline_pages/buildflags",
+    "//components/signin/public/base:signin_buildflags",
+    "//content/public/common:buildflags",
+    "//extensions/buildflags",
+    "//pdf:buildflags",
+    "//printing/buildflags",
+    "//rlz/buildflags",
+  ]
 }
 
 # Use a static library here because many test binaries depend on this but don't

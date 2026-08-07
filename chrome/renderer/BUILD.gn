@@ -18,7 +18,9 @@ import("//testing/libfuzzer/fuzzer_test.gni")
 import("//third_party/widevine/cdm/widevine.gni")
 import("//tools/grit/grit_rule.gni")
 
-assert(enable_supervised_users)
+# The renderer shares the Wasm Chrome feature contract: Family Link is an
+# unsupported desktop service and remains disabled.
+assert(enable_supervised_users || (is_wasm && enable_chromium_wasm_chrome))
 
 grit("resources") {
   source = "resources/renderer_resources.grd"
@@ -162,7 +164,6 @@ static_library("renderer") {
     "//components/pdf/common:util",
     "//components/permissions:permissions_common",
     "//components/plugins/renderer",
-    "//components/record_replay/core/common",
     "//components/resources:components_resources",
     "//components/resources:components_scaled_resources",
     "//components/safe_browsing:buildflags",
@@ -220,6 +221,13 @@ static_library("renderer") {
     "//ui/gfx/geometry",
     "//v8",
   ]
+
+  # Record/replay has a desktop renderer agent and no single-process Wasm
+  # transport yet. Keep normal page rendering available while withholding the
+  # feature at its renderer boundary.
+  if (!is_wasm) {
+    deps += [ "//components/record_replay/core/common" ]
+  }
 
   if (is_mac || is_win || is_linux || is_chromeos) {
     deps += [ "//components/webapps/isolated_web_apps:scheme" ]
@@ -326,7 +334,10 @@ static_library("renderer") {
       "wallet/boarding_pass_extractor.h",
     ]
     deps += [ "//chrome/common/wallet:mojo_bindings" ]
-  } else {
+  } else if (!is_wasm) {
+    # Read Anything, its local ML dependencies, NTP searchbox, and the Webium
+    # renderer extension have no Wasm service boundary yet. The base Chrome
+    # renderer remains available for ordinary web content.
     sources += [
       "accessibility/ax_tree_distiller.cc",
       "accessibility/ax_tree_distiller.h",
@@ -368,7 +379,6 @@ static_library("renderer") {
       "//chrome/common/read_anything:mojo_bindings",
       "//chrome/renderer/webui_browser",
       "//components/crx_file",
-      "//components/record_replay/content/renderer",
       "//components/trusted_vault",
       "//services/screen_ai/buildflags",
       "//services/screen_ai/public/mojom",
@@ -382,6 +392,10 @@ static_library("renderer") {
       "//third_party/tflite_support",
       "//third_party/tflite_support:tflite_support_proto",
     ]
+
+    if (!is_wasm) {
+      deps += [ "//components/record_replay/content/renderer" ]
+    }
   }
 
   if (is_chromeos) {
@@ -398,7 +412,7 @@ static_library("renderer") {
     ]
   }
 
-  if (!is_android) {
+  if (!is_android && !is_wasm) {
     sources += [
       "indigo/indigo_agent.cc",
       "indigo/indigo_agent.h",

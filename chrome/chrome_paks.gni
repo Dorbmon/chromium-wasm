@@ -108,6 +108,111 @@ template("chrome_repack_percent") {
   }
 }
 
+# A deliberately narrow counterpart to chrome_repack_percent() for the
+# single-process Wasm Chrome build.  The desktop template depends on the
+# aggregate //components/resources target, which in turn materializes crash,
+# GCM, and diagnostic WebUI resources.  Those services are not available in
+# the Wasm port.  Keep the scale-dependent resources used by Blink, Views, and
+# the Chrome frame explicit instead.
+template("chrome_repack_wasm_percent") {
+  percent = invoker.percent
+
+  repack(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "copy_data_to_bundle",
+                             "mark_as_data",
+                             "repack_allowlist",
+                             "visibility",
+                           ])
+
+    sources = [
+      "$root_gen_dir/chrome/app_icon_resources_${percent}_percent.pak",
+      "$root_gen_dir/chrome/renderer_resources_${percent}_percent.pak",
+      "$root_gen_dir/chrome/theme_resources_${percent}_percent.pak",
+      "$root_gen_dir/components/components_resources_${percent}_percent.pak",
+      "$root_gen_dir/third_party/blink/public/resources/blink_scaled_resources_${percent}_percent.pak",
+      "$root_gen_dir/ui/resources/ui_resources_${percent}_percent.pak",
+      "$root_gen_dir/ui/views/resources/views_resources_${percent}_percent.pak",
+    ]
+
+    deps = [
+      "//chrome/app/theme:theme_resources",
+      "//chrome/browser/wasm:app_icon_resources",
+      "//chrome/renderer:resources",
+      "//components/resources:components_scaled_resources",
+      "//third_party/blink/public:scaled_resources_${percent}_percent",
+      "//ui/resources:ui_resources_grd",
+      "//ui/views/resources:resources_grd",
+    ]
+
+    if (defined(invoker.deps)) {
+      deps += invoker.deps
+    }
+
+    output = "${invoker.output_dir}/chrome_${percent}_percent.pak"
+  }
+}
+
+# Chrome's desktop locale bundle includes Indigo strings whenever the target is
+# not Android.  Indigo is a desktop-only WebUI in the Wasm feature set, so make
+# the locale closure explicit as well.  This still includes all common Chrome,
+# Blink, networking, accessibility, and UI strings needed by the browser
+# frame; it intentionally does not map Wasm onto a desktop platform.
+template("chrome_repack_wasm_locales") {
+  repack_locales(target_name) {
+    forward_variables_from(invoker, "*")
+
+    source_patterns = [
+      "${root_gen_dir}/chrome/branded_strings_",
+      "${root_gen_dir}/chrome/generated_resources_",
+      "${root_gen_dir}/chrome/locale_settings_",
+      "${root_gen_dir}/chrome/platform_locale_settings_",
+      "${root_gen_dir}/components/omnibox/resources/omnibox_pedal_synonyms_",
+      "${root_gen_dir}/components/plus_addresses/core/browser/resources/strings/plus_addresses_strings_",
+      "${root_gen_dir}/components/strings/components_branded_strings_",
+      "${root_gen_dir}/components/strings/components_locale_settings_",
+      "${root_gen_dir}/components/strings/components_strings_",
+      "${root_gen_dir}/components/strings/components_variant_strings_",
+      "${root_gen_dir}/components/strings/privacy_sandbox_strings_",
+      "${root_gen_dir}/third_party/blink/public/strings/blink_strings_",
+      "${root_gen_dir}/third_party/blink/public/strings/permission_element_strings_",
+      "${root_gen_dir}/device/bluetooth/strings/bluetooth_strings_",
+      "${root_gen_dir}/device/fido/strings/fido_strings_",
+      "${root_gen_dir}/services/strings/services_strings_",
+      "${root_gen_dir}/third_party/libaddressinput/address_input_strings_",
+      "${root_gen_dir}/ui/strings/app_locale_settings_",
+      "${root_gen_dir}/ui/strings/auto_image_annotation_strings_",
+      "${root_gen_dir}/ui/strings/ax_strings_",
+      "${root_gen_dir}/ui/strings/ui_strings_",
+    ]
+
+    deps = [
+      "//chrome/app:branded_strings",
+      "//chrome/app:generated_resources",
+      "//chrome/app/resources:locale_settings",
+      "//chrome/app/resources:platform_locale_settings",
+      "//components/omnibox/resources:omnibox_pedal_synonyms",
+      "//components/plus_addresses/core/browser/resources/strings",
+      "//components/strings:components_branded_strings",
+      "//components/strings:components_locale_settings",
+      "//components/strings:components_strings",
+      "//components/strings:components_variant_strings",
+      "//components/strings:privacy_sandbox_strings",
+      "//device/bluetooth/strings",
+      "//device/fido/strings",
+      "//services/strings",
+      "//third_party/blink/public/strings",
+      "//third_party/blink/public/strings:permission_element_strings",
+      "//third_party/libaddressinput:strings",
+      "//ui/strings:app_locale_settings",
+      "//ui/strings:auto_image_annotation_strings",
+      "//ui/strings:ax_strings",
+      "//ui/strings:ui_strings",
+    ]
+  }
+}
+
 template("chrome_extra_paks") {
   repack(target_name) {
     forward_variables_from(invoker,
@@ -485,7 +590,10 @@ template("chrome_extra_paks") {
         deps += [ "//ash/ambient/resources:lottie_resources" ]
       }
     }
-    if (!is_android && !is_chromeos) {
+    # The desktop onboarding bundles assume native profile-picker and default
+    # browser integration. The single-process Wasm port deliberately exposes
+    # neither surface.
+    if (!is_android && !is_chromeos && !is_wasm) {
       sources += [
         "$root_gen_dir/chrome/default_browser_modal_resources.pak",
         "$root_gen_dir/chrome/intro_resources.pak",

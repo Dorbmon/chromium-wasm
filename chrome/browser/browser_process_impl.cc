@@ -205,11 +205,15 @@ void OnLocalStatePrefsLoaded();
 #include "chrome/browser/devtools/devtools_auto_opener.h"
 #include "chrome/browser/error_reporting/chrome_js_error_report_processor.h"
 #include "chrome/browser/gcm/gcm_product_util.h"
+#if !BUILDFLAG(IS_WASM)
 #include "chrome/browser/hid/hid_system_tray_icon.h"
+#endif
 #include "chrome/browser/intranet_redirect_detector.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/resource_coordinator/tab_manager.h"
+#if !BUILDFLAG(IS_WASM)
 #include "chrome/browser/usb/usb_system_tray_icon.h"
+#endif
 #include "chrome/browser/web_applications/isolated_web_apps/runtime_init.h"
 #include "chrome/browser/webapps/webapps_client_desktop.h"
 #include "components/gcm_driver/gcm_client_factory.h"
@@ -264,9 +268,11 @@ void OnLocalStatePrefsLoaded();
 #include "chrome/browser/usb/usb_pinned_notification.h"
 #include "components/crash/core/app/crashpad.h"
 #elif !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_WASM)
 #include "chrome/browser/hid/hid_status_icon.h"
-#include "chrome/browser/screen_ai/screen_ai_downloader_non_chromeos.h"
 #include "chrome/browser/usb/usb_status_icon.h"
+#endif
+#include "chrome/browser/screen_ai/screen_ai_downloader_non_chromeos.h"
 #include "components/enterprise/browser/controller/chrome_browser_cloud_management_controller.h"
 #endif
 
@@ -515,7 +521,7 @@ void BrowserProcessImpl::Init() {
           local_state());
 #endif
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 #if BUILDFLAG(IS_CHROMEOS)
   hid_system_tray_icon_ = std::make_unique<HidPinnedNotification>();
   usb_system_tray_icon_ = std::make_unique<UsbPinnedNotification>();
@@ -523,7 +529,7 @@ void BrowserProcessImpl::Init() {
   hid_system_tray_icon_ = std::make_unique<HidStatusIcon>();
   usb_system_tray_icon_ = std::make_unique<UsbStatusIcon>();
 #endif  // BUILDFLAG(IS_CHROMEOS)
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 
   features_->PostBrowserProcessInit();
 
@@ -599,11 +605,13 @@ void BrowserProcessImpl::StartTearDown() {
   }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
+#if !BUILDFLAG(IS_WASM)
   // |hid_system_tray_icon_| and |usb_system_tray_icon_| must be destroyed
   // before |system_notification_helper_| for ChromeOS and |status_tray_| for
   // non-ChromeOS.
   hid_system_tray_icon_.reset();
   usb_system_tray_icon_.reset();
+#endif
 
   system_notification_helper_.reset();
 
@@ -1227,7 +1235,7 @@ SerialPolicyAllowedPorts* BrowserProcessImpl::serial_policy_allowed_ports() {
   return serial_policy_allowed_ports_.get();
 }
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 HidSystemTrayIcon* BrowserProcessImpl::hid_system_tray_icon() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return hid_system_tray_icon_.get();
@@ -1249,7 +1257,7 @@ void BrowserProcessImpl::set_usb_system_tray_icon_for_test(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   usb_system_tray_icon_ = std::move(icon);
 }
-#endif
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 
 os_crypt_async::OSCryptAsync* BrowserProcessImpl::os_crypt_async() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);

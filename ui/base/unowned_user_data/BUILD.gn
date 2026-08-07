@@ -5,7 +5,11 @@
 # Technically, this could be supported on more platforms, but these are the only
 # ones where it's needed today.
 
-assert(is_win || is_mac || is_linux || is_chromeos || is_android)
+# BrowserProcess owns this host in the M6 source-selected Chrome target. The
+# Wasm condition remains narrow so Content Shell does not start selecting a
+# desktop-oriented process-wide service just by enabling ozone_wasm.
+assert(is_win || is_mac || is_linux || is_chromeos || is_android ||
+       (is_wasm && enable_chromium_wasm_chrome))
 
 component("unowned_user_data") {
   defines = [ "IS_UNOWNED_USER_DATA_IMPL" ]

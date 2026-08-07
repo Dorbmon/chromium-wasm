@@ -1,24 +1,22 @@
-// Copyright 2025 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/browser_manager_service.h"
-
 #include <algorithm>
+#include <optional>
+#include <utility>
 
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/lifetime/application_lifetime_desktop.h"
-#include "chrome/browser/lifetime/browser_shutdown.h"
-#include "chrome/browser/lifetime/termination_notification.h"
-#include "chrome/browser/printing/background_printing_manager.h"
+#include "base/check.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_destroyer.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "components/keep_alive_registry/keep_alive_registry.h"
-#include "components/keep_alive_registry/keep_alive_types.h"
-#include "printing/buildflags/buildflags.h"
+
+#if !BUILDFLAG(IS_WASM)
+#error "wasm_browser_manager_service.cc must only be built for Wasm"
+#endif
 
 BrowserManagerService::BrowserManagerService(Profile* profile)
     : ProfileBrowserCollection(profile) {
@@ -36,8 +34,8 @@ void BrowserManagerService::Shutdown() {
     browsers_and_subscriptions_.pop_back();
     std::erase(browsers_activation_order_, entry.browser.get());
 
-    // `entry` is destroyed here. Member destruction order ensures browser
-    // is released before subscriptions are destroyed.
+    // `entry` is destroyed here. Member destruction order ensures browser is
+    // released before subscriptions are destroyed.
   }
 
   browsers_activation_order_.clear();
@@ -82,9 +80,8 @@ void BrowserManagerService::AddBrowser(
       browser_ptr->RegisterBrowserDidClose(base::BindRepeating(
           &BrowserManagerService::OnBrowserClosed, base::Unretained(this)))));
 
-  // Push the browser to the back of the activation order list. It will be moved
-  // to the front when the browser is eventually activated (which may or may
-  // not happen immediately after creation).
+  // Push the browser to the back of the activation order list. It is moved to
+  // the front when activation eventually occurs.
   browsers_activation_order_.push_back(browser_ptr);
 
   base::WeakPtr<BrowserWindowInterface> browser_weak_ptr =
@@ -98,8 +95,8 @@ void BrowserManagerService::AddBrowser(
 
 void BrowserManagerService::DeleteBrowser(
     BrowserWindowInterface* removed_browser) {
-  // Extract the Browser from `browsers_and_subscriptions_` before deleting to
-  // avoid UAF risk in the case of re-entrancy.
+  // Extract the browser before deleting it to avoid a use-after-free if its
+  // teardown sends a synchronous close notification.
   std::optional<BrowserAndSubscriptions> target_browser_and_subscriptions;
   auto it = std::ranges::find_if(
       browsers_and_subscriptions_,
@@ -107,59 +104,19 @@ void BrowserManagerService::DeleteBrowser(
           const BrowserAndSubscriptions& browser_and_subscriptions) {
         return browser_and_subscriptions.browser.get() == removed_browser;
       });
-  if (it != browsers_and_subscriptions_.end()) {
-    std::erase(browsers_activation_order_, it->browser.get());
-    target_browser_and_subscriptions = std::move(*it);
-    browsers_and_subscriptions_.erase(it);
-  } else {
-    // `removed_browser` not present in `browsers_and_subscriptions_`.
+  if (it == browsers_and_subscriptions_.end()) {
     return;
   }
 
-  // The system incognito profile should not try be destroyed using
-  // ProfileDestroyer::DestroyProfileWhenAppropriate(). This profile can be
-  // used, at least, by the user manager window. This window is not a browser,
-  // therefore, chrome::IsOffTheRecordBrowserActiveForProfile(profile_) returns
-  // false, while the user manager window is still opened. This cannot be fixed
-  // in ProfileDestroyer::DestroyProfileWhenAppropriate(), because the
-  // ProfileManager needs to be able to destroy all profiles when it is
-  // destroyed. See crbug.com/40433858
-  //
-  // Non-primary OffTheRecord profiles should not be destroyed directly by
-  // Browser (e.g. for offscreen tabs, https://crbug.com/41285708).
-  //
-  // TODO(crbug.com/40159237): Use ScopedProfileKeepAlive for Incognito too,
-  // instead of separate logic for Incognito and regular profiles.
-  target_browser_and_subscriptions->browser.reset();
-  if (browsers_and_subscriptions_.empty() && profile_->IsIncognitoProfile() &&
-      !profile_->IsSystemProfile()) {
-#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
-    // The Printing Background Manager holds onto preview dialog WebContents
-    // whose corresponding print jobs have not yet fully spooled. Make sure
-    // these get destroyed before tearing down the incognito profile so that
-    // their RenderFrameHosts can exit in time - see crbug.com/41235373
-    g_browser_process->background_printing_manager()
-        ->DeletePreviewContentsForBrowserContext(&profile_.get());
-#endif
-    // An incognito profile is no longer needed, this indirectly frees
-    // its cache and cookies once it gets destroyed at the appropriate time.
-    ProfileDestroyer::DestroyOTRProfileWhenAppropriate(&profile_.get());
-  }
+  std::erase(browsers_activation_order_, it->browser.get());
+  target_browser_and_subscriptions = std::move(*it);
+  browsers_and_subscriptions_.erase(it);
 
-  // If we're exiting, send out the APP_TERMINATING notification to allow other
-  // modules to shut themselves down.
-  if (!KeepAliveRegistry::GetInstance()->IsOriginRegistered(
-          KeepAliveOrigin::BROWSER) &&
-      (browser_shutdown::IsTryingToQuit() ||
-       g_browser_process->IsShuttingDown())) {
-    // Last browser has just closed, and this is a user-initiated quit or there
-    // is no module keeping the app alive, so send out our notification. No need
-    // to call ProfileManager::ShutdownSessionServices() as part of the
-    // shutdown, because Browser::WindowClosing() already makes sure that the
-    // SessionService is created and notified.
-    browser_shutdown::NotifyAppTerminating();
-    chrome::OnAppExiting();
-  }
+  // WasmProfile currently supports only a regular profile. Incognito profile
+  // destruction and desktop application-termination notifications have no
+  // supported M6 lifecycle yet; main-parts owns process shutdown instead.
+  CHECK(!profile_->IsOffTheRecord());
+  target_browser_and_subscriptions->browser.reset();
 }
 
 void BrowserManagerService::AddBrowserForTesting(
@@ -183,11 +140,7 @@ void BrowserManagerService::AddBrowserForTesting(
               &BrowserManagerService::OnBrowserClosedForTesting,
               base::Unretained(this)))));
 
-  // Push the browser to the back of the activation order list. It will be moved
-  // to the front when the browser is eventually activated (which may or may
-  // not happen immediately after creation).
   browsers_activation_order_.push_back(browser);
-
   observers().Notify(&BrowserCollectionObserver::OnBrowserCreated, browser);
 }
 
@@ -213,17 +166,17 @@ BrowserCollection::BrowserVector BrowserManagerService::GetBrowsers(
   if (!browsers_and_subscriptions_for_testing_.empty()) {
     CHECK(browsers_and_subscriptions_.empty());
     browsers.reserve(browsers_and_subscriptions_for_testing_.size());
-    for (auto& browser_and_subscription :
+    for (auto& browser_and_subscriptions :
          browsers_and_subscriptions_for_testing_) {
-      if (!browser_and_subscription.browser->IsDeleteScheduled()) {
-        browsers.push_back(browser_and_subscription.browser.get());
+      if (!browser_and_subscriptions.browser->IsDeleteScheduled()) {
+        browsers.push_back(browser_and_subscriptions.browser);
       }
     }
   } else {
     browsers.reserve(browsers_and_subscriptions_.size());
-    for (auto& browser_and_subscription : browsers_and_subscriptions_) {
-      if (!browser_and_subscription.browser->IsDeleteScheduled()) {
-        browsers.push_back(browser_and_subscription.browser.get());
+    for (auto& browser_and_subscriptions : browsers_and_subscriptions_) {
+      if (!browser_and_subscriptions.browser->IsDeleteScheduled()) {
+        browsers.push_back(browser_and_subscriptions.browser.get());
       }
     }
   }
@@ -233,7 +186,6 @@ BrowserCollection::BrowserVector BrowserManagerService::GetBrowsers(
 
 void BrowserManagerService::OnBrowserActivated(
     BrowserWindowInterface* browser) {
-  // Move `browser` to the front of the activation list.
   auto it = std::ranges::find(browsers_activation_order_, browser);
   CHECK(it != browsers_activation_order_.end());
   std::rotate(browsers_activation_order_.begin(), it, it + 1);
@@ -258,8 +210,6 @@ void BrowserManagerService::OnBrowserClosed(BrowserWindowInterface* browser) {
 
 void BrowserManagerService::OnBrowserClosedForTesting(
     BrowserWindowInterface* browser) {
-  // Tests manually creating owned browsers must create all their instances
-  // via `Browser::DeprecatedCreateOwnedForTesting()`.
   CHECK(browsers_and_subscriptions_.empty());
   auto it = std::ranges::find_if(
       browsers_and_subscriptions_for_testing_,
@@ -271,7 +221,6 @@ void BrowserManagerService::OnBrowserClosedForTesting(
     std::erase(browsers_activation_order_, browser);
     browsers_and_subscriptions_for_testing_.erase(it);
     observers().Notify(&BrowserCollectionObserver::OnBrowserClosed, browser);
-    return;
   }
 }
 

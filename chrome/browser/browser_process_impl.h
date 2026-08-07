@@ -236,7 +236,7 @@ class BrowserProcessImpl : public BrowserProcess,
       override;
 
   SerialPolicyAllowedPorts* serial_policy_allowed_ports() override;
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
   HidSystemTrayIcon* hid_system_tray_icon() override;
   void set_hid_system_tray_icon_for_test(
       std::unique_ptr<HidSystemTrayIcon> icon) override;
@@ -489,8 +489,10 @@ class BrowserProcessImpl : public BrowserProcess,
   // Called to signal the process' main message loop to exit.
   base::OnceClosure quit_closure_;
 
+#if !BUILDFLAG(IS_WASM)
   std::unique_ptr<HidSystemTrayIcon> hid_system_tray_icon_;
   std::unique_ptr<UsbSystemTrayIcon> usb_system_tray_icon_;
+#endif
 
   BuildState build_state_;
 #endif

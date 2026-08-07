@@ -24,6 +24,10 @@ assert(!enable_chromium_wasm_content || enable_chromium_wasm_v8,
        "M3 Content Shell requires the passing M2 V8 gate")
 assert(!enable_chromium_wasm_content || chromium_wasm_pthread_pool_size >= 4,
        "M3 Content Shell requires at least four prewarmed pthreads")
+assert(!enable_chromium_wasm_chrome || enable_chromium_wasm_content,
+       "M6 Chrome requires the passing M3 Content Shell graph")
+assert(!enable_chromium_wasm_chrome || chromium_wasm_pthread_pool_size >= 4,
+       "M6 Chrome requires at least four prewarmed pthreads")
 
 # Secondary host toolchains must retain the milestone-scoped source graph.
 # Re-entering the normal repository-wide gn_all target from a code-generation
@@ -31,7 +35,9 @@ assert(!enable_chromium_wasm_content || chromium_wasm_pthread_pool_size >= 4,
 if (enable_chromium_wasm_port) {
   group("gn_all") {
     testonly = true
-    if (enable_chromium_wasm_content) {
+    if (enable_chromium_wasm_chrome) {
+      deps = [ "//chrome:chrome_wasm($default_toolchain)" ]
+    } else if (enable_chromium_wasm_content) {
       deps = [
         "//content/shell:content_shell_wasm($default_toolchain)",
         "//tools/wasm:m3_allocator_oom_smoke($default_toolchain)",

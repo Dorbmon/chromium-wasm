@@ -316,7 +316,9 @@ class BrowserProcess {
   // through the policy engine.
   virtual SerialPolicyAllowedPorts* serial_policy_allowed_ports() = 0;
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
+  // M6 has no native status-tray surface. Keep these desktop-only test hooks
+  // out of the Wasm BrowserProcess ABI rather than accepting ignored icons.
   // Returns the object which maintains Human Interface Device (HID) system tray
   // icon.
   virtual HidSystemTrayIcon* hid_system_tray_icon() = 0;

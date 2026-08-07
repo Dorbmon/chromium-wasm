@@ -80,7 +80,10 @@ source_set("unit_tests") {
   }
 }
 
-if (!is_android) {
+# Browser tests require the native Chrome test-support UI process. The runtime
+# throttle remains source-selected for Wasm renderer builds, but its desktop
+# browser-test target must not pull that unsupported harness into GN.
+if (!is_android && !is_wasm) {
   source_set("browser_tests") {
     testonly = true
 

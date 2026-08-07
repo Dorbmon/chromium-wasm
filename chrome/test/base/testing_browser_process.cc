@@ -87,6 +87,7 @@
 #endif
 
 #if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_WASM)
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/hid/hid_pinned_notification.h"
 #include "chrome/browser/usb/usb_pinned_notification.h"
@@ -94,6 +95,7 @@
 #include "chrome/browser/hid/hid_status_icon.h"
 #include "chrome/browser/usb/usb_status_icon.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_WASM)
 #include "chrome/browser/web_applications/isolated_web_apps/runtime_init.h"
 #include "components/component_updater/component_updater_service.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
@@ -313,6 +315,7 @@ void TestingBrowserProcess::Init() {
   web_app::InitializeIsolatedWebAppRuntime(
       base::PassKey<TestingBrowserProcess>());
   KeepAliveRegistry::GetInstance()->SetIsShuttingDown(false);
+#if !BUILDFLAG(IS_WASM)
 #if BUILDFLAG(IS_CHROMEOS)
   hid_system_tray_icon_ = std::make_unique<HidPinnedNotification>();
   usb_system_tray_icon_ = std::make_unique<UsbPinnedNotification>();
@@ -320,6 +323,7 @@ void TestingBrowserProcess::Init() {
   hid_system_tray_icon_ = std::make_unique<HidStatusIcon>();
   usb_system_tray_icon_ = std::make_unique<UsbStatusIcon>();
 #endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_WASM)
 #endif  // !BUILDFLAG(IS_ANDROID)
 }
 
@@ -661,7 +665,7 @@ SerialPolicyAllowedPorts* TestingBrowserProcess::serial_policy_allowed_ports() {
   return serial_policy_allowed_ports_.get();
 }
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 HidSystemTrayIcon* TestingBrowserProcess::hid_system_tray_icon() {
   return hid_system_tray_icon_.get();
 }
@@ -679,7 +683,7 @@ void TestingBrowserProcess::set_usb_system_tray_icon_for_test(
     std::unique_ptr<UsbSystemTrayIcon> icon) {
   usb_system_tray_icon_ = std::move(icon);
 }
-#endif
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WASM)
 
 os_crypt_async::OSCryptAsync* TestingBrowserProcess::os_crypt_async() {
   return os_crypt_async_.get();
