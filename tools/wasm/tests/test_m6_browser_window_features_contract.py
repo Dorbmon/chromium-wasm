@@ -141,7 +141,7 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         self.assertIsNotNone(pimpl_match)
         self.assertNotIn("desktop_browser_window_capabilities_", pimpl_match.group())
 
-    def test_animation_and_browser_elements_lifecycles_are_real_and_ordered(
+    def test_window_feature_animation_and_browser_elements_lifecycles_are_real_and_ordered(
         self,
     ) -> None:
         implementation = source(
@@ -164,6 +164,44 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
             r"GetUserDataFactory\(\)\.CreateInstance<"
             r"BrowserElementsViewsImpl>\(\*browser,\s*\*browser\)",
         )
+        self.assertIn(
+            "std::make_unique<BrowserWindowFullscreenController>(*browser)",
+            implementation,
+        )
+        self.assertRegex(
+            implementation,
+            r"GetUserDataFactory\(\)\.CreateInstance<"
+            r"WindowFeatureController>\(",
+        )
+        self.assertIn(
+            "CreateInstanceWithFactoryMethod<ImmersiveModeController,",
+            implementation,
+        )
+        self.assertIn("&chrome::CreateImmersiveModeController", implementation)
+        self.assertIn(
+            "CHECK_EQ(browser->GetType(), BrowserWindowInterface::TYPE_NORMAL);",
+            implementation,
+        )
+
+        fullscreen_init = implementation.index(
+            "std::make_unique<BrowserWindowFullscreenController>(*browser)"
+        )
+        window_feature_init = implementation.index(
+            "CreateInstance<WindowFeatureController>"
+        )
+        immersive_init = implementation.index(
+            "CreateInstanceWithFactoryMethod<ImmersiveModeController,"
+        )
+        animation_init = implementation.index(
+            "CreateInstance<BrowserAnimationController>"
+        )
+        elements_init_call = implementation.index(
+            "CreateInstance<BrowserElementsViewsImpl>"
+        )
+        self.assertLess(fullscreen_init, window_feature_init)
+        self.assertLess(window_feature_init, immersive_init)
+        self.assertLess(immersive_init, animation_init)
+        self.assertLess(animation_init, elements_init_call)
         self.assertRegex(
             implementation,
             r"BrowserWindowFeatures::InitPostBrowserViewConstruction\(\s*"
@@ -200,6 +238,13 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         initialized = implementation.index("browser_view_initialized_ = true")
         self.assertLess(side_panel, tab_strip)
         self.assertLess(tab_strip, initialized)
+        immersive_teardown = implementation.index(
+            "immersive_mode_controller_.reset();"
+        )
+        window_feature_teardown = implementation.index(
+            "window_feature_controller_.reset();"
+        )
+        fullscreen_teardown = implementation.index("fullscreen_controller_.reset();")
         elements_teardown = implementation.index(
             "browser_elements_->AsA<BrowserElementsViews>()"
         )
@@ -207,6 +252,9 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         animation_reset = implementation.index(
             "browser_animation_controller_.reset();"
         )
+        self.assertLess(immersive_teardown, window_feature_teardown)
+        self.assertLess(window_feature_teardown, fullscreen_teardown)
+        self.assertLess(fullscreen_teardown, elements_teardown)
         self.assertLess(elements_teardown, elements_reset)
         self.assertLess(elements_reset, animation_reset)
         self.assertRegex(
@@ -220,8 +268,9 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         self.assertIn("CHECK(!browser_view_initialized_);", implementation)
         self.assertIn("base::NoDestructor", implementation)
 
-        # P1 implements only the lifecycle needed to own the real animation
-        # UDD and its testing factory.  Everything else remains link-blocked.
+        # P3 additionally supplies the initial normal-window policy UDDs and
+        # the one accessor whose lifecycle is now real. Everything else
+        # remains link-blocked.
         definitions = set(
             re.findall(
                 r"BrowserWindowFeatures::([A-Za-z_][A-Za-z0-9_]*)\s*\(",
@@ -234,10 +283,18 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
                 "Init",
                 "InitPostBrowserViewConstruction",
                 "TearDownPreBrowserWindowDestruction",
+                "immersive_mode_controller",
                 "GetUserDataFactoryForTesting",
                 "GetUserDataFactory",
             },
             definitions,
+        )
+        self.assertRegex(
+            implementation,
+            r"ImmersiveModeController\* "
+            r"BrowserWindowFeatures::immersive_mode_controller\(\) \{\s*"
+            r"CHECK\(impl_\);\s*"
+            r"return impl_->immersive_mode_controller\(\);",
         )
         self.assertIn("BrowserWindowFeatures::~BrowserWindowFeatures()", implementation)
         for forbidden in (
@@ -260,6 +317,9 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
             "chrome/browser/ui/views/interaction/browser_elements_views.h"
         )
         target = _source_set_body(wasm_build, "wasm_browser_window_features")
+        controller_target = _source_set_body(
+            wasm_build, "wasm_window_feature_controllers"
+        )
         interaction_target = _source_set_body(interaction_build, "interaction")
         features_target = _source_set_body(
             wasm_build, "wasm_browser_animation_features"
@@ -323,6 +383,7 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         for dependency in (
             '":wasm_browser_animation",',
             '":wasm_browser_animation_features",',
+            '":wasm_window_feature_controllers",',
             '"//base",',
             '"//chrome/browser/ui/browser_window",',
             '"//chrome/browser/ui/views/interaction:impl",',
@@ -353,8 +414,86 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
+        for filename in (
+            "../ui/fullscreen/browser_window_fullscreen_controller.h",
+            "../ui/views/frame/immersive_mode_controller.h",
+            "../ui/window_feature_controller/window_feature_controller.h",
+            "../ui/fullscreen/browser_window_fullscreen_controller_wasm.cc",
+            "../ui/views/frame/immersive_mode_controller.cc",
+            "../ui/views/frame/immersive_mode_controller_wasm.cc",
+            "../ui/window_feature_controller/window_feature_controller_wasm.cc",
+        ):
+            with self.subTest(controller_filename=filename):
+                self.assertIn(f'"{filename}"', controller_target)
+
+        for dependency in (
+            '"//base",',
+            '"//chrome/browser/ui/browser_window",',
+            '"//ui/base/unowned_user_data",',
+            '"//ui/base"',
+        ):
+            with self.subTest(controller_dependency=dependency):
+                self.assertIn(dependency, controller_target)
+
+        for forbidden in (
+            "//chrome/browser/ui:ui",
+            "//chrome/browser/ui/fullscreen",
+            "//chrome/browser/ui/window_feature_controller",
+            "//chrome/browser/ui/web_applications",
+            "//chrome/browser/history",
+            "//chrome/browser/themes",
+            "//chrome/browser/ui/browser_actions",
+            "//chrome/browser/ui/browser_command_controller",
+            "//chrome/browser/ui/browser_window/internal",
+            "//chrome/common:constants",
+            "//ui/views/controls/webview",
+        ):
+            with self.subTest(controller_forbidden=forbidden):
+                self.assertNotIn(forbidden, controller_target)
+
+        fullscreen_source = source(
+            "chrome/browser/ui/fullscreen/"
+            "browser_window_fullscreen_controller_wasm.cc"
+        )
+        window_feature_source = source(
+            "chrome/browser/ui/window_feature_controller/"
+            "window_feature_controller_wasm.cc"
+        )
+        immersive_source = source(
+            "chrome/browser/ui/views/frame/immersive_mode_controller_wasm.cc"
+        )
+
+        override_check = fullscreen_source.index(
+            "should_hide_ui_for_fullscreen_for_testing_.has_value()"
+        )
+        window_check = fullscreen_source.index("window && window->IsFullscreen()")
+        self.assertLess(override_check, window_check)
+        self.assertIn("base::to_address(browser_)->GetWindow()", fullscreen_source)
+        self.assertNotIn("ImmersiveModeController", fullscreen_source)
+
+        self.assertIn(
+            "CHECK_EQ(browser_type_, BrowserWindowInterface::TYPE_NORMAL);",
+            window_feature_source,
+        )
+        self.assertIn("CHECK(!app_controller_);", window_feature_source)
+        self.assertIn("case WindowFeature::kFeatureBookmarkBar:", window_feature_source)
+        self.assertIn(
+            "return check_can_support || !IsFullscreen();", window_feature_source
+        )
+        self.assertNotIn("app_browser_controller.h", window_feature_source)
+        self.assertNotIn("web_applications", window_feature_source)
+
+        self.assertIn("class WasmImmersiveModeController", immersive_source)
+        self.assertIn("CHECK(!enabled);", immersive_source)
+        self.assertIn("return std::make_unique<WasmImmersiveRevealedLock>();", immersive_source)
+        self.assertIn("bool IsEnabled() const override { return false; }", immersive_source)
+        self.assertIn("bool IsRevealed() const override { return false; }", immersive_source)
+        self.assertNotIn("return nullptr", immersive_source)
+
         chrome_build = source("chrome/BUILD.gn")
         main_parts = _source_set_body(wasm_build, "wasm_browser_main_parts")
+        self.assertNotIn(":wasm_window_feature_controllers", chrome_build)
+        self.assertNotIn(":wasm_window_feature_controllers", main_parts)
         self.assertNotIn(":wasm_browser_window_features", chrome_build)
         self.assertNotIn(":wasm_browser_window_features", main_parts)
 

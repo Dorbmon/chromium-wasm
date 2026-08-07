@@ -197,11 +197,39 @@ source_set("wasm_browser_animation_features") {
   ]
 }
 
+# A future Wasm BrowserView requires real fullscreen/window-feature UDD
+# policy, without admitting desktop BrowserActions, commands, web-app, or
+# history graphs. Fullscreen follows the real BrowserWindow state; immersive
+# mode is explicitly unsupported while retaining the API's valid revealed-lock
+# contract.
+source_set("wasm_window_feature_controllers") {
+  public = [
+    "../ui/fullscreen/browser_window_fullscreen_controller.h",
+    "../ui/views/frame/immersive_mode_controller.h",
+    "../ui/window_feature_controller/window_feature_controller.h",
+  ]
+
+  sources = [
+    "../ui/fullscreen/browser_window_fullscreen_controller_wasm.cc",
+    "../ui/views/frame/immersive_mode_controller.cc",
+    "../ui/views/frame/immersive_mode_controller_wasm.cc",
+    "../ui/window_feature_controller/window_feature_controller_wasm.cc",
+  ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//ui/base/unowned_user_data",
+  ]
+
+  deps = [ "//ui/base" ]
+}
+
 # BrowserWindowFeatures normally owns the complete desktop window-controller
-# graph. The first Wasm implementation owns only the real animation and
-# BrowserElements UDD lifecycles required before BrowserView construction, and
-# intentionally remains unlinked from chrome_wasm until the remaining
-# controller lifecycle exists.
+# graph. The first Wasm implementation owns only the real normal-window
+# policy, animation, and BrowserElements UDD lifecycles required before
+# BrowserView construction, and intentionally remains unlinked from
+# chrome_wasm until the remaining controller lifecycle exists.
 source_set("wasm_browser_window_features") {
   sources = [
     "wasm_browser_window_features.cc",
@@ -214,6 +242,7 @@ source_set("wasm_browser_window_features") {
   deps = [
     ":wasm_browser_animation",
     ":wasm_browser_animation_features",
+    ":wasm_window_feature_controllers",
     "//base",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/views/interaction:impl",
