@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
+#include "build/build_config.h"
 #include "chrome/common/buildflags.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
@@ -248,6 +249,10 @@ namespace ttc {
 class AiOverlayDialogController;
 }  // namespace ttc
 
+namespace views {
+class View;
+}  // namespace views
+
 // This class owns the core controllers for features that are scoped to a given
 // browser window on desktop.
 //
@@ -278,11 +283,92 @@ class BrowserWindowFeatures {
 
   // Called exactly once to initialize features that depend on the view
   // hierarchy in BrowserView.
+#if BUILDFLAG(IS_WASM)
+  void InitPostBrowserViewConstruction(views::View* browser_view);
+#else
   void InitPostBrowserViewConstruction(BrowserView* browser_view);
+#endif
 
   // Called exactly once to tear down state that depends on the window object.
   void TearDownPreBrowserWindowDestruction();
 
+#if BUILDFLAG(IS_WASM)
+  // The Wasm implementation deliberately exposes the desktop API surface but
+  // defines only the controllers that have a selected Wasm lifecycle. Leaving
+  // the rest as declarations makes accidental admission of an unsupported
+  // controller a link-time failure rather than a successful-looking null.
+  BrowserActions* browser_actions();
+  chrome::BrowserCommandController* browser_command_controller() const;
+  extensions::Mv2DisabledDialogController*
+  mv2_disabled_dialog_controller_for_testing();
+  ImmersiveModeController* immersive_mode_controller();
+  media_router::CastBrowserController* cast_browser_controller();
+  ExtensionInstalledWatcher* extension_installed_watcher();
+  glic::GlicIphController* glic_iph_controller();
+  PinnedToolbarActions* pinned_toolbar_actions();
+  SidePanelUI* side_panel_ui();
+  lens::LensRegionSearchController* lens_region_search_controller();
+  glic::GlicNudgeController* glic_nudge_controller();
+  TabStripModel* tab_strip_model();
+  ToastController* toast_controller();
+  ToastService* toast_service();
+  extensions::ExtensionSidePanelManager* extension_side_panel_manager();
+  ExtensionKeybindingRegistryViews* extension_keybinding_registry();
+  tab_groups::MostRecentSharedTabUpdateStore*
+  most_recent_shared_tab_update_store();
+  memory_saver::MemorySaverBubbleController* memory_saver_bubble_controller();
+  tab_groups::SharedTabGroupFeedbackController*
+  shared_tab_group_feedback_controller();
+  BrowserSyncedWindowDelegate* synced_window_delegate();
+  TabMenuModelDelegate* tab_menu_model_delegate();
+  tab_groups::DeletionDialogController* tab_group_deletion_dialog_controller();
+  SigninViewController* signin_view_controller();
+  TabStripServiceFeature* tab_strip_service_feature();
+  TabDragServiceFeature* tab_drag_service_feature();
+  tabs_api::TabStripUIControllerImpl* tab_strip_ui_controller();
+  LocationBarModel* location_bar_model();
+  const LocationBarModel* location_bar_model() const;
+#if defined(UNIT_TEST)
+  void swap_location_bar_models(
+      std::unique_ptr<LocationBarModel>* location_bar_model);
+#endif
+  LocationBar* location_bar();
+  const LocationBar* location_bar() const;
+  TabsFromOtherDevicesSidePanelCoordinator*
+  tabs_from_other_devices_side_panel_coordinator();
+  new_tab_footer::NewTabFooterController* new_tab_footer_controller();
+  DevtoolsUIController* devtools_ui_controller();
+  split_tabs::SplitTabHighlightController* split_tab_highlight_controller();
+  ContentsBorderController* contents_border_controller();
+  ProfileMenuCoordinator* profile_menu_coordinator();
+  IncognitoClearBrowsingDataDialogCoordinator*
+  incognito_clear_browsing_data_dialog_coordinator();
+#if defined(USE_AURA)
+  OverscrollPrefManager* overscroll_pref_manager();
+#endif  // defined(USE_AURA)
+  BrowserSelectFileDialogController* browser_select_file_dialog_controller();
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  ProfileCustomizationBubbleSyncController*
+  profile_customization_bubble_sync_controller();
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  FindBarController* GetFindBarController();
+  bool HasFindBarController() const;
+  WebUIBrowserExclusiveAccessContext* webui_browser_exclusive_access_context();
+  ExclusiveAccessManager* exclusive_access_manager();
+  FullscreenControlHost* fullscreen_control_host();
+  HistoryClustersSidePanelCoordinator*
+  history_clusters_side_panel_coordinator();
+  BrowserContentSettingBubbleModelDelegate*
+  content_setting_bubble_model_delegate();
+  BrowserLiveTabContext* live_tab_context();
+  ui::AcceleratorProvider* accelerator_provider();
+  FindBarOwner* find_bar_owner();
+  SearchboxContextData* searchbox_context_data();
+  omnibox::OmniboxPopupCloser* omnibox_popup_closer();
+  contextual_cueing::ContextualCueingController*
+  contextual_cueing_controller();
+  content_settings::CookieControlsController* cookie_controls_controller();
+#else
   BrowserActions* browser_actions() { return browser_actions_.get(); }
 
   chrome::BrowserCommandController* browser_command_controller() const {
@@ -511,6 +597,7 @@ class BrowserWindowFeatures {
   content_settings::CookieControlsController* cookie_controls_controller() {
     return cookie_controls_controller_.get();
   }
+#endif  // BUILDFLAG(IS_WASM)
 
   static ui::UserDataFactoryWithOwner<BrowserWindowInterface>&
   GetUserDataFactoryForTesting();
@@ -519,6 +606,10 @@ class BrowserWindowFeatures {
   static ui::UserDataFactoryWithOwner<BrowserWindowInterface>&
   GetUserDataFactory();
 
+#if BUILDFLAG(IS_WASM)
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+#else
   // A collection of features specific to desktop versions of Chrome.
   std::unique_ptr<DesktopBrowserWindowCapabilities>
       desktop_browser_window_capabilities_;
@@ -854,6 +945,7 @@ class BrowserWindowFeatures {
   // reverse order of initialization.
   std::unique_ptr<EmbedderBrowserWindowFeatures>
       embedder_browser_window_features_;
+#endif  // BUILDFLAG(IS_WASM)
 };
 
 #endif  // CHROME_BROWSER_UI_BROWSER_WINDOW_PUBLIC_BROWSER_WINDOW_FEATURES_H_

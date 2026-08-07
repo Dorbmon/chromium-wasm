@@ -181,6 +181,48 @@ source_set("wasm_browser_animation") {
   ]
 }
 
+# The provider implementations use only these three definitions from
+# ui_features.cc. Keep their canonical FeatureList behavior source-selected
+# here instead of parsing the desktop //chrome/browser/ui:ui aggregate.
+source_set("wasm_browser_animation_features") {
+  sources = [
+    "wasm_browser_animation_features.cc",
+    "../ui/ui_features.h",
+  ]
+
+  public_deps = [
+    "//base",
+    "//chrome/common:buildflags",
+    "//extensions/buildflags",
+  ]
+}
+
+# BrowserWindowFeatures normally owns the complete desktop window-controller
+# graph.  The first Wasm implementation owns only the real animation UDD
+# lifecycle required before BrowserView construction, and intentionally remains
+# unlinked from chrome_wasm until the remaining controller lifecycle exists.
+source_set("wasm_browser_window_features") {
+  sources = [
+    "wasm_browser_window_features.cc",
+    "../ui/views/animations/side_panel_animations.cc",
+    "../ui/views/animations/side_panel_animations.h",
+    "../ui/views/animations/tab_strip_animations.cc",
+    "../ui/views/animations/tab_strip_animations.h",
+  ]
+
+  deps = [
+    ":wasm_browser_animation",
+    ":wasm_browser_animation_features",
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//ui/base/identifier",
+    "//ui/base/interaction",
+    "//ui/base/unowned_user_data",
+    "//ui/gfx/animation",
+    "//ui/views",
+  ]
+}
+
 # Browser ownership is a keyed service. Its normal implementation is embedded
 # in the desktop UI aggregate and initializes History before a Profile exists.
 # The Wasm variant preserves collection/ownership semantics but leaves History
