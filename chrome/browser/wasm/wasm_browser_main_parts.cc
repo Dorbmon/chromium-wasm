@@ -15,7 +15,9 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/actions/chrome_actions.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
+#include "chrome/browser/ui/color/chrome_color_mixers.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_profile.h"
@@ -23,9 +25,11 @@
 #include "chrome/browser/wasm/wasm_tab_core_smoke.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_result_codes.h"
+#include "components/color/color_mixers.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/result_codes.h"
+#include "ui/color/color_provider_manager.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/ozone/public/ozone_platform.h"
 
@@ -79,6 +83,23 @@ int WasmBrowserMainParts::PreEarlyInitialization() {
       resources_pack, ui::kScaleFactorNone);
 
   return content::RESULT_CODE_NORMAL_EXIT;
+}
+
+void WasmBrowserMainParts::ToolkitInitialized() {
+  // BrowserMainLoop has created Aura's Env before this callback. Install the
+  // canonical component and Chrome color initializers before any BrowserView
+  // or BrowserWidget can request a ColorProvider. The default Wasm provider
+  // intentionally has no custom-theme or app-controller supplier at this
+  // stage, but the canonical mixers preserve those later extension points.
+  ui::ColorProviderManager::Get().AppendColorProviderInitializer(
+      base::BindRepeating(color::AddComponentsColorMixers));
+  ui::ColorProviderManager::Get().AppendColorProviderInitializer(
+      base::BindRepeating(AddChromeColorMixers));
+
+  // This maps Chrome action IDs for source-selected Views code without
+  // creating an ActionManager root or a Browser. Browser-owned actions remain
+  // outside the M6 window-lifecycle boundary until BrowserView is admitted.
+  InitializeActionIdStringMapping();
 }
 
 void WasmBrowserMainParts::PostCreateMainMessageLoop() {

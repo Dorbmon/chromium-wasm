@@ -27,6 +27,7 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
 
   // content::BrowserMainParts:
   int PreEarlyInitialization() override;
+  void ToolkitInitialized() override;
   void PostCreateMainMessageLoop() override;
   int PreCreateThreads() override;
   int PreMainMessageLoopRun() override;
