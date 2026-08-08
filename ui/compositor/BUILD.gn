@@ -93,7 +93,11 @@ component("compositor") {
     ]
   }
 
-  if (is_linux || is_fuchsia) {
+  # DesktopWindowTreeHostPlatform uses this adapter for the Ozone Wasm
+  # PlatformWindow just as it does on Linux/Fuchsia. Keep it in the narrow
+  # Chrome Wasm configuration rather than treating Wasm as Linux generally.
+  if (is_linux || is_fuchsia ||
+      (is_wasm && enable_chromium_wasm_chrome)) {
     sources += [
       "external_begin_frame_adapter.cc",
       "external_begin_frame_adapter.h",
@@ -135,7 +139,8 @@ component("compositor") {
     deps += [ "//ui/resources" ]
   }
 
-  if (is_linux || is_fuchsia) {
+  if (is_linux || is_fuchsia ||
+      (is_wasm && enable_chromium_wasm_chrome)) {
     deps += [ "//ui/platform_window" ]
   }
 }

@@ -157,6 +157,7 @@ class BrowserWidget : public views::Widget,
 
   raw_ptr<BrowserNativeWidget> browser_native_widget_;
 
+#if !BUILDFLAG(IS_WASM)
   // A weak reference to the root view associated with the window. We save a
   // copy as a BrowserRootView to avoid evil casting later, when we need to call
   // functions that only exist on BrowserRootView (versus RootView).
@@ -164,15 +165,18 @@ class BrowserWidget : public views::Widget,
 
   // A pointer to our FrameView as a BrowserFrameView.
   raw_ptr<BrowserFrameView> browser_frame_view_;
+#endif  // !BUILDFLAG(IS_WASM)
 
   // The BrowserView is our ClientView. This is a pointer to it.
   raw_ptr<BrowserView> browser_view_;
 
+#if !BUILDFLAG(IS_WASM)
   std::unique_ptr<SystemMenuModelBuilder> menu_model_builder_;
 
   // Used to show the system menu. Only used if
   // BrowserNativeWidget::UsesNativeSystemMenu() returns false.
   std::unique_ptr<views::MenuRunner> menu_runner_;
+#endif  // !BUILDFLAG(IS_WASM)
 
   base::CallbackListSubscription subscription_ =
       ui::TouchUiController::Get()->RegisterCallback(

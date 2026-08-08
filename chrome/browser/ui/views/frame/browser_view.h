@@ -5,6 +5,167 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_VIEW_H_
 
+#include "build/build_config.h"
+
+#if BUILDFLAG(IS_WASM)
+
+#include <memory>
+
+#include "base/callback_list.h"
+#include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/views/frame/tab_modal_dialog_host_wasm.h"
+#include "ui/base/accelerators/accelerator.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/views/widget/widget_delegate.h"
+#include "ui/views/widget/widget_observer.h"
+#include "ui/views/window/client_view.h"
+
+class Browser;
+class BrowserWidget;
+
+namespace content {
+class WebContents;
+}  // namespace content
+
+namespace gfx {
+class Point;
+}  // namespace gfx
+
+namespace views {
+class WebView;
+}  // namespace views
+
+// A content-only BrowserWindow for the object-only Wasm UI slice.
+//
+// This hosts exactly one externally-owned WebContents in a real Views WebView.
+// It intentionally has no Browser factory, toolbar, tab-strip, download, or
+// BrowserWindowFeatures lifecycle. Those APIs are absent from the paired Wasm
+// BrowserWindow contract, so a consumer must add a real implementation before
+// it can be selected into the Wasm browser graph.
+class BrowserView final : public BrowserWindow,
+                          public views::WidgetDelegate,
+                          public views::WidgetObserver,
+                          public views::ClientView {
+  METADATA_HEADER(BrowserView, views::ClientView)
+
+ public:
+  static constexpr char kBrowserViewKey[] = "__BROWSER_VIEW__";
+
+  explicit BrowserView(Browser* browser);
+  BrowserView(const BrowserView&) = delete;
+  BrowserView& operator=(const BrowserView&) = delete;
+  ~BrowserView() override;
+
+  // Retained only as identity for a future joined Browser lifecycle. This
+  // object-only host never invokes Browser methods or constructs WebContents.
+  Browser* browser() { return browser_; }
+  const Browser* browser() const { return browser_; }
+
+  void set_browser_widget(std::unique_ptr<BrowserWidget> widget);
+  BrowserWidget* browser_widget() const;
+
+  // Test-only structural teardown for the BrowserView/BrowserWidget ownership
+  // cycle. It is valid only for a null Browser and a detached WebContents;
+  // resetting the Widget destroys this BrowserView through its Views tree, so
+  // callers must not dereference |browser_view| after this call.
+  static void DestroyForWasmBrowserViewSmoke(BrowserView* browser_view);
+
+  views::WebView* contents_web_view() const { return contents_web_view_; }
+  WasmTabModalDialogHost* tab_modal_dialog_host() const {
+    return tab_modal_dialog_host_.get();
+  }
+  content::WebContents* GetActiveWebContents() const {
+    return active_web_contents_;
+  }
+
+  // BrowserWidget asks its client for menu shortcut labels. No Chrome command
+  // surface is selected for this object-only slice.
+  bool GetAccelerator(int command_id, ui::Accelerator* accelerator) const;
+
+  static BrowserView* GetBrowserViewForNativeWindow(gfx::NativeWindow window);
+
+  // BrowserWindow:
+  void Show() override;
+  void Hide() override;
+  bool IsVisible() const override;
+  void ShowInactive() override;
+  void Close() override;
+  void Activate() override;
+  void Deactivate() override;
+  bool IsActive() const override;
+  bool IsMaximized() const override;
+  bool IsMinimized() const override;
+  bool IsFullscreen() const override;
+  gfx::NativeWindow GetNativeWindow() const override;
+  gfx::Rect GetRestoredBounds() const override;
+  ui::mojom::WindowShowState GetRestoredState() const override;
+  gfx::Rect GetBounds() const override;
+  void Maximize() override;
+  void Minimize() override;
+  void Restore() override;
+  void SetBounds(const gfx::Rect& bounds) override;
+  void FlashFrame(bool flash) override;
+  ui::ZOrderLevel GetZOrderLevel() const override;
+  void SetZOrderLevel(ui::ZOrderLevel order) override;
+  ui::NativeTheme* GetNativeTheme() override;
+  const ui::ThemeProvider* GetThemeProvider() const override;
+  const ui::ColorProvider* GetColorProvider() const override;
+  void OnActiveTabChanged(content::WebContents* old_contents,
+                          content::WebContents* new_contents,
+                          int index,
+                          int reason) override;
+  void OnTabDetached(content::WebContents* contents,
+                     bool was_active) override;
+  gfx::Size GetContentsSize() const override;
+  void SetContentsSize(const gfx::Size& size) override;
+  web_modal::WebContentsModalDialogHost*
+  GetWebContentsModalDialogHost() override;
+  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHostFor(
+      content::WebContents* web_contents) override;
+  bool GetCanResize() override;
+  ui::mojom::WindowShowState GetWindowShowState() const override;
+  BrowserView* AsBrowserView() override;
+
+  // views::WidgetDelegate:
+  bool CanResize() const override;
+  bool CanMaximize() const override;
+  bool CanMinimize() const override;
+  bool CanActivate() const override;
+  views::View* GetContentsView() override;
+  views::ClientView* CreateClientView(views::Widget* widget) override;
+  views::Widget* GetWidget() override;
+  const views::Widget* GetWidget() const override;
+
+  // views::WidgetObserver:
+  void OnWidgetDestroying(views::Widget* widget) override;
+
+  // views::ClientView:
+  views::CloseRequestResult OnWindowCloseRequested() override;
+  int NonClientHitTest(const gfx::Point& point) override;
+  gfx::Size GetMinimumSize() const override;
+
+  // views::View:
+  void AddedToWidget() override;
+  void RemovedFromWidget() override;
+
+ private:
+  BrowserWidget& RequireBrowserWidget() const;
+  void OnWebContentsDetached(views::WebView* web_view);
+
+  raw_ptr<Browser> browser_;
+  std::unique_ptr<BrowserWidget> browser_widget_;
+  raw_ptr<views::WebView> contents_web_view_ = nullptr;
+  raw_ptr<content::WebContents> active_web_contents_ = nullptr;
+  std::unique_ptr<WasmTabModalDialogHost> tab_modal_dialog_host_;
+  base::CallbackListSubscription web_contents_detached_subscription_;
+  base::ScopedObservation<views::Widget, views::WidgetObserver>
+      widget_observation_{this};
+};
+
+#else  // BUILDFLAG(IS_WASM)
+
 #include <map>
 #include <memory>
 #include <optional>
@@ -19,7 +180,6 @@
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "build/build_config.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -1399,5 +1559,7 @@ class BrowserView : public BrowserWindow,
 
   mutable base::WeakPtrFactory<BrowserView> weak_ptr_factory_{this};
 };
+
+#endif  // BUILDFLAG(IS_WASM)
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_VIEW_H_

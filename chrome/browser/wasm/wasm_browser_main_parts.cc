@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/check.h"
+#include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -18,6 +19,7 @@
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -33,6 +35,7 @@
 namespace {
 
 constexpr char kLocale[] = "en-US";
+constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
 constexpr char kRequiredAssets[][24] = {
     "chrome_100_percent.pak",
     "chrome_200_percent.pak",
@@ -126,6 +129,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // Exercise the factory while the profile is live. Browser::Create() will
   // retrieve this same manager when the real window lifecycle is selected.
   CHECK(BrowserManagerServiceFactory::GetForProfile(profile_.get()));
+
+  // This test-only switch source-selects the structural Views/Aura/Ozone
+  // BrowserView path against the live Wasm profile, then exits after its
+  // client-owned Widget teardown. It never constructs a Browser or admits the
+  // BrowserWindowFeatures lifecycle; the ordinary path below remains explicit.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserViewSmokeSwitch)) {
+    if (!chrome::RunWasmBrowserViewSmoke(profile_.get())) {
+      LOG(ERROR) << "chrome_wasm Wasm BrowserView smoke failed";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
 
   // Browser::Create() currently requires a keyed BrowserManagerService graph.
   // Launching it before the corresponding source-selected shutdown sequence

@@ -123,7 +123,7 @@ source_set("wasm_browser_collection") {
 
 # The browser's Aura frame is a platform boundary, not part of the monolithic
 # desktop //chrome/browser/ui:ui target.  Keep the Wasm desktop-host
-# implementation source-selected so later BrowserWidget work can use the
+# implementation source-selected so BrowserWidget can use the
 # generic Ozone PlatformWindow without importing Linux/X11/Wayland code.
 source_set("wasm_browser_views_platform") {
   public = [
@@ -136,10 +136,103 @@ source_set("wasm_browser_views_platform") {
   public_deps = [ "//ui/views" ]
 }
 
+# BrowserWidget creates a BrowserNativeWidget through this factory seam. Keep
+# the Wasm implementation source-selected: it owns the real Chrome
+# BrowserNativeWidget/DesktopNativeWidgetAura lifetime and reuses the Ozone
+# Wasm desktop host without admitting the desktop BrowserView source or the
+# desktop :ui aggregate.
+source_set("wasm_browser_ui") {
+  assert(use_aura && use_ozone && toolkit_views)
+
+  public = [
+    "../ui/views/frame/browser_native_widget.h",
+    "../ui/views/frame/browser_native_widget_factory.h",
+    "../ui/views/frame/browser_native_widget_wasm.h",
+    # BrowserNativeWidgetWasm converts BrowserWidget to NativeWidgetDelegate.
+    "../ui/views/frame/browser_widget.h",
+  ]
+
+  sources = [
+    "../ui/views/frame/browser_native_widget_factory.cc",
+    "../ui/views/frame/browser_native_widget_wasm.cc",
+  ]
+
+  public_deps = [
+    ":wasm_browser_views_platform",
+    "//base",
+    "//content/public/browser",
+    "//ui/views",
+  ]
+
+  deps = [
+    "//ui/aura",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/wm",
+  ]
+}
+
+# The slim BrowserView hosts one selected model-owned WebContents in a
+# Views WebView. This source-selected host supplies the real modal geometry,
+# parent Widget, and observer lifetime for that view without selecting a
+# modal-manager delegate or any desktop BrowserWindow/close lifecycle. It is
+# selected only by the bounded BrowserView smoke below until those lifecycles
+# can clear blocked state and close child dialogs deterministically.
+source_set("wasm_tab_modal_dialog_host") {
+  public = [ "../ui/views/frame/tab_modal_dialog_host_wasm.h" ]
+
+  sources = [ "../ui/views/frame/tab_modal_dialog_host_wasm.cc" ]
+
+  public_deps = [
+    "//base",
+    "//components/web_modal",
+    "//ui/gfx",
+    "//ui/views",
+  ]
+
+  deps = [
+    "//ui/gfx/geometry",
+    "//ui/views/controls/webview:webview",
+  ]
+}
+
+# This is an object-only, content-only BrowserView. It owns a real Views
+# WebView and structural tab-modal host, but deliberately does not select a
+# Browser factory, close/unload lifecycle, BrowserWindowFeatures, or desktop
+# Chrome UI. The explicit BrowserView smoke selects it at runtime; the paired
+# BrowserWindow header keeps omitted desktop APIs a compile-time boundary
+# instead of inert stubs.
+source_set("wasm_browser_view") {
+  assert(use_aura && use_ozone && toolkit_views)
+
+  public = [
+    "../ui/browser_window.h",
+    "../ui/views/frame/browser_view.h",
+  ]
+
+  sources = [ "wasm_browser_view.cc" ]
+
+  public_deps = [
+    ":wasm_tab_modal_dialog_host",
+    "//base",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/gfx",
+    "//ui/views",
+  ]
+
+  deps = [
+    ":wasm_browser_ui",
+    "//ui/base/metadata:metadata",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/gfx/geometry",
+    "//ui/views/controls/webview:webview",
+  ]
+}
+
 # The desktop themes aggregate owns ThemeService and profile-backed custom
 # themes.  A first Wasm browser window instead has a fixed default provider
-# backed by the already-initialized ResourceBundle.  Keep it un-wired until
-# BrowserWidget's real lifetime is source-selected.
+# backed by the already-initialized ResourceBundle. It is selected only by the
+# explicit BrowserWidget smoke until BrowserWidget's full lifetime is selected.
 source_set("wasm_default_theme_provider") {
   public = [ "wasm_default_theme_provider.h" ]
   sources = [ "wasm_default_theme_provider.cc" ]
@@ -147,6 +240,56 @@ source_set("wasm_default_theme_provider") {
   deps = [ "//chrome/browser/themes:theme_properties" ]
 
   public_deps = [ "//ui/base" ]
+}
+
+# BrowserWidget is the narrow point that turns the content-only BrowserView
+# into a real Views Widget backed by BrowserNativeWidgetWasm. It deliberately
+# uses generic RootView and FrameView rather than BrowserRootView or
+# BrowserFrameView, and is never wired into Browser::Create. Only the explicit
+# BrowserView smoke reaches it through chrome_wasm until close/unload/modal and
+# BrowserWindowFeatures lifecycles are complete.
+source_set("wasm_browser_widget") {
+  assert(use_aura && use_ozone && toolkit_views)
+
+  public = [ "../ui/views/frame/browser_widget.h" ]
+
+  sources = [ "wasm_browser_widget.cc" ]
+
+  public_deps = [
+    "//base",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/views",
+  ]
+
+  deps = [
+    ":wasm_browser_ui",
+    ":wasm_browser_view",
+    ":wasm_default_theme_provider",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/native_theme",
+  ]
+}
+
+# This test-only composition proof is selected only by
+# --wasm-browser-view-smoke in WasmBrowserMainParts. It creates one null-
+# Browser BrowserView, one BrowserWidget, and one externally-owned
+# WebContents, then proves the client-owned Widget teardown path. It does not
+# select Browser::Create, BrowserWindowFeatures, or the desktop :ui aggregate.
+source_set("wasm_browser_view_smoke") {
+  public = [ "wasm_browser_view_smoke.h" ]
+
+  sources = [ "wasm_browser_view_smoke.cc" ]
+
+  deps = [
+    ":wasm_browser_view",
+    ":wasm_browser_widget",
+    ":wasm_profile",
+    "//base",
+    "//content/public/browser",
+    "//ui/gfx/geometry",
+    "//ui/views/controls/webview:webview",
+  ]
 }
 
 # BrowserAnimationController itself is platform-neutral, but its desktop
@@ -378,6 +521,7 @@ source_set("wasm_browser_main_parts") {
   deps = [
     ":wasm_browser_manager",
     ":wasm_browser_process",
+    ":wasm_browser_view_smoke",
     ":wasm_chrome_paths",
     ":wasm_chrome_result_codes",
     ":wasm_profile",

@@ -5,13 +5,83 @@
 #ifndef CHROME_BROWSER_UI_BROWSER_WINDOW_H_
 #define CHROME_BROWSER_UI_BROWSER_WINDOW_H_
 
+#include "build/build_config.h"
+
+#if BUILDFLAG(IS_WASM)
+
+#include "ui/base/base_window.h"
+#include "ui/base/mojom/window_show_state.mojom-forward.h"
+#include "ui/gfx/native_ui_types.h"
+
+class BrowserView;
+
+namespace content {
+class WebContents;
+}  // namespace content
+
+namespace gfx {
+class Size;
+}  // namespace gfx
+
+namespace ui {
+class ColorProvider;
+class NativeTheme;
+class ThemeProvider;
+}  // namespace ui
+
+namespace web_modal {
+class WebContentsModalDialogHost;
+}  // namespace web_modal
+
+// The object-only Wasm BrowserView owns one externally-owned WebContents in a
+// Views WebView. Keep only the window contract required to host that content.
+//
+// Deliberately omitted: browser-window creation/deletion, downloads, toolbar
+// and location-bar UI, exclusive access, and all desktop bubble/menu routes.
+// Those APIs must remain a compile-time boundary until their real Wasm
+// lifecycles are selected; returning inert success from this layer would make
+// a partial browser window look functional when it is not.
+class BrowserWindow : public ui::BaseWindow {
+ public:
+  virtual ~BrowserWindow() = default;
+
+  // The object-only host can find its one currently attached WebContents via
+  // its native Views hierarchy. Background-tab lookup is intentionally not
+  // admitted before the Wasm tab/window lifecycle exists.
+  static BrowserWindow* FindBrowserWindowWithWebContents(
+      content::WebContents* web_contents);
+
+  virtual ui::NativeTheme* GetNativeTheme() = 0;
+  virtual const ui::ThemeProvider* GetThemeProvider() const = 0;
+  virtual const ui::ColorProvider* GetColorProvider() const = 0;
+
+  virtual void OnActiveTabChanged(content::WebContents* old_contents,
+                                  content::WebContents* new_contents,
+                                  int index,
+                                  int reason) = 0;
+  virtual void OnTabDetached(content::WebContents* contents,
+                             bool was_active) = 0;
+  virtual gfx::Size GetContentsSize() const = 0;
+  virtual void SetContentsSize(const gfx::Size& size) = 0;
+
+  virtual web_modal::WebContentsModalDialogHost*
+  GetWebContentsModalDialogHost() = 0;
+  virtual web_modal::WebContentsModalDialogHost*
+  GetWebContentsModalDialogHostFor(content::WebContents* web_contents) = 0;
+
+  virtual bool GetCanResize() = 0;
+  virtual ui::mojom::WindowShowState GetWindowShowState() const = 0;
+  virtual BrowserView* AsBrowserView() = 0;
+};
+
+#else  // BUILDFLAG(IS_WASM)
+
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
-#include "build/build_config.h"
 #include "chrome/browser/apps/link_capturing/intent_picker_info.h"
 #include "chrome/browser/lifetime/browser_close_manager.h"
 #include "chrome/browser/signin/chrome_signin_helper.h"
@@ -516,5 +586,7 @@ class BrowserWindow : public ui::BaseWindow {
   // returns.
   virtual void DeleteBrowserWindow() = 0;
 };
+
+#endif  // BUILDFLAG(IS_WASM)
 
 #endif  // CHROME_BROWSER_UI_BROWSER_WINDOW_H_

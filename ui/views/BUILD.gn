@@ -1032,6 +1032,12 @@ component("views") {
     sources += [ "controls/menu/menu_config_fuchsia.cc" ]
   }
 
+  if (is_wasm && enable_chromium_wasm_chrome) {
+    # Generic Views initialization still needs a concrete MenuConfig platform
+    # hook, even though BrowserWidget does not expose an OS system menu.
+    sources += [ "controls/menu/menu_config_wasm.cc" ]
+  }
+
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
   }
