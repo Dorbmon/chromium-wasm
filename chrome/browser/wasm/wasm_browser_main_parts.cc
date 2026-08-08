@@ -20,6 +20,7 @@
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
+#include "chrome/browser/wasm/wasm_tab_core_smoke.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -36,6 +37,7 @@ namespace {
 
 constexpr char kLocale[] = "en-US";
 constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
+constexpr char kWasmTabCoreSmokeSwitch[] = "wasm-tab-core-smoke";
 constexpr char kRequiredAssets[][24] = {
     "chrome_100_percent.pak",
     "chrome_200_percent.pak",
@@ -138,6 +140,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
           kWasmBrowserViewSmokeSwitch)) {
     if (!chrome::RunWasmBrowserViewSmoke(profile_.get())) {
       LOG(ERROR) << "chrome_wasm Wasm BrowserView smoke failed";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+
+  // This test-only switch proves the real source-selected tab ownership path
+  // against the live Wasm profile, then exits before a Browser or Chrome Views
+  // window can be created. The ordinary chrome_wasm path below remains the
+  // explicit M6 foundation result until that lifecycle is complete.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmTabCoreSmokeSwitch)) {
+    if (!chrome::RunWasmTabCoreSmoke(profile_.get())) {
+      LOG(ERROR) << "chrome_wasm Wasm tab-core smoke failed";
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
     RequestShutdown();

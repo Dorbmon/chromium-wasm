@@ -7,20 +7,25 @@
 
 #include <memory>
 
+#include "build/build_config.h"
 #include "components/security_state/content/security_state_tab_helper.h"
+#if !BUILDFLAG(IS_WASM)
 #include "components/security_state/core/security_state.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
 #include "third_party/blink/public/common/security/security_style.h"
+#endif
+#include "content/public/browser/web_contents_user_data.h"
 
 namespace content {
+#if !BUILDFLAG(IS_WASM)
 class NavigationHandle;
+#endif
 class WebContents;
 }  // namespace content
 
 // This class extends the SecurityStateTabHelper with functionality that is
 // available in Chrome. In addition to using the `VisibleSecurityState` of the
-// base class, it considers:
+// base class, desktop Chrome considers:
 //  - the SafeBrowsingService to identify potentially malicious sites,
 //  - the PolicyCertService on ChromeOs to check for cached content from an
 //    untrusted source,
@@ -29,8 +34,17 @@ class WebContents;
 //  - the HttpsOnlyModeTabHelper providing HTTPS-Only Mode data.
 //
 // Furthermove, it logs console warnings for private data on insecure pages.
-class ChromeSecurityStateTabHelper : public SecurityStateTabHelper,
-                                     public content::WebContentsObserver {
+//
+// The Wasm build retains this helper's Chrome-owned WebContentsUserData
+// identity, but intentionally inherits the base visible-security-state
+// implementation until each desktop enrichment has a complete Wasm owner.
+// The observer APIs are structurally unavailable there rather than providing
+// inert callbacks.
+class ChromeSecurityStateTabHelper : public SecurityStateTabHelper
+#if !BUILDFLAG(IS_WASM)
+                                     , public content::WebContentsObserver
+#endif
+{
  public:
   // Creates a new `ChromeSecurityStateTabHelper` that can be accessed by using
   // the `SecurityStateTabHelper::From` method. It does not replace any existing
@@ -44,6 +58,7 @@ class ChromeSecurityStateTabHelper : public SecurityStateTabHelper,
 
   ~ChromeSecurityStateTabHelper() override;
 
+#if !BUILDFLAG(IS_WASM)
   std::unique_ptr<security_state::VisibleSecurityState>
   GetVisibleSecurityState() override;
 
@@ -53,6 +68,7 @@ class ChromeSecurityStateTabHelper : public SecurityStateTabHelper,
   void DidStartNavigation(
       content::NavigationHandle* navigation_handle) override;
   void PrimaryPageChanged(content::Page& page) override;
+#endif
 
  private:
   explicit ChromeSecurityStateTabHelper(content::WebContents* web_contents);

@@ -13,6 +13,7 @@
 #include "base/callback_list.h"
 #include "base/functional/callback_forward.h"
 #include "base/types/pass_key.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"
 #include "components/tabs/public/tab_network_state.h"
 #include "content/public/browser/web_contents_observer.h"

@@ -9,19 +9,24 @@
 #include "base/auto_reset.h"
 #include "base/check.h"
 #include "base/memory/ptr_util.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#if BUILDFLAG(IS_WASM)
+#include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
+#include "chrome/browser/wasm/wasm_session_tab_helper.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
+#else
 #include "chrome/browser/ui/tab_helpers.h"
+// Desktop owns this private helper through its native tab target. The Wasm
+// source-selected branch above uses the narrow public session-ID boundary.
+#include "components/sessions/content/session_tab_helper.h"  // nogncheck
+#endif
 #include "chrome/browser/ui/tabs/features.h"
-#include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
-#include "chrome/browser/ui/ui_features.h"
-#include "components/constrained_window/constrained_window_views.h"
-#include "components/sessions/content/session_tab_helper.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/tabs/public/split_tab_collection.h"
 #include "components/tabs/public/tab_collection.h"
@@ -34,16 +39,25 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value.h"
-#include "ui/views/widget/native_widget.h"
-#include "ui/views/widget/widget.h"
-#include "ui/views/widget/widget_delegate.h"
-#include "ui/views/window/dialog_delegate.h"
 
 namespace tabs {
 
 namespace {
 
 bool g_disable_tab_feature_initialization = false;
+
+#if BUILDFLAG(IS_WASM)
+// The Wasm TabModel owns the narrow per-WebContents policy before any tab
+// feature observes the contents. In particular, Chrome's elevated security
+// helper and the generic helper share a UserData key, so falling back to the
+// latter here would permanently prevent Chrome security consumers later.
+void PrepareWasmTabWebContents(content::WebContents* contents) {
+  CHECK(contents);
+  chrome::EnsureWasmSessionTabHelper(contents);
+  ChromeSecurityStateTabHelper::CreateForWebContents(contents);
+  web_modal::WebContentsModalDialogManager::CreateForWebContents(contents);
+}
+#endif
 
 }  // namespace
 
@@ -52,13 +66,23 @@ TabModel::TabModel(std::unique_ptr<content::WebContents> contents,
     : contents_owned_(std::move(contents)),
       contents_(contents_owned_.get()),
       soon_to_be_owning_model_(soon_to_be_owning_model) {
-  tabs::TabLookupFromWebContents::CreateForWebContents(contents_, this);
-
   // TODO(https://crbug.com/362038317): Tab-helpers should be created in exactly
   // one place, which is here.
+#if BUILDFLAG(IS_WASM)
+  PrepareWasmTabWebContents(contents_);
+#endif
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(contents_, this);
+
+#if !BUILDFLAG(IS_WASM)
   TabHelpers::AttachTabHelpers(contents_);
+#endif
   tab_features_ = std::make_unique<TabFeatures>();
+#if BUILDFLAG(IS_WASM)
+  const SessionID session_id = chrome::GetWasmSessionTabId(contents_);
+#else
   const SessionID session_id = sessions::SessionTabHelper::IdForTab(contents_);
+#endif
   CHECK(session_id.is_valid());
   SetSessionId(session_id.id());
 
@@ -347,12 +371,17 @@ std::optional<tab_groups::TabGroupId> TabModel::GetGroup() const {
 }
 
 void TabModel::Close() {
+#if BUILDFLAG(IS_WASM)
+  CHECK(false)
+      << "Wasm tab core has no joined unload/modal/browser-close lifecycle";
+#else
   auto* window_interface = GetBrowserWindowInterface();
   auto* tab_strip = window_interface->GetTabStripModel();
   CHECK(tab_strip);
   const int tab_idx = tab_strip->GetIndexOfTab(this);
   CHECK(tab_idx != TabStripModel::kNoTab);
   tab_strip->CloseWebContentsAt(tab_idx, TabCloseTypes::CLOSE_NONE);
+#endif
 }
 
 void TabModel::OnTabStripModelChanged(
@@ -459,6 +488,12 @@ void TabModel::WriteIntoTrace(perfetto::TracedValue context) const {
 std::unique_ptr<content::WebContents> TabModel::DiscardContents(
     std::unique_ptr<content::WebContents> contents) {
   CHECK_EQ(contents_->GetBrowserContext(), contents->GetBrowserContext());
+#if BUILDFLAG(IS_WASM)
+  // Listeners switch their WebContents observation during this callback, so
+  // replacement contents must already carry the same real session, security,
+  // and modal-manager ownership as a newly constructed tab.
+  PrepareWasmTabWebContents(contents.get());
+#endif
   will_discard_contents_callback_list_.Notify(this, contents_, contents.get());
   contents_->RemoveUserData(tabs::TabLookupFromWebContents::UserDataKey());
   std::unique_ptr<content::WebContents> old_contents =
@@ -467,7 +502,11 @@ std::unique_ptr<content::WebContents> TabModel::DiscardContents(
   contents_ = contents_owned_.get();
   WebContentsObserver::Observe(contents_);
 
+#if BUILDFLAG(IS_WASM)
+  const SessionID session_id = chrome::GetWasmSessionTabId(contents_);
+#else
   const SessionID session_id = sessions::SessionTabHelper::IdForTab(contents_);
+#endif
   CHECK(session_id.is_valid());
   SetSessionId(session_id.id());
 

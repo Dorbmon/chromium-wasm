@@ -202,10 +202,19 @@ class TabStripModel {
   // (see the TabStripModelDelegate documentation). |delegate| cannot be NULL.
   // the TabGroupModelFactory can be replaced with a nullptr to set the
   // group_model to null in cases where groups are not supported.
+#if BUILDFLAG(IS_WASM)
+  // Tab groups are not part of the first Wasm tab core. Keep the default null
+  // so a generic caller cannot accidentally construct the desktop group owner
+  // through the normal default argument.
+  explicit TabStripModel(TabStripModelDelegate* delegate,
+                         Profile* profile,
+                         TabGroupModelFactory* group_model_factory = nullptr);
+#else
   explicit TabStripModel(TabStripModelDelegate* delegate,
                          Profile* profile,
                          TabGroupModelFactory* group_model_factory =
                              TabGroupModelFactory::GetInstance());
+#endif
 
   TabStripModel(const TabStripModel&) = delete;
   TabStripModel& operator=(const TabStripModel&) = delete;

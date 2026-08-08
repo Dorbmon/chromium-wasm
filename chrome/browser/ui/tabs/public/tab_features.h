@@ -180,6 +180,34 @@ class FilterUiController;
 
 namespace tabs {
 
+#if BUILDFLAG(IS_WASM)
+// The first Wasm tab core has one live UI helper. The desktop controller
+// catalog below is intentionally unavailable until each owning lifecycle is
+// source-selected and functional; keeping those accessors out of this branch
+// makes an accidental dependency a compile-time failure instead of a null or
+// inert controller.
+class TabInterface;
+
+class TabFeatures {
+ public:
+  TabFeatures();
+  ~TabFeatures();
+
+  TabFeatures(const TabFeatures&) = delete;
+  TabFeatures& operator=(const TabFeatures&) = delete;
+
+  // Called exactly once after the TabInterface owns a live WebContents.
+  void Init(TabInterface& tab, Profile* profile);
+
+ private:
+  bool initialized_ = false;
+
+  // TabUIHelper registers real WebContents and tab-state observers through
+  // the TabInterface's unowned-user-data host.
+  std::unique_ptr<TabUIHelper> tab_ui_helper_;
+};
+
+#else
 class ContextHighlightTabFeature;
 class InactiveWindowMouseEventController;
 class TabAlertController;
@@ -596,6 +624,8 @@ class TabFeatures {
   // Must be the last member.
   base::WeakPtrFactory<TabFeatures> weak_factory_{this};
 };
+
+#endif  // BUILDFLAG(IS_WASM)
 
 }  // namespace tabs
 

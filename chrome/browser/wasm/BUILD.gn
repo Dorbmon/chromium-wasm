@@ -352,6 +352,183 @@ source_set("wasm_tabs_features") {
   public_deps = [ "//base" ]
 }
 
+# The desktop TabFeatures catalog owns tab groups, session restore, extension
+# UI, side panels, and profile-backed controllers. The first Wasm tab core
+# keeps only the live TabUIHelper/ContentsObserving lifetime. This target is
+# deliberately unlinked until a joined Wasm TabModel owns WebContents helper
+# setup and tab insertion/destruction policy.
+source_set("wasm_tab_features") {
+  public = [
+    "../ui/tab_ui_helper.h",
+    "../ui/tabs/contents_observing_tab_feature.h",
+    "../ui/tabs/public/tab_features.h",
+  ]
+
+  sources = [
+    "../ui/tabs/contents_observing_tab_feature.cc",
+    "wasm_tab_features.cc",
+    "wasm_tab_ui_helper.cc",
+  ]
+
+  # The public headers' complete narrow closure. Do not depend on the desktop
+  # tab targets: their build file rejects Wasm and owns unsupported feature
+  # controllers.
+  public_deps = [
+    "//base",
+    "//chrome/common:buildflags",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/base/unowned_user_data",
+  ]
+
+  deps = [
+    ":wasm_tabs_features",
+    "//content/public/common",
+    "//url",
+  ]
+}
+
+# Chrome callers require a SecurityStateTabHelper with embedder information,
+# but the desktop SSL implementation also owns QWAC, Safety Tip, HTTPS-First,
+# profile-pref, and disclosure UI integration. Select only the real Chrome
+# WebContentsUserData identity for Wasm. This remains unlinked until a joined
+# Wasm tab lifecycle attaches it before any generic helper can be created.
+source_set("wasm_chrome_security_state_tab_helper") {
+  public = [ "../ssl/chrome_security_state_tab_helper.h" ]
+
+  sources = [ "wasm_chrome_security_state_tab_helper.cc" ]
+
+  # The public header retains the Chrome helper type while the Wasm source
+  # inherits the base visible-security-state implementation. Do not depend on
+  # //chrome/browser/ssl:impl: it admits unavailable SSL UI and profile owners.
+  public_deps = [
+    "//components/security_state/content",
+    "//content/public/browser",
+  ]
+
+  deps = [ "//base" ]
+}
+
+# TabModel requires SessionTabHelper before construction. This narrowly
+# source-selected Wasm prerequisite preserves the real helper's transient
+# SessionID behavior while deliberately providing no session-service delegate.
+# It remains unlinked until a joined Wasm tab-core lifecycle establishes the
+# complete construction, insertion, and teardown ordering.
+source_set("wasm_session_tab_helper") {
+  public = [ "wasm_session_tab_helper.h" ]
+
+  sources = [
+    # These upstream headers are source-selected with their implementations so
+    # GN can verify the full helper closure without selecting the monolithic
+    # //components/sessions target and its persistent command-storage sources.
+    "//components/sessions/content/content_record_password_state.h",
+    "//components/sessions/content/content_record_password_state.cc",
+    "//components/sessions/content/content_serialized_navigation_builder.h",
+    "//components/sessions/content/content_serialized_navigation_builder.cc",
+    "//components/sessions/content/content_serialized_navigation_driver.h",
+    "//components/sessions/content/content_serialized_navigation_driver.cc",
+    "//components/sessions/content/extended_info_handler.h",
+    "//components/sessions/content/navigation_task_id.h",
+    "//components/sessions/content/navigation_task_id.cc",
+    "//components/sessions/content/session_tab_helper.h",
+    "//components/sessions/content/session_tab_helper.cc",
+    "//components/sessions/content/session_tab_helper_delegate.h",
+    "//components/sessions/core/serialized_navigation_driver.h",
+    "//components/sessions/core/serialized_navigation_entry.h",
+    "//components/sessions/core/serialized_navigation_entry.cc",
+    "//components/sessions/core/serialized_user_agent_override.h",
+    "//components/sessions/core/serialized_user_agent_override.cc",
+    "wasm_session_tab_helper.cc",
+  ]
+
+  public_deps = [
+    "//components/sessions:session_id",
+  ]
+
+  deps = [
+    "//base",
+    "//content/public/browser",
+    "//content/public/common",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
+    "//third_party/blink/public/common",
+    "//ui/base",
+    "//url",
+  ]
+}
+
+# The first Wasm tab core source-selects Chromium's real TabModel, tab
+# collection, observer, and selection ownership without admitting the desktop
+# tabs aggregate. Its only current consumer is the opt-in process-local smoke
+# below; a live Browser still needs a BrowserView-backed modal host and joined
+# close/unload lifecycle before it can create or destroy tabs at runtime.
+source_set("wasm_tab_core") {
+  public = [
+    "../ui/tabs/tab_group_model.h",
+    "../ui/tabs/tab_model.h",
+    "../ui/tabs/tab_strip_model.h",
+    "../ui/tabs/tab_strip_model_delegate.h",
+    "../ui/tabs/tab_strip_model_observer.h",
+    "../ui/tabs/tab_strip_model_selection_state.h",
+    "../ui/tabs/tab_strip_scrubbing_metrics.h",
+  ]
+
+  sources = [
+    "../ui/tabs/tab_model.cc",
+    "../ui/tabs/tab_strip_model_delegate.cc",
+    "../ui/tabs/tab_strip_model_observer.cc",
+    "../ui/tabs/tab_strip_model_selection_state.cc",
+    "wasm_tab_group_model.cc",
+    "wasm_tab_strip_model.cc",
+  ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/browser_window",
+    "//components/sessions:session_id",
+    "//components/split_tabs",
+    "//components/tab_groups",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/base/unowned_user_data",
+    "//ui/gfx",
+  ]
+
+  deps = [
+    ":wasm_chrome_security_state_tab_helper",
+    ":wasm_session_tab_helper",
+    ":wasm_tab_features",
+    ":wasm_tabs_features",
+    "//components/tabs",
+    "//components/web_modal",
+  ]
+}
+
+# This narrow, process-local proof is reached only through the explicit
+# --wasm-tab-core-smoke switch in WasmBrowserMainParts. It exercises one real
+# WebContents insertion without constructing a Browser, BrowserView, or
+# BrowserWindowInterface. The ordinary chrome_wasm startup path still stops at
+# the M6 foundation boundary.
+source_set("wasm_tab_core_smoke") {
+  public = [ "wasm_tab_core_smoke.h" ]
+
+  sources = [ "wasm_tab_core_smoke.cc" ]
+
+  deps = [
+    ":wasm_chrome_security_state_tab_helper",
+    ":wasm_profile",
+    ":wasm_session_tab_helper",
+    ":wasm_tab_core",
+    "//base",
+    "//components/security_state/content",
+    "//components/web_modal",
+    "//content/public/browser",
+  ]
+}
+
 # This is only the real ActionManager root-registration lifetime. It remains
 # unlinked until a selected browser/controller slice can initialize supported
 # actions and expose them to Views without inert controls.
@@ -522,6 +699,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_manager",
     ":wasm_browser_process",
     ":wasm_browser_view_smoke",
+    ":wasm_tab_core_smoke",
     ":wasm_chrome_paths",
     ":wasm_chrome_result_codes",
     ":wasm_profile",
