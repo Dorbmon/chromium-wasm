@@ -5,28 +5,45 @@
 #ifndef CHROME_BROWSER_UI_BROWSER_COMMAND_CONTROLLER_H_
 #define CHROME_BROWSER_UI_BROWSER_COMMAND_CONTROLLER_H_
 
+#include <memory>
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/command_updater.h"
 #include "chrome/browser/command_updater_delegate.h"
 #include "chrome/browser/command_updater_impl.h"
-#include "chrome/browser/ui/side_panel/side_panel_enums.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-#include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_section.h"
 #include "chrome/common/buildflags.h"
-#include "components/prefs/pref_change_registrar.h"
-#include "components/prefs/pref_member.h"
-#include "components/sessions/core/tab_restore_service_observer.h"
-#include "content/public/browser/web_contents_observer.h"
-#include "ui/actions/actions.h"
 #include "ui/base/window_open_disposition.h"
+
+#if BUILDFLAG(IS_WASM)
+#include "base/callback_list.h"
+#else
+// The desktop UI target owns these dependencies. GN checks header includes
+// before preprocessor selection, so do not expand the Wasm target's closure
+// for imports excluded by its build branch.
+#include "base/memory/weak_ptr.h"
+#include "chrome/browser/ui/side_panel/side_panel_enums.h"  // nogncheck
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"  // nogncheck
+#include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_section.h"  // nogncheck
+#include "components/prefs/pref_change_registrar.h"  // nogncheck
+#include "components/prefs/pref_member.h"  // nogncheck
+#include "components/sessions/core/tab_restore_service_observer.h"  // nogncheck
+#include "content/public/browser/web_contents_observer.h"  // nogncheck
+#include "ui/actions/actions.h"  // nogncheck
+#endif
 
 class Browser;
 class BrowserWindow;
 class BrowserWindowInterface;
 class Profile;
 enum class TabChangeType;
+enum class SidePanelOpenTrigger;
+enum class CustomizeChromeSection;
+
+namespace content {
+class WebContents;
+}
 
 namespace input {
 struct NativeWebKeyboardEvent;
@@ -45,9 +62,13 @@ namespace chrome {
 // This class needs to expose the internal command_updater_ in some way, hence
 // it implements CommandUpdater as the public API for it (so it's not directly
 // exposed).
+#if BUILDFLAG(IS_WASM)
+class BrowserCommandController : public CommandUpdater {
+#else
 class BrowserCommandController : public CommandUpdater,
                                  public TabStripModelObserver,
                                  public sessions::TabRestoreServiceObserver {
+#endif
  public:
   explicit BrowserCommandController(BrowserWindowInterface* bwi);
 
@@ -115,6 +136,34 @@ class BrowserCommandController : public CommandUpdater,
       Profile* profile);
 
  private:
+#if BUILDFLAG(IS_WASM)
+  // The first Wasm Chrome window supports only direct active-tab navigation.
+  // More command families remain absent rather than being registered as inert
+  // actions. This implementation intentionally uses BrowserWindowInterface
+  // instead of Browser while the Browser core remains outside the source-
+  // selected graph.
+  class ActiveContentsObserver;
+
+  void ActiveTabChanged(BrowserWindowInterface* browser_window_interface);
+  void ActiveContentsDestroyed();
+  void ObserveActiveContents();
+  void ClearNavigationCommands();
+  void UpdateNavigationCommands();
+  content::WebContents* GetActiveContents() const;
+
+  const raw_ptr<BrowserWindowInterface> browser_window_interface_;
+
+  // The observer must be destroyed before the browser-window callback
+  // subscription so teardown cannot inspect a stale active WebContents.
+  base::CallbackListSubscription active_tab_changed_subscription_;
+  std::unique_ptr<ActiveContentsObserver> active_contents_observer_;
+  bool active_contents_destroyed_ = false;
+
+  // The CommandUpdaterImpl manages only the fixed Wasm command allowlist.
+  // Unsupported ids are rejected before reaching it, so adding an observer
+  // cannot accidentally make an unsupported command appear available.
+  CommandUpdaterImpl command_updater_{nullptr};
+#else
 #if BUILDFLAG(IS_CHROMEOS)
   friend class BrowserCommandControllerBrowserTestLockedFullscreen;
 #endif
@@ -272,6 +321,7 @@ class BrowserCommandController : public CommandUpdater,
   std::unique_ptr<ExtensionStateObserver> extension_state_observer_;
 
   base::WeakPtrFactory<BrowserCommandController> weak_ptr_factory_{this};
+#endif  // BUILDFLAG(IS_WASM)
 };
 
 }  // namespace chrome

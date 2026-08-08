@@ -149,6 +149,20 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         )
 
         self.assertIn("class BrowserWindowFeatures::Impl", implementation)
+        self.assertIn('#include "chrome/browser/ui/browser_actions.h"', implementation)
+        self.assertIn(
+            '#include "chrome/browser/ui/browser_command_controller.h"',
+            implementation,
+        )
+        self.assertRegex(
+            implementation,
+            r"std::unique_ptr<BrowserActions>\s+browser_actions_;",
+        )
+        self.assertRegex(
+            implementation,
+            r"std::unique_ptr<chrome::BrowserCommandController>\s+"
+            r"browser_command_controller_;",
+        )
         self.assertIn(
             "std::unique_ptr<BrowserAnimationController> "
             "browser_animation_controller_;",
@@ -186,11 +200,20 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         fullscreen_init = implementation.index(
             "std::make_unique<BrowserWindowFullscreenController>(*browser)"
         )
+        actions_init = implementation.index(
+            "std::make_unique<BrowserActions>(browser)"
+        )
         window_feature_init = implementation.index(
             "CreateInstance<WindowFeatureController>"
         )
         immersive_init = implementation.index(
             "CreateInstanceWithFactoryMethod<ImmersiveModeController,"
+        )
+        command_controller_init = implementation.index(
+            "std::make_unique<chrome::BrowserCommandController>(browser)"
+        )
+        actions_initialized = implementation.index(
+            "browser_actions->InitializeBrowserActions();"
         )
         animation_init = implementation.index(
             "CreateInstance<BrowserAnimationController>"
@@ -198,10 +221,20 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         elements_init_call = implementation.index(
             "CreateInstance<BrowserElementsViewsImpl>"
         )
-        self.assertLess(fullscreen_init, window_feature_init)
+        self.assertLess(fullscreen_init, actions_init)
+        self.assertLess(actions_init, window_feature_init)
         self.assertLess(window_feature_init, immersive_init)
+        self.assertLess(immersive_init, command_controller_init)
+        self.assertLess(command_controller_init, actions_initialized)
+        self.assertLess(actions_initialized, animation_init)
         self.assertLess(immersive_init, animation_init)
         self.assertLess(animation_init, elements_init_call)
+        self.assertEqual(
+            1,
+            implementation.count("browser_actions->InitializeBrowserActions();"),
+        )
+        self.assertIn("std::move(browser_actions)", implementation)
+        self.assertIn("std::move(browser_command_controller)", implementation)
         self.assertRegex(
             implementation,
             r"BrowserWindowFeatures::InitPostBrowserViewConstruction\(\s*"
@@ -257,6 +290,15 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         self.assertLess(fullscreen_teardown, elements_teardown)
         self.assertLess(elements_teardown, elements_reset)
         self.assertLess(elements_reset, animation_reset)
+        self.assertNotIn("browser_actions_.reset()", implementation)
+        self.assertNotIn("browser_command_controller_.reset()", implementation)
+        action_member = implementation.index(
+            "std::unique_ptr<BrowserActions> browser_actions_;"
+        )
+        command_member = implementation.index("browser_command_controller_;")
+        self.assertLess(action_member, command_member)
+        self.assertIn("through BrowserWidget destruction", implementation)
+        self.assertIn("in reverse declaration order.", implementation)
         self.assertRegex(
             implementation,
             r"browser_elements_->AsA<BrowserElementsViews>\(\)[\s\S]*?"
@@ -268,9 +310,9 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         self.assertIn("CHECK(!browser_view_initialized_);", implementation)
         self.assertIn("base::NoDestructor", implementation)
 
-        # P3 additionally supplies the initial normal-window policy UDDs and
-        # the one accessor whose lifecycle is now real. Everything else
-        # remains link-blocked.
+        # P3's UDD lifecycle is retained, and the selected action root and
+        # navigation command controller now have checked, owning accessors.
+        # Everything else remains link-blocked.
         definitions = set(
             re.findall(
                 r"BrowserWindowFeatures::([A-Za-z_][A-Za-z0-9_]*)\s*\(",
@@ -283,11 +325,26 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
                 "Init",
                 "InitPostBrowserViewConstruction",
                 "TearDownPreBrowserWindowDestruction",
+                "browser_actions",
+                "browser_command_controller",
                 "immersive_mode_controller",
                 "GetUserDataFactoryForTesting",
                 "GetUserDataFactory",
             },
             definitions,
+        )
+        self.assertRegex(
+            implementation,
+            r"BrowserActions\* BrowserWindowFeatures::browser_actions\(\) \{\s*"
+            r"CHECK\(impl_\);\s*"
+            r"return impl_->browser_actions\(\);",
+        )
+        self.assertRegex(
+            implementation,
+            r"chrome::BrowserCommandController\*\s*"
+            r"BrowserWindowFeatures::browser_command_controller\(\) const \{\s*"
+            r"CHECK\(impl_\);\s*"
+            r"return impl_->browser_command_controller\(\);",
         )
         self.assertRegex(
             implementation,
@@ -300,8 +357,6 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         for forbidden in (
             "InitPostWindowConstruction",
             "Browser::Create",
-            "BrowserActions",
-            "BrowserCommandController",
             "ThemeService",
             "return nullptr",
         ):
@@ -381,8 +436,10 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
                 self.assertIn(f'"{filename}"', target)
 
         for dependency in (
+            '":wasm_browser_actions",',
             '":wasm_browser_animation",',
             '":wasm_browser_animation_features",',
+            '":wasm_browser_command_controller",',
             '":wasm_window_feature_controllers",',
             '"//base",',
             '"//chrome/browser/ui/browser_window",',
@@ -406,6 +463,10 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
             '"//chrome/browser/ui:browser_element_identifiers",',
             '"//ui/views/controls/webview",',
             "//chrome/browser/ui/browser_window/internal",
+            "//chrome/browser:command_updater_impl",
+            "//chrome/browser/ui/tabs:tab_strip",
+            "//chrome/browser/ui/browser_actions",
+            "//chrome/browser/ui/browser_command_controller",
             "//chrome/browser/history",
             "//chrome/common:constants",
             "//chrome/browser/ui/views/toolbar",
@@ -492,8 +553,18 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
 
         chrome_build = source("chrome/BUILD.gn")
         main_parts = _source_set_body(wasm_build, "wasm_browser_main_parts")
+        self.assertEqual(1, wasm_build.count('\":wasm_browser_actions\",'))
+        self.assertEqual(
+            1, wasm_build.count('\":wasm_browser_command_controller\",')
+        )
         self.assertNotIn(":wasm_window_feature_controllers", chrome_build)
         self.assertNotIn(":wasm_window_feature_controllers", main_parts)
+        self.assertNotIn(":wasm_browser_actions", chrome_build)
+        self.assertNotIn(":wasm_browser_actions", main_parts)
+        self.assertNotIn(":wasm_browser_command_controller", chrome_build)
+        self.assertNotIn(
+            ":wasm_browser_command_controller", main_parts
+        )
         self.assertNotIn(":wasm_browser_window_features", chrome_build)
         self.assertNotIn(":wasm_browser_window_features", main_parts)
 

@@ -116,7 +116,7 @@ class M6BrowserActionsContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, implementation)
 
-    def test_source_selection_is_narrow_and_unwired(self) -> None:
+    def test_source_selection_is_narrow_and_has_one_pre_view_owner(self) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")
         target = _source_set_body(wasm_build, "wasm_browser_actions")
         window_features = _source_set_body(
@@ -145,11 +145,15 @@ class M6BrowserActionsContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-        self.assertNotIn(":wasm_browser_actions", window_features)
-        self.assertNotIn(
+        # BrowserWindowFeatures is the single selected owner. It constructs
+        # the root before BrowserView exists, but Browser core/main remain
+        # deliberately unselected until real action consumers are admitted.
+        self.assertIn(":wasm_browser_actions", window_features)
+        self.assertIn(
             "BrowserWindowFeatures::browser_actions(",
             source("chrome/browser/wasm/wasm_browser_window_features.cc"),
         )
+        self.assertEqual(1, wasm_build.count('":wasm_browser_actions",'))
         self.assertNotIn(":wasm_browser_actions", source("chrome/BUILD.gn"))
         self.assertNotIn(
             ":wasm_browser_actions",

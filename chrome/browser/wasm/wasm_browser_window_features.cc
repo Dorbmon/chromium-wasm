@@ -11,6 +11,8 @@
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
+#include "chrome/browser/ui/browser_actions.h"
+#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
 #include "chrome/browser/ui/views/animations/side_panel_animations.h"
@@ -30,18 +32,35 @@ class BrowserWindowFeatures::Impl {
   Impl(std::unique_ptr<BrowserWindowFullscreenController> fullscreen_controller,
        std::unique_ptr<WindowFeatureController> window_feature_controller,
        std::unique_ptr<ImmersiveModeController> immersive_mode_controller,
+       std::unique_ptr<BrowserActions> browser_actions,
+       std::unique_ptr<chrome::BrowserCommandController>
+           browser_command_controller,
        std::unique_ptr<BrowserAnimationController> browser_animation_controller,
        std::unique_ptr<BrowserElements> browser_elements)
       : fullscreen_controller_(std::move(fullscreen_controller)),
         window_feature_controller_(std::move(window_feature_controller)),
         immersive_mode_controller_(std::move(immersive_mode_controller)),
+        browser_actions_(std::move(browser_actions)),
+        browser_command_controller_(std::move(browser_command_controller)),
         browser_animation_controller_(std::move(browser_animation_controller)),
         browser_elements_(std::move(browser_elements)) {
     CHECK(fullscreen_controller_);
     CHECK(window_feature_controller_);
     CHECK(immersive_mode_controller_);
+    CHECK(browser_actions_);
+    CHECK(browser_command_controller_);
     CHECK(browser_animation_controller_);
     CHECK(browser_elements_);
+  }
+
+  BrowserActions* browser_actions() const {
+    CHECK(browser_actions_);
+    return browser_actions_.get();
+  }
+
+  chrome::BrowserCommandController* browser_command_controller() const {
+    CHECK(browser_command_controller_);
+    return browser_command_controller_.get();
   }
 
   ImmersiveModeController* immersive_mode_controller() const {
@@ -71,6 +90,11 @@ class BrowserWindowFeatures::Impl {
   }
 
   void TearDownPreBrowserWindowDestruction() {
+    // The action root and command controller are not UDDs. Keep them alive
+    // through BrowserWidget destruction; Browser resets its features only
+    // after resetting its BrowserWindow, at which point Impl tears them down
+    // in reverse declaration order.
+
     // Undo the UDD registration in the reverse order it was established,
     // before BrowserElements or animation can observe the destroyed browser.
     immersive_mode_controller_.reset();
@@ -90,6 +114,11 @@ class BrowserWindowFeatures::Impl {
   std::unique_ptr<BrowserWindowFullscreenController> fullscreen_controller_;
   std::unique_ptr<WindowFeatureController> window_feature_controller_;
   std::unique_ptr<ImmersiveModeController> immersive_mode_controller_;
+  // Keep BrowserActions before BrowserCommandController so the controller
+  // unregisters its active-tab callback before the action root is removed.
+  std::unique_ptr<BrowserActions> browser_actions_;
+  std::unique_ptr<chrome::BrowserCommandController>
+      browser_command_controller_;
   std::unique_ptr<BrowserAnimationController> browser_animation_controller_;
   std::unique_ptr<BrowserElements> browser_elements_;
   bool browser_view_initialized_ = false;
@@ -111,6 +140,7 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
   // part of the lifecycle contract and must not depend on argument evaluation.
   auto fullscreen_controller =
       std::make_unique<BrowserWindowFullscreenController>(*browser);
+  auto browser_actions = std::make_unique<BrowserActions>(browser);
   auto window_feature_controller =
       GetUserDataFactory().CreateInstance<WindowFeatureController>(
           *browser, fullscreen_controller.get(), /*app_controller=*/nullptr,
@@ -125,6 +155,9 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
               *browser, &chrome::CreateImmersiveModeController,
               window_feature_controller.get(),
               browser->GetUnownedUserDataHost());
+  auto browser_command_controller =
+      std::make_unique<chrome::BrowserCommandController>(browser);
+  browser_actions->InitializeBrowserActions();
   auto browser_animation_controller =
       GetUserDataFactory().CreateInstance<BrowserAnimationController>(*browser,
                                                                       *browser);
@@ -134,7 +167,8 @@ void BrowserWindowFeatures::Init(BrowserWindowInterface* browser) {
 
   impl_ = std::make_unique<Impl>(
       std::move(fullscreen_controller), std::move(window_feature_controller),
-      std::move(immersive_mode_controller),
+      std::move(immersive_mode_controller), std::move(browser_actions),
+      std::move(browser_command_controller),
       std::move(browser_animation_controller), std::move(browser_elements));
 }
 
@@ -148,6 +182,17 @@ void BrowserWindowFeatures::TearDownPreBrowserWindowDestruction() {
   if (impl_) {
     impl_->TearDownPreBrowserWindowDestruction();
   }
+}
+
+BrowserActions* BrowserWindowFeatures::browser_actions() {
+  CHECK(impl_);
+  return impl_->browser_actions();
+}
+
+chrome::BrowserCommandController*
+BrowserWindowFeatures::browser_command_controller() const {
+  CHECK(impl_);
+  return impl_->browser_command_controller();
 }
 
 ImmersiveModeController* BrowserWindowFeatures::immersive_mode_controller() {

@@ -620,6 +620,45 @@ source_set("wasm_browser_actions") {
   ]
 }
 
+# The desktop BrowserCommandController owns extensions, profile-backed menus,
+# side panels, tab restore, and window-management commands. The first Wasm
+# controller source-selects only direct active-tab navigation through the
+# BrowserWindowInterface and Chromium WebContents APIs. It stays unlinked
+# until Browser core and BrowserView lifecycles can own it.
+source_set("wasm_browser_command_controller") {
+  public = [
+    "../command_observer.h",
+    "../command_updater.h",
+    "../command_updater_delegate.h",
+    "../command_updater_impl.h",
+    "../ui/browser_command_controller.h",
+  ]
+
+  sources = [
+    "../command_updater_impl.cc",
+    "wasm_browser_command_controller.cc",
+  ]
+
+  # These are the complete public-header closure for CommandUpdater and the
+  # BrowserCommandController Wasm build branch. BrowserWindowInterface is
+  # forward-declared in the public header, so its implementation target remains
+  # private. Do not depend on the desktop command-updater target here: it
+  # enters the browser aggregate before this source-selected controller can
+  # compile.
+  public_deps = [
+    "//base",
+    "//chrome/common:buildflags",
+    "//ui/base",
+  ]
+
+  deps = [
+    "//chrome/app:command_ids",
+    "//chrome/browser/ui/browser_window",
+    "//components/tabs:public",
+    "//content/public/browser",
+  ]
+}
+
 # A future Wasm BrowserView requires real fullscreen/window-feature UDD
 # policy, without admitting desktop BrowserActions, commands, web-app, or
 # history graphs. Fullscreen follows the real BrowserWindow state; immersive
@@ -663,8 +702,10 @@ source_set("wasm_browser_window_features") {
   ]
 
   deps = [
+    ":wasm_browser_actions",
     ":wasm_browser_animation",
     ":wasm_browser_animation_features",
+    ":wasm_browser_command_controller",
     ":wasm_window_feature_controllers",
     "//base",
     "//chrome/browser/ui/browser_window",
