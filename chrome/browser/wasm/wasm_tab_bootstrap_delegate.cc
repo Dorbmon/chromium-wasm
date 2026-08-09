@@ -167,7 +167,10 @@ bool WasmTabBootstrapDelegate::ShouldRunUnloadListenerBeforeClosing(
 }
 
 bool WasmTabBootstrapDelegate::CanReload() const {
-  return false;  // Explicitly unsupported until the browser command lifecycle.
+  // This is the tab context-menu policy, which remains unsupported. The
+  // bounded BrowserWindow view smoke exercises BrowserCommandController's
+  // direct selected-active-tab route instead.
+  return false;
 }
 
 void WasmTabBootstrapDelegate::AddToReadLater(

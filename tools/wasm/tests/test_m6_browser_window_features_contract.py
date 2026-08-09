@@ -554,8 +554,16 @@ class M6BrowserWindowFeaturesContractTest(unittest.TestCase):
         chrome_build = source("chrome/BUILD.gn")
         main_parts = _source_set_body(wasm_build, "wasm_browser_main_parts")
         self.assertEqual(1, wasm_build.count('\":wasm_browser_actions\",'))
+        self.assertIn(
+            ":wasm_browser_command_controller",
+            _source_set_body(wasm_build, "wasm_browser_window_features"),
+        )
+        self.assertIn(
+            ":wasm_browser_command_controller",
+            _source_set_body(wasm_build, "wasm_browser_window_view_smoke"),
+        )
         self.assertEqual(
-            1, wasm_build.count('\":wasm_browser_command_controller\",')
+            2, wasm_build.count('\":wasm_browser_command_controller\",')
         )
         self.assertNotIn(":wasm_window_feature_controllers", chrome_build)
         self.assertNotIn(":wasm_window_feature_controllers", main_parts)

@@ -10,10 +10,13 @@ class WasmProfile;
 namespace chrome {
 
 // Runs the opt-in one-tab bridge between the source-selected
-// BrowserWindowInterface model and the structural Wasm BrowserView. This is
-// not Browser::Create(): it temporarily binds a real BaseWindow and handles
-// one bounded no-unload close, but admits no Browser-backed window ownership,
-// modal delegate, navigation, or general host-close lifecycle.
+// BrowserWindowInterface model and the structural Wasm BrowserView. It commits
+// two fixed data: documents in the selected tab and exercises the selected
+// BrowserCommandController's back, forward, and reload operations. This is
+// not Browser::Create(): it does not broaden the BrowserWindowInterface
+// OpenURL/OpenGURL boundary, Browser-backed window ownership, modal delegate,
+// or general host-close lifecycle, and it ends through one bounded no-unload
+// close.
 bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile);
 
 }  // namespace chrome

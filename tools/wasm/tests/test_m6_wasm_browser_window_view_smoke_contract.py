@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for the opt-in Wasm BrowserWindowInterface/View relay smoke."""
+"""Contracts for the opt-in Wasm BrowserWindowInterface/View smoke."""
 
 from __future__ import annotations
 
@@ -203,6 +203,111 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, implementation)
 
+    def test_selected_active_tab_navigation_is_bounded_and_real(self) -> None:
+        header = source(
+            "chrome/browser/wasm/wasm_browser_window_view_smoke.h"
+        )
+        implementation = source(
+            "chrome/browser/wasm/wasm_browser_window_view_smoke.cc"
+        )
+
+        self.assertIn("two fixed data: documents", header)
+        self.assertIn("OpenURL/OpenGURL boundary", header)
+        self.assertIn("class ActiveTabNavigationObserver final", implementation)
+        self.assertIn("kFirstNavigationUrl", implementation)
+        self.assertIn("kSecondNavigationUrl", implementation)
+        self.assertIn("data:text/html;base64,", implementation)
+        self.assertIn("kBrowserWindowViewSmokeNavigationTimeout", implementation)
+        self.assertIn("base::Seconds(5)", implementation)
+        for expected in (
+            "NavigationController::LoadURLParams",
+            "LoadURLWithParams(params)",
+            "DidFinishNavigation(",
+            "IsInPrimaryMainFrame()",
+            "HasCommitted()",
+            "IsErrorPage()",
+            "GetLastCommittedURL()",
+            "DidStopLoading()",
+            "if (!wait_quit_closure_) {",
+            "std::move(wait_quit_closure_).Run();",
+            "raw_core->GetFeatures().browser_command_controller()",
+            "CheckSelectedTabRemainsBound(",
+            "CHECK_EQ(navigation_observer.completed_navigation_count(), 5);",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, implementation)
+
+        # The observer must tolerate the finish/stop/timeout ordering without
+        # attempting to run its OnceClosure twice.
+        finish_wait = implementation.index("void FinishNavigationWait() {")
+        self.assertLess(
+            implementation.index("if (!wait_quit_closure_) {", finish_wait),
+            implementation.index(
+                "std::move(wait_quit_closure_).Run();", finish_wait
+            ),
+        )
+
+        for expected in (
+            "IDC_BACK",
+            "IDC_FORWARD",
+            "IDC_RELOAD",
+            "IDC_RELOAD_BYPASSING_CACHE",
+            "IDC_STOP",
+            "navigation_controller.CanGoBack()",
+            "navigation_controller.CanGoForward()",
+            "command_controller->IsCommandEnabled(IDC_BACK)",
+            "command_controller->IsCommandEnabled(IDC_FORWARD)",
+            "command_controller->IsCommandEnabled(IDC_RELOAD)",
+            "command_controller->IsCommandEnabled(IDC_STOP)",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, implementation)
+
+        navigation_start = implementation.index(
+            "const GURL first_navigation_url(kFirstNavigationUrl);"
+        )
+        first_load = implementation.index(
+            "LoadCurrentTabAndWait(", navigation_start
+        )
+        second_load = implementation.index(
+            "LoadCurrentTabAndWait(", first_load + 1
+        )
+        back = implementation.index(
+            "ExecuteCurrentTabNavigationCommandAndWait(", second_load
+        )
+        forward = implementation.index(
+            "ExecuteCurrentTabNavigationCommandAndWait(", back + 1
+        )
+        reload = implementation.index(
+            "ExecuteCurrentTabNavigationCommandAndWait(", forward + 1
+        )
+        self.assertEqual(
+            [first_load, second_load, back, forward, reload],
+            sorted([first_load, second_load, back, forward, reload]),
+        )
+        for position, expected in (
+            (first_load, "first_navigation_url"),
+            (second_load, "second_navigation_url"),
+            (back, "IDC_BACK"),
+            (forward, "IDC_FORWARD"),
+            (reload, "IDC_RELOAD"),
+        ):
+            with self.subTest(position=position, expected=expected):
+                self.assertIn(expected, implementation[position : position + 220])
+
+        bound_state = implementation.index("void CheckSelectedTabRemainsBound(")
+        for expected in (
+            "CHECK_EQ(tab_strip_model->count(), 1);",
+            "CHECK_EQ(active_tab->GetContents(), expected_contents);",
+            "CHECK_EQ(browser_view->GetActiveWebContents(), expected_contents);",
+            "CHECK_EQ(adapter->active_tab_change_count(), 1);",
+            "CHECK_EQ(relay_state->notification_count, 1);",
+            "CHECK(!modal_manager->IsDialogActive());",
+            "CHECK(!tab_strip_model->IsTabBlocked(0));",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, implementation[bound_state:])
+
     def test_target_and_switch_are_smoke_only(self) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
@@ -217,10 +322,13 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             '":wasm_browser_window_core",',
             '":wasm_browser_view",',
             '":wasm_browser_widget",',
+            '":wasm_browser_command_controller",',
             '":wasm_browser_window_features",',
             '":wasm_tab_core",',
+            '"//chrome/app:command_ids",',
             '"//components/web_modal",',
             '"//content/public/browser",',
+            '"//url",',
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, target)

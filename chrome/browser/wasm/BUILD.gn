@@ -681,9 +681,11 @@ source_set("wasm_browser_window_core_smoke") {
 
 # This opt-in composition smoke owns one real model tab through the selected
 # BrowserWindowInterface, temporarily binds its real BrowserView BaseWindow,
-# relays the tab into that view, and closes it through the bounded no-unload
-# path. It does not create Browser or admit browser-modal UI/navigation or a
-# general browser-window lifecycle.
+# relays the tab into that view, commits two fixed data: documents, and uses
+# the selected active-tab command controller for back/forward/reload before
+# closing it through the bounded no-unload path. It does not create Browser,
+# broaden the BrowserWindowInterface OpenURL/OpenGURL boundary, admit
+# browser-modal UI, or implement a general browser-window lifecycle.
 source_set("wasm_browser_window_view_smoke") {
   public = [ "wasm_browser_window_view_smoke.h" ]
 
@@ -693,17 +695,20 @@ source_set("wasm_browser_window_view_smoke") {
     ":wasm_browser_manager",
     ":wasm_browser_view",
     ":wasm_browser_widget",
+    ":wasm_browser_command_controller",
     ":wasm_browser_window_core",
     ":wasm_browser_window_features",
     ":wasm_profile",
     ":wasm_tab_core",
     "//base",
+    "//chrome/app:command_ids",
     "//components/tabs:public",
     "//components/web_modal",
     "//content/public/browser",
     "//ui/display",
     "//ui/gfx/geometry",
     "//ui/views",
+    "//url",
   ]
 }
 

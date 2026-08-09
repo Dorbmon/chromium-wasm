@@ -122,8 +122,6 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
             "return false;  // Explicitly unsupported.",
             "return nullptr;  // Explicit unsupported result.",
             "return std::nullopt;  // Explicitly no tab-restore persistence.",
-            "return false;  // Explicitly unsupported until the browser "
-            "command lifecycle.",
         )
         for result in explicit_results:
             with self.subTest(result=result):
@@ -149,6 +147,21 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
         )
         self.assertIn("return false;", body)
         self.assertNotIn("RunUnloadListenerBeforeClosing(contents)", body)
+
+        # CanReload() controls the tab context-menu entry point. It remains
+        # disabled even though the bounded BrowserWindow view smoke can invoke
+        # the source-selected command controller directly on its active tab.
+        can_reload = re.search(
+            r"bool WasmTabBootstrapDelegate::CanReload\(\) const \{"
+            r"(?P<body>.*?)\n\}",
+            implementation,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(can_reload)
+        body = can_reload.group("body")
+        self.assertIn("tab context-menu policy", body)
+        self.assertIn("BrowserCommandController", body)
+        self.assertIn("return false;", body)
 
     def test_target_is_narrow_and_selected_only_by_core_smoke_targets(
         self,
