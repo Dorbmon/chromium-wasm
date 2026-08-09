@@ -9,10 +9,14 @@
 
 #if BUILDFLAG(IS_WASM)
 
+#include <memory>
+
+#include "chrome/browser/ui/browser_window_deleter.h"
 #include "ui/base/base_window.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/gfx/native_ui_types.h"
 
+class Browser;
 class BrowserView;
 
 namespace content {
@@ -36,14 +40,24 @@ class WebContentsModalDialogHost;
 // The object-only Wasm BrowserView owns one externally-owned WebContents in a
 // Views WebView. Keep only the window contract required to host that content.
 //
-// Deliberately omitted: browser-window creation/deletion, downloads, toolbar
-// and location-bar UI, exclusive access, and all desktop bubble/menu routes.
-// Those APIs must remain a compile-time boundary until their real Wasm
-// lifecycles are selected; returning inert success from this layer would make
-// a partial browser window look functional when it is not.
+// The visual factory/deleter seam is retained so a later source-selected
+// Browser owner can use normal BrowserWindow lifetime ownership. It remains
+// unlinked until that owner supplies tab, modal, unload, and close ordering.
+// Downloads, toolbar and location-bar UI, exclusive access, and all desktop
+// bubble/menu routes stay a compile-time boundary; returning inert success
+// from this layer would make a partial browser window look functional when it
+// is not.
 class BrowserWindow : public ui::BaseWindow {
  public:
   virtual ~BrowserWindow() = default;
+
+  // Creates the real content-only Views/Aura shell for a future Wasm Browser
+  // owner. The factory rejects tab dragging and performs no Browser setup;
+  // callers must provide the complete close lifecycle before using it.
+  static std::unique_ptr<BrowserWindow, BrowserWindowDeleter>
+  CreateBrowserWindow(Browser* browser,
+                      bool user_gesture,
+                      bool in_tab_dragging);
 
   // The object-only host can find its one currently attached WebContents via
   // its native Views hierarchy. Background-tab lookup is intentionally not
@@ -72,6 +86,15 @@ class BrowserWindow : public ui::BaseWindow {
   virtual bool GetCanResize() = 0;
   virtual ui::mojom::WindowShowState GetWindowShowState() const = 0;
   virtual BrowserView* AsBrowserView() = 0;
+
+ protected:
+  friend struct BrowserWindowDeleter;
+
+  // The custom deleter is the sole route that may break the BrowserView /
+  // BrowserWidget ownership cycle. A Wasm implementation must reject the call
+  // unless its owner has already detached all WebContents and completed its
+  // ordered browser teardown.
+  virtual void DeleteBrowserWindow() = 0;
 };
 
 #else  // BUILDFLAG(IS_WASM)

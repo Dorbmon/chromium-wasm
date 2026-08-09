@@ -187,11 +187,15 @@ void BrowserWidget::OnNativeWidgetDestroyed() {
   browser_native_widget_ = nullptr;
 
   // A Browser-backed window needs ordered unload, modal cancellation, tab
-  // detachment, and feature teardown. This structural target is useful only
-  // with a null Browser identity, where normal Views teardown is truthful and
-  // allows a future focused widget smoke to clean up.
-  CHECK(!browser_view_ || !browser_view_->browser())
-      << "Wasm BrowserWidget Browser destruction lifecycle is not selected";
+  // detachment, and feature teardown. Permit it only when BrowserWindowDeleter
+  // has explicitly entered the pre-closed cycle-break path; every other
+  // native host destruction remains unsupported.
+  if (browser_view_ && browser_view_->browser()) {
+    CHECK(browser_view_->IsWasmBrowserWindowDeletionInProgress())
+        << "Wasm BrowserWidget Browser destruction lifecycle is not selected";
+    CHECK(!browser_view_->GetActiveWebContents())
+        << "Detach WebContents before Wasm BrowserWidget destruction";
+  }
   views::Widget::OnNativeWidgetDestroyed();
 }
 

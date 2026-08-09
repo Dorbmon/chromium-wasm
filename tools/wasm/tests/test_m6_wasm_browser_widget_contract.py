@@ -92,7 +92,11 @@ class M6WasmBrowserWidgetContractTest(unittest.TestCase):
         implementation = source("chrome/browser/wasm/wasm_browser_widget.cc")
 
         self.assertIn(
-            "CHECK(!browser_view_ || !browser_view_->browser())", implementation
+            "browser_view_->IsWasmBrowserWindowDeletionInProgress()",
+            implementation,
+        )
+        self.assertIn(
+            "!browser_view_->GetActiveWebContents()", implementation
         )
         self.assertIn(
             "Wasm BrowserWidget Browser destruction lifecycle is not selected",

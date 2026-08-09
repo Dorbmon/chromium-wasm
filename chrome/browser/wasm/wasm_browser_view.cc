@@ -70,11 +70,32 @@ void BrowserView::SetWasmCloseRequestCallbackForSmoke(
   wasm_close_request_callback_ = std::move(callback);
 }
 
+void BrowserView::DeleteBrowserWindow() {
+  // This route is intentionally narrower than the object-only smoke helper:
+  // it exists only for a future Browser owner after that owner has closed its
+  // tab model, detached this non-owning WebView, and torn down all features
+  // retaining the View. BrowserWidget observes the flag while the client-owned
+  // Widget tears down, so an arbitrary native close still fails explicitly.
+  CHECK(browser_)
+      << "Wasm BrowserWindow deleter requires a Browser-owned BrowserView";
+  CHECK(browser_widget_)
+      << "Wasm BrowserWindow deleter requires an initialized BrowserWidget";
+  CHECK(!active_web_contents_)
+      << "Detach WebContents before destroying a Wasm BrowserWindow";
+  CHECK(!browser_window_deletion_in_progress_);
+  browser_window_deletion_in_progress_ = true;
+
+  // BrowserWidget's RootView owns this BrowserView. Resetting the Widget is
+  // the sole cycle break; do not touch |this| after the reset.
+  browser_widget_.reset();
+}
+
 // static
 void BrowserView::DestroyForWasmBrowserViewSmoke(BrowserView* browser_view) {
   CHECK(browser_view);
   CHECK(!browser_view->browser_)
       << "Wasm BrowserView Browser destruction lifecycle is not selected";
+  CHECK(!browser_view->browser_window_deletion_in_progress_);
   CHECK(browser_view->browser_widget_);
   CHECK(!browser_view->active_web_contents_)
       << "Detach the externally owned WebContents before Widget teardown";

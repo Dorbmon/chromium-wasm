@@ -74,6 +74,13 @@ class BrowserView final : public BrowserWindow,
   void SetWasmCloseRequestCallbackForSmoke(
       base::RepeatingCallback<views::CloseRequestResult()> callback);
 
+  // True only while BrowserWindowDeleter is breaking a fully pre-closed
+  // Browser-owned Widget/View cycle. BrowserWidget uses this to distinguish
+  // that ordered teardown from an unsupported native host destruction.
+  bool IsWasmBrowserWindowDeletionInProgress() const {
+    return browser_window_deletion_in_progress_;
+  }
+
   // Test-only structural teardown for the BrowserView/BrowserWidget ownership
   // cycle. It is valid only for a null Browser and a detached WebContents;
   // resetting the Widget destroys this BrowserView through its Views tree, so
@@ -159,6 +166,9 @@ class BrowserView final : public BrowserWindow,
   void RemovedFromWidget() override;
 
  private:
+  // BrowserWindow:
+  void DeleteBrowserWindow() final;
+
   BrowserWidget& RequireBrowserWidget() const;
   void OnWebContentsDetached(views::WebView* web_view);
 
@@ -166,6 +176,7 @@ class BrowserView final : public BrowserWindow,
   std::unique_ptr<BrowserWidget> browser_widget_;
   base::RepeatingCallback<views::CloseRequestResult()>
       wasm_close_request_callback_;
+  bool browser_window_deletion_in_progress_ = false;
   raw_ptr<views::WebView> contents_web_view_ = nullptr;
   raw_ptr<content::WebContents> active_web_contents_ = nullptr;
   std::unique_ptr<WasmTabModalDialogHost> tab_modal_dialog_host_;

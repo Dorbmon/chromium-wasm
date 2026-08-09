@@ -317,6 +317,32 @@ source_set("wasm_browser_widget") {
   ]
 }
 
+# The future slim Wasm Browser needs the normal BrowserWindow visual ownership
+# seam without source-selecting desktop BrowserView/factory code. This target
+# creates the generic Views/Aura shell and supplies BrowserWindowDeleter; it
+# remains unlinked until a Browser owner performs real tab/modal/unload close
+# ordering before invoking the deleter.
+source_set("wasm_browser_window_factory") {
+  assert(use_aura && use_ozone && toolkit_views)
+
+  visibility = [ ":*" ]
+
+  sources = [
+    "../ui/browser_window_deleter.cc",
+    "../ui/browser_window_deleter.h",
+    "wasm_browser_window_factory.cc",
+  ]
+
+  public_deps = [ ":wasm_browser_view" ]
+
+  deps = [
+    ":wasm_browser_widget",
+    "//base",
+    "//ui/aura",
+    "//ui/views",
+  ]
+}
+
 # This test-only composition proof is selected only by
 # --wasm-browser-view-smoke in WasmBrowserMainParts. It creates one null-
 # Browser BrowserView, one BrowserWidget, and one externally-owned

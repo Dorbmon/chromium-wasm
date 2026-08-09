@@ -53,11 +53,15 @@ def _wasm_branch(header: str) -> str:
 
 
 class M6WasmBrowserViewContractTest(unittest.TestCase):
-    def test_browser_window_is_slim_and_omits_desktop_lifecycle(self) -> None:
+    def test_browser_window_is_slim_with_only_the_strict_visual_seam(self) -> None:
         wasm_window = _wasm_branch(source("chrome/browser/ui/browser_window.h"))
 
         for expected in (
             "class BrowserWindow : public ui::BaseWindow",
+            "#include \"chrome/browser/ui/browser_window_deleter.h\"",
+            "std::unique_ptr<BrowserWindow, BrowserWindowDeleter>",
+            "CreateBrowserWindow(Browser* browser,",
+            "virtual void DeleteBrowserWindow() = 0",
             "FindBrowserWindowWithWebContents",
             "GetNativeTheme() = 0",
             "GetThemeProvider() const = 0",
@@ -77,8 +81,6 @@ class M6WasmBrowserViewContractTest(unittest.TestCase):
 
         for forbidden in (
             '#include "chrome/browser/ui/browser.h"',
-            "CreateBrowserWindow",
-            "DeleteBrowserWindow",
             "Browser::DownloadCloseType",
             "ConfirmBrowserCloseWithPendingDownloads",
             "GetLocationBar",
