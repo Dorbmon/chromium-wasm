@@ -622,11 +622,16 @@ void RenderThreadImpl::Init() {
       discardable_memory::ClientDiscardableSharedMemoryManager>(
       std::move(manager_remote), GetIOTaskRunner());
 
-  // TODO(boliu): In single process, browser main loop should set up the
-  // discardable memory manager, and should skip this if kSingleProcess.
-  // See crbug.com/503724.
+#if BUILDFLAG(IS_WASM)
+  // The single-process Wasm browser registers its real, thread-safe
+  // DiscardableSharedMemoryManager before renderer initialization. Retain the
+  // client manager for its renderer lifecycle state, but do not overwrite the
+  // process-global allocator with a second owner.
+  CHECK(base::DiscardableMemoryAllocator::HasInstance());
+#else
   base::DiscardableMemoryAllocator::SetInstance(
       discardable_memory_allocator_.get());
+#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   ChildProcess::current()->SetIOThreadType(base::ThreadType::kPresentation);

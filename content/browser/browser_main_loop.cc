@@ -703,13 +703,18 @@ void BrowserMainLoop::PostCreateMainMessageLoop() {
 
   { base::SetRecordActionTaskRunner(GetUIThreadTaskRunner({})); }
 
-  // TODO(boliu): kSingleProcess check is a temporary workaround for
-  // in-process Android WebView. crbug.com/503724 tracks proper fix.
-  // Also check to see if a discardable memory manager was set (e.g. unit tests)
-  if (!parsed_command_line_->HasSwitch(switches::kSingleProcess) &&
+  // The single-process exclusion is an in-process Android WebView workaround
+  // (crbug.com/503724). Wasm instead has one real browser-owned
+  // discardable-memory manager, so it must register that manager here before
+  // Views/Skia can allocate discardable resources. Also check to see if a
+  // discardable memory manager was set (e.g. unit tests).
+  if ((!parsed_command_line_->HasSwitch(switches::kSingleProcess) ||
+       BUILDFLAG(IS_WASM)) &&
       !base::DiscardableMemoryAllocator::HasInstance()) {
-    base::DiscardableMemoryAllocator::SetInstance(
-        discardable_memory::DiscardableSharedMemoryManager::Get());
+    auto* const discardable_memory_manager =
+        discardable_memory::DiscardableSharedMemoryManager::Get();
+    CHECK(discardable_memory_manager);
+    base::DiscardableMemoryAllocator::SetInstance(discardable_memory_manager);
   }
 
   {
