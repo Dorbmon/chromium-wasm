@@ -213,10 +213,10 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 
-  // This test-only switch binds one real model-owned WebContents to the
-  // structural BrowserView, verifies active-tab relay and bounded close
-  // ordering, then releases both owners. It deliberately creates no Browser
-  // and leaves BrowserWindowInterface without a BaseWindow binding.
+  // This test-only switch binds one real model-owned WebContents and a
+  // temporary BaseWindow to the structural BrowserView, verifies active-tab
+  // relay and bounded close ordering, then releases both owners. It
+  // deliberately creates no Browser or general browser-window lifecycle.
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserWindowViewSmokeSwitch)) {
     if (!chrome::RunWasmBrowserWindowViewSmoke(profile_.get())) {

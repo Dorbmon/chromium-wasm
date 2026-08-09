@@ -104,6 +104,9 @@ class M6WasmBrowserViewContractTest(unittest.TestCase):
             "raw_ptr<views::WebView> contents_web_view_ = nullptr;",
             "raw_ptr<content::WebContents> active_web_contents_ = nullptr;",
             "std::unique_ptr<WasmTabModalDialogHost> tab_modal_dialog_host_;",
+            "SetWasmCloseRequestCallbackForSmoke",
+            "base::RepeatingCallback<views::CloseRequestResult()>",
+            "wasm_close_request_callback_",
             "OnActiveTabChanged",
             "OnTabDetached",
             "GetWebContentsModalDialogHostFor",
@@ -117,7 +120,19 @@ class M6WasmBrowserViewContractTest(unittest.TestCase):
         self.assertIn("AddWebContentsDetachedCallback", implementation)
         self.assertIn("contents_web_view_->SetWebContents(new_contents);", implementation)
         self.assertIn("contents_web_view_->SetWebContents(nullptr);", implementation)
-        self.assertIn("CHECK(false) << \"Wasm BrowserView close lifecycle", implementation)
+        self.assertIn("SetWasmCloseRequestCallbackForSmoke", implementation)
+        self.assertIn("CHECK(wasm_close_request_callback_)", implementation)
+        self.assertGreaterEqual(
+            implementation.count("wasm_close_request_callback_.Run()"), 2
+        )
+        self.assertNotIn("MakeCloseSynchronous", implementation)
+
+        # The standalone structural BrowserView smoke must not silently opt
+        # into the joined Core close lifecycle.
+        structural_smoke = source("chrome/browser/wasm/wasm_browser_view_smoke.cc")
+        self.assertNotIn(
+            "SetWasmCloseRequestCallbackForSmoke", structural_smoke
+        )
 
         # A browser-created WebContents or Browser lifecycle call would violate
         # this object's explicit ownership boundary.

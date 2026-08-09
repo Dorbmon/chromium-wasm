@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_manager_service.h"
@@ -28,6 +30,11 @@ BrowserManagerService::~BrowserManagerService() = default;
 void BrowserManagerService::Shutdown() {
   CHECK(browsers_and_subscriptions_for_testing_.empty());
 
+  // Any posted Wasm deletion drain must not outlive this keyed service or its
+  // profile. Pending entries are still owned here, so destroy them while the
+  // profile and its BrowserWindowFeatures dependencies remain valid.
+  weak_ptr_factory_.InvalidateWeakPtrs();
+
   while (!browsers_and_subscriptions_.empty()) {
     BrowserAndSubscriptions entry =
         std::move(browsers_and_subscriptions_.back());
@@ -38,6 +45,7 @@ void BrowserManagerService::Shutdown() {
     // released before subscriptions are destroyed.
   }
 
+  DestroyPendingBrowserDestructions();
   browsers_activation_order_.clear();
 }
 
@@ -116,7 +124,30 @@ void BrowserManagerService::DeleteBrowser(
   // destruction and desktop application-termination notifications have no
   // supported M6 lifecycle yet; main-parts owns process shutdown instead.
   CHECK(!profile_->IsOffTheRecord());
-  target_browser_and_subscriptions->browser.reset();
+
+  // A did-close subscriber is allowed to request manager deletion while the
+  // browser's RepeatingCallbackList is dispatching. Destroying the browser
+  // synchronously there would destroy that list mid-Notify(), which is an
+  // explicit use-after-free boundary in base/callback_list.h. Remove the
+  // logical browser synchronously, but keep the browser and subscriptions in
+  // a service-owned pending container until the current UI turn completes.
+  pending_browser_destructions_.push_back(
+      std::move(*target_browser_and_subscriptions));
+  // This must not run from a nested run loop opened by a did-close subscriber:
+  // base::RepeatingCallbackList remains in Notify() until that subscriber
+  // returns. A non-nestable task waits for the outer dispatch task to finish.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
+      FROM_HERE,
+      base::BindOnce(&BrowserManagerService::DestroyPendingBrowserDestructions,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void BrowserManagerService::DestroyPendingBrowserDestructions() {
+  // Each BrowserAndSubscriptions declares `browser` last, so clearing this
+  // container releases every BrowserWindowInterface before its callback
+  // subscriptions. This runs only after did-close callback dispatch returns,
+  // or synchronously during keyed-service shutdown while Profile is valid.
+  pending_browser_destructions_.clear();
 }
 
 void BrowserManagerService::AddBrowserForTesting(

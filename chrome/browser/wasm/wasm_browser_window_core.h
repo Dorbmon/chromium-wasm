@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -21,6 +22,12 @@ class BrowserWindowFeatures;
 class DesktopBrowserWindowCapabilities;
 class Profile;
 class TabStripModel;
+class TabStripModelChange;
+struct TabStripSelectionChange;
+
+namespace content {
+class WebContents;
+}  // namespace content
 
 namespace chrome {
 class WasmTabBootstrapDelegate;
@@ -34,12 +41,20 @@ namespace web_modal {
 class WebContentsModalDialogHost;
 }  // namespace web_modal
 
+namespace ui {
+class BaseWindow;
+}  // namespace ui
+
+namespace views {
+class View;
+}  // namespace views
+
 // A process-local BrowserWindowInterface owner for the opt-in Wasm lifecycle
 // smoke. It owns the real, source-selected tab model and
-// BrowserWindowFeatures setup, but deliberately has no Browser, BrowserView,
-// or BaseWindow yet. Its initial state is empty; explicit smoke targets may
-// briefly add the bounded no-unload tab. It must not be used as a substitute
-// for the joined live browser/window close lifecycle.
+// BrowserWindowFeatures setup. An explicit smoke may bind a non-owning
+// BaseWindow and relay its one bounded tab through a view-side adapter. This
+// remains distinct from Browser::Create and the joined browser/window close
+// lifecycle.
 class WasmBrowserWindowCore final : public BrowserWindowInterface {
  public:
   explicit WasmBrowserWindowCore(Profile* profile);
@@ -51,11 +66,37 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   // replace this with real modal, unload, and BrowserView teardown ordering.
   void CloseForWasmBrowserWindowCoreSmoke();
 
-  // Dispatches the BrowserWindowInterface active-tab callback after an
-  // opt-in smoke has attached or detached the model-owned WebContents from
-  // its Views host. This is deliberately not a BrowserView ownership API: the
-  // first joined browser/window lifecycle must own that relation directly.
+  // Dispatches the BrowserWindowInterface active-tab callback after the
+  // view-side adapter has attached or detached the model-owned WebContents.
+  // This does not make the core a BrowserView owner: the joined
+  // browser/window lifecycle must still own that relation directly.
   void NotifyActiveTabDidChangeForWasmSmoke();
+
+  // Binds the bounded model to a real BaseWindow after its Views Widget has
+  // initialized. The callbacks are view-side only: this core never owns a
+  // BrowserView or BrowserWidget and therefore cannot create a dependency
+  // cycle with the structural Views target.
+  using ActiveContentsChangedCallback = base::RepeatingCallback<void(
+      content::WebContents* old_contents,
+      content::WebContents* new_contents,
+      int active_index,
+      int reason)>;
+  using ContentsDetachedCallback =
+      base::RepeatingCallback<void(content::WebContents*, bool was_active)>;
+  void BindWindowForWasmBrowserWindowViewSmoke(
+      ui::BaseWindow* window,
+      ActiveContentsChangedCallback active_contents_changed_callback,
+      ContentsDetachedCallback contents_detached_callback,
+      base::OnceClosure destroy_window_callback);
+  void InitPostBrowserViewConstructionForWasmBrowserWindowViewSmoke(
+      views::View* browser_view);
+  void OnWindowActivationChangedForWasmBrowserWindowViewSmoke(
+      ui::BaseWindow* window,
+      bool active);
+  void RequestCloseForWasmBrowserWindowViewSmoke();
+  void UnbindWindowForWasmBrowserWindowViewSmoke(ui::BaseWindow* window);
+  base::WeakPtr<WasmBrowserWindowCore>
+  GetWeakPtrForWasmBrowserWindowViewSmoke();
 
   // BrowserWindowInterface:
   ui::UnownedUserDataHost& GetUnownedUserDataHost() override;
@@ -108,7 +149,18 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   const DesktopBrowserWindowCapabilities* capabilities() const override;
 
  private:
+  class TabStripModelObserver;
+
   void NotifyBrowserDidClose();
+  void OnTabWillBeRemovedForWasmBrowserWindowViewSmoke(
+      tabs::TabInterface* tab,
+      int index);
+  void OnTabStripModelChangedForWasmBrowserWindowViewSmoke(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection);
+  void OnTabStripEmptyForWasmBrowserWindowViewSmoke();
+  void FinishCloseForWasmBrowserWindowViewSmoke();
 
   using BrowserDidCloseCallbackList =
       base::RepeatingCallbackList<void(BrowserWindowInterface*)>;
@@ -126,6 +178,7 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   ui::UnownedUserDataHost unowned_user_data_host_;
   std::unique_ptr<chrome::WasmTabBootstrapDelegate> tab_delegate_;
   std::unique_ptr<TabStripModel> tab_strip_model_;
+  std::unique_ptr<TabStripModelObserver> tab_strip_model_observer_;
 
   // These callback lists must outlive BrowserWindowFeatures: the selected
   // command controller holds an active-tab subscription until its teardown.
@@ -137,8 +190,15 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
 
   std::unique_ptr<BrowserWindowFeatures> features_;
   raw_ptr<tabs::TabInterface> last_notified_active_tab_ = nullptr;
+  raw_ptr<ui::BaseWindow> window_ = nullptr;
+  ActiveContentsChangedCallback active_contents_changed_callback_;
+  ContentsDetachedCallback contents_detached_callback_;
+  base::OnceClosure destroy_window_callback_;
   bool is_delete_scheduled_ = false;
   bool is_active_ = false;
+  bool browser_view_initialized_ = false;
+  bool close_requested_ = false;
+  bool features_torn_down_ = false;
 
   base::WeakPtrFactory<WasmBrowserWindowCore> weak_ptr_factory_{this};
 };

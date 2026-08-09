@@ -50,7 +50,10 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
             "ui::UnownedUserDataHost unowned_user_data_host_;",
             "std::unique_ptr<chrome::WasmTabBootstrapDelegate> tab_delegate_;",
             "std::unique_ptr<TabStripModel> tab_strip_model_;",
+            "std::unique_ptr<TabStripModelObserver> tab_strip_model_observer_;",
             "std::unique_ptr<BrowserWindowFeatures> features_;",
+            "raw_ptr<ui::BaseWindow> window_ = nullptr;",
+            "bool features_torn_down_ = false;",
             "base::WeakPtrFactory<WasmBrowserWindowCore> "
             "weak_ptr_factory_{this};",
         ):
@@ -71,6 +74,23 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
             "CHECK_NE(active_tab, last_notified_active_tab_.get());",
             implementation,
         )
+        for expected in (
+            "BindWindowForWasmBrowserWindowViewSmoke",
+            "InitPostBrowserViewConstructionForWasmBrowserWindowViewSmoke",
+            "RequestCloseForWasmBrowserWindowViewSmoke",
+            "UnbindWindowForWasmBrowserWindowViewSmoke",
+            "OnWindowActivationChangedForWasmBrowserWindowViewSmoke",
+            "class WasmBrowserWindowCore::TabStripModelObserver final",
+            "tab_strip_model_->AddObserver(tab_strip_model_observer_.get());",
+            "contents_detached_callback_.Run(tab->GetContents()",
+            "active_contents_changed_callback_.Run(",
+            "tab_strip_model_->CloseAllTabs();",
+            "FinishCloseForWasmBrowserWindowViewSmoke",
+            "CHECK(close_requested_);",
+            "CHECK(features_torn_down_);",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, implementation)
 
         order = (
             "std::make_unique<chrome::WasmTabBootstrapDelegate>(this)",
@@ -81,18 +101,17 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
         positions = [implementation.index(item) for item in order]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("return TYPE_NORMAL;", implementation)
-        self.assertIn("return nullptr;", implementation)
+        self.assertIn("return window_.get();", implementation)
         self.assertIn("return GetFeatures().browser_actions();", implementation)
         self.assertIn("return tab_strip_model_->GetActiveTab();", implementation)
         self.assertIn("return false;", implementation)
+        self.assertIn("if (!features_torn_down_)", implementation)
 
-        # This probe is an honest pre-window lifecycle owner. It must not
-        # silently acquire a Browser/View or invoke a post-window hook.
+        # This core binds only a BaseWindow plus view-side callbacks. It must
+        # not acquire Browser/View ownership or start browser navigation.
         for forbidden in (
             '#include "chrome/browser/ui/browser.h"',
             '#include "chrome/browser/ui/views/frame/browser_view.h"',
-            "InitPostBrowserViewConstruction",
-            "InitPostWindowConstruction",
             "WebContents::Create",
             "Browser::Create",
         ):
@@ -132,6 +151,10 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
         callbacks = implementation.index(
             "browser_did_close_callbacks_.Notify(this);", notify
         )
+        feature_phase = implementation.index(
+            "CHECK(!browser_view_initialized_ || features_torn_down_);", notify
+        )
+        self.assertLess(feature_phase, scheduled)
         self.assertLess(scheduled, callbacks)
 
         destructor = implementation.index(
@@ -141,6 +164,7 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
             "weak_ptr_factory_.InvalidateWeakPtrs();",
             "features_->TearDownPreBrowserWindowDestruction();",
             "features_.reset();",
+            "tab_strip_model_observer_.reset();",
             "tab_strip_model_.reset();",
             "tab_delegate_.reset();",
         )

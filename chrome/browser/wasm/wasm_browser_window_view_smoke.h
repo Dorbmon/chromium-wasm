@@ -11,8 +11,9 @@ namespace chrome {
 
 // Runs the opt-in one-tab bridge between the source-selected
 // BrowserWindowInterface model and the structural Wasm BrowserView. This is
-// not Browser::Create(): it admits no Browser-backed window ownership, modal
-// delegate, navigation, or host-close lifecycle.
+// not Browser::Create(): it temporarily binds a real BaseWindow and handles
+// one bounded no-unload close, but admits no Browser-backed window ownership,
+// modal delegate, navigation, or general host-close lifecycle.
 bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile);
 
 }  // namespace chrome

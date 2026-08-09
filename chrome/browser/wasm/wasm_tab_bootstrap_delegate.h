@@ -18,16 +18,16 @@ namespace chrome {
 
 // The narrow delegate for the first source-selected Wasm tab bootstrap.
 //
-// This object only supplies the real BrowserWindowInterface identity. It
-// deliberately does not create or close tabs, create windows, attach
-// WebContents helpers, persist sessions, or service tab menus. Those
-// operations must remain outside the source closure until their complete
-// Browser/TabStripModel lifecycles are selected.
+// This object supplies the real BrowserWindowInterface identity and the
+// bounded no-unload policy used by explicit Wasm smokes. It deliberately does
+// not create windows, attach general WebContents helpers, persist sessions, or
+// service tab menus. Those operations must remain outside the source closure
+// until their complete Browser/TabStripModel lifecycles are selected.
 //
 // The BrowserWindowInterface must outlive this delegate. It is currently wired
-// only by explicit Wasm BrowserWindowInterface smoke targets; a future
-// TYPE_NORMAL Browser owns both objects and supplies the interface at
-// construction.
+// only by explicit Wasm BrowserWindowInterface smoke targets, including an
+// empty core and the bounded one-tab close smoke; a future TYPE_NORMAL Browser
+// owns both objects and supplies the interface at construction.
 class WasmTabBootstrapDelegate : public TabStripModelDelegate {
  public:
   explicit WasmTabBootstrapDelegate(

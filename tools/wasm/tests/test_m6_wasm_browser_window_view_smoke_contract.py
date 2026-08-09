@@ -51,14 +51,19 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             header,
         )
         self.assertIn(
-            "class WasmBrowserWindowViewSmokeBridge final "
-            ": public TabStripModelObserver",
+            "class WasmBrowserWindowViewSmokeAdapter final "
+            ": public views::WidgetObserver",
             implementation,
         )
-        self.assertIn("void OnTabWillBeRemoved(", implementation)
-        self.assertIn("void OnTabStripModelChanged(", implementation)
+        self.assertIn("SetWasmCloseRequestCallbackForSmoke", implementation)
+        self.assertIn("OnCloseRequested", implementation)
+        self.assertIn("return views::CloseRequestResult::kCannotClose;", implementation)
+        self.assertIn("if (!close_requested_)", implementation)
+        self.assertNotIn("MakeCloseSynchronous", implementation)
+        self.assertIn("void OnContentsDetached(", implementation)
+        self.assertIn("void OnActiveContentsChanged(", implementation)
         self.assertIn(
-            "browser_view_->OnTabDetached(contents, /*was_active=*/true);",
+            "browser_view_->OnTabDetached(contents, was_active);",
             implementation,
         )
         self.assertIn("raw_ptr<BrowserView> browser_view = nullptr;", implementation)
@@ -67,18 +72,21 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             implementation,
         )
 
+        core = source("chrome/browser/wasm/wasm_browser_window_core.cc")
         attach = implementation.index("browser_view_->OnActiveTabChanged(")
-        relay = implementation.index(
-            "core_->NotifyActiveTabDidChangeForWasmSmoke();"
-        )
         detach = implementation.index(
-            "browser_view_->OnTabDetached(contents, /*was_active=*/true);"
+            "browser_view_->OnTabDetached(contents, was_active);"
         )
-        self.assertLess(attach, relay)
-        self.assertLess(detach, relay)
+        relay = core.index("NotifyActiveTabDidChangeForWasmSmoke();")
+        core_attach = core.index("active_contents_changed_callback_.Run(")
+        core_detach = core.index("contents_detached_callback_.Run(tab->GetContents()")
+        self.assertLess(attach, implementation.index("++active_tab_change_count_"))
+        self.assertLess(detach, implementation.index("detached_active_contents_ = true"))
+        self.assertLess(core_attach, relay)
+        self.assertLess(core_detach, core_attach)
         self.assertIn(
             "CHECK_NE(active_tab, last_notified_active_tab_.get());",
-            source("chrome/browser/wasm/wasm_browser_window_core.cc"),
+            core,
         )
 
         for expected in (
@@ -86,41 +94,76 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             "web_modal::WebContentsModalDialogManager::FromWebContents(",
             "CHECK(!modal_manager->IsDialogActive());",
             "RecordActiveTabChange",
-            "relay_state.notification_count, 2",
-            "active_tab->Close();",
-            "CHECK(tab_strip_model->empty());",
-            "CHECK(!browser_view->GetActiveWebContents());",
+            "raw_core->GetWindow()->Close();",
+            "BrowserView::DestroyForWasmBrowserViewSmoke(browser_view_);",
+            "RequestDeferredBrowserDeletion",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, implementation)
+        for expected in (
+            "RequestCloseForWasmBrowserWindowViewSmoke",
+            "CloseAllTabs();",
+            "CHECK(!window_);",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, core)
 
-    def test_teardown_keeps_view_dependent_features_alive_until_detach(self) -> None:
+    def test_close_hook_keeps_view_dependent_features_alive_until_detach(self) -> None:
         implementation = source(
             "chrome/browser/wasm/wasm_browser_window_view_smoke.cc"
         )
+        core = source("chrome/browser/wasm/wasm_browser_window_core.cc")
 
-        ordered = (
-            "active_tab->Close();",
-            "raw_core->GetFeatures().TearDownPreBrowserWindowDestruction();",
-            "bridge.StopObserving();",
-            "BrowserView::DestroyForWasmBrowserViewSmoke(browser_view);",
-            "base::RunLoop().RunUntilIdle();",
-            "raw_core->CloseForWasmBrowserWindowCoreSmoke();",
-            "browser_manager->DeleteBrowser(core.get());",
-            "CHECK(!weak_core);",
+        detach = core.index("contents_detached_callback_.Run(tab->GetContents()")
+        active = core.index("active_contents_changed_callback_.Run(")
+        self.assertLess(detach, active)
+        finish = core.index(
+            "void WasmBrowserWindowCore::FinishCloseForWasmBrowserWindowViewSmoke"
         )
-        positions = [implementation.index(item) for item in ordered]
+        ordered_finish = (
+            "GetFeatures().TearDownPreBrowserWindowDestruction();",
+            "features_torn_down_ = true;",
+            "std::move(destroy_window_callback_).Run();",
+            "CHECK(!window_);",
+            "NotifyBrowserDidClose();",
+        )
+        positions = [core.index(item, finish) for item in ordered_finish]
+        self.assertEqual(positions, sorted(positions))
+        destroy = implementation.index("void Destroy() {")
+        adapter_order = (
+            "core_->UnbindWindowForWasmBrowserWindowViewSmoke(browser_view_);",
+            "widget_observation_.Reset();",
+            "BrowserView::DestroyForWasmBrowserViewSmoke(browser_view_);",
+        )
+        positions = [implementation.index(item, destroy) for item in adapter_order]
         self.assertEqual(positions, sorted(positions))
         weak_capture = implementation.index(
             "base::WeakPtr<BrowserWindowInterface> weak_core = "
             "raw_core->GetWeakPtr();"
         )
-        close_call = implementation.index(
-            "raw_core->CloseForWasmBrowserWindowCoreSmoke();"
-        )
+        close_call = implementation.index("raw_core->GetWindow()->Close();")
         self.assertLess(weak_capture, close_call)
-        self.assertNotIn("raw_core->", implementation[close_call + 1 :])
-        self.assertIn("if (core) {", implementation)
+        self.assertEqual(
+            implementation.count("raw_core->GetWindow()->Close();"), 2
+        )
+        before_idle = (
+            "CHECK_EQ(raw_core->GetWindow(), browser_view);",
+            "CHECK(browser_view->GetWidget());",
+            "CHECK(!raw_core->IsDeleteScheduled());",
+            "CHECK(tab_strip_model->empty());",
+            "CHECK(adapter.detached_active_contents());",
+            "CHECK_EQ(adapter.active_tab_change_count(), 2);",
+            "CHECK_EQ(relay_state.notification_count, 2);",
+            "CHECK(!relay_state.last_contents);",
+            "CHECK(!browser_view->GetActiveWebContents());",
+            "base::RunLoop().RunUntilIdle();",
+        )
+        positions = [implementation.index(item, close_call) for item in before_idle]
+        self.assertEqual(positions, sorted(positions))
+        run_until_idle = positions[-1]
+        self.assertNotIn("raw_core->", implementation[run_until_idle + 1 :])
+        self.assertIn("CHECK(deferred_deletion_state.delete_requested);", implementation)
+        self.assertIn("CHECK(!weak_core);", implementation)
         self.assertIn(
             '"CHROMIUM_WASM_M6_BROWSER_WINDOW_VIEW"', implementation
         )
@@ -131,11 +174,9 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
         for forbidden in (
             "Browser::Create",
             "BrowserWindowModalDialogDelegate",
-            "browser_view->Close(",
             "widget->Close(",
             "OpenURL(",
             "OpenGURL(",
-            "GetWindow()",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, implementation)

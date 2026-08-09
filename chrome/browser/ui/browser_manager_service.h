@@ -10,7 +10,9 @@
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "components/keyed_service/core/keyed_service.h"
 
@@ -109,6 +111,13 @@ class BrowserManagerService : public KeyedService,
   };
   std::vector<BrowserAndSubscriptions> browsers_and_subscriptions_;
 
+#if BUILDFLAG(IS_WASM)
+  // Physical destruction is deferred until every did-close subscriber has
+  // returned. Shutdown drains this container before the profile goes away.
+  void DestroyPendingBrowserDestructions();
+  std::vector<BrowserAndSubscriptions> pending_browser_destructions_;
+#endif
+
   // `browsers_and_subscriptions_for_testing_` and `browsers_and_subscriptions_`
   // are mutually exclusive to each other. Tests creating owned test Browser
   // instances should never be creating unowned Browser instances.
@@ -136,6 +145,10 @@ class BrowserManagerService : public KeyedService,
   };
   std::vector<UnownedBrowserAndSubscriptions>
       browsers_and_subscriptions_for_testing_;
+
+#if BUILDFLAG(IS_WASM)
+  base::WeakPtrFactory<BrowserManagerService> weak_ptr_factory_{this};
+#endif
 };
 
 #endif  // CHROME_BROWSER_UI_BROWSER_MANAGER_SERVICE_H_

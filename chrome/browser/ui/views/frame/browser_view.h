@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "base/callback_list.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -65,6 +66,13 @@ class BrowserView final : public BrowserWindow,
 
   void set_browser_widget(std::unique_ptr<BrowserWidget> widget);
   BrowserWidget* browser_widget() const;
+
+  // Installs the explicitly switch-gated close coordinator for the bounded
+  // BrowserWindowInterface/View smoke. Without it, all close entry points
+  // remain unsupported so a structural BrowserView cannot strand a
+  // model-owned WebContents.
+  void SetWasmCloseRequestCallbackForSmoke(
+      base::RepeatingCallback<views::CloseRequestResult()> callback);
 
   // Test-only structural teardown for the BrowserView/BrowserWidget ownership
   // cycle. It is valid only for a null Browser and a detached WebContents;
@@ -156,6 +164,8 @@ class BrowserView final : public BrowserWindow,
 
   raw_ptr<Browser> browser_;
   std::unique_ptr<BrowserWidget> browser_widget_;
+  base::RepeatingCallback<views::CloseRequestResult()>
+      wasm_close_request_callback_;
   raw_ptr<views::WebView> contents_web_view_ = nullptr;
   raw_ptr<content::WebContents> active_web_contents_ = nullptr;
   std::unique_ptr<WasmTabModalDialogHost> tab_modal_dialog_host_;

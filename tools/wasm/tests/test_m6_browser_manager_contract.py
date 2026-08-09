@@ -91,6 +91,46 @@ class M6BrowserManagerContractTest(unittest.TestCase):
         self.assertNotIn('"chrome/browser/ui/browser.h"', wasm_service)
         self.assertIn("CHECK(!profile_->IsOffTheRecord())", wasm_service)
 
+    def test_wasm_defers_physical_deletion_until_close_subscribers_return(
+        self,
+    ) -> None:
+        header = source("chrome/browser/ui/browser_manager_service.h")
+        wasm_service = source(
+            "chrome/browser/wasm/wasm_browser_manager_service.cc"
+        )
+
+        for expected in (
+            "std::vector<BrowserAndSubscriptions> pending_browser_destructions_;",
+            "void DestroyPendingBrowserDestructions();",
+            "base::WeakPtrFactory<BrowserManagerService> weak_ptr_factory_{this};",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, header)
+
+        delete_browser = wasm_service.index(
+            "void BrowserManagerService::DeleteBrowser"
+        )
+        shutdown = wasm_service.index("void BrowserManagerService::Shutdown")
+        self.assertIn(
+            "pending_browser_destructions_.push_back(",
+            wasm_service[delete_browser:],
+        )
+        self.assertIn(
+            "&BrowserManagerService::DestroyPendingBrowserDestructions",
+            wasm_service[delete_browser:],
+        )
+        self.assertIn("PostNonNestableTask(", wasm_service[delete_browser:])
+        self.assertIn("weak_ptr_factory_.InvalidateWeakPtrs();", wasm_service[shutdown:])
+        self.assertIn(
+            "DestroyPendingBrowserDestructions();", wasm_service[shutdown:]
+        )
+        self.assertIn(
+            "pending_browser_destructions_.clear();", wasm_service
+        )
+        self.assertNotIn(
+            "target_browser_and_subscriptions->browser.reset();", wasm_service
+        )
+
     def test_factory_is_registered_before_profile_becomes_live(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
         factory = source(

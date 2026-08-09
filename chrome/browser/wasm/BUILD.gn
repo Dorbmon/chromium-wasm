@@ -537,9 +537,9 @@ source_set("wasm_session_tab_helper") {
 # but not the desktop //chrome/browser/ui/tabs targets, which assert a native
 # platform and pull the full tab/menu/session graph. This delegate is selected
 # only by explicit BrowserWindowInterface smoke targets: it supplies a real
-# TYPE_NORMAL window identity, while all general mutation, closing, and
-# WebContents-helper policy remains outside the source closure until a joined
-# Wasm tab-core lifecycle owns it.
+# TYPE_NORMAL window identity and bounded no-unload close policy, while all
+# general mutation and WebContents-helper policy remains outside the source
+# closure until a joined Wasm tab-core lifecycle owns it.
 source_set("wasm_tab_bootstrap_delegate") {
   public = [
     "../ui/tabs/tab_strip_model_delegate.h",
@@ -679,9 +679,10 @@ source_set("wasm_browser_window_core_smoke") {
 }
 
 # This opt-in composition smoke owns one real model tab through the selected
-# BrowserWindowInterface, relays it into the structural BrowserView, and closes
-# it through the bounded no-unload path. It does not create Browser, bind a
-# BaseWindow to the interface, or admit browser-modal UI/navigation lifecycles.
+# BrowserWindowInterface, temporarily binds its real BrowserView BaseWindow,
+# relays the tab into that view, and closes it through the bounded no-unload
+# path. It does not create Browser or admit browser-modal UI/navigation or a
+# general browser-window lifecycle.
 source_set("wasm_browser_window_view_smoke") {
   public = [ "wasm_browser_window_view_smoke.h" ]
 

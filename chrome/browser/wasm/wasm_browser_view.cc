@@ -63,6 +63,13 @@ BrowserWidget* BrowserView::browser_widget() const {
   return browser_widget_.get();
 }
 
+void BrowserView::SetWasmCloseRequestCallbackForSmoke(
+    base::RepeatingCallback<views::CloseRequestResult()> callback) {
+  CHECK(callback);
+  CHECK(!wasm_close_request_callback_);
+  wasm_close_request_callback_ = std::move(callback);
+}
+
 // static
 void BrowserView::DestroyForWasmBrowserViewSmoke(BrowserView* browser_view) {
   CHECK(browser_view);
@@ -127,10 +134,12 @@ void BrowserView::ShowInactive() {
 }
 
 void BrowserView::Close() {
-  // Browser unload, modal cancellation, and BrowserWindow destruction are not
-  // part of this object-only source closure. Do not let a base-window caller
-  // destroy the real Widget and strand model-owned WebContents.
-  CHECK(false) << "Wasm BrowserView close lifecycle is not selected";
+  // Both direct BaseWindow closes and host close requests route through the
+  // same coordinator. It retains client ownership while the bounded tab close
+  // posts its final Widget teardown; without it this remains unsupported.
+  CHECK(wasm_close_request_callback_)
+      << "Wasm BrowserView close lifecycle is not selected";
+  static_cast<void>(wasm_close_request_callback_.Run());
 }
 
 void BrowserView::Activate() {
@@ -344,9 +353,9 @@ void BrowserView::OnWidgetDestroying(views::Widget* widget) {
 }
 
 views::CloseRequestResult BrowserView::OnWindowCloseRequested() {
-  // A Browser close/unload/download lifecycle has not been selected. Do not
-  // silently destroy the widget and strand model-owned WebContents.
-  CHECK(false) << "Wasm BrowserView close lifecycle is not selected";
+  CHECK(wasm_close_request_callback_)
+      << "Wasm BrowserView close lifecycle is not selected";
+  return wasm_close_request_callback_.Run();
 }
 
 int BrowserView::NonClientHitTest(const gfx::Point& point) {
