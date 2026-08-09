@@ -16,8 +16,10 @@
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_session_tab_helper.h"
 #include "components/security_state/content/security_state_tab_helper.h"
@@ -157,9 +159,13 @@ class TabCoreSmokeDelegate final : public TabStripModelDelegate {
   }
 
   bool ShouldRunUnloadListenerBeforeClosing(
-      content::WebContents* /*contents*/) override {
-    UnsupportedTabCoreSmokeDelegateOperation(
-        "tab close beforeunload handling");
+      content::WebContents* contents) override {
+    // The smoke intentionally exercises only the selected immediate-close
+    // policy. A pending unload is a hard boundary, not an implicit approval
+    // to destroy the WebContents.
+    CHECK(contents);
+    CHECK(!contents->NeedToFireBeforeUnloadOrUnloadEvents());
+    return false;
   }
 
   bool CanReload() const override {
@@ -245,6 +251,85 @@ class TabCoreSmokeDelegate final : public TabStripModelDelegate {
   raw_ptr<Profile> profile_;
 };
 
+// Verifies that the selected close primitive keeps the removed TabModel alive
+// during its model-change callback and only reports an empty strip after it has
+// released the WebContents. This is intentionally not a Browser substitute.
+class TabCoreSmokeCloseObserver final : public TabStripModelObserver {
+ public:
+  explicit TabCoreSmokeCloseObserver(content::WebContents* contents)
+      : contents_(contents) {
+    CHECK(contents_);
+  }
+
+  TabCoreSmokeCloseObserver(const TabCoreSmokeCloseObserver&) = delete;
+  TabCoreSmokeCloseObserver& operator=(const TabCoreSmokeCloseObserver&) =
+      delete;
+  ~TabCoreSmokeCloseObserver() override = default;
+
+  void ExpectComplete() const {
+    CHECK_EQ(stage_, Stage::kCloseAllStopped);
+  }
+
+ private:
+  enum class Stage {
+    kInitial,
+    kWillCloseAll,
+    kWillRemove,
+    kRemoved,
+    kEmpty,
+    kCloseAllStopped,
+  };
+
+  void WillCloseAllTabs(TabStripModel* tab_strip_model) override {
+    CHECK_EQ(stage_, Stage::kInitial);
+    CHECK_EQ(tab_strip_model->count(), 1);
+    stage_ = Stage::kWillCloseAll;
+  }
+
+  void OnTabWillBeRemoved(tabs::TabInterface* tab, int index) override {
+    CHECK_EQ(stage_, Stage::kWillCloseAll);
+    CHECK_EQ(index, 0);
+    CHECK_EQ(tab->GetContents(), contents_);
+    stage_ = Stage::kWillRemove;
+  }
+
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override {
+    CHECK_EQ(stage_, Stage::kWillRemove);
+    CHECK_EQ(change.type(), TabStripModelChange::kRemoved);
+    const TabStripModelChange::Remove* const remove = change.GetRemove();
+    CHECK_EQ(remove->contents.size(), 1u);
+    CHECK_EQ(remove->contents.front().contents, contents_);
+    CHECK_EQ(tab_strip_model->count(), 0);
+    CHECK_EQ(selection.old_contents, contents_);
+    CHECK(!selection.new_contents);
+    CHECK(selection.selected_tabs_were_removed);
+    stage_ = Stage::kRemoved;
+  }
+
+  void TabStripEmpty() override {
+    CHECK_EQ(stage_, Stage::kRemoved);
+    stage_ = Stage::kEmpty;
+  }
+
+  void CloseAllTabsStopped(
+      TabStripModel* tab_strip_model,
+      TabStripModelObserver::CloseAllStoppedReason reason) override {
+    CHECK_EQ(stage_, Stage::kEmpty);
+    CHECK(tab_strip_model->empty());
+    CHECK_EQ(reason, TabStripModelObserver::kCloseAllCompleted);
+    stage_ = Stage::kCloseAllStopped;
+  }
+
+  // This address is examined only through the removal callback, while the
+  // detached TabModel still owns the WebContents. It is intentionally a plain
+  // non-owning value because TabStripEmpty() follows destruction.
+  content::WebContents* contents_;
+  Stage stage_ = Stage::kInitial;
+};
+
 }  // namespace
 
 bool RunWasmTabCoreSmoke(WasmProfile* profile) {
@@ -294,6 +379,28 @@ bool RunWasmTabCoreSmoke(WasmProfile* profile) {
       web_modal::WebContentsModalDialogManager::FromWebContents(raw_contents);
   CHECK(modal_manager);
   CHECK(!modal_manager->IsDialogActive());
+
+  TabCoreSmokeCloseObserver close_observer(raw_contents);
+  tab_strip_model.AddObserver(&close_observer);
+  tab_strip_model.GetTabAtIndex(0)->Close();
+  close_observer.ExpectComplete();
+  tab_strip_model.RemoveObserver(&close_observer);
+  CHECK(tab_strip_model.empty());
+  CHECK_EQ(tab_strip_model.GetActiveWebContents(), nullptr);
+
+  std::unique_ptr<content::WebContents> second_contents =
+      content::WebContents::Create(create_params);
+  CHECK(second_contents);
+  content::WebContents* const second_raw_contents = second_contents.get();
+  tab_strip_model.AppendWebContents(std::move(second_contents),
+                                    /*foreground=*/true);
+  TabCoreSmokeCloseObserver close_all_observer(second_raw_contents);
+  tab_strip_model.AddObserver(&close_all_observer);
+  tab_strip_model.CloseAllTabs();
+  close_all_observer.ExpectComplete();
+  tab_strip_model.RemoveObserver(&close_all_observer);
+  CHECK(tab_strip_model.empty());
+  CHECK_EQ(tab_strip_model.GetActiveWebContents(), nullptr);
 
   std::fprintf(stderr, "%s:PASS\n", kTabCoreSmokeMarker);
   return true;

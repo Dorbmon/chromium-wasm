@@ -372,8 +372,11 @@ std::optional<tab_groups::TabGroupId> TabModel::GetGroup() const {
 
 void TabModel::Close() {
 #if BUILDFLAG(IS_WASM)
-  CHECK(false)
-      << "Wasm tab core has no joined unload/modal/browser-close lifecycle";
+  CHECK(owning_model_)
+      << "Cannot close a Wasm tab after it has been detached from its model";
+  const int tab_index = owning_model_->GetIndexOfTab(this);
+  CHECK_NE(tab_index, TabStripModel::kNoTab);
+  owning_model_->CloseWebContentsAt(tab_index, TabCloseTypes::CLOSE_NONE);
 #else
   auto* window_interface = GetBrowserWindowInterface();
   auto* tab_strip = window_interface->GetTabStripModel();

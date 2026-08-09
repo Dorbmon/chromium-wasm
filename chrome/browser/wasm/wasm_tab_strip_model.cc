@@ -12,6 +12,10 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory/ptr_util.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/types/pass_key.h"
 #include "build/build_config.h"
@@ -26,6 +30,7 @@
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/models/list_selection_model.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_tab_strip_model.cc must only be built for WebAssembly"
@@ -155,6 +160,11 @@ int TabStripModel::InsertDetachedTabAt(
     std::optional<tab_groups::TabGroupId> group) {
   ReentrancyCheck reentrancy_check(&reentrancy_guard_);
   CHECK(tab);
+  CHECK(!closing_all_)
+      << "Wasm tab core does not insert tabs after CloseAllTabs";
+  CHECK_EQ(count(), 0)
+      << "Wasm tab core only supports its first tab insertion";
+  CHECK_EQ(index, 0);
   CHECK(!group.has_value())
       << "Wasm tab core does not support tab-group insertion";
   tab->OnAddedToModel(this);
@@ -417,7 +427,144 @@ void TabStripModel::NotifyForegroundTabsWillEnterBackground() {
   }
 }
 
-void TabStripModel::CloseWebContentsAt(int /*index*/, uint32_t /*close_types*/) {
-  CHECK(false)
-      << "Wasm tab core has no joined unload/modal/browser-close lifecycle";
+void TabStripModel::CloseWebContentsAt(int index, uint32_t close_types) {
+  ReentrancyCheck::ValidateNotReentrant(&reentrancy_guard_);
+  base::WeakPtr<TabStripModel> model_ref = weak_factory_.GetWeakPtr();
+  reentrancy_guard_ = true;
+  base::ScopedClosureRunner reset_reentrancy_guard(base::BindOnce(
+      [](base::WeakPtr<TabStripModel> model) {
+        if (model) {
+          model->reentrancy_guard_ = false;
+        }
+      },
+      model_ref));
+
+  // This source-selected core deliberately owns only the immediate,
+  // single-tab close case. A general close path needs the async beforeunload
+  // loop, tab-restore persistence, and a Browser/window lifecycle; none may be
+  // faked by returning successfully here.
+  CHECK_EQ(close_types, static_cast<uint32_t>(TabCloseTypes::CLOSE_NONE));
+  CHECK_EQ(count(), 1)
+      << "Wasm tab core only supports closing its sole initial tab";
+  CHECK_EQ(index, 0);
+
+  tabs::TabModel* const tab = GetTabModelAtIndex(index);
+  CHECK(!tab->IsPinned());
+  CHECK(!tab->GetGroup().has_value());
+  CHECK(!tab->IsSplit());
+  CHECK(!tab->IsBlocked())
+      << "Wasm tab core does not close a tab while modal UI is active";
+
+  content::WebContents* const contents = tab->GetContents();
+  CHECK(contents);
+  const bool should_run_unload =
+      ShouldRunUnloadListenerBeforeClosing(contents);
+  if (!model_ref) {
+    return;
+  }
+  CHECK(!should_run_unload)
+      << "Wasm tab core does not support asynchronous beforeunload, unload, "
+         "or delegate-requested close handling";
+  const web_modal::WebContentsModalDialogManager* const modal_manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(contents);
+  CHECK(modal_manager);
+  CHECK(!modal_manager->IsDialogActive())
+      << "Wasm tab core does not close an active modal dialog";
+
+  // Observer callbacks may schedule Browser ownership destruction in the
+  // joined lifecycle. Preserve upstream-style weak-pointer checks even though
+  // this bounded core currently has no Browser observer.
+  for (auto& observer : observers_) {
+    observer.WillCloseAllTabs(this);
+  }
+  if (!model_ref) {
+    return;
+  }
+
+  tabs::TabInterface* const old_active_tab = GetActiveTab();
+  content::WebContents* const old_contents = GetActiveWebContents();
+  const ui::ListSelectionModel old_selection =
+      selection_model().GetListSelectionModel();
+
+  // CloseAllTabs() suppresses foreground transitions, matching upstream's
+  // whole-window close behavior. A direct final-tab close retains them.
+  if (!closing_all_ && tab == old_active_tab) {
+    tab->WillDeactivate(base::PassKey<TabStripModel>());
+  }
+  if (!closing_all_ && tab->IsVisible()) {
+    tab->WillBecomeHidden(base::PassKey<TabStripModel>());
+  }
+  tab->WillDetach(base::PassKey<TabStripModel>(),
+                  tabs::TabInterface::DetachReason::kDelete);
+  for (auto& observer : observers_) {
+    observer.OnTabWillBeRemoved(tab, index);
+  }
+  if (!model_ref) {
+    return;
+  }
+
+  // TabFeatures observes the WebContents and must be destroyed before the
+  // collection releases the TabModel. Keep the returned TabModel alive through
+  // the change callback, whose payload intentionally contains raw pointers.
+  tab->DestroyTabFeatures();
+  std::unique_ptr<tabs::TabModel> detached_tab = base::WrapUnique(
+      static_cast<tabs::TabModel*>(
+          contents_data_->RemoveTabAtIndexRecursive(index).release()));
+  selection_model_.RemoveTabFromSelection(tab);
+  selection_model_.InvalidateListSelectionModel(base::PassKey<TabStripModel>());
+  CHECK(empty());
+  selection_model_.Clear();
+  detached_tab->OnRemovedFromModel();
+
+  {
+    TabStripModelChange::Remove remove;
+    remove.contents.emplace_back(detached_tab.get(), index,
+                                 TabRemovedReason::kDeleted,
+                                 tabs::TabInterface::DetachReason::kDelete,
+                                 std::nullopt);
+    TabStripSelectionChange selection(old_active_tab, old_selection);
+    selection.new_tab = nullptr;
+    selection.old_contents = old_contents;
+    selection.new_contents = nullptr;
+    selection.new_model = selection_model().GetListSelectionModel();
+    selection.selected_tabs_were_removed = old_selection.IsSelected(index);
+    OnChange(TabStripModelChange(std::move(remove)), selection);
+  }
+  if (!model_ref) {
+    return;
+  }
+
+  detached_tab.reset();
+  for (auto& observer : observers_) {
+    observer.TabStripEmpty();
+  }
+  if (!model_ref) {
+    return;
+  }
+  for (auto& observer : observers_) {
+    observer.CloseAllTabsStopped(
+        this, TabStripModelObserver::kCloseAllCompleted);
+  }
+}
+
+void TabStripModel::CloseAllTabs() {
+  ReentrancyCheck::ValidateNotReentrant(&reentrancy_guard_);
+
+  // This is intentionally a one-tab, no-history closing path. It establishes
+  // the same whole-window notification distinction as desktop Chromium while
+  // leaving async unload, persistence, and multi-tab behavior unadmitted.
+  closing_all_ = true;
+  if (empty()) {
+    return;
+  }
+  CHECK_EQ(count(), 1)
+      << "Wasm tab core only supports closing its sole initial tab";
+  CloseWebContentsAt(/*index=*/0, TabCloseTypes::CLOSE_NONE);
+}
+
+bool TabStripModel::ShouldRunUnloadListenerBeforeClosing(
+    content::WebContents* contents) {
+  CHECK(contents);
+  return contents->NeedToFireBeforeUnloadOrUnloadEvents() ||
+         delegate_->ShouldRunUnloadListenerBeforeClosing(contents);
 }

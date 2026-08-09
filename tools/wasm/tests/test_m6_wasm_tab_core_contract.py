@@ -73,7 +73,7 @@ class M6WasmTabCoreContractTest(unittest.TestCase):
             r"(?<!Chrome)SecurityStateTabHelper::CreateForWebContents",
         )
 
-    def test_wasm_model_disables_groups_and_close_until_joined_lifecycles(
+    def test_wasm_model_disables_groups_and_limits_close_to_one_tab_with_an_explicit_unload_boundary(
         self,
     ) -> None:
         header = source("chrome/browser/ui/tabs/tab_strip_model.h")
@@ -86,8 +86,23 @@ class M6WasmTabCoreContractTest(unittest.TestCase):
         self.assertIn("does not support tab-group model construction", implementation)
         self.assertIn("CHECK(!group.has_value())", implementation)
         self.assertIn("does not support tab-group insertion", implementation)
+        self.assertIn("CHECK(!closing_all_)", implementation)
+        self.assertIn("does not insert tabs after CloseAllTabs", implementation)
+        self.assertIn("CHECK_EQ(count(), 0)", implementation)
+        self.assertIn("only supports its first tab insertion", implementation)
         self.assertIn("does not support pinned-tab insertion", implementation)
-        self.assertIn("Wasm tab core has no joined unload/modal/browser-close lifecycle", implementation)
+        self.assertIn("void TabStripModel::CloseWebContentsAt", implementation)
+        self.assertIn("void TabStripModel::CloseAllTabs()", implementation)
+        self.assertIn("Wasm tab core only supports closing its sole initial tab", implementation)
+        self.assertIn(
+            "does not support asynchronous beforeunload, unload", implementation
+        )
+        self.assertIn("ShouldRunUnloadListenerBeforeClosing(contents)", implementation)
+        self.assertIn(
+            "delegate_->ShouldRunUnloadListenerBeforeClosing(contents)",
+            implementation,
+        )
+        self.assertIn("does not close an active modal dialog", implementation)
         self.assertIn("TabGroupModel::TabGroupModel() = default;", group_model)
         self.assertIn("TabGroupModel::~TabGroupModel() = default;", group_model)
 
