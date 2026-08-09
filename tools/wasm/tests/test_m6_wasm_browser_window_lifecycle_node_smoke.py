@@ -25,11 +25,26 @@ def successful_result() -> dict[str, object]:
         "abort": None,
         "canvasCopies": 1,
         "fatalReports": [],
-        "focusReports": [],
-        "frameReports": [],
-        "markerObserved": True,
+        "focusReports": [
+            {
+                "protocol": 1,
+                "keyboardTargetPresent": True,
+                "active": True,
+            }
+        ],
+        "frameReports": [
+            {
+                "protocol": 1,
+                "id": 1,
+                "width": 640,
+                "height": 480,
+                "timestampMs": 1.0,
+            }
+        ],
+        "passObserved": True,
         "processExitReports": [{"protocol": 1, "exitCode": 0}],
-        "readinessReports": [],
+        "readyObserved": True,
+        "readinessReports": [{"protocol": 1, "surfaceReady": True}],
         "rejection": None,
         "runtimeExitCode": 0,
     }
@@ -40,6 +55,7 @@ class M6WasmBrowserWindowLifecycleNodeSmokeTest(unittest.TestCase):
         source = smoke.runner_source("file:///chrome_wasm.js", 1000)
         for expected in (
             "arguments: [\"--wasm-browser-window-lifecycle-smoke\"]",
+            "readyMarker",
             "class MockCanvasContext",
             "putImageData(imageData, x, y)",
             "globalThis.__chromiumWasmHostBridgeV1 = Object.freeze",
@@ -54,17 +70,29 @@ class M6WasmBrowserWindowLifecycleNodeSmokeTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, source)
 
-    def test_accepts_zero_exit_and_the_lifecycle_pass_marker(self) -> None:
-        smoke.validate_result(successful_result(), smoke.PASS_MARKER)
+    def test_accepts_visible_zero_exit_and_both_lifecycle_markers(self) -> None:
+        smoke.validate_result(
+            successful_result(), f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}"
+        )
 
-    def test_rejects_missing_marker_and_nonzero_process_exit(self) -> None:
-        with self.assertRaisesRegex(M0Error, "pass marker"):
-            smoke.validate_result(successful_result(), "runtime output")
+    def test_rejects_missing_ready_marker_and_nonzero_process_exit(self) -> None:
+        with self.assertRaisesRegex(M0Error, "ready marker"):
+            smoke.validate_result(successful_result(), smoke.PASS_MARKER)
 
         result = successful_result()
         result["processExitReports"] = [{"protocol": 1, "exitCode": 13}]
         with self.assertRaisesRegex(M0Error, "nonzero"):
-            smoke.validate_result(result, smoke.PASS_MARKER)
+            smoke.validate_result(
+                result, f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}"
+            )
+
+    def test_rejects_missing_visible_surface_evidence(self) -> None:
+        result = successful_result()
+        result["frameReports"] = []
+        with self.assertRaisesRegex(M0Error, "compositor frames"):
+            smoke.validate_result(
+                result, f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}"
+            )
 
     def test_parser_rejects_missing_or_repeated_result_records(self) -> None:
         result = json.dumps(successful_result(), separators=(",", ":"))

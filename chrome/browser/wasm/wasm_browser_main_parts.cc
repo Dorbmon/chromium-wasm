@@ -4,6 +4,7 @@
 
 #include "chrome/browser/wasm/wasm_browser_main_parts.h"
 
+#include <cstdio>
 #include <string>
 
 #include "base/check.h"
@@ -14,6 +15,7 @@
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/actions/chrome_actions.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
@@ -66,6 +68,10 @@ constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
     "wasm-browser-window-view-smoke";
 constexpr char kWasmBrowserWindowLifecycleSmokeSwitch[] =
     "wasm-browser-window-lifecycle-smoke";
+constexpr char kWasmBrowserWindowLifecycleSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M6_BROWSER_WINDOW_LIFECYCLE:READY";
+constexpr base::TimeDelta kWasmBrowserWindowLifecycleSmokeVisibleDuration =
+    base::Milliseconds(250);
 constexpr char kWasmTabCoreSmokeSwitch[] = "wasm-tab-core-smoke";
 constexpr char kRequiredAssets[][24] = {
     "chrome_100_percent.pak",
@@ -230,17 +236,23 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 
-  // This separate opt-in lifecycle proof owns one bounded no-unload tab and
-  // defers the main-loop quit until BrowserManagerService has physically
-  // destroyed its Core. It remains distinct from Browser::Create(), ordinary
-  // startup, and the richer navigation/modal composition smoke above.
+  // This separate opt-in lifecycle proof owns one visible bounded no-unload
+  // tab through a main-loop turn, then defers exit until BrowserManagerService
+  // has physically destroyed its Core. It remains distinct from
+  // Browser::Create(), ordinary startup, and the richer navigation/modal
+  // composition smoke above.
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserWindowLifecycleSmokeSwitch)) {
     CHECK(!browser_window_lifecycle_);
+    CHECK(!browser_window_lifecycle_smoke_requested_);
+    browser_window_lifecycle_smoke_requested_ = true;
     browser_window_lifecycle_ =
-        std::make_unique<chrome::WasmBrowserWindowLifecycle>(profile_.get());
+        std::make_unique<chrome::WasmBrowserWindowLifecycle>(
+            profile_.get(),
+            base::BindOnce(
+                &WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete,
+                weak_ptr_factory_.GetWeakPtr()));
     browser_window_lifecycle_->Initialize();
-    RequestShutdown();
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 
@@ -285,6 +297,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 void WasmBrowserMainParts::WillRunMainMessageLoop(
     std::unique_ptr<base::RunLoop>& run_loop) {
   main_message_loop_quit_closure_ = run_loop->QuitClosure();
+  StartBrowserWindowLifecycleSmokeShutdownTimer();
   MaybeStartShutdown();
 }
 
@@ -334,9 +347,9 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
   if (browser_window_lifecycle_) {
     if (!browser_window_shutdown_started_) {
       browser_window_shutdown_started_ = true;
-      browser_window_lifecycle_->BeginShutdown(base::BindOnce(
-          &WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete,
-          weak_ptr_factory_.GetWeakPtr()));
+      if (!browser_window_lifecycle_->IsShutdownStarted()) {
+        browser_window_lifecycle_->BeginShutdown();
+      }
     }
     return;
   }
@@ -344,11 +357,48 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
   FinishShutdown();
 }
 
+void WasmBrowserMainParts::StartBrowserWindowLifecycleSmokeShutdownTimer() {
+  if (!browser_window_lifecycle_smoke_requested_ || shutdown_requested_) {
+    return;
+  }
+  CHECK(browser_window_lifecycle_);
+  CHECK(!browser_window_lifecycle_smoke_shutdown_timer_.IsRunning());
+  browser_window_lifecycle_smoke_shutdown_timer_.Start(
+      FROM_HERE, kWasmBrowserWindowLifecycleSmokeVisibleDuration,
+      base::BindOnce(
+          &WasmBrowserMainParts::OnBrowserWindowLifecycleSmokeShutdownTimer,
+          weak_ptr_factory_.GetWeakPtr()));
+}
+
+void WasmBrowserMainParts::OnBrowserWindowLifecycleSmokeShutdownTimer() {
+  // A direct BrowserView/host close can already be draining through the
+  // lifecycle-owned did-close barrier. In that case its completion will quit
+  // the main loop without trying to re-enter the Core close path.
+  if (shutdown_requested_ || !browser_window_lifecycle_ ||
+      browser_window_lifecycle_->IsShutdownStarted()) {
+    return;
+  }
+
+  CHECK(browser_window_lifecycle_smoke_requested_);
+  CHECK(browser_window_lifecycle_->IsVisible());
+  std::fprintf(stderr, "%s\n", kWasmBrowserWindowLifecycleSmokeReadyMarker);
+  std::fflush(stderr);
+  RequestShutdown();
+}
+
 void WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete() {
   CHECK(browser_window_lifecycle_);
-  CHECK(browser_window_shutdown_started_);
   CHECK(browser_window_lifecycle_->IsShutdownComplete());
+  browser_window_lifecycle_smoke_shutdown_timer_.Stop();
   browser_window_lifecycle_.reset();
+
+  // A direct BrowserView/host close does not pass through RequestShutdown().
+  // Once its did-close barrier has physically destroyed the Core, convert that
+  // terminal one-window close into the same browser-main shutdown sequence.
+  if (!shutdown_requested_) {
+    RequestShutdown();
+    return;
+  }
   FinishShutdown();
 }
 
@@ -365,6 +415,7 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     return;
   }
   foundation_shutdown_ = true;
+  browser_window_lifecycle_smoke_shutdown_timer_.Stop();
 
   // Profile's interlocked keyed-service shutdown includes BrowserManagerService.
   // Never let it be the mechanism that destroys a Core still bound to the

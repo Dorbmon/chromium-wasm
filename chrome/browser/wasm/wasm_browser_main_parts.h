@@ -7,6 +7,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
+#include "base/timer/timer.h"
 #include <memory>
 
 #include "content/public/browser/browser_main_parts.h"
@@ -56,6 +57,8 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   bool PreflightResources();
   void RequestShutdown();
   void MaybeStartShutdown();
+  void StartBrowserWindowLifecycleSmokeShutdownTimer();
+  void OnBrowserWindowLifecycleSmokeShutdownTimer();
   void OnBrowserWindowLifecycleShutdownComplete();
   void FinishShutdown();
   void ShutdownFoundation();
@@ -64,6 +67,7 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   bool ozone_main_loop_initialized_ = false;
   bool shutdown_requested_ = false;
   bool browser_window_shutdown_started_ = false;
+  bool browser_window_lifecycle_smoke_requested_ = false;
   bool foundation_shutdown_ = false;
   base::RepeatingClosure main_message_loop_quit_closure_;
 
@@ -85,6 +89,11 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   // the manager-owned Core, before profile keyed-service shutdown begins.
   std::unique_ptr<chrome::WasmBrowserWindowLifecycle>
       browser_window_lifecycle_;
+
+  // This test-only timer starts only after Content has installed the main
+  // RunLoop. It proves the retained visible window survives an ordinary UI
+  // turn before requesting the bounded shutdown sequence.
+  base::OneShotTimer browser_window_lifecycle_smoke_shutdown_timer_;
 
   // Ozone retains the shutdown callback it receives at main-loop creation.
   // Keep this last so callbacks become inert before other state is destroyed.

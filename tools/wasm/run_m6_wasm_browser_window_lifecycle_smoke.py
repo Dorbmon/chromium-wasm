@@ -3,13 +3,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run the Wasm browser-window shutdown-lifecycle smoke under pinned Node.
+"""Run the visible Wasm browser-window lifecycle smoke under pinned Node.
 
-The lifecycle creates a real bounded BrowserWindowInterface, BrowserView, and
-one model-owned WebContents before asking its manager to drain the Core's
-asynchronous physical destruction. This mock-canvas harness supplies the
-normal Ozone host bridge, but intentionally proves the shutdown marker and
-zero exit rather than treating frame presentation as the lifecycle criterion.
+The lifecycle retains one real bounded BrowserWindowInterface, BrowserView,
+and model-owned WebContents through a main-loop turn. This mock-canvas harness
+requires its ready and physical-destruction markers as well as actual Ozone
+frame, surface-readiness, and focus evidence before accepting clean shutdown.
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ from run_node_smoke import node_executable
 
 SENTINEL = "CHROMIUM_WASM_M6_BROWSER_WINDOW_LIFECYCLE"
 PASS_MARKER = f"{SENTINEL}:PASS"
+READY_MARKER = f"{SENTINEL}:READY"
 RESULT_PREFIX = f"{SENTINEL}:NODE_EXIT "
 NODE_PASS_MARKER = f"{SENTINEL}_NODE:PASS"
 SMOKE_SWITCH = "--wasm-browser-window-lifecycle-smoke"
@@ -45,11 +45,12 @@ _MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def runner_source(module_url: str, timeout_ms: int) -> str:
-    """Returns the isolated Node harness for one lifecycle shutdown run."""
+    """Returns the isolated Node harness for one visible lifecycle run."""
     return f"""
 import createModule from {json.dumps(module_url)};
 
 const passMarker = {json.dumps(PASS_MARKER)};
+const readyMarker = {json.dumps(READY_MARKER)};
 const resultPrefix = {json.dumps(RESULT_PREFIX)};
 const result = {{
   abort: null,
@@ -57,8 +58,9 @@ const result = {{
   fatalReports: [],
   focusReports: [],
   frameReports: [],
-  markerObserved: false,
+  passObserved: false,
   processExitReports: [],
+  readyObserved: false,
   readinessReports: [],
   rejection: null,
   runtimeExitCode: null,
@@ -197,8 +199,10 @@ try {{
   clearTimeout(timeoutId);
 }}
 
-result.markerObserved = stdout.concat(stderr).some(
+result.passObserved = stdout.concat(stderr).some(
     (line) => line.includes(passMarker));
+result.readyObserved = stdout.concat(stderr).some(
+    (line) => line.includes(readyMarker));
 process.stdout.write(resultPrefix + JSON.stringify(result) + '\\n');
 if (result.rejection || result.abort || result.runtimeExitCode !== 0) {{
   process.exitCode = 1;
@@ -224,8 +228,57 @@ def validate_result(result: dict[str, Any], output: str) -> None:
         raise M0Error("lifecycle runtime did not exit zero")
     if result.get("abort") is not None or result.get("rejection") is not None:
         raise M0Error("lifecycle runtime aborted or rejected")
-    if PASS_MARKER not in output:
+    if result.get("readyObserved") is not True or READY_MARKER not in output:
+        raise M0Error("lifecycle runtime is missing its ready marker")
+    if result.get("passObserved") is not True or PASS_MARKER not in output:
         raise M0Error("lifecycle runtime is missing its pass marker")
+
+    canvas_copies = result.get("canvasCopies")
+    if type(canvas_copies) is not int or canvas_copies < 1:
+        raise M0Error("lifecycle runtime reported no canvas copies")
+
+    frame_reports = result.get("frameReports")
+    if not isinstance(frame_reports, list) or not frame_reports:
+        raise M0Error("lifecycle runtime reported no compositor frames")
+    previous_frame_id = 0
+    for report in frame_reports:
+        if not isinstance(report, dict) or report.get("protocol") != 1:
+            raise M0Error("lifecycle frame report is invalid")
+        frame_id = report.get("id")
+        width = report.get("width")
+        height = report.get("height")
+        timestamp = report.get("timestampMs")
+        if (
+            type(frame_id) is not int
+            or frame_id <= previous_frame_id
+            or type(width) is not int
+            or width < 1
+            or type(height) is not int
+            or height < 1
+            or isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+        ):
+            raise M0Error("lifecycle frame report is invalid")
+        previous_frame_id = frame_id
+
+    readiness_reports = result.get("readinessReports")
+    if not isinstance(readiness_reports, list) or not any(
+        isinstance(report, dict)
+        and report.get("protocol") == 1
+        and report.get("surfaceReady") is True
+        for report in readiness_reports
+    ):
+        raise M0Error("lifecycle runtime never reported a ready surface")
+
+    focus_reports = result.get("focusReports")
+    if not isinstance(focus_reports, list) or not any(
+        isinstance(report, dict)
+        and report.get("protocol") == 1
+        and report.get("keyboardTargetPresent") is True
+        and report.get("active") is True
+        for report in focus_reports
+    ):
+        raise M0Error("lifecycle runtime never observed an active keyboard target")
 
     fatal_reports = result.get("fatalReports")
     if not isinstance(fatal_reports, list) or fatal_reports:

@@ -21,6 +21,7 @@
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/gfx/geometry/rect.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_browser_window_lifecycle.cc must only be built for WebAssembly"
@@ -32,14 +33,19 @@ namespace {
 
 constexpr char kBrowserWindowLifecycleSmokeMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_WINDOW_LIFECYCLE:PASS";
+constexpr gfx::Rect kBrowserWindowLifecycleSmokeBounds(0, 0, 640, 480);
 
 }  // namespace
 
-WasmBrowserWindowLifecycle::WasmBrowserWindowLifecycle(WasmProfile* profile)
+WasmBrowserWindowLifecycle::WasmBrowserWindowLifecycle(
+    WasmProfile* profile,
+    base::OnceClosure shutdown_complete)
     : profile_(profile),
-      browser_manager_(BrowserManagerServiceFactory::GetForProfile(profile)) {
+      browser_manager_(BrowserManagerServiceFactory::GetForProfile(profile)),
+      shutdown_complete_callback_(std::move(shutdown_complete)) {
   CHECK(profile_);
   CHECK(browser_manager_);
+  CHECK(shutdown_complete_callback_);
 }
 
 WasmBrowserWindowLifecycle::~WasmBrowserWindowLifecycle() {
@@ -47,6 +53,7 @@ WasmBrowserWindowLifecycle::~WasmBrowserWindowLifecycle() {
   // destroyed after the Core's manager deletion turn has invalidated |core_|.
   CHECK(!view_host_);
   CHECK(!core_);
+  CHECK(!core_did_close_subscription_);
   CHECK(!shutdown_complete_callback_);
 }
 
@@ -57,6 +64,8 @@ void WasmBrowserWindowLifecycle::Initialize() {
   CHECK(!shutdown_complete_);
   CHECK(!view_host_);
   CHECK(!core_);
+  CHECK(!core_did_close_subscription_);
+  CHECK(shutdown_complete_callback_);
   CHECK(browser_manager_->IsEmpty());
 
   auto core = std::make_unique<WasmBrowserWindowCore>(profile_);
@@ -65,6 +74,15 @@ void WasmBrowserWindowLifecycle::Initialize() {
   CHECK(core_);
   browser_manager_->AddBrowser(std::move(core));
   CHECK_EQ(browser_manager_->GetSize(), 1u);
+
+  // Install this before the Views host can expose a close route. The manager
+  // callback is intentionally armed only once the Core emits did-close: doing
+  // so during initialization would observe an empty destruction queue and
+  // complete immediately before any close had occurred.
+  core_did_close_subscription_ = raw_core->RegisterBrowserDidClose(
+      base::BindRepeating(&WasmBrowserWindowLifecycle::OnCoreDidClose,
+                          base::Unretained(this)));
+  CHECK(core_did_close_subscription_);
 
   view_host_ = std::make_unique<WasmBrowserWindowViewHost>(raw_core);
   view_host_->Initialize();
@@ -88,36 +106,78 @@ void WasmBrowserWindowLifecycle::Initialize() {
   CHECK_EQ(browser_view->GetActiveWebContents(), raw_contents);
 
   initialized_ = true;
+
+  // The selected Wasm BrowserView BaseWindow implementation forwards these
+  // calls to its retained BrowserWidget. Keep the test geometry fixed until
+  // the primary-window factory owns host-display resize policy.
+  browser_view->SetBounds(kBrowserWindowLifecycleSmokeBounds);
+  CHECK_EQ(browser_view->GetBounds(), kBrowserWindowLifecycleSmokeBounds);
+  browser_view->Show();
+  CHECK(browser_view->IsVisible());
 }
 
-void WasmBrowserWindowLifecycle::BeginShutdown(base::OnceClosure completion) {
+void WasmBrowserWindowLifecycle::BeginShutdown() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(initialized_);
   CHECK(!shutdown_started_);
   CHECK(!shutdown_complete_);
-  CHECK(completion);
   CHECK(view_host_);
   CHECK(core_);
   CHECK_EQ(browser_manager_->GetSize(), 1u);
 
   shutdown_started_ = true;
-  shutdown_complete_callback_ = std::move(completion);
+  view_host_->RequestClose();
+}
 
-  // Register before asking the host to close. Core posts its manager deletion
-  // only after the did-close callback list returns, and BrowserManagerService
-  // then posts its own non-nestable physical destruction turn. This callback
-  // is the only shutdown completion signal that spans both turns.
+bool WasmBrowserWindowLifecycle::IsVisible() const {
+  CHECK(initialized_);
+  CHECK(!shutdown_complete_);
+  CHECK(view_host_);
+  const views::Widget* const widget = view_host_->browser_view()->GetWidget();
+  CHECK(widget);
+  return widget->IsVisible();
+}
+
+void WasmBrowserWindowLifecycle::OnCoreDidClose(
+    BrowserWindowInterface* browser) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!shutdown_complete_);
+  CHECK_EQ(browser, core_.get());
+
+  // A BrowserView/host close may enter the Core directly rather than through
+  // BeginShutdown(). Both paths converge here while did-close dispatch is
+  // still active, before the Core posts manager deletion.
+  shutdown_started_ = true;
+  ArmBrowserDestructionBarrier();
+}
+
+void WasmBrowserWindowLifecycle::ArmBrowserDestructionBarrier() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(core_);
+  if (browser_destruction_barrier_armed_) {
+    return;
+  }
+  browser_destruction_barrier_armed_ = true;
+
+  // Core posts manager deletion only after every did-close subscriber has
+  // returned. BrowserManagerService then posts its own non-nestable physical
+  // destruction turn. Register during did-close so this covers both the
+  // owner-initiated and direct BrowserView/host close paths without claiming
+  // a manager-empty callback during initialization.
   browser_manager_->RunWhenBrowserDestructionsCompleteForWasm(
       base::BindOnce(
           &WasmBrowserWindowLifecycle::OnBrowserDestructionsComplete,
           base::Unretained(this)));
-  view_host_->RequestClose();
 }
 
 void WasmBrowserWindowLifecycle::OnBrowserDestructionsComplete() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(initialized_);
   CHECK(shutdown_started_);
+  CHECK(browser_destruction_barrier_armed_);
   CHECK(!shutdown_complete_);
   CHECK(!core_);
   CHECK(browser_manager_->IsEmpty());
@@ -135,6 +195,7 @@ void WasmBrowserWindowLifecycle::OnBrowserDestructionsComplete() {
   CHECK_EQ(view_host_->active_tab_change_count_for_testing(), 2);
   CHECK(view_host_->detached_active_contents_for_testing());
   view_host_.reset();
+  core_did_close_subscription_ = base::CallbackListSubscription();
   shutdown_complete_ = true;
 
   std::fprintf(stderr, "%s\n", kBrowserWindowLifecycleSmokeMarker);
