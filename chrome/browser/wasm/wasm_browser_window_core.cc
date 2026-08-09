@@ -227,7 +227,7 @@ WasmBrowserWindowCore::GetUnownedUserDataHost() const {
 
 ui::BaseWindow* WasmBrowserWindowCore::GetWindow() {
   // A null BaseWindow is the honest pre-BrowserView state and again after the
-  // bounded Views adapter has torn down. The fullscreen controller supports
+  // bounded Views host has torn down. The fullscreen controller supports
   // that state during feature initialization.
   return window_.get();
 }
@@ -449,7 +449,7 @@ void WasmBrowserWindowCore::FinishCloseForWasmBrowserWindowViewSmoke() {
   CHECK(destroy_window_callback_);
 
   // BrowserElements and the animation controller retain the real Views
-  // object. Their teardown must happen before the adapter resets its
+  // object. Their teardown must happen before the view host resets its
   // BrowserWidget and destroys the BrowserView.
   GetFeatures().TearDownPreBrowserWindowDestruction();
   features_torn_down_ = true;

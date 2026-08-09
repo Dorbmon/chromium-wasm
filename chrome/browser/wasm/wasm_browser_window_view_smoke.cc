@@ -14,7 +14,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
-#include "base/scoped_observation.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -29,8 +28,8 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/wasm/wasm_browser_window_core.h"
+#include "chrome/browser/wasm/wasm_browser_window_view_host.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
@@ -44,7 +43,6 @@
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/views_delegate.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/widget/widget_observer.h"
 #include "ui/views/widget/root_view.h"
 #include "url/gurl.h"
 
@@ -300,188 +298,16 @@ class NestedTabStripEmptyObserver final : public TabStripModelObserver {
   const raw_ptr<NestedTabStripEmptyState> state_;
 };
 
-// The core owns the tab-model observer and BrowserWindowInterface relay. This
-// adapter owns only the structural Views objects and converts those relay
-// callbacks into BrowserView attachment, detachment, activation, and the
-// client-owned Widget destruction protocol.
-class WasmBrowserWindowViewSmokeAdapter final : public views::WidgetObserver {
- public:
-  explicit WasmBrowserWindowViewSmokeAdapter(WasmBrowserWindowCore* core)
-      : core_(core ? core->GetWeakPtrForWasmBrowserWindowViewSmoke()
-                   : base::WeakPtr<WasmBrowserWindowCore>()) {
-    CHECK(core_);
-  }
-
-  WasmBrowserWindowViewSmokeAdapter(
-      const WasmBrowserWindowViewSmokeAdapter&) = delete;
-  WasmBrowserWindowViewSmokeAdapter& operator=(
-      const WasmBrowserWindowViewSmokeAdapter&) = delete;
-
-  ~WasmBrowserWindowViewSmokeAdapter() override {
-    widget_observation_.Reset();
-    CHECK(!browser_view_);
-    CHECK(!core_ || !core_->GetWindow());
-  }
-
-  void Initialize() {
-    CHECK(core_);
-    CHECK(!browser_view_);
-
-    // BrowserView is owned by BrowserWidget's RootView after Init(). Do not put
-    // it in a unique_ptr: Destroy() below breaks that ownership cycle.
-    BrowserView* const browser_view = new BrowserView(/*browser=*/nullptr);
-    auto browser_widget = std::make_unique<BrowserWidget>(browser_view);
-    BrowserWidget* const widget = browser_widget.get();
-    browser_view->set_browser_widget(std::move(browser_widget));
-    widget->InitBrowserWidget();
-    CHECK_EQ(browser_view->GetWidget(), widget);
-    CHECK(widget->browser_native_widget());
-
-    browser_view_ = browser_view;
-    widget_ = widget;
-    widget_observation_.Observe(widget);
-
-    browser_view->SetWasmCloseRequestCallbackForSmoke(base::BindRepeating(
-        &WasmBrowserWindowViewSmokeAdapter::OnCloseRequested,
-        base::Unretained(this)));
-
-    core_->BindWindowForWasmBrowserWindowViewSmoke(
-        browser_view_,
-        base::BindRepeating(
-            &WasmBrowserWindowViewSmokeAdapter::OnActiveContentsChanged,
-            base::Unretained(this)),
-        base::BindRepeating(
-            &WasmBrowserWindowViewSmokeAdapter::OnContentsDetached,
-            base::Unretained(this)),
-        base::BindOnce(&WasmBrowserWindowViewSmokeAdapter::Destroy,
-                       base::Unretained(this)));
-    core_->InitPostBrowserViewConstructionForWasmBrowserWindowViewSmoke(
-        browser_view_);
-  }
-
-  BrowserView* browser_view() const {
-    CHECK(browser_view_);
-    return browser_view_;
-  }
-
-  int active_tab_change_count() const { return active_tab_change_count_; }
-  bool detached_active_contents() const { return detached_active_contents_; }
-  int close_request_count() const { return close_request_count_; }
-
- private:
-  void OnActiveContentsChanged(content::WebContents* old_contents,
-                               content::WebContents* new_contents,
-                               int active_index,
-                               int reason) {
-    CHECK(browser_view_);
-    if (new_contents) {
-      CHECK(!old_contents);
-      browser_view_->OnActiveTabChanged(old_contents, new_contents,
-                                        active_index, reason);
-      CHECK_EQ(browser_view_->GetActiveWebContents(), new_contents);
-    } else {
-      CHECK(old_contents);
-      // The core calls OnContentsDetached() during OnTabWillBeRemoved(), while
-      // the model still owns the tab. A null active event must never leave the
-      // non-owning WebView attached to the removed contents.
-      CHECK(detached_active_contents_);
-      CHECK(!browser_view_->GetActiveWebContents());
-    }
-    ++active_tab_change_count_;
-  }
-
-  void OnContentsDetached(content::WebContents* contents, bool was_active) {
-    CHECK(browser_view_);
-    CHECK(contents);
-    CHECK(was_active);
-    CHECK_EQ(browser_view_->GetActiveWebContents(), contents);
-    browser_view_->OnTabDetached(contents, was_active);
-    CHECK(!browser_view_->GetActiveWebContents());
-    detached_active_contents_ = true;
-  }
-
-  views::CloseRequestResult OnCloseRequested() {
-    CHECK(core_);
-    ++close_request_count_;
-    if (!close_requested_) {
-      close_requested_ = true;
-      core_->RequestCloseForWasmBrowserWindowViewSmoke();
-    }
-    // Keep the client-owned Widget alive while the Core posts its ordered
-    // BrowserWindowFeatures/View teardown. Repeated close requests during
-    // that turn are intentionally rejected rather than re-entering the model.
-    return views::CloseRequestResult::kCannotClose;
-  }
-
-  void Destroy() {
-    CHECK(core_);
-    CHECK(browser_view_);
-    CHECK(widget_);
-    CHECK(close_requested_);
-    CHECK(!browser_view_->GetActiveWebContents());
-
-    // Keep BrowserWindowFeatures teardown in the core before this callback.
-    // Deactivate the real Ozone/Views window before publishing the inactive
-    // BrowserWindowInterface state, so global active-window queries cannot
-    // observe contradictory BaseWindow and BWI activation states.
-    if (browser_view_->IsActive()) {
-      browser_view_->Deactivate();
-    }
-    CHECK(!core_->IsActive());
-
-    // Clear the BaseWindow relation before resetting the client-owned Widget;
-    // global collection queries then see the honest no-window state.
-    core_->UnbindWindowForWasmBrowserWindowViewSmoke(browser_view_);
-    widget_observation_.Reset();
-    BrowserView::DestroyForWasmBrowserViewSmoke(browser_view_);
-    browser_view_ = nullptr;
-    widget_ = nullptr;
-  }
-
-  // views::WidgetObserver:
-  void OnWidgetActivationChanged(views::Widget* widget, bool active) override {
-    CHECK_EQ(widget, widget_);
-    CHECK(core_);
-    core_->OnWindowActivationChangedForWasmBrowserWindowViewSmoke(
-        browser_view_, active);
-  }
-
-  void OnWidgetDestroying(views::Widget* widget) override {
-    CHECK_EQ(widget, widget_);
-    // BrowserView observes this event first and clears its WebView. A native
-    // teardown with a live model would therefore be unable to perform the
-    // required detach/BWF ordering. It remains an explicit unsupported path.
-    CHECK(false) << "Wasm BrowserWindow view smoke requires its controlled "
-                    "no-unload close lifecycle";
-  }
-
-  void OnWidgetDestroyed(views::Widget* widget) override {
-    CHECK_EQ(widget, widget_);
-    CHECK(false) << "Wasm BrowserWindow view smoke native teardown escaped "
-                    "its controlled lifecycle";
-  }
-
-  base::WeakPtr<WasmBrowserWindowCore> core_;
-  raw_ptr<BrowserView> browser_view_;
-  raw_ptr<BrowserWidget> widget_ = nullptr;
-  base::ScopedObservation<views::Widget, views::WidgetObserver>
-      widget_observation_{this};
-  int active_tab_change_count_ = 0;
-  bool detached_active_contents_ = false;
-  bool close_requested_ = false;
-  int close_request_count_ = 0;
-};
-
 void CheckSelectedTabRemainsBound(
     WasmBrowserWindowCore* core,
     BrowserView* browser_view,
-    const WasmBrowserWindowViewSmokeAdapter* adapter,
+    const WasmBrowserWindowViewHost* view_host,
     const ActiveTabRelayState* relay_state,
     const web_modal::WebContentsModalDialogManager* modal_manager,
     content::WebContents* expected_contents) {
   CHECK(core);
   CHECK(browser_view);
-  CHECK(adapter);
+  CHECK(view_host);
   CHECK(relay_state);
   CHECK(modal_manager);
   CHECK(expected_contents);
@@ -496,7 +322,7 @@ void CheckSelectedTabRemainsBound(
   CHECK_EQ(core->GetWindow(), browser_view);
   CHECK(browser_view->GetWidget());
   CHECK_EQ(browser_view->GetActiveWebContents(), expected_contents);
-  CHECK_EQ(adapter->active_tab_change_count(), 1);
+  CHECK_EQ(view_host->active_tab_change_count_for_testing(), 1);
   CHECK_EQ(relay_state->notification_count, 1);
   CHECK_EQ(relay_state->last_contents, expected_contents);
   CHECK(!modal_manager->IsDialogActive());
@@ -506,7 +332,7 @@ void CheckSelectedTabRemainsBound(
 struct BoundCoreCloseTaskState {
   raw_ptr<WasmBrowserWindowCore> core;
   raw_ptr<BrowserView> browser_view;
-  raw_ptr<WasmBrowserWindowViewSmokeAdapter> adapter;
+  raw_ptr<WasmBrowserWindowViewHost> view_host;
   raw_ptr<TabStripModel> tab_strip_model;
   raw_ptr<ActiveTabRelayState> relay_state;
   raw_ptr<NestedTabStripEmptyState> nested_tab_strip_empty_state;
@@ -521,7 +347,7 @@ void RequestBoundCoreClose(BoundCoreCloseTaskState* state) {
   CHECK(state);
   CHECK(state->core);
   CHECK(state->browser_view);
-  CHECK(state->adapter);
+  CHECK(state->view_host);
   CHECK(state->tab_strip_model);
   CHECK(state->relay_state);
   CHECK(state->nested_tab_strip_empty_state);
@@ -540,10 +366,10 @@ void RequestBoundCoreClose(BoundCoreCloseTaskState* state) {
   CHECK_EQ(state->core->GetWindow(), state->browser_view);
   CHECK(state->browser_view->GetWidget());
   CHECK(!state->core->IsDeleteScheduled());
-  CHECK_EQ(state->adapter->close_request_count(), 3);
+  CHECK_EQ(state->view_host->close_request_count_for_testing(), 3);
   CHECK(state->tab_strip_model->empty());
-  CHECK(state->adapter->detached_active_contents());
-  CHECK_EQ(state->adapter->active_tab_change_count(), 2);
+  CHECK(state->view_host->detached_active_contents_for_testing());
+  CHECK_EQ(state->view_host->active_tab_change_count_for_testing(), 2);
   CHECK_EQ(state->relay_state->notification_count, 2);
   CHECK(!state->relay_state->last_contents);
   CHECK(!state->browser_view->GetActiveWebContents());
@@ -595,9 +421,9 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
   base::WeakPtr<BrowserWindowInterface> weak_core = raw_core->GetWeakPtr();
 
   {
-    WasmBrowserWindowViewSmokeAdapter adapter(raw_core);
-    adapter.Initialize();
-    BrowserView* const browser_view = adapter.browser_view();
+    WasmBrowserWindowViewHost view_host(raw_core);
+    view_host.Initialize();
+    BrowserView* const browser_view = view_host.browser_view();
     CHECK_EQ(raw_core->GetWindow(), browser_view);
 
     ActiveTabRelayState relay_state{
@@ -629,7 +455,7 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     CHECK_EQ(browser_view->GetActiveWebContents(), raw_contents);
     CHECK_EQ(relay_state.notification_count, 1);
     CHECK_EQ(relay_state.last_contents, raw_contents);
-    CHECK_EQ(adapter.active_tab_change_count(), 1);
+    CHECK_EQ(view_host.active_tab_change_count_for_testing(), 1);
     const web_modal::WebContentsModalDialogManager* const modal_manager =
         web_modal::WebContentsModalDialogManager::FromWebContents(
             raw_contents);
@@ -674,12 +500,12 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     ActiveTabNavigationObserver navigation_observer(raw_contents);
     LoadCurrentTabAndWait(&navigation_observer, &navigation_controller,
                           first_navigation_url);
-    CheckSelectedTabRemainsBound(raw_core, browser_view, &adapter,
+    CheckSelectedTabRemainsBound(raw_core, browser_view, &view_host,
                                  &relay_state, modal_manager, raw_contents);
 
     LoadCurrentTabAndWait(&navigation_observer, &navigation_controller,
                           second_navigation_url);
-    CheckSelectedTabRemainsBound(raw_core, browser_view, &adapter,
+    CheckSelectedTabRemainsBound(raw_core, browser_view, &view_host,
                                  &relay_state, modal_manager, raw_contents);
     CHECK(navigation_controller.CanGoBack());
     CHECK(!navigation_controller.CanGoForward());
@@ -692,7 +518,7 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     ExecuteCurrentTabNavigationCommandAndWait(
         &navigation_observer, command_controller, IDC_BACK,
         first_navigation_url);
-    CheckSelectedTabRemainsBound(raw_core, browser_view, &adapter,
+    CheckSelectedTabRemainsBound(raw_core, browser_view, &view_host,
                                  &relay_state, modal_manager, raw_contents);
     CHECK(navigation_controller.CanGoForward());
     CHECK(command_controller->IsCommandEnabled(IDC_FORWARD));
@@ -702,7 +528,7 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     ExecuteCurrentTabNavigationCommandAndWait(
         &navigation_observer, command_controller, IDC_FORWARD,
         second_navigation_url);
-    CheckSelectedTabRemainsBound(raw_core, browser_view, &adapter,
+    CheckSelectedTabRemainsBound(raw_core, browser_view, &view_host,
                                  &relay_state, modal_manager, raw_contents);
     CHECK(!navigation_controller.CanGoForward());
     CHECK(!command_controller->IsCommandEnabled(IDC_FORWARD));
@@ -714,7 +540,7 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     ExecuteCurrentTabNavigationCommandAndWait(
         &navigation_observer, command_controller, IDC_RELOAD,
         second_navigation_url);
-    CheckSelectedTabRemainsBound(raw_core, browser_view, &adapter,
+    CheckSelectedTabRemainsBound(raw_core, browser_view, &view_host,
                                  &relay_state, modal_manager, raw_contents);
     CHECK_EQ(navigation_controller.GetEntryCount(), history_entry_count);
     CHECK_EQ(navigation_controller.GetCurrentEntryIndex(), history_entry_index);
@@ -737,7 +563,7 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     BoundCoreCloseTaskState close_task_state{
         .core = raw_core,
         .browser_view = browser_view,
-        .adapter = &adapter,
+        .view_host = &view_host,
         .tab_strip_model = tab_strip_model,
         .relay_state = &relay_state,
         .nested_tab_strip_empty_state = &nested_tab_strip_empty_state,

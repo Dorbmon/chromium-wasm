@@ -31,6 +31,7 @@ class WebContents;
 
 namespace chrome {
 class WasmTabBootstrapDelegate;
+class WasmBrowserWindowViewHost;
 }  // namespace chrome
 
 namespace tabs {
@@ -52,7 +53,7 @@ class View;
 // A process-local BrowserWindowInterface owner for the opt-in Wasm lifecycle
 // smoke. It owns the real, source-selected tab model and
 // BrowserWindowFeatures setup. An explicit smoke may bind a non-owning
-// BaseWindow and relay its one bounded tab through a view-side adapter. This
+// BaseWindow and relay its one bounded tab through a view-side host. This
 // remains distinct from Browser::Create and the joined browser/window close
 // lifecycle. Its caller must drain that bounded close before profile shutdown;
 // process shutdown while FinishClose is pending remains outside this smoke.
@@ -66,38 +67,6 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   // Completes the empty-model ownership proof. A future live close path must
   // replace this with real modal, unload, and BrowserView teardown ordering.
   void CloseForWasmBrowserWindowCoreSmoke();
-
-  // Dispatches the BrowserWindowInterface active-tab callback after the
-  // view-side adapter has attached or detached the model-owned WebContents.
-  // This does not make the core a BrowserView owner: the joined
-  // browser/window lifecycle must still own that relation directly.
-  void NotifyActiveTabDidChangeForWasmSmoke();
-
-  // Binds the bounded model to a real BaseWindow after its Views Widget has
-  // initialized. The callbacks are view-side only: this core never owns a
-  // BrowserView or BrowserWidget and therefore cannot create a dependency
-  // cycle with the structural Views target.
-  using ActiveContentsChangedCallback = base::RepeatingCallback<void(
-      content::WebContents* old_contents,
-      content::WebContents* new_contents,
-      int active_index,
-      int reason)>;
-  using ContentsDetachedCallback =
-      base::RepeatingCallback<void(content::WebContents*, bool was_active)>;
-  void BindWindowForWasmBrowserWindowViewSmoke(
-      ui::BaseWindow* window,
-      ActiveContentsChangedCallback active_contents_changed_callback,
-      ContentsDetachedCallback contents_detached_callback,
-      base::OnceClosure destroy_window_callback);
-  void InitPostBrowserViewConstructionForWasmBrowserWindowViewSmoke(
-      views::View* browser_view);
-  void OnWindowActivationChangedForWasmBrowserWindowViewSmoke(
-      ui::BaseWindow* window,
-      bool active);
-  void RequestCloseForWasmBrowserWindowViewSmoke();
-  void UnbindWindowForWasmBrowserWindowViewSmoke(ui::BaseWindow* window);
-  base::WeakPtr<WasmBrowserWindowCore>
-  GetWeakPtrForWasmBrowserWindowViewSmoke();
 
   // BrowserWindowInterface:
   ui::UnownedUserDataHost& GetUnownedUserDataHost() override;
@@ -150,7 +119,40 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   const DesktopBrowserWindowCapabilities* capabilities() const override;
 
  private:
+  friend class chrome::WasmBrowserWindowViewHost;
+
   class TabStripModelObserver;
+
+  // Dispatches the BrowserWindowInterface active-tab callback after the
+  // view host has attached or detached the model-owned WebContents. This does
+  // not make the Core a BrowserView owner: the joined browser/window lifecycle
+  // must still own that relation directly.
+  void NotifyActiveTabDidChangeForWasmSmoke();
+
+  // The View host is the only allowed caller for this bounded bridge. It
+  // binds a non-owning BaseWindow after Widget initialization and supplies
+  // view-side callbacks; the Core never owns BrowserView or BrowserWidget.
+  using ActiveContentsChangedCallback = base::RepeatingCallback<void(
+      content::WebContents* old_contents,
+      content::WebContents* new_contents,
+      int active_index,
+      int reason)>;
+  using ContentsDetachedCallback =
+      base::RepeatingCallback<void(content::WebContents*, bool was_active)>;
+  void BindWindowForWasmBrowserWindowViewSmoke(
+      ui::BaseWindow* window,
+      ActiveContentsChangedCallback active_contents_changed_callback,
+      ContentsDetachedCallback contents_detached_callback,
+      base::OnceClosure destroy_window_callback);
+  void InitPostBrowserViewConstructionForWasmBrowserWindowViewSmoke(
+      views::View* browser_view);
+  void OnWindowActivationChangedForWasmBrowserWindowViewSmoke(
+      ui::BaseWindow* window,
+      bool active);
+  void RequestCloseForWasmBrowserWindowViewSmoke();
+  void UnbindWindowForWasmBrowserWindowViewSmoke(ui::BaseWindow* window);
+  base::WeakPtr<WasmBrowserWindowCore>
+  GetWeakPtrForWasmBrowserWindowViewSmoke();
 
   void NotifyBrowserDidClose();
   void ScheduleManagerDeletionForWasmBrowserWindowSmoke();
