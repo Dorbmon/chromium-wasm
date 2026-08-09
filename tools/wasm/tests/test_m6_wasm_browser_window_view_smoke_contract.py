@@ -332,7 +332,7 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, implementation[bound_state:])
 
-    def test_switch_local_modal_manager_clears_blocking_before_tab_close(
+    def test_switch_local_constrained_child_dialog_clears_blocking_before_tab_close(
         self,
     ) -> None:
         header = source(
@@ -343,17 +343,22 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
         )
 
         self.assertIn(
-            "temporarily drives one state-only WebContentsModalDialogManager",
+            "temporarily shows one constrained child Views dialog",
             header,
         )
         for expected in (
             "class LocalWcmdmDelegate final",
-            "class ControlledSingleWebContentsDialogManager final",
             "browser_view_->GetWebContentsModalDialogHostFor(web_contents)",
             "tab_strip_model_->SetTabBlocked(index, blocked);",
-            "const gfx::NativeWindow dialog = browser_view->GetNativeWindow();",
-            "modal_manager->ShowDialogWithManager(",
-            "raw_dialog_manager->Close();",
+            "void ExerciseWasmConstrainedChildDialog(",
+            "SetModalType(ui::mojom::ModalType::kChild);",
+            "views::Widget::InitParams::CLIENT_OWNS_WIDGET",
+            "views::CreateSolidBackground(SK_ColorMAGENTA)",
+            "constrained_window::ShowWebModalDialogViewsOwned(",
+            "dialog_widget->MakeCloseSynchronous(",
+            "modal_manager->CloseAllDialogs();",
+            "CHECK(!dialog_widget);",
+            "CHECK(!dialog_delegate);",
             "modal_manager->SetDelegate(nullptr);",
             "CHECK(!modal_manager->IsDialogActive());",
             "CHECK(!tab_strip_model->IsTabBlocked(0));",
@@ -362,10 +367,19 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
                 self.assertIn(expected, implementation)
 
         modal_proof = implementation.index(
-            "void ExerciseWasmModalManagerState("
+            "void ExerciseWasmConstrainedChildDialog("
+        )
+        show = implementation.index(
+            "constrained_window::ShowWebModalDialogViewsOwned(", modal_proof
+        )
+        compositor_turn = implementation.index(
+            "modal_visible_run_loop.Run();", show
         )
         close = implementation.index(
-            "raw_dialog_manager->Close();", modal_proof
+            "modal_manager->CloseAllDialogs();", compositor_turn
+        )
+        unblocked = implementation.index(
+            "CHECK(!tab_strip_model->IsTabBlocked(0));", close
         )
         clear_delegate = implementation.index(
             "modal_manager->SetDelegate(nullptr);", close
@@ -373,18 +387,82 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
         close_setup = implementation.index(
             "NestedTabStripEmptyState", clear_delegate
         )
-        self.assertLess(modal_proof, close)
+        self.assertLess(modal_proof, show)
+        self.assertLess(show, compositor_turn)
+        self.assertLess(compositor_turn, close)
+        self.assertLess(close, unblocked)
+        self.assertLess(unblocked, clear_delegate)
         self.assertLess(close, clear_delegate)
         self.assertLess(clear_delegate, close_setup)
 
-        # The controlled manager drives real WCMDM state only. This focused
-        # smoke must not grow a production modal pipeline or create child UI.
+        # This focused child-widget proof must not grow a production modal
+        # pipeline or Browser-backed lifecycle.
         for forbidden in (
             "Browser::Create",
             "BrowserWindowModalDialogDelegate",
-            "constrained_window",
-            "views::Widget::InitParams",
-            "new views::Widget",
+            "ControlledSingleWebContentsDialogManager",
+            "SingleWebContentsDialogManager",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, implementation)
+
+    def test_wasm_constrained_window_selects_only_direct_child_dialog_code(
+        self,
+    ) -> None:
+        wasm_build = source("chrome/browser/wasm/BUILD.gn")
+        implementation = source(
+            "chrome/browser/wasm/wasm_constrained_window_views.cc"
+        )
+        target = _source_set_body(wasm_build, "wasm_constrained_window")
+
+        for expected in (
+            '"../../../components/constrained_window/constrained_window_views.h",',
+            '"../../../components/constrained_window/native_web_contents_modal_dialog_manager_views.cc",',
+            '"../../../components/constrained_window/native_web_contents_modal_dialog_manager_views.h",',
+            '"../../../components/constrained_window/show_modal_dialog_views.cc",',
+            '"wasm_constrained_window_views.cc",',
+            '"//components/web_modal",',
+            '"//skia",',
+            '"//content/public/browser",',
+            '"//ui/aura",',
+            '"//ui/wm",',
+            'visibility = [ ":wasm_browser_window_view_smoke" ]',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, target)
+
+        for forbidden in (
+            '"//components/constrained_window",',
+            "guest_view",
+            "GuestViewBase",
+            '"../../../components/constrained_window/constrained_window_views.cc",',
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, target)
+
+        for expected in (
+            '#include "components/constrained_window/constrained_window_views.h"',
+            "const void* kConstrainedWindowWidgetIdentifier",
+            "void UpdateWebContentsModalDialogPosition(",
+            "views::Widget* ShowWebModalDialogViews(",
+            "std::unique_ptr<views::Widget> ShowWebModalDialogViewsOwned(",
+            "views::Widget* CreateWebModalDialogViews(",
+            "CreateWebModalDialogViews(dialog, initiator_web_contents);",
+            "ShowModalDialog(widget->GetNativeWindow(), initiator_web_contents);",
+            "NativeWebContentsModalDialogManagerViews observer",
+            "CHECK(dialog_host->ShouldConstrainDialogBoundsByHost());",
+            "dialog->set_use_desktop_widget_override(false);",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, implementation)
+
+        for forbidden in (
+            "guest_view",
+            "GuestViewBase",
+            "CreateBrowserModalDialogViews",
+            "ShowBrowserModal",
+            "ShowWebModal(std::unique_ptr",
+            "GetTopLevelWebContents(",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, implementation)
@@ -405,10 +483,12 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             '":wasm_browser_command_controller",',
             '":wasm_browser_window_features",',
             '":wasm_browser_window_view_host",',
+            '":wasm_constrained_window",',
             '":wasm_tab_core",',
             '"//chrome/app:command_ids",',
             '"//components/web_modal",',
             '"//content/public/browser",',
+            '"//ui/base/mojom:ui_base_types",',
             '"//url",',
         ):
             with self.subTest(expected=expected):

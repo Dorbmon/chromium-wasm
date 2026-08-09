@@ -31,8 +31,8 @@
 #include "chrome/browser/wasm/wasm_browser_window_core.h"
 #include "chrome/browser/wasm/wasm_browser_window_view_host.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "components/constrained_window/constrained_window_views.h"
 #include "components/tabs/public/tab_interface.h"
-#include "components/web_modal/single_web_contents_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/browser_thread.h"
@@ -40,12 +40,19 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/hit_test.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/background.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/view.h"
 #include "ui/views/views_delegate.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/root_view.h"
+#include "ui/views/window/client_view.h"
+#include "ui/views/window/dialog_delegate.h"
+#include "ui/views/window/frame_view.h"
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_WASM)
@@ -61,8 +68,11 @@ constexpr char kBrowserWindowViewSmokeMarker[] =
 constexpr gfx::Rect kBrowserWindowViewSmokeBounds(0, 0, 640, 480);
 constexpr base::TimeDelta kBrowserWindowViewSmokeVisibleDuration =
     base::Milliseconds(250);
+constexpr base::TimeDelta kBrowserWindowViewSmokeModalVisibleDuration =
+    base::Milliseconds(250);
 constexpr base::TimeDelta kBrowserWindowViewSmokeNavigationTimeout =
     base::Seconds(5);
+constexpr gfx::Size kBrowserWindowViewSmokeModalContentsSize(192, 96);
 
 // These documents have no scripts, dialog APIs, or unload handlers. They
 // exercise real top-level history independently of network/WISP availability,
@@ -396,94 +406,64 @@ class LocalWcmdmDelegate final
   int modal_host_request_count_ = 0;
 };
 
-struct ControlledSingleDialogState {
-  int host_changed_count = 0;
-  int show_count = 0;
-  int hide_count = 0;
-  int focus_count = 0;
-  int pulse_count = 0;
-  int close_count = 0;
-  bool saw_non_null_host = false;
-  bool shown = false;
-  bool closed = false;
-};
-
-// State-only manager used to exercise one actual manager queue entry. It
-// intentionally creates no child Widget or native dialog; its Close() call
-// synchronously transfers control to WebContentsModalDialogManager::WillClose,
-// which removes and destroys this manager before that call returns.
-class ControlledSingleWebContentsDialogManager final
-    : public web_modal::SingleWebContentsDialogManager {
+// FrameView's base implementation reserves no client area. A constrained
+// Wasm child dialog has neither a host-native nor a Chrome dialog frame, so
+// make its generic Views frame the full painted client boundary.
+class WasmConstrainedChildFrameView final : public views::FrameView {
  public:
-  ControlledSingleWebContentsDialogManager(
-      gfx::NativeWindow dialog,
-      web_modal::SingleWebContentsDialogManagerDelegate* delegate,
-      ControlledSingleDialogState* state)
-      : dialog_(dialog), delegate_(delegate), state_(state) {
-    CHECK(delegate_);
-    CHECK(state_);
+  WasmConstrainedChildFrameView() = default;
+  WasmConstrainedChildFrameView(const WasmConstrainedChildFrameView&) =
+      delete;
+  WasmConstrainedChildFrameView& operator=(
+      const WasmConstrainedChildFrameView&) = delete;
+  ~WasmConstrainedChildFrameView() override = default;
+
+  gfx::Rect GetBoundsForClientView() const override {
+    return GetLocalBounds();
   }
 
-  ControlledSingleWebContentsDialogManager(
-      const ControlledSingleWebContentsDialogManager&) = delete;
-  ControlledSingleWebContentsDialogManager& operator=(
-      const ControlledSingleWebContentsDialogManager&) = delete;
-  ~ControlledSingleWebContentsDialogManager() override = default;
-
-  void Show() override {
-    CHECK(!state_->closed);
-    CHECK_EQ(state_->show_count, 0);
-    ++state_->show_count;
-    state_->shown = true;
-    is_active_ = true;
+  gfx::Rect GetWindowBoundsForClientBounds(
+      const gfx::Rect& client_bounds) const override {
+    return client_bounds;
   }
 
-  void Hide() override {
-    CHECK(!state_->closed);
-    ++state_->hide_count;
-    is_active_ = false;
+  int NonClientHitTest(const gfx::Point& point) override {
+    return GetLocalBounds().Contains(point) ? HTCLIENT : HTNOWHERE;
   }
-
-  void Close() override {
-    CHECK(!state_->closed);
-    ++state_->close_count;
-    state_->closed = true;
-    is_active_ = false;
-
-    // WillClose() erases this object from the real manager. Do not access any
-    // member after this call.
-    delegate_->WillClose(dialog_);
-  }
-
-  void Focus() override {
-    CHECK(!state_->closed);
-    ++state_->focus_count;
-    is_active_ = true;
-  }
-
-  void Pulse() override {
-    CHECK(!state_->closed);
-    ++state_->pulse_count;
-  }
-
-  void HostChanged(web_modal::WebContentsModalDialogHost* new_host) override {
-    CHECK(!state_->closed);
-    CHECK(new_host);
-    ++state_->host_changed_count;
-    state_->saw_non_null_host = true;
-  }
-
-  gfx::NativeWindow dialog() override { return dialog_; }
-  bool IsActive() const override { return is_active_; }
-
- private:
-  const gfx::NativeWindow dialog_;
-  const raw_ptr<web_modal::SingleWebContentsDialogManagerDelegate> delegate_;
-  const raw_ptr<ControlledSingleDialogState> state_;
-  bool is_active_ = false;
 };
 
-void ExerciseWasmModalManagerState(
+// Retain DialogDelegate's canonical child-modal InitParams and
+// CLIENT_OWNS_WIDGET ownership contract, but deliberately omit the standard
+// dialog client chrome. The bounded smoke needs one actual painted child
+// surface; it must not require the unselected generic dialog font stack.
+class WasmConstrainedChildDialogDelegate final : public views::DialogDelegate {
+ public:
+  WasmConstrainedChildDialogDelegate() {
+    SetModalType(ui::mojom::ModalType::kChild);
+    SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+    SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+    SetShowCloseButton(false);
+    SetShowTitle(false);
+    set_use_custom_frame(false);
+  }
+
+  WasmConstrainedChildDialogDelegate(
+      const WasmConstrainedChildDialogDelegate&) = delete;
+  WasmConstrainedChildDialogDelegate& operator=(
+      const WasmConstrainedChildDialogDelegate&) = delete;
+  ~WasmConstrainedChildDialogDelegate() override = default;
+
+  views::ClientView* CreateClientView(views::Widget* widget) override {
+    return new views::ClientView(widget, TransferOwnershipOfContentsView());
+  }
+
+  std::unique_ptr<views::FrameView> CreateFrameView(
+      views::Widget* /*widget*/) override {
+    return std::make_unique<WasmConstrainedChildFrameView>();
+  }
+};
+
+void ExerciseWasmConstrainedChildDialog(
     BrowserView* browser_view,
     TabStripModel* tab_strip_model,
     web_modal::WebContentsModalDialogManager* modal_manager,
@@ -502,44 +482,70 @@ void ExerciseWasmModalManagerState(
   modal_manager->SetDelegate(&modal_delegate);
   CHECK_EQ(modal_manager->delegate(), &modal_delegate);
 
-  // The managed dialog is state-only, but retain one non-null opaque identity
-  // for the real manager's queue lookup. This is the already-existing
-  // BrowserView native window, not a newly created child UI surface.
-  const gfx::NativeWindow dialog = browser_view->GetNativeWindow();
-  CHECK(dialog);
-  ControlledSingleDialogState dialog_state;
-  auto controlled_dialog_manager =
-      std::make_unique<ControlledSingleWebContentsDialogManager>(
-          dialog, modal_manager, &dialog_state);
-  ControlledSingleWebContentsDialogManager* const raw_dialog_manager =
-      controlled_dialog_manager.get();
-  modal_manager->ShowDialogWithManager(dialog,
-                                       std::move(controlled_dialog_manager));
+  // WasmTabModalDialogHost constrains kChild dialogs to the existing Browser
+  // Widget Aura tree. A fixed, strongly colored contents view makes this a
+  // real Views paint rather than a manager-only state transition.
+  std::unique_ptr<views::DialogDelegate> dialog_delegate =
+      std::make_unique<WasmConstrainedChildDialogDelegate>();
+  auto contents_view = std::make_unique<views::View>();
+  contents_view->SetPreferredSize(kBrowserWindowViewSmokeModalContentsSize);
+  contents_view->SetBackground(views::CreateSolidBackground(SK_ColorMAGENTA));
+  dialog_delegate->SetContentsView(std::move(contents_view));
+
+  std::unique_ptr<views::Widget> dialog_widget =
+      constrained_window::ShowWebModalDialogViewsOwned(
+          dialog_delegate.get(), web_contents,
+          views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  CHECK(dialog_widget);
+
+  bool dialog_widget_destroyed = false;
+  dialog_widget->MakeCloseSynchronous(base::BindOnce(
+      [](std::unique_ptr<views::Widget>* dialog_widget,
+         std::unique_ptr<views::DialogDelegate>* dialog_delegate,
+         bool* dialog_widget_destroyed, views::Widget::ClosedReason) {
+        CHECK(dialog_widget);
+        CHECK(*dialog_widget);
+        CHECK(dialog_delegate);
+        CHECK(*dialog_delegate);
+        *dialog_widget_destroyed = true;
+        dialog_widget->reset();
+        dialog_delegate->reset();
+      },
+      &dialog_widget, &dialog_delegate, &dialog_widget_destroyed));
 
   CHECK(modal_manager->IsDialogActive());
   CHECK(modal_delegate.web_contents_blocked());
   CHECK_EQ(modal_delegate.blocked_state_change_count(), 1);
-  CHECK_EQ(modal_delegate.modal_host_request_count(), 1);
   CHECK(tab_strip_model->IsTabBlocked(0));
-  CHECK_EQ(dialog_state.host_changed_count, 1);
-  CHECK(dialog_state.saw_non_null_host);
-  CHECK_EQ(dialog_state.show_count, 1);
-  CHECK(dialog_state.shown);
-  CHECK_EQ(dialog_state.hide_count, 0);
-  CHECK_EQ(dialog_state.focus_count, 0);
-  CHECK_EQ(dialog_state.pulse_count, 0);
-  CHECK_EQ(dialog_state.close_count, 0);
-  CHECK(!dialog_state.closed);
+  // Creation asks for host geometry once, and WCMDM asks again while attaching
+  // the real native dialog manager.
+  CHECK_GE(modal_delegate.modal_host_request_count(), 2);
+  CHECK(dialog_widget->IsVisible());
+  CHECK(!dialog_widget->is_top_level());
 
-  // The manager erases and deletes |raw_dialog_manager| in this call. Inspect
-  // only the external state after it returns.
-  raw_dialog_manager->Close();
+  // Keep the child visible through a UI/compositor turn before closing it via
+  // WCMDM rather than directly deleting a dialog object.
+  base::RunLoop modal_visible_run_loop;
+  base::OneShotTimer modal_visible_timer;
+  modal_visible_timer.Start(FROM_HERE,
+                            kBrowserWindowViewSmokeModalVisibleDuration,
+                            modal_visible_run_loop.QuitClosure());
+  modal_visible_run_loop.Run();
+  CHECK(dialog_widget->IsVisible());
+
+  modal_manager->CloseAllDialogs();
+  CHECK(dialog_widget_destroyed);
+  CHECK(!dialog_widget);
+  CHECK(!dialog_delegate);
   CHECK(!modal_manager->IsDialogActive());
   CHECK(!modal_delegate.web_contents_blocked());
   CHECK_EQ(modal_delegate.blocked_state_change_count(), 2);
   CHECK(!tab_strip_model->IsTabBlocked(0));
-  CHECK_EQ(dialog_state.close_count, 1);
-  CHECK(dialog_state.closed);
+
+  // CLIENT_OWNS_WIDGET dispatches the constrained manager's WillClose()
+  // synchronously, while Aura completes the native child-window close on its
+  // queued turn. Drain it before the parent BrowserWidget starts tab teardown.
+  base::RunLoop().RunUntilIdle();
 
   // The delegate is stack-owned by this switch-local proof. Clear it only
   // after the real manager has delivered the unblocked state, before the
@@ -697,8 +703,8 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     CHECK_EQ(global_collection->GetActiveBrowser(), raw_core);
     CHECK_GE(activation_state.did_become_active, 1);
 
-    ExerciseWasmModalManagerState(browser_view, tab_strip_model, modal_manager,
-                                  raw_contents);
+    ExerciseWasmConstrainedChildDialog(browser_view, tab_strip_model,
+                                       modal_manager, raw_contents);
 
     // Exercise exactly one selected model tab through the real command
     // controller that BrowserWindowFeatures owns. This is intentionally a

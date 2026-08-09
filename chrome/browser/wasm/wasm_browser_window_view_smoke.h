@@ -13,11 +13,11 @@ namespace chrome {
 // BrowserWindowInterface model and the structural Wasm BrowserView. It commits
 // two fixed data: documents in the selected tab, exercises the selected
 // BrowserCommandController's back, forward, and reload operations, and
-// temporarily drives one state-only WebContentsModalDialogManager through the
-// existing BrowserView modal geometry. This is not Browser::Create(): it does
-// not broaden the BrowserWindowInterface OpenURL/OpenGURL boundary,
-// Browser-backed window ownership, a production modal delegate, or general
-// host-close lifecycle, and it ends through one bounded no-unload close.
+// temporarily shows one constrained child Views dialog through the existing
+// BrowserView modal geometry. This is not Browser::Create(): it does not
+// broaden the BrowserWindowInterface OpenURL/OpenGURL boundary, Browser-backed
+// window ownership, a production modal delegate, or general host-close
+// lifecycle, and it ends through one bounded no-unload close.
 bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile);
 
 }  // namespace chrome

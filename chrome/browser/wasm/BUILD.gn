@@ -195,6 +195,51 @@ source_set("wasm_tab_modal_dialog_host") {
   ]
 }
 
+# The upstream constrained-window target resolves guest WebContents and owns
+# browser-modal helpers. The bounded Wasm smoke has one direct top-level
+# WebContents and only needs the canonical child-dialog Widget/manager path.
+# Source-select that subset here instead of depending on
+# //components/constrained_window: its guest-view dependency is intentionally
+# disabled in the first Wasm Chrome build. Do not add the upstream target to a
+# dependent of this source set: doing so would compile the same canonical
+# NativeWebContentsModalDialogManagerViews symbols twice.
+source_set("wasm_constrained_window") {
+  assert(use_aura && use_ozone && toolkit_views)
+
+  visibility = [ ":wasm_browser_window_view_smoke" ]
+
+  public = [
+    "../../../components/constrained_window/constrained_window_views.h",
+  ]
+
+  sources = [
+    "../../../components/constrained_window/native_web_contents_modal_dialog_manager_views.cc",
+    "../../../components/constrained_window/native_web_contents_modal_dialog_manager_views.h",
+    "../../../components/constrained_window/show_modal_dialog_views.cc",
+    "wasm_constrained_window_views.cc",
+  ]
+
+  deps = [
+    "//base",
+    "//components/web_modal",
+    "//content/public/browser",
+    "//ui/aura",
+    "//ui/base",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/gfx/geometry",
+    "//ui/views",
+    "//ui/wm",
+  ]
+
+  public_deps = [
+    "//base",
+    "//components/web_modal",
+    "//skia",
+    "//ui/gfx",
+    "//ui/views",
+  ]
+}
+
 # This is an object-only, content-only BrowserView. It owns a real Views
 # WebView and structural tab-modal host, but deliberately does not select a
 # Browser factory, close/unload lifecycle, BrowserWindowFeatures, or desktop
@@ -722,6 +767,7 @@ source_set("wasm_browser_window_view_smoke") {
     ":wasm_browser_window_core",
     ":wasm_browser_window_features",
     ":wasm_browser_window_view_host",
+    ":wasm_constrained_window",
     ":wasm_profile",
     ":wasm_tab_core",
     "//base",
@@ -729,6 +775,7 @@ source_set("wasm_browser_window_view_smoke") {
     "//components/tabs:public",
     "//components/web_modal",
     "//content/public/browser",
+    "//ui/base/mojom:ui_base_types",
     "//ui/display",
     "//ui/gfx/geometry",
     "//ui/views",
