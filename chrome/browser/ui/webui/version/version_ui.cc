@@ -19,11 +19,17 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/browser_process_impl.h"
+#if !BUILDFLAG(IS_WASM)
+#include "chrome/browser/browser_process_impl.h"  // nogncheck: !IS_WASM only.
+#endif
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/version/version_handler.h"
-#include "chrome/common/channel_info.h"
-#include "chrome/common/url_constants.h"
+#if !BUILDFLAG(IS_WASM)
+#include "chrome/common/channel_info.h"  // nogncheck: !IS_WASM only.
+#include "chrome/common/url_constants.h"  // nogncheck: !IS_WASM only.
+#else
+#include "chrome/browser/wasm/wasm_version_theme_source.h"
+#endif
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
@@ -50,8 +56,8 @@
 #include "base/android/android_info.h"
 #include "base/android/apk_info.h"
 #include "chrome/browser/ui/android/android_about_app_info.h"
-#else
-#include "chrome/browser/ui/webui/theme_source.h"
+#elif !BUILDFLAG(IS_WASM)
+#include "chrome/browser/ui/webui/theme_source.h"  // nogncheck: !IS_WASM only.
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -74,8 +80,13 @@ using content::WebUIDataSource;
 namespace {
 
 void CreateAndAddVersionUIDataSource(Profile* profile) {
+#if BUILDFLAG(IS_WASM)
+  constexpr char kWasmVersionHost[] = "version";
+#else
+  constexpr char kWasmVersionHost[] = chrome::kChromeUIVersionHost;
+#endif
   WebUIDataSource* html_source =
-      WebUIDataSource::CreateAndAdd(profile, chrome::kChromeUIVersionHost);
+      WebUIDataSource::CreateAndAdd(profile, kWasmVersionHost);
   // These localized strings are used to label version details.
   static constexpr webui::LocalizedString kStrings[] = {
       {version_ui::kTitle, IDS_VERSION_UI_TITLE},
@@ -125,6 +136,12 @@ void CreateAndAddVersionUIDataSource(Profile* profile) {
 }
 
 std::string GetProductModifier() {
+#if BUILDFLAG(IS_WASM)
+  // Wasm deliberately has no release-channel service in its first
+  // single-process profile. Label the product honestly rather than invoking
+  // the desktop channel/configuration stack.
+  return "wasm-single-process";
+#else
   std::vector<std::string> modifier_parts;
   if (std::string channel_name =
           chrome::GetChannelName(chrome::WithExtendedStable(true));
@@ -135,6 +152,7 @@ std::string GetProductModifier() {
   modifier_parts.emplace_back("dcheck");
 #endif  // BUILDFLAG(DCHECK_IS_CONFIGURABLE)
   return base::JoinString(modifier_parts, "-");
+#endif
 }
 
 std::string_view GetVersionInformationalSuffix() {
@@ -161,7 +179,10 @@ VersionUI::VersionUI(content::WebUI* web_ui)
   web_ui->AddMessageHandler(std::make_unique<VersionHandler>());
 #endif
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_WASM)
+  content::URLDataSource::Add(profile,
+                              std::make_unique<chrome::WasmVersionThemeSource>());
+#elif !BUILDFLAG(IS_ANDROID)
   // Set up the chrome://theme/ source.
   content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 #endif
@@ -244,11 +265,24 @@ void VersionUI::AddVersionDetailStrings(content::WebUIDataSource* html_source) {
 
   html_source->AddString(version_ui::kJSEngine, "V8");
   html_source->AddString(version_ui::kJSVersion, V8_VERSION_STRING);
+#if BUILDFLAG(IS_WASM)
+  // The fixed M6 locale is en-US, but its compact Wasm ICU data excludes the
+  // date formatter used by the desktop localized copyright string. Keep the
+  // real VersionUI detail present with an explicit English fallback instead
+  // of logging a formatting failure for every chrome://version navigation.
+  base::Time::Exploded now;
+  base::Time::Now().UTCExplode(&now);
+  std::u16string copyright = u"Copyright ";
+  copyright += base::NumberToString16(now.year);
+  copyright += u" The Chromium Authors. All rights reserved.";
+  html_source->AddString(version_ui::kCopyright, copyright);
+#else
   html_source->AddString(
       version_ui::kCopyright,
       base::i18n::MessageFormatter::FormatWithNumberedArgs(
           l10n_util::GetStringUTF16(IDS_ABOUT_VERSION_COPYRIGHT),
           base::Time::Now()));
+#endif
   html_source->AddString(version_ui::kCL, version_info::GetLastChange());
   html_source->AddString(version_ui::kUserAgent,
                          embedder_support::GetUserAgent());
@@ -306,6 +340,12 @@ void VersionUI::AddVersionDetailStrings(content::WebUIDataSource* html_source) {
                          version_utils::win::GetCohortVersionInfo());
 #endif  // BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(IS_WASM)
+  // The first volatile Wasm profile deliberately has no variations service.
+  // Supply explicit empty values expected by the real VersionUI resources.
+  html_source->AddString(version_ui::kVariationsSource, std::string());
+  html_source->AddString(version_ui::kVariationsSeed, std::string());
+#else
   auto* variations_service = g_browser_process->variations_service();
   html_source->AddString(version_ui::kVariationsSource,
                          variations_service
@@ -318,6 +358,7 @@ void VersionUI::AddVersionDetailStrings(content::WebUIDataSource* html_source) {
       variations_service
           ? version_ui::SeedTypeToUiString(variations_service->GetSeedType())
           : std::string());
+#endif
 
   html_source->AddString(version_ui::kSanitizer,
                          version_info::GetSanitizerList());

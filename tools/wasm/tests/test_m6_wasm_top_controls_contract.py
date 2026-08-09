@@ -95,6 +95,7 @@ class M6WasmTopControlsContractTest(unittest.TestCase):
             "address_field_->SetInvalid(true);",
             "url::kDataScheme",
             "url::kAboutBlankURL",
+            'constexpr char kWasmVersionURL[] = "chrome://version/";',
             "ClearActiveTab();",
             "address_field_->GetFocusManager()->ClearFocus();",
             "browser_command_controller_->RemoveCommandObserver(this);",
@@ -108,7 +109,7 @@ class M6WasmTopControlsContractTest(unittest.TestCase):
             "Omnibox",
             "OpenURL(",
             "OpenGURL(",
-            "chrome://",
+            "chrome://settings",
             "javascript:",
         ):
             with self.subTest(forbidden=forbidden):

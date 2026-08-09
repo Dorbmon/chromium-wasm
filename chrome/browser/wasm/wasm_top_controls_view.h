@@ -41,8 +41,9 @@ class Textfield;
 // The bounded Wasm top-controls strip supplies only direct active-tab
 // navigation. It intentionally is not a Toolbar, LocationBar, or omnibox:
 // command state comes from the selected BrowserCommandController and typed
-// input is restricted to URLs Chromium can load without selecting desktop
-// search, history, keyword, or Chrome WebUI ownership.
+// input is restricted to direct URLs plus the one source-selected VersionUI;
+// it does not select desktop search, history, keyword, or the broad Chrome
+// WebUI registry.
 class WasmTopControlsView final : public views::View,
                                   public views::TextfieldController,
                                   public CommandObserver,

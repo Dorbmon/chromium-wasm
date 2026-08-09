@@ -53,7 +53,12 @@ def successful_result() -> dict[str, object]:
 
 def complete_output() -> str:
     return "\n".join(
-        (smoke.READY_MARKER, smoke.TOP_CONTROLS_MARKER, smoke.PASS_MARKER)
+        (
+            smoke.READY_MARKER,
+            smoke.TOP_CONTROLS_MARKER,
+            smoke.VERSION_WEBUI_MARKER,
+            smoke.PASS_MARKER,
+        )
     )
 
 
@@ -82,6 +87,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             '"CHROMIUM_WASM_M6_BROWSER:READY"',
             '"CHROMIUM_WASM_M6_BROWSER:PASS"',
             '"CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"',
+            '"CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"',
             "SubmitAddressAndWait(",
             "ClickNavigationButtonAndWait(",
             "CloseEmptyBrowserForSmoke(",
@@ -149,6 +155,21 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
                 "top-controls",
                 missing_top_controls,
                 "\n".join((smoke.READY_MARKER, smoke.PASS_MARKER)),
+            )
+        )
+
+        missing_version_webui = successful_result()
+        cases.append(
+            (
+                "Version WebUI",
+                missing_version_webui,
+                "\n".join(
+                    (
+                        smoke.READY_MARKER,
+                        smoke.TOP_CONTROLS_MARKER,
+                        smoke.PASS_MARKER,
+                    )
+                ),
             )
         )
 

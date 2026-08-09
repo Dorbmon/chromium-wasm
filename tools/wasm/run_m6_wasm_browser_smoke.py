@@ -40,6 +40,7 @@ SENTINEL = "CHROMIUM_WASM_M6_BROWSER"
 PASS_MARKER = f"{SENTINEL}:PASS"
 READY_MARKER = f"{SENTINEL}:READY"
 TOP_CONTROLS_MARKER = "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"
+VERSION_WEBUI_MARKER = "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"
 RESULT_PREFIX = f"{SENTINEL}:NODE_EXIT "
 NODE_PASS_MARKER = f"{SENTINEL}_NODE:PASS"
 SMOKE_SWITCH = "--wasm-browser-smoke"
@@ -282,6 +283,8 @@ def validate_result(result: dict[str, Any], output: str) -> None:
         raise M0Error("Browser runtime is missing its pass marker")
     if TOP_CONTROLS_MARKER not in output:
         raise M0Error("Browser runtime is missing its top-controls marker")
+    if VERSION_WEBUI_MARKER not in output:
+        raise M0Error("Browser runtime is missing its Version WebUI marker")
     _require_exact_int(result.get("canvasCopies"), "Browser canvas copy count", minimum=1)
 
     fatal_reports = result.get("fatalReports")

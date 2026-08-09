@@ -6,11 +6,14 @@
 #define CHROME_BROWSER_UI_WEBUI_VERSION_VERSION_UI_H_
 
 #include "build/build_config.h"
-#include "chrome/common/url_constants.h"
-#include "chrome/common/webui_url_constants.h"
+#if !BUILDFLAG(IS_WASM)
+#include "chrome/common/url_constants.h"  // nogncheck: !IS_WASM only.
+#include "chrome/common/webui_url_constants.h"  // nogncheck: !IS_WASM only.
+#endif
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/browser/webui_config.h"
+#include "content/public/common/url_constants.h"
 #include "ui/base/resource/resource_scale_factor.h"
 
 namespace base {
@@ -21,9 +24,15 @@ class VersionUI;
 
 class VersionUIConfig : public content::DefaultWebUIConfig<VersionUI> {
  public:
+#if BUILDFLAG(IS_WASM)
+  // The Wasm embedder source-selects this one WebUI configuration rather than
+  // the desktop Chrome WebUI registry and its complete browser UI graph.
+  VersionUIConfig() : DefaultWebUIConfig(content::kChromeUIScheme, "version") {}
+#else
   VersionUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
                            chrome::kChromeUIVersionHost) {}
+#endif
 };
 
 // The WebUI handler for chrome://version.

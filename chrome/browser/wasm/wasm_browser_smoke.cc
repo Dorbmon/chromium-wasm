@@ -23,14 +23,18 @@
 #include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/webui/version/version_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/webui_config.h"
+#include "content/public/common/url_constants.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -56,6 +60,8 @@ constexpr char kBrowserSmokeMarker[] = "CHROMIUM_WASM_M6_BROWSER:PASS";
 constexpr char kBrowserSmokeReadyMarker[] = "CHROMIUM_WASM_M6_BROWSER:READY";
 constexpr char kTopControlsSmokeMarker[] =
     "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS";
+constexpr char kVersionWebUISmokeMarker[] =
+    "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS";
 constexpr gfx::Rect kBrowserSmokeBounds(0, 0, 640, 480);
 constexpr base::TimeDelta kBrowserSmokeVisibleDuration = base::Milliseconds(250);
 constexpr base::TimeDelta kNavigationTimeout = base::Seconds(5);
@@ -65,6 +71,7 @@ constexpr char kFirstNavigationUrl[] =
 constexpr char kSecondNavigationUrl[] =
     "data:text/html;base64,"
     "PCFkb2N0eXBlIGh0bWw+PHRpdGxlPndhc20tdG9wLWNvbnRyb2xzLWI8L3RpdGxlPjxib2R5Pndhc20tdG9wLWNvbnRyb2xzLWI8L2JvZHk+";
+constexpr char kVersionWebUIUrl[] = "chrome://version/";
 
 struct BrowserSmokeState {
   BrowserWindowInterface* expected_browser = nullptr;
@@ -441,6 +448,33 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
            history_entry_index);
 
+  // Chrome's real VersionUI is the first source-selected WebUI route. Enter
+  // it through the actual Views address field instead of a direct controller
+  // construction, then verify the config and controller installed for the
+  // committed page. Its Version resources and static logo source are bundled
+  // in the normal chrome_wasm resource packs.
+  const GURL version_webui_url(kVersionWebUIUrl);
+  SubmitAddressAndWait(&navigation_observer, browser_widget, address_field,
+                       version_webui_url);
+  CHECK_EQ(raw_first_contents->GetLastCommittedURL(), version_webui_url);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(version_webui_url.spec()));
+  content::WebUI* const web_ui = raw_first_contents->GetWebUI();
+  CHECK(web_ui);
+  content::WebUIConfig* const web_ui_config = web_ui->GetWebUIConfig();
+  CHECK(web_ui_config);
+  CHECK_EQ(web_ui_config->scheme(), content::kChromeUIScheme);
+  CHECK_EQ(web_ui_config->host(), "version");
+  VersionUI* const version_ui =
+      static_cast<VersionUI*>(web_ui->GetController());
+  CHECK(version_ui);
+  CHECK_EQ(version_ui->web_ui(), web_ui);
+  const int version_history_entry_count =
+      first_navigation_controller.GetEntryCount();
+  const int version_history_entry_index =
+      first_navigation_controller.GetCurrentEntryIndex();
+  std::puts(kVersionWebUISmokeMarker);
+
   // A focused address field is specific to the selected tab. Switching away
   // must clear/refresh it before Return can reach the new active WebContents.
   address_field->SetText(u"https://stale-tab-text.invalid/");
@@ -455,7 +489,7 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   tab_strip_model->ActivateTabAt(0);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
   CHECK_EQ(address_field->GetText(),
-           base::UTF8ToUTF16(second_navigation_url.spec()));
+           base::UTF8ToUTF16(version_webui_url.spec()));
 
   // Unsupported schemes must fail at the address-field boundary rather than
   // being handed to a partially selected Chrome WebUI/JavaScript route.
@@ -463,13 +497,14 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   address_field->RequestFocus();
   SendKeyPress(browser_widget, ui::VKEY_RETURN);
   CHECK(address_field->GetInvalid());
-  CHECK_EQ(first_navigation_controller.GetEntryCount(), history_entry_count);
+  CHECK_EQ(first_navigation_controller.GetEntryCount(),
+           version_history_entry_count);
   CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
-           history_entry_index);
-  CHECK_EQ(raw_first_contents->GetLastCommittedURL(), second_navigation_url);
+           version_history_entry_index);
+  CHECK_EQ(raw_first_contents->GetLastCommittedURL(), version_webui_url);
   browser_widget->GetFocusManager()->ClearFocus();
   CHECK_EQ(address_field->GetText(),
-           base::UTF8ToUTF16(second_navigation_url.spec()));
+           base::UTF8ToUTF16(version_webui_url.spec()));
   std::puts(kTopControlsSmokeMarker);
 
   BrowserSmokeState state;

@@ -425,16 +425,70 @@ source_set("wasm_browser_smoke") {
     ":wasm_browser_manager",
     ":wasm_browser_view",
     ":wasm_top_controls",
+    ":wasm_version_ui",
     ":wasm_profile",
     ":wasm_tab_core",
     "//base",
     "//content/public/browser",
+    "//content/public/common",
     "//ui/base",
     "//ui/events",
     "//ui/gfx/geometry",
     "//ui/views",
     "//ui/views/controls/webview:webview",
     "//url",
+  ]
+}
+
+# The first Wasm WebUI source-selects Chrome's real VersionUI resources and
+# handler without registering the desktop WebUI registry or ThemeService. Its
+# static chrome://theme source serves only VersionUI's bundled product logos.
+source_set("wasm_version_ui") {
+  visibility = [
+    ":wasm_browser_main_parts",
+    ":wasm_browser_smoke",
+  ]
+
+  public = [
+    "../ui/webui/version/version_ui.h",
+    "wasm_version_ui.h",
+  ]
+
+  sources = [
+    "../ui/webui/version/version_handler.cc",
+    "../ui/webui/version/version_handler.h",
+    "../ui/webui/version/version_ui.cc",
+    "../ui/webui/version/version_ui.h",
+    "wasm_version_theme_source.cc",
+    "wasm_version_theme_source.h",
+    "wasm_version_ui.cc",
+  ]
+
+  public_deps = [
+    "//content/public/browser",
+    "//content/public/common",
+    "//ui/webui",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/app:branded_strings",
+    "//chrome/app:generated_resources",
+    "//chrome/app/theme:theme_resources",
+    "//chrome/browser/profiles:profile",
+    "//components/embedder_support:user_agent",
+    "//components/resources:components_scaled_resources",
+    "//components/strings",
+    "//components/variations",
+    "//components/variations/net",
+    "//components/variations/service",
+    "//components/version_info",
+    "//components/webui/version",
+    "//components/webui/version/resources",
+    "//content/public/common",
+    "//ui/base",
+    "//url",
+    "//v8:v8_version",
   ]
 }
 
@@ -1169,6 +1223,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
     ":wasm_browser_smoke",
+    ":wasm_version_ui",
     ":wasm_browser_process",
     ":wasm_browser_toolkit",
     ":wasm_browser_view_smoke",
@@ -1205,6 +1260,7 @@ source_set("wasm_content_browser_client") {
     "//base",
     "//components/embedder_support:user_agent",
     "//content/public/browser",
+    "//content/public/common",
     "//url",
   ]
 }

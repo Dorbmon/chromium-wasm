@@ -40,12 +40,14 @@
 namespace {
 
 constexpr int kWasmTopControlsHeight = 40;
+constexpr char kWasmVersionURL[] = "chrome://version/";
 
 bool IsWasmTopControlsUrl(const GURL& target_url) {
   return target_url.is_valid() &&
          (target_url.SchemeIsHTTPOrHTTPS() ||
           target_url.SchemeIs(url::kDataScheme) ||
-          target_url == GURL(url::kAboutBlankURL));
+          target_url == GURL(url::kAboutBlankURL) ||
+          target_url == GURL(kWasmVersionURL));
 }
 
 }  // namespace
