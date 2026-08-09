@@ -12,6 +12,7 @@
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "build/build_config.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
@@ -19,6 +20,8 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/events/event_constants.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -101,6 +104,20 @@ void BrowserView::InitializeWasmTopControls(
       std::make_unique<views::BoxLayout>(
           views::BoxLayout::Orientation::kVertical));
   layout->SetFlexForView(contents_web_view_, 1, /*use_min_size=*/true);
+
+  // This is deliberately a narrow subset of Chrome's desktop accelerator
+  // table. Every registered shortcut maps to a real visible selected-tab
+  // control or the two-tab model; unsupported desktop commands remain absent
+  // rather than being swallowed as fake browser behavior.
+  AddAccelerator(ui::Accelerator(ui::VKEY_L, ui::EF_PLATFORM_ACCELERATOR));
+  AddAccelerator(ui::Accelerator(ui::VKEY_R, ui::EF_PLATFORM_ACCELERATOR));
+  AddAccelerator(ui::Accelerator(
+      ui::VKEY_R, ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN));
+  AddAccelerator(ui::Accelerator(ui::VKEY_LEFT, ui::EF_ALT_DOWN));
+  AddAccelerator(ui::Accelerator(ui::VKEY_RIGHT, ui::EF_ALT_DOWN));
+  AddAccelerator(ui::Accelerator(ui::VKEY_TAB, ui::EF_CONTROL_DOWN));
+  AddAccelerator(ui::Accelerator(
+      ui::VKEY_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN));
 }
 
 void BrowserView::DeleteBrowserWindow() {
@@ -142,10 +159,36 @@ void BrowserView::DestroyForWasmBrowserViewSmoke(BrowserView* browser_view) {
 
 bool BrowserView::GetAccelerator(int command_id,
                                  ui::Accelerator* accelerator) const {
-  static_cast<void>(command_id);
-  static_cast<void>(accelerator);
-  // No Chrome command/menu surface is selected for this content-only host.
-  return false;
+  CHECK(accelerator);
+  switch (command_id) {
+    case IDC_FOCUS_LOCATION:
+      *accelerator =
+          ui::Accelerator(ui::VKEY_L, ui::EF_PLATFORM_ACCELERATOR);
+      return true;
+    case IDC_RELOAD:
+      *accelerator =
+          ui::Accelerator(ui::VKEY_R, ui::EF_PLATFORM_ACCELERATOR);
+      return true;
+    case IDC_RELOAD_BYPASSING_CACHE:
+      *accelerator = ui::Accelerator(
+          ui::VKEY_R, ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN);
+      return true;
+    case IDC_BACK:
+      *accelerator = ui::Accelerator(ui::VKEY_LEFT, ui::EF_ALT_DOWN);
+      return true;
+    case IDC_FORWARD:
+      *accelerator = ui::Accelerator(ui::VKEY_RIGHT, ui::EF_ALT_DOWN);
+      return true;
+    case IDC_SELECT_NEXT_TAB:
+      *accelerator = ui::Accelerator(ui::VKEY_TAB, ui::EF_CONTROL_DOWN);
+      return true;
+    case IDC_SELECT_PREVIOUS_TAB:
+      *accelerator = ui::Accelerator(
+          ui::VKEY_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN);
+      return true;
+    default:
+      return false;
+  }
 }
 
 // static
@@ -464,6 +507,49 @@ gfx::Size BrowserView::GetMinimumSize() const {
                  wasm_top_controls_->GetPreferredSize().height()));
   }
   return minimum_size;
+}
+
+bool BrowserView::AcceleratorPressed(const ui::Accelerator& accelerator) {
+  if (!wasm_top_controls_ || !wasm_tab_strip_) {
+    return false;
+  }
+
+  if (accelerator ==
+      ui::Accelerator(ui::VKEY_L, ui::EF_PLATFORM_ACCELERATOR)) {
+    wasm_top_controls_->FocusAddressFieldForAccelerator();
+    return true;
+  }
+  if (accelerator ==
+      ui::Accelerator(ui::VKEY_R, ui::EF_PLATFORM_ACCELERATOR)) {
+    return wasm_top_controls_->ExecuteNavigationCommandForAccelerator(
+        IDC_RELOAD, accelerator.time_stamp());
+  }
+  if (accelerator == ui::Accelerator(
+                         ui::VKEY_R,
+                         ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN)) {
+    return wasm_top_controls_->ExecuteNavigationCommandForAccelerator(
+        IDC_RELOAD_BYPASSING_CACHE, accelerator.time_stamp());
+  }
+  if (accelerator == ui::Accelerator(ui::VKEY_LEFT, ui::EF_ALT_DOWN)) {
+    return wasm_top_controls_->ExecuteNavigationCommandForAccelerator(
+        IDC_BACK, accelerator.time_stamp());
+  }
+  if (accelerator == ui::Accelerator(ui::VKEY_RIGHT, ui::EF_ALT_DOWN)) {
+    return wasm_top_controls_->ExecuteNavigationCommandForAccelerator(
+        IDC_FORWARD, accelerator.time_stamp());
+  }
+  if (accelerator ==
+      ui::Accelerator(ui::VKEY_TAB, ui::EF_CONTROL_DOWN)) {
+    return wasm_tab_strip_->ActivateRelativeTabForAccelerator(
+        /*previous=*/false, accelerator.time_stamp());
+  }
+  if (accelerator == ui::Accelerator(
+                         ui::VKEY_TAB,
+                         ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN)) {
+    return wasm_tab_strip_->ActivateRelativeTabForAccelerator(
+        /*previous=*/true, accelerator.time_stamp());
+  }
+  return false;
 }
 
 void BrowserView::AddedToWidget() {

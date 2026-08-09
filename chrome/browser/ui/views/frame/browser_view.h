@@ -116,7 +116,7 @@ class BrowserView final : public BrowserWindow,
   WasmTabStripView* wasm_tab_strip() const { return wasm_tab_strip_; }
 
   // BrowserWidget asks its client for menu shortcut labels. No Chrome command
-  // surface is selected for this object-only slice.
+  // surface is selected beyond the small direct Wasm accelerator set.
   bool GetAccelerator(int command_id, ui::Accelerator* accelerator) const;
 
   static BrowserView* GetBrowserViewForNativeWindow(gfx::NativeWindow window);
@@ -182,6 +182,7 @@ class BrowserView final : public BrowserWindow,
   gfx::Size GetMinimumSize() const override;
 
   // views::View:
+  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
   void AddedToWidget() override;
   void RemovedFromWidget() override;
 

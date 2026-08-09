@@ -56,6 +56,7 @@ def complete_output() -> str:
         (
             smoke.READY_MARKER,
             smoke.TAB_STRIP_MARKER,
+            smoke.VIEWS_ACCELERATORS_MARKER,
             smoke.TOP_CONTROLS_MARKER,
             smoke.VERSION_WEBUI_MARKER,
             smoke.PASS_MARKER,
@@ -88,6 +89,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             '"CHROMIUM_WASM_M6_BROWSER:READY"',
             '"CHROMIUM_WASM_M6_BROWSER:PASS"',
             '"CHROMIUM_WASM_M6_TAB_STRIP:PASS"',
+            '"CHROMIUM_WASM_M6_VIEWS_ACCELERATORS:PASS"',
             '"CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"',
             '"CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"',
             "SubmitAddressAndWait(",
@@ -138,7 +140,13 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             (
                 "ready",
                 missing_ready,
-                "\n".join((smoke.TOP_CONTROLS_MARKER, smoke.PASS_MARKER)),
+                "\n".join(
+                    (
+                        smoke.VIEWS_ACCELERATORS_MARKER,
+                        smoke.TOP_CONTROLS_MARKER,
+                        smoke.PASS_MARKER,
+                    )
+                ),
             )
         )
 
@@ -147,7 +155,13 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             (
                 "pass",
                 missing_pass,
-                "\n".join((smoke.READY_MARKER, smoke.TOP_CONTROLS_MARKER)),
+                "\n".join(
+                    (
+                        smoke.READY_MARKER,
+                        smoke.VIEWS_ACCELERATORS_MARKER,
+                        smoke.TOP_CONTROLS_MARKER,
+                    )
+                ),
             )
         )
 
@@ -156,7 +170,30 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             (
                 "top-controls",
                 missing_top_controls,
-                "\n".join((smoke.READY_MARKER, smoke.PASS_MARKER)),
+                "\n".join(
+                    (
+                        smoke.READY_MARKER,
+                        smoke.VIEWS_ACCELERATORS_MARKER,
+                        smoke.PASS_MARKER,
+                    )
+                ),
+            )
+        )
+
+        missing_views_accelerators = successful_result()
+        cases.append(
+            (
+                "Views accelerators",
+                missing_views_accelerators,
+                "\n".join(
+                    (
+                        smoke.READY_MARKER,
+                        smoke.TAB_STRIP_MARKER,
+                        smoke.TOP_CONTROLS_MARKER,
+                        smoke.VERSION_WEBUI_MARKER,
+                        smoke.PASS_MARKER,
+                    )
+                ),
             )
         )
 
@@ -168,6 +205,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
                 "\n".join(
                     (
                         smoke.READY_MARKER,
+                        smoke.VIEWS_ACCELERATORS_MARKER,
                         smoke.TOP_CONTROLS_MARKER,
                         smoke.VERSION_WEBUI_MARKER,
                         smoke.PASS_MARKER,
@@ -184,6 +222,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
                 "\n".join(
                     (
                         smoke.READY_MARKER,
+                        smoke.VIEWS_ACCELERATORS_MARKER,
                         smoke.TAB_STRIP_MARKER,
                         smoke.TOP_CONTROLS_MARKER,
                         smoke.PASS_MARKER,

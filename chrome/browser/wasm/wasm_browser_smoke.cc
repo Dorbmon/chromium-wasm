@@ -17,6 +17,7 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/wasm/wasm_browser.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
@@ -37,8 +38,10 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
+#include "ui/base/accelerators/accelerator.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/events/event.h"
+#include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
@@ -62,6 +65,11 @@ constexpr char kBrowserSmokeMarker[] = "CHROMIUM_WASM_M6_BROWSER:PASS";
 constexpr char kBrowserSmokeReadyMarker[] = "CHROMIUM_WASM_M6_BROWSER:READY";
 constexpr char kTopControlsSmokeMarker[] =
     "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS";
+// This is deliberately a Views-routing proof: it injects KeyEvents through
+// the BrowserWidget and verifies FocusManager registration and command
+// routing. Host DOM/Ozone delivery is a separate platform gate.
+constexpr char kViewsAcceleratorsSmokeMarker[] =
+    "CHROMIUM_WASM_M6_VIEWS_ACCELERATORS:PASS";
 constexpr char kTabStripSmokeMarker[] = "CHROMIUM_WASM_M6_TAB_STRIP:PASS";
 constexpr char kVersionWebUISmokeMarker[] =
     "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS";
@@ -289,12 +297,14 @@ class ActiveTabNavigationObserver final
   bool timed_out_ = false;
 };
 
-void SendKeyPress(views::Widget* widget, ui::KeyboardCode key_code) {
+void SendKeyPress(views::Widget* widget,
+                  ui::KeyboardCode key_code,
+                  ui::EventFlags flags = ui::EF_NONE) {
   CHECK(widget);
-  ui::KeyEvent press(ui::EventType::kKeyPressed, key_code, 0,
+  ui::KeyEvent press(ui::EventType::kKeyPressed, key_code, flags,
                      base::TimeTicks::Now());
   widget->OnKeyEvent(&press);
-  ui::KeyEvent release(ui::EventType::kKeyReleased, key_code, 0,
+  ui::KeyEvent release(ui::EventType::kKeyReleased, key_code, flags,
                        base::TimeTicks::Now());
   widget->OnKeyEvent(&release);
 }
@@ -342,6 +352,21 @@ void ClickNavigationButtonAndWait(
   navigation_observer->WaitForNavigation(
       expected_url, /*expect_typed_user_navigation=*/false,
       base::BindOnce(&ClickButton, base::Unretained(button)));
+}
+
+void SendAcceleratorAndWait(ActiveTabNavigationObserver* navigation_observer,
+                            views::Widget* widget,
+                            ui::KeyboardCode key_code,
+                            ui::EventFlags flags,
+                            const GURL& expected_url) {
+  CHECK(navigation_observer);
+  CHECK(widget);
+  navigation_observer->WaitForNavigation(
+      expected_url, /*expect_typed_user_navigation=*/false,
+      base::BindOnce(
+          [](views::Widget* widget, ui::KeyboardCode key_code,
+             ui::EventFlags flags) { SendKeyPress(widget, key_code, flags); },
+          base::Unretained(widget), key_code, flags));
 }
 
 void CloseEmptyBrowserForSmoke(Profile* profile,
@@ -487,6 +512,26 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(reload_button->GetEnabled());
   CHECK(!stop_button->GetEnabled());
 
+  // Verify that the source-selected browser accelerators are registered with
+  // the real Views FocusManager, then exercise focus through a keyboard event
+  // rather than calling the address field directly.
+  ui::Accelerator accelerator;
+  CHECK(browser_view.GetAccelerator(IDC_FOCUS_LOCATION, &accelerator));
+  CHECK(accelerator ==
+        ui::Accelerator(ui::VKEY_L, ui::EF_PLATFORM_ACCELERATOR));
+  CHECK(browser_widget->GetFocusManager()->IsAcceleratorRegistered(
+      accelerator));
+  CHECK(browser_view.GetAccelerator(IDC_SELECT_NEXT_TAB, &accelerator));
+  CHECK(accelerator ==
+        ui::Accelerator(ui::VKEY_TAB, ui::EF_CONTROL_DOWN));
+  CHECK(browser_widget->GetFocusManager()->IsAcceleratorRegistered(
+      accelerator));
+  SendKeyPress(browser_widget, ui::VKEY_L, ui::EF_PLATFORM_ACCELERATOR);
+  CHECK_EQ(browser_widget->GetFocusManager()->GetFocusedView(),
+           address_field);
+  CHECK_EQ(address_field->GetSelectedText(), u"about:blank");
+  browser_widget->GetFocusManager()->ClearFocus();
+
   const GURL first_navigation_url(kFirstNavigationUrl);
   const GURL second_navigation_url(kSecondNavigationUrl);
   CHECK(first_navigation_url.is_valid());
@@ -535,6 +580,29 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
 
   ClickNavigationButtonAndWait(&navigation_observer, reload_button,
                                second_navigation_url);
+  CHECK_EQ(first_navigation_controller.GetEntryCount(), history_entry_count);
+  CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
+           history_entry_index);
+
+  // The same real NavigationController operations must work through registered
+  // browser accelerators. These KeyEvents enter the actual Widget, so Views'
+  // FocusManager chooses BrowserView rather than a direct command-controller
+  // call. This does not stand in for host DOM/Ozone keyboard delivery.
+  SendAcceleratorAndWait(&navigation_observer, browser_widget, ui::VKEY_LEFT,
+                         ui::EF_ALT_DOWN, first_navigation_url);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(first_navigation_url.spec()));
+  SendAcceleratorAndWait(&navigation_observer, browser_widget, ui::VKEY_RIGHT,
+                         ui::EF_ALT_DOWN, second_navigation_url);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(second_navigation_url.spec()));
+  SendAcceleratorAndWait(&navigation_observer, browser_widget, ui::VKEY_R,
+                         ui::EF_PLATFORM_ACCELERATOR, second_navigation_url);
+  SendAcceleratorAndWait(
+      &navigation_observer, browser_widget, ui::VKEY_R,
+      ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN, second_navigation_url);
   CHECK_EQ(first_navigation_controller.GetEntryCount(), history_entry_count);
   CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
            history_entry_index);
@@ -591,6 +659,28 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(address_field->GetText(),
            base::UTF8ToUTF16(version_webui_url.spec()));
 
+  // Switch through the registered keyboard accelerators as well as the Views
+  // buttons above. The model observer verifies the keyboard path preserves
+  // its real user-gesture selection reason and the view stays attached first.
+  tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(1));
+  SendKeyPress(browser_widget, ui::VKEY_TAB, ui::EF_CONTROL_DOWN);
+  tab_selection_observer.VerifyAndReset();
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(address_field->GetText(), u"about:blank");
+  tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(0));
+  SendKeyPress(browser_widget, ui::VKEY_TAB,
+               ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN);
+  tab_selection_observer.VerifyAndReset();
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(version_webui_url.spec()));
+
+  SendKeyPress(browser_widget, ui::VKEY_L, ui::EF_PLATFORM_ACCELERATOR);
+  CHECK_EQ(browser_widget->GetFocusManager()->GetFocusedView(),
+           address_field);
+  CHECK_EQ(address_field->GetSelectedText(),
+           base::UTF8ToUTF16(version_webui_url.spec()));
+
   // Unsupported schemes must fail at the address-field boundary rather than
   // being handed to a partially selected Chrome WebUI/JavaScript route.
   address_field->SetText(u"javascript:document.title='not-selected'");
@@ -605,6 +695,7 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   browser_widget->GetFocusManager()->ClearFocus();
   CHECK_EQ(address_field->GetText(),
            base::UTF8ToUTF16(version_webui_url.spec()));
+  std::puts(kViewsAcceleratorsSmokeMarker);
   std::puts(kTopControlsSmokeMarker);
 
   BrowserSmokeState state;

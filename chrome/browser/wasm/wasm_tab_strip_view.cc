@@ -84,6 +84,29 @@ views::LabelButton* WasmTabStripView::tab_button_for_testing(int index) const {
   return tab_buttons_[index];
 }
 
+bool WasmTabStripView::ActivateRelativeTabForAccelerator(
+    bool previous,
+    base::TimeTicks time_stamp) {
+  CHECK(tab_strip_model_);
+  const int tab_count = tab_strip_model_->count();
+  if (tab_count < 2) {
+    return false;
+  }
+
+  const int active_index = tab_strip_model_->active_index();
+  CHECK_GE(active_index, 0);
+  CHECK_LT(active_index, tab_count);
+  const int target_index =
+      previous ? (active_index + tab_count - 1) % tab_count
+               : (active_index + 1) % tab_count;
+  CHECK_NE(target_index, active_index);
+  tab_strip_model_->ActivateTabAt(
+      target_index,
+      TabStripUserGestureDetails(
+          TabStripUserGestureDetails::GestureType::kKeyboard, time_stamp));
+  return true;
+}
+
 void WasmTabStripView::SyncFromModel() {
   CHECK(tab_strip_model_);
   CHECK_LE(tab_strip_model_->count(), kWasmMaximumTabCount)

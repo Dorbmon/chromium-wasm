@@ -338,8 +338,10 @@ source_set("wasm_browser_view") {
     ":wasm_browser_ui",
     ":wasm_tab_strip",
     ":wasm_top_controls",
+    "//chrome/app:command_ids",
     "//ui/base/metadata:metadata",
     "//ui/base/mojom:ui_base_types",
+    "//ui/events",
     "//ui/gfx/geometry",
     "//ui/views/controls/webview:webview",
   ]
@@ -465,6 +467,7 @@ source_set("wasm_browser_smoke") {
     ":wasm_profile",
     ":wasm_tab_core",
     "//base",
+    "//chrome/app:command_ids",
     "//content/public/browser",
     "//content/public/common",
     "//ui/base",

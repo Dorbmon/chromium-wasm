@@ -40,6 +40,7 @@ SENTINEL = "CHROMIUM_WASM_M6_BROWSER"
 PASS_MARKER = f"{SENTINEL}:PASS"
 READY_MARKER = f"{SENTINEL}:READY"
 TOP_CONTROLS_MARKER = "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"
+VIEWS_ACCELERATORS_MARKER = "CHROMIUM_WASM_M6_VIEWS_ACCELERATORS:PASS"
 TAB_STRIP_MARKER = "CHROMIUM_WASM_M6_TAB_STRIP:PASS"
 VERSION_WEBUI_MARKER = "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"
 RESULT_PREFIX = f"{SENTINEL}:NODE_EXIT "
@@ -284,6 +285,8 @@ def validate_result(result: dict[str, Any], output: str) -> None:
         raise M0Error("Browser runtime is missing its pass marker")
     if TOP_CONTROLS_MARKER not in output:
         raise M0Error("Browser runtime is missing its top-controls marker")
+    if VIEWS_ACCELERATORS_MARKER not in output:
+        raise M0Error("Browser runtime is missing its Views accelerators marker")
     if TAB_STRIP_MARKER not in output:
         raise M0Error("Browser runtime is missing its tab-strip marker")
     if VERSION_WEBUI_MARKER not in output:

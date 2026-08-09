@@ -126,6 +126,25 @@ void WasmTopControlsView::OnActiveWebContentsDetached(
   }
 }
 
+void WasmTopControlsView::FocusAddressFieldForAccelerator() {
+  CHECK(address_field_);
+  address_field_->RequestFocus();
+  address_field_->SelectAll(/*reversed=*/false);
+}
+
+bool WasmTopControlsView::ExecuteNavigationCommandForAccelerator(
+    int command_id,
+    base::TimeTicks time_stamp) {
+  CHECK(command_id == IDC_BACK || command_id == IDC_FORWARD ||
+        command_id == IDC_RELOAD ||
+        command_id == IDC_RELOAD_BYPASSING_CACHE || command_id == IDC_STOP);
+  if (address_field_->HasFocus()) {
+    CHECK(address_field_->GetFocusManager());
+    address_field_->GetFocusManager()->ClearFocus();
+  }
+  return browser_command_controller_->ExecuteCommand(command_id, time_stamp);
+}
+
 void WasmTopControlsView::ActiveTabChanged(
     BrowserWindowInterface* browser_window_interface) {
   CHECK_EQ(browser_window_interface, browser_window_interface_);
@@ -185,15 +204,8 @@ void WasmTopControlsView::UpdateNavigationButton(int command_id) {
 
 void WasmTopControlsView::ExecuteNavigationCommand(int command_id,
                                                     const ui::Event& event) {
-  static_cast<void>(event);
-  CHECK(command_id == IDC_BACK || command_id == IDC_FORWARD ||
-        command_id == IDC_RELOAD || command_id == IDC_STOP);
-  if (address_field_->HasFocus()) {
-    CHECK(address_field_->GetFocusManager());
-    address_field_->GetFocusManager()->ClearFocus();
-  }
-  static_cast<void>(browser_command_controller_->ExecuteCommand(
-      command_id, base::TimeTicks::Now()));
+  static_cast<void>(ExecuteNavigationCommandForAccelerator(
+      command_id, event.time_stamp()));
 }
 
 bool WasmTopControlsView::NavigateAddressText() {

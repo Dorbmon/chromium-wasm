@@ -8,6 +8,7 @@
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "chrome/browser/command_observer.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
@@ -80,6 +81,14 @@ class WasmTopControlsView final : public views::View,
   views::LabelButton* stop_button_for_testing() const {
     return stop_button_;
   }
+
+  // BrowserView invokes these only from its small, registered Views
+  // accelerator set. They deliberately expose the same focus and selected
+  // BrowserCommandController routes as the visible controls rather than
+  // creating a second navigation surface.
+  void FocusAddressFieldForAccelerator();
+  bool ExecuteNavigationCommandForAccelerator(int command_id,
+                                              base::TimeTicks time_stamp);
 
  private:
   void ActiveTabChanged(BrowserWindowInterface* browser_window_interface);
