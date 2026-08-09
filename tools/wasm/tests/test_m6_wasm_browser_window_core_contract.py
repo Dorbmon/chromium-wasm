@@ -80,6 +80,8 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
             "RequestCloseForWasmBrowserWindowViewSmoke",
             "UnbindWindowForWasmBrowserWindowViewSmoke",
             "OnWindowActivationChangedForWasmBrowserWindowViewSmoke",
+            "ScheduleManagerDeletionForWasmBrowserWindowSmoke",
+            "DeleteFromManagerForWasmBrowserWindowSmoke",
             "class WasmBrowserWindowCore::TabStripModelObserver final",
             "tab_strip_model_->AddObserver(tab_strip_model_observer_.get());",
             "contents_detached_callback_.Run(tab->GetContents()",
@@ -179,15 +181,41 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
             collection,
         )
 
+        close_entry = implementation.index(
+            "void WasmBrowserWindowCore::CloseForWasmBrowserWindowCoreSmoke"
+        )
+        close_order = (
+            "NotifyBrowserDidClose();",
+            "if (weak_this) {",
+            "ScheduleManagerDeletionForWasmBrowserWindowSmoke();",
+        )
+        close_positions = [implementation.index(item, close_entry) for item in close_order]
+        self.assertEqual(close_positions, sorted(close_positions))
+
+        schedule_entry = implementation.index(
+            "void WasmBrowserWindowCore::ScheduleManagerDeletionForWasmBrowserWindowSmoke"
+        )
+        schedule_body = implementation[schedule_entry:]
+        for expected in (
+            "PostNonNestableTask(",
+            "CHECK(base::SingleThreadTaskRunner::GetCurrentDefault()",
+            "&WasmBrowserWindowCore::DeleteFromManagerForWasmBrowserWindowSmoke",
+            "weak_ptr_factory_.GetWeakPtr()",
+            "BrowserManagerServiceFactory::GetForProfile(profile_.get())",
+            "browser_manager->DeleteBrowser(this);",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, schedule_body)
+
         smoke_order = (
             "browser_manager->AddBrowser(std::move(core));",
             "raw_core->CloseForWasmBrowserWindowCoreSmoke();",
-            "base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(",
-            "browser_manager->DeleteBrowser(core.get());",
+            "CHECK(weak_core);",
             "base::RunLoop().RunUntilIdle();",
             "CHECK(!weak_core);",
         )
-        smoke_positions = [smoke.index(item) for item in smoke_order]
+        add_browser = smoke.index(smoke_order[0])
+        smoke_positions = [smoke.index(item, add_browser) for item in smoke_order]
         self.assertEqual(smoke_positions, sorted(smoke_positions))
         weak_capture = smoke.index(
             "base::WeakPtr<BrowserWindowInterface> weak_core = "
@@ -195,10 +223,36 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
         )
         close_call = smoke.index("raw_core->CloseForWasmBrowserWindowCoreSmoke();")
         self.assertLess(weak_capture, close_call)
-        self.assertNotIn("raw_core->", smoke[close_call + 1 :])
-        self.assertIn("if (core) {", smoke)
+        self.assertIn(
+            "base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(",
+            smoke,
+        )
+        self.assertIn(
+            "RequestReentrantBrowserWindowCoreDeletion", smoke
+        )
+        self.assertIn(
+            "state->browser_manager->DeleteBrowser(browser);", smoke
+        )
+        self.assertIn(
+            "base::RunLoop::Type::kNestableTasksAllowed", smoke
+        )
+        self.assertIn("nested_run_loop.RunUntilIdle();", smoke)
+        self.assertIn("CHECK(state->weak_core);", smoke)
+        self.assertIn("CloseReentrantBrowserWindowCore", smoke)
+        self.assertIn("base::RunLoop reentrant_outer_run_loop;", smoke)
+        self.assertIn("reentrant_outer_run_loop.Run();", smoke)
+        self.assertIn(
+            "CHECK(reentrant_deletion_state.nested_run_loop_completed);",
+            smoke,
+        )
+        self.assertIn("CHECK(reentrant_deletion_state.delete_requested);", smoke)
+        self.assertIn("CHECK(!weak_reentrant_core);", smoke)
         self.assertIn("CHECK(browser_manager->IsEmpty());", smoke)
         self.assertIn("CHECK(global_collection->IsEmpty());", smoke)
+        tab_empty = implementation.index(
+            "void WasmBrowserWindowCore::OnTabStripEmptyForWasmBrowserWindowViewSmoke"
+        )
+        self.assertIn("PostNonNestableTask(", implementation[tab_empty:])
         self.assertIn(
             '"CHROMIUM_WASM_M6_BROWSER_WINDOW_CORE:PASS"', smoke
         )
@@ -218,6 +272,7 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
         for expected in (
             '"wasm_browser_window_core.cc"',
             '"wasm_browser_window_core.h"',
+            '":wasm_browser_manager",',
             '":wasm_browser_window_features",',
             '":wasm_tab_bootstrap_delegate",',
             '":wasm_tab_core",',
@@ -235,7 +290,6 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
             '"//chrome/browser/ui/javascript_dialogs",',
             '"//components/sessions",',
             '"//components/web_modal",',
-            ":wasm_browser_manager",
             ":wasm_browser_view",
             ":wasm_browser_widget",
         ):

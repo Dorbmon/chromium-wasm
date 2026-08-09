@@ -94,9 +94,9 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             "web_modal::WebContentsModalDialogManager::FromWebContents(",
             "CHECK(!modal_manager->IsDialogActive());",
             "RecordActiveTabChange",
-            "raw_core->GetWindow()->Close();",
+            "state->core->GetWindow()->Close();",
+            "state->browser_view->GetWidget()->Close();",
             "BrowserView::DestroyForWasmBrowserViewSmoke(browser_view_);",
-            "RequestDeferredBrowserDeletion",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, implementation)
@@ -126,6 +126,7 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             "std::move(destroy_window_callback_).Run();",
             "CHECK(!window_);",
             "NotifyBrowserDidClose();",
+            "ScheduleManagerDeletionForWasmBrowserWindowSmoke();",
         )
         positions = [core.index(item, finish) for item in ordered_finish]
         self.assertEqual(positions, sorted(positions))
@@ -141,29 +142,51 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             "base::WeakPtr<BrowserWindowInterface> weak_core = "
             "raw_core->GetWeakPtr();"
         )
-        close_call = implementation.index("raw_core->GetWindow()->Close();")
-        self.assertLess(weak_capture, close_call)
+        close_task = implementation.index("void RequestBoundCoreClose(")
         self.assertEqual(
-            implementation.count("raw_core->GetWindow()->Close();"), 2
+            implementation.count("state->core->GetWindow()->Close();"), 2
         )
-        before_idle = (
-            "CHECK_EQ(raw_core->GetWindow(), browser_view);",
-            "CHECK(browser_view->GetWidget());",
-            "CHECK(!raw_core->IsDeleteScheduled());",
-            "CHECK(tab_strip_model->empty());",
-            "CHECK(adapter.detached_active_contents());",
-            "CHECK_EQ(adapter.active_tab_change_count(), 2);",
-            "CHECK_EQ(relay_state.notification_count, 2);",
-            "CHECK(!relay_state.last_contents);",
-            "CHECK(!browser_view->GetActiveWebContents());",
-            "base::RunLoop().RunUntilIdle();",
+        close_dispatch = implementation.index("close_outer_run_loop.Run();")
+        self.assertLess(weak_capture, close_dispatch)
+        close_order = (
+            "state->core->GetWindow()->Close();",
+            "state->browser_view->GetWidget()->Close();",
+            "state->core->GetWindow()->Close();",
+            "CHECK_EQ(state->adapter->close_request_count(), 3);",
+            "CHECK(state->tab_strip_model->empty());",
+            "CHECK(state->adapter->detached_active_contents());",
+            "CHECK_EQ(state->adapter->active_tab_change_count(), 2);",
+            "CHECK_EQ(state->relay_state->notification_count, 2);",
+            "CHECK(!state->relay_state->last_contents);",
+            "CHECK(!state->browser_view->GetActiveWebContents());",
+            "CHECK_EQ(state->browser_manager->GetSize(), 1u);",
+            "CHECK_EQ(state->global_collection->GetSize(), 1u);",
+            "state->tab_strip_model->RemoveObserver(",
+            "state->outer_run_loop->QuitWhenIdle();",
         )
-        positions = [implementation.index(item, close_call) for item in before_idle]
+        positions = []
+        cursor = close_task
+        for item in close_order:
+            position = implementation.index(item, cursor)
+            positions.append(position)
+            cursor = position + len(item)
         self.assertEqual(positions, sorted(positions))
-        run_until_idle = positions[-1]
-        self.assertNotIn("raw_core->", implementation[run_until_idle + 1 :])
-        self.assertIn("CHECK(deferred_deletion_state.delete_requested);", implementation)
+        self.assertIn(
+            "class NestedTabStripEmptyObserver final", implementation
+        )
+        self.assertIn(
+            "base::RunLoop::Type::kNestableTasksAllowed", implementation
+        )
+        self.assertIn("nested_run_loop.RunUntilIdle();", implementation)
+        self.assertIn(
+            "CHECK_EQ(state_->core->GetWindow(), state_->browser_view);",
+            implementation,
+        )
+        self.assertIn("base::RunLoop close_outer_run_loop;", implementation)
+        self.assertIn("close_outer_run_loop.Run();", implementation)
         self.assertIn("CHECK(!weak_core);", implementation)
+        self.assertNotIn("DeferredDeletionState", implementation)
+        self.assertNotIn("RequestDeferredBrowserDeletion", implementation)
         self.assertIn(
             '"CHROMIUM_WASM_M6_BROWSER_WINDOW_VIEW"', implementation
         )
@@ -174,7 +197,6 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
         for forbidden in (
             "Browser::Create",
             "BrowserWindowModalDialogDelegate",
-            "widget->Close(",
             "OpenURL(",
             "OpenGURL(",
         ):

@@ -24,6 +24,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/wasm/wasm_browser_window_core.h"
@@ -93,24 +94,46 @@ void RecordDidBecomeInactive(ActivationState* state,
   ++state->did_become_inactive;
 }
 
-struct DeferredDeletionState {
-  raw_ptr<BrowserManagerService> browser_manager = nullptr;
-  bool delete_requested = false;
+struct NestedTabStripEmptyState {
+  raw_ptr<WasmBrowserWindowCore> core;
+  raw_ptr<BrowserView> browser_view;
+  bool nested_run_loop_completed = false;
 };
 
-void RequestDeferredBrowserDeletion(DeferredDeletionState* state,
-                                    BrowserWindowInterface* browser) {
-  CHECK(state);
-  CHECK(state->browser_manager);
-  CHECK(browser);
-  CHECK(browser->IsDeleteScheduled());
+// Proves that the Core's TabStripEmpty teardown task is non-nestable. This
+// observer runs after the Core's own observer has posted FinishClose().
+class NestedTabStripEmptyObserver final : public TabStripModelObserver {
+ public:
+  explicit NestedTabStripEmptyObserver(NestedTabStripEmptyState* state)
+      : state_(state) {
+    CHECK(state_);
+  }
 
-  // This runs during BrowserWindowInterface did-close dispatch. The Wasm
-  // manager must remove logical ownership now but defer physical destruction
-  // until all subscribers, including this one, have returned.
-  state->browser_manager->DeleteBrowser(browser);
-  state->delete_requested = true;
-}
+  NestedTabStripEmptyObserver(const NestedTabStripEmptyObserver&) = delete;
+  NestedTabStripEmptyObserver& operator=(
+      const NestedTabStripEmptyObserver&) = delete;
+  ~NestedTabStripEmptyObserver() override = default;
+
+ private:
+  // TabStripModelObserver:
+  void TabStripEmpty() override {
+    CHECK(state_->core);
+    CHECK(state_->browser_view);
+    base::RunLoop nested_run_loop(
+        base::RunLoop::Type::kNestableTasksAllowed);
+    nested_run_loop.RunUntilIdle();
+
+    // FinishClose must remain queued until the outer tab-model close task
+    // returns. Destroying this Widget during observer dispatch would invalidate
+    // the View/model ownership boundary that is still on the stack.
+    CHECK_EQ(state_->core->GetWindow(), state_->browser_view);
+    CHECK(state_->browser_view->GetWidget());
+    CHECK(!state_->core->IsDeleteScheduled());
+    state_->nested_run_loop_completed = true;
+  }
+
+  const raw_ptr<NestedTabStripEmptyState> state_;
+};
 
 // The core owns the tab-model observer and BrowserWindowInterface relay. This
 // adapter owns only the structural Views objects and converts those relay
@@ -178,6 +201,7 @@ class WasmBrowserWindowViewSmokeAdapter final : public views::WidgetObserver {
 
   int active_tab_change_count() const { return active_tab_change_count_; }
   bool detached_active_contents() const { return detached_active_contents_; }
+  int close_request_count() const { return close_request_count_; }
 
  private:
   void OnActiveContentsChanged(content::WebContents* old_contents,
@@ -213,6 +237,7 @@ class WasmBrowserWindowViewSmokeAdapter final : public views::WidgetObserver {
 
   views::CloseRequestResult OnCloseRequested() {
     CHECK(core_);
+    ++close_request_count_;
     if (!close_requested_) {
       close_requested_ = true;
       core_->RequestCloseForWasmBrowserWindowViewSmoke();
@@ -279,7 +304,69 @@ class WasmBrowserWindowViewSmokeAdapter final : public views::WidgetObserver {
   int active_tab_change_count_ = 0;
   bool detached_active_contents_ = false;
   bool close_requested_ = false;
+  int close_request_count_ = 0;
 };
+
+struct BoundCoreCloseTaskState {
+  raw_ptr<WasmBrowserWindowCore> core;
+  raw_ptr<BrowserView> browser_view;
+  raw_ptr<WasmBrowserWindowViewSmokeAdapter> adapter;
+  raw_ptr<TabStripModel> tab_strip_model;
+  raw_ptr<ActiveTabRelayState> relay_state;
+  raw_ptr<NestedTabStripEmptyState> nested_tab_strip_empty_state;
+  raw_ptr<NestedTabStripEmptyObserver> nested_tab_strip_empty_observer;
+  raw_ptr<BrowserManagerService> browser_manager;
+  raw_ptr<GlobalBrowserCollection> global_collection;
+  raw_ptr<base::RunLoop> outer_run_loop;
+  bool close_task_completed = false;
+};
+
+void RequestBoundCoreClose(BoundCoreCloseTaskState* state) {
+  CHECK(state);
+  CHECK(state->core);
+  CHECK(state->browser_view);
+  CHECK(state->adapter);
+  CHECK(state->tab_strip_model);
+  CHECK(state->relay_state);
+  CHECK(state->nested_tab_strip_empty_state);
+  CHECK(state->nested_tab_strip_empty_observer);
+  CHECK(state->browser_manager);
+  CHECK(state->global_collection);
+  CHECK(state->outer_run_loop);
+
+  // Exercise direct BaseWindow close, the Widget's host-close route, and a
+  // repeated direct request while the one-tab teardown is pending. Every entry
+  // point must reject native destruction until FinishClose runs in the outer
+  // UI turn.
+  state->core->GetWindow()->Close();
+  state->browser_view->GetWidget()->Close();
+  state->core->GetWindow()->Close();
+  CHECK_EQ(state->core->GetWindow(), state->browser_view);
+  CHECK(state->browser_view->GetWidget());
+  CHECK(!state->core->IsDeleteScheduled());
+  CHECK_EQ(state->adapter->close_request_count(), 3);
+  CHECK(state->tab_strip_model->empty());
+  CHECK(state->adapter->detached_active_contents());
+  CHECK_EQ(state->adapter->active_tab_change_count(), 2);
+  CHECK_EQ(state->relay_state->notification_count, 2);
+  CHECK(!state->relay_state->last_contents);
+  CHECK(!state->browser_view->GetActiveWebContents());
+  CHECK(state->nested_tab_strip_empty_state->nested_run_loop_completed);
+
+  // FinishClose is intentionally posted non-nestably. Until that outer close
+  // dispatch completes, the registered Core remains visible rather than
+  // reporting a premature manager/global removal.
+  CHECK_EQ(state->browser_manager->GetSize(), 1u);
+  CHECK_EQ(state->global_collection->GetSize(), 1u);
+
+  // The observer has already verified the nested-loop boundary. Remove it
+  // while the model is still alive; the outer task will subsequently destroy
+  // the Core and its TabStripModel.
+  state->tab_strip_model->RemoveObserver(
+      state->nested_tab_strip_empty_observer);
+  state->close_task_completed = true;
+  state->outer_run_loop->QuitWhenIdle();
+}
 
 }  // namespace
 
@@ -307,7 +394,8 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
   CHECK_EQ(global_collection->GetSize(), 1u);
   CHECK(!global_collection->GetActiveBrowser());
   // Keep this before the did-close event: a collection observer may
-  // synchronously delete the core while it is notifying close subscribers.
+  // synchronously request manager deletion, which removes logical ownership
+  // while the Core stays alive through the deferred destruction turn.
   base::WeakPtr<BrowserWindowInterface> weak_core = raw_core->GetWeakPtr();
 
   {
@@ -329,14 +417,6 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     base::CallbackListSubscription did_become_inactive_subscription =
         raw_core->RegisterDidBecomeInactive(base::BindRepeating(
             &RecordDidBecomeInactive, base::Unretained(&activation_state)));
-    DeferredDeletionState deferred_deletion_state{
-        .browser_manager = browser_manager,
-    };
-    base::CallbackListSubscription close_deletion_subscription =
-        raw_core->RegisterBrowserDidClose(base::BindRepeating(
-            &RequestDeferredBrowserDeletion,
-            base::Unretained(&deferred_deletion_state)));
-
     TabStripModel* const tab_strip_model = raw_core->GetTabStripModel();
     CHECK(tab_strip_model);
 
@@ -376,23 +456,38 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     CHECK_EQ(global_collection->GetActiveBrowser(), raw_core);
     CHECK_GE(activation_state.did_become_active, 1);
 
-    // The real BrowserWindowInterface now exposes the real BrowserView
-    // BaseWindow. Both direct close requests are rejected while one bounded
-    // no-unload model close posts its ordered teardown.
-    raw_core->GetWindow()->Close();
-    raw_core->GetWindow()->Close();
-    CHECK_EQ(raw_core->GetWindow(), browser_view);
-    CHECK(browser_view->GetWidget());
-    CHECK(!raw_core->IsDeleteScheduled());
-    CHECK(tab_strip_model->empty());
-    CHECK(adapter.detached_active_contents());
-    CHECK_EQ(adapter.active_tab_change_count(), 2);
-    CHECK_EQ(relay_state.notification_count, 2);
-    CHECK(!relay_state.last_contents);
-    CHECK(!browser_view->GetActiveWebContents());
+    NestedTabStripEmptyState nested_tab_strip_empty_state{
+        .core = raw_core,
+        .browser_view = browser_view,
+    };
+    NestedTabStripEmptyObserver nested_tab_strip_empty_observer(
+        &nested_tab_strip_empty_state);
+    tab_strip_model->AddObserver(&nested_tab_strip_empty_observer);
+
+    // PreMainMessageLoopRun() itself is not inside the BrowserMainLoop's
+    // RunLoop. Start the close from a posted outer task so the observer's
+    // nested run loop genuinely verifies the non-nestable FinishClose turn.
+    base::RunLoop close_outer_run_loop;
+    BoundCoreCloseTaskState close_task_state{
+        .core = raw_core,
+        .browser_view = browser_view,
+        .adapter = &adapter,
+        .tab_strip_model = tab_strip_model,
+        .relay_state = &relay_state,
+        .nested_tab_strip_empty_state = &nested_tab_strip_empty_state,
+        .nested_tab_strip_empty_observer = &nested_tab_strip_empty_observer,
+        .browser_manager = browser_manager,
+        .global_collection = global_collection,
+        .outer_run_loop = &close_outer_run_loop,
+    };
+    CHECK(base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&RequestBoundCoreClose, &close_task_state)));
+    close_outer_run_loop.Run();
+    CHECK(close_task_state.close_task_completed);
+    CHECK(nested_tab_strip_empty_state.nested_run_loop_completed);
     base::RunLoop().RunUntilIdle();
     CHECK_GE(activation_state.did_become_inactive, 1);
-    CHECK(deferred_deletion_state.delete_requested);
     CHECK(!weak_core);
     CHECK(browser_manager->IsEmpty());
     CHECK(global_collection->IsEmpty());

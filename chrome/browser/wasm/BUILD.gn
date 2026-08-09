@@ -631,6 +631,7 @@ source_set("wasm_browser_window_core") {
   ]
 
   deps = [
+    ":wasm_browser_manager",
     ":wasm_browser_window_features",
     ":wasm_tab_bootstrap_delegate",
     ":wasm_tab_core",

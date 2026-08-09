@@ -50,6 +50,54 @@ void OnBrowserWindowCoreClosed(BrowserWindowCoreCloseState* state,
   state->did_close = true;
 }
 
+struct ReentrantBrowserWindowCoreDeletionState {
+  raw_ptr<BrowserManagerService> browser_manager;
+  raw_ptr<GlobalBrowserCollection> global_collection;
+  base::WeakPtr<BrowserWindowInterface> weak_core;
+  bool delete_requested = false;
+  bool nested_run_loop_completed = false;
+};
+
+void RequestReentrantBrowserWindowCoreDeletion(
+    ReentrantBrowserWindowCoreDeletionState* state,
+    BrowserWindowInterface* browser) {
+  CHECK(state);
+  CHECK(state->browser_manager);
+  CHECK(browser);
+  CHECK(browser->IsDeleteScheduled());
+
+  // This deliberately requests deletion during did-close dispatch. The
+  // manager must keep the full BrowserAndSubscriptions entry alive until all
+  // callback-list subscribers return, while Core's own deferred request below
+  // becomes an idempotent no-op.
+  state->browser_manager->DeleteBrowser(browser);
+  state->delete_requested = true;
+
+  // The manager's destruction task must not run while this callback has a
+  // nested UI loop active. A non-nestable turn keeps the callback list and
+  // the core alive until the outer did-close dispatch returns.
+  base::RunLoop nested_run_loop(
+      base::RunLoop::Type::kNestableTasksAllowed);
+  nested_run_loop.RunUntilIdle();
+  CHECK(state->weak_core);
+  CHECK(state->browser_manager->IsEmpty());
+  CHECK(state->global_collection->IsEmpty());
+  state->nested_run_loop_completed = true;
+}
+
+void CloseReentrantBrowserWindowCore(
+    WasmBrowserWindowCore* core,
+    ReentrantBrowserWindowCoreDeletionState* state,
+    base::RunLoop* outer_run_loop) {
+  CHECK(core);
+  CHECK(state);
+  CHECK(outer_run_loop);
+  core->CloseForWasmBrowserWindowCoreSmoke();
+  CHECK(state->delete_requested);
+  CHECK(state->nested_run_loop_completed);
+  outer_run_loop->QuitWhenIdle();
+}
+
 }  // namespace
 
 bool RunWasmBrowserWindowCoreSmoke(WasmProfile* profile) {
@@ -91,29 +139,54 @@ bool RunWasmBrowserWindowCoreSmoke(WasmProfile* profile) {
       raw_core->RegisterBrowserDidClose(base::BindRepeating(
           &OnBrowserWindowCoreClosed, base::Unretained(&close_state)));
 
-  // A collection observer may elect to delete the core from its did-close
-  // callback. Retain only a weak reference across that notification.
+  // Core itself schedules manager deletion only after all did-close
+  // subscribers return. Retain a weak reference across that turn and prove
+  // that physical destruction occurs only after the task queue drains.
   base::WeakPtr<BrowserWindowInterface> weak_core = raw_core->GetWeakPtr();
   raw_core->CloseForWasmBrowserWindowCoreSmoke();
   CHECK(close_state.did_close);
-  CHECK(!weak_core || weak_core->IsDeleteScheduled());
+  CHECK(weak_core);
+  CHECK(weak_core->IsDeleteScheduled());
   CHECK(browser_manager->IsEmpty());
   CHECK(global_collection->IsEmpty());
-
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(
-          [](BrowserManagerService* browser_manager,
-             base::WeakPtr<BrowserWindowInterface> core) {
-            CHECK(browser_manager);
-            if (core) {
-              browser_manager->DeleteBrowser(core.get());
-            }
-          },
-          base::Unretained(browser_manager), weak_core));
   base::RunLoop().RunUntilIdle();
 
   CHECK(!weak_core);
+  CHECK(browser_manager->IsEmpty());
+  CHECK(global_collection->IsEmpty());
+
+  // Exercise an independent direct manager deletion request from a did-close
+  // subscriber. It must not destroy the core or its callback list before this
+  // notification returns; after the queue drains it shares the same terminal
+  // ownership result as the normal Core-owned path.
+  auto reentrant_core = std::make_unique<WasmBrowserWindowCore>(profile);
+  WasmBrowserWindowCore* const raw_reentrant_core = reentrant_core.get();
+  browser_manager->AddBrowser(std::move(reentrant_core));
+  CHECK_EQ(browser_manager->GetSize(), 1u);
+  CHECK_EQ(global_collection->GetSize(), 1u);
+  ReentrantBrowserWindowCoreDeletionState reentrant_deletion_state{
+      .browser_manager = browser_manager,
+      .global_collection = global_collection,
+  };
+  base::CallbackListSubscription reentrant_deletion_subscription =
+      raw_reentrant_core->RegisterBrowserDidClose(base::BindRepeating(
+          &RequestReentrantBrowserWindowCoreDeletion,
+          base::Unretained(&reentrant_deletion_state)));
+  base::WeakPtr<BrowserWindowInterface> weak_reentrant_core =
+      raw_reentrant_core->GetWeakPtr();
+  reentrant_deletion_state.weak_core = weak_reentrant_core;
+  // PreMainMessageLoopRun() itself is not inside the BrowserMainLoop RunLoop.
+  // Start this close from a posted outer task so the subscriber's RunUntilIdle
+  // below is genuinely nested and cannot execute non-nestable destruction.
+  base::RunLoop reentrant_outer_run_loop;
+  CHECK(base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&CloseReentrantBrowserWindowCore, raw_reentrant_core,
+                     &reentrant_deletion_state, &reentrant_outer_run_loop)));
+  reentrant_outer_run_loop.Run();
+  CHECK(reentrant_deletion_state.delete_requested);
+  CHECK(reentrant_deletion_state.nested_run_loop_completed);
+  CHECK(!weak_reentrant_core);
   CHECK(browser_manager->IsEmpty());
   CHECK(global_collection->IsEmpty());
   std::puts(kBrowserWindowCoreSmokeMarker);

@@ -10,6 +10,8 @@
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/browser_manager_service.h"
+#include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
@@ -108,7 +110,12 @@ void WasmBrowserWindowCore::CloseForWasmBrowserWindowCoreSmoke() {
   CHECK(tab_strip_model_->empty());
   CHECK(!window_);
   CHECK(!browser_view_initialized_);
+  base::WeakPtr<WasmBrowserWindowCore> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
   NotifyBrowserDidClose();
+  if (weak_this) {
+    ScheduleManagerDeletionForWasmBrowserWindowSmoke();
+  }
 }
 
 void WasmBrowserWindowCore::NotifyActiveTabDidChangeForWasmSmoke() {
@@ -422,11 +429,14 @@ void WasmBrowserWindowCore::OnTabStripModelChangedForWasmBrowserWindowViewSmoke(
 void WasmBrowserWindowCore::OnTabStripEmptyForWasmBrowserWindowViewSmoke() {
   CHECK(close_requested_);
   CHECK(tab_strip_model_->empty());
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+  // TabStripModel observers can enter nested run loops. The destruction path
+  // must wait for the outer model close dispatch to return before it tears
+  // down the BrowserView/BrowserWidget ownership cycle.
+  CHECK(base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
       FROM_HERE,
       base::BindOnce(
           &WasmBrowserWindowCore::FinishCloseForWasmBrowserWindowViewSmoke,
-          weak_ptr_factory_.GetWeakPtr()));
+          weak_ptr_factory_.GetWeakPtr())));
 }
 
 void WasmBrowserWindowCore::FinishCloseForWasmBrowserWindowViewSmoke() {
@@ -453,6 +463,10 @@ void WasmBrowserWindowCore::FinishCloseForWasmBrowserWindowViewSmoke() {
 
   CHECK(!window_);
   NotifyBrowserDidClose();
+  if (!weak_this) {
+    return;
+  }
+  ScheduleManagerDeletionForWasmBrowserWindowSmoke();
 }
 
 void WasmBrowserWindowCore::NotifyBrowserDidClose() {
@@ -461,4 +475,29 @@ void WasmBrowserWindowCore::NotifyBrowserDidClose() {
   CHECK(!browser_view_initialized_ || features_torn_down_);
   is_delete_scheduled_ = true;
   browser_did_close_callbacks_.Notify(this);
+}
+
+void WasmBrowserWindowCore::ScheduleManagerDeletionForWasmBrowserWindowSmoke() {
+  CHECK(is_delete_scheduled_);
+  CHECK(!window_);
+
+  // The did-close callback list can run arbitrary collection observers. Do
+  // not hand manager ownership back until every subscriber has returned, even
+  // if one opens a nested run loop. BrowserManagerService adds a second
+  // non-nestable destruction turn so its subscriptions stay alive through the
+  // Core destructor.
+  CHECK(base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
+      FROM_HERE,
+      base::BindOnce(
+          &WasmBrowserWindowCore::DeleteFromManagerForWasmBrowserWindowSmoke,
+          weak_ptr_factory_.GetWeakPtr())));
+}
+
+void WasmBrowserWindowCore::DeleteFromManagerForWasmBrowserWindowSmoke() {
+  CHECK(is_delete_scheduled_);
+  CHECK(!window_);
+  BrowserManagerService* const browser_manager =
+      BrowserManagerServiceFactory::GetForProfile(profile_.get());
+  CHECK(browser_manager);
+  browser_manager->DeleteBrowser(this);
 }

@@ -54,7 +54,8 @@ class View;
 // BrowserWindowFeatures setup. An explicit smoke may bind a non-owning
 // BaseWindow and relay its one bounded tab through a view-side adapter. This
 // remains distinct from Browser::Create and the joined browser/window close
-// lifecycle.
+// lifecycle. Its caller must drain that bounded close before profile shutdown;
+// process shutdown while FinishClose is pending remains outside this smoke.
 class WasmBrowserWindowCore final : public BrowserWindowInterface {
  public:
   explicit WasmBrowserWindowCore(Profile* profile);
@@ -152,6 +153,8 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   class TabStripModelObserver;
 
   void NotifyBrowserDidClose();
+  void ScheduleManagerDeletionForWasmBrowserWindowSmoke();
+  void DeleteFromManagerForWasmBrowserWindowSmoke();
   void OnTabWillBeRemovedForWasmBrowserWindowViewSmoke(
       tabs::TabInterface* tab,
       int index);

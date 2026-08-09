@@ -139,7 +139,8 @@ void BrowserView::Close() {
   // posts its final Widget teardown; without it this remains unsupported.
   CHECK(wasm_close_request_callback_)
       << "Wasm BrowserView close lifecycle is not selected";
-  static_cast<void>(wasm_close_request_callback_.Run());
+  CHECK_EQ(wasm_close_request_callback_.Run(),
+           views::CloseRequestResult::kCannotClose);
 }
 
 void BrowserView::Activate() {
