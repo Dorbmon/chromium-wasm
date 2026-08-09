@@ -19,6 +19,8 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/wasm/wasm_browser.h"
+#include "chrome/browser/wasm/wasm_browser_menu.h"
+#include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "chrome/browser/ui/browser_manager_service.h"
@@ -34,6 +36,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_ui.h"
+#include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/webui_config.h"
@@ -73,6 +76,10 @@ constexpr char kViewsAcceleratorsSmokeMarker[] =
 constexpr char kTabStripSmokeMarker[] = "CHROMIUM_WASM_M6_TAB_STRIP:PASS";
 constexpr char kVersionWebUISmokeMarker[] =
     "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS";
+constexpr char kSettingsBootstrapSmokeMarker[] =
+    "CHROMIUM_WASM_M6_SETTINGS_BOOTSTRAP:PASS";
+constexpr char kBrowserMenuSmokeMarker[] =
+    "CHROMIUM_WASM_M6_BROWSER_MENU:PASS";
 constexpr gfx::Rect kBrowserSmokeBounds(0, 0, 640, 480);
 constexpr base::TimeDelta kBrowserSmokeVisibleDuration = base::Milliseconds(250);
 constexpr base::TimeDelta kNavigationTimeout = base::Seconds(5);
@@ -83,6 +90,7 @@ constexpr char kSecondNavigationUrl[] =
     "data:text/html;base64,"
     "PCFkb2N0eXBlIGh0bWw+PHRpdGxlPndhc20tdG9wLWNvbnRyb2xzLWI8L3RpdGxlPjxib2R5Pndhc20tdG9wLWNvbnRyb2xzLWI8L2JvZHk+";
 constexpr char kVersionWebUIUrl[] = "chrome://version/";
+constexpr char kSettingsWebUIUrl[] = "chrome://settings/";
 
 struct BrowserSmokeState {
   BrowserWindowInterface* expected_browser = nullptr;
@@ -471,6 +479,9 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(raw_browser->IsTabStripVisible());
   WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
   CHECK(top_controls);
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  CHECK(browser_menu);
   views::Widget* const browser_widget = browser_view.GetWidget();
   CHECK(browser_widget);
   browser_widget->GetRootView()->DeprecatedLayoutImmediately();
@@ -501,16 +512,20 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
       top_controls->reload_button_for_testing();
   views::LabelButton* const stop_button =
       top_controls->stop_button_for_testing();
+  views::LabelButton* const menu_button =
+      top_controls->menu_button_for_testing();
   CHECK(address_field);
   CHECK(back_button);
   CHECK(forward_button);
   CHECK(reload_button);
   CHECK(stop_button);
+  CHECK(menu_button);
   CHECK_EQ(address_field->GetText(), u"about:blank");
   CHECK(!back_button->GetEnabled());
   CHECK(!forward_button->GetEnabled());
   CHECK(reload_button->GetEnabled());
   CHECK(!stop_button->GetEnabled());
+  CHECK(!browser_menu->IsOpen());
 
   // Verify that the source-selected browser accelerators are registered with
   // the real Views FocusManager, then exercise focus through a keyboard event
@@ -607,14 +622,69 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
            history_entry_index);
 
-  // Chrome's real VersionUI is the first source-selected WebUI route. Enter
-  // it through the actual Views address field instead of a direct controller
-  // construction, then verify the config and controller installed for the
-  // committed page. Its Version resources and static logo source are bundled
-  // in the normal chrome_wasm resource packs.
+  // The Wasm app menu is a real child panel of BrowserView, not host HTML or
+  // a second native Widget. Opening it must reserve layout inside the same
+  // one-surface Views tree, then its Settings action must navigate the active
+  // model-owned WebContents through Chromium's NavigationController.
+  const int closed_contents_y = browser_view.contents_web_view()->bounds().y();
+  ClickButton(menu_button);
+  CHECK(browser_menu->IsOpen());
+  browser_widget->GetRootView()->DeprecatedLayoutImmediately();
+  CHECK_GT(browser_view.contents_web_view()->bounds().y(), closed_contents_y);
+  views::LabelButton* const menu_reload_button =
+      browser_menu->reload_button_for_testing();
+  views::LabelButton* const menu_about_button =
+      browser_menu->about_button_for_testing();
+  views::LabelButton* const menu_settings_button =
+      browser_menu->settings_button_for_testing();
+  CHECK(menu_reload_button);
+  CHECK(menu_about_button);
+  CHECK(menu_settings_button);
+  CHECK(menu_reload_button->GetVisible());
+  CHECK(menu_about_button->GetVisible());
+  CHECK(menu_settings_button->GetVisible());
+  CHECK(menu_reload_button->GetEnabled());
+  CHECK(menu_about_button->GetEnabled());
+  CHECK(menu_settings_button->GetEnabled());
+
+  const GURL settings_webui_url(kSettingsWebUIUrl);
+  navigation_observer.WaitForNavigation(
+      settings_webui_url, /*expect_typed_user_navigation=*/false,
+      base::BindOnce(&ClickButton, base::Unretained(menu_settings_button)));
+  CHECK(!browser_menu->IsOpen());
+  browser_widget->GetRootView()->DeprecatedLayoutImmediately();
+  CHECK_EQ(browser_view.contents_web_view()->bounds().y(), closed_contents_y);
+  CHECK_EQ(raw_first_contents->GetLastCommittedURL(), settings_webui_url);
+  CHECK_EQ(raw_first_contents->GetTitle(), u"Settings \u2014 Chromium Wasm");
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(settings_webui_url.spec()));
+  content::WebUI* const settings_web_ui = raw_first_contents->GetWebUI();
+  CHECK(settings_web_ui);
+  content::WebUIConfig* const settings_web_ui_config =
+      settings_web_ui->GetWebUIConfig();
+  CHECK(settings_web_ui_config);
+  CHECK_EQ(settings_web_ui_config->scheme(), content::kChromeUIScheme);
+  CHECK_EQ(settings_web_ui_config->host(), "settings");
+  CHECK(settings_web_ui->GetController());
+  WasmSettingsUI* const settings_ui =
+      settings_web_ui->GetController()->GetAs<WasmSettingsUI>();
+  CHECK(settings_ui);
+  CHECK_EQ(settings_ui->web_ui(), settings_web_ui);
+  std::puts(kSettingsBootstrapSmokeMarker);
+
+  // Chrome's real VersionUI remains source-selected. Reach it through the
+  // same visible app menu rather than a direct controller construction, then
+  // verify the concrete config and controller installed for the committed
+  // page. Its Version resources and static logo source are bundled in the
+  // normal chrome_wasm resource packs.
   const GURL version_webui_url(kVersionWebUIUrl);
-  SubmitAddressAndWait(&navigation_observer, browser_widget, address_field,
-                       version_webui_url);
+  ClickButton(menu_button);
+  CHECK(browser_menu->IsOpen());
+  browser_widget->GetRootView()->DeprecatedLayoutImmediately();
+  navigation_observer.WaitForNavigation(
+      version_webui_url, /*expect_typed_user_navigation=*/false,
+      base::BindOnce(&ClickButton, base::Unretained(menu_about_button)));
+  CHECK(!browser_menu->IsOpen());
   CHECK_EQ(raw_first_contents->GetLastCommittedURL(), version_webui_url);
   CHECK_EQ(address_field->GetText(),
            base::UTF8ToUTF16(version_webui_url.spec()));
@@ -624,6 +694,10 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(web_ui_config);
   CHECK_EQ(web_ui_config->scheme(), content::kChromeUIScheme);
   CHECK_EQ(web_ui_config->host(), "version");
+  CHECK(web_ui->GetController());
+  // VersionUI predates WebUIController's optional type-token mechanism. Its
+  // exact config and host are already checked above, so this source-selected
+  // upstream controller cast remains the valid concrete assertion here.
   VersionUI* const version_ui =
       static_cast<VersionUI*>(web_ui->GetController());
   CHECK(version_ui);
@@ -632,6 +706,17 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
       first_navigation_controller.GetEntryCount();
   const int version_history_entry_index =
       first_navigation_controller.GetCurrentEntryIndex();
+  ClickButton(menu_button);
+  CHECK(browser_menu->IsOpen());
+  browser_widget->GetRootView()->DeprecatedLayoutImmediately();
+  ClickNavigationButtonAndWait(&navigation_observer, menu_reload_button,
+                               version_webui_url);
+  CHECK(!browser_menu->IsOpen());
+  CHECK_EQ(first_navigation_controller.GetEntryCount(),
+           version_history_entry_count);
+  CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
+           version_history_entry_index);
+  std::puts(kBrowserMenuSmokeMarker);
   std::puts(kVersionWebUISmokeMarker);
 
   // A focused address field is specific to the selected tab. Switching away
@@ -640,10 +725,20 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   address_field->RequestFocus();
   CHECK_EQ(browser_widget->GetFocusManager()->GetFocusedView(),
            address_field);
+  // An open command panel belongs to the selected tab. A genuine Views tab
+  // selection must dismiss it before rebinding the active WebContents, so a
+  // stale Reload command cannot be invoked against the new tab.
+  ClickButton(menu_button);
+  CHECK(browser_menu->IsOpen());
+  browser_widget->GetRootView()->DeprecatedLayoutImmediately();
+  CHECK_GT(browser_view.contents_web_view()->bounds().y(), closed_contents_y);
   UserGestureTabSelectionObserver tab_selection_observer(tab_strip_model);
   tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(1));
   ClickButton(second_tab_button);
   tab_selection_observer.VerifyAndReset();
+  CHECK(!browser_menu->IsOpen());
+  browser_widget->GetRootView()->DeprecatedLayoutImmediately();
+  CHECK_EQ(browser_view.contents_web_view()->bounds().y(), closed_contents_y);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
   CHECK(!address_field->HasFocus());
   CHECK_EQ(address_field->GetText(), u"about:blank");

@@ -14,6 +14,7 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/wasm/wasm_browser_menu.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
@@ -84,6 +85,7 @@ void BrowserView::InitializeWasmTopControls(
       << "Wasm top controls require a Browser-owned BrowserView";
   CHECK(browser_window_interface);
   CHECK(browser_command_controller);
+  CHECK(!wasm_browser_menu_);
   CHECK(!wasm_tab_strip_);
   CHECK(!wasm_top_controls_);
   CHECK(contents_web_view_);
@@ -92,8 +94,14 @@ void BrowserView::InitializeWasmTopControls(
       std::make_unique<WasmTabStripView>(browser_window_interface);
   wasm_tab_strip_ = AddChildViewAt(std::move(tab_strip), 0);
 
-  auto top_controls = std::make_unique<WasmTopControlsView>(
+  auto menu = std::make_unique<WasmBrowserMenuView>(
       browser_window_interface, browser_command_controller);
+  wasm_browser_menu_ = AddChildViewAt(std::move(menu), 1);
+
+  auto top_controls = std::make_unique<WasmTopControlsView>(
+      browser_window_interface, browser_command_controller,
+      base::BindRepeating(&WasmBrowserMenuView::Toggle,
+                          base::Unretained(wasm_browser_menu_)));
   wasm_top_controls_ = AddChildViewAt(std::move(top_controls), 1);
 
   // The null-Browser structural smoke retains the earlier FillLayout. A
@@ -356,6 +364,9 @@ void BrowserView::OnTabDetached(content::WebContents* contents,
   if (wasm_top_controls_) {
     wasm_top_controls_->OnActiveWebContentsDetached(contents);
   }
+  if (wasm_browser_menu_) {
+    wasm_browser_menu_->Close();
+  }
   contents_web_view_->SetWebContents(nullptr);
   active_web_contents_ = nullptr;
 }
@@ -387,6 +398,9 @@ int BrowserView::GetWasmTopChromeHeight() const {
   }
   if (wasm_top_controls_) {
     height += wasm_top_controls_->GetPreferredSize().height();
+  }
+  if (wasm_browser_menu_ && wasm_browser_menu_->GetVisible()) {
+    height += wasm_browser_menu_->GetPreferredSize().height();
   }
   return height;
 }
@@ -466,6 +480,9 @@ void BrowserView::OnWidgetDestroying(views::Widget* widget) {
   if (wasm_top_controls_ && active_web_contents_) {
     wasm_top_controls_->OnActiveWebContentsDetached(active_web_contents_);
   }
+  if (wasm_browser_menu_) {
+    wasm_browser_menu_->Close();
+  }
   if (contents_web_view_) {
     contents_web_view_->SetWebContents(nullptr);
   }
@@ -505,6 +522,15 @@ gfx::Size BrowserView::GetMinimumSize() const {
         minimum_size.height() +
         std::max(controls_minimum_size.height(),
                  wasm_top_controls_->GetPreferredSize().height()));
+  }
+  if (wasm_browser_menu_ && wasm_browser_menu_->GetVisible()) {
+    const gfx::Size menu_minimum_size = wasm_browser_menu_->GetMinimumSize();
+    minimum_size.set_width(
+        std::max(minimum_size.width(), menu_minimum_size.width()));
+    minimum_size.set_height(
+        minimum_size.height() +
+        std::max(menu_minimum_size.height(),
+                 wasm_browser_menu_->GetPreferredSize().height()));
   }
   return minimum_size;
 }

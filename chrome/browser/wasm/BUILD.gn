@@ -275,8 +275,9 @@ source_set("wasm_tab_strip") {
 }
 
 # This bounded Wasm control strip owns only direct active-tab navigation and a
-# restricted URL field. It deliberately does not select Chrome's Toolbar,
-# TabStrip, LocationBar, omnibox, menus, history, or WebUI graphs.
+# restricted URL field plus a callback into the one-surface Wasm menu panel.
+# It deliberately does not select Chrome's Toolbar, desktop TabStrip,
+# LocationBar, omnibox, history, or broad WebUI graphs.
 source_set("wasm_top_controls") {
   # The BrowserView and its explicit runtime smoke are the only current
   # owners. Keep this narrow so a later caller cannot accidentally make these
@@ -299,6 +300,39 @@ source_set("wasm_top_controls") {
 
   deps = [
     ":wasm_tab_features",
+    "//chrome/app:command_ids",
+    "//chrome/browser/ui/browser_window",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/base/metadata:metadata",
+    "//ui/events",
+    "//ui/gfx/geometry",
+    "//url",
+  ]
+}
+
+# ozone_wasm supports one compositor surface, so the first app menu is a real
+# Views child panel inside BrowserView rather than a desktop MenuRunner that
+# creates another native Widget. Its commands stay limited to routes the
+# selected slim Browser can actually execute.
+source_set("wasm_browser_menu") {
+  visibility = [
+    ":wasm_browser_smoke",
+    ":wasm_browser_view",
+  ]
+
+  public = [ "wasm_browser_menu.h" ]
+
+  sources = [ "wasm_browser_menu.cc" ]
+
+  public_deps = [
+    ":wasm_browser_command_controller",
+    "//base",
+    "//ui/views",
+  ]
+
+  deps = [
     "//chrome/app:command_ids",
     "//chrome/browser/ui/browser_window",
     "//components/tabs:public",
@@ -337,6 +371,7 @@ source_set("wasm_browser_view") {
 
   deps = [
     ":wasm_browser_ui",
+    ":wasm_browser_menu",
     ":wasm_tab_strip",
     ":wasm_top_controls",
     "//chrome/app:command_ids",
@@ -461,10 +496,12 @@ source_set("wasm_browser_smoke") {
   deps = [
     ":wasm_browser",
     ":wasm_browser_manager",
+    ":wasm_browser_menu",
     ":wasm_browser_view",
     ":wasm_tab_strip",
     ":wasm_top_controls",
     ":wasm_version_ui",
+    ":wasm_settings_ui",
     ":wasm_profile",
     ":wasm_tab_core",
     "//base",
@@ -476,6 +513,30 @@ source_set("wasm_browser_smoke") {
     "//ui/gfx/geometry",
     "//ui/views",
     "//ui/views/controls/webview:webview",
+    "//url",
+  ]
+}
+
+# The desktop SettingsUI target is intentionally not source-selected: it owns
+# a broad native/profile/service and Polymer resource graph that is not present
+# in the bounded M6 browser. This real, trusted WebUI instead describes the
+# currently implemented Wasm settings surface without claiming mutable or
+# durable preference support.
+source_set("wasm_settings_ui") {
+  visibility = [
+    ":wasm_browser_main_parts",
+    ":wasm_browser_smoke",
+  ]
+
+  public = [ "wasm_settings_ui.h" ]
+
+  sources = [ "wasm_settings_ui.cc" ]
+
+  public_deps = [ "//content/public/browser" ]
+
+  deps = [
+    "//base",
+    "//content/public/common",
     "//url",
   ]
 }
@@ -1300,6 +1361,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
     ":wasm_browser_smoke",
+    ":wasm_settings_ui",
     ":wasm_version_ui",
     ":wasm_browser_process",
     ":wasm_browser_toolkit",

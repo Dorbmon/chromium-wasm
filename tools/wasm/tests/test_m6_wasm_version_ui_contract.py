@@ -118,12 +118,13 @@ class M6WasmVersionUIContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, theme_source)
 
-    def test_only_version_theme_and_shared_resources_are_handled(self) -> None:
+    def test_version_route_stays_narrow_alongside_settings_bootstrap(self) -> None:
         browser_client = source("chrome/browser/wasm/wasm_content_browser_client.cc")
         controls = source("chrome/browser/wasm/wasm_top_controls_view.cc")
 
         for required in (
             'constexpr char kWasmVersionHost[] = "version";',
+            'constexpr char kWasmSettingsHost[] = "settings";',
             'constexpr char kWasmThemeHost[] = "theme";',
             'constexpr char kWasmResourcesHost[] = "resources";',
             "url.SchemeIs(content::kChromeUIScheme)",
@@ -133,7 +134,6 @@ class M6WasmVersionUIContractTest(unittest.TestCase):
 
         self.assertIn('constexpr char kWasmVersionURL[] = "chrome://version/";', controls)
         for forbidden in (
-            "chrome://settings",
             "SchemeIs(content::kChromeUIScheme)",
             "ThemeService",
         ):

@@ -26,6 +26,7 @@
 class Browser;
 class BrowserWidget;
 class BrowserWindowInterface;
+class WasmBrowserMenuView;
 class WasmTabStripView;
 class WasmTopControlsView;
 
@@ -114,6 +115,9 @@ class BrowserView final : public BrowserWindow,
     return wasm_top_controls_;
   }
   WasmTabStripView* wasm_tab_strip() const { return wasm_tab_strip_; }
+  WasmBrowserMenuView* wasm_browser_menu() const {
+    return wasm_browser_menu_;
+  }
 
   // BrowserWidget asks its client for menu shortcut labels. No Chrome command
   // surface is selected beyond the small direct Wasm accelerator set.
@@ -199,6 +203,7 @@ class BrowserView final : public BrowserWindow,
   base::RepeatingCallback<views::CloseRequestResult()>
       wasm_close_request_callback_;
   bool browser_window_deletion_in_progress_ = false;
+  raw_ptr<WasmBrowserMenuView> wasm_browser_menu_ = nullptr;
   raw_ptr<WasmTabStripView> wasm_tab_strip_ = nullptr;
   raw_ptr<WasmTopControlsView> wasm_top_controls_ = nullptr;
   raw_ptr<views::WebView> contents_web_view_ = nullptr;

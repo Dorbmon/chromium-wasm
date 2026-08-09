@@ -77,6 +77,8 @@ class M6WasmTopControlsContractTest(unittest.TestCase):
             "forward_button_for_testing",
             "reload_button_for_testing",
             "stop_button_for_testing",
+            "menu_button_for_testing",
+            "base::RepeatingClosure toggle_menu_callback",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, header)
@@ -96,6 +98,9 @@ class M6WasmTopControlsContractTest(unittest.TestCase):
             "url::kDataScheme",
             "url::kAboutBlankURL",
             'constexpr char kWasmVersionURL[] = "chrome://version/";',
+            'constexpr char kWasmSettingsURL[] = "chrome://settings/";',
+            "ToggleMenu",
+            "toggle_menu_callback_.Run();",
             "ClearActiveTab();",
             "address_field_->GetFocusManager()->ClearFocus();",
             "browser_command_controller_->RemoveCommandObserver(this);",
@@ -109,7 +114,6 @@ class M6WasmTopControlsContractTest(unittest.TestCase):
             "Omnibox",
             "OpenURL(",
             "OpenGURL(",
-            "chrome://settings",
             "javascript:",
         ):
             with self.subTest(forbidden=forbidden):

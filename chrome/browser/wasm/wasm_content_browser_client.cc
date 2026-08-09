@@ -21,6 +21,7 @@
 namespace {
 
 constexpr char kWasmVersionHost[] = "version";
+constexpr char kWasmSettingsHost[] = "settings";
 constexpr char kWasmThemeHost[] = "theme";
 constexpr char kWasmResourcesHost[] = "resources";
 
@@ -64,12 +65,12 @@ bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
     return false;
 
   // The M6 foundation supports ordinary web navigation and empty documents.
-  // It source-selects exactly VersionUI plus the static image and shared WebUI
-  // resource sources that VersionUI needs; no other Chrome WebUI route is
-  // handled yet.
+  // It source-selects VersionUI plus a static Wasm settings bootstrap. Theme
+  // and resources remain dependency-only subresource origins rather than
+  // general user-navigable Chrome routes.
   return url.SchemeIsHTTPOrHTTPS() || url.SchemeIs(url::kAboutScheme) ||
          url.SchemeIs(url::kDataScheme) || url.SchemeIs(url::kBlobScheme) ||
          (url.SchemeIs(content::kChromeUIScheme) &&
-          (url.host() == kWasmVersionHost || url.host() == kWasmThemeHost ||
-           url.host() == kWasmResourcesHost));
+          (url.host() == kWasmVersionHost || url.host() == kWasmSettingsHost ||
+           url.host() == kWasmThemeHost || url.host() == kWasmResourcesHost));
 }

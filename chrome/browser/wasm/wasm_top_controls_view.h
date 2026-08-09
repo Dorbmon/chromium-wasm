@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_WASM_WASM_TOP_CONTROLS_VIEW_H_
 
 #include "base/callback_list.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
@@ -54,7 +55,8 @@ class WasmTopControlsView final : public views::View,
  public:
   WasmTopControlsView(
       BrowserWindowInterface* browser_window_interface,
-      chrome::BrowserCommandController* browser_command_controller);
+      chrome::BrowserCommandController* browser_command_controller,
+      base::RepeatingClosure toggle_menu_callback);
   WasmTopControlsView(const WasmTopControlsView&) = delete;
   WasmTopControlsView& operator=(const WasmTopControlsView&) = delete;
   ~WasmTopControlsView() override;
@@ -81,6 +83,9 @@ class WasmTopControlsView final : public views::View,
   views::LabelButton* stop_button_for_testing() const {
     return stop_button_;
   }
+  views::LabelButton* menu_button_for_testing() const {
+    return menu_button_;
+  }
 
   // BrowserView invokes these only from its small, registered Views
   // accelerator set. They deliberately expose the same focus and selected
@@ -97,6 +102,7 @@ class WasmTopControlsView final : public views::View,
   void RefreshFromActiveTab();
   void UpdateNavigationButton(int command_id);
   void ExecuteNavigationCommand(int command_id, const ui::Event& event);
+  void ToggleMenu(const ui::Event& event);
   bool NavigateAddressText();
 
   // views::TextfieldController:
@@ -119,6 +125,8 @@ class WasmTopControlsView final : public views::View,
   raw_ptr<views::LabelButton> forward_button_ = nullptr;
   raw_ptr<views::LabelButton> reload_button_ = nullptr;
   raw_ptr<views::LabelButton> stop_button_ = nullptr;
+  raw_ptr<views::LabelButton> menu_button_ = nullptr;
+  base::RepeatingClosure toggle_menu_callback_;
   base::CallbackListSubscription active_tab_changed_subscription_;
   base::CallbackListSubscription tab_ui_change_subscription_;
   base::ScopedObservation<views::View, views::ViewObserver>

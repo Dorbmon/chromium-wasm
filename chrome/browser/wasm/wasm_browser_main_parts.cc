@@ -26,6 +26,7 @@
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_browser_smoke.h"
+#include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_version_ui.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
@@ -220,10 +221,12 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // shut down with the profile rather than arriving lazily after that point.
   EnsureWasmBrowserKeyedServiceFactoriesBuilt();
 
-  // The source-selected VersionUI configuration is process-global and must
-  // exist before the first Wasm WebContents is created. It intentionally adds
-  // only chrome://version rather than the desktop Chrome WebUI registry.
+  // The source-selected WebUI configurations are process-global and must
+  // exist before the first Wasm WebContents is created. They intentionally
+  // add only VersionUI plus the explicit Wasm settings bootstrap rather than
+  // the desktop Chrome WebUI registry.
   chrome::EnsureWasmVersionWebUIConfigRegistered();
+  chrome::EnsureWasmSettingsWebUIConfigRegistered();
 
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.

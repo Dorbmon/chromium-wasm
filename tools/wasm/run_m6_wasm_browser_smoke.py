@@ -6,11 +6,12 @@
 """Run the manager-owned Wasm Browser smoke under pinned Node.
 
 The explicit --wasm-browser-smoke path first closes an empty source-selected
-Browser, then exercises a bounded Views tab strip and top-controls row,
-two-tab switching, and close ordering in its Aura/Ozone BrowserView before
-the normal BrowserWindowDeleter/BrowserManagerService path. This mock-canvas
-harness requires terminal markers and host-side presentation evidence; a zero
-process exit alone cannot certify that the Browser-owned window was visible.
+Browser, then exercises a bounded Views tab strip, top-controls row, and
+one-surface in-canvas menu. It navigates that menu to the selected VersionUI
+and explicit read-only Settings bootstrap before proving two-tab switching and
+close ordering in its Aura/Ozone BrowserView. This mock-canvas harness requires
+terminal markers and host-side presentation evidence; a zero process exit alone
+cannot certify that the Browser-owned window was visible.
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ TOP_CONTROLS_MARKER = "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"
 VIEWS_ACCELERATORS_MARKER = "CHROMIUM_WASM_M6_VIEWS_ACCELERATORS:PASS"
 TAB_STRIP_MARKER = "CHROMIUM_WASM_M6_TAB_STRIP:PASS"
 VERSION_WEBUI_MARKER = "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"
+SETTINGS_BOOTSTRAP_MARKER = "CHROMIUM_WASM_M6_SETTINGS_BOOTSTRAP:PASS"
+BROWSER_MENU_MARKER = "CHROMIUM_WASM_M6_BROWSER_MENU:PASS"
 RESULT_PREFIX = f"{SENTINEL}:NODE_EXIT "
 NODE_PASS_MARKER = f"{SENTINEL}_NODE:PASS"
 SMOKE_SWITCH = "--wasm-browser-smoke"
@@ -291,6 +294,10 @@ def validate_result(result: dict[str, Any], output: str) -> None:
         raise M0Error("Browser runtime is missing its tab-strip marker")
     if VERSION_WEBUI_MARKER not in output:
         raise M0Error("Browser runtime is missing its Version WebUI marker")
+    if SETTINGS_BOOTSTRAP_MARKER not in output:
+        raise M0Error("Browser runtime is missing its Settings bootstrap marker")
+    if BROWSER_MENU_MARKER not in output:
+        raise M0Error("Browser runtime is missing its in-canvas menu marker")
     _require_exact_int(result.get("canvasCopies"), "Browser canvas copy count", minimum=1)
 
     fatal_reports = result.get("fatalReports")

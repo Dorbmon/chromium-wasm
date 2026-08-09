@@ -58,6 +58,8 @@ def complete_output() -> str:
             smoke.TAB_STRIP_MARKER,
             smoke.VIEWS_ACCELERATORS_MARKER,
             smoke.TOP_CONTROLS_MARKER,
+            smoke.BROWSER_MENU_MARKER,
+            smoke.SETTINGS_BOOTSTRAP_MARKER,
             smoke.VERSION_WEBUI_MARKER,
             smoke.PASS_MARKER,
         )
@@ -91,6 +93,8 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             '"CHROMIUM_WASM_M6_TAB_STRIP:PASS"',
             '"CHROMIUM_WASM_M6_VIEWS_ACCELERATORS:PASS"',
             '"CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"',
+            '"CHROMIUM_WASM_M6_BROWSER_MENU:PASS"',
+            '"CHROMIUM_WASM_M6_SETTINGS_BOOTSTRAP:PASS"',
             '"CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"',
             "SubmitAddressAndWait(",
             "ClickNavigationButtonAndWait(",
@@ -225,6 +229,44 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
                         smoke.VIEWS_ACCELERATORS_MARKER,
                         smoke.TAB_STRIP_MARKER,
                         smoke.TOP_CONTROLS_MARKER,
+                        smoke.PASS_MARKER,
+                    )
+                ),
+            )
+        )
+
+        missing_settings_bootstrap = successful_result()
+        cases.append(
+            (
+                "Settings bootstrap",
+                missing_settings_bootstrap,
+                "\n".join(
+                    (
+                        smoke.READY_MARKER,
+                        smoke.VIEWS_ACCELERATORS_MARKER,
+                        smoke.TAB_STRIP_MARKER,
+                        smoke.TOP_CONTROLS_MARKER,
+                        smoke.BROWSER_MENU_MARKER,
+                        smoke.VERSION_WEBUI_MARKER,
+                        smoke.PASS_MARKER,
+                    )
+                ),
+            )
+        )
+
+        missing_browser_menu = successful_result()
+        cases.append(
+            (
+                "in-canvas menu",
+                missing_browser_menu,
+                "\n".join(
+                    (
+                        smoke.READY_MARKER,
+                        smoke.VIEWS_ACCELERATORS_MARKER,
+                        smoke.TAB_STRIP_MARKER,
+                        smoke.TOP_CONTROLS_MARKER,
+                        smoke.SETTINGS_BOOTSTRAP_MARKER,
+                        smoke.VERSION_WEBUI_MARKER,
                         smoke.PASS_MARKER,
                     )
                 ),

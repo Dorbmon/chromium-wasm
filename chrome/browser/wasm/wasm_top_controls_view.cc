@@ -41,24 +41,29 @@ namespace {
 
 constexpr int kWasmTopControlsHeight = 40;
 constexpr char kWasmVersionURL[] = "chrome://version/";
+constexpr char kWasmSettingsURL[] = "chrome://settings/";
 
 bool IsWasmTopControlsUrl(const GURL& target_url) {
   return target_url.is_valid() &&
          (target_url.SchemeIsHTTPOrHTTPS() ||
           target_url.SchemeIs(url::kDataScheme) ||
           target_url == GURL(url::kAboutBlankURL) ||
-          target_url == GURL(kWasmVersionURL));
+          target_url == GURL(kWasmVersionURL) ||
+          target_url == GURL(kWasmSettingsURL));
 }
 
 }  // namespace
 
 WasmTopControlsView::WasmTopControlsView(
     BrowserWindowInterface* browser_window_interface,
-    chrome::BrowserCommandController* browser_command_controller)
+    chrome::BrowserCommandController* browser_command_controller,
+    base::RepeatingClosure toggle_menu_callback)
     : browser_window_interface_(browser_window_interface),
-      browser_command_controller_(browser_command_controller) {
+      browser_command_controller_(browser_command_controller),
+      toggle_menu_callback_(std::move(toggle_menu_callback)) {
   CHECK(browser_window_interface_);
   CHECK(browser_command_controller_);
+  CHECK(toggle_menu_callback_);
 
   SetPreferredSize(gfx::Size(0, kWasmTopControlsHeight));
   auto layout = std::make_unique<views::BoxLayout>(
@@ -82,6 +87,10 @@ WasmTopControlsView::WasmTopControlsView(
       base::BindRepeating(&WasmTopControlsView::ExecuteNavigationCommand,
                           base::Unretained(this), IDC_STOP),
       u"Stop"));
+  menu_button_ = AddChildView(std::make_unique<views::LabelButton>(
+      base::BindRepeating(&WasmTopControlsView::ToggleMenu,
+                          base::Unretained(this)),
+      u"Menu"));
 
   address_field_ = AddChildView(std::make_unique<views::Textfield>());
   address_field_->SetController(this);
@@ -206,6 +215,12 @@ void WasmTopControlsView::ExecuteNavigationCommand(int command_id,
                                                     const ui::Event& event) {
   static_cast<void>(ExecuteNavigationCommandForAccelerator(
       command_id, event.time_stamp()));
+}
+
+void WasmTopControlsView::ToggleMenu(const ui::Event& event) {
+  static_cast<void>(event);
+  CHECK(toggle_menu_callback_);
+  toggle_menu_callback_.Run();
 }
 
 bool WasmTopControlsView::NavigateAddressText() {
