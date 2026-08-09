@@ -51,6 +51,12 @@ def successful_result() -> dict[str, object]:
     }
 
 
+def complete_output() -> str:
+    return "\n".join(
+        (smoke.READY_MARKER, smoke.TOP_CONTROLS_MARKER, smoke.PASS_MARKER)
+    )
+
+
 class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
     def test_source_keeps_the_browser_smoke_explicit_and_terminal(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
@@ -75,6 +81,9 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
         for expected in (
             '"CHROMIUM_WASM_M6_BROWSER:READY"',
             '"CHROMIUM_WASM_M6_BROWSER:PASS"',
+            '"CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"',
+            "SubmitAddressAndWait(",
+            "ClickNavigationButtonAndWait(",
             "CloseEmptyBrowserForSmoke(",
             "browser_view.Show();",
             "tab_strip_model->ActivateTabAt(1);",
@@ -111,18 +120,37 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
                 self.assertIn(expected, runner)
 
     def test_accepts_complete_browser_presentation_and_shutdown_evidence(self) -> None:
-        smoke.validate_result(
-            successful_result(), f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}"
-        )
+        smoke.validate_result(successful_result(), complete_output())
 
     def test_rejects_each_required_browser_smoke_signal(self) -> None:
         cases: list[tuple[str, dict[str, object], str]] = []
 
         missing_ready = successful_result()
-        cases.append(("ready", missing_ready, smoke.PASS_MARKER))
+        cases.append(
+            (
+                "ready",
+                missing_ready,
+                "\n".join((smoke.TOP_CONTROLS_MARKER, smoke.PASS_MARKER)),
+            )
+        )
 
         missing_pass = successful_result()
-        cases.append(("pass", missing_pass, smoke.READY_MARKER))
+        cases.append(
+            (
+                "pass",
+                missing_pass,
+                "\n".join((smoke.READY_MARKER, smoke.TOP_CONTROLS_MARKER)),
+            )
+        )
+
+        missing_top_controls = successful_result()
+        cases.append(
+            (
+                "top-controls",
+                missing_top_controls,
+                "\n".join((smoke.READY_MARKER, smoke.PASS_MARKER)),
+            )
+        )
 
         no_canvas_copy = successful_result()
         no_canvas_copy["canvasCopies"] = 0
@@ -130,7 +158,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             (
                 "canvas copy",
                 no_canvas_copy,
-                f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}",
+                complete_output(),
             )
         )
 
@@ -140,7 +168,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             (
                 "compositor frames",
                 no_frame,
-                f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}",
+                complete_output(),
             )
         )
 
@@ -150,7 +178,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             (
                 "ready surface",
                 no_readiness,
-                f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}",
+                complete_output(),
             )
         )
 
@@ -160,7 +188,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             (
                 "active keyboard target",
                 no_focus,
-                f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}",
+                complete_output(),
             )
         )
 
@@ -179,16 +207,12 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
                 result = successful_result()
                 result[field] = value
                 with self.assertRaisesRegex(M0Error, expression):
-                    smoke.validate_result(
-                        result, f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}"
-                    )
+                    smoke.validate_result(result, complete_output())
 
         result = successful_result()
         result["processExitReports"] = [{"protocol": 1, "exitCode": 17}]
         with self.assertRaisesRegex(M0Error, "nonzero"):
-            smoke.validate_result(
-                result, f"{smoke.READY_MARKER}\n{smoke.PASS_MARKER}"
-            )
+            smoke.validate_result(result, complete_output())
 
     def test_parser_rejects_missing_or_repeated_result_records(self) -> None:
         result = json.dumps(successful_result(), separators=(",", ":"))

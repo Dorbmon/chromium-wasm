@@ -198,6 +198,7 @@ class M6WasmBrowserContractTest(unittest.TestCase):
                 self.assertNotIn(forbidden, browser_target)
 
         self.assertIn('":wasm_browser",', smoke_target)
+        self.assertIn('":wasm_top_controls",', smoke_target)
         self.assertIn('":wasm_browser_smoke",', _source_set_body(
             build, "wasm_browser_main_parts"
         ))
@@ -231,6 +232,17 @@ class M6WasmBrowserContractTest(unittest.TestCase):
             "browser_view.Show();",
             "visible_run_loop.Run();",
             '"CHROMIUM_WASM_M6_BROWSER:READY"',
+            '"CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"',
+            "browser_view.wasm_top_controls()",
+            "SubmitAddressAndWait(",
+            "ClickNavigationButtonAndWait(",
+            "ui::VKEY_RETURN",
+            "PageTransitionCoreTypeIs(",
+            "navigation_handle->HasUserGesture()",
+            "javascript:document.title='not-selected'",
+            "https://stale-tab-text.invalid/",
+            "CHECK(!address_field->HasFocus());",
+            "CHECK_EQ(address_field->GetText(), u\"about:blank\");",
             "raw_browser->GetWindow()->Close();",
             "base::RunLoop().RunUntilIdle();",
             "CHECK(!weak_browser);",
@@ -245,6 +257,9 @@ class M6WasmBrowserContractTest(unittest.TestCase):
             "OpenGURL(",
             "Browser::CreateParams::CreateForApp",
             "chrome://settings",
+            "ToolbarView",
+            "LocationBarView",
+            "OmniboxView",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, smoke)

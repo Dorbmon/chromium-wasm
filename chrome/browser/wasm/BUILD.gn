@@ -240,12 +240,47 @@ source_set("wasm_constrained_window") {
   ]
 }
 
-# This is an object-only, content-only BrowserView. It owns a real Views
-# WebView and structural tab-modal host, but deliberately does not select a
-# Browser factory, close/unload lifecycle, BrowserWindowFeatures, or desktop
-# Chrome UI. The explicit BrowserView smoke selects it at runtime; the paired
-# BrowserWindow header keeps omitted desktop APIs a compile-time boundary
-# instead of inert stubs.
+# This bounded Wasm control strip owns only direct active-tab navigation and a
+# restricted URL field. It deliberately does not select Chrome's Toolbar,
+# TabStrip, LocationBar, omnibox, menus, history, or WebUI graphs.
+source_set("wasm_top_controls") {
+  # The BrowserView and its explicit runtime smoke are the only current
+  # owners. Keep this narrow so a later caller cannot accidentally make these
+  # controls look like a general Chrome toolbar implementation.
+  visibility = [
+    ":wasm_browser_smoke",
+    ":wasm_browser_view",
+  ]
+
+  public = [ "wasm_top_controls_view.h" ]
+
+  sources = [ "wasm_top_controls_view.cc" ]
+
+  public_deps = [
+    ":wasm_browser_command_controller",
+    "//base",
+    "//ui/views",
+  ]
+
+  deps = [
+    ":wasm_tab_features",
+    "//chrome/app:command_ids",
+    "//chrome/browser/ui/browser_window",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base",
+    "//ui/base/metadata:metadata",
+    "//ui/events",
+    "//ui/gfx/geometry",
+    "//url",
+  ]
+}
+
+# This begins as an object-only content host and, when a real Wasm Browser owns
+# it, can install the bounded source-selected navigation row above its WebView.
+# It still avoids desktop BrowserView, Toolbar, TabStrip, LocationBar, and
+# omnibox selection. The null-Browser structural smoke retains the original
+# content-only FillLayout path.
 source_set("wasm_browser_view") {
   assert(use_aura && use_ozone && toolkit_views)
 
@@ -267,6 +302,7 @@ source_set("wasm_browser_view") {
 
   deps = [
     ":wasm_browser_ui",
+    ":wasm_top_controls",
     "//ui/base/metadata:metadata",
     "//ui/base/mojom:ui_base_types",
     "//ui/gfx/geometry",
@@ -388,11 +424,17 @@ source_set("wasm_browser_smoke") {
     ":wasm_browser",
     ":wasm_browser_manager",
     ":wasm_browser_view",
+    ":wasm_top_controls",
     ":wasm_profile",
     ":wasm_tab_core",
     "//base",
     "//content/public/browser",
+    "//ui/base",
+    "//ui/events",
     "//ui/gfx/geometry",
+    "//ui/views",
+    "//ui/views/controls/webview:webview",
+    "//url",
   ]
 }
 

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/frame/browser_view.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -12,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -20,6 +22,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/widget/widget.h"
 
@@ -68,6 +71,29 @@ void BrowserView::SetWasmCloseRequestCallback(
   CHECK(callback);
   CHECK(!wasm_close_request_callback_);
   wasm_close_request_callback_ = std::move(callback);
+}
+
+void BrowserView::InitializeWasmTopControls(
+    BrowserWindowInterface* browser_window_interface,
+    chrome::BrowserCommandController* browser_command_controller) {
+  CHECK(browser_)
+      << "Wasm top controls require a Browser-owned BrowserView";
+  CHECK(browser_window_interface);
+  CHECK(browser_command_controller);
+  CHECK(!wasm_top_controls_);
+  CHECK(contents_web_view_);
+
+  auto top_controls = std::make_unique<WasmTopControlsView>(
+      browser_window_interface, browser_command_controller);
+  wasm_top_controls_ = AddChildViewAt(std::move(top_controls), 0);
+
+  // The null-Browser structural smoke retains the earlier FillLayout. A
+  // Browser-owned view instead places this fixed-height control row above the
+  // WebView, preserving the latter as the sole content/modal anchor.
+  views::BoxLayout* const layout = SetLayoutManager(
+      std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kVertical));
+  layout->SetFlexForView(contents_web_view_, 1, /*use_min_size=*/true);
 }
 
 void BrowserView::DeleteBrowserWindow() {
@@ -277,6 +303,9 @@ void BrowserView::OnTabDetached(content::WebContents* contents,
   }
 
   CHECK(contents_web_view_);
+  if (wasm_top_controls_) {
+    wasm_top_controls_->OnActiveWebContentsDetached(contents);
+  }
   contents_web_view_->SetWebContents(nullptr);
   active_web_contents_ = nullptr;
 }
@@ -292,7 +321,13 @@ void BrowserView::SetContentsSize(const gfx::Size& size) {
   }
 
   gfx::Rect bounds = GetBounds();
-  bounds.set_size(size);
+  // BrowserWindow's contents-size API means WebContents geometry. Account for
+  // the fixed controls row in the outer Widget only after it is installed;
+  // the null-Browser structural path remains an exact FillLayout.
+  const int top_controls_height =
+      wasm_top_controls_ ? wasm_top_controls_->GetPreferredSize().height() : 0;
+  bounds.set_size(
+      gfx::Size(size.width(), size.height() + top_controls_height));
   SetBounds(bounds);
 }
 
@@ -368,6 +403,9 @@ void BrowserView::OnWidgetDestroying(views::Widget* widget) {
   CHECK(widget_observation_.IsObservingSource(widget));
   widget_observation_.Reset();
   tab_modal_dialog_host_.reset();
+  if (wasm_top_controls_ && active_web_contents_) {
+    wasm_top_controls_->OnActiveWebContentsDetached(active_web_contents_);
+  }
   if (contents_web_view_) {
     contents_web_view_->SetWebContents(nullptr);
   }
@@ -385,8 +423,23 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
 }
 
 gfx::Size BrowserView::GetMinimumSize() const {
-  return contents_web_view_ ? contents_web_view_->GetMinimumSize()
-                            : gfx::Size();
+  gfx::Size minimum_size =
+      contents_web_view_ ? contents_web_view_->GetMinimumSize() : gfx::Size();
+  if (!wasm_top_controls_) {
+    return minimum_size;
+  }
+
+  const gfx::Size controls_minimum_size =
+      wasm_top_controls_->GetMinimumSize();
+  minimum_size.set_width(
+      std::max(minimum_size.width(), controls_minimum_size.width()));
+  // The strip's preferred height is deliberately fixed. A child Button's
+  // minimum height alone would permit a BrowserView that clips the strip.
+  minimum_size.set_height(
+      minimum_size.height() +
+      std::max(controls_minimum_size.height(),
+               wasm_top_controls_->GetPreferredSize().height()));
+  return minimum_size;
 }
 
 void BrowserView::AddedToWidget() {

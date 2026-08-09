@@ -178,6 +178,8 @@ Browser::Browser(const CreateParams& params)
   // The Wasm feature implementation intentionally omits the desktop
   // post-window Browser graph. It uses the real selected BrowserView instead.
   features_->InitPostBrowserViewConstruction(&browser_view);
+  browser_view.InitializeWasmTopControls(
+      this, features_->browser_command_controller());
 }
 
 Browser::~Browser() {

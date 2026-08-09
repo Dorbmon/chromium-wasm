@@ -9,12 +9,16 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/wasm/wasm_browser.h"
+#include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -22,8 +26,23 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/events/event.h"
+#include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/controls/webview/webview.h"
+#include "ui/views/focus/focus_manager.h"
+#include "ui/views/widget/root_view.h"
+#include "ui/views/widget/widget.h"
+#include "url/gurl.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_browser_smoke.cc must only be built for WebAssembly"
@@ -35,8 +54,17 @@ namespace {
 
 constexpr char kBrowserSmokeMarker[] = "CHROMIUM_WASM_M6_BROWSER:PASS";
 constexpr char kBrowserSmokeReadyMarker[] = "CHROMIUM_WASM_M6_BROWSER:READY";
+constexpr char kTopControlsSmokeMarker[] =
+    "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS";
 constexpr gfx::Rect kBrowserSmokeBounds(0, 0, 640, 480);
 constexpr base::TimeDelta kBrowserSmokeVisibleDuration = base::Milliseconds(250);
+constexpr base::TimeDelta kNavigationTimeout = base::Seconds(5);
+constexpr char kFirstNavigationUrl[] =
+    "data:text/html;base64,"
+    "PCFkb2N0eXBlIGh0bWw+PHRpdGxlPndhc20tdG9wLWNvbnRyb2xzLWE8L3RpdGxlPjxib2R5Pndhc20tdG9wLWNvbnRyb2xzLWE8L2JvZHk+";
+constexpr char kSecondNavigationUrl[] =
+    "data:text/html;base64,"
+    "PCFkb2N0eXBlIGh0bWw+PHRpdGxlPndhc20tdG9wLWNvbnRyb2xzLWI8L3RpdGxlPjxib2R5Pndhc20tdG9wLWNvbnRyb2xzLWI8L2JvZHk+";
 
 struct BrowserSmokeState {
   BrowserWindowInterface* expected_browser = nullptr;
@@ -69,6 +97,172 @@ void OnBrowserDidClose(BrowserSmokeState* state,
   CHECK_EQ(browser, state->expected_browser);
   CHECK(browser->IsDeleteScheduled());
   state->did_close = true;
+}
+
+class ActiveTabNavigationObserver final
+    : public content::WebContentsObserver {
+ public:
+  explicit ActiveTabNavigationObserver(content::WebContents* web_contents)
+      : content::WebContentsObserver(web_contents) {
+    CHECK(web_contents);
+  }
+
+  ActiveTabNavigationObserver(const ActiveTabNavigationObserver&) = delete;
+  ActiveTabNavigationObserver& operator=(const ActiveTabNavigationObserver&) =
+      delete;
+  ~ActiveTabNavigationObserver() override = default;
+
+  void WaitForNavigation(const GURL& expected_url,
+                         bool expect_typed_user_navigation,
+                         base::OnceClosure start_navigation) {
+    CHECK(expected_url.is_valid());
+    CHECK(start_navigation);
+    CHECK(!waiting_for_navigation_);
+    CHECK(!wait_quit_closure_);
+    CHECK(web_contents());
+
+    expected_url_ = expected_url;
+    expect_typed_user_navigation_ = expect_typed_user_navigation;
+    waiting_for_navigation_ = true;
+    committed_primary_main_frame_ = false;
+    stopped_loading_after_commit_ = false;
+    timed_out_ = false;
+
+    base::RunLoop navigation_run_loop;
+    wait_quit_closure_ = navigation_run_loop.QuitClosure();
+    navigation_timeout_.Start(
+        FROM_HERE, kNavigationTimeout,
+        base::BindOnce(&ActiveTabNavigationObserver::OnNavigationTimeout,
+                       base::Unretained(this)));
+    std::move(start_navigation).Run();
+    navigation_run_loop.Run();
+    navigation_timeout_.Stop();
+
+    CHECK(!timed_out_);
+    CHECK(committed_primary_main_frame_);
+    CHECK(stopped_loading_after_commit_);
+    CHECK(web_contents());
+    CHECK_EQ(web_contents()->GetLastCommittedURL(), expected_url_);
+
+    waiting_for_navigation_ = false;
+    expected_url_ = GURL();
+    expect_typed_user_navigation_ = false;
+  }
+
+ private:
+  // content::WebContentsObserver:
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    CHECK(navigation_handle);
+    if (!waiting_for_navigation_ ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage() ||
+        navigation_handle->GetURL() != expected_url_) {
+      return;
+    }
+
+    CHECK(!committed_primary_main_frame_);
+    if (expect_typed_user_navigation_) {
+      CHECK(ui::PageTransitionCoreTypeIs(
+          navigation_handle->GetPageTransition(), ui::PAGE_TRANSITION_TYPED));
+      CHECK(navigation_handle->HasUserGesture());
+    }
+    CHECK(web_contents());
+    CHECK_EQ(web_contents()->GetLastCommittedURL(), expected_url_);
+    committed_primary_main_frame_ = true;
+
+    // A synchronous completion may not produce a later DidStopLoading()
+    // callback after this observer starts waiting. The WebContents loading
+    // state remains the authoritative completion signal in that case.
+    if (!web_contents()->IsLoading()) {
+      stopped_loading_after_commit_ = true;
+      FinishNavigationWait();
+    }
+  }
+
+  void DidStopLoading() override {
+    if (!waiting_for_navigation_ || !committed_primary_main_frame_) {
+      return;
+    }
+
+    stopped_loading_after_commit_ = true;
+    FinishNavigationWait();
+  }
+
+  void OnNavigationTimeout() {
+    timed_out_ = true;
+    FinishNavigationWait();
+  }
+
+  void FinishNavigationWait() {
+    if (wait_quit_closure_) {
+      std::move(wait_quit_closure_).Run();
+    }
+  }
+
+  base::OneShotTimer navigation_timeout_;
+  base::OnceClosure wait_quit_closure_;
+  GURL expected_url_;
+  bool expect_typed_user_navigation_ = false;
+  bool waiting_for_navigation_ = false;
+  bool committed_primary_main_frame_ = false;
+  bool stopped_loading_after_commit_ = false;
+  bool timed_out_ = false;
+};
+
+void SendKeyPress(views::Widget* widget, ui::KeyboardCode key_code) {
+  CHECK(widget);
+  ui::KeyEvent press(ui::EventType::kKeyPressed, key_code, 0,
+                     base::TimeTicks::Now());
+  widget->OnKeyEvent(&press);
+  ui::KeyEvent release(ui::EventType::kKeyReleased, key_code, 0,
+                       base::TimeTicks::Now());
+  widget->OnKeyEvent(&release);
+}
+
+void ClickButton(views::LabelButton* button) {
+  CHECK(button);
+  CHECK(button->GetEnabled());
+  const gfx::Point center = button->GetLocalBounds().CenterPoint();
+  button->OnMousePressed(ui::MouseEvent(
+      ui::EventType::kMousePressed, center, center, base::TimeTicks::Now(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  button->OnMouseReleased(ui::MouseEvent(
+      ui::EventType::kMouseReleased, center, center, base::TimeTicks::Now(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+}
+
+void SubmitAddressAndWait(ActiveTabNavigationObserver* navigation_observer,
+                          views::Widget* widget,
+                          views::Textfield* address_field,
+                          const GURL& expected_url) {
+  CHECK(navigation_observer);
+  CHECK(widget);
+  CHECK(address_field);
+  navigation_observer->WaitForNavigation(
+      expected_url, /*expect_typed_user_navigation=*/true,
+      base::BindOnce(
+          [](views::Widget* widget, views::Textfield* address_field,
+             const GURL& expected_url) {
+            address_field->SetText(base::UTF8ToUTF16(expected_url.spec()));
+            address_field->RequestFocus();
+            CHECK_EQ(widget->GetFocusManager()->GetFocusedView(),
+                     address_field);
+            SendKeyPress(widget, ui::VKEY_RETURN);
+          },
+          base::Unretained(widget), base::Unretained(address_field),
+          expected_url));
+}
+
+void ClickNavigationButtonAndWait(
+    ActiveTabNavigationObserver* navigation_observer,
+    views::LabelButton* button,
+    const GURL& expected_url) {
+  CHECK(navigation_observer);
+  CHECK(button);
+  navigation_observer->WaitForNavigation(
+      expected_url, /*expect_typed_user_navigation=*/false,
+      base::BindOnce(&ClickButton, base::Unretained(button)));
 }
 
 void CloseEmptyBrowserForSmoke(Profile* profile,
@@ -163,6 +357,120 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
                       visible_run_loop.QuitClosure());
   visible_run_loop.Run();
   std::puts(kBrowserSmokeReadyMarker);
+
+  // Exercise the purpose-built Views row through its public input path. This
+  // is intentionally not a desktop Toolbar or omnibox proof: it verifies the
+  // selected BrowserCommandController-backed buttons and the restricted
+  // active-tab URL field while the real BrowserWidget is visible.
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  CHECK(top_controls);
+  views::Widget* const browser_widget = browser_view.GetWidget();
+  CHECK(browser_widget);
+  browser_widget->GetRootView()->DeprecatedLayoutImmediately();
+  CHECK_EQ(browser_view.contents_web_view()->bounds().y(),
+           top_controls->GetPreferredSize().height());
+
+  views::Textfield* const address_field =
+      top_controls->address_field_for_testing();
+  views::LabelButton* const back_button =
+      top_controls->back_button_for_testing();
+  views::LabelButton* const forward_button =
+      top_controls->forward_button_for_testing();
+  views::LabelButton* const reload_button =
+      top_controls->reload_button_for_testing();
+  views::LabelButton* const stop_button =
+      top_controls->stop_button_for_testing();
+  CHECK(address_field);
+  CHECK(back_button);
+  CHECK(forward_button);
+  CHECK(reload_button);
+  CHECK(stop_button);
+  CHECK_EQ(address_field->GetText(), u"about:blank");
+  CHECK(!back_button->GetEnabled());
+  CHECK(!forward_button->GetEnabled());
+  CHECK(reload_button->GetEnabled());
+  CHECK(!stop_button->GetEnabled());
+
+  const GURL first_navigation_url(kFirstNavigationUrl);
+  const GURL second_navigation_url(kSecondNavigationUrl);
+  CHECK(first_navigation_url.is_valid());
+  CHECK(second_navigation_url.is_valid());
+  content::NavigationController& first_navigation_controller =
+      raw_first_contents->GetController();
+  ActiveTabNavigationObserver navigation_observer(raw_first_contents);
+
+  SubmitAddressAndWait(&navigation_observer, browser_widget, address_field,
+                       first_navigation_url);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(first_navigation_url.spec()));
+  CHECK(!address_field->GetInvalid());
+
+  SubmitAddressAndWait(&navigation_observer, browser_widget, address_field,
+                       second_navigation_url);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(second_navigation_url.spec()));
+  CHECK(first_navigation_controller.CanGoBack());
+  CHECK(!first_navigation_controller.CanGoForward());
+  CHECK(back_button->GetEnabled());
+  CHECK(!forward_button->GetEnabled());
+  CHECK(reload_button->GetEnabled());
+  CHECK(!stop_button->GetEnabled());
+
+  ClickNavigationButtonAndWait(&navigation_observer, back_button,
+                               first_navigation_url);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(first_navigation_url.spec()));
+  CHECK(first_navigation_controller.CanGoForward());
+  CHECK(forward_button->GetEnabled());
+
+  ClickNavigationButtonAndWait(&navigation_observer, forward_button,
+                               second_navigation_url);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(second_navigation_url.spec()));
+  const int history_entry_count = first_navigation_controller.GetEntryCount();
+  const int history_entry_index =
+      first_navigation_controller.GetCurrentEntryIndex();
+
+  ClickNavigationButtonAndWait(&navigation_observer, reload_button,
+                               second_navigation_url);
+  CHECK_EQ(first_navigation_controller.GetEntryCount(), history_entry_count);
+  CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
+           history_entry_index);
+
+  // A focused address field is specific to the selected tab. Switching away
+  // must clear/refresh it before Return can reach the new active WebContents.
+  address_field->SetText(u"https://stale-tab-text.invalid/");
+  address_field->RequestFocus();
+  CHECK_EQ(browser_widget->GetFocusManager()->GetFocusedView(),
+           address_field);
+  tab_strip_model->ActivateTabAt(1);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK(!address_field->HasFocus());
+  CHECK_EQ(address_field->GetText(), u"about:blank");
+  CHECK(!address_field->GetInvalid());
+  tab_strip_model->ActivateTabAt(0);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(second_navigation_url.spec()));
+
+  // Unsupported schemes must fail at the address-field boundary rather than
+  // being handed to a partially selected Chrome WebUI/JavaScript route.
+  address_field->SetText(u"javascript:document.title='not-selected'");
+  address_field->RequestFocus();
+  SendKeyPress(browser_widget, ui::VKEY_RETURN);
+  CHECK(address_field->GetInvalid());
+  CHECK_EQ(first_navigation_controller.GetEntryCount(), history_entry_count);
+  CHECK_EQ(first_navigation_controller.GetCurrentEntryIndex(),
+           history_entry_index);
+  CHECK_EQ(raw_first_contents->GetLastCommittedURL(), second_navigation_url);
+  browser_widget->GetFocusManager()->ClearFocus();
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(second_navigation_url.spec()));
+  std::puts(kTopControlsSmokeMarker);
 
   BrowserSmokeState state;
   state.expected_browser = raw_browser;

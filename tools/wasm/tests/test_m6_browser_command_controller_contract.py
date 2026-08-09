@@ -262,10 +262,9 @@ class M6BrowserCommandControllerContractTest(unittest.TestCase):
             _source_set_body(wasm_build, "wasm_browser_main_parts"),
         )
         # BrowserWindowFeatures is the sole owner and constructs the
-        # controller before BrowserView. The bounded View smoke has a direct
-        # dependency only because it includes the public controller API to
-        # exercise selected-active-tab back/forward/reload; it does not add a
-        # Browser core or browser-main lifecycle edge.
+        # controller before BrowserView. The bounded Views consumers depend on
+        # its public API only to reflect/execute selected active-tab navigation;
+        # neither adds a Browser core or browser-main lifecycle edge.
         self.assertIn(
             ":wasm_browser_command_controller",
             _source_set_body(wasm_build, "wasm_browser_window_features"),
@@ -274,8 +273,12 @@ class M6BrowserCommandControllerContractTest(unittest.TestCase):
             ":wasm_browser_command_controller",
             _source_set_body(wasm_build, "wasm_browser_window_view_smoke"),
         )
+        self.assertIn(
+            ":wasm_browser_command_controller",
+            _source_set_body(wasm_build, "wasm_top_controls"),
+        )
         self.assertEqual(
-            2, wasm_build.count('\":wasm_browser_command_controller\",')
+            3, wasm_build.count('\":wasm_browser_command_controller\",')
         )
 
 

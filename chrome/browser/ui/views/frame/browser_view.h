@@ -25,6 +25,12 @@
 
 class Browser;
 class BrowserWidget;
+class BrowserWindowInterface;
+class WasmTopControlsView;
+
+namespace chrome {
+class BrowserCommandController;
+}  // namespace chrome
 
 namespace content {
 class WebContents;
@@ -38,13 +44,13 @@ namespace views {
 class WebView;
 }  // namespace views
 
-// A content-only BrowserWindow for the object-only Wasm UI slice.
+// A slim BrowserWindow for the Wasm UI slice.
 //
-// This hosts exactly one externally-owned WebContents in a real Views WebView.
-// It intentionally has no Browser factory, toolbar, tab-strip, download, or
-// BrowserWindowFeatures lifecycle. Those APIs are absent from the paired Wasm
-// BrowserWindow contract, so a consumer must add a real implementation before
-// it can be selected into the Wasm browser graph.
+// This always hosts the selected WebContents in a real Views WebView. A
+// Browser-owned instance may additionally own the purpose-built Wasm top
+// controls; a null-Browser structural instance remains content-only. Neither
+// path selects the desktop Chrome toolbar, tab strip, location bar, download,
+// or omnibox graph.
 class BrowserView final : public BrowserWindow,
                           public views::WidgetDelegate,
                           public views::WidgetObserver,
@@ -74,6 +80,15 @@ class BrowserView final : public BrowserWindow,
   void SetWasmCloseRequestCallback(
       base::RepeatingCallback<views::CloseRequestResult()> callback);
 
+  // Installs the selected Wasm navigation controls for a Browser-owned view.
+  // This accepts only BrowserWindowInterface and command-controller seams so
+  // BrowserView never needs a Browser include or target dependency. Null-
+  // Browser structural smokes intentionally never call it and retain the
+  // simple FillLayout path.
+  void InitializeWasmTopControls(
+      BrowserWindowInterface* browser_window_interface,
+      chrome::BrowserCommandController* browser_command_controller);
+
   // True only while BrowserWindowDeleter is breaking a fully pre-closed
   // Browser-owned Widget/View cycle. BrowserWidget uses this to distinguish
   // that ordered teardown from an unsupported native host destruction.
@@ -93,6 +108,9 @@ class BrowserView final : public BrowserWindow,
   }
   content::WebContents* GetActiveWebContents() const {
     return active_web_contents_;
+  }
+  WasmTopControlsView* wasm_top_controls() const {
+    return wasm_top_controls_;
   }
 
   // BrowserWidget asks its client for menu shortcut labels. No Chrome command
@@ -177,6 +195,7 @@ class BrowserView final : public BrowserWindow,
   base::RepeatingCallback<views::CloseRequestResult()>
       wasm_close_request_callback_;
   bool browser_window_deletion_in_progress_ = false;
+  raw_ptr<WasmTopControlsView> wasm_top_controls_ = nullptr;
   raw_ptr<views::WebView> contents_web_view_ = nullptr;
   raw_ptr<content::WebContents> active_web_contents_ = nullptr;
   std::unique_ptr<WasmTabModalDialogHost> tab_modal_dialog_host_;
