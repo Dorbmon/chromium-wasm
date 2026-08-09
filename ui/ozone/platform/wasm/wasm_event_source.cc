@@ -38,6 +38,16 @@ bool IsSupportedM4DomCode(DomCode dom_code) {
          dom_code == DomCode::US_V;
 }
 
+// Keep this physical-key slice exactly aligned with BrowserView's selected
+// Views accelerators. It intentionally does not make OzoneWasm a generic
+// keyboard implementation or broaden the existing M4 Content Shell ABI.
+bool IsSupportedWasmAcceleratorDomCode(DomCode dom_code) {
+  return dom_code == DomCode::SHIFT_LEFT || dom_code == DomCode::ALT_LEFT ||
+         dom_code == DomCode::US_L || dom_code == DomCode::US_R ||
+         dom_code == DomCode::ARROW_LEFT ||
+         dom_code == DomCode::ARROW_RIGHT || dom_code == DomCode::TAB;
+}
+
 bool IsM4RepeatableDomCode(DomCode dom_code) {
   return dom_code == DomCode::ARROW_DOWN || dom_code == DomCode::BACKSPACE;
 }
@@ -113,12 +123,28 @@ class WasmSystemInputInjector final : public SystemInputInjector {
     // platform repeat timer. The bounded printable slice maps through the
     // Ozone keyboard layout engine below. Backspace plus Ctrl+C/Ctrl+V do not
     // make this generic keyboard or host-synthesized text input to Blink.
-    if (!IsSupportedM4DomCode(physical_key)) {
+    if (!IsSupportedM4DomCode(physical_key) &&
+        !IsSupportedWasmAcceleratorDomCode(physical_key)) {
       NOTIMPLEMENTED_LOG_ONCE()
           << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, KeyB, "
-             "Backspace, and Ctrl+C/Ctrl+V only";
+             "Backspace, and Ctrl+C/Ctrl+V; the bounded BrowserView slice "
+             "also supports Ctrl+L/R/Tab, Ctrl+Shift+R/Tab, and Alt+Left/"
+             "Right";
       return;
     }
+    const auto modifier_flags_for_key = [this](DomCode physical_key) {
+      EventFlags flags = EF_NONE;
+      if (control_left_ || physical_key == DomCode::CONTROL_LEFT) {
+        flags |= EF_CONTROL_DOWN;
+      }
+      if (shift_left_ || physical_key == DomCode::SHIFT_LEFT) {
+        flags |= EF_SHIFT_DOWN;
+      }
+      if (alt_left_ || physical_key == DomCode::ALT_LEFT) {
+        flags |= EF_ALT_DOWN;
+      }
+      return flags;
+    };
     bool* key_down = &backspace_;
     if (physical_key == DomCode::ARROW_DOWN) {
       key_down = &arrow_down_;
@@ -132,6 +158,20 @@ class WasmSystemInputInjector final : public SystemInputInjector {
       key_down = &key_c_;
     } else if (physical_key == DomCode::US_V) {
       key_down = &key_v_;
+    } else if (physical_key == DomCode::SHIFT_LEFT) {
+      key_down = &shift_left_;
+    } else if (physical_key == DomCode::ALT_LEFT) {
+      key_down = &alt_left_;
+    } else if (physical_key == DomCode::US_L) {
+      key_down = &key_l_;
+    } else if (physical_key == DomCode::US_R) {
+      key_down = &key_r_;
+    } else if (physical_key == DomCode::ARROW_LEFT) {
+      key_down = &arrow_left_;
+    } else if (physical_key == DomCode::ARROW_RIGHT) {
+      key_down = &arrow_right_;
+    } else if (physical_key == DomCode::TAB) {
+      key_down = &tab_;
     } else {
       DCHECK_EQ(physical_key, DomCode::BACKSPACE);
     }
@@ -139,7 +179,9 @@ class WasmSystemInputInjector final : public SystemInputInjector {
       if (down && !suppress_auto_repeat &&
           IsM4RepeatableDomCode(physical_key)) {
         event_source_->DispatchKeyEvent(EventType::kKeyPressed, physical_key,
-                                        EF_IS_REPEAT, device_id_);
+                                        modifier_flags_for_key(physical_key) |
+                                            EF_IS_REPEAT,
+                                        device_id_);
       }
       return;
     }
@@ -151,13 +193,18 @@ class WasmSystemInputInjector final : public SystemInputInjector {
              "held";
       return;
     }
-    // Keep Control in the flag state of its own press/release and every
-    // bounded chord key. That is the normal Ozone modifier representation;
-    // SystemInputInjector deliberately accepts physical keys only.
-    const EventFlags flags =
-        (control_left_ || physical_key == DomCode::CONTROL_LEFT)
-            ? EF_CONTROL_DOWN
-            : EF_NONE;
+    if (down && !IsAcceleratorChordSatisfied(physical_key)) {
+      NOTIMPLEMENTED_LOG_ONCE()
+          << "ozone_wasm only accepts the bounded BrowserView accelerator "
+             "chords Ctrl+L/R/Tab, Ctrl+Shift+R/Tab, and Alt+Left/Right";
+      return;
+    }
+    // Retain each modifier in its own press/release and in every accepted
+    // physical-key chord. This mirrors normal Ozone modifier representation;
+    // SystemInputInjector deliberately accepts physical keys only. The state
+    // update happens after constructing flags so a modifier keyup retains its
+    // own modifier flag, as native KeyEvent normalization expects.
+    const EventFlags flags = modifier_flags_for_key(physical_key);
     *key_down = down;
     event_source_->DispatchKeyEvent(
         down ? EventType::kKeyPressed : EventType::kKeyReleased,
@@ -165,6 +212,22 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   }
 
  private:
+  bool IsAcceleratorChordSatisfied(DomCode physical_key) const {
+    switch (physical_key) {
+      case DomCode::US_L:
+        return control_left_ && !shift_left_ && !alt_left_;
+      case DomCode::US_R:
+        return control_left_ && !alt_left_;
+      case DomCode::ARROW_LEFT:
+      case DomCode::ARROW_RIGHT:
+        return alt_left_ && !control_left_ && !shift_left_;
+      case DomCode::TAB:
+        return control_left_ && !alt_left_;
+      default:
+        return true;
+    }
+  }
+
   raw_ptr<WasmPlatformEventSource> event_source_;
   gfx::PointF location_;
   EventFlags button_flags_ = EF_NONE;
@@ -176,6 +239,13 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   bool control_left_ = false;
   bool key_c_ = false;
   bool key_v_ = false;
+  bool shift_left_ = false;
+  bool alt_left_ = false;
+  bool key_l_ = false;
+  bool key_r_ = false;
+  bool arrow_left_ = false;
+  bool arrow_right_ = false;
+  bool tab_ = false;
 };
 
 }  // namespace
@@ -324,7 +394,8 @@ bool WasmPlatformEventSource::DispatchKeyEvent(EventType type,
   DCHECK(thread_checker_.CalledOnValidThread());
   if (PlatformEventSource::ShouldIgnoreNativePlatformEvents() ||
       (type != EventType::kKeyPressed && type != EventType::kKeyReleased) ||
-      !IsSupportedM4DomCode(physical_key)) {
+      (!IsSupportedM4DomCode(physical_key) &&
+       !IsSupportedWasmAcceleratorDomCode(physical_key))) {
     return false;
   }
 

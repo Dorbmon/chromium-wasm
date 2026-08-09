@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_mixers.h"
 #include "chrome/browser/wasm/wasm_browser_lifecycle.h"
+#include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_browser_smoke.h"
@@ -70,8 +71,12 @@ constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
 constexpr char kWasmBrowserSmokeSwitch[] = "wasm-browser-smoke";
 constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
     "wasm-browser-lifecycle-smoke";
+constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
+    "wasm-browser-host-accelerator-smoke";
 constexpr char kWasmBrowserLifecycleSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY";
+constexpr char kWasmBrowserHostAcceleratorSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_ACCELERATORS:READY";
 constexpr base::TimeDelta kWasmBrowserLifecycleSmokeVisibleDuration =
     base::Milliseconds(250);
 constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
@@ -220,6 +225,14 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
+  // Keep Chrome's bounded physical-key ABI separate from Content Shell's test
+  // bridge. It must capture Ozone's injector while the UI sequence and Ozone
+  // platform are live, and PostMainMessageLoopRun releases it before Ozone.
+  if (!chrome::InitializeWasmBrowserHostInput()) {
+    LOG(ERROR) << "chrome_wasm could not create its Ozone input injector";
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+
   // Exercise the factory while the profile is live. Browser::Create() will
   // retrieve this same manager when the real window lifecycle is selected.
   CHECK(BrowserManagerServiceFactory::GetForProfile(profile_.get()));
@@ -242,8 +255,14 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // across a browser-main loop turn, then waits for manager physical
   // destruction before profile shutdown. It remains one blank no-unload tab,
   // not ordinary Chrome startup or a general Browser lifecycle.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kWasmBrowserLifecycleSmokeSwitch)) {
+  const bool browser_lifecycle_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserLifecycleSmokeSwitch);
+  const bool browser_host_accelerator_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostAcceleratorSmokeSwitch);
+  if (browser_lifecycle_smoke || browser_host_accelerator_smoke) {
+    CHECK(!(browser_lifecycle_smoke && browser_host_accelerator_smoke));
     CHECK(!browser_lifecycle_);
     CHECK(!browser_lifecycle_smoke_requested_);
     CHECK(!browser_window_lifecycle_);
@@ -352,6 +371,10 @@ void WasmBrowserMainParts::WillRunMainMessageLoop(
 }
 
 void WasmBrowserMainParts::PostMainMessageLoopRun() {
+  // Invalidate the host ABI and release its SystemInputInjector while its
+  // Ozone owner is still live. Queued records carry a generation token and
+  // safely drop after this point.
+  chrome::ShutdownWasmBrowserHostInput();
   if (ozone_main_loop_initialized_) {
     ui::OzonePlatform::GetInstance()->PostMainMessageLoopRun();
     ozone_main_loop_initialized_ = false;
@@ -447,6 +470,15 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
 
   CHECK(browser_lifecycle_smoke_requested_);
   CHECK(browser_lifecycle_->IsVisible());
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostAcceleratorSmokeSwitch)) {
+    // Install the UI verifier before reporting READY: host stdout callbacks
+    // may synchronously invoke the exported ABI in response to that marker.
+    browser_lifecycle_->StartHostAcceleratorSmoke();
+    std::fprintf(stderr, "%s\n", kWasmBrowserHostAcceleratorSmokeReadyMarker);
+    std::fflush(stderr);
+    return;
+  }
   std::fprintf(stderr, "%s\n", kWasmBrowserLifecycleSmokeReadyMarker);
   std::fflush(stderr);
   RequestShutdown();

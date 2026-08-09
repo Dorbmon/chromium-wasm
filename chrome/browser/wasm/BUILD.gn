@@ -282,6 +282,7 @@ source_set("wasm_top_controls") {
   # owners. Keep this narrow so a later caller cannot accidentally make these
   # controls look like a general Chrome toolbar implementation.
   visibility = [
+    ":wasm_browser_lifecycle",
     ":wasm_browser_smoke",
     ":wasm_browser_view",
   ]
@@ -956,6 +957,25 @@ source_set("wasm_browser_window_lifecycle") {
 # through a normal browser-main loop, then waits for BrowserManagerService's
 # physical-destruction turn before profile shutdown. It intentionally remains
 # one-window/one-tab and does not enable ordinary Chrome startup.
+source_set("wasm_browser_host_input") {
+  public = [ "wasm_browser_host_input.h" ]
+
+  sources = [ "wasm_browser_host_input.cc" ]
+
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_main_parts",
+  ]
+
+  public_deps = [ "//base" ]
+
+  deps = [
+    "//content/public/browser",
+    "//ui/events",
+    "//ui/ozone",
+  ]
+}
+
 source_set("wasm_browser_lifecycle") {
   public = [ "wasm_browser_lifecycle.h" ]
 
@@ -967,10 +987,12 @@ source_set("wasm_browser_lifecycle") {
 
   deps = [
     ":wasm_browser",
+    ":wasm_browser_host_input",
     ":wasm_browser_manager",
     ":wasm_browser_view",
     ":wasm_profile",
     ":wasm_tab_core",
+    ":wasm_top_controls",
     "//content/public/browser",
     "//ui/gfx/geometry",
   ]
@@ -1259,6 +1281,7 @@ source_set("wasm_browser_main_parts") {
   ]
 
   deps = [
+    ":wasm_browser_host_input",
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
     ":wasm_browser_smoke",

@@ -17,10 +17,13 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_browser.h"
+#include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/controls/textfield/textfield.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_browser_lifecycle.cc must only be built for WebAssembly"
@@ -32,6 +35,8 @@ namespace {
 
 constexpr char kBrowserLifecycleSmokeMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS";
+constexpr char kHostAcceleratorsSmokeMarker[] =
+    "CHROMIUM_WASM_M6_HOST_ACCELERATORS:PASS";
 constexpr gfx::Rect kBrowserLifecycleSmokeBounds(0, 0, 640, 480);
 
 }  // namespace
@@ -48,6 +53,10 @@ WasmBrowserLifecycle::WasmBrowserLifecycle(
 }
 
 WasmBrowserLifecycle::~WasmBrowserLifecycle() {
+  // A queued host ABI check stores a callback bound to this coordinator. The
+  // close barrier always runs on UI before destruction, so clear it before the
+  // coordinator's raw callbacks and Browser weak pointer disappear.
+  ClearWasmBrowserHostAcceleratorVerificationForTesting();
   // BrowserManagerService owns the Browser. This lifecycle can disappear only
   // after the manager's physical destruction callback invalidates |browser_|.
   CHECK(!browser_);
@@ -115,6 +124,24 @@ void WasmBrowserLifecycle::BeginShutdown() {
   browser_->GetWindow()->Close();
 }
 
+void WasmBrowserLifecycle::StartHostAcceleratorSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!host_accelerator_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+
+  host_accelerator_smoke_started_ = true;
+  SetWasmBrowserHostAcceleratorVerificationForTesting(
+      base::BindRepeating(&WasmBrowserLifecycle::VerifyHostAcceleratorDelivery,
+                          base::Unretained(this)),
+      base::BindOnce(
+          &WasmBrowserLifecycle::OnHostAcceleratorDeliveryVerified,
+          base::Unretained(this)));
+}
+
 bool WasmBrowserLifecycle::IsVisible() const {
   CHECK(initialized_);
   CHECK(!shutdown_complete_);
@@ -132,6 +159,7 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   // A direct BrowserView/host close can enter Browser::OnWindowClosing()
   // without BeginShutdown(). Both paths converge while did-close dispatch is
   // active, before Browser posts manager deletion.
+  ClearWasmBrowserHostAcceleratorVerificationForTesting();
   shutdown_started_ = true;
   ArmBrowserDestructionBarrier();
 }
@@ -172,11 +200,49 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   browser_did_close_subscription_ = base::CallbackListSubscription();
   shutdown_complete_ = true;
 
+  ClearWasmBrowserHostAcceleratorVerificationForTesting();
+
   std::fprintf(stderr, "%s\n", kBrowserLifecycleSmokeMarker);
   std::fflush(stderr);
 
   // This callback may reset and destroy this lifecycle in main-parts.
   std::move(shutdown_complete_callback_).Run();
+}
+
+bool WasmBrowserLifecycle::VerifyHostAcceleratorDelivery() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(host_accelerator_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTopControlsView* const top_controls =
+      browser_view.wasm_top_controls();
+  CHECK(top_controls);
+  views::Textfield* const address_field =
+      top_controls->address_field_for_testing();
+  CHECK(address_field);
+
+  // Ctrl+L is intentionally the first host proof: it has an unambiguous
+  // visible focus and selection result, while navigation and tab commands
+  // remain covered by the richer Views routing smoke.
+  return address_field->HasFocus() && !address_field->GetText().empty() &&
+         address_field->GetSelectedText() == address_field->GetText();
+}
+
+void WasmBrowserLifecycle::OnHostAcceleratorDeliveryVerified() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(host_accelerator_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(VerifyHostAcceleratorDelivery());
+
+  std::fprintf(stderr, "%s\n", kHostAcceleratorsSmokeMarker);
+  std::fflush(stderr);
+  BeginShutdown();
 }
 
 }  // namespace chrome

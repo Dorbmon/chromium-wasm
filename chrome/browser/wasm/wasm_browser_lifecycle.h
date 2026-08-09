@@ -45,6 +45,12 @@ class WasmBrowserLifecycle final {
   // also converges on the same did-close/destruction barrier.
   void BeginShutdown();
 
+  // Arms the explicit host-to-Ozone accelerator proof after this lifecycle's
+  // BrowserView is visible. The exported host ABI can only complete this
+  // switch-gated check by delivering a selected physical shortcut through the
+  // UI event path; it cannot directly invoke browser commands.
+  void StartHostAcceleratorSmoke();
+
   bool IsVisible() const;
   bool IsShutdownStarted() const { return shutdown_started_; }
   bool IsShutdownComplete() const { return shutdown_complete_; }
@@ -53,6 +59,8 @@ class WasmBrowserLifecycle final {
   void OnBrowserDidClose(BrowserWindowInterface* browser);
   void ArmBrowserDestructionBarrier();
   void OnBrowserDestructionsComplete();
+  bool VerifyHostAcceleratorDelivery();
+  void OnHostAcceleratorDeliveryVerified();
 
   const raw_ptr<WasmProfile> profile_;
   const raw_ptr<BrowserManagerService> browser_manager_;
@@ -60,6 +68,7 @@ class WasmBrowserLifecycle final {
   base::CallbackListSubscription browser_did_close_subscription_;
   base::OnceClosure shutdown_complete_callback_;
   bool initialized_ = false;
+  bool host_accelerator_smoke_started_ = false;
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;
