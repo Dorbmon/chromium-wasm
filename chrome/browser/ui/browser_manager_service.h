@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -44,6 +45,19 @@ class BrowserManagerService : public KeyedService,
   // `browser` has first emitted a did-close event and `OnBrowserClosed()` is
   // called before `DeleteBrowser()`.
   void DeleteBrowser(BrowserWindowInterface* browser);
+
+#if BUILDFLAG(IS_WASM)
+  // Runs |callback| once this service's owned and deferred-destruction queues
+  // are both physically empty. This is intentionally stronger than IsEmpty(),
+  // which excludes delete-scheduled browsers while their
+  // BrowserWindowInterface and callback subscriptions remain in
+  // |pending_browser_destructions_|.
+  //
+  // This neither closes nor prevents creation of later browsers. The
+  // switch-gated Wasm browser-main lifecycle owns its creation scope and uses
+  // this as a physical-destruction barrier before profile shutdown.
+  void RunWhenBrowserDestructionsCompleteForWasm(base::OnceClosure callback);
+#endif
 
   // Adds a new unowned Browser created by unit tests.
   // TODO(crbug.com/417766643): Remove this once all use of Browser in unit
@@ -115,7 +129,9 @@ class BrowserManagerService : public KeyedService,
   // Physical destruction is deferred until every did-close subscriber has
   // returned. Shutdown drains this container before the profile goes away.
   void DestroyPendingBrowserDestructions();
+  void MaybeRunBrowserDestructionCallbacksForWasm();
   std::vector<BrowserAndSubscriptions> pending_browser_destructions_;
+  std::vector<base::OnceClosure> browser_destruction_callbacks_;
 #endif
 
   // `browsers_and_subscriptions_for_testing_` and `browsers_and_subscriptions_`

@@ -164,7 +164,7 @@ class M6WasmBrowserWindowViewHostContractTest(unittest.TestCase):
 
         self.assertIn("void NotifyActiveTabDidChangeForWasmSmoke();", header[friend:])
 
-    def test_host_target_is_private_to_the_explicit_view_smoke(self) -> None:
+    def test_host_target_is_private_to_bounded_wasm_lifecycles(self) -> None:
         build_file = source("chrome/browser/wasm/BUILD.gn")
         host_target = _source_set_body(
             build_file, "wasm_browser_window_view_host"
@@ -177,7 +177,8 @@ class M6WasmBrowserWindowViewHostContractTest(unittest.TestCase):
         for expected in (
             '"wasm_browser_window_view_host.h"',
             '"wasm_browser_window_view_host.cc"',
-            'visibility = [ ":wasm_browser_window_view_smoke" ]',
+            '":wasm_browser_window_lifecycle",',
+            '":wasm_browser_window_view_smoke",',
             '":wasm_browser_view",',
             '":wasm_browser_widget",',
             '":wasm_browser_window_core",',

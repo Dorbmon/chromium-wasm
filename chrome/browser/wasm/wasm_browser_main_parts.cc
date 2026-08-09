@@ -23,6 +23,7 @@
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_core_smoke.h"
+#include "chrome/browser/wasm/wasm_browser_window_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_window_view_smoke.h"
 #include "chrome/browser/wasm/wasm_tab_core_smoke.h"
 #include "chrome/common/chrome_paths.h"
@@ -63,6 +64,8 @@ constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
     "wasm-browser-window-core-smoke";
 constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
     "wasm-browser-window-view-smoke";
+constexpr char kWasmBrowserWindowLifecycleSmokeSwitch[] =
+    "wasm-browser-window-lifecycle-smoke";
 constexpr char kWasmTabCoreSmokeSwitch[] = "wasm-tab-core-smoke";
 constexpr char kRequiredAssets[][24] = {
     "chrome_100_percent.pak",
@@ -227,6 +230,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 
+  // This separate opt-in lifecycle proof owns one bounded no-unload tab and
+  // defers the main-loop quit until BrowserManagerService has physically
+  // destroyed its Core. It remains distinct from Browser::Create(), ordinary
+  // startup, and the richer navigation/modal composition smoke above.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserWindowLifecycleSmokeSwitch)) {
+    CHECK(!browser_window_lifecycle_);
+    browser_window_lifecycle_ =
+        std::make_unique<chrome::WasmBrowserWindowLifecycle>(profile_.get());
+    browser_window_lifecycle_->Initialize();
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+
   // This test-only switch source-selects the structural Views/Aura/Ozone
   // BrowserView path against the live Wasm profile, then exits after its
   // client-owned Widget teardown. It never constructs a Browser or admits the
@@ -268,9 +285,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 void WasmBrowserMainParts::WillRunMainMessageLoop(
     std::unique_ptr<base::RunLoop>& run_loop) {
   main_message_loop_quit_closure_ = run_loop->QuitClosure();
-  if (shutdown_requested_) {
-    main_message_loop_quit_closure_.Run();
-  }
+  MaybeStartShutdown();
 }
 
 void WasmBrowserMainParts::PostMainMessageLoopRun() {
@@ -301,7 +316,45 @@ bool WasmBrowserMainParts::PreflightResources() {
 }
 
 void WasmBrowserMainParts::RequestShutdown() {
+  if (shutdown_requested_) {
+    return;
+  }
   shutdown_requested_ = true;
+  MaybeStartShutdown();
+}
+
+void WasmBrowserMainParts::MaybeStartShutdown() {
+  // A lifecycle close posts non-nestable UI work. If Ozone requests shutdown
+  // before Content has installed the main RunLoop, defer that work until the
+  // loop can service it rather than abandoning a bound Views window.
+  if (!shutdown_requested_ || !main_message_loop_quit_closure_) {
+    return;
+  }
+
+  if (browser_window_lifecycle_) {
+    if (!browser_window_shutdown_started_) {
+      browser_window_shutdown_started_ = true;
+      browser_window_lifecycle_->BeginShutdown(base::BindOnce(
+          &WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete,
+          weak_ptr_factory_.GetWeakPtr()));
+    }
+    return;
+  }
+
+  FinishShutdown();
+}
+
+void WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete() {
+  CHECK(browser_window_lifecycle_);
+  CHECK(browser_window_shutdown_started_);
+  CHECK(browser_window_lifecycle_->IsShutdownComplete());
+  browser_window_lifecycle_.reset();
+  FinishShutdown();
+}
+
+void WasmBrowserMainParts::FinishShutdown() {
+  CHECK(shutdown_requested_);
+  CHECK(!browser_window_lifecycle_);
   if (main_message_loop_quit_closure_) {
     main_message_loop_quit_closure_.Run();
   }
@@ -312,6 +365,12 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     return;
   }
   foundation_shutdown_ = true;
+
+  // Profile's interlocked keyed-service shutdown includes BrowserManagerService.
+  // Never let it be the mechanism that destroys a Core still bound to the
+  // Views host: the lifecycle's physical-destruction barrier must have run
+  // while the UI loop and profile were still live.
+  CHECK(!browser_window_lifecycle_);
 
   if (profile_) {
     profile_->Shutdown();

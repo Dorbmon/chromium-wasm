@@ -290,9 +290,10 @@ source_set("wasm_default_theme_provider") {
 # BrowserWidget is the narrow point that turns the content-only BrowserView
 # into a real Views Widget backed by BrowserNativeWidgetWasm. It deliberately
 # uses generic RootView and FrameView rather than BrowserRootView or
-# BrowserFrameView, and is never wired into Browser::Create. Only the explicit
-# BrowserView smoke reaches it through chrome_wasm until close/unload/modal and
-# BrowserWindowFeatures lifecycles are complete.
+# BrowserFrameView, and is never wired into Browser::Create. It is reached only
+# by the explicit BrowserView composition smoke and the bounded browser-main
+# shutdown lifecycle, until general close/unload/modal and BrowserWindowFeatures
+# lifecycles are complete.
 source_set("wasm_browser_widget") {
   assert(use_aura && use_ozone && toolkit_views)
 
@@ -687,14 +688,18 @@ source_set("wasm_browser_window_core") {
 # The bounded Views-side owner binds a Core to one content-only BrowserView and
 # BrowserWidget. The Core retains BrowserWindowInterface, profile, model, and
 # BrowserWindowFeatures ownership; this host never creates or owns a tab or
-# WebContents. It stays source-selected only by the explicit composition smoke
-# until a joined Browser/window lifecycle can retain it through shutdown.
+# WebContents. It is source-selected only by the explicit composition smoke and
+# the one browser-main lifecycle smoke that retains it through physical manager
+# destruction; neither admits a general Browser/window lifecycle.
 source_set("wasm_browser_window_view_host") {
   public = [ "wasm_browser_window_view_host.h" ]
 
   sources = [ "wasm_browser_window_view_host.cc" ]
 
-  visibility = [ ":wasm_browser_window_view_smoke" ]
+  visibility = [
+    ":wasm_browser_window_lifecycle",
+    ":wasm_browser_window_view_smoke",
+  ]
 
   public_deps = [
     "//base",
@@ -705,6 +710,31 @@ source_set("wasm_browser_window_view_host") {
     ":wasm_browser_view",
     ":wasm_browser_widget",
     ":wasm_browser_window_core",
+  ]
+}
+
+# This switch-gated lifecycle owner proves that browser-main can retain one
+# bounded Core/View host through its asynchronous destruction before profile
+# shutdown. It creates one about:blank model tab solely to exercise the current
+# no-unload close path; it neither selects Browser::Create nor a general Chrome
+# browser-window lifecycle.
+source_set("wasm_browser_window_lifecycle") {
+  public = [ "wasm_browser_window_lifecycle.h" ]
+
+  sources = [ "wasm_browser_window_lifecycle.cc" ]
+
+  visibility = [ ":wasm_browser_main_parts" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [
+    ":wasm_browser_manager",
+    ":wasm_browser_view",
+    ":wasm_browser_window_core",
+    ":wasm_browser_window_view_host",
+    ":wasm_profile",
+    ":wasm_tab_core",
+    "//content/public/browser",
   ]
 }
 
@@ -997,6 +1027,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_view_smoke",
     ":wasm_tab_core_smoke",
     ":wasm_browser_window_core_smoke",
+    ":wasm_browser_window_lifecycle",
     ":wasm_browser_window_view_smoke",
     ":wasm_chrome_paths",
     ":wasm_chrome_result_codes",

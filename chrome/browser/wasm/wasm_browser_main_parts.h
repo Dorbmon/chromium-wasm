@@ -14,6 +14,10 @@
 class WasmBrowserProcess;
 class WasmProfile;
 
+namespace chrome {
+class WasmBrowserWindowLifecycle;
+}
+
 namespace display {
 class Screen;
 }
@@ -51,11 +55,15 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
  private:
   bool PreflightResources();
   void RequestShutdown();
+  void MaybeStartShutdown();
+  void OnBrowserWindowLifecycleShutdownComplete();
+  void FinishShutdown();
   void ShutdownFoundation();
 
   bool resource_bundle_initialized_ = false;
   bool ozone_main_loop_initialized_ = false;
   bool shutdown_requested_ = false;
+  bool browser_window_shutdown_started_ = false;
   bool foundation_shutdown_ = false;
   base::RepeatingClosure main_message_loop_quit_closure_;
 
@@ -71,6 +79,12 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   // g_browser_process is cleared.
   std::unique_ptr<WasmBrowserProcess> browser_process_;
   std::unique_ptr<WasmProfile> profile_;
+
+  // This is declared after |profile_| so its destructor runs first. It keeps
+  // the Views host alive until BrowserManagerService has physically destroyed
+  // the manager-owned Core, before profile keyed-service shutdown begins.
+  std::unique_ptr<chrome::WasmBrowserWindowLifecycle>
+      browser_window_lifecycle_;
 
   // Ozone retains the shutdown callback it receives at main-loop creation.
   // Keep this last so callbacks become inert before other state is destroyed.

@@ -142,12 +142,37 @@ void BrowserManagerService::DeleteBrowser(
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
+void BrowserManagerService::RunWhenBrowserDestructionsCompleteForWasm(
+    base::OnceClosure callback) {
+  CHECK(callback);
+  CHECK(browsers_and_subscriptions_for_testing_.empty());
+  browser_destruction_callbacks_.push_back(std::move(callback));
+  MaybeRunBrowserDestructionCallbacksForWasm();
+}
+
 void BrowserManagerService::DestroyPendingBrowserDestructions() {
   // Each BrowserAndSubscriptions declares `browser` last, so clearing this
   // container releases every BrowserWindowInterface before its callback
   // subscriptions. This runs only after did-close callback dispatch returns,
   // or synchronously during keyed-service shutdown while Profile is valid.
   pending_browser_destructions_.clear();
+  MaybeRunBrowserDestructionCallbacksForWasm();
+}
+
+void BrowserManagerService::MaybeRunBrowserDestructionCallbacksForWasm() {
+  // IsEmpty() is intentionally insufficient here: it hides delete-scheduled
+  // entries before |pending_browser_destructions_| has physically destroyed
+  // their BrowserWindowInterface and invalidated its weak pointers.
+  if (!browsers_and_subscriptions_.empty() ||
+      !pending_browser_destructions_.empty()) {
+    return;
+  }
+
+  std::vector<base::OnceClosure> callbacks =
+      std::move(browser_destruction_callbacks_);
+  for (base::OnceClosure& callback : callbacks) {
+    std::move(callback).Run();
+  }
 }
 
 void BrowserManagerService::AddBrowserForTesting(
