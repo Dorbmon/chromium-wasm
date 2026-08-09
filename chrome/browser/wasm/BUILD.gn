@@ -533,6 +533,36 @@ source_set("wasm_session_tab_helper") {
   ]
 }
 
+# The first Wasm tab object needs the canonical TabStripModelDelegate interface
+# but not the desktop //chrome/browser/ui/tabs targets, which assert a native
+# platform and pull the full tab/menu/session graph. This object-only delegate
+# is intentionally unwired: it supplies a real TYPE_NORMAL window identity,
+# while all mutation, closing, and WebContents-helper policy remains outside
+# the source closure until a joined Wasm tab-core lifecycle owns it.
+source_set("wasm_tab_bootstrap_delegate") {
+  public = [
+    "../ui/tabs/tab_strip_model_delegate.h",
+    "wasm_tab_bootstrap_delegate.h",
+  ]
+
+  sources = [ "wasm_tab_bootstrap_delegate.cc" ]
+
+  # The canonical delegate header's complete public closure. Do not depend on
+  # //chrome/browser/ui/tabs:tab_strip: its build file rejects Wasm.
+  public_deps = [
+    "//base",
+    "//chrome/common:buildflags",
+    "//components/sessions:session_id",
+    "//components/split_tabs",
+    "//components/tab_groups",
+    "//components/tabs:public",
+  ]
+
+  deps = [
+    "//chrome/browser/ui/browser_window",
+  ]
+}
+
 # The first Wasm tab core source-selects Chromium's real TabModel, tab
 # collection, observer, and selection ownership without admitting the desktop
 # tabs aggregate. Its only current consumer is the opt-in process-local smoke
