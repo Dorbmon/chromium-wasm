@@ -57,6 +57,21 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
             with self.subTest(member=member):
                 self.assertIn(member, header)
 
+        self.assertIn(
+            "void NotifyActiveTabDidChangeForWasmSmoke();", header
+        )
+        self.assertIn(
+            "active_tab_changed_callbacks_.Notify(this);", implementation
+        )
+        self.assertIn(
+            "raw_ptr<tabs::TabInterface> last_notified_active_tab_ = nullptr;",
+            header,
+        )
+        self.assertIn(
+            "CHECK_NE(active_tab, last_notified_active_tab_.get());",
+            implementation,
+        )
+
         order = (
             "std::make_unique<chrome::WasmTabBootstrapDelegate>(this)",
             "std::make_unique<TabStripModel>(",
@@ -150,6 +165,14 @@ class M6WasmBrowserWindowCoreContractTest(unittest.TestCase):
         )
         smoke_positions = [smoke.index(item) for item in smoke_order]
         self.assertEqual(smoke_positions, sorted(smoke_positions))
+        weak_capture = smoke.index(
+            "base::WeakPtr<BrowserWindowInterface> weak_core = "
+            "raw_core->GetWeakPtr();"
+        )
+        close_call = smoke.index("raw_core->CloseForWasmBrowserWindowCoreSmoke();")
+        self.assertLess(weak_capture, close_call)
+        self.assertNotIn("raw_core->", smoke[close_call + 1 :])
+        self.assertIn("if (core) {", smoke)
         self.assertIn("CHECK(browser_manager->IsEmpty());", smoke)
         self.assertIn("CHECK(global_collection->IsEmpty());", smoke)
         self.assertIn(

@@ -535,11 +535,11 @@ source_set("wasm_session_tab_helper") {
 
 # The first Wasm tab object needs the canonical TabStripModelDelegate interface
 # but not the desktop //chrome/browser/ui/tabs targets, which assert a native
-# platform and pull the full tab/menu/session graph. This object-only delegate
-# is selected only by the empty BrowserWindowInterface lifecycle smoke: it
-# supplies a real TYPE_NORMAL window identity, while all mutation, closing,
-# and WebContents-helper policy remains outside the source closure until a
-# joined Wasm tab-core lifecycle owns it.
+# platform and pull the full tab/menu/session graph. This delegate is selected
+# only by explicit BrowserWindowInterface smoke targets: it supplies a real
+# TYPE_NORMAL window identity, while all general mutation, closing, and
+# WebContents-helper policy remains outside the source closure until a joined
+# Wasm tab-core lifecycle owns it.
 source_set("wasm_tab_bootstrap_delegate") {
   public = [
     "../ui/tabs/tab_strip_model_delegate.h",
@@ -615,8 +615,9 @@ source_set("wasm_tab_core") {
 
 # This opt-in owner proves that the selected tab and BrowserWindowFeatures
 # lifecycles can be registered with BrowserManagerService before a BrowserView
-# exists. It deliberately owns an empty model only: navigation, modal hosting,
-# and Browser-backed close semantics remain outside this source closure.
+# exists. Its initial model is empty; only an explicit smoke may briefly own
+# the bounded no-unload tab. Navigation, modal hosting, and Browser-backed
+# close semantics remain outside this source closure.
 source_set("wasm_browser_window_core") {
   public = [ "wasm_browser_window_core.h" ]
 
@@ -674,6 +675,33 @@ source_set("wasm_browser_window_core_smoke") {
     ":wasm_tab_core",
     "//base",
     "//content/public/browser",
+  ]
+}
+
+# This opt-in composition smoke owns one real model tab through the selected
+# BrowserWindowInterface, relays it into the structural BrowserView, and closes
+# it through the bounded no-unload path. It does not create Browser, bind a
+# BaseWindow to the interface, or admit browser-modal UI/navigation lifecycles.
+source_set("wasm_browser_window_view_smoke") {
+  public = [ "wasm_browser_window_view_smoke.h" ]
+
+  sources = [ "wasm_browser_window_view_smoke.cc" ]
+
+  deps = [
+    ":wasm_browser_manager",
+    ":wasm_browser_view",
+    ":wasm_browser_widget",
+    ":wasm_browser_window_core",
+    ":wasm_browser_window_features",
+    ":wasm_profile",
+    ":wasm_tab_core",
+    "//base",
+    "//components/tabs:public",
+    "//components/web_modal",
+    "//content/public/browser",
+    "//ui/display",
+    "//ui/gfx/geometry",
+    "//ui/views",
   ]
 }
 
@@ -891,6 +919,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_view_smoke",
     ":wasm_tab_core_smoke",
     ":wasm_browser_window_core_smoke",
+    ":wasm_browser_window_view_smoke",
     ":wasm_chrome_paths",
     ":wasm_chrome_result_codes",
     ":wasm_profile",

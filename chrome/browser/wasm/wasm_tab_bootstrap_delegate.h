@@ -25,7 +25,7 @@ namespace chrome {
 // Browser/TabStripModel lifecycles are selected.
 //
 // The BrowserWindowInterface must outlive this delegate. It is currently wired
-// only by the empty BrowserWindowInterface lifecycle smoke; a future
+// only by explicit Wasm BrowserWindowInterface smoke targets; a future
 // TYPE_NORMAL Browser owns both objects and supplies the interface at
 // construction.
 class WasmTabBootstrapDelegate : public TabStripModelDelegate {

@@ -153,8 +153,17 @@ bool WasmTabBootstrapDelegate::RunUnloadListenerBeforeClosing(
 }
 
 bool WasmTabBootstrapDelegate::ShouldRunUnloadListenerBeforeClosing(
-    content::WebContents* /*contents*/) {
-  UnsupportedTabBootstrapOperation("tab close beforeunload handling");
+    content::WebContents* contents) {
+  CHECK(contents);
+  CHECK(!contents->NeedToFireBeforeUnloadOrUnloadEvents())
+      << "Wasm tab bootstrap does not support asynchronous beforeunload or "
+         "unload handling";
+
+  // The bounded TabStripModel close path has already established that the
+  // one initial tab has no pending beforeunload or unload work. Do not ask for
+  // a delegate-owned asynchronous close sequence that this source-selected
+  // bootstrap deliberately does not implement.
+  return false;
 }
 
 bool WasmTabBootstrapDelegate::CanReload() const {

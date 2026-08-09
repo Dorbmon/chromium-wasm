@@ -35,10 +35,11 @@ class WebContentsModalDialogHost;
 }  // namespace web_modal
 
 // A process-local BrowserWindowInterface owner for the opt-in Wasm lifecycle
-// smoke. It owns the real, source-selected empty tab model and
+// smoke. It owns the real, source-selected tab model and
 // BrowserWindowFeatures setup, but deliberately has no Browser, BrowserView,
-// or BaseWindow yet. It must not be used as a substitute for the joined live
-// browser/window close lifecycle.
+// or BaseWindow yet. Its initial state is empty; explicit smoke targets may
+// briefly add the bounded no-unload tab. It must not be used as a substitute
+// for the joined live browser/window close lifecycle.
 class WasmBrowserWindowCore final : public BrowserWindowInterface {
  public:
   explicit WasmBrowserWindowCore(Profile* profile);
@@ -49,6 +50,12 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   // Completes the empty-model ownership proof. A future live close path must
   // replace this with real modal, unload, and BrowserView teardown ordering.
   void CloseForWasmBrowserWindowCoreSmoke();
+
+  // Dispatches the BrowserWindowInterface active-tab callback after an
+  // opt-in smoke has attached or detached the model-owned WebContents from
+  // its Views host. This is deliberately not a BrowserView ownership API: the
+  // first joined browser/window lifecycle must own that relation directly.
+  void NotifyActiveTabDidChangeForWasmSmoke();
 
   // BrowserWindowInterface:
   ui::UnownedUserDataHost& GetUnownedUserDataHost() override;
@@ -129,6 +136,7 @@ class WasmBrowserWindowCore final : public BrowserWindowInterface {
   DidBecomeInactiveCallbackList did_become_inactive_callbacks_;
 
   std::unique_ptr<BrowserWindowFeatures> features_;
+  raw_ptr<tabs::TabInterface> last_notified_active_tab_ = nullptr;
   bool is_delete_scheduled_ = false;
   bool is_active_ = false;
 

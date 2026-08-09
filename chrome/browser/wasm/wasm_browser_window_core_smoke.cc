@@ -10,6 +10,7 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -90,21 +91,24 @@ bool RunWasmBrowserWindowCoreSmoke(WasmProfile* profile) {
       raw_core->RegisterBrowserDidClose(base::BindRepeating(
           &OnBrowserWindowCoreClosed, base::Unretained(&close_state)));
 
+  // A collection observer may elect to delete the core from its did-close
+  // callback. Retain only a weak reference across that notification.
+  base::WeakPtr<BrowserWindowInterface> weak_core = raw_core->GetWeakPtr();
   raw_core->CloseForWasmBrowserWindowCoreSmoke();
   CHECK(close_state.did_close);
-  CHECK(raw_core->IsDeleteScheduled());
+  CHECK(!weak_core || weak_core->IsDeleteScheduled());
   CHECK(browser_manager->IsEmpty());
   CHECK(global_collection->IsEmpty());
 
-  base::WeakPtr<BrowserWindowInterface> weak_core = raw_core->GetWeakPtr();
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(
           [](BrowserManagerService* browser_manager,
              base::WeakPtr<BrowserWindowInterface> core) {
             CHECK(browser_manager);
-            CHECK(core);
-            browser_manager->DeleteBrowser(core.get());
+            if (core) {
+              browser_manager->DeleteBrowser(core.get());
+            }
           },
           base::Unretained(browser_manager), weak_core));
   base::RunLoop().RunUntilIdle();

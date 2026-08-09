@@ -67,6 +67,18 @@ void WasmBrowserWindowCore::CloseForWasmBrowserWindowCoreSmoke() {
   NotifyBrowserDidClose();
 }
 
+void WasmBrowserWindowCore::NotifyActiveTabDidChangeForWasmSmoke() {
+  CHECK(tab_strip_model_);
+  CHECK(!is_delete_scheduled_);
+
+  // This smoke-only relay must reflect a real TabStripModel selection change,
+  // rather than manufacture duplicate or stale BrowserWindowInterface events.
+  tabs::TabInterface* const active_tab = GetActiveTabInterface();
+  CHECK_NE(active_tab, last_notified_active_tab_.get());
+  last_notified_active_tab_ = active_tab;
+  active_tab_changed_callbacks_.Notify(this);
+}
+
 ui::UnownedUserDataHost& WasmBrowserWindowCore::GetUnownedUserDataHost() {
   return unowned_user_data_host_;
 }

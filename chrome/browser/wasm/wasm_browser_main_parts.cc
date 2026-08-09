@@ -23,6 +23,7 @@
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_core_smoke.h"
+#include "chrome/browser/wasm/wasm_browser_window_view_smoke.h"
 #include "chrome/browser/wasm/wasm_tab_core_smoke.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_result_codes.h"
@@ -60,6 +61,8 @@ constexpr char kLocale[] = "en-US";
 constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
 constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
     "wasm-browser-window-core-smoke";
+constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
+    "wasm-browser-window-view-smoke";
 constexpr char kWasmTabCoreSmokeSwitch[] = "wasm-tab-core-smoke";
 constexpr char kRequiredAssets[][24] = {
     "chrome_100_percent.pak",
@@ -204,6 +207,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
           kWasmBrowserWindowCoreSmokeSwitch)) {
     if (!chrome::RunWasmBrowserWindowCoreSmoke(profile_.get())) {
       LOG(ERROR) << "chrome_wasm Wasm BrowserWindowInterface core smoke failed";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+
+  // This test-only switch binds one real model-owned WebContents to the
+  // structural BrowserView, verifies active-tab relay and bounded close
+  // ordering, then releases both owners. It deliberately creates no Browser
+  // and leaves BrowserWindowInterface without a BaseWindow binding.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserWindowViewSmokeSwitch)) {
+    if (!chrome::RunWasmBrowserWindowViewSmoke(profile_.get())) {
+      LOG(ERROR) << "chrome_wasm Wasm BrowserWindow/View smoke failed";
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
     RequestShutdown();

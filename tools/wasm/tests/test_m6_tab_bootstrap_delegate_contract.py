@@ -107,7 +107,6 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
             "moving tabs between windows",
             "moving tabs to a new window",
             "tab close unload handling",
-            "tab close beforeunload handling",
             "Read Later",
             "copying tab URLs",
             "Glic",
@@ -133,7 +132,27 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
         self.assertNotIn("std::move(close_callback).Run()", implementation)
         self.assertNotIn("std::move(callback).Run()", implementation)
 
-    def test_target_is_narrow_and_selected_only_by_the_core_smoke(self) -> None:
+        # The one selected core/view smoke reaches the strict immediate-close
+        # path only after TabStripModel has rejected pending unload work. The
+        # delegate must never manufacture an asynchronous close success.
+        no_unload = re.search(
+            r"bool WasmTabBootstrapDelegate::ShouldRunUnloadListenerBeforeClosing\(\s*"
+            r"content::WebContents\* contents\) \{(?P<body>.*?)\n\}",
+            implementation,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(no_unload)
+        body = no_unload.group("body")
+        self.assertIn("CHECK(contents);", body)
+        self.assertIn(
+            "CHECK(!contents->NeedToFireBeforeUnloadOrUnloadEvents())", body
+        )
+        self.assertIn("return false;", body)
+        self.assertNotIn("RunUnloadListenerBeforeClosing(contents)", body)
+
+    def test_target_is_narrow_and_selected_only_by_core_smoke_targets(
+        self,
+    ) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")
         target = _source_set_body(wasm_build, "wasm_tab_bootstrap_delegate")
 
