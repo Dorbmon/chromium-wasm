@@ -163,7 +163,7 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
         self.assertIn("BrowserCommandController", body)
         self.assertIn("return false;", body)
 
-    def test_target_is_narrow_and_selected_only_by_core_smoke_targets(
+    def test_target_is_narrow_and_selected_only_by_bounded_wasm_owners(
         self,
     ) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")
@@ -196,10 +196,16 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-        self.assertEqual(1, wasm_build.count('":wasm_tab_bootstrap_delegate",'))
+        # The source-selected Browser owns the same bounded one-tab delegate;
+        # it is not a route into desktop tab-strip/UI ownership.
+        self.assertEqual(2, wasm_build.count('":wasm_tab_bootstrap_delegate",'))
         self.assertIn(
             '":wasm_tab_bootstrap_delegate",',
             _source_set_body(wasm_build, "wasm_browser_window_core"),
+        )
+        self.assertIn(
+            '":wasm_tab_bootstrap_delegate",',
+            _source_set_body(wasm_build, "wasm_browser"),
         )
         self.assertNotIn(
             '":wasm_tab_bootstrap_delegate",',

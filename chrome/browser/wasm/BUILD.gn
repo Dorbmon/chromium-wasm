@@ -343,6 +343,59 @@ source_set("wasm_browser_window_factory") {
   ]
 }
 
+# This is the first source-selected real Browser owner. It keeps the desktop
+# Browser implementation and its broad UI/session/unload graph out of the
+# Wasm closure, while owning one normal BrowserWindow through the standard
+# BrowserWindowDeleter seam. It is reached only by the explicit Browser smoke
+# until ordinary startup owns the complete close/unload/modal lifecycle.
+source_set("wasm_browser") {
+  public = [
+    "wasm_browser.h",
+  ]
+
+  sources = [ "wasm_browser.cc" ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//components/sessions:session_id",
+    "//ui/base/unowned_user_data",
+  ]
+
+  deps = [
+    ":wasm_browser_manager",
+    ":wasm_browser_process",
+    ":wasm_browser_window_factory",
+    ":wasm_browser_window_features",
+    ":wasm_tab_bootstrap_delegate",
+    ":wasm_tab_core",
+    "//chrome/browser/profiles:profile",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/views",
+  ]
+}
+
+# This runtime proof owns a real Browser through BrowserManagerService, then
+# appends and closes its one selected tab through BrowserWindowDeleter. It is
+# intentionally not ordinary Chrome startup or a general Browser lifecycle.
+source_set("wasm_browser_smoke") {
+  public = [ "wasm_browser_smoke.h" ]
+
+  sources = [ "wasm_browser_smoke.cc" ]
+
+  deps = [
+    ":wasm_browser",
+    ":wasm_browser_manager",
+    ":wasm_browser_view",
+    ":wasm_profile",
+    ":wasm_tab_core",
+    "//base",
+    "//content/public/browser",
+    "//ui/gfx/geometry",
+  ]
+}
+
 # This test-only composition proof is selected only by
 # --wasm-browser-view-smoke in WasmBrowserMainParts. It creates one null-
 # Browser BrowserView, one BrowserWidget, and one externally-owned
@@ -1048,6 +1101,7 @@ source_set("wasm_browser_main_parts") {
 
   deps = [
     ":wasm_browser_manager",
+    ":wasm_browser_smoke",
     ":wasm_browser_process",
     ":wasm_browser_toolkit",
     ":wasm_browser_view_smoke",

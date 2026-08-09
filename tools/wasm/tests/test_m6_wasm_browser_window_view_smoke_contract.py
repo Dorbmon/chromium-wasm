@@ -61,7 +61,7 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             ": public views::WidgetObserver",
             host_header,
         )
-        self.assertIn("SetWasmCloseRequestCallbackForSmoke", host_implementation)
+        self.assertIn("SetWasmCloseRequestCallback", host_implementation)
         self.assertIn("OnCloseRequested", host_implementation)
         self.assertIn(
             "return views::CloseRequestResult::kCannotClose;",

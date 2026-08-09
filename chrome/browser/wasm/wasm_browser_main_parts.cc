@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/color/chrome_color_mixers.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
+#include "chrome/browser/wasm/wasm_browser_smoke.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_core_smoke.h"
@@ -64,6 +65,7 @@ constexpr char kLocale[] = "en-US";
 constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
 constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
     "wasm-browser-window-core-smoke";
+constexpr char kWasmBrowserSmokeSwitch[] = "wasm-browser-smoke";
 constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
     "wasm-browser-window-view-smoke";
 constexpr char kWasmBrowserWindowLifecycleSmokeSwitch[] =
@@ -208,6 +210,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // retrieve this same manager when the real window lifecycle is selected.
   CHECK(BrowserManagerServiceFactory::GetForProfile(profile_.get()));
 
+  // This switch-gated proof creates the first real Wasm Browser through the
+  // normal BrowserWindow factory/deleter seam, attaches one model-owned tab,
+  // then verifies the ordered BrowserWindowFeatures and manager destruction
+  // path. It remains deliberately narrower than ordinary Chrome startup.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserSmokeSwitch)) {
+    if (!chrome::RunWasmBrowserSmoke(profile_.get())) {
+      LOG(ERROR) << "chrome_wasm Wasm Browser smoke failed";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+
   // This test-only switch registers an empty source-selected
   // BrowserWindowInterface with the real manager and feature UDD lifecycles,
   // then proves its close notification and asynchronous destruction order.
@@ -284,10 +300,11 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 
-  // Browser::Create() currently requires a keyed BrowserManagerService graph.
-  // Launching it before the corresponding source-selected shutdown sequence
-  // exists would risk profile/data corruption. Fail explicitly rather than
-  // keeping the host page alive without a real Chrome browser window.
+  // The explicit Browser smoke above proves only its bounded create/close
+  // lifecycle. Ordinary startup still lacks a persistent owner that can keep
+  // a Browser alive, arbitrate host close, and drain physical destruction
+  // before profile shutdown. Fail explicitly instead of presenting that probe
+  // as a general Chrome browser window.
   LOG(ERROR)
       << "chrome_wasm M6 foundation initialized, but the source-selected "
          "Chrome Views browser lifecycle is not available yet";
@@ -333,6 +350,12 @@ void WasmBrowserMainParts::RequestShutdown() {
     return;
   }
   shutdown_requested_ = true;
+  // Creation status uses BrowserProcess shutdown state. Set it as soon as
+  // shutdown is requested so no bounded Browser can be admitted while a
+  // lifecycle is draining its non-nestable close work.
+  if (browser_process_) {
+    browser_process_->EndSession();
+  }
   MaybeStartShutdown();
 }
 
@@ -423,12 +446,14 @@ void WasmBrowserMainParts::ShutdownFoundation() {
   // while the UI loop and profile were still live.
   CHECK(!browser_window_lifecycle_);
 
+  if (browser_process_) {
+    browser_process_->EndSession();
+  }
   if (profile_) {
     profile_->Shutdown();
     profile_.reset();
   }
   if (browser_process_) {
-    browser_process_->EndSession();
     browser_process_.reset();
   }
   if (resource_bundle_initialized_) {

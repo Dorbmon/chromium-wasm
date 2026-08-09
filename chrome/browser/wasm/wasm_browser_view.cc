@@ -63,7 +63,7 @@ BrowserWidget* BrowserView::browser_widget() const {
   return browser_widget_.get();
 }
 
-void BrowserView::SetWasmCloseRequestCallbackForSmoke(
+void BrowserView::SetWasmCloseRequestCallback(
     base::RepeatingCallback<views::CloseRequestResult()> callback) {
   CHECK(callback);
   CHECK(!wasm_close_request_callback_);

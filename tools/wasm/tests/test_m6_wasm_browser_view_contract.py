@@ -106,7 +106,7 @@ class M6WasmBrowserViewContractTest(unittest.TestCase):
             "raw_ptr<views::WebView> contents_web_view_ = nullptr;",
             "raw_ptr<content::WebContents> active_web_contents_ = nullptr;",
             "std::unique_ptr<WasmTabModalDialogHost> tab_modal_dialog_host_;",
-            "SetWasmCloseRequestCallbackForSmoke",
+            "SetWasmCloseRequestCallback",
             "base::RepeatingCallback<views::CloseRequestResult()>",
             "wasm_close_request_callback_",
             "OnActiveTabChanged",
@@ -122,7 +122,7 @@ class M6WasmBrowserViewContractTest(unittest.TestCase):
         self.assertIn("AddWebContentsDetachedCallback", implementation)
         self.assertIn("contents_web_view_->SetWebContents(new_contents);", implementation)
         self.assertIn("contents_web_view_->SetWebContents(nullptr);", implementation)
-        self.assertIn("SetWasmCloseRequestCallbackForSmoke", implementation)
+        self.assertIn("SetWasmCloseRequestCallback", implementation)
         self.assertIn("CHECK(wasm_close_request_callback_)", implementation)
         self.assertGreaterEqual(
             implementation.count("wasm_close_request_callback_.Run()"), 2
@@ -133,7 +133,7 @@ class M6WasmBrowserViewContractTest(unittest.TestCase):
         # into the joined Core close lifecycle.
         structural_smoke = source("chrome/browser/wasm/wasm_browser_view_smoke.cc")
         self.assertNotIn(
-            "SetWasmCloseRequestCallbackForSmoke", structural_smoke
+            "SetWasmCloseRequestCallback", structural_smoke
         )
 
         # A browser-created WebContents or Browser lifecycle call would violate

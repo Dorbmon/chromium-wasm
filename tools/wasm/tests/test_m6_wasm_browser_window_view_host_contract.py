@@ -68,7 +68,7 @@ class M6WasmBrowserWindowViewHostContractTest(unittest.TestCase):
             "std::make_unique<BrowserWidget>(browser_view)",
             "widget->InitBrowserWidget();",
             "widget_observation_.Observe(widget);",
-            "SetWasmCloseRequestCallbackForSmoke",
+            "SetWasmCloseRequestCallback",
             "BindWindowForWasmBrowserWindowViewSmoke",
             "InitPostBrowserViewConstructionForWasmBrowserWindowViewSmoke",
             "OnWindowActivationChangedForWasmBrowserWindowViewSmoke",

@@ -5,6 +5,18 @@
 #ifndef CHROME_BROWSER_UI_BROWSER_H_
 #define CHROME_BROWSER_UI_BROWSER_H_
 
+#include "build/build_config.h"
+
+#if BUILDFLAG(IS_WASM)
+
+// The desktop Browser declaration pulls its complete Views, tab-strip,
+// unload, session, and platform-window graph. The Wasm target source-selects
+// a deliberately small BrowserWindowInterface owner instead, so this public
+// include resolves to the matching declaration on that platform.
+#include "chrome/browser/wasm/wasm_browser.h"
+
+#else  // BUILDFLAG(IS_WASM)
+
 #include <stdint.h>
 
 #include <map>
@@ -23,7 +35,6 @@
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/types/expected.h"
-#include "build/build_config.h"
 #include "chrome/browser/tab_contents/web_contents_collection.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
@@ -1272,5 +1283,7 @@ class Browser : public TabStripModelObserver,
   // The following factory is used to close the frame at a later time.
   base::WeakPtrFactory<Browser> weak_factory_{this};
 };
+
+#endif  // BUILDFLAG(IS_WASM)
 
 #endif  // CHROME_BROWSER_UI_BROWSER_H_

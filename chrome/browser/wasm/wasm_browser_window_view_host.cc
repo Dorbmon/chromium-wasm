@@ -52,7 +52,7 @@ void WasmBrowserWindowViewHost::Initialize() {
   widget_ = widget;
   widget_observation_.Observe(widget);
 
-  browser_view->SetWasmCloseRequestCallbackForSmoke(base::BindRepeating(
+  browser_view->SetWasmCloseRequestCallback(base::BindRepeating(
       &WasmBrowserWindowViewHost::OnCloseRequested, base::Unretained(this)));
 
   core_->BindWindowForWasmBrowserWindowViewSmoke(

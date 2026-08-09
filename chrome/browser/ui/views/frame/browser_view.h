@@ -67,11 +67,11 @@ class BrowserView final : public BrowserWindow,
   void set_browser_widget(std::unique_ptr<BrowserWidget> widget);
   BrowserWidget* browser_widget() const;
 
-  // Installs the explicitly switch-gated close coordinator for the bounded
-  // BrowserWindowInterface/View smoke. Without it, all close entry points
-  // remain unsupported so a structural BrowserView cannot strand a
-  // model-owned WebContents.
-  void SetWasmCloseRequestCallbackForSmoke(
+  // Installs the source-selected Wasm close coordinator. Without it, all
+  // close entry points remain unsupported so BrowserView cannot strand a
+  // model-owned WebContents. The bounded Core smoke and the slim Browser
+  // lifecycle both use this same callback boundary.
+  void SetWasmCloseRequestCallback(
       base::RepeatingCallback<views::CloseRequestResult()> callback);
 
   // True only while BrowserWindowDeleter is breaking a fully pre-closed
