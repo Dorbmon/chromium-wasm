@@ -73,7 +73,7 @@ class M6WasmTabCoreContractTest(unittest.TestCase):
             r"(?<!Chrome)SecurityStateTabHelper::CreateForWebContents",
         )
 
-    def test_wasm_model_disables_groups_and_limits_close_to_one_tab_with_an_explicit_unload_boundary(
+    def test_wasm_model_disables_groups_and_bounds_two_tab_close_with_an_explicit_unload_boundary(
         self,
     ) -> None:
         header = source("chrome/browser/ui/tabs/tab_strip_model.h")
@@ -88,12 +88,21 @@ class M6WasmTabCoreContractTest(unittest.TestCase):
         self.assertIn("does not support tab-group insertion", implementation)
         self.assertIn("CHECK(!closing_all_)", implementation)
         self.assertIn("does not insert tabs after CloseAllTabs", implementation)
-        self.assertIn("CHECK_EQ(count(), 0)", implementation)
-        self.assertIn("only supports its first tab insertion", implementation)
+        self.assertIn("constexpr int kWasmMaximumTabCount = 2;", implementation)
+        self.assertIn("CHECK_LT(count(), kWasmMaximumTabCount)", implementation)
+        self.assertIn("only supports two append-only tabs", implementation)
+        self.assertIn("CHECK_EQ(index, count())", implementation)
+        self.assertIn("does not support inserting or reordering tabs", implementation)
         self.assertIn("does not support pinned-tab insertion", implementation)
+        self.assertIn("void TabStripModel::ActivateTabAt", implementation)
+        self.assertIn("SetSelectedTab(new_selection, requested_tab);", implementation)
+        self.assertIn("does not switch tabs while modal UI is active", implementation)
         self.assertIn("void TabStripModel::CloseWebContentsAt", implementation)
         self.assertIn("void TabStripModel::CloseAllTabs()", implementation)
-        self.assertIn("Wasm tab core only supports closing its sole initial tab", implementation)
+        self.assertIn("bounded two-tab model", implementation)
+        self.assertIn("const bool notify_close_all = !closing_all_ && count() == 1;", implementation)
+        self.assertIn("const int index_to_close =", implementation)
+        self.assertIn("while (!empty())", implementation)
         self.assertIn(
             "does not support asynchronous beforeunload, unload", implementation
         )

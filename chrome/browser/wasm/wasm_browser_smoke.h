@@ -10,9 +10,9 @@ class WasmProfile;
 namespace chrome {
 
 // Exercises the first real manager-owned Wasm Browser: its BrowserWindow
-// factory, selected BrowserWindowFeatures, model-owned initial tab, and
-// ordered BrowserWindowDeleter/manager close path. This remains a one-tab,
-// no-unload/no-modal smoke, not ordinary Chrome startup.
+// factory, selected BrowserWindowFeatures, bounded two-tab model/view
+// transitions, and ordered BrowserWindowDeleter/manager close path. This
+// remains a no-unload/no-modal smoke, not ordinary Chrome startup.
 bool RunWasmBrowserSmoke(WasmProfile* profile);
 
 }  // namespace chrome

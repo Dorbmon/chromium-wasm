@@ -13,7 +13,7 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 
 
 class M6WasmTabCloseContractTest(unittest.TestCase):
-    def test_close_is_single_tab_immediate_and_preserves_notification_lifetime(
+    def test_close_is_bounded_two_tab_immediate_and_preserves_notification_lifetime(
         self,
     ) -> None:
         implementation = source("chrome/browser/wasm/wasm_tab_strip_model.cc")
@@ -21,27 +21,35 @@ class M6WasmTabCloseContractTest(unittest.TestCase):
         for expected in (
             "void TabStripModel::CloseWebContentsAt(int index, uint32_t close_types)",
             "CHECK_EQ(close_types, static_cast<uint32_t>(TabCloseTypes::CLOSE_NONE));",
-            "Wasm tab core only supports closing its sole initial tab",
+            "CHECK(ContainsIndex(index));",
+            "CHECK_LE(count(), kWasmMaximumTabCount);",
+            "bounded two-tab model",
             "NeedToFireBeforeUnloadOrUnloadEvents()",
             "delegate_->ShouldRunUnloadListenerBeforeClosing(contents)",
             "does not support asynchronous beforeunload, unload",
             "WebContentsModalDialogManager::FromWebContents(contents)",
             "does not close an active modal dialog",
             "reentrancy_guard_ = true;",
+            "const bool notify_close_all = !closing_all_ && count() == 1;",
             "observer.WillCloseAllTabs(this);",
             "tab->WillDetach(base::PassKey<TabStripModel>(),",
             "observer.OnTabWillBeRemoved(tab, index);",
             "tab->DestroyTabFeatures();",
             "contents_data_->RemoveTabAtIndexRecursive(index)",
             "detached_tab->OnRemovedFromModel();",
+            "else if (tab == old_active_tab)",
+            "SetSelectedTab(selection_model_,",
             "TabStripModelChange::Remove remove;",
             "OnChange(TabStripModelChange(std::move(remove)), selection);",
             "detached_tab.reset();",
+            "if (empty()) {",
             "observer.TabStripEmpty();",
             "observer.CloseAllTabsStopped(",
             "TabStripModelObserver::kCloseAllCompleted",
             "void TabStripModel::CloseAllTabs()",
             "closing_all_ = true;",
+            "const int index_to_close =",
+            "while (!empty())",
             "if (!closing_all_ && tab == old_active_tab)",
             "if (!closing_all_ && tab->IsVisible())",
         ):

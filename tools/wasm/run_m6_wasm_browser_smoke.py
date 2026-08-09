@@ -6,10 +6,11 @@
 """Run the manager-owned Wasm Browser smoke under pinned Node.
 
 The explicit --wasm-browser-smoke path first closes an empty source-selected
-Browser, then shows and closes its one-tab BrowserView through Aura/Ozone and
-the normal BrowserWindowDeleter/BrowserManagerService path. This mock-canvas
-harness requires terminal markers and host-side presentation evidence; a zero
-process exit alone cannot certify that the Browser-owned window was visible.
+Browser, then exercises bounded two-tab switching and close ordering in its
+Aura/Ozone BrowserView before the normal BrowserWindowDeleter/
+BrowserManagerService path. This mock-canvas harness requires terminal markers
+and host-side presentation evidence; a zero process exit alone cannot certify
+that the Browser-owned window was visible.
 """
 
 from __future__ import annotations

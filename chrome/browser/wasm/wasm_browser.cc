@@ -225,15 +225,15 @@ void Browser::OnWindowClosing() {
   CHECK(tab_strip_model_);
   close_requested_ = true;
   if (tab_strip_model_->empty()) {
-    // The strict factory may expose an empty Browser before its sole initial
+    // The strict factory may expose an empty Browser before its first initial
     // WebContents is appended. It still owns a real Widget/BWF graph, so
     // close through the same deferred teardown rather than stranding it.
     PostFinishClose();
     return;
   }
 
-  CHECK_EQ(tab_strip_model_->count(), 1)
-      << "Wasm Browser only closes its sole initial tab";
+  CHECK_LE(tab_strip_model_->count(), 2)
+      << "Wasm Browser only closes its bounded two-tab model";
   // TabStripModel enforces no beforeunload, no active modal, no history, and
   // no groups/splits. Do not make this Browser close path an acknowledgement
   // of a wider lifecycle than the model actually implements.
@@ -425,16 +425,19 @@ views::CloseRequestResult Browser::OnWindowCloseRequested() {
 }
 
 void Browser::OnTabWillBeRemoved(tabs::TabInterface* tab, int index) {
-  CHECK(close_requested_);
   CHECK(window_);
+  CHECK(tab_strip_model_);
   CHECK(tab);
-  CHECK_EQ(index, 0);
-  CHECK_EQ(tab, tab_strip_model_->GetActiveTab());
+  CHECK(tab_strip_model_->ContainsIndex(index));
+  CHECK_EQ(tab, tab_strip_model_->GetTabAtIndex(index));
+
+  const bool was_active = tab == tab_strip_model_->GetActiveTab();
 
   // The TabModel still owns the contents at this notification. Detach the
   // non-owning Views WebView before kRemoved observers and destruction can
-  // release it.
-  window_->OnTabDetached(tab->GetContents(), /*was_active=*/true);
+  // release it. Background-tab removal deliberately leaves the currently
+  // attached WebView alone.
+  window_->OnTabDetached(tab->GetContents(), was_active);
 }
 
 void Browser::OnTabStripModelChanged(
@@ -447,12 +450,11 @@ void Browser::OnTabStripModelChanged(
   }
 
   CHECK(window_);
-  if (selection.new_contents) {
-    CHECK(!selection.old_contents);
-    CHECK_EQ(selection.new_contents, tab_strip_model_->GetActiveWebContents());
-  } else {
+  CHECK_EQ(selection.new_contents, tab_strip_model_->GetActiveWebContents());
+  if (!selection.new_contents) {
     CHECK(selection.old_contents);
-    CHECK(!tab_strip_model_->GetActiveWebContents());
+  } else if (selection.old_contents) {
+    CHECK_NE(selection.old_contents, selection.new_contents);
   }
 
   // The BrowserView attachment is always updated before BrowserWindowInterface

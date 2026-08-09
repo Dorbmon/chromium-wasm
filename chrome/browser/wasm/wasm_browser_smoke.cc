@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -20,6 +21,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -38,8 +40,26 @@ constexpr base::TimeDelta kBrowserSmokeVisibleDuration = base::Milliseconds(250)
 
 struct BrowserSmokeState {
   BrowserWindowInterface* expected_browser = nullptr;
+  std::vector<content::WebContents*> expected_active_contents;
+  size_t active_tab_change_count = 0;
   bool did_close = false;
 };
+
+void OnActiveTabChanged(BrowserSmokeState* state,
+                        BrowserWindowInterface* browser) {
+  CHECK(state);
+  CHECK(browser);
+  CHECK_EQ(browser, state->expected_browser);
+  CHECK_LT(state->active_tab_change_count,
+           state->expected_active_contents.size());
+
+  tabs::TabInterface* const active_tab = browser->GetActiveTabInterface();
+  content::WebContents* const active_contents =
+      active_tab ? active_tab->GetContents() : nullptr;
+  CHECK_EQ(active_contents,
+           state->expected_active_contents[state->active_tab_change_count]);
+  ++state->active_tab_change_count;
+}
 
 void OnBrowserDidClose(BrowserSmokeState* state,
                        BrowserWindowInterface* browser) {
@@ -61,7 +81,7 @@ void CloseEmptyBrowserForSmoke(Profile* profile,
   CHECK(global_collection->IsEmpty());
 
   // Browser::Create deliberately exposes an empty model before a caller
-  // supplies the sole initial WebContents. Exercise that close edge first so
+  // supplies its first initial WebContents. Exercise that close edge first so
   // it cannot strand an initialized BrowserWidget/BWF graph.
   Browser::CreateParams params(profile, /*user_gesture=*/false);
   Browser* const raw_browser = Browser::Create(params);
@@ -105,19 +125,30 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(browser_view.GetBounds(), kBrowserSmokeBounds);
 
   content::WebContents::CreateParams create_params(profile);
-  std::unique_ptr<content::WebContents> contents =
+  std::unique_ptr<content::WebContents> first_contents =
       content::WebContents::Create(create_params);
-  CHECK(contents);
-  content::WebContents* const raw_contents = contents.get();
+  CHECK(first_contents);
+  content::WebContents* const raw_first_contents = first_contents.get();
   TabStripModel* const tab_strip_model = raw_browser->tab_strip_model();
   CHECK(tab_strip_model);
   CHECK(tab_strip_model->empty());
-  tab_strip_model->AppendWebContents(std::move(contents), /*foreground=*/true);
+  tab_strip_model->AppendWebContents(std::move(first_contents),
+                                     /*foreground=*/true);
   CHECK_EQ(tab_strip_model->count(), 1);
-  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_contents);
-  CHECK_EQ(browser_view.GetActiveWebContents(), raw_contents);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
   CHECK_EQ(raw_browser->GetActiveTabInterface(),
            tab_strip_model->GetActiveTab());
+
+  std::unique_ptr<content::WebContents> second_contents =
+      content::WebContents::Create(create_params);
+  CHECK(second_contents);
+  content::WebContents* const raw_second_contents = second_contents.get();
+  tab_strip_model->AppendWebContents(std::move(second_contents),
+                                     /*foreground=*/false);
+  CHECK_EQ(tab_strip_model->count(), 2);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
 
   browser_view.Show();
   CHECK(browser_view.IsVisible());
@@ -135,21 +166,73 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
 
   BrowserSmokeState state;
   state.expected_browser = raw_browser;
+  base::CallbackListSubscription active_tab_subscription =
+      raw_browser->RegisterActiveTabDidChange(
+          base::BindRepeating(&OnActiveTabChanged, &state));
   base::CallbackListSubscription close_subscription =
       raw_browser->RegisterBrowserDidClose(
           base::BindRepeating(&OnBrowserDidClose, &state));
   base::WeakPtr<Browser> weak_browser = raw_browser->AsWeakPtr();
 
+  // The model owns both WebContents while BrowserView owns only the selected
+  // native view. Verify an explicit switch, a background close, then an
+  // active close that selects and reattaches the surviving tab.
+  state.expected_active_contents.push_back(raw_second_contents);
+  tab_strip_model->ActivateTabAt(1);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(state.active_tab_change_count, 1u);
+
+  tab_strip_model->GetTabAtIndex(0)->Close();
+  CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(state.active_tab_change_count, 1u);
+
+  std::unique_ptr<content::WebContents> third_contents =
+      content::WebContents::Create(create_params);
+  CHECK(third_contents);
+  content::WebContents* const raw_third_contents = third_contents.get();
+  tab_strip_model->AppendWebContents(std::move(third_contents),
+                                     /*foreground=*/false);
+  CHECK_EQ(tab_strip_model->count(), 2);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+
+  state.expected_active_contents.push_back(raw_third_contents);
+  tab_strip_model->ActivateTabAt(1);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_third_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_third_contents);
+  CHECK_EQ(state.active_tab_change_count, 2u);
+
+  state.expected_active_contents.push_back(raw_second_contents);
+  tab_strip_model->GetTabAtIndex(1)->Close();
+  CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(state.active_tab_change_count, 3u);
+
+  std::unique_ptr<content::WebContents> fourth_contents =
+      content::WebContents::Create(create_params);
+  CHECK(fourth_contents);
+  tab_strip_model->AppendWebContents(std::move(fourth_contents),
+                                     /*foreground=*/false);
+  CHECK_EQ(tab_strip_model->count(), 2);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+
   // Exercise both BaseWindow close requests before the model's non-nestable
   // finish task runs. BrowserView must keep the Widget alive and absorb the
   // repeated request rather than letting client-owned native destruction race
   // tab removal.
+  state.expected_active_contents.push_back(nullptr);
   raw_browser->GetWindow()->Close();
   raw_browser->GetWindow()->Close();
   CHECK(weak_browser);
   CHECK(tab_strip_model->empty());
   CHECK(!raw_browser->IsDeleteScheduled());
   CHECK(!browser_view.GetActiveWebContents());
+  CHECK_EQ(state.active_tab_change_count,
+           state.expected_active_contents.size());
 
   base::RunLoop().RunUntilIdle();
 
