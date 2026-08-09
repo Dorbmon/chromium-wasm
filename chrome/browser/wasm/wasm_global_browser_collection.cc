@@ -118,7 +118,11 @@ GlobalBrowserCollection::GetPlatformDelegate() {
 
 BrowserWindowInterface* GlobalBrowserCollection::GetActiveBrowser() {
   BrowserWindowInterface* browser = GetLastActiveBrowser();
-  return (browser && browser->GetWindow()->IsActive()) ? browser : nullptr;
+  // A BrowserWindowInterface becomes globally visible before its BrowserView
+  // and BaseWindow are constructed. Treat that honest pre-widget state as not
+  // active rather than manufacturing a placeholder BaseWindow.
+  ui::BaseWindow* const window = browser ? browser->GetWindow() : nullptr;
+  return (window && window->IsActive()) ? browser : nullptr;
 }
 
 size_t GlobalBrowserCollection::GetIncognitoBrowserCount() {

@@ -133,7 +133,7 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
         self.assertNotIn("std::move(close_callback).Run()", implementation)
         self.assertNotIn("std::move(callback).Run()", implementation)
 
-    def test_target_is_narrow_and_unwired(self) -> None:
+    def test_target_is_narrow_and_selected_only_by_the_core_smoke(self) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")
         target = _source_set_body(wasm_build, "wasm_tab_bootstrap_delegate")
 
@@ -164,7 +164,15 @@ class M6TabBootstrapDelegateContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-        self.assertEqual(0, wasm_build.count('":wasm_tab_bootstrap_delegate",'))
+        self.assertEqual(1, wasm_build.count('":wasm_tab_bootstrap_delegate",'))
+        self.assertIn(
+            '":wasm_tab_bootstrap_delegate",',
+            _source_set_body(wasm_build, "wasm_browser_window_core"),
+        )
+        self.assertNotIn(
+            '":wasm_tab_bootstrap_delegate",',
+            _source_set_body(wasm_build, "wasm_browser_main_parts"),
+        )
         self.assertNotIn(
             ":wasm_tab_bootstrap_delegate", source("chrome/BUILD.gn")
         )

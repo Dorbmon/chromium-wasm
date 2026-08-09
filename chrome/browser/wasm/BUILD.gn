@@ -536,9 +536,10 @@ source_set("wasm_session_tab_helper") {
 # The first Wasm tab object needs the canonical TabStripModelDelegate interface
 # but not the desktop //chrome/browser/ui/tabs targets, which assert a native
 # platform and pull the full tab/menu/session graph. This object-only delegate
-# is intentionally unwired: it supplies a real TYPE_NORMAL window identity,
-# while all mutation, closing, and WebContents-helper policy remains outside
-# the source closure until a joined Wasm tab-core lifecycle owns it.
+# is selected only by the empty BrowserWindowInterface lifecycle smoke: it
+# supplies a real TYPE_NORMAL window identity, while all mutation, closing,
+# and WebContents-helper policy remains outside the source closure until a
+# joined Wasm tab-core lifecycle owns it.
 source_set("wasm_tab_bootstrap_delegate") {
   public = [
     "../ui/tabs/tab_strip_model_delegate.h",
@@ -565,8 +566,8 @@ source_set("wasm_tab_bootstrap_delegate") {
 
 # The first Wasm tab core source-selects Chromium's real TabModel, tab
 # collection, observer, and selection ownership without admitting the desktop
-# tabs aggregate. Its only current consumer is the opt-in process-local smoke
-# below; a live Browser still needs a BrowserView-backed modal host and joined
+# tabs aggregate. Its current consumers are opt-in process-local smoke targets;
+# a live Browser still needs a BrowserView-backed modal host and joined
 # close/unload lifecycle before it can create or destroy tabs at runtime.
 source_set("wasm_tab_core") {
   public = [
@@ -612,6 +613,30 @@ source_set("wasm_tab_core") {
   ]
 }
 
+# This opt-in owner proves that the selected tab and BrowserWindowFeatures
+# lifecycles can be registered with BrowserManagerService before a BrowserView
+# exists. It deliberately owns an empty model only: navigation, modal hosting,
+# and Browser-backed close semantics remain outside this source closure.
+source_set("wasm_browser_window_core") {
+  public = [ "wasm_browser_window_core.h" ]
+
+  sources = [ "wasm_browser_window_core.cc" ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//components/sessions:session_id",
+    "//ui/base/unowned_user_data",
+  ]
+
+  deps = [
+    ":wasm_browser_window_features",
+    ":wasm_tab_bootstrap_delegate",
+    ":wasm_tab_core",
+    "//components/tabs:public",
+  ]
+}
+
 # This narrow, process-local proof is reached only through the explicit
 # --wasm-tab-core-smoke switch in WasmBrowserMainParts. It exercises one real
 # WebContents insertion without constructing a Browser, BrowserView, or
@@ -630,6 +655,24 @@ source_set("wasm_tab_core_smoke") {
     "//base",
     "//components/security_state/content",
     "//components/web_modal",
+    "//content/public/browser",
+  ]
+}
+
+# This switch-gated lifecycle probe proves real BrowserManagerService and
+# GlobalBrowserCollection ownership for an empty BrowserWindowInterface. It
+# has no Browser, BrowserView, WebContents, or BaseWindow.
+source_set("wasm_browser_window_core_smoke") {
+  public = [ "wasm_browser_window_core_smoke.h" ]
+
+  sources = [ "wasm_browser_window_core_smoke.cc" ]
+
+  deps = [
+    ":wasm_browser_manager",
+    ":wasm_browser_window_core",
+    ":wasm_profile",
+    ":wasm_tab_core",
+    "//base",
     "//content/public/browser",
   ]
 }
@@ -720,8 +763,8 @@ source_set("wasm_window_feature_controllers") {
 # BrowserWindowFeatures normally owns the complete desktop window-controller
 # graph. The first Wasm implementation owns only the real normal-window
 # policy, animation, and BrowserElements UDD lifecycles required before
-# BrowserView construction, and intentionally remains unlinked from
-# chrome_wasm until the remaining controller lifecycle exists.
+# BrowserView construction. It is reachable only from explicit M6 smoke
+# targets until the remaining controller lifecycle exists.
 source_set("wasm_browser_window_features") {
   sources = [
     "wasm_browser_window_features.cc",
@@ -847,6 +890,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_toolkit",
     ":wasm_browser_view_smoke",
     ":wasm_tab_core_smoke",
+    ":wasm_browser_window_core_smoke",
     ":wasm_chrome_paths",
     ":wasm_chrome_result_codes",
     ":wasm_profile",

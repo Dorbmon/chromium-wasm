@@ -175,10 +175,22 @@ class M6WasmTabCoreContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-        self.assertEqual(1, wasm_build.count('":wasm_tab_core",'))
+        self.assertEqual(3, wasm_build.count('":wasm_tab_core",'))
         self.assertIn(
             '":wasm_tab_core",',
             _source_set_body(wasm_build, "wasm_tab_core_smoke"),
+        )
+        self.assertIn(
+            '":wasm_tab_core",',
+            _source_set_body(wasm_build, "wasm_browser_window_core"),
+        )
+        self.assertIn(
+            '":wasm_tab_core",',
+            _source_set_body(wasm_build, "wasm_browser_window_core_smoke"),
+        )
+        self.assertNotIn(
+            '":wasm_tab_core",',
+            _source_set_body(wasm_build, "wasm_browser_main_parts"),
         )
         self.assertNotIn(":wasm_tab_core", source("chrome/BUILD.gn"))
 
