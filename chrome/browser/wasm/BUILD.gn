@@ -817,6 +817,30 @@ source_set("wasm_browser_window_lifecycle") {
   ]
 }
 
+# This switch-gated lifecycle owner retains one real source-selected Browser
+# through a normal browser-main loop, then waits for BrowserManagerService's
+# physical-destruction turn before profile shutdown. It intentionally remains
+# one-window/one-tab and does not enable ordinary Chrome startup.
+source_set("wasm_browser_lifecycle") {
+  public = [ "wasm_browser_lifecycle.h" ]
+
+  sources = [ "wasm_browser_lifecycle.cc" ]
+
+  visibility = [ ":wasm_browser_main_parts" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [
+    ":wasm_browser",
+    ":wasm_browser_manager",
+    ":wasm_browser_view",
+    ":wasm_profile",
+    ":wasm_tab_core",
+    "//content/public/browser",
+    "//ui/gfx/geometry",
+  ]
+}
+
 # This narrow, process-local proof is reached only through the explicit
 # --wasm-tab-core-smoke switch in WasmBrowserMainParts. It exercises one real
 # WebContents insertion without constructing a Browser, BrowserView, or
@@ -1100,6 +1124,7 @@ source_set("wasm_browser_main_parts") {
   ]
 
   deps = [
+    ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
     ":wasm_browser_smoke",
     ":wasm_browser_process",

@@ -16,6 +16,7 @@ class WasmBrowserProcess;
 class WasmProfile;
 
 namespace chrome {
+class WasmBrowserLifecycle;
 class WasmBrowserWindowLifecycle;
 }
 
@@ -57,6 +58,9 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   bool PreflightResources();
   void RequestShutdown();
   void MaybeStartShutdown();
+  void StartBrowserLifecycleSmokeShutdownTimer();
+  void OnBrowserLifecycleSmokeShutdownTimer();
+  void OnBrowserLifecycleShutdownComplete();
   void StartBrowserWindowLifecycleSmokeShutdownTimer();
   void OnBrowserWindowLifecycleSmokeShutdownTimer();
   void OnBrowserWindowLifecycleShutdownComplete();
@@ -66,6 +70,8 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   bool resource_bundle_initialized_ = false;
   bool ozone_main_loop_initialized_ = false;
   bool shutdown_requested_ = false;
+  bool browser_shutdown_started_ = false;
+  bool browser_lifecycle_smoke_requested_ = false;
   bool browser_window_shutdown_started_ = false;
   bool browser_window_lifecycle_smoke_requested_ = false;
   bool foundation_shutdown_ = false;
@@ -84,15 +90,17 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   std::unique_ptr<WasmBrowserProcess> browser_process_;
   std::unique_ptr<WasmProfile> profile_;
 
-  // This is declared after |profile_| so its destructor runs first. It keeps
-  // the Views host alive until BrowserManagerService has physically destroyed
-  // the manager-owned Core, before profile keyed-service shutdown begins.
+  // These are declared after |profile_| so their destructors run first. They
+  // retain the bounded Browser/Core lifecycles until BrowserManagerService has
+  // physically destroyed their manager-owned object before profile shutdown.
+  std::unique_ptr<chrome::WasmBrowserLifecycle> browser_lifecycle_;
   std::unique_ptr<chrome::WasmBrowserWindowLifecycle>
       browser_window_lifecycle_;
 
-  // This test-only timer starts only after Content has installed the main
-  // RunLoop. It proves the retained visible window survives an ordinary UI
-  // turn before requesting the bounded shutdown sequence.
+  // These test-only timers start only after Content has installed the main
+  // RunLoop. They prove retained visible windows survive an ordinary UI turn
+  // before requesting their bounded shutdown sequence.
+  base::OneShotTimer browser_lifecycle_smoke_shutdown_timer_;
   base::OneShotTimer browser_window_lifecycle_smoke_shutdown_timer_;
 
   // Ozone retains the shutdown callback it receives at main-loop creation.

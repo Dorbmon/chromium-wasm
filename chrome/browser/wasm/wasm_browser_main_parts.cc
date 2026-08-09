@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/actions/chrome_actions.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_mixers.h"
+#include "chrome/browser/wasm/wasm_browser_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_browser_smoke.h"
@@ -66,6 +67,12 @@ constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
 constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
     "wasm-browser-window-core-smoke";
 constexpr char kWasmBrowserSmokeSwitch[] = "wasm-browser-smoke";
+constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
+    "wasm-browser-lifecycle-smoke";
+constexpr char kWasmBrowserLifecycleSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY";
+constexpr base::TimeDelta kWasmBrowserLifecycleSmokeVisibleDuration =
+    base::Milliseconds(250);
 constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
     "wasm-browser-window-view-smoke";
 constexpr char kWasmBrowserWindowLifecycleSmokeSwitch[] =
@@ -224,6 +231,24 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 
+  // This opt-in lifecycle proof keeps one real source-selected Browser alive
+  // across a browser-main loop turn, then waits for manager physical
+  // destruction before profile shutdown. It remains one blank no-unload tab,
+  // not ordinary Chrome startup or a general Browser lifecycle.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserLifecycleSmokeSwitch)) {
+    CHECK(!browser_lifecycle_);
+    CHECK(!browser_lifecycle_smoke_requested_);
+    CHECK(!browser_window_lifecycle_);
+    browser_lifecycle_smoke_requested_ = true;
+    browser_lifecycle_ = std::make_unique<chrome::WasmBrowserLifecycle>(
+        profile_.get(),
+        base::BindOnce(&WasmBrowserMainParts::OnBrowserLifecycleShutdownComplete,
+                       weak_ptr_factory_.GetWeakPtr()));
+    browser_lifecycle_->Initialize();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+
   // This test-only switch registers an empty source-selected
   // BrowserWindowInterface with the real manager and feature UDD lifecycles,
   // then proves its close notification and asynchronous destruction order.
@@ -314,6 +339,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 void WasmBrowserMainParts::WillRunMainMessageLoop(
     std::unique_ptr<base::RunLoop>& run_loop) {
   main_message_loop_quit_closure_ = run_loop->QuitClosure();
+  StartBrowserLifecycleSmokeShutdownTimer();
   StartBrowserWindowLifecycleSmokeShutdownTimer();
   MaybeStartShutdown();
 }
@@ -367,6 +393,17 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
     return;
   }
 
+  CHECK(!(browser_lifecycle_ && browser_window_lifecycle_));
+  if (browser_lifecycle_) {
+    if (!browser_shutdown_started_) {
+      browser_shutdown_started_ = true;
+      if (!browser_lifecycle_->IsShutdownStarted()) {
+        browser_lifecycle_->BeginShutdown();
+      }
+    }
+    return;
+  }
+
   if (browser_window_lifecycle_) {
     if (!browser_window_shutdown_started_) {
       browser_window_shutdown_started_ = true;
@@ -377,6 +414,50 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
     return;
   }
 
+  FinishShutdown();
+}
+
+void WasmBrowserMainParts::StartBrowserLifecycleSmokeShutdownTimer() {
+  if (!browser_lifecycle_smoke_requested_ || shutdown_requested_) {
+    return;
+  }
+  CHECK(browser_lifecycle_);
+  CHECK(!browser_lifecycle_smoke_shutdown_timer_.IsRunning());
+  browser_lifecycle_smoke_shutdown_timer_.Start(
+      FROM_HERE, kWasmBrowserLifecycleSmokeVisibleDuration,
+      base::BindOnce(&WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
+  // A direct BrowserView close can already be draining through the Browser
+  // lifecycle's did-close barrier. That completion quits without re-entering
+  // the Browser close path.
+  if (shutdown_requested_ || !browser_lifecycle_ ||
+      browser_lifecycle_->IsShutdownStarted()) {
+    return;
+  }
+
+  CHECK(browser_lifecycle_smoke_requested_);
+  CHECK(browser_lifecycle_->IsVisible());
+  std::fprintf(stderr, "%s\n", kWasmBrowserLifecycleSmokeReadyMarker);
+  std::fflush(stderr);
+  RequestShutdown();
+}
+
+void WasmBrowserMainParts::OnBrowserLifecycleShutdownComplete() {
+  CHECK(browser_lifecycle_);
+  CHECK(browser_lifecycle_->IsShutdownComplete());
+  browser_lifecycle_smoke_shutdown_timer_.Stop();
+  browser_lifecycle_.reset();
+
+  // A direct BrowserView close does not pass through RequestShutdown(). Once
+  // the physical destruction barrier has completed, turn it into the same
+  // browser-main exit sequence as the timer-driven path.
+  if (!shutdown_requested_) {
+    RequestShutdown();
+    return;
+  }
   FinishShutdown();
 }
 
@@ -427,6 +508,7 @@ void WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete() {
 
 void WasmBrowserMainParts::FinishShutdown() {
   CHECK(shutdown_requested_);
+  CHECK(!browser_lifecycle_);
   CHECK(!browser_window_lifecycle_);
   if (main_message_loop_quit_closure_) {
     main_message_loop_quit_closure_.Run();
@@ -438,12 +520,14 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     return;
   }
   foundation_shutdown_ = true;
+  browser_lifecycle_smoke_shutdown_timer_.Stop();
   browser_window_lifecycle_smoke_shutdown_timer_.Stop();
 
   // Profile's interlocked keyed-service shutdown includes BrowserManagerService.
   // Never let it be the mechanism that destroys a Core still bound to the
   // Views host: the lifecycle's physical-destruction barrier must have run
   // while the UI loop and profile were still live.
+  CHECK(!browser_lifecycle_);
   CHECK(!browser_window_lifecycle_);
 
   if (browser_process_) {
