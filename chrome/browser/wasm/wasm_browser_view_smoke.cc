@@ -21,8 +21,8 @@
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/views_delegate.h"
-#include "ui/views/widget/desktop_aura/desktop_screen_ozone.h"
 #include "ui/views/widget/root_view.h"
 
 #if !BUILDFLAG(IS_WASM)
@@ -38,18 +38,6 @@ constexpr gfx::Rect kBrowserViewSmokeBounds(0, 0, 640, 480);
 constexpr base::TimeDelta kBrowserViewSmokeVisibleDuration =
     base::Milliseconds(250);
 
-// Widget::Init() requires an embedding ViewsDelegate. This generic delegate is
-// deliberately scoped to the smoke: it supplies no Chrome command, Browser,
-// or profile policy, and its lifetime strictly contains the Widget teardown.
-class BrowserViewSmokeViewsDelegate final : public views::ViewsDelegate {
- public:
-  BrowserViewSmokeViewsDelegate() = default;
-  BrowserViewSmokeViewsDelegate(const BrowserViewSmokeViewsDelegate&) = delete;
-  BrowserViewSmokeViewsDelegate& operator=(
-      const BrowserViewSmokeViewsDelegate&) = delete;
-  ~BrowserViewSmokeViewsDelegate() override = default;
-};
-
 void ReportBrowserViewSmokeStep(const char* step) {
   std::fprintf(stderr, "%s:STEP=%s\n", kBrowserViewSmokeMarker, step);
 }
@@ -59,14 +47,12 @@ void ReportBrowserViewSmokeStep(const char* step) {
 bool RunWasmBrowserViewSmoke(WasmProfile* profile) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(profile);
-  CHECK(!views::ViewsDelegate::GetInstance());
-  BrowserViewSmokeViewsDelegate views_delegate;
-
-  // This installs the regular Aura ScreenOzone adapter, which in turn owns
-  // the Ozone platform's real WasmScreen. Keep it scoped around the Widget so
-  // its PlatformScreen outlives all Aura window operations during teardown.
-  CHECK(!display::Screen::HasScreen());
-  views::DesktopScreenOzone ozone_screen;
+  // The normal Wasm browser lifecycle owns generic Views/Aura state before
+  // profile startup. The smoke verifies that a BrowserWidget can use that
+  // durable state without installing its own desktop policy.
+  CHECK(views::ViewsDelegate::GetInstance());
+  CHECK(views::LayoutProvider::Get());
+  CHECK(display::Screen::HasScreen());
 
   // BrowserView is owned by BrowserWidget's RootView after Init(). Do not put
   // it in a unique_ptr: the explicit helper below breaks that ownership cycle.
@@ -136,6 +122,10 @@ bool RunWasmBrowserViewSmoke(WasmProfile* profile) {
   ReportBrowserViewSmokeStep("widget-reset");
   base::RunLoop().RunUntilIdle();
   ReportBrowserViewSmokeStep("native-teardown-drained");
+
+  CHECK(views::ViewsDelegate::GetInstance());
+  CHECK(views::LayoutProvider::Get());
+  CHECK(display::Screen::HasScreen());
 
   std::fprintf(stderr, "%s:PASS\n", kBrowserViewSmokeMarker);
   return true;

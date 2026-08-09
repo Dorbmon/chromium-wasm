@@ -49,11 +49,9 @@ class M6WasmBrowserViewSmokeContractTest(unittest.TestCase):
         self.assertIn("bool RunWasmBrowserViewSmoke(WasmProfile* profile);", header)
         for expected in (
             "CHECK_CURRENTLY_ON(content::BrowserThread::UI);",
-            "CHECK(!views::ViewsDelegate::GetInstance());",
-            "BrowserViewSmokeViewsDelegate views_delegate;",
-            "class BrowserViewSmokeViewsDelegate final : public views::ViewsDelegate",
-            "CHECK(!display::Screen::HasScreen());",
-            "views::DesktopScreenOzone ozone_screen;",
+            "CHECK(views::ViewsDelegate::GetInstance());",
+            "CHECK(views::LayoutProvider::Get());",
+            "CHECK(display::Screen::HasScreen());",
             "ReportBrowserViewSmokeStep(\"construct-view\");",
             "ReportBrowserViewSmokeStep(\"widget-initialized\");",
             "ReportBrowserViewSmokeStep(\"web-contents-created\");",
@@ -97,6 +95,8 @@ class M6WasmBrowserViewSmokeContractTest(unittest.TestCase):
             "Browser::Create",
             "BrowserWindowFeatures",
             "BrowserManager",
+            "BrowserViewSmokeViewsDelegate",
+            "DesktopScreenOzone ozone_screen",
             "MakeCloseSynchronous",
             "CloseNow(",
             "browser_view->Close(",

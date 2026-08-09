@@ -821,10 +821,14 @@ source_set("wasm_browser_main_parts") {
     ":wasm_chrome_result_codes",
     ":wasm_profile",
     "//base",
+    "//components/color",
     "//content/public/browser",
     "//content/public/common",
     "//ui/base",
+    "//ui/display",
     "//ui/ozone",
+    "//ui/views",
+    "//ui/wm",
   ]
 }
 

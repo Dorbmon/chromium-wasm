@@ -31,13 +31,29 @@
 #include "content/public/common/result_codes.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/display/screen.h"
 #include "ui/ozone/public/ozone_platform.h"
+#include "ui/views/layout/layout_provider.h"
+#include "ui/views/views_delegate.h"
+#include "ui/views/widget/desktop_aura/desktop_screen.h"
+#include "ui/wm/core/wm_state.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_browser_main_parts.cc must only be built for WebAssembly"
 #endif
 
 namespace {
+
+// The generic delegate gives Views the process-global owner it requires while
+// deliberately avoiding Chrome-specific profile, placement, and native
+// desktop-widget policies.
+class WasmViewsDelegate final : public views::ViewsDelegate {
+ public:
+  WasmViewsDelegate() = default;
+  WasmViewsDelegate(const WasmViewsDelegate&) = delete;
+  WasmViewsDelegate& operator=(const WasmViewsDelegate&) = delete;
+  ~WasmViewsDelegate() override = default;
+};
 
 constexpr char kLocale[] = "en-US";
 constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
@@ -86,11 +102,27 @@ int WasmBrowserMainParts::PreEarlyInitialization() {
 }
 
 void WasmBrowserMainParts::ToolkitInitialized() {
-  // BrowserMainLoop has created Aura's Env before this callback. Install the
-  // canonical component and Chrome color initializers before any BrowserView
-  // or BrowserWidget can request a ColorProvider. The default Wasm provider
-  // intentionally has no custom-theme or app-controller supplier at this
-  // stage, but the canonical mixers preserve those later extension points.
+  // BrowserMainLoop has created Aura's Env before this callback, but has not
+  // registered BrowserThread::UI yet. Install generic process-lifetime Views
+  // state here rather than creating it transiently in a BrowserWidget smoke.
+  if (!views::ViewsDelegate::GetInstance()) {
+    views_delegate_ = std::make_unique<WasmViewsDelegate>();
+  }
+  CHECK(views::ViewsDelegate::GetInstance());
+
+  if (!views::LayoutProvider::Get()) {
+    layout_provider_ = std::make_unique<views::LayoutProvider>();
+  }
+  CHECK(views::LayoutProvider::Get());
+
+  CHECK(!wm_state_);
+  wm_state_ = std::make_unique<wm::WMState>();
+
+  // Install the canonical component and Chrome color initializers before any
+  // BrowserView or BrowserWidget can request a ColorProvider. The default
+  // Wasm provider intentionally has no custom-theme or app-controller
+  // supplier at this stage, but the canonical mixers preserve those later
+  // extension points.
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
       base::BindRepeating(color::AddComponentsColorMixers));
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
@@ -114,6 +146,14 @@ int WasmBrowserMainParts::PreCreateThreads() {
   if (!resource_bundle_initialized_) {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
+
+  CHECK(views::ViewsDelegate::GetInstance());
+  CHECK(views::LayoutProvider::Get());
+  CHECK(wm_state_);
+  if (!display::Screen::Get()) {
+    screen_ = views::CreateDesktopScreen();
+  }
+  CHECK(display::Screen::Get());
 
   browser_process_ = std::make_unique<WasmBrowserProcess>();
   return content::RESULT_CODE_NORMAL_EXIT;

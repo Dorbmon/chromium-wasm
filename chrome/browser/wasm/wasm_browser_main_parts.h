@@ -14,6 +14,19 @@
 class WasmBrowserProcess;
 class WasmProfile;
 
+namespace display {
+class Screen;
+}
+
+namespace views {
+class LayoutProvider;
+class ViewsDelegate;
+}
+
+namespace wm {
+class WMState;
+}
+
 // Source-selected browser-main lifecycle for the initial Wasm Chrome process.
 // It owns the resource bundle and the real, deliberately volatile process and
 // profile objects. A normal startup result is withheld until the Chrome Views
@@ -45,6 +58,14 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   bool shutdown_requested_ = false;
   bool foundation_shutdown_ = false;
   base::RepeatingClosure main_message_loop_quit_closure_;
+
+  // These generic Views/Aura singletons must outlive profile teardown and
+  // Ozone's post-main-loop hook. Declaration order preserves the upstream
+  // destruction order: WM state, screen, layout provider, then delegate.
+  std::unique_ptr<views::ViewsDelegate> views_delegate_;
+  std::unique_ptr<views::LayoutProvider> layout_provider_;
+  std::unique_ptr<display::Screen> screen_;
+  std::unique_ptr<wm::WMState> wm_state_;
 
   // Declaration order is intentional: profile shutdown must finish before
   // g_browser_process is cleared.
