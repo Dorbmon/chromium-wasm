@@ -427,6 +427,14 @@ component("skia") {
       sources += skia_ports_fontmgr_custom_sources
       sources += skia_ports_fontmgr_empty_sources
       public += skia_ports_fontmgr_empty_public
+
+      # The platform FontConfig path is intentionally unavailable on Wasm.
+      # Compile the data-backed manager instead so ui/gfx can install a
+      # deterministic bundled typeface before the default manager is cached.
+      if (is_wasm) {
+        sources += skia_ports_fontmgr_embedded_sources
+        public += skia_ports_fontmgr_embedded_public
+      }
     }
     sources += skia_ports_typeface_proxy_sources
     sources += skia_ports_typeface_fontations_sources

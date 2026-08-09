@@ -243,6 +243,16 @@ component("gfx") {
     deps += [ "//third_party/fontconfig" ]
   }
 
+  # Wasm has no OS font service. Install its deterministic bundled font
+  # manager before any caller can initialize Skia's otherwise-empty default
+  # font manager.
+  if (is_wasm) {
+    sources += [
+      "font_util_wasm.cc",
+      "font_util_wasm.h",
+    ]
+  }
+
   if (is_apple) {
     sources += [ "font_render_params_mac.cc" ]
     frameworks = [ "IOSurface.framework" ]

@@ -16,6 +16,10 @@
 #include "ui/gfx/win/direct_write.h"
 #endif
 
+#if BUILDFLAG(IS_WASM)
+#include "ui/gfx/font_util_wasm.h"
+#endif
+
 namespace gfx {
 
 void InitializeFonts() {
@@ -24,6 +28,13 @@ void InitializeFonts() {
   // here helps in cases where the browser process is starting up in the
   // background (resources have not yet been granted to cast) since it prevents
   // the long delay the user would have seen on first rendering.
+
+#if BUILDFLAG(IS_WASM)
+  // This must run before any caller reaches skia::DefaultFontMgr(). The Wasm
+  // platform has no system font service, and its Skia fallback is deliberately
+  // empty rather than a fake metrics provider.
+  InitializeFontsWasm();
+#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   // Early initialize FontConfig.

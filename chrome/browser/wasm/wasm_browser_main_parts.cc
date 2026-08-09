@@ -88,6 +88,7 @@ constexpr char kRequiredAssets[][24] = {
     "resources.pak",
     "locales/en-US.pak",
     "icudtl.dat",
+    "Roboto-Regular.ttf",
 };
 
 }  // namespace

@@ -60,6 +60,9 @@ config("content_shell_lib_warnings") {
 }
 
 if (is_wasm) {
+  wasm_default_font_asset =
+      "//third_party/skia/resources/fonts/Roboto-Regular.ttf"
+
   config("content_shell_wasm_assets") {
     ldflags = [
       "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8",
@@ -70,6 +73,8 @@ if (is_wasm) {
       "--embed-file=" +
           rebase_path("$root_out_dir/icudtl.dat", root_build_dir) +
           "@/assets/icudtl.dat",
+      "--embed-file=" + rebase_path(wasm_default_font_asset, root_build_dir) +
+          "@/assets/Roboto-Regular.ttf",
     ]
   }
 }
@@ -883,6 +888,7 @@ if (is_android) {
     inputs = [
       "$root_out_dir/content_shell.pak",
       "$root_out_dir/icudtl.dat",
+      wasm_default_font_asset,
     ]
     configs += [ ":content_shell_wasm_assets" ]
     deps = [
@@ -907,6 +913,7 @@ if (is_android) {
     inputs = [
       "$root_out_dir/content_shell.pak",
       "$root_out_dir/icudtl.dat",
+      wasm_default_font_asset,
     ]
     configs += [ ":content_shell_wasm_assets" ]
     defines = [ "CONTENT_SHELL_WASM_M5_TEST=1" ]
@@ -935,6 +942,7 @@ if (is_android) {
     inputs = [
       "$root_out_dir/content_shell.pak",
       "$root_out_dir/icudtl.dat",
+      wasm_default_font_asset,
     ]
     configs += [ ":content_shell_wasm_assets" ]
     defines = [ "CONTENT_SHELL_WASM_M5_CONTROLLED_PREFLIGHT_TEST=1" ]
@@ -961,6 +969,7 @@ if (is_android) {
     inputs = [
       "$root_out_dir/content_shell.pak",
       "$root_out_dir/icudtl.dat",
+      wasm_default_font_asset,
     ]
     configs += [ ":content_shell_wasm_assets" ]
     defines = [ "CONTENT_SHELL_WASM_M5_PUBLIC_TEST=1" ]

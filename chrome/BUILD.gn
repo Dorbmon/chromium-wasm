@@ -405,6 +405,12 @@ if (is_wasm && enable_chromium_wasm_chrome) {
   assert(use_ozone)
   assert(toolkit_views)
 
+  # Roboto is an Apache-2.0 font already pinned in Skia's source tree. It is
+  # deliberately embedded as a real Wasm filesystem asset, not synthesized
+  # from host fonts, before gfx::InitializeFonts() runs.
+  wasm_default_font_asset =
+      "//third_party/skia/resources/fonts/Roboto-Regular.ttf"
+
   # Keep the first Wasm Chrome bundle deliberately small and explicit. The
   # desktop :packed_resources target aggregates onboarding, native integration,
   # and many WebUIs whose backing services are intentionally unavailable in
@@ -492,6 +498,8 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "--embed-file=" +
           rebase_path("$root_out_dir/icudtl.dat", root_build_dir) +
           "@/assets/icudtl.dat",
+      "--embed-file=" + rebase_path(wasm_default_font_asset, root_build_dir) +
+          "@/assets/Roboto-Regular.ttf",
     ]
   }
 
@@ -507,6 +515,7 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "$root_out_dir/resources.pak",
       "$root_out_dir/locales/en-US.pak",
       "$root_out_dir/icudtl.dat",
+      wasm_default_font_asset,
     ]
     configs += [ ":chrome_wasm_assets" ]
     deps = [
