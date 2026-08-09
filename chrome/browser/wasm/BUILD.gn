@@ -953,10 +953,8 @@ source_set("wasm_browser_window_lifecycle") {
   ]
 }
 
-# This switch-gated lifecycle owner retains one real source-selected Browser
-# through a normal browser-main loop, then waits for BrowserManagerService's
-# physical-destruction turn before profile shutdown. It intentionally remains
-# one-window/one-tab and does not enable ordinary Chrome startup.
+# The physical-key-only host ABI is intentionally separate from browser-main
+# lifecycle ownership and has no authority to create or close a Browser.
 source_set("wasm_browser_host_input") {
   public = [ "wasm_browser_host_input.h" ]
 
@@ -974,6 +972,22 @@ source_set("wasm_browser_host_input") {
     "//ui/events",
     "//ui/ozone",
   ]
+}
+
+# Browser-main owns this one-shot host shutdown bridge for ordinary Wasm
+# startup. It deliberately has no input-injection or Browser/WebContents API:
+# host JavaScript can request the already-owned close/drain sequence exactly
+# once, and browser-main invalidates queued work before profile teardown.
+source_set("wasm_browser_host_lifecycle") {
+  public = [ "wasm_browser_host_lifecycle.h" ]
+
+  sources = [ "wasm_browser_host_lifecycle.cc" ]
+
+  visibility = [ ":wasm_browser_main_parts" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
 }
 
 source_set("wasm_browser_lifecycle") {
@@ -1282,6 +1296,7 @@ source_set("wasm_browser_main_parts") {
 
   deps = [
     ":wasm_browser_host_input",
+    ":wasm_browser_host_lifecycle",
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
     ":wasm_browser_smoke",

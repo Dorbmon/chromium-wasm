@@ -20,8 +20,9 @@
 #include "chrome/browser/ui/actions/chrome_actions.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_mixers.h"
-#include "chrome/browser/wasm/wasm_browser_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
+#include "chrome/browser/wasm/wasm_browser_host_lifecycle.h"
+#include "chrome/browser/wasm/wasm_browser_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_browser_smoke.h"
@@ -75,8 +76,14 @@ constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
     "wasm-browser-host-accelerator-smoke";
 constexpr char kWasmBrowserLifecycleSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY";
+constexpr char kWasmBrowserLifecycleSmokePassMarker[] =
+    "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS";
 constexpr char kWasmBrowserHostAcceleratorSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_HOST_ACCELERATORS:READY";
+constexpr char kWasmNormalBrowserReadyMarker[] =
+    "CHROMIUM_WASM_M6_NORMAL_BROWSER:READY";
+constexpr char kWasmNormalBrowserPassMarker[] =
+    "CHROMIUM_WASM_M6_NORMAL_BROWSER:PASS";
 constexpr base::TimeDelta kWasmBrowserLifecycleSmokeVisibleDuration =
     base::Milliseconds(250);
 constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
@@ -351,15 +358,29 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 
-  // The explicit Browser smoke above proves only its bounded create/close
-  // lifecycle. Ordinary startup still lacks a persistent owner that can keep
-  // a Browser alive, arbitrate host close, and drain physical destruction
-  // before profile shutdown. Fail explicitly instead of presenting that probe
-  // as a general Chrome browser window.
-  LOG(ERROR)
-      << "chrome_wasm M6 foundation initialized, but the source-selected "
-         "Chrome Views browser lifecycle is not available yet";
-  return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  // The ordinary Wasm path retains one real Browser through the main loop.
+  // Its host ABI can request shutdown once, but browser-main owns all actual
+  // window close, manager-drain, and profile-teardown work. This is still the
+  // bounded M6 surface: one blank tab at fixed bounds, no general OpenURL,
+  // modal, menu, history, or Settings lifecycle.
+  CHECK(!browser_lifecycle_);
+  CHECK(!browser_lifecycle_smoke_requested_);
+  CHECK(!browser_window_lifecycle_);
+  if (!chrome::InitializeWasmBrowserHostLifecycle(base::BindRepeating(
+          &WasmBrowserMainParts::RequestShutdown,
+          weak_ptr_factory_.GetWeakPtr()))) {
+    LOG(ERROR) << "chrome_wasm could not initialize its host shutdown bridge";
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+  browser_lifecycle_ = std::make_unique<chrome::WasmBrowserLifecycle>(
+      profile_.get(),
+      base::BindOnce(&WasmBrowserMainParts::OnBrowserLifecycleShutdownComplete,
+                     weak_ptr_factory_.GetWeakPtr()));
+  browser_lifecycle_->Initialize();
+  CHECK(browser_lifecycle_->IsVisible());
+  std::fprintf(stderr, "%s\n", kWasmNormalBrowserReadyMarker);
+  std::fflush(stderr);
+  return content::RESULT_CODE_NORMAL_EXIT;
 }
 
 void WasmBrowserMainParts::WillRunMainMessageLoop(
@@ -371,6 +392,9 @@ void WasmBrowserMainParts::WillRunMainMessageLoop(
 }
 
 void WasmBrowserMainParts::PostMainMessageLoopRun() {
+  // Shut down the lifecycle request ABI first: it owns a callback into these
+  // main-parts and must become inert before the profile/Ozone teardown path.
+  chrome::ShutdownWasmBrowserHostLifecycle();
   // Invalidate the host ABI and release its SystemInputInjector while its
   // Ozone owner is still live. Queued records carry a generation token and
   // safely drop after this point.
@@ -488,6 +512,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleShutdownComplete() {
   CHECK(browser_lifecycle_);
   CHECK(browser_lifecycle_->IsShutdownComplete());
   browser_lifecycle_smoke_shutdown_timer_.Stop();
+  const bool lifecycle_smoke = browser_lifecycle_smoke_requested_;
+  std::fprintf(stderr, "%s\n",
+               lifecycle_smoke ? kWasmBrowserLifecycleSmokePassMarker
+                               : kWasmNormalBrowserPassMarker);
+  std::fflush(stderr);
   browser_lifecycle_.reset();
 
   // A direct BrowserView close does not pass through RequestShutdown(). Once

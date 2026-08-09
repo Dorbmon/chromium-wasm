@@ -8,7 +8,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chromium Wasm Chrome foundation</title>
+  <title>Chromium Wasm normal browser lifecycle</title>
   <style>
     :root {
       color-scheme: dark;
@@ -96,16 +96,16 @@
       height="600"
       tabindex="0"
       aria-label="Chromium Chrome output"></canvas>
-    <aside aria-label="Chrome foundation loader diagnostics">
-      <h1>Chromium Wasm Chrome foundation</h1>
+    <aside aria-label="Chrome normal-browser loader diagnostics">
+      <h1>Chromium Wasm normal browser lifecycle</h1>
       <dl id="versions"></dl>
-      <pre id="chrome-status">Starting Chrome foundation…</pre>
+      <pre id="chrome-status">Starting Chrome browser…</pre>
     </aside>
   </main>
   <script type="module">
-    import {runChromeWasmFoundationFromQuery} from "/__m6__/chrome_wasm_host.js";
+    import {runChromeWasmNormalBrowserFromQuery} from "/__m6__/chrome_wasm_host.js";
 
-    runChromeWasmFoundationFromQuery().catch((error) => {
+    runChromeWasmNormalBrowserFromQuery().catch((error) => {
       document.querySelector("#chrome-root").dataset.state = "fail";
       document.querySelector("#chrome-status").textContent =
         `HOST FAILURE: ${String(error)}`;

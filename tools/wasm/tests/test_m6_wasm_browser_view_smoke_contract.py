@@ -133,7 +133,7 @@ class M6WasmBrowserViewSmokeContractTest(unittest.TestCase):
         self.assertIn("browser_view->browser_widget_.reset();", body)
         self.assertTrue(body.rstrip().endswith("browser_view->browser_widget_.reset();"))
 
-    def test_switch_is_opt_in_and_normal_code_13_branch_remains(self) -> None:
+    def test_switch_is_opt_in_and_normal_lifecycle_follows(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
 
         switch = (
@@ -147,17 +147,18 @@ class M6WasmBrowserViewSmokeContractTest(unittest.TestCase):
         success_index = main_parts.index(
             "return content::RESULT_CODE_NORMAL_EXIT;", shutdown_index
         )
-        foundation_index = main_parts.index(
-            "chrome_wasm M6 foundation initialized, but the source-selected "
+        normal_lifecycle_index = main_parts.index(
+            "InitializeWasmBrowserHostLifecycle("
         )
-        unsupported_index = main_parts.index(
-            "return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", foundation_index
+        normal_ready_index = main_parts.index(
+            "std::fprintf(stderr, \"%s\\n\", kWasmNormalBrowserReadyMarker);",
+            normal_lifecycle_index,
         )
         self.assertLess(switch_index, run_index)
         self.assertLess(run_index, shutdown_index)
         self.assertLess(shutdown_index, success_index)
-        self.assertLess(success_index, foundation_index)
-        self.assertLess(foundation_index, unsupported_index)
+        self.assertLess(success_index, normal_lifecycle_index)
+        self.assertLess(normal_lifecycle_index, normal_ready_index)
 
     def test_build_target_is_test_only_and_source_selected_by_main_parts(self) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")

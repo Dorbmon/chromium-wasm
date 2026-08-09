@@ -33,8 +33,6 @@ namespace chrome {
 
 namespace {
 
-constexpr char kBrowserLifecycleSmokeMarker[] =
-    "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS";
 constexpr char kHostAcceleratorsSmokeMarker[] =
     "CHROMIUM_WASM_M6_HOST_ACCELERATORS:PASS";
 constexpr gfx::Rect kBrowserLifecycleSmokeBounds(0, 0, 640, 480);
@@ -201,9 +199,6 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   shutdown_complete_ = true;
 
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
-
-  std::fprintf(stderr, "%s\n", kBrowserLifecycleSmokeMarker);
-  std::fflush(stderr);
 
   // This callback may reset and destroy this lifecycle in main-parts.
   std::move(shutdown_complete_callback_).Run();

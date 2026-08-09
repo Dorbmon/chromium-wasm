@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for the persistent switch-gated slim Browser lifecycle."""
+"""Contracts for the bounded persistent slim Browser lifecycle."""
 
 from __future__ import annotations
 
@@ -74,7 +74,6 @@ class M6WasmBrowserLifecycleContractTest(unittest.TestCase):
             "CHECK(!browser_);",
             "CHECK(browser_manager_->IsEmpty());",
             "CHECK(global_collection->IsEmpty());",
-            '"CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS"',
             "std::move(shutdown_complete_callback_).Run();",
         ):
             with self.subTest(expected=expected):
@@ -102,7 +101,7 @@ class M6WasmBrowserLifecycleContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, implementation)
 
-    def test_main_parts_runs_the_lifecycle_only_behind_its_switch(self) -> None:
+    def test_main_parts_owns_both_smoke_and_normal_lifecycle_modes(self) -> None:
         header = source("chrome/browser/wasm/wasm_browser_main_parts.h")
         implementation = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
 
@@ -122,6 +121,22 @@ class M6WasmBrowserLifecycleContractTest(unittest.TestCase):
         switch_index = implementation.index(switch)
         initialize_index = implementation.index("browser_lifecycle_->Initialize();")
         self.assertLess(switch_index, initialize_index)
+
+        normal_ready = '"CHROMIUM_WASM_M6_NORMAL_BROWSER:READY"'
+        normal_pass = '"CHROMIUM_WASM_M6_NORMAL_BROWSER:PASS"'
+        smoke_pass = '"CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS"'
+        for expected in (normal_ready, normal_pass, smoke_pass):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, implementation)
+
+        normal_path = implementation[
+            implementation.index("InitializeWasmBrowserHostLifecycle("):
+            implementation.index("void WasmBrowserMainParts::WillRunMainMessageLoop")
+        ]
+        self.assertIn("browser_lifecycle_ = std::make_unique", normal_path)
+        self.assertIn("browser_lifecycle_->Initialize();", normal_path)
+        self.assertIn("kWasmNormalBrowserReadyMarker", normal_path)
+        self.assertNotIn("browser_lifecycle_smoke_requested_ = true", normal_path)
 
         will_run = implementation.index("void WasmBrowserMainParts::WillRunMainMessageLoop")
         post_run = implementation.index(
@@ -155,6 +170,8 @@ class M6WasmBrowserLifecycleContractTest(unittest.TestCase):
             )
         ]
         self.assertIn("browser_lifecycle_smoke_shutdown_timer_.Stop();", complete_body)
+        self.assertIn("kWasmBrowserLifecycleSmokePassMarker", complete_body)
+        self.assertIn("kWasmNormalBrowserPassMarker", complete_body)
         self.assertIn("browser_lifecycle_.reset();", complete_body)
         self.assertIn("FinishShutdown();", complete_body)
 

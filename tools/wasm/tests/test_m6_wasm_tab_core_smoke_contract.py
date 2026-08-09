@@ -79,7 +79,7 @@ class M6WasmTabCoreSmokeContractTest(unittest.TestCase):
         self.assertNotIn("BrowserView", implementation)
         self.assertNotIn("BrowserWidget", implementation)
 
-    def test_switch_is_opt_in_and_normal_foundation_result_remains(self) -> None:
+    def test_switch_is_opt_in_and_normal_lifecycle_follows(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
 
         switch = 'constexpr char kWasmTabCoreSmokeSwitch[] = "wasm-tab-core-smoke";'
@@ -87,16 +87,17 @@ class M6WasmTabCoreSmokeContractTest(unittest.TestCase):
         switch_index = main_parts.index(switch)
         run_index = main_parts.index("chrome::RunWasmTabCoreSmoke(profile_.get())")
         shutdown_index = main_parts.index("RequestShutdown();", run_index)
-        foundation_index = main_parts.index(
-            "chrome_wasm M6 foundation initialized, but the source-selected "
+        normal_lifecycle_index = main_parts.index(
+            "InitializeWasmBrowserHostLifecycle("
         )
-        unsupported_index = main_parts.index(
-            "return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", foundation_index
+        normal_ready_index = main_parts.index(
+            "std::fprintf(stderr, \"%s\\n\", kWasmNormalBrowserReadyMarker);",
+            normal_lifecycle_index,
         )
         self.assertLess(switch_index, run_index)
         self.assertLess(run_index, shutdown_index)
-        self.assertLess(shutdown_index, foundation_index)
-        self.assertLess(foundation_index, unsupported_index)
+        self.assertLess(shutdown_index, normal_lifecycle_index)
+        self.assertLess(normal_lifecycle_index, normal_ready_index)
 
     def test_build_owner_is_narrow_and_not_a_browser_ui_target(self) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")

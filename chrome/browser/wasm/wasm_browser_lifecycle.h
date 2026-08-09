@@ -17,7 +17,7 @@ class WasmProfile;
 
 namespace chrome {
 
-// Owns the process-lifetime side of one switch-gated slim Browser. The
+// Owns the process-lifetime side of one bounded slim Browser. The
 // BrowserManagerService retains the Browser itself; this coordinator attaches
 // its sole initial tab, observes every close route, and waits for the
 // manager's physical-destruction turn before browser-main tears down the
@@ -37,8 +37,8 @@ class WasmBrowserLifecycle final {
   ~WasmBrowserLifecycle();
 
   // Creates the manager-owned Browser, attaches its sole model-owned blank
-  // WebContents, and shows its real Aura/Ozone BrowserView at fixed smoke
-  // bounds after all close-observation state is installed.
+  // WebContents, and shows its real Aura/Ozone BrowserView at fixed bounds
+  // after all close-observation state is installed.
   void Initialize();
 
   // Begins the selected Browser's no-unload close path. A direct host close

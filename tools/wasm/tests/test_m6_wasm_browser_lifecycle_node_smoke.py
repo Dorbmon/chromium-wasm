@@ -65,7 +65,7 @@ class M6WasmBrowserLifecycleNodeSmokeTest(unittest.TestCase):
             '"CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY"', main_parts
         )
         self.assertIn(
-            '"CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS"', lifecycle
+            '"CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS"', main_parts
         )
         self.assertIn("browser_->GetWindow()->Close();", lifecycle)
         self.assertIn(
