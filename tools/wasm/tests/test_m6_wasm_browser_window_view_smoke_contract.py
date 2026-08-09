@@ -332,6 +332,63 @@ class M6WasmBrowserWindowViewSmokeContractTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, implementation[bound_state:])
 
+    def test_switch_local_modal_manager_clears_blocking_before_tab_close(
+        self,
+    ) -> None:
+        header = source(
+            "chrome/browser/wasm/wasm_browser_window_view_smoke.h"
+        )
+        implementation = source(
+            "chrome/browser/wasm/wasm_browser_window_view_smoke.cc"
+        )
+
+        self.assertIn(
+            "temporarily drives one state-only WebContentsModalDialogManager",
+            header,
+        )
+        for expected in (
+            "class LocalWcmdmDelegate final",
+            "class ControlledSingleWebContentsDialogManager final",
+            "browser_view_->GetWebContentsModalDialogHostFor(web_contents)",
+            "tab_strip_model_->SetTabBlocked(index, blocked);",
+            "const gfx::NativeWindow dialog = browser_view->GetNativeWindow();",
+            "modal_manager->ShowDialogWithManager(",
+            "raw_dialog_manager->Close();",
+            "modal_manager->SetDelegate(nullptr);",
+            "CHECK(!modal_manager->IsDialogActive());",
+            "CHECK(!tab_strip_model->IsTabBlocked(0));",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, implementation)
+
+        modal_proof = implementation.index(
+            "void ExerciseWasmModalManagerState("
+        )
+        close = implementation.index(
+            "raw_dialog_manager->Close();", modal_proof
+        )
+        clear_delegate = implementation.index(
+            "modal_manager->SetDelegate(nullptr);", close
+        )
+        close_setup = implementation.index(
+            "NestedTabStripEmptyState", clear_delegate
+        )
+        self.assertLess(modal_proof, close)
+        self.assertLess(close, clear_delegate)
+        self.assertLess(clear_delegate, close_setup)
+
+        # The controlled manager drives real WCMDM state only. This focused
+        # smoke must not grow a production modal pipeline or create child UI.
+        for forbidden in (
+            "Browser::Create",
+            "BrowserWindowModalDialogDelegate",
+            "constrained_window",
+            "views::Widget::InitParams",
+            "new views::Widget",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, implementation)
+
     def test_target_and_switch_are_smoke_only(self) -> None:
         wasm_build = source("chrome/browser/wasm/BUILD.gn")
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")

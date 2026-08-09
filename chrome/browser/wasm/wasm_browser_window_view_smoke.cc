@@ -32,7 +32,9 @@
 #include "chrome/browser/wasm/wasm_browser_window_view_host.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/web_modal/single_web_contents_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
@@ -329,6 +331,223 @@ void CheckSelectedTabRemainsBound(
   CHECK(!tab_strip_model->IsTabBlocked(0));
 }
 
+// This delegate is deliberately local to the switch-gated smoke. It connects
+// the real WebContentsModalDialogManager to the selected tab model and uses
+// the existing BrowserView host only for its modal geometry. It does not own
+// or create any dialog UI.
+class LocalWcmdmDelegate final
+    : public web_modal::WebContentsModalDialogManagerDelegate {
+ public:
+  LocalWcmdmDelegate(TabStripModel* tab_strip_model,
+                     BrowserView* browser_view,
+                     content::WebContents* web_contents)
+      : tab_strip_model_(tab_strip_model),
+        browser_view_(browser_view),
+        web_contents_(web_contents) {
+    CHECK(tab_strip_model_);
+    CHECK(browser_view_);
+    CHECK(web_contents_);
+  }
+
+  LocalWcmdmDelegate(const LocalWcmdmDelegate&) = delete;
+  LocalWcmdmDelegate& operator=(const LocalWcmdmDelegate&) = delete;
+  ~LocalWcmdmDelegate() override = default;
+
+  void SetWebContentsBlocked(content::WebContents* web_contents,
+                             bool blocked) override {
+    CHECK_EQ(web_contents, web_contents_);
+    const int index = tab_strip_model_->GetIndexOfWebContents(web_contents);
+    CHECK_EQ(index, 0);
+    CHECK_NE(web_contents_blocked_, blocked);
+    web_contents_blocked_ = blocked;
+    ++blocked_state_change_count_;
+    tab_strip_model_->SetTabBlocked(index, blocked);
+    CHECK_EQ(tab_strip_model_->IsTabBlocked(index), blocked);
+  }
+
+  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost(
+      content::WebContents* web_contents) override {
+    CHECK_EQ(web_contents, web_contents_);
+    CHECK(browser_view_->IsVisible());
+    ++modal_host_request_count_;
+    web_modal::WebContentsModalDialogHost* const modal_host =
+        browser_view_->GetWebContentsModalDialogHostFor(web_contents);
+    CHECK(modal_host);
+    return modal_host;
+  }
+
+  bool IsWebContentsVisible(content::WebContents* web_contents) override {
+    CHECK_EQ(web_contents, web_contents_);
+    return browser_view_->IsVisible();
+  }
+
+  bool web_contents_blocked() const { return web_contents_blocked_; }
+  int blocked_state_change_count() const {
+    return blocked_state_change_count_;
+  }
+  int modal_host_request_count() const { return modal_host_request_count_; }
+
+ private:
+  const raw_ptr<TabStripModel> tab_strip_model_;
+  const raw_ptr<BrowserView> browser_view_;
+  const raw_ptr<content::WebContents> web_contents_;
+  bool web_contents_blocked_ = false;
+  int blocked_state_change_count_ = 0;
+  int modal_host_request_count_ = 0;
+};
+
+struct ControlledSingleDialogState {
+  int host_changed_count = 0;
+  int show_count = 0;
+  int hide_count = 0;
+  int focus_count = 0;
+  int pulse_count = 0;
+  int close_count = 0;
+  bool saw_non_null_host = false;
+  bool shown = false;
+  bool closed = false;
+};
+
+// State-only manager used to exercise one actual manager queue entry. It
+// intentionally creates no child Widget or native dialog; its Close() call
+// synchronously transfers control to WebContentsModalDialogManager::WillClose,
+// which removes and destroys this manager before that call returns.
+class ControlledSingleWebContentsDialogManager final
+    : public web_modal::SingleWebContentsDialogManager {
+ public:
+  ControlledSingleWebContentsDialogManager(
+      gfx::NativeWindow dialog,
+      web_modal::SingleWebContentsDialogManagerDelegate* delegate,
+      ControlledSingleDialogState* state)
+      : dialog_(dialog), delegate_(delegate), state_(state) {
+    CHECK(delegate_);
+    CHECK(state_);
+  }
+
+  ControlledSingleWebContentsDialogManager(
+      const ControlledSingleWebContentsDialogManager&) = delete;
+  ControlledSingleWebContentsDialogManager& operator=(
+      const ControlledSingleWebContentsDialogManager&) = delete;
+  ~ControlledSingleWebContentsDialogManager() override = default;
+
+  void Show() override {
+    CHECK(!state_->closed);
+    CHECK_EQ(state_->show_count, 0);
+    ++state_->show_count;
+    state_->shown = true;
+    is_active_ = true;
+  }
+
+  void Hide() override {
+    CHECK(!state_->closed);
+    ++state_->hide_count;
+    is_active_ = false;
+  }
+
+  void Close() override {
+    CHECK(!state_->closed);
+    ++state_->close_count;
+    state_->closed = true;
+    is_active_ = false;
+
+    // WillClose() erases this object from the real manager. Do not access any
+    // member after this call.
+    delegate_->WillClose(dialog_);
+  }
+
+  void Focus() override {
+    CHECK(!state_->closed);
+    ++state_->focus_count;
+    is_active_ = true;
+  }
+
+  void Pulse() override {
+    CHECK(!state_->closed);
+    ++state_->pulse_count;
+  }
+
+  void HostChanged(web_modal::WebContentsModalDialogHost* new_host) override {
+    CHECK(!state_->closed);
+    CHECK(new_host);
+    ++state_->host_changed_count;
+    state_->saw_non_null_host = true;
+  }
+
+  gfx::NativeWindow dialog() override { return dialog_; }
+  bool IsActive() const override { return is_active_; }
+
+ private:
+  const gfx::NativeWindow dialog_;
+  const raw_ptr<web_modal::SingleWebContentsDialogManagerDelegate> delegate_;
+  const raw_ptr<ControlledSingleDialogState> state_;
+  bool is_active_ = false;
+};
+
+void ExerciseWasmModalManagerState(
+    BrowserView* browser_view,
+    TabStripModel* tab_strip_model,
+    web_modal::WebContentsModalDialogManager* modal_manager,
+    content::WebContents* web_contents) {
+  CHECK(browser_view);
+  CHECK(tab_strip_model);
+  CHECK(modal_manager);
+  CHECK(web_contents);
+  CHECK(browser_view->IsVisible());
+  CHECK(!modal_manager->delegate());
+  CHECK(!modal_manager->IsDialogActive());
+  CHECK(!tab_strip_model->IsTabBlocked(0));
+
+  LocalWcmdmDelegate modal_delegate(tab_strip_model, browser_view,
+                                    web_contents);
+  modal_manager->SetDelegate(&modal_delegate);
+  CHECK_EQ(modal_manager->delegate(), &modal_delegate);
+
+  // The managed dialog is state-only, but retain one non-null opaque identity
+  // for the real manager's queue lookup. This is the already-existing
+  // BrowserView native window, not a newly created child UI surface.
+  const gfx::NativeWindow dialog = browser_view->GetNativeWindow();
+  CHECK(dialog);
+  ControlledSingleDialogState dialog_state;
+  auto controlled_dialog_manager =
+      std::make_unique<ControlledSingleWebContentsDialogManager>(
+          dialog, modal_manager, &dialog_state);
+  ControlledSingleWebContentsDialogManager* const raw_dialog_manager =
+      controlled_dialog_manager.get();
+  modal_manager->ShowDialogWithManager(dialog,
+                                       std::move(controlled_dialog_manager));
+
+  CHECK(modal_manager->IsDialogActive());
+  CHECK(modal_delegate.web_contents_blocked());
+  CHECK_EQ(modal_delegate.blocked_state_change_count(), 1);
+  CHECK_EQ(modal_delegate.modal_host_request_count(), 1);
+  CHECK(tab_strip_model->IsTabBlocked(0));
+  CHECK_EQ(dialog_state.host_changed_count, 1);
+  CHECK(dialog_state.saw_non_null_host);
+  CHECK_EQ(dialog_state.show_count, 1);
+  CHECK(dialog_state.shown);
+  CHECK_EQ(dialog_state.hide_count, 0);
+  CHECK_EQ(dialog_state.focus_count, 0);
+  CHECK_EQ(dialog_state.pulse_count, 0);
+  CHECK_EQ(dialog_state.close_count, 0);
+  CHECK(!dialog_state.closed);
+
+  // The manager erases and deletes |raw_dialog_manager| in this call. Inspect
+  // only the external state after it returns.
+  raw_dialog_manager->Close();
+  CHECK(!modal_manager->IsDialogActive());
+  CHECK(!modal_delegate.web_contents_blocked());
+  CHECK_EQ(modal_delegate.blocked_state_change_count(), 2);
+  CHECK(!tab_strip_model->IsTabBlocked(0));
+  CHECK_EQ(dialog_state.close_count, 1);
+  CHECK(dialog_state.closed);
+
+  // The delegate is stack-owned by this switch-local proof. Clear it only
+  // after the real manager has delivered the unblocked state, before the
+  // normal model/tab close begins.
+  modal_manager->SetDelegate(nullptr);
+  CHECK(!modal_manager->delegate());
+}
+
 struct BoundCoreCloseTaskState {
   raw_ptr<WasmBrowserWindowCore> core;
   raw_ptr<BrowserView> browser_view;
@@ -456,7 +675,7 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     CHECK_EQ(relay_state.notification_count, 1);
     CHECK_EQ(relay_state.last_contents, raw_contents);
     CHECK_EQ(view_host.active_tab_change_count_for_testing(), 1);
-    const web_modal::WebContentsModalDialogManager* const modal_manager =
+    web_modal::WebContentsModalDialogManager* const modal_manager =
         web_modal::WebContentsModalDialogManager::FromWebContents(
             raw_contents);
     CHECK(modal_manager);
@@ -477,6 +696,9 @@ bool RunWasmBrowserWindowViewSmoke(WasmProfile* profile) {
     CHECK(raw_core->IsActive());
     CHECK_EQ(global_collection->GetActiveBrowser(), raw_core);
     CHECK_GE(activation_state.did_become_active, 1);
+
+    ExerciseWasmModalManagerState(browser_view, tab_strip_model, modal_manager,
+                                  raw_contents);
 
     // Exercise exactly one selected model tab through the real command
     // controller that BrowserWindowFeatures owns. This is intentionally a
