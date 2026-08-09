@@ -198,6 +198,7 @@ class M6WasmBrowserContractTest(unittest.TestCase):
                 self.assertNotIn(forbidden, browser_target)
 
         self.assertIn('":wasm_browser",', smoke_target)
+        self.assertIn('":wasm_tab_strip",', smoke_target)
         self.assertIn('":wasm_top_controls",', smoke_target)
         self.assertIn('":wasm_browser_smoke",', _source_set_body(
             build, "wasm_browser_main_parts"
@@ -232,9 +233,16 @@ class M6WasmBrowserContractTest(unittest.TestCase):
             "browser_view.Show();",
             "visible_run_loop.Run();",
             '"CHROMIUM_WASM_M6_BROWSER:READY"',
+            '"CHROMIUM_WASM_M6_TAB_STRIP:PASS"',
             '"CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"',
             '"CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"',
             "browser_view.wasm_top_controls()",
+            "browser_view.wasm_tab_strip()",
+            "raw_browser->IsTabStripVisible()",
+            "UserGestureTabSelectionObserver",
+            "ClickButton(second_tab_button);",
+            "TabStripModelObserver::CHANGE_REASON_USER_GESTURE",
+            'CHECK_EQ(first_tab_button->GetText(), u"wasm-top-controls-a");',
             "SubmitAddressAndWait(",
             "ClickNavigationButtonAndWait(",
             "ui::VKEY_RETURN",

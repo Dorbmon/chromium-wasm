@@ -55,6 +55,7 @@ def complete_output() -> str:
     return "\n".join(
         (
             smoke.READY_MARKER,
+            smoke.TAB_STRIP_MARKER,
             smoke.TOP_CONTROLS_MARKER,
             smoke.VERSION_WEBUI_MARKER,
             smoke.PASS_MARKER,
@@ -86,6 +87,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
         for expected in (
             '"CHROMIUM_WASM_M6_BROWSER:READY"',
             '"CHROMIUM_WASM_M6_BROWSER:PASS"',
+            '"CHROMIUM_WASM_M6_TAB_STRIP:PASS"',
             '"CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"',
             '"CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"',
             "SubmitAddressAndWait(",
@@ -158,6 +160,22 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
             )
         )
 
+        missing_tab_strip = successful_result()
+        cases.append(
+            (
+                "tab-strip",
+                missing_tab_strip,
+                "\n".join(
+                    (
+                        smoke.READY_MARKER,
+                        smoke.TOP_CONTROLS_MARKER,
+                        smoke.VERSION_WEBUI_MARKER,
+                        smoke.PASS_MARKER,
+                    )
+                ),
+            )
+        )
+
         missing_version_webui = successful_result()
         cases.append(
             (
@@ -166,6 +184,7 @@ class M6WasmBrowserNodeSmokeTest(unittest.TestCase):
                 "\n".join(
                     (
                         smoke.READY_MARKER,
+                        smoke.TAB_STRIP_MARKER,
                         smoke.TOP_CONTROLS_MARKER,
                         smoke.PASS_MARKER,
                     )

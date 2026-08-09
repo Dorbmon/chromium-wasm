@@ -184,10 +184,14 @@ class M6WasmTabCoreContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-        # The two shutdown lifecycles plus the source-selected Browser and its
-        # runtime smoke create/use the bounded model directly. These are eight
-        # explicit Wasm-only consumers, not desktop UI routes.
-        self.assertEqual(8, wasm_build.count('":wasm_tab_core",'))
+        # The two shutdown lifecycles, source-selected Browser/runtime smoke,
+        # and the bounded tab-strip observer create/use the model directly.
+        # These are nine explicit Wasm-only consumers, not desktop UI routes.
+        self.assertEqual(9, wasm_build.count('":wasm_tab_core",'))
+        self.assertIn(
+            '":wasm_tab_core",',
+            _source_set_body(wasm_build, "wasm_tab_strip"),
+        )
         self.assertIn(
             '":wasm_tab_core",',
             _source_set_body(wasm_build, "wasm_tab_core_smoke"),

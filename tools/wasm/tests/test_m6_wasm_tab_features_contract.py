@@ -178,10 +178,10 @@ class M6WasmTabFeaturesContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-        # The joined tab core owns feature lifetime; the bounded top-controls
-        # view reads its selected TabUIHelper seam without pulling a desktop
-        # tab-strip or browser-window aggregate.
-        self.assertEqual(2, wasm_build.count('":wasm_tab_features",'))
+        # The joined tab core owns feature lifetime; the bounded controls and
+        # tab strip read the selected TabUIHelper seam without pulling a
+        # desktop tab-strip or browser-window aggregate.
+        self.assertEqual(3, wasm_build.count('":wasm_tab_features",'))
         self.assertIn(
             '":wasm_tab_features",',
             _source_set_body(wasm_build, "wasm_tab_core"),
@@ -189,6 +189,10 @@ class M6WasmTabFeaturesContractTest(unittest.TestCase):
         self.assertIn(
             '":wasm_tab_features",',
             _source_set_body(wasm_build, "wasm_top_controls"),
+        )
+        self.assertIn(
+            '":wasm_tab_features",',
+            _source_set_body(wasm_build, "wasm_tab_strip"),
         )
         self.assertNotIn(":wasm_tab_features", source("chrome/BUILD.gn"))
 

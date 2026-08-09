@@ -18,11 +18,13 @@
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/wasm/wasm_browser.h"
+#include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/webui/version/version_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_profile.h"
@@ -60,6 +62,7 @@ constexpr char kBrowserSmokeMarker[] = "CHROMIUM_WASM_M6_BROWSER:PASS";
 constexpr char kBrowserSmokeReadyMarker[] = "CHROMIUM_WASM_M6_BROWSER:READY";
 constexpr char kTopControlsSmokeMarker[] =
     "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS";
+constexpr char kTabStripSmokeMarker[] = "CHROMIUM_WASM_M6_TAB_STRIP:PASS";
 constexpr char kVersionWebUISmokeMarker[] =
     "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS";
 constexpr gfx::Rect kBrowserSmokeBounds(0, 0, 640, 480);
@@ -105,6 +108,75 @@ void OnBrowserDidClose(BrowserSmokeState* state,
   CHECK(browser->IsDeleteScheduled());
   state->did_close = true;
 }
+
+// Verifies that the Views button path retains the TabStripModel's real user
+// gesture signal. Direct model activation remains below only for unrelated
+// model-close lifecycle coverage.
+class UserGestureTabSelectionObserver final : public TabStripModelObserver {
+ public:
+  explicit UserGestureTabSelectionObserver(TabStripModel* tab_strip_model)
+      : tab_strip_model_(tab_strip_model) {
+    CHECK(tab_strip_model_);
+  }
+
+  UserGestureTabSelectionObserver(const UserGestureTabSelectionObserver&) =
+      delete;
+  UserGestureTabSelectionObserver& operator=(
+      const UserGestureTabSelectionObserver&) = delete;
+  ~UserGestureTabSelectionObserver() override {
+    if (observing_ && tab_strip_model_) {
+      tab_strip_model_->RemoveObserver(this);
+    }
+  }
+
+  void Expect(tabs::TabInterface* expected_tab) {
+    CHECK(expected_tab);
+    CHECK(!observing_);
+    expected_tab_ = expected_tab;
+    saw_expected_selection_ = false;
+    tab_strip_model_->AddObserver(this);
+    observing_ = true;
+  }
+
+  void VerifyAndReset() {
+    CHECK(observing_);
+    CHECK(saw_expected_selection_);
+    tab_strip_model_->RemoveObserver(this);
+    observing_ = false;
+    expected_tab_ = nullptr;
+  }
+
+ private:
+  // TabStripModelObserver:
+  void OnTabStripModelChanged(
+      TabStripModel* tab_strip_model,
+      const TabStripModelChange& change,
+      const TabStripSelectionChange& selection) override {
+    CHECK_EQ(tab_strip_model, tab_strip_model_);
+    if (!selection.active_tab_changed()) {
+      return;
+    }
+
+    CHECK(!saw_expected_selection_);
+    CHECK_EQ(change.type(), TabStripModelChange::kSelectionOnly);
+    CHECK_EQ(selection.new_tab, expected_tab_);
+    CHECK_EQ(selection.reason,
+             TabStripModelObserver::CHANGE_REASON_USER_GESTURE);
+    saw_expected_selection_ = true;
+  }
+
+  void OnTabStripModelDestroyed(TabStripModel* tab_strip_model) override {
+    CHECK_EQ(tab_strip_model, tab_strip_model_);
+    tab_strip_model_ = nullptr;
+    expected_tab_ = nullptr;
+    observing_ = false;
+  }
+
+  TabStripModel* tab_strip_model_;
+  tabs::TabInterface* expected_tab_ = nullptr;
+  bool observing_ = false;
+  bool saw_expected_selection_ = false;
+};
 
 class ActiveTabNavigationObserver final
     : public content::WebContentsObserver {
@@ -365,17 +437,34 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   visible_run_loop.Run();
   std::puts(kBrowserSmokeReadyMarker);
 
-  // Exercise the purpose-built Views row through its public input path. This
-  // is intentionally not a desktop Toolbar or omnibox proof: it verifies the
-  // selected BrowserCommandController-backed buttons and the restricted
-  // active-tab URL field while the real BrowserWidget is visible.
+  // Exercise the purpose-built Views strips through their public input paths.
+  // This is intentionally not a desktop tab strip, Toolbar, or omnibox proof:
+  // it verifies two model-owned tab buttons plus selected
+  // BrowserCommandController-backed navigation and a restricted URL field.
+  WasmTabStripView* const wasm_tab_strip = browser_view.wasm_tab_strip();
+  CHECK(wasm_tab_strip);
+  CHECK(raw_browser->IsTabStripVisible());
   WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
   CHECK(top_controls);
   views::Widget* const browser_widget = browser_view.GetWidget();
   CHECK(browser_widget);
   browser_widget->GetRootView()->DeprecatedLayoutImmediately();
   CHECK_EQ(browser_view.contents_web_view()->bounds().y(),
-           top_controls->GetPreferredSize().height());
+           wasm_tab_strip->GetPreferredSize().height() +
+               top_controls->GetPreferredSize().height());
+
+  views::LabelButton* const first_tab_button =
+      wasm_tab_strip->tab_button_for_testing(0);
+  views::LabelButton* const second_tab_button =
+      wasm_tab_strip->tab_button_for_testing(1);
+  CHECK(first_tab_button);
+  CHECK(second_tab_button);
+  CHECK(first_tab_button->GetVisible());
+  CHECK(second_tab_button->GetVisible());
+  CHECK(first_tab_button->GetEnabled());
+  CHECK(second_tab_button->GetEnabled());
+  CHECK(first_tab_button->GetBackground());
+  CHECK(!second_tab_button->GetBackground());
 
   views::Textfield* const address_field =
       top_controls->address_field_for_testing();
@@ -409,6 +498,7 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   SubmitAddressAndWait(&navigation_observer, browser_widget, address_field,
                        first_navigation_url);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(first_tab_button->GetText(), u"wasm-top-controls-a");
   CHECK_EQ(address_field->GetText(),
            base::UTF8ToUTF16(first_navigation_url.spec()));
   CHECK(!address_field->GetInvalid());
@@ -416,6 +506,7 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   SubmitAddressAndWait(&navigation_observer, browser_widget, address_field,
                        second_navigation_url);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(first_tab_button->GetText(), u"wasm-top-controls-b");
   CHECK_EQ(address_field->GetText(),
            base::UTF8ToUTF16(second_navigation_url.spec()));
   CHECK(first_navigation_controller.CanGoBack());
@@ -481,13 +572,22 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   address_field->RequestFocus();
   CHECK_EQ(browser_widget->GetFocusManager()->GetFocusedView(),
            address_field);
-  tab_strip_model->ActivateTabAt(1);
+  UserGestureTabSelectionObserver tab_selection_observer(tab_strip_model);
+  tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(1));
+  ClickButton(second_tab_button);
+  tab_selection_observer.VerifyAndReset();
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
   CHECK(!address_field->HasFocus());
   CHECK_EQ(address_field->GetText(), u"about:blank");
   CHECK(!address_field->GetInvalid());
-  tab_strip_model->ActivateTabAt(0);
+  CHECK(!first_tab_button->GetBackground());
+  CHECK(second_tab_button->GetBackground());
+  tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(0));
+  ClickButton(first_tab_button);
+  tab_selection_observer.VerifyAndReset();
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK(first_tab_button->GetBackground());
+  CHECK(!second_tab_button->GetBackground());
   CHECK_EQ(address_field->GetText(),
            base::UTF8ToUTF16(version_webui_url.spec()));
 
@@ -530,6 +630,8 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(tab_strip_model->count(), 1);
   CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK(first_tab_button->GetVisible());
+  CHECK(!second_tab_button->GetVisible());
   CHECK_EQ(state.active_tab_change_count, 1u);
 
   std::unique_ptr<content::WebContents> third_contents =
@@ -540,6 +642,8 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
                                      /*foreground=*/false);
   CHECK_EQ(tab_strip_model->count(), 2);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK(first_tab_button->GetVisible());
+  CHECK(second_tab_button->GetVisible());
 
   state.expected_active_contents.push_back(raw_third_contents);
   tab_strip_model->ActivateTabAt(1);
@@ -552,6 +656,8 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(tab_strip_model->count(), 1);
   CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK(first_tab_button->GetVisible());
+  CHECK(!second_tab_button->GetVisible());
   CHECK_EQ(state.active_tab_change_count, 3u);
 
   std::unique_ptr<content::WebContents> fourth_contents =
@@ -562,6 +668,8 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(tab_strip_model->count(), 2);
   CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK(first_tab_button->GetVisible());
+  CHECK(second_tab_button->GetVisible());
 
   // Exercise both BaseWindow close requests before the model's non-nestable
   // finish task runs. BrowserView must keep the Widget alive and absorb the
@@ -574,8 +682,12 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(tab_strip_model->empty());
   CHECK(!raw_browser->IsDeleteScheduled());
   CHECK(!browser_view.GetActiveWebContents());
+  CHECK(!first_tab_button->GetVisible());
+  CHECK(!second_tab_button->GetVisible());
   CHECK_EQ(state.active_tab_change_count,
            state.expected_active_contents.size());
+
+  std::puts(kTabStripSmokeMarker);
 
   base::RunLoop().RunUntilIdle();
 

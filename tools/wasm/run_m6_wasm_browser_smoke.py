@@ -6,11 +6,11 @@
 """Run the manager-owned Wasm Browser smoke under pinned Node.
 
 The explicit --wasm-browser-smoke path first closes an empty source-selected
-Browser, then exercises a bounded Views top-controls row, two-tab switching,
-and close ordering in its Aura/Ozone BrowserView before the normal
-BrowserWindowDeleter/BrowserManagerService path. This mock-canvas harness
-requires terminal markers and host-side presentation evidence; a zero process
-exit alone cannot certify that the Browser-owned window was visible.
+Browser, then exercises a bounded Views tab strip and top-controls row,
+two-tab switching, and close ordering in its Aura/Ozone BrowserView before
+the normal BrowserWindowDeleter/BrowserManagerService path. This mock-canvas
+harness requires terminal markers and host-side presentation evidence; a zero
+process exit alone cannot certify that the Browser-owned window was visible.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ SENTINEL = "CHROMIUM_WASM_M6_BROWSER"
 PASS_MARKER = f"{SENTINEL}:PASS"
 READY_MARKER = f"{SENTINEL}:READY"
 TOP_CONTROLS_MARKER = "CHROMIUM_WASM_M6_TOP_CONTROLS:PASS"
+TAB_STRIP_MARKER = "CHROMIUM_WASM_M6_TAB_STRIP:PASS"
 VERSION_WEBUI_MARKER = "CHROMIUM_WASM_M6_VERSION_WEBUI:PASS"
 RESULT_PREFIX = f"{SENTINEL}:NODE_EXIT "
 NODE_PASS_MARKER = f"{SENTINEL}_NODE:PASS"
@@ -283,6 +284,8 @@ def validate_result(result: dict[str, Any], output: str) -> None:
         raise M0Error("Browser runtime is missing its pass marker")
     if TOP_CONTROLS_MARKER not in output:
         raise M0Error("Browser runtime is missing its top-controls marker")
+    if TAB_STRIP_MARKER not in output:
+        raise M0Error("Browser runtime is missing its tab-strip marker")
     if VERSION_WEBUI_MARKER not in output:
         raise M0Error("Browser runtime is missing its Version WebUI marker")
     _require_exact_int(result.get("canvasCopies"), "Browser canvas copy count", minimum=1)

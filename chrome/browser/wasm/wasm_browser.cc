@@ -309,9 +309,7 @@ const TabStripModel* Browser::GetTabStripModel() const {
 }
 
 bool Browser::IsTabStripVisible() {
-  // The first Browser owns a real BrowserView but has not selected a visual
-  // tab-strip implementation yet.
-  return false;
+  return window_ && GetBrowserView().wasm_tab_strip() != nullptr;
 }
 
 base::CallbackListSubscription Browser::RegisterBrowserCloseCancelled(

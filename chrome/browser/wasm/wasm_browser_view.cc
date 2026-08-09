@@ -13,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/web_contents.h"
@@ -80,16 +81,22 @@ void BrowserView::InitializeWasmTopControls(
       << "Wasm top controls require a Browser-owned BrowserView";
   CHECK(browser_window_interface);
   CHECK(browser_command_controller);
+  CHECK(!wasm_tab_strip_);
   CHECK(!wasm_top_controls_);
   CHECK(contents_web_view_);
 
+  auto tab_strip =
+      std::make_unique<WasmTabStripView>(browser_window_interface);
+  wasm_tab_strip_ = AddChildViewAt(std::move(tab_strip), 0);
+
   auto top_controls = std::make_unique<WasmTopControlsView>(
       browser_window_interface, browser_command_controller);
-  wasm_top_controls_ = AddChildViewAt(std::move(top_controls), 0);
+  wasm_top_controls_ = AddChildViewAt(std::move(top_controls), 1);
 
   // The null-Browser structural smoke retains the earlier FillLayout. A
-  // Browser-owned view instead places this fixed-height control row above the
-  // WebView, preserving the latter as the sole content/modal anchor.
+  // Browser-owned view instead places the fixed-height tab strip and control
+  // row above the WebView, preserving the latter as the sole content/modal
+  // anchor.
   views::BoxLayout* const layout = SetLayoutManager(
       std::make_unique<views::BoxLayout>(
           views::BoxLayout::Orientation::kVertical));
@@ -322,13 +329,23 @@ void BrowserView::SetContentsSize(const gfx::Size& size) {
 
   gfx::Rect bounds = GetBounds();
   // BrowserWindow's contents-size API means WebContents geometry. Account for
-  // the fixed controls row in the outer Widget only after it is installed;
-  // the null-Browser structural path remains an exact FillLayout.
-  const int top_controls_height =
-      wasm_top_controls_ ? wasm_top_controls_->GetPreferredSize().height() : 0;
-  bounds.set_size(
-      gfx::Size(size.width(), size.height() + top_controls_height));
+  // the fixed Wasm tab and controls rows in the outer Widget only after they
+  // are installed; the null-Browser structural path remains an exact
+  // FillLayout.
+  bounds.set_size(gfx::Size(size.width(),
+                            size.height() + GetWasmTopChromeHeight()));
   SetBounds(bounds);
+}
+
+int BrowserView::GetWasmTopChromeHeight() const {
+  int height = 0;
+  if (wasm_tab_strip_) {
+    height += wasm_tab_strip_->GetPreferredSize().height();
+  }
+  if (wasm_top_controls_) {
+    height += wasm_top_controls_->GetPreferredSize().height();
+  }
+  return height;
 }
 
 web_modal::WebContentsModalDialogHost*
@@ -425,20 +442,27 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
 gfx::Size BrowserView::GetMinimumSize() const {
   gfx::Size minimum_size =
       contents_web_view_ ? contents_web_view_->GetMinimumSize() : gfx::Size();
-  if (!wasm_top_controls_) {
-    return minimum_size;
+  if (wasm_tab_strip_) {
+    const gfx::Size tab_strip_minimum_size = wasm_tab_strip_->GetMinimumSize();
+    minimum_size.set_width(
+        std::max(minimum_size.width(), tab_strip_minimum_size.width()));
+    // The strip's preferred height is deliberately fixed. A child Button's
+    // minimum height alone would permit a BrowserView that clips the strip.
+    minimum_size.set_height(
+        minimum_size.height() +
+        std::max(tab_strip_minimum_size.height(),
+                 wasm_tab_strip_->GetPreferredSize().height()));
   }
-
-  const gfx::Size controls_minimum_size =
-      wasm_top_controls_->GetMinimumSize();
-  minimum_size.set_width(
-      std::max(minimum_size.width(), controls_minimum_size.width()));
-  // The strip's preferred height is deliberately fixed. A child Button's
-  // minimum height alone would permit a BrowserView that clips the strip.
-  minimum_size.set_height(
-      minimum_size.height() +
-      std::max(controls_minimum_size.height(),
-               wasm_top_controls_->GetPreferredSize().height()));
+  if (wasm_top_controls_) {
+    const gfx::Size controls_minimum_size =
+        wasm_top_controls_->GetMinimumSize();
+    minimum_size.set_width(
+        std::max(minimum_size.width(), controls_minimum_size.width()));
+    minimum_size.set_height(
+        minimum_size.height() +
+        std::max(controls_minimum_size.height(),
+                 wasm_top_controls_->GetPreferredSize().height()));
+  }
   return minimum_size;
 }
 

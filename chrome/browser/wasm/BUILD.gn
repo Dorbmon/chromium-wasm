@@ -240,6 +240,40 @@ source_set("wasm_constrained_window") {
   ]
 }
 
+# This bounded Wasm tab strip observes the real source-selected TabStripModel
+# and supplies only two direct tab-selection buttons. It deliberately does not
+# select Chrome's desktop TabStrip, controller, drag, close, group, menu, or
+# new-tab graph.
+source_set("wasm_tab_strip") {
+  # The BrowserView and its explicit runtime smoke are the only current
+  # owners. Keep this narrow so a later caller cannot accidentally treat these
+  # two model-backed buttons as the full desktop tab-strip implementation.
+  visibility = [
+    ":wasm_browser_smoke",
+    ":wasm_browser_view",
+  ]
+
+  public = [ "wasm_tab_strip_view.h" ]
+
+  sources = [ "wasm_tab_strip_view.cc" ]
+
+  public_deps = [
+    ":wasm_tab_core",
+    "//base",
+    "//ui/views",
+  ]
+
+  deps = [
+    ":wasm_tab_features",
+    "//chrome/browser/ui/browser_window",
+    "//components/tabs:public",
+    "//skia",
+    "//ui/base/metadata:metadata",
+    "//ui/events",
+    "//ui/gfx/geometry",
+  ]
+}
+
 # This bounded Wasm control strip owns only direct active-tab navigation and a
 # restricted URL field. It deliberately does not select Chrome's Toolbar,
 # TabStrip, LocationBar, omnibox, menus, history, or WebUI graphs.
@@ -302,6 +336,7 @@ source_set("wasm_browser_view") {
 
   deps = [
     ":wasm_browser_ui",
+    ":wasm_tab_strip",
     ":wasm_top_controls",
     "//ui/base/metadata:metadata",
     "//ui/base/mojom:ui_base_types",
@@ -424,6 +459,7 @@ source_set("wasm_browser_smoke") {
     ":wasm_browser",
     ":wasm_browser_manager",
     ":wasm_browser_view",
+    ":wasm_tab_strip",
     ":wasm_top_controls",
     ":wasm_version_ui",
     ":wasm_profile",

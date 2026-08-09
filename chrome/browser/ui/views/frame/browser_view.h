@@ -26,6 +26,7 @@
 class Browser;
 class BrowserWidget;
 class BrowserWindowInterface;
+class WasmTabStripView;
 class WasmTopControlsView;
 
 namespace chrome {
@@ -80,11 +81,11 @@ class BrowserView final : public BrowserWindow,
   void SetWasmCloseRequestCallback(
       base::RepeatingCallback<views::CloseRequestResult()> callback);
 
-  // Installs the selected Wasm navigation controls for a Browser-owned view.
-  // This accepts only BrowserWindowInterface and command-controller seams so
-  // BrowserView never needs a Browser include or target dependency. Null-
-  // Browser structural smokes intentionally never call it and retain the
-  // simple FillLayout path.
+  // Installs the selected Wasm tab strip and navigation controls for a
+  // Browser-owned view. This accepts only BrowserWindowInterface and
+  // command-controller seams so BrowserView never needs a Browser include or
+  // target dependency. Null-Browser structural smokes intentionally never
+  // call it and retain the simple FillLayout path.
   void InitializeWasmTopControls(
       BrowserWindowInterface* browser_window_interface,
       chrome::BrowserCommandController* browser_command_controller);
@@ -112,6 +113,7 @@ class BrowserView final : public BrowserWindow,
   WasmTopControlsView* wasm_top_controls() const {
     return wasm_top_controls_;
   }
+  WasmTabStripView* wasm_tab_strip() const { return wasm_tab_strip_; }
 
   // BrowserWidget asks its client for menu shortcut labels. No Chrome command
   // surface is selected for this object-only slice.
@@ -187,6 +189,7 @@ class BrowserView final : public BrowserWindow,
   // BrowserWindow:
   void DeleteBrowserWindow() final;
 
+  int GetWasmTopChromeHeight() const;
   BrowserWidget& RequireBrowserWidget() const;
   void OnWebContentsDetached(views::WebView* web_view);
 
@@ -195,6 +198,7 @@ class BrowserView final : public BrowserWindow,
   base::RepeatingCallback<views::CloseRequestResult()>
       wasm_close_request_callback_;
   bool browser_window_deletion_in_progress_ = false;
+  raw_ptr<WasmTabStripView> wasm_tab_strip_ = nullptr;
   raw_ptr<WasmTopControlsView> wasm_top_controls_ = nullptr;
   raw_ptr<views::WebView> contents_web_view_ = nullptr;
   raw_ptr<content::WebContents> active_web_contents_ = nullptr;
