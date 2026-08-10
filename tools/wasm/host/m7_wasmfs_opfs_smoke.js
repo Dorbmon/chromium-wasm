@@ -2,22 +2,49 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Two-document, same-origin OPFS/WasmFS feasibility host. It deliberately
+// Same-origin, multi-document OPFS/WasmFS feasibility host. It deliberately
 // owns no persistent state: OPFS operations belong exclusively to the WasmFS
 // C++ smoke. The only OPFS-related JavaScript work here is a capability
 // inspection; it never invokes the OPFS directory method.
 
 const HOST_PROTOCOL = 1;
-const CASE = "m7_wasmfs_opfs_outer_reload";
-const SCOPE = "isolated-wasmfs-opfs-two-document-same-origin";
-const PERSISTENCE_SCOPE = "primitive-opfs-persistence-only";
+const CASE = "m7_wasmfs_opfs_interrupted_update_outer_reload";
+const SCOPE = "isolated-wasmfs-opfs-six-document-same-origin";
+const PERSISTENCE_SCOPE =
+    "primitive-opfs-persistence-and-application-boundary-recovery-only";
 const MODULE_NAME = "m7_wasmfs_opfs_smoke";
 const WRITE_PHASE = "write";
 const VERIFY_PHASE = "verify";
+const RECOVERY_PRECOMMIT_PHASE = "recovery-precommit";
+const RECOVERY_PRECOMMIT_VERIFY_PHASE = "recovery-precommit-verify";
+const RECOVERY_POSTCOMMIT_PHASE = "recovery-postcommit";
+const RECOVERY_POSTCOMMIT_VERIFY_PHASE = "recovery-postcommit-verify";
+const PHASES = Object.freeze([
+  WRITE_PHASE,
+  VERIFY_PHASE,
+  RECOVERY_PRECOMMIT_PHASE,
+  RECOVERY_PRECOMMIT_VERIFY_PHASE,
+  RECOVERY_POSTCOMMIT_PHASE,
+  RECOVERY_POSTCOMMIT_VERIFY_PHASE,
+]);
+const NEXT_PHASES = Object.freeze({
+  [WRITE_PHASE]: VERIFY_PHASE,
+  [VERIFY_PHASE]: RECOVERY_PRECOMMIT_PHASE,
+  [RECOVERY_PRECOMMIT_PHASE]: RECOVERY_PRECOMMIT_VERIFY_PHASE,
+  [RECOVERY_PRECOMMIT_VERIFY_PHASE]: RECOVERY_POSTCOMMIT_PHASE,
+  [RECOVERY_POSTCOMMIT_PHASE]: RECOVERY_POSTCOMMIT_VERIFY_PHASE,
+});
 const PHASE_SWITCH = "--m7-opfs-phase=";
 const RUN_SWITCH = "--m7-opfs-run=";
 const WRITE_READY_MARKER = "CHROMIUM_WASM_M7_OPFS:WRITE_READY";
 const VERIFY_STARTED_MARKER = "CHROMIUM_WASM_M7_OPFS:VERIFY_STARTED";
+const RECOVERY_INTERRUPTION_READY_MARKER =
+    "CHROMIUM_WASM_M7_OPFS:RECOVERY_INTERRUPTION_READY";
+const RECOVERY_VERIFY_STARTED_MARKER =
+    "CHROMIUM_WASM_M7_OPFS:RECOVERY_VERIFY_STARTED";
+const RECOVERY_READY_MARKER = "CHROMIUM_WASM_M7_OPFS:RECOVERY_READY";
+const RECOVERY_PRECOMMIT_BOUNDARY = "after_tmp_fdatasync_before_rename";
+const RECOVERY_POSTCOMMIT_BOUNDARY = "after_completed_rename_return";
 const PASS_MARKER = "CHROMIUM_WASM_M7_OPFS:PASS";
 const FAIL_MARKER = "CHROMIUM_WASM_M7_OPFS:FAIL";
 const RENAME_REPLACE_MARKER =
@@ -175,20 +202,94 @@ async function probeRequiredOpfsCapability() {
   });
 }
 
+function isKnownPhase(phase) {
+  return PHASES.includes(phase);
+}
+
+function isInitialPhase(phase) {
+  return phase === WRITE_PHASE;
+}
+
+function isRecoveryInterruptionPhase(phase) {
+  return phase === RECOVERY_PRECOMMIT_PHASE ||
+      phase === RECOVERY_POSTCOMMIT_PHASE;
+}
+
+function isRecoveryVerifyPhase(phase) {
+  return phase === RECOVERY_PRECOMMIT_VERIFY_PHASE ||
+      phase === RECOVERY_POSTCOMMIT_VERIFY_PHASE;
+}
+
+function recoveryBoundaryForPhase(phase) {
+  if (phase === RECOVERY_PRECOMMIT_PHASE ||
+      phase === RECOVERY_PRECOMMIT_VERIFY_PHASE) {
+    return RECOVERY_PRECOMMIT_BOUNDARY;
+  }
+  if (phase === RECOVERY_POSTCOMMIT_PHASE ||
+      phase === RECOVERY_POSTCOMMIT_VERIFY_PHASE) {
+    return RECOVERY_POSTCOMMIT_BOUNDARY;
+  }
+  return null;
+}
+
+function expectedPassMarker(phase) {
+  return PASS_MARKER + " phase=" + phase;
+}
+
+function expectedCompletionMarker(phase) {
+  const boundary = recoveryBoundaryForPhase(phase);
+  if (isRecoveryInterruptionPhase(phase) && boundary !== null) {
+    return RECOVERY_INTERRUPTION_READY_MARKER + " phase=" + phase +
+        " boundary=" + boundary +
+        " atomic_recovery=not_claimed database_recovery=not_claimed";
+  }
+  return expectedPassMarker(phase);
+}
+
+function expectedCompletionKind(phase) {
+  return isRecoveryInterruptionPhase(phase) ?
+      "interruption-ready" : "native-pass";
+}
+
+function expectedRecoveryVerifyStartedMarker(phase) {
+  const boundary = recoveryBoundaryForPhase(phase);
+  if (!isRecoveryVerifyPhase(phase) || boundary === null) {
+    return null;
+  }
+  return RECOVERY_VERIFY_STARTED_MARKER + " phase=" + phase +
+      " boundary=" + boundary;
+}
+
+function expectedRecoveryReadyMarker(phase) {
+  if (phase === RECOVERY_PRECOMMIT_VERIFY_PHASE) {
+    return RECOVERY_READY_MARKER + " phase=" + phase +
+        " outcome=retained_generation_a_discarded_temp" +
+        " atomic_recovery=not_claimed database_recovery=not_claimed" +
+        " cleanup=ok";
+  }
+  if (phase === RECOVERY_POSTCOMMIT_VERIFY_PHASE) {
+    return RECOVERY_READY_MARKER + " phase=" + phase +
+        " outcome=retained_generation_b_after_rename" +
+        " atomic_recovery=not_claimed database_recovery=not_claimed" +
+        " cleanup=ok";
+  }
+  return null;
+}
+
 function staticContext(query) {
   const token = oneQueryValue(query, "token");
   const phase = oneQueryValue(query, "phase");
   const runNamespace = oneQueryValue(query, "run");
   const timeoutMs = parseTimeout(oneQueryValue(query, "timeoutMs"));
   if (!RUN_NAMESPACE_RE.test(token) || !RUN_NAMESPACE_RE.test(runNamespace) ||
-      (phase !== WRITE_PHASE && phase !== VERIFY_PHASE)) {
+      !isKnownPhase(phase)) {
     throw new Error("M7 OPFS smoke query is invalid");
   }
 
   let priorTimeOrigin = null;
   let priorModuleIdentity = null;
   let outerReload = false;
-  if (phase === VERIFY_PHASE) {
+  if (!isInitialPhase(phase)) {
     requireOnlyQueryParameters(query, new Set([
       "token", "phase", "run", "timeoutMs", "priorTimeOrigin",
       "priorModuleIdentity", "outerReload",
@@ -197,7 +298,7 @@ function staticContext(query) {
     priorModuleIdentity = oneQueryValue(query, "priorModuleIdentity");
     outerReload = oneQueryValue(query, "outerReload") === "1";
     if (!MODULE_ID_RE.test(priorModuleIdentity) || !outerReload) {
-      throw new Error("M7 OPFS verify query lacks a fresh outer reload witness");
+      throw new Error("M7 OPFS phase lacks a fresh outer reload witness");
     }
   } else if (query.has("priorTimeOrigin") || query.has("priorModuleIdentity") ||
              query.has("outerReload")) {
@@ -233,23 +334,33 @@ function outputContainsExact(output, marker) {
       output.stderr.some((line) => line === marker);
 }
 
-function expectedPassMarker(phase) {
-  return PASS_MARKER + " phase=" + phase;
-}
-
 function nativeMarkerFailure(context, output) {
   if (outputContains(output, FAIL_MARKER)) {
     return "native WasmFS OPFS smoke emitted FAIL";
   }
-  if (!outputContainsExact(output, expectedPassMarker(context.phase))) {
-    return "native WasmFS OPFS smoke did not emit its exact PASS marker";
+  if (!outputContainsExact(output, expectedCompletionMarker(context.phase))) {
+    return "native WasmFS OPFS smoke did not emit its exact completion marker";
   }
-  const expected = context.phase === WRITE_PHASE ?
-      WRITE_READY_MARKER : VERIFY_STARTED_MARKER;
-  if (!outputContains(output, expected)) {
+  if (context.phase === WRITE_PHASE &&
+      !outputContains(output, WRITE_READY_MARKER)) {
     return "native WasmFS OPFS smoke did not emit its phase marker";
   }
-  if (!outputContains(output, RENAME_REPLACE_MARKER)) {
+  if (context.phase === VERIFY_PHASE &&
+      !outputContains(output, VERIFY_STARTED_MARKER)) {
+    return "native WasmFS OPFS smoke did not emit its phase marker";
+  }
+  const recoveryVerifyStarted = expectedRecoveryVerifyStartedMarker(context.phase);
+  if (recoveryVerifyStarted !== null &&
+      !outputContains(output, recoveryVerifyStarted)) {
+    return "native WasmFS OPFS smoke did not begin fresh recovery verification";
+  }
+  const recoveryReady = expectedRecoveryReadyMarker(context.phase);
+  if (recoveryReady !== null &&
+      !outputContainsExact(output, recoveryReady)) {
+    return "native WasmFS OPFS smoke did not report recovery disposition";
+  }
+  if ((context.phase === WRITE_PHASE || context.phase === VERIFY_PHASE) &&
+      !outputContains(output, RENAME_REPLACE_MARKER)) {
     return "native WasmFS OPFS smoke did not confirm completed rename replacement";
   }
   return null;
@@ -285,7 +396,7 @@ function waitForRuntimeCompletion(runtimeCompletion, timeoutMs) {
   let timeoutId = null;
   const timeout = new Promise((_, reject) => {
     timeoutId = setTimeout(() => {
-      reject(new Error("M7 OPFS runtime did not report exact PASS before timeout"));
+      reject(new Error("M7 OPFS runtime did not report its exact completion marker before timeout"));
     }, timeoutMs);
   });
   return Promise.race([runtimeCompletion, timeout]).finally(() => {
@@ -342,16 +453,17 @@ async function runRuntime(context) {
         runtimeExitCode = Number(code);
       }
       if (!completionObserved) {
-        reportCompletion(null, "M7 OPFS runtime exited before exact PASS");
+        reportCompletion(null, "M7 OPFS runtime exited before exact completion");
       }
     };
   });
-  const expectedCompletionMarker = expectedPassMarker(context.phase);
+  const expectedRuntimeCompletionMarker =
+      expectedCompletionMarker(context.phase);
   const captureNativeOutput = (destination, line) => {
     const capturedLine = appendBounded(destination, line, context.runNamespace);
     if (capturedLine.startsWith(FAIL_MARKER)) {
       reportCompletion(null, "native WasmFS OPFS smoke emitted FAIL");
-    } else if (capturedLine === expectedCompletionMarker) {
+    } else if (capturedLine === expectedRuntimeCompletionMarker) {
       reportCompletion(capturedLine, null);
     }
   };
@@ -389,7 +501,7 @@ async function runRuntime(context) {
     onRuntimeInitialized() { runtimeInitialized = true; },
     onAbort(reason) {
       abort = String(reason);
-      reportCompletion(null, "M7 OPFS runtime aborted before exact PASS");
+      reportCompletion(null, "M7 OPFS runtime aborted before exact completion");
     },
     onExit(code) { reportExit(code); },
   });
@@ -431,7 +543,7 @@ async function runRuntime(context) {
 
 function baseResult(context) {
   const timeOrigin = performance.timeOrigin;
-  const freshOuterDocument = context.phase === VERIFY_PHASE &&
+  const freshOuterDocument = !isInitialPhase(context.phase) &&
       context.outerReload && context.priorTimeOrigin !== null &&
       timeOrigin > context.priorTimeOrigin;
   return {
@@ -446,16 +558,17 @@ function baseResult(context) {
     sharedArrayBuffer: typeof SharedArrayBuffer === "function",
     opfsCapability: false,
     opfsFallbackUsed: false,
-    // This feasibility lane intentionally proves only primitive durable file
-    // behavior. WasmFS currently shares an OPFS OpenState inside one module,
-    // so it must not be represented as cross-module access-handle or Chromium
+    // This feasibility lane proves primitive durable file behavior and two
+    // application-visible interrupted-update cut points. It does not inject a
+    // failure inside OPFS move(), and WasmFS currently shares an OPFS OpenState
+    // inside one module, so it is not cross-module access-handle or Chromium
     // file-lock evidence.
     persistenceScope: PERSISTENCE_SCOPE,
-    // The native smoke verifies a completed replacement of an existing durable
-    // file after a fresh document. It cannot interrupt the underlying async
-    // move, so it must not be represented as atomic crash-recovery proof.
     completedRenameReplacePersistence: false,
+    interruptedUpdateBoundary: recoveryBoundaryForPhase(context.phase),
+    interruptedUpdateRecoveryProven: false,
     atomicRecoveryProven: false,
+    databaseRecoveryProven: false,
     fileLockSemanticsProven: false,
     concurrentAccessHandleSemanticsProven: false,
     outerReload: context.outerReload,
@@ -468,8 +581,9 @@ function baseResult(context) {
     runtimeExitCode: null,
     completionObserved: false,
     completionMarker: null,
+    completionKind: expectedCompletionKind(context.phase),
     runtimeLifecycle: "not-observed",
-    // The target intentionally retains its live runtime after the exact PASS
+    // The target intentionally retains its live runtime after its completion
     // marker. The following location.replace() destroys this isolated outer
     // document; it is not a graceful WasmFS/backend/thread shutdown claim.
     teardownMode: "outer-document",
@@ -489,8 +603,8 @@ async function executePhase(context) {
     result.error = "required OPFS synchronous-access capability is unavailable";
     return result;
   }
-  if (context.phase === VERIFY_PHASE && !result.freshOuterDocument) {
-    result.error = "verify phase did not start in a fresh outer document";
+  if (!isInitialPhase(context.phase) && !result.freshOuterDocument) {
+    result.error = "phase did not start in a fresh outer document";
     return result;
   }
 
@@ -505,12 +619,16 @@ async function executePhase(context) {
     result.stdout = runtime.output.stdout;
     result.stderr = runtime.output.stderr;
     result.moduleIdentity = runtime.moduleIdentity;
-    result.freshModuleIdentity = context.phase === VERIFY_PHASE &&
+    result.freshModuleIdentity = !isInitialPhase(context.phase) &&
         context.priorModuleIdentity !== null &&
         result.moduleIdentity !== context.priorModuleIdentity;
     const markerFailure = nativeMarkerFailure(context, runtime.output);
     result.completedRenameReplacePersistence =
+        (context.phase === WRITE_PHASE || context.phase === VERIFY_PHASE) &&
         outputContains(runtime.output, RENAME_REPLACE_MARKER);
+    const recoveryReady = expectedRecoveryReadyMarker(context.phase);
+    result.interruptedUpdateRecoveryProven = recoveryReady !== null &&
+        outputContainsExact(runtime.output, recoveryReady);
     result.runtimeLifecycle = runtime.completionObserved &&
         runtime.runtimeExitCode === null && runtime.abort === null ?
         "live-runtime" : "not-live-runtime";
@@ -519,12 +637,12 @@ async function executePhase(context) {
     } else if (runtime.abort !== null) {
       result.error = "M7 OPFS runtime aborted";
     } else if (!runtime.completionObserved ||
-               runtime.completionMarker !== expectedPassMarker(context.phase)) {
-      result.error = "M7 OPFS runtime did not report exact PASS completion";
+               runtime.completionMarker !== expectedCompletionMarker(context.phase)) {
+      result.error = "M7 OPFS runtime did not report exact completion";
     } else if (!runtime.runtimeInitialized) {
       result.error = "M7 OPFS runtime never initialized";
-    } else if (context.phase === VERIFY_PHASE && !result.freshModuleIdentity) {
-      result.error = "verify phase did not create a fresh Module";
+    } else if (!isInitialPhase(context.phase) && !result.freshModuleIdentity) {
+      result.error = "phase did not create a fresh Module";
     } else if (markerFailure !== null) {
       result.error = markerFailure;
     } else {
@@ -556,28 +674,35 @@ async function postResult(context, result) {
 }
 
 function verifyResultShape(result) {
+  const regularPersistencePhase = result.phase === WRITE_PHASE ||
+      result.phase === VERIFY_PHASE;
+  const recoveryVerify = isRecoveryVerifyPhase(result.phase);
   if (result.status !== "pass" || result.opfsFallbackUsed !== false ||
       result.crossOriginIsolated !== true || result.sharedArrayBuffer !== true ||
       result.opfsCapability !== true || result.origin !== location.origin ||
       result.persistenceScope !== PERSISTENCE_SCOPE ||
-      result.completedRenameReplacePersistence !== true ||
+      result.completedRenameReplacePersistence !== regularPersistencePhase ||
+      result.interruptedUpdateBoundary !== recoveryBoundaryForPhase(result.phase) ||
+      result.interruptedUpdateRecoveryProven !== recoveryVerify ||
       result.atomicRecoveryProven !== false ||
+      result.databaseRecoveryProven !== false ||
       result.fileLockSemanticsProven !== false ||
       result.concurrentAccessHandleSemanticsProven !== false ||
       result.runtimeInitialized !== true ||
       result.factorySettled !== true || result.runtimeExitCode !== null ||
       result.completionObserved !== true ||
-      result.completionMarker !== expectedPassMarker(result.phase) ||
+      result.completionMarker !== expectedCompletionMarker(result.phase) ||
+      result.completionKind !== expectedCompletionKind(result.phase) ||
       result.runtimeLifecycle !== "live-runtime" ||
       result.teardownMode !== "outer-document" ||
       result.abort !== null || result.error !== null) {
     throw new Error("M7 OPFS runtime result is incomplete");
   }
-  if (result.phase === VERIFY_PHASE &&
+  if (!isInitialPhase(result.phase) &&
       (!result.outerReload || !result.freshOuterDocument || !result.freshModuleIdentity)) {
-    throw new Error("M7 OPFS verify result lacks fresh outer-reload proof");
+    throw new Error("M7 OPFS result lacks fresh outer-reload proof");
   }
-  if (result.phase === WRITE_PHASE &&
+  if (isInitialPhase(result.phase) &&
       (result.outerReload || result.freshOuterDocument || result.freshModuleIdentity)) {
     throw new Error("M7 OPFS write result contains outer-reload evidence");
   }
@@ -590,19 +715,21 @@ export async function runM7WasmfsOpfsSmokeFromQuery() {
   await postResult(context, result);
   verifyResultShape(result);
 
-  if (context.phase === WRITE_PHASE) {
-    // This is intentionally a whole-document navigation. The verify phase has
-    // a new JavaScript realm, a new Emscripten factory, and a new Wasm Module.
-    // It is the intentional teardown boundary for the write runtime, which
-    // remains live after its exact PASS marker; no graceful runtime shutdown
-    // is exercised or claimed by this smoke.
-    const verifyUrl = new URL(location.href);
-    verifyUrl.searchParams.set("phase", VERIFY_PHASE);
-    verifyUrl.searchParams.set("outerReload", "1");
-    verifyUrl.searchParams.set("priorTimeOrigin", String(result.timeOrigin));
-    verifyUrl.searchParams.set("priorModuleIdentity", result.moduleIdentity);
-    location.replace(verifyUrl.href);
+  // Every phase ends in a whole-document navigation. The next phase receives
+  // a new JavaScript realm, Emscripten factory, and Wasm Module. This is the
+  // intentional abrupt teardown boundary for the two interruption phases; no
+  // graceful WasmFS/backend/thread shutdown is exercised or claimed.
+  const nextPhase = NEXT_PHASES[context.phase];
+  if (nextPhase === undefined) {
+    location.replace(new URL("./complete", location.href).href);
+    return result;
   }
+  const nextUrl = new URL(location.href);
+  nextUrl.searchParams.set("phase", nextPhase);
+  nextUrl.searchParams.set("outerReload", "1");
+  nextUrl.searchParams.set("priorTimeOrigin", String(result.timeOrigin));
+  nextUrl.searchParams.set("priorModuleIdentity", result.moduleIdentity);
+  location.replace(nextUrl.href);
   return result;
 }
 
@@ -610,10 +737,13 @@ export const m7WasmfsOpfsSmokeContract = Object.freeze({
   protocol: HOST_PROTOCOL,
   case: CASE,
   scope: SCOPE,
-  phases: Object.freeze([WRITE_PHASE, VERIFY_PHASE]),
+  phases: PHASES,
   nativeMarkers: Object.freeze([
     WRITE_READY_MARKER,
     VERIFY_STARTED_MARKER,
+    RECOVERY_INTERRUPTION_READY_MARKER,
+    RECOVERY_VERIFY_STARTED_MARKER,
+    RECOVERY_READY_MARKER,
     RENAME_REPLACE_MARKER,
     PASS_MARKER,
     FAIL_MARKER,

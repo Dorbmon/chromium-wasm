@@ -31,15 +31,21 @@ class M7WasmfsOpfsSmokeContractTest(unittest.TestCase):
         )
         self.assertNotIn("m7_wasmfs_opfs_smoke", chrome_build)
 
-    def test_source_has_a_strict_two_phase_opfs_contract(self) -> None:
+    def test_source_has_a_strict_multi_phase_opfs_contract(self) -> None:
         smoke = source("tools/wasm/m7_wasmfs_opfs_smoke.cc")
 
         for token in (
             'constexpr char kWritePhase[] = "write";',
             'constexpr char kVerifyPhase[] = "verify";',
+            'constexpr char kRecoveryPrecommitPhase[] = "recovery-precommit";',
+            '"recovery-precommit-verify";',
+            'constexpr char kRecoveryPostcommitPhase[] = "recovery-postcommit";',
+            '"recovery-postcommit-verify";',
             'constexpr char kPhasePrefix[] = "--m7-opfs-phase=";',
             'constexpr char kRunPrefix[] = "--m7-opfs-run=";',
             "bool IsValidRunId(std::string_view run_id)",
+            "bool IsKnownPhase(std::string_view phase)",
+            "bool IsRecoveryInterruptionPhase(std::string_view phase)",
             "return std::isalnum(value) || value == '-' || value == '_';",
             "wasmfs_create_opfs_backend()",
             "wasmfs_create_directory(mount_point, 0700, backend)",
@@ -146,11 +152,94 @@ class M7WasmfsOpfsSmokeContractTest(unittest.TestCase):
         self.assertIn("#include <emscripten/emscripten.h>", smoke)
         self.assertIn("emscripten_exit_with_live_runtime();", smoke)
         self.assertIn("outer document replacement dispose the live runtime", smoke)
-        self.assertIn("not orderly WasmFS\n  // shutdown or crash recovery", smoke)
+        self.assertIn("OPFS/database crash-recovery durability", smoke)
         main = re.search(r"int main\(int argc, char\* argv\[\]\) \{(?P<body>.*)", smoke, re.DOTALL)
         self.assertIsNotNone(main)
         body = main.group("body")
-        self.assertLess(body.index(":PASS phase=%s"), body.index("emscripten_exit_with_live_runtime();"))
+        interruption_exit = body.index("if (IsRecoveryInterruptionPhase")
+        pass_marker = body.index(":PASS phase=%s")
+        final_exit = body.rindex("emscripten_exit_with_live_runtime();")
+        self.assertLess(interruption_exit, pass_marker)
+        self.assertLess(pass_marker, final_exit)
+
+    def test_recovery_boundaries_are_outer_document_only(self) -> None:
+        smoke = source("tools/wasm/m7_wasmfs_opfs_smoke.cc")
+        precommit = re.search(
+            r"void RunRecoveryPrecommitPhase\(const FixturePaths& paths\) "
+            r"\{(?P<body>.*?)\n\}",
+            smoke,
+            re.DOTALL,
+        )
+        precommit_verify = re.search(
+            r"void RunRecoveryPrecommitVerifyPhase\(const FixturePaths& paths\) "
+            r"\{(?P<body>.*?)\n\}",
+            smoke,
+            re.DOTALL,
+        )
+        postcommit = re.search(
+            r"void RunRecoveryPostcommitPhase\(const FixturePaths& paths\) "
+            r"\{(?P<body>.*?)\n\}",
+            smoke,
+            re.DOTALL,
+        )
+        postcommit_verify = re.search(
+            r"void RunRecoveryPostcommitVerifyPhase\(const FixturePaths& paths\) "
+            r"\{(?P<body>.*?)\n\}",
+            smoke,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(precommit)
+        self.assertIsNotNone(precommit_verify)
+        self.assertIsNotNone(postcommit)
+        self.assertIsNotNone(postcommit_verify)
+
+        precommit_body = precommit.group("body")
+        precommit_verify_body = precommit_verify.group("body")
+        postcommit_body = postcommit.group("body")
+        postcommit_verify_body = postcommit_verify.group("body")
+        self.assertLess(
+            precommit_body.index("CreateRecoveryFixture(paths)"),
+            precommit_body.index("PrintRecoveryInterruptionReady"),
+        )
+        self.assertNotIn(
+            "rename(paths.temporary_commit.c_str(), paths.commit.c_str())",
+            precommit_body,
+        )
+        self.assertLess(
+            postcommit_body.index(
+                "rename(paths.temporary_commit.c_str(), paths.commit.c_str())"
+            ),
+            postcommit_body.index("PrintRecoveryInterruptionReady"),
+        )
+        self.assertLess(
+            precommit_verify_body.index(
+                "VerifyExactFile(paths.commit, kCommitGenerationAData"
+            ),
+            precommit_verify_body.index("RemoveFile(paths.temporary_commit"),
+        )
+        self.assertLess(
+            precommit_verify_body.index("RemoveFile(paths.temporary_commit"),
+            precommit_verify_body.index(
+                "VerifyExactFile(paths.commit, kCommitGenerationAData",
+                precommit_verify_body.index("RemoveFile(paths.temporary_commit"),
+            ),
+        )
+        self.assertIn("Require(IsMissing(paths.temporary_commit)", postcommit_verify_body)
+        self.assertIn(
+            "VerifyExactFile(paths.commit, kCommitGenerationBData",
+            postcommit_verify_body,
+        )
+        for token in (
+            "not a hook inside OPFS move()",
+            "not a SQLite or LevelDB journal",
+            "atomic_recovery=not_claimed",
+            "database_recovery=not_claimed",
+            "cleanup=ok",
+            "RECOVERY_INTERRUPTION_READY",
+            "RECOVERY_READY",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, smoke)
 
     def test_verify_started_precedes_any_persistence_read(self) -> None:
         smoke = source("tools/wasm/m7_wasmfs_opfs_smoke.cc")

@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import copy
 import http.client
 import json
 from pathlib import Path
@@ -31,13 +30,36 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 RESULT_TOKEN = "result-token-for-m7-opfs-123456"
 RUN_NAMESPACE = "run-namespace-for-m7-opfs-123456"
 ORIGIN = "http://127.0.0.1:43127"
-WRITE_MODULE_ID = "1" * 32
-VERIFY_MODULE_ID = "2" * 32
+MODULE_IDS = {
+    phase: format(index + 1, "x") * 32 for index, phase in enumerate(smoke.PHASES)
+}
+TIME_ORIGINS = {
+    phase: 1000.25 + index for index, phase in enumerate(smoke.PHASES)
+}
+
+
+def prior_phase(phase: str) -> str | None:
+    index = smoke.PHASES.index(phase)
+    return None if index == 0 else smoke.PHASES[index - 1]
 
 
 def passing_result(phase: str) -> dict[str, object]:
-    is_write = phase == smoke.WRITE_PHASE
-    marker = smoke.WRITE_READY_MARKER if is_write else smoke.VERIFY_STARTED_MARKER
+    is_write = smoke.is_initial_phase(phase)
+    previous_phase = prior_phase(phase)
+    completion_marker = smoke.expected_completion_marker(phase)
+    stdout: list[str] = []
+    if phase == smoke.WRITE_PHASE:
+        stdout.extend([smoke.WRITE_READY_MARKER, smoke.RENAME_REPLACE_MARKER])
+    elif phase == smoke.VERIFY_PHASE:
+        stdout.extend([smoke.VERIFY_STARTED_MARKER, smoke.RENAME_REPLACE_MARKER])
+    else:
+        recovery_verify_started = smoke.expected_recovery_verify_started_marker(phase)
+        if recovery_verify_started is not None:
+            stdout.append(recovery_verify_started)
+        recovery_ready = smoke.expected_recovery_ready_marker(phase)
+        if recovery_ready is not None:
+            stdout.append(recovery_ready)
+    stdout.append(completion_marker)
     return {
         "protocol": 1,
         "case": smoke.CASE,
@@ -51,42 +73,56 @@ def passing_result(phase: str) -> dict[str, object]:
         "opfsCapability": True,
         "opfsFallbackUsed": False,
         "persistenceScope": smoke.PERSISTENCE_SCOPE,
-        "completedRenameReplacePersistence": True,
+        "completedRenameReplacePersistence": phase
+        in (smoke.WRITE_PHASE, smoke.VERIFY_PHASE),
+        "interruptedUpdateBoundary": smoke.recovery_boundary_for_phase(phase),
+        "interruptedUpdateRecoveryProven": smoke.is_recovery_verify_phase(phase),
         "atomicRecoveryProven": False,
+        "databaseRecoveryProven": False,
         "fileLockSemanticsProven": False,
         "concurrentAccessHandleSemanticsProven": False,
         "outerReload": not is_write,
-        "timeOrigin": 1000.25 if is_write else 1001.5,
-        "priorTimeOrigin": None if is_write else 1000.25,
-        "moduleIdentity": WRITE_MODULE_ID if is_write else VERIFY_MODULE_ID,
-        "priorModuleIdentity": None if is_write else WRITE_MODULE_ID,
+        "timeOrigin": TIME_ORIGINS[phase],
+        "priorTimeOrigin": (
+            None if previous_phase is None else TIME_ORIGINS[previous_phase]
+        ),
+        "moduleIdentity": MODULE_IDS[phase],
+        "priorModuleIdentity": (
+            None if previous_phase is None else MODULE_IDS[previous_phase]
+        ),
         "freshOuterDocument": False if is_write else True,
         "freshModuleIdentity": False if is_write else True,
-        # The two documents intentionally tear down their still-live runtimes
+        # Every document intentionally tears down its still-live runtime
         # through outer navigation, rather than exercising native shutdown.
         "runtimeExitCode": None,
         "completionObserved": True,
-        "completionMarker": f"{smoke.PASS_MARKER} phase={phase}",
+        "completionMarker": completion_marker,
+        "completionKind": smoke.expected_completion_kind(phase),
         "runtimeLifecycle": "live-runtime",
         "teardownMode": "outer-document",
         "factorySettled": True,
         "runtimeInitialized": True,
         "abort": None,
-        "stdout": [
-            marker,
-            smoke.RENAME_REPLACE_MARKER,
-            f"{smoke.PASS_MARKER} phase={phase}",
-        ],
+        "stdout": stdout,
         "stderr": [],
         "error": None,
     }
 
 
 class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
-    def test_validate_result_pair_accepts_two_fresh_documents(self) -> None:
+    def test_validate_result_pair_accepts_the_baseline_persistence_documents(
+        self,
+    ) -> None:
         smoke.validate_result_pair(
             passing_result(smoke.WRITE_PHASE),
             passing_result(smoke.VERIFY_PHASE),
+            expected_run_namespace=RUN_NAMESPACE,
+            expected_origin=ORIGIN,
+        )
+
+    def test_validate_result_sequence_accepts_six_outer_documents(self) -> None:
+        smoke.validate_result_sequence(
+            {phase: passing_result(phase) for phase in smoke.PHASES},
             expected_run_namespace=RUN_NAMESPACE,
             expected_origin=ORIGIN,
         )
@@ -129,7 +165,7 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         write = passing_result(smoke.WRITE_PHASE)
         write["stdout"] = [
             smoke.WRITE_READY_MARKER,
-            f"{smoke.PASS_MARKER} phase={smoke.WRITE_PHASE}",
+            smoke.expected_completion_marker(smoke.WRITE_PHASE),
         ]
         with self.assertRaises(M0Error):
             smoke.validate_result_pair(
@@ -144,8 +180,8 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
             ("outerReload", False),
             ("freshOuterDocument", False),
             ("freshModuleIdentity", False),
-            ("timeOrigin", 1000.25),
-            ("moduleIdentity", WRITE_MODULE_ID),
+            ("timeOrigin", TIME_ORIGINS[smoke.WRITE_PHASE]),
+            ("moduleIdentity", MODULE_IDS[smoke.WRITE_PHASE]),
         ):
             with self.subTest(field=field):
                 write = passing_result(smoke.WRITE_PHASE)
@@ -175,7 +211,7 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         for field, value in (
             ("runtimeExitCode", 0),
             ("completionObserved", False),
-            ("completionMarker", f"{smoke.PASS_MARKER} phase=verify"),
+            ("completionMarker", "wrong-completion-marker"),
             ("runtimeLifecycle", "not-live-runtime"),
             ("teardownMode", "graceful"),
         ):
@@ -190,13 +226,79 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
                         expected_origin=ORIGIN,
                     )
 
-    def test_validate_result_pair_requires_exact_phase_qualified_pass_marker(self) -> None:
+    def test_validate_result_pair_requires_exact_phase_qualified_completion_marker(
+        self,
+    ) -> None:
         write = passing_result(smoke.WRITE_PHASE)
         write["stdout"] = [smoke.WRITE_READY_MARKER, smoke.PASS_MARKER]
         with self.assertRaises(M0Error):
             smoke.validate_result_pair(
                 write,
                 passing_result(smoke.VERIFY_PHASE),
+                expected_run_namespace=RUN_NAMESPACE,
+                expected_origin=ORIGIN,
+            )
+
+    def test_validate_result_sequence_rejects_atomic_and_database_claims(self) -> None:
+        for field in ("atomicRecoveryProven", "databaseRecoveryProven"):
+            with self.subTest(field=field):
+                results = {phase: passing_result(phase) for phase in smoke.PHASES}
+                results[smoke.RECOVERY_PRECOMMIT_VERIFY_PHASE][field] = True
+                with self.assertRaises(M0Error):
+                    smoke.validate_result_sequence(
+                        results,
+                        expected_run_namespace=RUN_NAMESPACE,
+                        expected_origin=ORIGIN,
+                    )
+
+    def test_recovery_verification_requires_the_matching_boundary_and_marker(
+        self,
+    ) -> None:
+        phase = smoke.RECOVERY_POSTCOMMIT_VERIFY_PHASE
+        for field, value in (
+            ("interruptedUpdateBoundary", smoke.RECOVERY_PRECOMMIT_BOUNDARY),
+            ("interruptedUpdateRecoveryProven", False),
+        ):
+            with self.subTest(field=field):
+                results = {
+                    phase_name: passing_result(phase_name)
+                    for phase_name in smoke.PHASES
+                }
+                results[phase][field] = value
+                with self.assertRaises(M0Error):
+                    smoke.validate_result_sequence(
+                        results,
+                        expected_run_namespace=RUN_NAMESPACE,
+                        expected_origin=ORIGIN,
+                    )
+
+        results = {
+            phase_name: passing_result(phase_name) for phase_name in smoke.PHASES
+        }
+        recovery_ready = smoke.expected_recovery_ready_marker(phase)
+        self.assertIsNotNone(recovery_ready)
+        results[phase]["stdout"] = [
+            smoke.expected_recovery_verify_started_marker(phase),
+            recovery_ready.removesuffix(" cleanup=ok"),
+            smoke.expected_completion_marker(phase),
+        ]
+        with self.assertRaises(M0Error):
+            smoke.validate_result_sequence(
+                results,
+                expected_run_namespace=RUN_NAMESPACE,
+                expected_origin=ORIGIN,
+            )
+
+    def test_interruption_phase_requires_its_non_pass_completion_marker(self) -> None:
+        phase = smoke.RECOVERY_PRECOMMIT_PHASE
+        result = passing_result(phase)
+        result["completionMarker"] = f"{smoke.PASS_MARKER} phase={phase}"
+        result["completionKind"] = "native-pass"
+        result["stdout"] = [f"{smoke.PASS_MARKER} phase={phase}"]
+        with self.assertRaises(M0Error):
+            smoke.validate_phase_result(
+                result,
+                expected_phase=phase,
                 expected_run_namespace=RUN_NAMESPACE,
                 expected_origin=ORIGIN,
             )
@@ -241,7 +343,9 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
             )
         )
 
-    def test_terminal_host_failure_is_reported_without_waiting_for_verify(self) -> None:
+    def test_terminal_host_failure_is_reported_without_waiting_for_all_phases(
+        self,
+    ) -> None:
         results: dict[str, dict[str, object]] = {}
         result_queue: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
         failed = passing_result(smoke.WRITE_PHASE)
@@ -251,7 +355,7 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         browser = mock.Mock()
         browser.poll.return_value = None
         with self.assertRaisesRegex(M0Error, "write host reported failure"):
-            smoke.wait_for_result_pair(
+            smoke.wait_for_result_sequence(
                 browser,
                 deque(),
                 result_queue,
@@ -280,7 +384,7 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
             )
             (out_dir / f"{smoke.MODULE_NAME}.wasm").write_bytes(b"\\0asm")
             result_queue: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue(
-                maxsize=2
+                maxsize=len(smoke.PHASES)
             )
             server = smoke.create_server(
                 "127.0.0.1",
@@ -326,6 +430,8 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
                 self.assertEqual(status, 404)
                 status, _, _ = request("GET", f"{smoke.HOST_ROOT}/unexpected")
                 self.assertEqual(status, 404)
+                status, _, _ = request("GET", f"{smoke.HOST_ROOT}/complete")
+                self.assertEqual(status, 200)
 
                 result = {
                     "protocol": 1,
@@ -379,16 +485,25 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         self.assertIn("opfsFallbackUsed: false", host)
         self.assertIn("persistenceScope: PERSISTENCE_SCOPE", host)
         self.assertIn("completedRenameReplacePersistence: false", host)
+        self.assertIn("interruptedUpdateBoundary: recoveryBoundaryForPhase", host)
+        self.assertIn("interruptedUpdateRecoveryProven: false", host)
         self.assertIn("atomicRecoveryProven: false", host)
+        self.assertIn("databaseRecoveryProven: false", host)
+        self.assertIn('const RECOVERY_PRECOMMIT_PHASE = "recovery-precommit";', host)
+        self.assertIn('const RECOVERY_POSTCOMMIT_PHASE = "recovery-postcommit";', host)
+        self.assertIn("const NEXT_PHASES = Object.freeze({", host)
+        self.assertIn("function expectedCompletionMarker(phase)", host)
         self.assertIn("const RENAME_REPLACE_MARKER =", host)
         self.assertIn("outputContains(runtime.output, RENAME_REPLACE_MARKER)", host)
         self.assertIn("fileLockSemanticsProven: false", host)
         self.assertIn("concurrentAccessHandleSemanticsProven: false", host)
         self.assertIn("await postResult(context, result);", host)
-        self.assertIn("location.replace(verifyUrl.href);", host)
+        self.assertIn("const nextPhase = NEXT_PHASES[context.phase];", host)
+        self.assertIn("location.replace(nextUrl.href);", host)
+        self.assertIn('new URL("./complete", location.href)', host)
         self.assertLess(
             host.index("await postResult(context, result);"),
-            host.index("location.replace(verifyUrl.href);"),
+            host.index("location.replace(nextUrl.href);"),
         )
         self.assertIn("timeOrigin > context.priorTimeOrigin", host)
         self.assertIn("bindModuleIdentity(module, moduleIdentity);", host)
@@ -447,18 +562,24 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         self.assertNotIn("--module-name", runner)
         self.assertIn('"Cross-Origin-Opener-Policy", "same-origin"', runner)
         self.assertIn('"Cross-Origin-Embedder-Policy", "require-corp"', runner)
-        self.assertIn("TemporaryDirectory(prefix=\"chromium-wasm-m7-opfs-outer-\")", runner)
+        self.assertIn('prefix="chromium-wasm-m7-opfs-outer-"', runner)
         self.assertIn("browser_command(", runner)
         self.assertIn("location.replace()", runner)
         self.assertIn("redact_opaque_value(results, result_token, run_namespace)", runner)
         self.assertIn('"runtimeExitCode": None', runner)
-        self.assertIn('"completedRenameReplacePersistence": True', runner)
+        self.assertIn("regular_persistence_phase = expected_phase", runner)
+        self.assertIn('"completedRenameReplacePersistence": regular_persistence_phase', runner)
+        self.assertIn('"interruptedUpdateRecoveryProven": recovery_verify_phase', runner)
         self.assertIn('"atomicRecoveryProven": False', runner)
+        self.assertIn('"databaseRecoveryProven": False', runner)
         self.assertIn("RENAME_REPLACE_MARKER", runner)
         self.assertIn('"completionObserved": True', runner)
         self.assertIn('"runtimeLifecycle": "live-runtime"', runner)
         self.assertIn('"teardownMode": "outer-document"', runner)
         self.assertIn("def _require_exact_output", runner)
+        self.assertIn("def validate_result_sequence", runner)
+        self.assertIn("def wait_for_result_sequence", runner)
+        self.assertIn("maxsize=len(PHASES)", runner)
         for forbidden in (
             "Page.reload",
             "location.reload",

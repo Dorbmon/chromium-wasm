@@ -3,16 +3,18 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run the isolated two-document WasmFS/OPFS persistence feasibility smoke.
+"""Run the isolated multi-document WasmFS/OPFS persistence feasibility smoke.
 
 The host page never reads or writes OPFS. It starts a dedicated Wasm executable
-with an opaque per-run namespace, waits for its exact native PASS marker while
-the target retains a live runtime, and then performs a full same-origin
-`location.replace()` into a new document. That outer document teardown is
-intentional and is not an orderly WasmFS/backend/thread shutdown claim. The
-new document creates a new Emscripten Module and verifies only primitive
-durable filesystem behavior. This is deliberately not a Chrome profile mount,
-database recovery, or file-locking claim.
+with an opaque per-run namespace, waits for the exact native completion marker
+while the target retains a live runtime, and then performs a full same-origin
+`location.replace()` into a new document. Two intentional application-visible
+cut points bracket a durable temporary generation and a completed rename. That
+outer document teardown is intentional and is not an orderly
+WasmFS/backend/thread shutdown claim. Fresh documents verify the narrow
+recovery policy at those cut points. This is deliberately not a Chrome profile
+mount, a failure injected inside OPFS move(), database recovery, or a
+file-locking claim.
 """
 
 from __future__ import annotations
@@ -40,11 +42,25 @@ from run_browser_smoke import browser_command, drain_stream, find_browser, stop_
 
 
 SENTINEL = "CHROMIUM_WASM_M7_WASMFS_OPFS_DOM"
-CASE = "m7_wasmfs_opfs_outer_reload"
-SCOPE = "isolated-wasmfs-opfs-two-document-same-origin"
-PERSISTENCE_SCOPE = "primitive-opfs-persistence-only"
+CASE = "m7_wasmfs_opfs_interrupted_update_outer_reload"
+SCOPE = "isolated-wasmfs-opfs-six-document-same-origin"
+PERSISTENCE_SCOPE = (
+    "primitive-opfs-persistence-and-application-boundary-recovery-only"
+)
 WRITE_PHASE = "write"
 VERIFY_PHASE = "verify"
+RECOVERY_PRECOMMIT_PHASE = "recovery-precommit"
+RECOVERY_PRECOMMIT_VERIFY_PHASE = "recovery-precommit-verify"
+RECOVERY_POSTCOMMIT_PHASE = "recovery-postcommit"
+RECOVERY_POSTCOMMIT_VERIFY_PHASE = "recovery-postcommit-verify"
+PHASES = (
+    WRITE_PHASE,
+    VERIFY_PHASE,
+    RECOVERY_PRECOMMIT_PHASE,
+    RECOVERY_PRECOMMIT_VERIFY_PHASE,
+    RECOVERY_POSTCOMMIT_PHASE,
+    RECOVERY_POSTCOMMIT_VERIFY_PHASE,
+)
 DEFAULT_OUT_DIR = Path("out/wasm-chrome-m6")
 MODULE_NAME = "m7_wasmfs_opfs_smoke"
 HOST_ROOT = "/__m7_wasmfs_opfs_smoke__"
@@ -54,9 +70,83 @@ OPAQUE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 MODULE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 WRITE_READY_MARKER = "CHROMIUM_WASM_M7_OPFS:WRITE_READY"
 VERIFY_STARTED_MARKER = "CHROMIUM_WASM_M7_OPFS:VERIFY_STARTED"
+RECOVERY_INTERRUPTION_READY_MARKER = (
+    "CHROMIUM_WASM_M7_OPFS:RECOVERY_INTERRUPTION_READY"
+)
+RECOVERY_VERIFY_STARTED_MARKER = "CHROMIUM_WASM_M7_OPFS:RECOVERY_VERIFY_STARTED"
+RECOVERY_READY_MARKER = "CHROMIUM_WASM_M7_OPFS:RECOVERY_READY"
+RECOVERY_PRECOMMIT_BOUNDARY = "after_tmp_fdatasync_before_rename"
+RECOVERY_POSTCOMMIT_BOUNDARY = "after_completed_rename_return"
 PASS_MARKER = "CHROMIUM_WASM_M7_OPFS:PASS"
 FAIL_MARKER = "CHROMIUM_WASM_M7_OPFS:FAIL"
 RENAME_REPLACE_MARKER = "rename_replace=ok atomic_recovery=not_claimed"
+
+
+def is_initial_phase(phase: str) -> bool:
+    return phase == WRITE_PHASE
+
+
+def is_recovery_interruption_phase(phase: str) -> bool:
+    return phase in (RECOVERY_PRECOMMIT_PHASE, RECOVERY_POSTCOMMIT_PHASE)
+
+
+def is_recovery_verify_phase(phase: str) -> bool:
+    return phase in (
+        RECOVERY_PRECOMMIT_VERIFY_PHASE,
+        RECOVERY_POSTCOMMIT_VERIFY_PHASE,
+    )
+
+
+def recovery_boundary_for_phase(phase: str) -> str | None:
+    if phase in (RECOVERY_PRECOMMIT_PHASE, RECOVERY_PRECOMMIT_VERIFY_PHASE):
+        return RECOVERY_PRECOMMIT_BOUNDARY
+    if phase in (RECOVERY_POSTCOMMIT_PHASE, RECOVERY_POSTCOMMIT_VERIFY_PHASE):
+        return RECOVERY_POSTCOMMIT_BOUNDARY
+    return None
+
+
+def expected_completion_marker(phase: str) -> str:
+    boundary = recovery_boundary_for_phase(phase)
+    if is_recovery_interruption_phase(phase) and boundary is not None:
+        return (
+            f"{RECOVERY_INTERRUPTION_READY_MARKER} phase={phase} "
+            f"boundary={boundary} atomic_recovery=not_claimed "
+            "database_recovery=not_claimed"
+        )
+    return f"{PASS_MARKER} phase={phase}"
+
+
+def expected_completion_kind(phase: str) -> str:
+    return (
+        "interruption-ready"
+        if is_recovery_interruption_phase(phase)
+        else "native-pass"
+    )
+
+
+def expected_recovery_verify_started_marker(phase: str) -> str | None:
+    boundary = recovery_boundary_for_phase(phase)
+    if not is_recovery_verify_phase(phase) or boundary is None:
+        return None
+    return f"{RECOVERY_VERIFY_STARTED_MARKER} phase={phase} boundary={boundary}"
+
+
+def expected_recovery_ready_marker(phase: str) -> str | None:
+    if phase == RECOVERY_PRECOMMIT_VERIFY_PHASE:
+        return (
+            f"{RECOVERY_READY_MARKER} phase={phase} "
+            "outcome=retained_generation_a_discarded_temp "
+            "atomic_recovery=not_claimed database_recovery=not_claimed "
+            "cleanup=ok"
+        )
+    if phase == RECOVERY_POSTCOMMIT_VERIFY_PHASE:
+        return (
+            f"{RECOVERY_READY_MARKER} phase={phase} "
+            "outcome=retained_generation_b_after_rename "
+            "atomic_recovery=not_claimed database_recovery=not_claimed "
+            "cleanup=ok"
+        )
+    return None
 
 
 class M7WasmfsOpfsSmokeServer(ThreadingHTTPServer):
@@ -117,6 +207,13 @@ class M7WasmfsOpfsSmokeRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK, "text/html; charset=utf-8", self.server.html_bytes
             )
             return
+        if path == f"{HOST_ROOT}/complete":
+            self._send_bytes(
+                HTTPStatus.OK,
+                "text/html; charset=utf-8",
+                b"<!doctype html><title>Chromium Wasm M7 OPFS complete</title>\n",
+            )
+            return
         if path == f"{HOST_ROOT}/m7_wasmfs_opfs_smoke.js":
             self._send_bytes(
                 HTTPStatus.OK,
@@ -144,7 +241,7 @@ class M7WasmfsOpfsSmokeRequestHandler(BaseHTTPRequestHandler):
             self._not_found()
             return
         phase = path[len(prefix) :]
-        if phase not in (WRITE_PHASE, VERIFY_PHASE) or "/" in phase:
+        if phase not in PHASES or "/" in phase:
             self._not_found()
             return
         try:
@@ -368,6 +465,8 @@ def validate_phase_result(
     expected_run_namespace: str,
     expected_origin: str,
 ) -> None:
+    regular_persistence_phase = expected_phase in (WRITE_PHASE, VERIFY_PHASE)
+    recovery_verify_phase = is_recovery_verify_phase(expected_phase)
     for field, expected in {
         "protocol": 1,
         "case": CASE,
@@ -381,17 +480,21 @@ def validate_phase_result(
         "opfsCapability": True,
         "opfsFallbackUsed": False,
         "persistenceScope": PERSISTENCE_SCOPE,
-        "completedRenameReplacePersistence": True,
+        "completedRenameReplacePersistence": regular_persistence_phase,
+        "interruptedUpdateBoundary": recovery_boundary_for_phase(expected_phase),
+        "interruptedUpdateRecoveryProven": recovery_verify_phase,
         "atomicRecoveryProven": False,
+        "databaseRecoveryProven": False,
         "fileLockSemanticsProven": False,
         "concurrentAccessHandleSemanticsProven": False,
         # The target intentionally uses emscripten_exit_with_live_runtime()
-        # after PASS. A location.replace() of this isolated document is the
-        # teardown boundary; normal exit/atexit/global destructor behavior is
-        # deliberately not exercised or claimed here.
+        # after its completion marker. A location.replace() of this isolated
+        # document is the teardown boundary; normal exit/atexit/global
+        # destructor behavior is deliberately not exercised or claimed here.
         "runtimeExitCode": None,
         "completionObserved": True,
-        "completionMarker": f"{PASS_MARKER} phase={expected_phase}",
+        "completionMarker": expected_completion_marker(expected_phase),
+        "completionKind": expected_completion_kind(expected_phase),
         "runtimeLifecycle": "live-runtime",
         "teardownMode": "outer-document",
         "runtimeInitialized": True,
@@ -404,7 +507,7 @@ def validate_phase_result(
     module_identity = result.get("moduleIdentity")
     if not isinstance(module_identity, str) or not MODULE_ID_RE.fullmatch(module_identity):
         raise M0Error("M7 OPFS result Module identity is invalid")
-    if expected_phase == WRITE_PHASE:
+    if is_initial_phase(expected_phase):
         _require_equal(result, "outerReload", False)
         _require_equal(result, "priorTimeOrigin", None)
         _require_equal(result, "priorModuleIdentity", None)
@@ -420,10 +523,36 @@ def validate_phase_result(
         if not isinstance(prior_module_identity, str) or not MODULE_ID_RE.fullmatch(
             prior_module_identity
         ):
-            raise M0Error("M7 OPFS verify result prior Module identity is invalid")
+            raise M0Error("M7 OPFS result prior Module identity is invalid")
+    _require_exact_output(result, expected_completion_marker(expected_phase))
+    if expected_phase == VERIFY_PHASE:
         _require_output(result, VERIFY_STARTED_MARKER)
-    _require_exact_output(result, f"{PASS_MARKER} phase={expected_phase}")
-    _require_output(result, RENAME_REPLACE_MARKER)
+    recovery_verify_started = expected_recovery_verify_started_marker(expected_phase)
+    if recovery_verify_started is not None:
+        _require_output(result, recovery_verify_started)
+    recovery_ready = expected_recovery_ready_marker(expected_phase)
+    if recovery_ready is not None:
+        _require_exact_output(result, recovery_ready)
+    if regular_persistence_phase:
+        _require_output(result, RENAME_REPLACE_MARKER)
+
+
+def validate_result_transition(
+    previous_result: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    previous_time_origin = _require_positive_number(previous_result, "timeOrigin")
+    time_origin = _require_positive_number(result, "timeOrigin")
+    if time_origin <= previous_time_origin:
+        raise M0Error("M7 OPFS phase did not receive a newer document time origin")
+    if result.get("priorTimeOrigin") != previous_result.get("timeOrigin"):
+        raise M0Error("M7 OPFS phase did not preserve the prior document time origin")
+    if result.get("priorModuleIdentity") != previous_result.get("moduleIdentity"):
+        raise M0Error("M7 OPFS phase did not preserve the prior Module identity")
+    if result.get("moduleIdentity") == previous_result.get("moduleIdentity"):
+        raise M0Error("M7 OPFS phase reused the prior Module identity")
+    if result.get("origin") != previous_result.get("origin"):
+        raise M0Error("M7 OPFS phases did not remain same-origin")
 
 
 def validate_result_pair(
@@ -445,18 +574,29 @@ def validate_result_pair(
         expected_run_namespace=expected_run_namespace,
         expected_origin=expected_origin,
     )
-    write_time_origin = _require_positive_number(write_result, "timeOrigin")
-    verify_time_origin = _require_positive_number(verify_result, "timeOrigin")
-    if verify_time_origin <= write_time_origin:
-        raise M0Error("M7 OPFS verify did not receive a newer document time origin")
-    if verify_result.get("priorTimeOrigin") != write_result.get("timeOrigin"):
-        raise M0Error("M7 OPFS verify did not preserve the write document time origin")
-    if verify_result.get("priorModuleIdentity") != write_result.get("moduleIdentity"):
-        raise M0Error("M7 OPFS verify did not preserve the write Module identity")
-    if verify_result.get("moduleIdentity") == write_result.get("moduleIdentity"):
-        raise M0Error("M7 OPFS verify reused the write Module identity")
-    if verify_result.get("origin") != write_result.get("origin"):
-        raise M0Error("M7 OPFS phases did not remain same-origin")
+    validate_result_transition(write_result, verify_result)
+
+
+def validate_result_sequence(
+    results: dict[str, dict[str, Any]],
+    *,
+    expected_run_namespace: str,
+    expected_origin: str,
+) -> None:
+    if set(results) != set(PHASES):
+        raise M0Error("M7 OPFS result sequence does not contain every phase")
+    previous_result: dict[str, Any] | None = None
+    for phase in PHASES:
+        result = results[phase]
+        validate_phase_result(
+            result,
+            expected_phase=phase,
+            expected_run_namespace=expected_run_namespace,
+            expected_origin=expected_origin,
+        )
+        if previous_result is not None:
+            validate_result_transition(previous_result, result)
+        previous_result = result
 
 
 def _drain_results(
@@ -473,7 +613,7 @@ def _drain_results(
         results[phase] = result
 
 
-def wait_for_result_pair(
+def wait_for_result_sequence(
     browser: subprocess.Popen[str],
     browser_stderr: deque[str],
     result_queue: queue.Queue[tuple[str, dict[str, Any]]],
@@ -490,15 +630,15 @@ def wait_for_result_pair(
                     + " host reported failure: "
                     + str(result.get("error", "<unspecified>"))
                 )
-        if WRITE_PHASE in results and VERIFY_PHASE in results:
+        if all(phase in results for phase in PHASES):
             return results
         if browser.poll() is not None:
             raise M0Error(
-                "host browser exited before both M7 OPFS results: "
+                "host browser exited before all M7 OPFS results: "
                 + "\n".join(browser_stderr)
             )
         time.sleep(0.05)
-    raise M0Error("M7 OPFS smoke did not post both outer-document phase results")
+    raise M0Error("M7 OPFS smoke did not post all outer-document phase results")
 
 
 def write_failure_diagnostics(
@@ -549,7 +689,7 @@ def write_failure_diagnostics(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the isolated two-document WasmFS/OPFS persistence smoke."
+        description="Run the isolated multi-document WasmFS/OPFS recovery smoke."
     )
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
@@ -586,7 +726,9 @@ def main() -> int:
         run_namespace = secrets.token_urlsafe(24)
         if result_token == run_namespace:
             raise M0Error("M7 OPFS result token and run namespace unexpectedly match")
-        result_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=2)
+        result_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(
+            maxsize=len(PHASES)
+        )
         stage = "create_server"
         server = create_server(
             "127.0.0.1",
@@ -632,15 +774,14 @@ def main() -> int:
         )
         stderr_thread.start()
         deadline = time.monotonic() + args.timeout
-        stage = "wait_for_outer_reload_results"
-        results = wait_for_result_pair(
+        stage = "wait_for_outer_document_results"
+        results = wait_for_result_sequence(
             browser, browser_stderr, result_queue, deadline, results
         )
         expected_origin = f"http://{server.server_address[0]}:{server.server_address[1]}"
-        stage = "validate_two_document_persistence"
-        validate_result_pair(
-            results[WRITE_PHASE],
-            results[VERIFY_PHASE],
+        stage = "validate_interrupted_update_outer_reload"
+        validate_result_sequence(
+            results,
             expected_run_namespace=run_namespace,
             expected_origin=expected_origin,
         )

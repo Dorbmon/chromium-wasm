@@ -39,6 +39,22 @@ namespace {
 constexpr char kPrefix[] = "CHROMIUM_WASM_M7_OPFS";
 constexpr char kWritePhase[] = "write";
 constexpr char kVerifyPhase[] = "verify";
+constexpr char kRecoveryPrecommitPhase[] = "recovery-precommit";
+constexpr char kRecoveryPrecommitVerifyPhase[] =
+    "recovery-precommit-verify";
+constexpr char kRecoveryPostcommitPhase[] = "recovery-postcommit";
+constexpr char kRecoveryPostcommitVerifyPhase[] =
+    "recovery-postcommit-verify";
+constexpr char kRecoveryInterruptionReadyPrefix[] =
+    "CHROMIUM_WASM_M7_OPFS:RECOVERY_INTERRUPTION_READY";
+constexpr char kRecoveryVerifyStartedPrefix[] =
+    "CHROMIUM_WASM_M7_OPFS:RECOVERY_VERIFY_STARTED";
+constexpr char kRecoveryReadyPrefix[] =
+    "CHROMIUM_WASM_M7_OPFS:RECOVERY_READY";
+constexpr char kRecoveryPrecommitBoundary[] =
+    "after_tmp_fdatasync_before_rename";
+constexpr char kRecoveryPostcommitBoundary[] =
+    "after_completed_rename_return";
 constexpr char kPhasePrefix[] = "--m7-opfs-phase=";
 constexpr char kRunPrefix[] = "--m7-opfs-run=";
 constexpr size_t kMinimumRunIdLength = 12;
@@ -130,6 +146,18 @@ bool IsValidRunId(std::string_view run_id) {
   });
 }
 
+bool IsKnownPhase(std::string_view phase) {
+  return phase == kWritePhase || phase == kVerifyPhase ||
+         phase == kRecoveryPrecommitPhase ||
+         phase == kRecoveryPrecommitVerifyPhase ||
+         phase == kRecoveryPostcommitPhase ||
+         phase == kRecoveryPostcommitVerifyPhase;
+}
+
+bool IsRecoveryInterruptionPhase(std::string_view phase) {
+  return phase == kRecoveryPrecommitPhase || phase == kRecoveryPostcommitPhase;
+}
+
 const char* ParseArguments(int argc, char* argv[], Arguments* arguments) {
   bool saw_phase = false;
   bool saw_run_id = false;
@@ -157,7 +185,7 @@ const char* ParseArguments(int argc, char* argv[], Arguments* arguments) {
   if (!saw_phase || !saw_run_id) {
     return "missing_phase_or_run_id";
   }
-  if (arguments->phase != kWritePhase && arguments->phase != kVerifyPhase) {
+  if (!IsKnownPhase(arguments->phase)) {
     return "invalid_phase";
   }
   if (!IsValidRunId(arguments->run_id)) {
@@ -423,9 +451,162 @@ void RemoveDirectory(const std::string& path, const char* reason) {
   Require(rmdir(path.c_str()) == 0, reason);
 }
 
+void CreateRecoveryFixture(const FixturePaths& paths) {
+  PrintPhase("recovery_fixture_create");
+  Require(IsMissing(paths.root), "recovery_fixture_preexisting");
+  RequireDirectoryCreate(paths.root, "recovery_root_create");
+  RequireDirectoryCreate(paths.tree, "recovery_tree_create");
+  WriteDurableNewFile(paths.commit, kCommitGenerationAData,
+                      "recovery_generation_a_create",
+                      "recovery_generation_a_write",
+                      "recovery_generation_a_fdatasync",
+                      "recovery_generation_a_close");
+  WriteDurableNewFile(paths.temporary_commit, kCommitGenerationBData,
+                      "recovery_generation_b_create",
+                      "recovery_generation_b_write",
+                      "recovery_generation_b_fdatasync",
+                      "recovery_generation_b_close");
+  VerifyExactFile(paths.commit, kCommitGenerationAData,
+                  "recovery_generation_a_reopen",
+                  "recovery_generation_a_reopen_stat",
+                  "recovery_generation_a_reopen_read",
+                  "recovery_generation_a_reopen_close");
+  VerifyExactFile(paths.temporary_commit, kCommitGenerationBData,
+                  "recovery_generation_b_reopen",
+                  "recovery_generation_b_reopen_stat",
+                  "recovery_generation_b_reopen_read",
+                  "recovery_generation_b_reopen_close");
+  RequireDirectoryNames(paths.tree, {"commit.bin", "commit.tmp"},
+                        "recovery_fixture_tree_open",
+                        "recovery_fixture_tree_entries",
+                        "recovery_fixture_tree_close");
+}
+
+void PrintRecoveryInterruptionReady(const char* phase, const char* boundary) {
+  std::fprintf(stdout,
+               "%s phase=%s boundary=%s "
+               "atomic_recovery=not_claimed database_recovery=not_claimed\n",
+               kRecoveryInterruptionReadyPrefix, phase, boundary);
+  std::fflush(stdout);
+}
+
+void RunRecoveryPrecommitPhase(const FixturePaths& paths) {
+  // This is an application-visible cut point, not a hook inside OPFS move().
+  // The fresh document must retain the known-good generation and discard the
+  // independently durable temporary generation.
+  CreateRecoveryFixture(paths);
+  PrintPhase("recovery_precommit_interruption_boundary");
+  PrintRecoveryInterruptionReady(kRecoveryPrecommitPhase,
+                                 kRecoveryPrecommitBoundary);
+}
+
+void RunRecoveryPostcommitPhase(const FixturePaths& paths) {
+  // This cut point occurs only after the complete WasmFS rename call has
+  // returned. It does not observe or claim behavior during the browser-owned
+  // FileSystemFileHandle.move() implementation.
+  CreateRecoveryFixture(paths);
+  Require(rename(paths.temporary_commit.c_str(), paths.commit.c_str()) == 0,
+          "recovery_postcommit_rename");
+  Require(IsMissing(paths.temporary_commit),
+          "recovery_postcommit_temp_present_after_rename");
+  VerifyExactFile(paths.commit, kCommitGenerationBData,
+                  "recovery_postcommit_generation_b_open",
+                  "recovery_postcommit_generation_b_stat",
+                  "recovery_postcommit_generation_b_read",
+                  "recovery_postcommit_generation_b_close");
+  RequireDirectoryNames(paths.tree, {"commit.bin"},
+                        "recovery_postcommit_tree_open",
+                        "recovery_postcommit_tree_entries",
+                        "recovery_postcommit_tree_close");
+  PrintPhase("recovery_postcommit_interruption_boundary");
+  PrintRecoveryInterruptionReady(kRecoveryPostcommitPhase,
+                                 kRecoveryPostcommitBoundary);
+}
+
+void PrintRecoveryVerifyStarted(const char* phase, const char* boundary) {
+  std::fprintf(stdout, "%s phase=%s boundary=%s\n",
+               kRecoveryVerifyStartedPrefix, phase, boundary);
+  std::fflush(stdout);
+}
+
+void CleanupRecoveryFixture(const FixturePaths& paths, const char* prefix) {
+  RemoveFile(paths.commit, prefix);
+  RemoveDirectory(paths.tree, "recovery_cleanup_tree");
+  RemoveDirectory(paths.root, "recovery_cleanup_root");
+  Require(IsMissing(paths.root), "recovery_cleanup_root_present");
+}
+
+void RunRecoveryPrecommitVerifyPhase(const FixturePaths& paths) {
+  PrintRecoveryVerifyStarted(kRecoveryPrecommitVerifyPhase,
+                             kRecoveryPrecommitBoundary);
+  PrintPhase("recovery_precommit_fresh_instance_verify");
+  VerifyExactFile(paths.commit, kCommitGenerationAData,
+                  "recovery_precommit_generation_a_open",
+                  "recovery_precommit_generation_a_stat",
+                  "recovery_precommit_generation_a_read",
+                  "recovery_precommit_generation_a_close");
+  VerifyExactFile(paths.temporary_commit, kCommitGenerationBData,
+                  "recovery_precommit_generation_b_open",
+                  "recovery_precommit_generation_b_stat",
+                  "recovery_precommit_generation_b_read",
+                  "recovery_precommit_generation_b_close");
+  RequireDirectoryNames(paths.tree, {"commit.bin", "commit.tmp"},
+                        "recovery_precommit_tree_open",
+                        "recovery_precommit_tree_entries",
+                        "recovery_precommit_tree_close");
+
+  // The temporary generation is not a completed application commit. This is
+  // deliberately a tiny recovery policy, not a SQLite or LevelDB journal.
+  RemoveFile(paths.temporary_commit, "recovery_precommit_discard_temp");
+  Require(IsMissing(paths.temporary_commit),
+          "recovery_precommit_temp_present_after_discard");
+  VerifyExactFile(paths.commit, kCommitGenerationAData,
+                  "recovery_precommit_retained_generation_a_open",
+                  "recovery_precommit_retained_generation_a_stat",
+                  "recovery_precommit_retained_generation_a_read",
+                  "recovery_precommit_retained_generation_a_close");
+  RequireDirectoryNames(paths.tree, {"commit.bin"},
+                        "recovery_precommit_recovered_tree_open",
+                        "recovery_precommit_recovered_tree_entries",
+                        "recovery_precommit_recovered_tree_close");
+  CleanupRecoveryFixture(paths, "recovery_precommit_cleanup_commit");
+
+  std::fprintf(stdout,
+               "%s phase=%s outcome=retained_generation_a_discarded_temp "
+               "atomic_recovery=not_claimed database_recovery=not_claimed "
+               "cleanup=ok\n",
+               kRecoveryReadyPrefix, kRecoveryPrecommitVerifyPhase);
+  std::fflush(stdout);
+}
+
+void RunRecoveryPostcommitVerifyPhase(const FixturePaths& paths) {
+  PrintRecoveryVerifyStarted(kRecoveryPostcommitVerifyPhase,
+                             kRecoveryPostcommitBoundary);
+  PrintPhase("recovery_postcommit_fresh_instance_verify");
+  VerifyExactFile(paths.commit, kCommitGenerationBData,
+                  "recovery_postcommit_generation_b_open",
+                  "recovery_postcommit_generation_b_stat",
+                  "recovery_postcommit_generation_b_read",
+                  "recovery_postcommit_generation_b_close");
+  Require(IsMissing(paths.temporary_commit),
+          "recovery_postcommit_temp_present");
+  RequireDirectoryNames(paths.tree, {"commit.bin"},
+                        "recovery_postcommit_tree_open",
+                        "recovery_postcommit_tree_entries",
+                        "recovery_postcommit_tree_close");
+  CleanupRecoveryFixture(paths, "recovery_postcommit_cleanup_commit");
+
+  std::fprintf(stdout,
+               "%s phase=%s outcome=retained_generation_b_after_rename "
+               "atomic_recovery=not_claimed database_recovery=not_claimed "
+               "cleanup=ok\n",
+               kRecoveryReadyPrefix, kRecoveryPostcommitVerifyPhase);
+  std::fflush(stdout);
+}
+
 void RunVerifyPhase(const FixturePaths& paths) {
   // This is emitted only after the fresh Wasm module has mounted OPFS. The
-  // two-load host gate uses it to distinguish a real second module invocation
+  // next outer-document gate uses it to distinguish a real module invocation
   // from an in-page reentry into the write instance.
   std::fprintf(stdout, "%s:VERIFY_STARTED schema=%d run_id=redacted\n", kPrefix,
                kSchemaVersion);
@@ -500,8 +681,25 @@ int main(int argc, char* argv[]) {
   const FixturePaths paths = MakeFixturePaths(arguments.run_id);
   if (arguments.phase == kWritePhase) {
     RunWritePhase(paths);
-  } else {
+  } else if (arguments.phase == kVerifyPhase) {
     RunVerifyPhase(paths);
+  } else if (arguments.phase == kRecoveryPrecommitPhase) {
+    RunRecoveryPrecommitPhase(paths);
+  } else if (arguments.phase == kRecoveryPrecommitVerifyPhase) {
+    RunRecoveryPrecommitVerifyPhase(paths);
+  } else if (arguments.phase == kRecoveryPostcommitPhase) {
+    RunRecoveryPostcommitPhase(paths);
+  } else {
+    RunRecoveryPostcommitVerifyPhase(paths);
+  }
+
+  if (IsRecoveryInterruptionPhase(arguments.phase)) {
+    // The host posts the native interruption-ready witness and immediately
+    // replaces the outer document. No destructor, close, or application
+    // cleanup path follows this boundary. This is a controlled abrupt document
+    // disposal at an application-visible boundary, not a failure injected
+    // inside the OPFS move implementation and not a database recovery claim.
+    emscripten_exit_with_live_runtime();
   }
 
   std::fprintf(stdout, "%s:RUNTIME_END phase=%s\n", kPrefix,
@@ -515,7 +713,8 @@ int main(int argc, char* argv[]) {
   // on the browser main thread. This isolated feasibility smoke instead lets
   // the outer document replacement dispose the live runtime after every file
   // descriptor has been closed and fdatasynced above. It therefore proves
-  // primitive OPFS persistence across a fresh document, not orderly WasmFS
-  // shutdown or crash recovery.
+  // primitive OPFS persistence across fresh documents and the bounded
+  // application-boundary recovery dispositions above. It does not prove
+  // orderly WasmFS shutdown or OPFS/database crash-recovery durability.
   emscripten_exit_with_live_runtime();
 }
