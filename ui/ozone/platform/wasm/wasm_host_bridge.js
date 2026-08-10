@@ -158,24 +158,29 @@ mergeInto(LibraryManager.library, {
     return ChromiumWasmHostBridge.reportReadiness(update) ? 1 : 0;
   },
 
-  // This one-shot test-only witness is deliberately separate from readiness:
-  // readiness FVP is sticky, while the controlled HTTPS smoke emits this only
-  // from its observer after the exact target document has committed and
-  // reached first visually non-empty paint.
+  // This phased test-only witness is deliberately separate from readiness:
+  // readiness FVP is sticky, while the controlled HTTPS smoke emits phase 1
+  // and phase 2 only from its observer after the exact target document has
+  // committed and reached first visually non-empty paint.  Keep the phase
+  // narrow and explicit so a reload screenshot cannot credit the initial
+  // navigation's FVP.
   chromium_wasm_report_controlled_https_target_fvp__deps: [
     '$ChromiumWasmHostBridge',
   ],
   chromium_wasm_report_controlled_https_target_fvp__proxy: 'sync',
-  chromium_wasm_report_controlled_https_target_fvp: () => {
+  chromium_wasm_report_controlled_https_target_fvp: (phase) => {
+    if (!Number.isSafeInteger(phase) || (phase !== 1 && phase !== 2)) {
+      return 0;
+    }
     const bridge = ChromiumWasmHostBridge.bridge();
     if (!bridge ||
         typeof bridge.reportControlledHttpsTargetFvp !== 'function') {
       return 0;
     }
-    bridge.reportControlledHttpsTargetFvp({
+    return bridge.reportControlledHttpsTargetFvp({
       protocol: ChromiumWasmHostBridge.version,
-    });
-    return 1;
+      phase,
+    }) === true ? 1 : 0;
   },
 
   chromium_wasm_report_ozone_focus_state__deps: ['$ChromiumWasmHostBridge'],

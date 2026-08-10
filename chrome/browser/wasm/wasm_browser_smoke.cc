@@ -38,6 +38,7 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -74,7 +75,7 @@ extern "C" int chromium_wasm_report_readiness(
     int shell_ready,
     int surface_ready,
     int first_visually_nonempty_paint);
-extern "C" int chromium_wasm_report_controlled_https_target_fvp();
+extern "C" int chromium_wasm_report_controlled_https_target_fvp(int phase);
 
 namespace chrome {
 
@@ -102,6 +103,10 @@ constexpr char kControlledHttpsSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY";
 constexpr char kControlledHttpsSmokeNavigatedMarker[] =
     "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED";
+constexpr char kControlledHttpsSmokeReloadReadyMarker[] =
+    "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOAD_READY";
+constexpr char kControlledHttpsSmokeReloadedMarker[] =
+    "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOADED";
 constexpr gfx::Rect kBrowserSmokeBounds(0, 0, 640, 480);
 constexpr base::TimeDelta kBrowserSmokeVisibleDuration = base::Milliseconds(250);
 constexpr base::TimeDelta kNavigationTimeout = base::Seconds(5);
@@ -233,6 +238,13 @@ class UserGestureTabSelectionObserver final : public TabStripModelObserver {
 
 class ActiveTabNavigationObserver final
     : public content::WebContentsObserver {
+ private:
+  enum class NavigationExpectation {
+    kAny,
+    kTypedUser,
+    kReload,
+  };
+
  public:
   explicit ActiveTabNavigationObserver(content::WebContents* web_contents)
       : content::WebContentsObserver(web_contents) {
@@ -247,7 +259,10 @@ class ActiveTabNavigationObserver final
   void WaitForNavigation(const GURL& expected_url,
                          bool expect_typed_user_navigation,
                          base::OnceClosure start_navigation) {
-    WaitForNavigationImpl(expected_url, expect_typed_user_navigation,
+    WaitForNavigationImpl(
+        expected_url,
+        expect_typed_user_navigation ? NavigationExpectation::kTypedUser
+                                     : NavigationExpectation::kAny,
                           /*require_first_visually_nonempty_paint=*/false,
                           std::move(start_navigation), base::OnceClosure(),
                           base::OnceClosure());
@@ -264,17 +279,36 @@ class ActiveTabNavigationObserver final
       base::OnceClosure on_primary_main_frame_commit,
       base::OnceClosure on_target_first_visually_nonempty_paint) {
     CHECK(on_target_first_visually_nonempty_paint);
-    WaitForNavigationImpl(expected_url, expect_typed_user_navigation,
+    WaitForNavigationImpl(
+        expected_url,
+        expect_typed_user_navigation ? NavigationExpectation::kTypedUser
+                                     : NavigationExpectation::kAny,
                           /*require_first_visually_nonempty_paint=*/true,
                           std::move(start_navigation),
                           std::move(on_primary_main_frame_commit),
                           std::move(on_target_first_visually_nonempty_paint));
   }
 
+  // Waits only for a host/Ozone-delivered normal reload. The caller supplies
+  // no browser command: |start_navigation| only makes the bounded host input
+  // phase observable after this exact navigation observer is armed.
+  void WaitForReloadAndFirstVisuallyNonEmptyPaint(
+      const GURL& expected_url,
+      base::OnceClosure start_navigation,
+      base::OnceClosure on_primary_main_frame_commit,
+      base::OnceClosure on_target_first_visually_nonempty_paint) {
+    CHECK(on_target_first_visually_nonempty_paint);
+    WaitForNavigationImpl(
+        expected_url, NavigationExpectation::kReload,
+        /*require_first_visually_nonempty_paint=*/true,
+        std::move(start_navigation), std::move(on_primary_main_frame_commit),
+        std::move(on_target_first_visually_nonempty_paint));
+  }
+
  private:
   void WaitForNavigationImpl(
       const GURL& expected_url,
-      bool expect_typed_user_navigation,
+      NavigationExpectation navigation_expectation,
       bool require_first_visually_nonempty_paint,
       base::OnceClosure start_navigation,
       base::OnceClosure on_primary_main_frame_commit,
@@ -287,7 +321,7 @@ class ActiveTabNavigationObserver final
     CHECK(web_contents());
 
     expected_url_ = expected_url;
-    expect_typed_user_navigation_ = expect_typed_user_navigation;
+    navigation_expectation_ = navigation_expectation;
     require_first_visually_nonempty_paint_ =
         require_first_visually_nonempty_paint;
     on_primary_main_frame_commit_ = std::move(on_primary_main_frame_commit);
@@ -322,7 +356,7 @@ class ActiveTabNavigationObserver final
 
     waiting_for_navigation_ = false;
     expected_url_ = GURL();
-    expect_typed_user_navigation_ = false;
+    navigation_expectation_ = NavigationExpectation::kAny;
     require_first_visually_nonempty_paint_ = false;
   }
 
@@ -338,10 +372,22 @@ class ActiveTabNavigationObserver final
     }
 
     CHECK(!committed_primary_main_frame_);
-    if (expect_typed_user_navigation_) {
-      CHECK(ui::PageTransitionCoreTypeIs(
-          navigation_handle->GetPageTransition(), ui::PAGE_TRANSITION_TYPED));
-      CHECK(navigation_handle->HasUserGesture());
+    switch (navigation_expectation_) {
+      case NavigationExpectation::kAny:
+        break;
+      case NavigationExpectation::kTypedUser:
+        CHECK(ui::PageTransitionCoreTypeIs(
+            navigation_handle->GetPageTransition(),
+            ui::PAGE_TRANSITION_TYPED));
+        CHECK(navigation_handle->HasUserGesture());
+        break;
+      case NavigationExpectation::kReload:
+        CHECK(ui::PageTransitionCoreTypeIs(
+            navigation_handle->GetPageTransition(),
+            ui::PAGE_TRANSITION_RELOAD));
+        CHECK_EQ(navigation_handle->GetReloadType(),
+                 content::ReloadType::NORMAL);
+        break;
     }
     CHECK(web_contents());
     CHECK_EQ(web_contents()->GetLastCommittedURL(), expected_url_);
@@ -436,7 +482,7 @@ class ActiveTabNavigationObserver final
   base::OnceClosure on_primary_main_frame_commit_;
   base::OnceClosure on_target_first_visually_nonempty_paint_;
   GURL expected_url_;
-  bool expect_typed_user_navigation_ = false;
+  NavigationExpectation navigation_expectation_ = NavigationExpectation::kAny;
   bool require_first_visually_nonempty_paint_ = false;
   bool waiting_for_navigation_ = false;
   bool committed_primary_main_frame_ = false;
@@ -1216,9 +1262,12 @@ bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile) {
         std::puts(kControlledHttpsSmokeReadyMarker);
         std::fflush(stdout);
       }),
-      base::BindOnce([] { std::puts(kControlledHttpsSmokeNavigatedMarker); }),
       base::BindOnce([] {
-        CHECK_EQ(chromium_wasm_report_controlled_https_target_fvp(), 1);
+        std::puts(kControlledHttpsSmokeNavigatedMarker);
+        std::fflush(stdout);
+      }),
+      base::BindOnce([] {
+        CHECK_EQ(chromium_wasm_report_controlled_https_target_fvp(1), 1);
       }));
   CHECK_EQ(raw_contents->GetLastCommittedURL(), controlled_https_url);
   CHECK_EQ(raw_contents->GetTitle(), kControlledHttpsTitle);
@@ -1244,6 +1293,53 @@ bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile) {
   // The commit marker and real invalidation above precede this bounded
   // compositor turn. The host independently requires its new canvas frame
   // before close rather than accepting the initial about:blank window.
+  WaitForBrowserSmokePresentation();
+
+  // A physical Ctrl+R must preserve the same history entry. Capture this
+  // before arming the reload observer; the host cannot use the observer as a
+  // command surface because its start closure emits only the reload-ready
+  // marker and then waits for the real Ozone accelerator.
+  content::NavigationController& navigation_controller =
+      raw_contents->GetController();
+  const int history_entry_count = navigation_controller.GetEntryCount();
+  const int history_entry_index = navigation_controller.GetCurrentEntryIndex();
+  CHECK_GT(history_entry_count, 0);
+  CHECK_GE(history_entry_index, 0);
+  CHECK_LT(history_entry_index, history_entry_count);
+
+  // Do not begin a second WISP diagnostic window here. HTTP/2 may reuse the
+  // established TCP stream for a valid reload, so the original window remains
+  // the scoped browser-side route proof while the relay independently counts
+  // the second exact fixture request over that route.
+  navigation_observer.WaitForReloadAndFirstVisuallyNonEmptyPaint(
+      controlled_https_url,
+      base::BindOnce([] {
+        std::puts(kControlledHttpsSmokeReloadReadyMarker);
+        std::fflush(stdout);
+      }),
+      base::BindOnce([] {
+        std::puts(kControlledHttpsSmokeReloadedMarker);
+        std::fflush(stdout);
+      }),
+      base::BindOnce([] {
+        CHECK_EQ(chromium_wasm_report_controlled_https_target_fvp(2), 1);
+      }));
+  CHECK_EQ(raw_contents->GetLastCommittedURL(), controlled_https_url);
+  CHECK_EQ(raw_contents->GetTitle(), kControlledHttpsTitle);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(controlled_https_url.spec()));
+  CHECK(!address_field->GetInvalid());
+  CHECK_EQ(navigation_controller.GetEntryCount(), history_entry_count);
+  CHECK_EQ(navigation_controller.GetCurrentEntryIndex(), history_entry_index);
+
+  const std::optional<net::WasmWispTransportDiagnostics>
+      reload_wisp_diagnostics = net::GetWasmWispTransportDiagnostics();
+  CHECK(reload_wisp_diagnostics);
+  CHECK_EQ(reload_wisp_diagnostics->completion_flags,
+           net::kWasmWispDiagnosticAllRequired);
+  // The host binds its only retained screenshot to a new canvas frame after
+  // this exact reload commit and target FVP, never to the initial navigation.
+  browser_view.SchedulePaint();
   WaitForBrowserSmokePresentation();
 
   BrowserSmokeState state;

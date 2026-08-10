@@ -129,6 +129,23 @@ def passing_result() -> dict[str, object]:
         }
         for event_type in ("keydown", "keyup")
     ]
+    ctrl_r = [
+        {
+            "type": event_type,
+            "code": code,
+            "trusted": True,
+            "cancelable": True,
+            "canvasFocused": True,
+            "accepted": True,
+            "defaultPrevented": True,
+        }
+        for event_type, code in (
+            ("keydown", "ControlLeft"),
+            ("keydown", "KeyR"),
+            ("keyup", "KeyR"),
+            ("keyup", "ControlLeft"),
+        )
+    ]
     return {
         "protocol": 1,
         "case": smoke.CASE,
@@ -142,7 +159,8 @@ def passing_result() -> dict[str, object]:
         "crossOriginIsolated": True,
         "sharedArrayBuffer": True,
         "canvasFocusedAtStart": True,
-        "proxyFocused": True,
+        "proxyFocusedForText": True,
+        "canvasFocusedForReload": True,
         "controlledHttps": {
             "wispConfigured": True,
             "runtimeArgumentsConfigured": True,
@@ -153,14 +171,22 @@ def passing_result() -> dict[str, object]:
             "navigatedMarkerObservationSequence": 1,
             "postNavigatedFrameObserved": True,
             "firstVisuallyNonEmptyPaintReportObserved": True,
-            "firstVisuallyNonEmptyPaintObservationSequence": 3,
-            "targetFirstVisuallyNonEmptyPaintSignalObserved": True,
-            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence": 3,
+            "firstVisuallyNonEmptyPaintObservationSequence": 4,
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObserved": True,
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence": 3,
             "postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved": True,
-            "firstEligibleScreenshotFrameId": 2,
+            "reloadReadyMarkerObserved": True,
+            "reloadedMarkerObserved": True,
+            "frameIdAtReloadedMarker": 2,
+            "reloadedMarkerObservationSequence": 6,
+            "postReloadFrameObserved": True,
+            "reloadTargetFirstVisuallyNonEmptyPaintSignalObserved": True,
+            "reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence": 7,
+            "postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved": True,
+            "firstEligibleScreenshotFrameId": 3,
             "screenshotCaptureAttempted": True,
-            "screenshotFrameId": 2,
-            "screenshotObservationSequence": 4,
+            "screenshotFrameId": 3,
+            "screenshotObservationSequence": 8,
             "passMarkerObserved": True,
         },
         "abort": None,
@@ -171,6 +197,7 @@ def passing_result() -> dict[str, object]:
         "frameReports": [
             {"id": 1, "width": 640, "height": 480, "timestampMs": 1.0},
             {"id": 2, "width": 640, "height": 480, "timestampMs": 2.0},
+            {"id": 3, "width": 640, "height": 480, "timestampMs": 3.0},
         ],
         "readiness": {
             "shellReady": True,
@@ -218,30 +245,43 @@ def passing_result() -> dict[str, object]:
             "textDeliveryAccepted": True,
             "enterComplete": True,
             "navigatedObserved": True,
+            "reloadReadyObserved": True,
+            "ctrlRComplete": True,
+            "reloadCanvasFocused": True,
+            "reloadedObserved": True,
             "screenshotObserved": True,
             "passObserved": True,
             "navigationMarkerFrameId": 1,
-            "screenshotFrameId": 2,
+            "reloadMarkerFrameId": 2,
+            "screenshotFrameId": 3,
             "ctrlLRecords": ctrl_l,
             "beforeInputRecords": [before_input],
             "browserTextDeliveryReports": [
                 {"action": 4, "sessionId": 0, "sequence": 1, "accepted": True}
             ],
             "enterRecords": enter,
+            "ctrlRRecords": ctrl_r,
             "rejectedRecords": [],
             "cleanupRecords": [],
+            "reloadRejectedRecords": [],
+            "reloadCleanupRecords": [],
         },
         "screenshot": {
             "mimeType": "image/png",
             "dataBase64": SCREENSHOT_DATA_BASE64,
             "width": 640,
             "height": 480,
-            "frameId": 2,
-            "timestampMs": 2.0,
-            "observationSequence": 4,
+            "frameId": 3,
+            "timestampMs": 3.0,
+            "observationSequence": 8,
         },
         "canvasBackingStore": {"width": 640, "height": 480},
-        "stdout": [smoke.READY_MARKER, smoke.NAVIGATED_MARKER],
+        "stdout": [
+            smoke.READY_MARKER,
+            smoke.NAVIGATED_MARKER,
+            smoke.RELOAD_READY_MARKER,
+            smoke.RELOADED_MARKER,
+        ],
         "stderr": [smoke.PASS_MARKER],
         "failedChecks": [],
         "error": None,
@@ -348,13 +388,15 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, expression):
                     smoke.validate_controlled_wisp_endpoint(endpoint)
 
-    def test_requires_one_h2_fixture_delivery_event(self) -> None:
+    def test_requires_two_h2_fixture_delivery_events_across_one_or_two_streams(
+        self,
+    ) -> None:
         status = {
             "fixture": smoke.RELAY_FIXTURE,
             "protocol": 1,
             "ready": True,
-            "m6UiRequests": 1,
-            "h2Requests": {"protocol": "h2", "count": 1},
+            "m6UiRequests": 2,
+            "h2Requests": {"protocol": "h2", "count": 2},
             "localGateway443StreamsOpened": 1,
             "localGateway443Requests": 0,
             "requestedDestinations": [
@@ -363,18 +405,28 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
             "transcript": [
                 {"sequence": 1, "event": "fixture-ready"},
                 {"sequence": 2, "event": "h2-m6-ui"},
+                {"sequence": 3, "event": "h2-m6-ui"},
             ],
         }
         smoke.validate_relay_status(status)
 
+        # Reload may legitimately reuse the first H2 stream or reconnect once,
+        # but every observed WISP destination remains the canonical gateway.
+        two_streams = copy.deepcopy(status)
+        two_streams["localGateway443StreamsOpened"] = 2
+        two_streams["requestedDestinations"].append(
+            {"hostname": "a.test", "port": smoke.GATEWAY_LOGICAL_PORT}
+        )
+        smoke.validate_relay_status(two_streams)
+
         for mutate, expression in (
             (
                 lambda payload: payload.__setitem__("m6UiRequests", 0),
-                "exactly one",
+                "exactly two",
             ),
             (
-                lambda payload: payload.__setitem__("m6UiRequests", 2),
-                "exactly one",
+                lambda payload: payload.__setitem__("m6UiRequests", 1),
+                "exactly two",
             ),
             (
                 lambda payload: payload.__setitem__("fixture", "wrong-fixture"),
@@ -388,21 +440,27 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
             ),
             (
                 lambda payload: payload.__setitem__(
-                    "h2Requests", {"protocol": "http/1.1", "count": 1}
+                    "h2Requests", {"protocol": "http/1.1", "count": 2}
                 ),
                 "HTTP/2",
             ),
             (
                 lambda payload: payload.__setitem__(
-                    "h2Requests", {"protocol": "h2", "count": 2}
+                    "h2Requests", {"protocol": "h2", "count": 1}
                 ),
-                "exactly one HTTP/2",
+                "exactly two HTTP/2",
             ),
             (
                 lambda payload: payload.__setitem__(
                     "localGateway443StreamsOpened", 0
                 ),
-                "exactly one mapped",
+                "one or two mapped",
+            ),
+            (
+                lambda payload: payload.__setitem__(
+                    "localGateway443StreamsOpened", 3
+                ),
+                "one or two mapped",
             ),
             (
                 lambda payload: payload.__setitem__(
@@ -415,17 +473,17 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
                     "requestedDestinations",
                     [{"hostname": "a.test", "port": 43211}],
                 ),
-                "exact WISP CONNECT",
+                "exact WISP CONNECT records",
             ),
             (
                 lambda payload: payload.__setitem__(
                     "transcript",
                     [
                         {"sequence": 1, "event": "h2-m6-ui"},
-                        {"sequence": 2, "event": "h2-m6-ui"},
+                        {"sequence": 2, "event": "fixture-ready"},
                     ],
                 ),
-                "exactly one M6 UI event",
+                "exactly two M6 UI events",
             ),
             (
                 lambda payload: payload.__setitem__(
@@ -647,9 +705,9 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
             ),
             (
                 lambda result: result["controlledHttps"].__setitem__(
-                    "frameIdAtNavigatedMarker", 2
+                    "frameIdAtReloadedMarker", 3
                 ),
-                "first post-NAVIGATED frame eligible after FVP",
+                "first post-RELOADED frame eligible after reload FVP",
             ),
             (
                 lambda result: result["controlledHttps"].__setitem__(
@@ -703,11 +761,36 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
             ),
             (
                 lambda result: result["controlledHttps"].__setitem__(
-                    "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
-                    4,
+                    "reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+                    6,
                 ),
-                "after NAVIGATED and target first visually non-empty paint "
-                "signal",
+                "reload target first visually non-empty paint signal was not "
+                "observed after RELOADED",
+            ),
+            (
+                lambda result: result["controlledHttps"].__setitem__(
+                    "postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved",
+                    False,
+                ),
+                "postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved",
+            ),
+            (
+                lambda result: result["hostInput"].__setitem__(
+                    "ctrlRComplete", False
+                ),
+                "ctrlRComplete",
+            ),
+            (
+                lambda result: result["hostInput"]["ctrlRRecords"][1].__setitem__(
+                    "trusted", False
+                ),
+                "Ctrl\\+R record 1",
+            ),
+            (
+                lambda result: result["hostInput"].__setitem__(
+                    "reloadMarkerFrameId", 1
+                ),
+                "input frame evidence disagrees",
             ),
             (
                 lambda result: result["screenshot"].__setitem__(
@@ -719,7 +802,7 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
                 lambda result: result["screenshot"].__setitem__(
                     "frameId", 1
                 ),
-                "not bound to its first eligible frame",
+                "not bound to its first eligible reload frame",
             ),
         ):
             with self.subTest(expression=expression):
@@ -735,11 +818,11 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
         # Even the dedicated signal cannot be credited before NAVIGATED.
         controlled["firstVisuallyNonEmptyPaintObservationSequence"] = 1
         controlled[
-            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence"
         ] = 1
         with self.assertRaisesRegex(
             M0Error,
-            "target first visually non-empty paint signal was not observed "
+            "initial target first visually non-empty paint signal was not observed "
             "after NAVIGATED",
         ):
             smoke.validate_result(result, expected_versions=VERSIONS)
@@ -753,13 +836,13 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
         # must not substitute for the separate C++ target-FVP protocol signal.
         controlled["navigatedMarkerObservationSequence"] = 2
         controlled["firstVisuallyNonEmptyPaintObservationSequence"] = 1
-        controlled["targetFirstVisuallyNonEmptyPaintSignalObserved"] = False
+        controlled["initialTargetFirstVisuallyNonEmptyPaintSignalObserved"] = False
         controlled[
-            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence"
         ] = 0
         with self.assertRaisesRegex(
             M0Error,
-            "targetFirstVisuallyNonEmptyPaintSignalObserved is not true",
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObserved is not true",
         ):
             smoke.validate_result(result, expected_versions=VERSIONS)
 
@@ -812,6 +895,8 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             'const URL_SWITCH = "--wasm-browser-controlled-https-url";',
             'const READY_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY";',
             'const NAVIGATED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED";',
+            '"CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOAD_READY"',
+            '"CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOADED"',
             'const PASS_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS";',
             'const FIXTURE_PATH = "/m5/m6-ui";',
             'const FIXTURE_URL = "https://a.test/m5/m6-ui";',
@@ -835,12 +920,25 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             'import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";',
             'const ADDRESS_TEXT_CHUNKS = Object.freeze(["https://a.test/m5/m6-ui"]);',
             "canvasFocusedAtStart",
+            "proxyFocusedForText",
+            "canvasFocusedForReload",
             "proxyTextEmpty",
             "textareaValue, ...textMetadata",
             "postNavigatedFrameObserved",
             "postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved",
-            "targetFirstVisuallyNonEmptyPaintSignalObserved",
-            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObserved",
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+            "reloadReadyMarkerObserved",
+            "reloadedMarkerObserved",
+            "frameIdAtReloadedMarker",
+            "postReloadFrameObserved",
+            "reloadTargetFirstVisuallyNonEmptyPaintSignalObserved",
+            "reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+            "postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved",
+            "ctrlRComplete",
+            "reloadCanvasFocused",
+            "ctrlRRecords",
+            "chromium_wasm_browser_host_key",
             "firstEligibleScreenshotFrameId",
             "screenshotCaptureAttempted",
             "screenshotObservationSequence",
@@ -856,35 +954,39 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             host.index("URL_SWITCH + \"=\" + controlledUrl.href"),
             host.index("namespace.default(moduleOptions)"),
         )
-        self.assertNotIn("ccall(", host)
+        self.assertIn("ccall(", host)
+        self.assertIn('"chromium_wasm_browser_host_key"', host)
         self.assertNotIn("location.assign(", host)
         self.assertNotIn("location.replace(", host)
-        capture_start = host.index("#captureScreenshotForFirstEligibleFrame")
+        self.assertNotIn("Page.reload", host)
+        self.assertNotIn("NavigationController", host)
+        capture_start = host.index("#captureScreenshotForFirstEligibleReloadFrame")
         capture_end = host.index("#reportFrame", capture_start)
         capture = host[capture_start:capture_end]
         self.assertIn('this.#canvas.toDataURL("image/png")', capture)
         self.assertIn("this.#screenshotCaptureAttempted = true", capture)
         report_frame_end = host.index("#reportReadiness", capture_end)
         report_frame = host[capture_end:report_frame_end]
-        self.assertIn("this.#navigatedMarkerObserved", report_frame)
+        self.assertIn("this.#reloadedMarkerObserved", report_frame)
         self.assertIn(
-            "this.#targetFirstVisuallyNonEmptyPaintSignalObserved",
+            "this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved",
             report_frame,
         )
         self.assertIn(
-            "this.#captureScreenshotForFirstEligibleFrame(", report_frame
+            "this.#captureScreenshotForFirstEligibleReloadFrame(", report_frame
         )
         target_fvp_start = host.index("#reportControlledHttpsTargetFvp")
         target_fvp_end = host.index("#reportFocus", target_fvp_start)
         target_fvp = host[target_fvp_start:target_fvp_end]
-        self.assertIn("Object.keys(report).length !== 1", target_fvp)
-        self.assertIn("this.#navigatedMarkerObserved", target_fvp)
+        self.assertIn("Object.keys(report).length !== 2", target_fvp)
+        self.assertIn("report.phase", target_fvp)
+        self.assertIn("this.#reloadedMarkerObserved", target_fvp)
         self.assertIn(
-            "observationSequence <= this.#navigatedMarkerObservationSequence",
+            "observationSequence <= this.#reloadedMarkerObservationSequence",
             target_fvp,
         )
         self.assertIn(
-            "this.#targetFirstVisuallyNonEmptyPaintSignalObserved = true",
+            "this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved = true",
             target_fvp,
         )
 
@@ -901,8 +1003,12 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "m6UiRequests",
             "localGateway443StreamsOpened",
             "requestedDestinations",
-            "targetFirstVisuallyNonEmptyPaintSignalObserved",
-            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObserved",
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+            "reloadTargetFirstVisuallyNonEmptyPaintSignalObserved",
+            "reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+            "RELOAD_READY_MARKER",
+            "RELOADED_MARKER",
             "h2-m6-ui",
             "chromium-wasm-m5-network-v1",
             "check_controlled_https_boundary(out_dir)",
@@ -916,12 +1022,15 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "from m4_cdp import unused_loopback_port, wait_for_page_client",
             "wait_for_page_client(debug_port",
             "client.dispatch_control_shortcut(\"KeyL\", \"l\", 76)",
+            "client.dispatch_control_shortcut(\"KeyR\", \"r\", 82)",
             "client.call(\"Input.insertText\", {\"text\": text_chunk})",
+            "awaiting-trusted-dom-ctrl-r",
             "Input.dispatchKeyEvent",
             "__chromiumWasmM6ControlledHttpsHostTextState",
             "chrome_wasm_text_input.js",
             "verify_explicit_text_heap_exports",
             'Module["_chromium_wasm_browser_host_text"]',
+            'Module["_chromium_wasm_browser_host_key"]',
             'Module["_malloc"]',
             'Module["_free"]',
             'Module["ccall"]',
@@ -932,6 +1041,7 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
         self.assertNotIn("ccall(", runner)
         self.assertNotIn("Input.dispatchMouseEvent", runner)
         self.assertNotIn("Runtime.evaluate", runner)
+        self.assertNotIn("Page.reload", runner)
         self.assertNotIn("SCREENSHOT_CAPTURED_UNCOMPARED", runner)
 
     def test_target_fvp_uses_a_dedicated_nonsticky_host_bridge_signal(
@@ -945,9 +1055,11 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
         target_fvp = bridge[start:end]
         for expected in (
             "chromium_wasm_report_controlled_https_target_fvp__proxy: 'sync'",
-            "chromium_wasm_report_controlled_https_target_fvp: () =>",
+            "chromium_wasm_report_controlled_https_target_fvp: (phase) =>",
             "bridge.reportControlledHttpsTargetFvp({",
             "protocol: ChromiumWasmHostBridge.version",
+            "phase,",
+            "}) === true ? 1 : 0",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, target_fvp)

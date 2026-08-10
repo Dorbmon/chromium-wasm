@@ -17,6 +17,9 @@ const ADDRESS_TEXT_CHUNKS = Object.freeze(["https://a.test/m5/m6-ui"]);
 const ADDRESS_TEXT = ADDRESS_TEXT_CHUNKS.join("");
 const READY_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY";
 const NAVIGATED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED";
+const RELOAD_READY_MARKER =
+    "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOAD_READY";
+const RELOADED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOADED";
 const PASS_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS";
 const WISP_CONFIGURATION_VERSION = 1;
 const WISP_SUBPROTOCOL = "wisp";
@@ -217,6 +220,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #versions;
   #module = null;
   #textInput = null;
+  #completedTextSnapshot = null;
   #stdout = [];
   #stderr = [];
   #fatalErrors = [];
@@ -245,9 +249,17 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #postNavigatedFrameObserved = false;
   #firstVisuallyNonEmptyPaintReportObserved = false;
   #firstVisuallyNonEmptyPaintObservationSequence = 0;
-  #targetFirstVisuallyNonEmptyPaintSignalObserved = false;
-  #targetFirstVisuallyNonEmptyPaintSignalObservationSequence = 0;
+  #initialTargetFirstVisuallyNonEmptyPaintSignalObserved = false;
+  #initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence = 0;
   #postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved = false;
+  #reloadReadyMarkerObserved = false;
+  #reloadedMarkerObserved = false;
+  #frameIdAtReloadedMarker = 0;
+  #reloadedMarkerObservationSequence = 0;
+  #postReloadFrameObserved = false;
+  #reloadTargetFirstVisuallyNonEmptyPaintSignalObserved = false;
+  #reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence = 0;
+  #postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved = false;
   #firstEligibleScreenshotFrameId = 0;
   #screenshotCaptureAttempted = false;
   #screenshot = null;
@@ -257,6 +269,13 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #runtimeArgumentsConfigured = false;
   #configurationPrecededFactory = false;
   #state = "starting";
+  #reloadInputAttached = false;
+  #reloadHeldCodes = [];
+  #onReloadKeyDown = null;
+  #onReloadKeyUp = null;
+  #onReloadCanvasBlur = null;
+  #onReloadWindowBlur = null;
+  #onReloadVisibilityChange = null;
   #input = {
     readyObserved: false,
     nativeTextAdmissionCount: 0,
@@ -267,10 +286,18 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     textDeliveryAccepted: false,
     enterComplete: false,
     navigatedObserved: false,
+    reloadReadyObserved: false,
+    ctrlRComplete: false,
+    reloadCanvasFocused: false,
+    reloadedObserved: false,
     screenshotObserved: false,
     passObserved: false,
     navigationMarkerFrameId: null,
+    reloadMarkerFrameId: null,
     screenshotFrameId: null,
+    ctrlRRecords: [],
+    reloadRejectedRecords: [],
+    reloadCleanupRecords: [],
   };
 
   constructor(canvas, proxy, versions) {
@@ -294,13 +321,21 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #recordOutput(value) {
     const text = String(value);
     if (text.includes(READY_MARKER)) {
-      this.#readyMarkerObserved = true;
-      this.#input.readyObserved = true;
-      this.#updateReadyState();
+      if (this.#readyMarkerObserved || this.#navigatedMarkerObserved ||
+          this.#reloadReadyMarkerObserved || this.#reloadedMarkerObserved ||
+          this.#passMarkerObserved) {
+        this.#recordFatal("controlled-HTTPS READY marker is out of order");
+      } else {
+        this.#readyMarkerObserved = true;
+        this.#input.readyObserved = true;
+        this.#updateReadyState();
+      }
     }
     if (text.includes(NAVIGATED_MARKER)) {
-      if (this.#navigatedMarkerObserved) {
-        this.#recordFatal("controlled-HTTPS NAVIGATED marker was reported twice");
+      if (!this.#readyMarkerObserved || this.#navigatedMarkerObserved ||
+          this.#reloadReadyMarkerObserved || this.#reloadedMarkerObserved ||
+          this.#passMarkerObserved) {
+        this.#recordFatal("controlled-HTTPS NAVIGATED marker is out of order");
       } else {
         this.#navigatedMarkerObserved = true;
         this.#frameIdAtNavigatedMarker = this.#frameReports.at(-1)?.id || 0;
@@ -311,10 +346,40 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
         this.#advanceInputState();
       }
     }
+    if (text.includes(RELOAD_READY_MARKER)) {
+      if (!this.#navigatedMarkerObserved || this.#reloadReadyMarkerObserved ||
+          this.#reloadedMarkerObserved || this.#passMarkerObserved) {
+        this.#recordFatal("controlled-HTTPS RELOAD_READY marker is out of order");
+      } else {
+        this.#reloadReadyMarkerObserved = true;
+        this.#input.reloadReadyObserved = true;
+        this.#advanceInputState();
+      }
+    }
+    if (text.includes(RELOADED_MARKER)) {
+      if (!this.#reloadReadyMarkerObserved || !this.#input.ctrlRComplete ||
+          this.#reloadedMarkerObserved || this.#passMarkerObserved) {
+        this.#recordFatal("controlled-HTTPS RELOADED marker is out of order");
+      } else {
+        this.#reloadedMarkerObserved = true;
+        this.#frameIdAtReloadedMarker = this.#frameReports.at(-1)?.id || 0;
+        this.#reloadedMarkerObservationSequence = ++this.#observationSequence;
+        this.#input.reloadedObserved = true;
+        this.#input.reloadMarkerFrameId = this.#frameIdAtReloadedMarker;
+        this.#advanceInputState();
+      }
+    }
     if (text.includes(PASS_MARKER)) {
-      this.#passMarkerObserved = true;
-      this.#input.passObserved = true;
-      this.#setState("pass-observed");
+      if (!this.#reloadedMarkerObserved ||
+          !this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved ||
+          !this.#postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved ||
+          this.#passMarkerObserved) {
+        this.#recordFatal("controlled-HTTPS PASS marker is out of order");
+      } else {
+        this.#passMarkerObserved = true;
+        this.#input.passObserved = true;
+        this.#setState("pass-observed");
+      }
     }
   }
 
@@ -370,7 +435,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     }
   }
 
-  #captureScreenshotForFirstEligibleFrame(report, observationSequence) {
+  #captureScreenshotForFirstEligibleReloadFrame(report, observationSequence) {
     if (this.#screenshotCaptureAttempted) {
       return;
     }
@@ -380,7 +445,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       // chromium_wasm_present_frame copies the compositor pixels into this
       // canvas before reportFrame runs. Take the synchronous snapshot here so
       // it is exactly the first presented frame observed after both the C++
-      // NAVIGATED marker and the verified target-FVP protocol signal.
+      // RELOADED marker and the phase-2 target-FVP protocol signal.
       const dataBase64 = decodePngDataUrl(this.#canvas.toDataURL("image/png"));
       this.#screenshot = {
         mimeType: "image/png",
@@ -427,13 +492,27 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       if (isPostNavigatedFrame) {
         this.#postNavigatedFrameObserved = true;
       }
-      const isFirstEligibleScreenshotFrame = isPostNavigatedFrame &&
-          this.#targetFirstVisuallyNonEmptyPaintSignalObserved &&
+      const isPostInitialFvpFrame = isPostNavigatedFrame &&
+          this.#initialTargetFirstVisuallyNonEmptyPaintSignalObserved &&
           observationSequence >
-              this.#targetFirstVisuallyNonEmptyPaintSignalObservationSequence;
-      if (isFirstEligibleScreenshotFrame) {
+              this.#initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence;
+      if (isPostInitialFvpFrame) {
         this.#postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved = true;
-        this.#captureScreenshotForFirstEligibleFrame(report, observationSequence);
+      }
+      const isPostReloadFrame = this.#reloadedMarkerObserved &&
+          report.id > this.#frameIdAtReloadedMarker &&
+          observationSequence > this.#reloadedMarkerObservationSequence;
+      if (isPostReloadFrame) {
+        this.#postReloadFrameObserved = true;
+      }
+      const isFirstEligibleReloadScreenshotFrame = isPostReloadFrame &&
+          this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved &&
+          observationSequence >
+              this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence;
+      if (isFirstEligibleReloadScreenshotFrame) {
+        this.#postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved = true;
+        this.#captureScreenshotForFirstEligibleReloadFrame(
+            report, observationSequence);
       }
       this.#advanceInputState();
     } catch (error) {
@@ -469,24 +548,38 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     try {
       const report = asReport(value, "controlled-HTTPS target FVP report");
       if (report.protocol !== HOST_PROTOCOL ||
-          Object.keys(report).length !== 1) {
+          !Number.isSafeInteger(report.phase) ||
+          (report.phase !== 1 && report.phase !== 2) ||
+          Object.keys(report).length !== 2) {
         throw new Error("controlled-HTTPS target FVP report is invalid");
       }
-      if (this.#targetFirstVisuallyNonEmptyPaintSignalObserved) {
-        throw new Error("controlled-HTTPS target FVP was reported twice");
-      }
       const observationSequence = ++this.#observationSequence;
-      if (!this.#navigatedMarkerObserved ||
-          observationSequence <= this.#navigatedMarkerObservationSequence) {
-        throw new Error("controlled-HTTPS target FVP preceded NAVIGATED");
+      if (report.phase === 1) {
+        if (!this.#navigatedMarkerObserved || this.#reloadReadyMarkerObserved ||
+            this.#initialTargetFirstVisuallyNonEmptyPaintSignalObserved ||
+            observationSequence <= this.#navigatedMarkerObservationSequence) {
+          throw new Error("controlled-HTTPS phase-1 target FVP is out of order");
+        }
+        this.#initialTargetFirstVisuallyNonEmptyPaintSignalObserved = true;
+        this.#initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence =
+            observationSequence;
+      } else {
+        if (!this.#reloadedMarkerObserved ||
+            !this.#initialTargetFirstVisuallyNonEmptyPaintSignalObserved ||
+            this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved ||
+            observationSequence <= this.#reloadedMarkerObservationSequence) {
+          throw new Error("controlled-HTTPS phase-2 target FVP is out of order");
+        }
+        this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved = true;
+        this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence =
+            observationSequence;
       }
-      this.#targetFirstVisuallyNonEmptyPaintSignalObserved = true;
-      this.#targetFirstVisuallyNonEmptyPaintSignalObservationSequence =
-          observationSequence;
       this.#advanceInputState();
+      return true;
     } catch (error) {
       this.#recordFatal("invalid controlled-HTTPS target FVP report: " +
           String(error));
+      return false;
     }
   }
 
@@ -599,7 +692,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
         host.#reportReadiness(report);
       },
       reportControlledHttpsTargetFvp(report) {
-        host.#reportControlledHttpsTargetFvp(report);
+        return host.#reportControlledHttpsTargetFvp(report);
       },
       reportOzoneFocusState(report) {
         host.#reportFocus(report);
@@ -620,7 +713,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   }
 
   #textSnapshot() {
-    return this.#textInput?.snapshot() || {
+    return this.#textInput?.snapshot() || this.#completedTextSnapshot || {
       attached: false,
       deliveryAccepted: false,
       deliveryRejected: false,
@@ -638,13 +731,16 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     const text = this.#textSnapshot();
     globalThis.__chromiumWasmM6ControlledHttpsHostTextState = Object.freeze({
       state: this.#state,
-      attached: text.attached,
+      attached: this.#textInput !== null && text.attached,
       readyObserved: this.#input.readyObserved,
       ctrlLComplete: this.#input.ctrlLComplete,
       proxyFocused: text.proxyFocused,
       deliveryAccepted: text.deliveryAccepted,
       pendingDeliveryCount: text.pendingDeliveryCount,
       enterComplete: this.#input.enterComplete,
+      reloadReadyObserved: this.#input.reloadReadyObserved,
+      ctrlRComplete: this.#input.ctrlRComplete,
+      reloadCanvasFocused: this.#input.reloadCanvasFocused,
       passObserved: this.#input.passObserved,
     });
   }
@@ -656,7 +752,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
 
   #updateReadyState() {
     const text = this.#textSnapshot();
-    if (!text.attached || !this.#input.readyObserved ||
+    if (!this.#textInput || !text.attached || !this.#input.readyObserved ||
         this.#input.passObserved || text.deliveryRejected) {
       return;
     }
@@ -682,13 +778,172 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   }
 
   #advanceInputState() {
-    if (this.#input.navigatedObserved &&
-        this.#targetFirstVisuallyNonEmptyPaintSignalObserved &&
+    if (this.#input.reloadedObserved &&
+        this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved &&
         this.#screenshot && !this.#input.screenshotObserved) {
       this.#input.screenshotObserved = true;
       this.#input.screenshotFrameId = this.#screenshot.frameId;
     }
+    this.#armReloadInput();
     this.#updateReadyState();
+  }
+
+  #callReloadHostKey(code, down) {
+    if (!this.#module || typeof this.#module.ccall !== "function") {
+      return 0;
+    }
+    try {
+      return this.#module.ccall(
+          "chromium_wasm_browser_host_key", "number", ["string", "number"],
+          [code, down ? 1 : 0]);
+    } catch (error) {
+      this.#recordFatal("controlled-HTTPS reload key ABI call failed: " +
+          String(error));
+      return 0;
+    }
+  }
+
+  #reloadRejectionReason(event, down) {
+    const expected = [
+      ["keydown", "ControlLeft"],
+      ["keydown", "KeyR"],
+      ["keyup", "KeyR"],
+      ["keyup", "ControlLeft"],
+    ];
+    if (!this.#reloadInputAttached || this.#input.ctrlRComplete ||
+        !this.#module) {
+      return "controlled-HTTPS reload verifier is not ready";
+    }
+    const expectedEvent = expected[this.#input.ctrlRRecords.length];
+    if (!expectedEvent || expectedEvent[0] !== (down ? "keydown" : "keyup") ||
+        expectedEvent[1] !== event.code) {
+      return "DOM key is outside the bounded Ctrl+R transaction";
+    }
+    if (event.isTrusted !== true || event.cancelable !== true ||
+        document.activeElement !== this.#canvas || event.isComposing ||
+        event.repeat || event.key === "Dead" || event.key === "Process" ||
+        event.metaKey || event.altKey || event.shiftKey ||
+        event.getModifierState("AltGraph")) {
+      return "DOM Ctrl+R key has unsupported trust, target, or modifier state";
+    }
+    if (event.code === "KeyR" && !event.ctrlKey) {
+      return "DOM KeyR event lacks ControlLeft";
+    }
+    return null;
+  }
+
+  #releaseReloadHeldKeys(reason) {
+    for (const code of [...this.#reloadHeldCodes].reverse()) {
+      const accepted = this.#callReloadHostKey(code, false) === 1;
+      appendBounded(this.#input.reloadCleanupRecords, {reason, code, accepted});
+    }
+    this.#reloadHeldCodes = [];
+  }
+
+  #detachReloadInput() {
+    if (!this.#reloadInputAttached) {
+      return;
+    }
+    this.#canvas.removeEventListener("keydown", this.#onReloadKeyDown);
+    this.#canvas.removeEventListener("keyup", this.#onReloadKeyUp);
+    this.#canvas.removeEventListener("blur", this.#onReloadCanvasBlur);
+    window.removeEventListener("blur", this.#onReloadWindowBlur);
+    document.removeEventListener(
+        "visibilitychange", this.#onReloadVisibilityChange);
+    this.#reloadInputAttached = false;
+    this.#onReloadKeyDown = null;
+    this.#onReloadKeyUp = null;
+    this.#onReloadCanvasBlur = null;
+    this.#onReloadWindowBlur = null;
+    this.#onReloadVisibilityChange = null;
+  }
+
+  #handleReloadKey(event, down) {
+    const record = {
+      type: down ? "keydown" : "keyup",
+      code: event.code,
+      key: event.key,
+      trusted: event.isTrusted,
+      cancelable: event.cancelable,
+      canvasFocused: document.activeElement === this.#canvas,
+      accepted: false,
+      defaultPrevented: false,
+    };
+    const reason = this.#reloadRejectionReason(event, down);
+    // This temporary verifier owns the focused private canvas transaction.
+    // Suppress every cancelable key in the phase, including rejected input, so
+    // the outer browser cannot reload itself while the proof fails closed.
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    record.defaultPrevented = event.defaultPrevented;
+    if (reason !== null || this.#callReloadHostKey(event.code, down) !== 1) {
+      record.rejectionReason = reason || "Chrome rejected a Ctrl+R key transition";
+      appendBounded(this.#input.reloadRejectedRecords, record);
+      this.#recordFatal("controlled-HTTPS reload key was rejected: " +
+          record.rejectionReason);
+      return;
+    }
+    record.accepted = true;
+    appendBounded(this.#input.ctrlRRecords, record);
+    if (down) {
+      this.#reloadHeldCodes.push(event.code);
+    } else {
+      this.#reloadHeldCodes = this.#reloadHeldCodes.filter(
+          (code) => code !== event.code);
+    }
+    if (this.#input.ctrlRRecords.length === 4) {
+      this.#input.ctrlRComplete = true;
+      this.#detachReloadInput();
+      this.#setState("awaiting-native-reload");
+    } else {
+      this.#publishState();
+    }
+  }
+
+  #armReloadInput() {
+    if (!this.#reloadReadyMarkerObserved || this.#reloadInputAttached ||
+        this.#input.ctrlRComplete || !this.#textInput ||
+        !this.#initialTargetFirstVisuallyNonEmptyPaintSignalObserved ||
+        !this.#postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved) {
+      return;
+    }
+    const snapshot = this.#textInput.snapshot();
+    if (snapshot.deliveryRejected || snapshot.pendingDeliveryCount !== 0 ||
+        snapshot.pendingTextUtf8Bytes !== 0 || snapshot.textareaValue !== "") {
+      this.#recordFatal("trusted text transaction did not drain before Ctrl+R");
+      return;
+    }
+    // The shared adapter owns Ctrl+L only. Preserve its metadata-only result,
+    // detach it, and then focus the canvas for a distinct one-shot Ctrl+R
+    // transaction so the adapter cannot reject this reload chord.
+    this.#completedTextSnapshot = snapshot;
+    this.#textInput.detach();
+    this.#textInput = null;
+    this.#proxy.value = "";
+    this.#proxy.setSelectionRange(0, 0);
+    this.#canvas.focus({preventScroll: true});
+    if (document.activeElement !== this.#canvas) {
+      this.#recordFatal("controlled-HTTPS canvas did not accept reload focus");
+      return;
+    }
+    this.#input.reloadCanvasFocused = true;
+    this.#onReloadKeyDown = (event) => this.#handleReloadKey(event, true);
+    this.#onReloadKeyUp = (event) => this.#handleReloadKey(event, false);
+    this.#onReloadCanvasBlur = () => this.#releaseReloadHeldKeys("canvas-blur");
+    this.#onReloadWindowBlur = () => this.#releaseReloadHeldKeys("window-blur");
+    this.#onReloadVisibilityChange = () => {
+      if (document.hidden) {
+        this.#releaseReloadHeldKeys("document-hidden");
+      }
+    };
+    this.#canvas.addEventListener("keydown", this.#onReloadKeyDown);
+    this.#canvas.addEventListener("keyup", this.#onReloadKeyUp);
+    this.#canvas.addEventListener("blur", this.#onReloadCanvasBlur);
+    window.addEventListener("blur", this.#onReloadWindowBlur);
+    document.addEventListener("visibilitychange", this.#onReloadVisibilityChange);
+    this.#reloadInputAttached = true;
+    this.#setState("awaiting-trusted-dom-ctrl-r");
   }
 
   #recordNativeTextAdmission(record) {
@@ -730,11 +985,13 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       return;
     }
     if (typeof module.ccall !== "function" ||
+        typeof module._chromium_wasm_browser_host_key !== "function" ||
         typeof module._chromium_wasm_browser_host_text !== "function" ||
         typeof module._malloc !== "function" ||
         typeof module._free !== "function" ||
         !(module.HEAPU8 instanceof Uint8Array)) {
-      this.#recordFatal("controlled-HTTPS module lacks trusted text heap exports");
+      this.#recordFatal(
+          "controlled-HTTPS module lacks trusted text or key heap exports");
       return;
     }
     this.#module = module;
@@ -791,7 +1048,8 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       crossOriginIsolated,
       sharedArrayBuffer: typeof SharedArrayBuffer === "function",
       canvasFocusedAtStart: text.ctrlLRecords[0]?.canvasFocused === true,
-      proxyFocused: text.proxyFocused,
+      proxyFocusedForText: this.#input.proxyFocusedAfterCtrlL,
+      canvasFocusedForReload: this.#input.reloadCanvasFocused,
       controlledHttps: {
         wispConfigured: this.#wispConfigured,
         runtimeArgumentsConfigured: this.#runtimeArgumentsConfigured,
@@ -806,12 +1064,24 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
             this.#firstVisuallyNonEmptyPaintReportObserved,
         firstVisuallyNonEmptyPaintObservationSequence:
             this.#firstVisuallyNonEmptyPaintObservationSequence,
-        targetFirstVisuallyNonEmptyPaintSignalObserved:
-            this.#targetFirstVisuallyNonEmptyPaintSignalObserved,
-        targetFirstVisuallyNonEmptyPaintSignalObservationSequence:
-            this.#targetFirstVisuallyNonEmptyPaintSignalObservationSequence,
+        initialTargetFirstVisuallyNonEmptyPaintSignalObserved:
+            this.#initialTargetFirstVisuallyNonEmptyPaintSignalObserved,
+        initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence:
+            this.#initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence,
         postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved:
             this.#postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved,
+        reloadReadyMarkerObserved: this.#reloadReadyMarkerObserved,
+        reloadedMarkerObserved: this.#reloadedMarkerObserved,
+        frameIdAtReloadedMarker: this.#frameIdAtReloadedMarker,
+        reloadedMarkerObservationSequence:
+            this.#reloadedMarkerObservationSequence,
+        postReloadFrameObserved: this.#postReloadFrameObserved,
+        reloadTargetFirstVisuallyNonEmptyPaintSignalObserved:
+            this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObserved,
+        reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence:
+            this.#reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence,
+        postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved:
+            this.#postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved,
         firstEligibleScreenshotFrameId: this.#firstEligibleScreenshotFrameId,
         screenshotCaptureAttempted: this.#screenshotCaptureAttempted,
         screenshotFrameId: this.#screenshot?.frameId || 0,
@@ -950,6 +1220,8 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     } catch (error) {
       return this.#result("fail", String(error));
     } finally {
+      this.#releaseReloadHeldKeys("teardown");
+      this.#detachReloadInput();
       this.#textInput?.detach();
       this.#textInput = null;
       this.#releaseWindowErrors();
@@ -976,8 +1248,10 @@ function validateResult(result) {
   require(result.sharedArrayBuffer === true, "SharedArrayBuffer is unavailable");
   require(result.canvasFocusedAtStart === true,
       "canvas was not focused for the trusted Ctrl+L transaction");
-  require(result.proxyFocused === true,
-      "trusted textarea proxy lost focus before exit");
+  require(result.proxyFocusedForText === true,
+      "trusted textarea proxy was not focused for the initial text transaction");
+  require(result.canvasFocusedForReload === true,
+      "canvas was not focused for the trusted Ctrl+R transaction");
   require(result.abort === null, "runtime aborted");
   require(Array.isArray(result.fatalErrors) && result.fatalErrors.length === 0,
       "host recorded a fatal error");
@@ -1002,41 +1276,63 @@ function validateResult(result) {
               true,
           "controlled-HTTPS first visually non-empty paint report is absent");
   require(result.controlledHttps
-              ?.targetFirstVisuallyNonEmptyPaintSignalObserved === true,
-          "controlled-HTTPS target first visually non-empty paint signal is " +
-              "absent");
+              ?.initialTargetFirstVisuallyNonEmptyPaintSignalObserved === true,
+          "controlled-HTTPS initial target first visually non-empty paint " +
+              "signal is absent");
   require(result.controlledHttps
               ?.postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved ===
               true,
           "no post-NAVIGATED canvas frame followed the first visually non-empty " +
               "paint report");
+  require(result.controlledHttps?.reloadReadyMarkerObserved === true,
+      "controlled-HTTPS RELOAD_READY marker is absent");
+  require(result.controlledHttps?.reloadedMarkerObserved === true,
+      "controlled-HTTPS RELOADED marker is absent");
+  require(result.controlledHttps?.postReloadFrameObserved === true,
+      "no canvas frame followed the controlled-HTTPS RELOADED marker");
+  require(result.controlledHttps
+              ?.reloadTargetFirstVisuallyNonEmptyPaintSignalObserved === true,
+          "controlled-HTTPS reload target first visually non-empty paint " +
+              "signal is absent");
+  require(result.controlledHttps
+              ?.postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved === true,
+          "no post-RELOADED canvas frame followed the reload target FVP");
   require(result.controlledHttps?.screenshotCaptureAttempted === true,
       "the first eligible screenshot capture was not attempted");
   require(Number.isSafeInteger(result.controlledHttps
               ?.firstEligibleScreenshotFrameId) &&
               result.controlledHttps.firstEligibleScreenshotFrameId >
-                  result.controlledHttps.frameIdAtNavigatedMarker,
-          "the first eligible screenshot frame is invalid");
+                  result.controlledHttps.frameIdAtReloadedMarker,
+          "the first eligible reload screenshot frame is invalid");
   require(result.controlledHttps?.screenshotFrameId ===
               result.controlledHttps?.firstEligibleScreenshotFrameId,
           "the screenshot was not captured from the first eligible frame");
   require(Number.isSafeInteger(result.controlledHttps
               ?.navigatedMarkerObservationSequence) &&
               Number.isSafeInteger(result.controlledHttps
-                  ?.targetFirstVisuallyNonEmptyPaintSignalObservationSequence) &&
-              result.controlledHttps
-                      .targetFirstVisuallyNonEmptyPaintSignalObservationSequence >
+                  ?.initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence) &&
+          result.controlledHttps
+                      .initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence >
                   result.controlledHttps.navigatedMarkerObservationSequence,
-          "the target first visually non-empty paint signal was not observed " +
+          "the initial target first visually non-empty paint signal was not observed " +
               "after NAVIGATED");
+  require(Number.isSafeInteger(result.controlledHttps
+              ?.reloadedMarkerObservationSequence) &&
+              Number.isSafeInteger(result.controlledHttps
+                  ?.reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence) &&
+              result.controlledHttps
+                      .reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence >
+                  result.controlledHttps.reloadedMarkerObservationSequence,
+          "the reload target first visually non-empty paint signal was not " +
+              "observed after RELOADED");
   require(Number.isSafeInteger(result.controlledHttps
               ?.screenshotObservationSequence) &&
               result.controlledHttps.screenshotObservationSequence >
-                  result.controlledHttps.navigatedMarkerObservationSequence &&
+                  result.controlledHttps.reloadedMarkerObservationSequence &&
               result.controlledHttps.screenshotObservationSequence >
                   result.controlledHttps
-                      .targetFirstVisuallyNonEmptyPaintSignalObservationSequence,
-          "the screenshot was not observed after NAVIGATED and target FVP " +
+                      .reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence,
+          "the screenshot was not observed after RELOADED and reload target FVP " +
               "signal");
   require(isCapturedPngScreenshot(result.screenshot),
       "controlled-HTTPS PNG screenshot evidence is invalid");
@@ -1092,8 +1388,12 @@ function validateResult(result) {
           "canonical text delivery did not drain cleanly");
   require(input?.enterComplete === true,
       "trusted physical Enter transaction did not complete");
-  require(input?.navigatedObserved === true && input?.screenshotObserved === true,
-      "trusted input was not bound to the post-navigation screenshot");
+  require(input?.navigatedObserved === true &&
+              input?.reloadReadyObserved === true &&
+              input?.ctrlRComplete === true &&
+              input?.reloadCanvasFocused === true &&
+              input?.reloadedObserved === true && input?.screenshotObserved === true,
+          "trusted input was not bound to the post-reload screenshot");
   require(input?.passObserved === true,
       "controlled-HTTPS native pass marker is absent from input evidence");
   require(Array.isArray(input?.ctrlLRecords) && input.ctrlLRecords.length === 4 &&
@@ -1127,8 +1427,23 @@ function validateResult(result) {
                   record.cancelable === true && record.proxyFocused === true &&
                   record.accepted === true && record.defaultPrevented === true),
           "trusted physical Enter evidence is invalid");
+  require(Array.isArray(input?.ctrlRRecords) && input.ctrlRRecords.length === 4 &&
+              JSON.stringify(input.ctrlRRecords.map((record) => [
+                record?.type, record?.code,
+              ])) === JSON.stringify([
+                ["keydown", "ControlLeft"],
+                ["keydown", "KeyR"],
+                ["keyup", "KeyR"],
+                ["keyup", "ControlLeft"],
+              ]) &&
+              input.ctrlRRecords.every((record) => record?.trusted === true &&
+                  record.cancelable === true && record.canvasFocused === true &&
+                  record.accepted === true && record.defaultPrevented === true),
+          "trusted physical Ctrl+R evidence is invalid");
   require(JSON.stringify(input?.rejectedRecords) === "[]" &&
-              JSON.stringify(input?.cleanupRecords) === "[]",
+              JSON.stringify(input?.cleanupRecords) === "[]" &&
+              JSON.stringify(input?.reloadRejectedRecords) === "[]" &&
+              JSON.stringify(input?.reloadCleanupRecords) === "[]",
           "trusted controlled-HTTPS input has unexpected rejection or cleanup");
   result.failedChecks = failures;
   if (failures.length > 0) {
@@ -1200,6 +1515,8 @@ export const chromeWasmBrowserControlledHttpsSmokeContract = Object.freeze({
   NAVIGATED_MARKER,
   PASS_MARKER,
   READY_MARKER,
+  RELOADED_MARKER,
+  RELOAD_READY_MARKER,
   SCOPE,
   SWITCH,
   URL_SWITCH,

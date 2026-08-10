@@ -7,8 +7,9 @@
 
 This harness serves the dedicated test-only Chrome executable from a
 cross-origin-isolated page. The host configures WISP before the Emscripten
-factory starts, then uses only trusted CDP Ctrl+L, Input.insertText, and
-physical Enter events to navigate Chromium's real Views address field.
+factory starts, then uses only trusted CDP Ctrl+L, Input.insertText, physical
+Enter, and a physical Ctrl+R to navigate and reload Chromium's real Views
+address field.
 """
 
 from __future__ import annotations
@@ -74,6 +75,8 @@ SMOKE_SWITCH = "--wasm-browser-controlled-https-smoke"
 URL_SWITCH = "--wasm-browser-controlled-https-url"
 READY_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY"
 NAVIGATED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED"
+RELOAD_READY_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOAD_READY"
+RELOADED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:RELOADED"
 PASS_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS"
 ADDRESS_TEXT_CHUNKS = ("https://a.test/m5/m6-ui",)
 ADDRESS_TEXT = "".join(ADDRESS_TEXT_CHUNKS)
@@ -581,7 +584,7 @@ def _decode_screenshot_evidence(
     frame_reports: list[dict[str, Any]],
     screenshot_contract: dict[str, Any],
 ) -> bytes:
-    """Decode one bounded PNG and bind it to the first eligible frame."""
+    """Decode one bounded PNG and bind it to the first reload-eligible frame."""
 
     screenshot = result.get("screenshot")
     expected_fields = {
@@ -642,7 +645,7 @@ def _decode_screenshot_evidence(
     ):
         raise M0Error(
             "controlled-HTTPS screenshot is not bound to its first eligible "
-            "frame"
+            "reload frame"
         )
     matching_frames = [
         frame for frame in frame_reports if frame["id"] == screenshot["frameId"]
@@ -662,7 +665,7 @@ def _decode_screenshot_evidence(
 
 
 def _validate_trusted_host_input(value: object) -> None:
-    """Require the sole canonical URL to cross the trusted Ozone text ABI."""
+    """Require trusted DOM input for the typed URL and physical reload."""
 
     if not isinstance(value, dict):
         raise M0Error("controlled-HTTPS trusted host input evidence is missing")
@@ -678,6 +681,10 @@ def _validate_trusted_host_input(value: object) -> None:
         "proxyTextEmpty": True,
         "enterComplete": True,
         "navigatedObserved": True,
+        "reloadReadyObserved": True,
+        "ctrlRComplete": True,
+        "reloadCanvasFocused": True,
+        "reloadedObserved": True,
         "screenshotObserved": True,
         "passObserved": True,
         "tombstonedDeliveryCount": 0,
@@ -766,7 +773,37 @@ def _validate_trusted_host_input(value: object) -> None:
             }.items()
         ):
             raise M0Error(f"controlled-HTTPS Enter record {index} is invalid")
-    for field in ("rejectedRecords", "cleanupRecords"):
+
+    expected_ctrl_r = [
+        ("keydown", "ControlLeft"),
+        ("keydown", "KeyR"),
+        ("keyup", "KeyR"),
+        ("keyup", "ControlLeft"),
+    ]
+    ctrl_r = value.get("ctrlRRecords")
+    if not isinstance(ctrl_r, list) or len(ctrl_r) != len(expected_ctrl_r):
+        raise M0Error("controlled-HTTPS trusted Ctrl+R record count is invalid")
+    for index, (event_type, code) in enumerate(expected_ctrl_r):
+        record = ctrl_r[index]
+        if not isinstance(record, dict) or any(
+            record.get(field) != expected
+            for field, expected in {
+                "type": event_type,
+                "code": code,
+                "trusted": True,
+                "cancelable": True,
+                "canvasFocused": True,
+                "accepted": True,
+                "defaultPrevented": True,
+            }.items()
+        ):
+            raise M0Error(f"controlled-HTTPS Ctrl+R record {index} is invalid")
+    for field in (
+        "rejectedRecords",
+        "cleanupRecords",
+        "reloadRejectedRecords",
+        "reloadCleanupRecords",
+    ):
         if value.get(field) != []:
             raise M0Error(f"controlled-HTTPS has unexpected {field}")
 
@@ -794,7 +831,8 @@ def validate_result(
         "crossOriginIsolated": True,
         "sharedArrayBuffer": True,
         "canvasFocusedAtStart": True,
-        "proxyFocused": True,
+        "proxyFocusedForText": True,
+        "canvasFocusedForReload": True,
         "abort": None,
         "failedChecks": [],
         "error": None,
@@ -818,7 +856,13 @@ def validate_result(
     output = "\n".join(
         str(line) for field in ("stdout", "stderr") for line in result[field]
     )
-    for marker in (READY_MARKER, NAVIGATED_MARKER, PASS_MARKER):
+    for marker in (
+        READY_MARKER,
+        NAVIGATED_MARKER,
+        RELOAD_READY_MARKER,
+        RELOADED_MARKER,
+        PASS_MARKER,
+    ):
         if marker not in output:
             raise M0Error(f"controlled-HTTPS output is missing {marker}")
 
@@ -833,8 +877,13 @@ def validate_result(
         "navigatedMarkerObserved",
         "postNavigatedFrameObserved",
         "firstVisuallyNonEmptyPaintReportObserved",
-        "targetFirstVisuallyNonEmptyPaintSignalObserved",
+        "initialTargetFirstVisuallyNonEmptyPaintSignalObserved",
         "postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved",
+        "reloadReadyMarkerObserved",
+        "reloadedMarkerObserved",
+        "postReloadFrameObserved",
+        "reloadTargetFirstVisuallyNonEmptyPaintSignalObserved",
+        "postReloadFrameAfterFirstVisuallyNonEmptyPaintObserved",
         "screenshotCaptureAttempted",
         "passMarkerObserved",
     ):
@@ -844,7 +893,9 @@ def validate_result(
     for field in (
         "navigatedMarkerObservationSequence",
         "firstVisuallyNonEmptyPaintObservationSequence",
-        "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+        "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+        "reloadedMarkerObservationSequence",
+        "reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
         "firstEligibleScreenshotFrameId",
         "screenshotFrameId",
         "screenshotObservationSequence",
@@ -854,35 +905,57 @@ def validate_result(
     navigated_frame_id = controlled.get("frameIdAtNavigatedMarker")
     if type(navigated_frame_id) is not int or navigated_frame_id < 0:
         raise M0Error("controlled-HTTPS NAVIGATED frame ID is invalid")
+    reloaded_frame_id = controlled.get("frameIdAtReloadedMarker")
+    if type(reloaded_frame_id) is not int or reloaded_frame_id < 0:
+        raise M0Error("controlled-HTTPS RELOADED frame ID is invalid")
     if (
-        controlled["firstEligibleScreenshotFrameId"]
-        <= navigated_frame_id
+        controlled["firstEligibleScreenshotFrameId"] <= reloaded_frame_id
         or controlled["screenshotFrameId"]
         != controlled["firstEligibleScreenshotFrameId"]
     ):
         raise M0Error(
             "controlled-HTTPS screenshot was not captured from the first "
-            "post-NAVIGATED frame eligible after FVP"
+            "post-RELOADED frame eligible after reload FVP"
         )
     if (
-        controlled["targetFirstVisuallyNonEmptyPaintSignalObservationSequence"]
+        controlled[
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+        ]
         <= controlled["navigatedMarkerObservationSequence"]
     ):
         raise M0Error(
-            "controlled-HTTPS target first visually non-empty paint signal "
-            "was not observed after NAVIGATED"
+            "controlled-HTTPS initial target first visually non-empty paint "
+            "signal was not observed after NAVIGATED"
         )
     if (
-        controlled["screenshotObservationSequence"]
-        <= controlled["navigatedMarkerObservationSequence"]
-        or controlled["screenshotObservationSequence"]
+        controlled["reloadedMarkerObservationSequence"]
         <= controlled[
-            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+            "initialTargetFirstVisuallyNonEmptyPaintSignalObservationSequence"
         ]
     ):
         raise M0Error(
-            "controlled-HTTPS screenshot was not observed after NAVIGATED "
-            "and target first visually non-empty paint signal"
+            "controlled-HTTPS RELOADED marker was not observed after the "
+            "initial target first visually non-empty paint signal"
+        )
+    if (
+        controlled["reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence"]
+        <= controlled["reloadedMarkerObservationSequence"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS reload target first visually non-empty paint "
+            "signal was not observed after RELOADED"
+        )
+    if (
+        controlled["screenshotObservationSequence"]
+        <= controlled["reloadedMarkerObservationSequence"]
+        or controlled["screenshotObservationSequence"]
+        <= controlled[
+            "reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+        ]
+    ):
+        raise M0Error(
+            "controlled-HTTPS screenshot was not observed after RELOADED "
+            "and reload target first visually non-empty paint signal"
         )
 
     last_frame = browser_view_smoke._validate_frame_reports(
@@ -893,6 +966,12 @@ def validate_result(
     ):
         raise M0Error(
             "controlled-HTTPS has no canvas frame after the NAVIGATED marker"
+        )
+    if not any(
+        frame["id"] > reloaded_frame_id for frame in result["frameReports"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS has no canvas frame after the RELOADED marker"
         )
     browser_view_smoke._validate_readiness(
         result.get("readiness"), result.get("readinessReports")
@@ -917,7 +996,20 @@ def validate_result(
         for state in text_states
     ):
         raise M0Error("controlled-HTTPS has no editable Ozone TextInputClient state")
-    _validate_trusted_host_input(result.get("hostInput"))
+    host_input = result.get("hostInput")
+    if not isinstance(host_input, dict):
+        raise M0Error("controlled-HTTPS trusted host input evidence is missing")
+    _validate_trusted_host_input(host_input)
+    if (
+        host_input.get("navigationMarkerFrameId") != navigated_frame_id
+        or host_input.get("reloadMarkerFrameId") != reloaded_frame_id
+        or host_input.get("screenshotFrameId")
+        != controlled["screenshotFrameId"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS trusted input frame evidence disagrees with "
+            "the native navigation phases"
+        )
     backing_store = result.get("canvasBackingStore")
     if not browser_view_smoke._exact_json_value_equal(
         backing_store,
@@ -992,10 +1084,10 @@ def validate_relay_status(status: dict[str, Any]) -> None:
     if (
         type(m6_ui_requests) is not int
         or not 0 <= m6_ui_requests <= MAX_RELAY_COUNTER
-        or m6_ui_requests != 1
+        or m6_ui_requests != 2
     ):
         raise M0Error(
-            "controlled-HTTPS relay did not observe exactly one M6 UI request"
+            "controlled-HTTPS relay did not observe exactly two M6 UI requests"
         )
     h2_requests = status.get("h2Requests")
     if (
@@ -1003,25 +1095,35 @@ def validate_relay_status(status: dict[str, Any]) -> None:
         or h2_requests.get("protocol") != "h2"
         or type(h2_requests.get("count")) is not int
         or not 0 <= h2_requests["count"] <= MAX_RELAY_COUNTER
-        or h2_requests["count"] != 1
+        or h2_requests["count"] != 2
     ):
-        raise M0Error("controlled-HTTPS relay lacks exactly one HTTP/2 request")
-    if status.get("localGateway443StreamsOpened") != 1:
+        raise M0Error("controlled-HTTPS relay lacks exactly two HTTP/2 requests")
+    streams_opened = status.get("localGateway443StreamsOpened")
+    if (
+        type(streams_opened) is not int
+        or not 1 <= streams_opened <= 2
+    ):
         raise M0Error(
-            "controlled-HTTPS relay did not open exactly one mapped "
-            "a.test:443 WISP stream"
+            "controlled-HTTPS relay did not open one or two mapped "
+            "a.test:443 WISP streams"
         )
     if status.get("localGateway443Requests") != 0:
         raise M0Error(
             "controlled-HTTPS relay received an unexpected local-gateway probe"
         )
     requested_destinations = status.get("requestedDestinations")
-    if requested_destinations != [
-        {"hostname": "a.test", "port": GATEWAY_LOGICAL_PORT}
-    ]:
+    if (
+        not isinstance(requested_destinations, list)
+        or not 1 <= len(requested_destinations) <= 2
+        or any(
+            destination
+            != {"hostname": "a.test", "port": GATEWAY_LOGICAL_PORT}
+            for destination in requested_destinations
+        )
+    ):
         raise M0Error(
-            "controlled-HTTPS relay lacks the exact WISP CONNECT for "
-            "a.test:443"
+            "controlled-HTTPS relay lacks one or two exact WISP CONNECT "
+            "records for a.test:443"
         )
     transcript = status.get("transcript")
     if (
@@ -1048,14 +1150,14 @@ def validate_relay_status(status: dict[str, Any]) -> None:
         previous_sequence = sequence
         events.append(event)
     fixture_events = events.count("h2-m6-ui")
-    if fixture_events != 1:
+    if fixture_events != 2:
         raise M0Error(
-            "controlled-HTTPS relay transcript lacks exactly one M6 UI event"
+            "controlled-HTTPS relay transcript lacks exactly two M6 UI events"
         )
 
 
 def verify_explicit_text_heap_exports(module_loader: Path) -> None:
-    """The adapter copies bounded UTF-8 through these explicit Wasm exports."""
+    """Trusted text and reload input use only these explicit Wasm exports."""
 
     try:
         loader = module_loader.read_text(encoding="utf-8")
@@ -1065,6 +1167,7 @@ def verify_explicit_text_heap_exports(module_loader: Path) -> None:
         ) from error
     for export in (
         'Module["_chromium_wasm_browser_host_text"]',
+        'Module["_chromium_wasm_browser_host_key"]',
         'Module["_malloc"]',
         'Module["_free"]',
         'Module["ccall"]',
@@ -1072,7 +1175,7 @@ def verify_explicit_text_heap_exports(module_loader: Path) -> None:
     ):
         if export not in loader:
             raise M0Error(
-                "controlled-HTTPS module lacks required trusted-text heap export "
+                "controlled-HTTPS module lacks required trusted-input export "
                 + export
             )
 
@@ -1084,6 +1187,8 @@ def wait_for_state(
     result_queue: queue.Queue[dict[str, Any]],
     deadline: float,
     state: str,
+    *,
+    require_attached: bool | None = True,
 ) -> None:
     """Poll only the host's read-only state witness between CDP input steps."""
 
@@ -1107,7 +1212,10 @@ def wait_for_state(
         if (
             isinstance(last_state, dict)
             and last_state.get("state") == state
-            and last_state.get("attached") is True
+            and (
+                require_attached is None
+                or last_state.get("attached") is require_attached
+            )
         ):
             return
         time.sleep(0.05)
@@ -1535,6 +1643,18 @@ def main() -> int:
         )
         stage = "dispatch_trusted_physical_enter"
         dispatch_unmodified_enter(client)
+        stage = "wait_for_ctrl_r_listener"
+        wait_for_state(
+            client,
+            browser,
+            browser_stderr,
+            result_queue,
+            deadline,
+            "awaiting-trusted-dom-ctrl-r",
+            require_attached=None,
+        )
+        stage = "dispatch_trusted_dom_ctrl_r"
+        client.dispatch_control_shortcut("KeyR", "r", 82)
         stage = "wait_for_result"
         result = wait_for_result(browser, browser_stderr, result_queue, deadline)
         stage = "validate_result"

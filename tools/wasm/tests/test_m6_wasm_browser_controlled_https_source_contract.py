@@ -107,7 +107,8 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
             "CHECK(!url.has_query());",
             "CHECK(!url.has_ref());",
             "CHECK_EQ(url.path(), kControlledHttpsPath);",
-            "extern \"C\" int chromium_wasm_report_controlled_https_target_fvp();",
+            '#include "content/public/browser/reload_type.h"',
+            "extern \"C\" int chromium_wasm_report_controlled_https_target_fvp(int phase);",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, smoke)
@@ -123,14 +124,23 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
             "net::kWasmWispDiagnosticStreamConfirmed",
             "net::kWasmWispDiagnosticAllRequired",
             "WaitForNavigationAndFirstVisuallyNonEmptyPaint(",
-            "chromium_wasm_report_controlled_https_target_fvp(), 1",
+            "WaitForReloadAndFirstVisuallyNonEmptyPaint(",
+            "chromium_wasm_report_controlled_https_target_fvp(1), 1",
+            "chromium_wasm_report_controlled_https_target_fvp(2), 1",
             "chromium_wasm_report_readiness(",
             "browser_view.SchedulePaint();",
             "CHECK_EQ(raw_contents->GetTitle(), kControlledHttpsTitle);",
+            "content::NavigationController& navigation_controller",
+            "const int history_entry_count = navigation_controller.GetEntryCount();",
+            "const int history_entry_index = navigation_controller.GetCurrentEntryIndex();",
+            "CHECK_EQ(navigation_controller.GetEntryCount(), history_entry_count);",
+            "CHECK_EQ(navigation_controller.GetCurrentEntryIndex(), history_entry_index);",
             "raw_browser->GetWindow()->Close();",
             "base::RunLoop().RunUntilIdle();",
             'std::puts(kControlledHttpsSmokeReadyMarker);',
             'std::puts(kControlledHttpsSmokeNavigatedMarker);',
+            'std::puts(kControlledHttpsSmokeReloadReadyMarker);',
+            'std::puts(kControlledHttpsSmokeReloadedMarker);',
             'std::puts(kControlledHttpsSmokeMarker);',
         ):
             with self.subTest(required=required):
@@ -142,6 +152,10 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
             "web_contents()->GetLastCommittedURL() != expected_url_",
             "on_target_first_visually_nonempty_paint",
             "MarkFirstVisuallyNonEmptyPaintAfterCommit();",
+            "NavigationExpectation::kReload",
+            "ui::PAGE_TRANSITION_RELOAD",
+            "navigation_handle->GetReloadType()",
+            "content::ReloadType::NORMAL",
         ):
             with self.subTest(observer_required=required):
                 self.assertIn(required, observer)
@@ -165,15 +179,42 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
         )
         self.assertLess(
             run.index("std::puts(kControlledHttpsSmokeNavigatedMarker);"),
-            run.index("chromium_wasm_report_controlled_https_target_fvp(), 1"),
+            run.index("chromium_wasm_report_controlled_https_target_fvp(1), 1"),
         )
         self.assertLess(
-            run.index("chromium_wasm_report_controlled_https_target_fvp(), 1"),
+            run.index("chromium_wasm_report_controlled_https_target_fvp(1), 1"),
             run.index("chromium_wasm_report_readiness("),
         )
         self.assertLess(
             run.index("chromium_wasm_report_readiness("),
             run.index("browser_view.SchedulePaint();"),
+        )
+        self.assertEqual(run.count("net::BeginWasmWispTransportDiagnostics("), 1)
+        self.assertLess(
+            run.index("WaitForNavigationAndFirstVisuallyNonEmptyPaint("),
+            run.index("WaitForReloadAndFirstVisuallyNonEmptyPaint("),
+        )
+        self.assertLess(
+            run.index("WaitForBrowserSmokePresentation();", run.index(
+                "chromium_wasm_report_controlled_https_target_fvp(1), 1"
+            )),
+            run.index("WaitForReloadAndFirstVisuallyNonEmptyPaint("),
+        )
+        self.assertLess(
+            run.index("WaitForReloadAndFirstVisuallyNonEmptyPaint("),
+            run.index("std::puts(kControlledHttpsSmokeReloadReadyMarker);"),
+        )
+        self.assertLess(
+            run.index("std::puts(kControlledHttpsSmokeReloadReadyMarker);"),
+            run.index("std::puts(kControlledHttpsSmokeReloadedMarker);"),
+        )
+        self.assertLess(
+            run.index("std::puts(kControlledHttpsSmokeReloadedMarker);"),
+            run.index("chromium_wasm_report_controlled_https_target_fvp(2), 1"),
+        )
+        self.assertLess(
+            run.index("chromium_wasm_report_controlled_https_target_fvp(2), 1"),
+            run.index("raw_browser->GetWindow()->Close();"),
         )
         # The controlled fixture must use the same real Ozone TextInputClient
         # boundary as ordinary trusted DOM text. Its C++ branch owns the one
@@ -213,6 +254,8 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
         close = run.index("raw_browser->GetWindow()->Close();")
         self.assertIn("WaitForBrowserSmokePresentation();", run[navigated:close])
         self.assertNotIn("raw_contents->GetController().LoadURL", run)
+        self.assertNotIn("raw_contents->GetController().Reload(", run)
+        self.assertNotIn("navigation_controller.Reload(", run)
         self.assertNotIn("--ignore-certificate-errors", smoke)
 
     def test_smoke_target_declares_the_net_dependency(self) -> None:
