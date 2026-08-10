@@ -196,7 +196,7 @@ source_set("wasm_tab_modal_dialog_host") {
 }
 
 # The upstream constrained-window target resolves guest WebContents and owns
-# browser-modal helpers. The bounded Wasm smoke has one direct top-level
+# browser-modal helpers. The bounded Wasm Browser has direct top-level
 # WebContents and only needs the canonical child-dialog Widget/manager path.
 # Source-select that subset here instead of depending on
 # //components/constrained_window: its guest-view dependency is intentionally
@@ -206,7 +206,10 @@ source_set("wasm_tab_modal_dialog_host") {
 source_set("wasm_constrained_window") {
   assert(use_aura && use_ozone && toolkit_views)
 
-  visibility = [ ":wasm_browser_window_view_smoke" ]
+  visibility = [
+    ":wasm_browser",
+    ":wasm_browser_window_view_smoke",
+  ]
 
   public = [
     "../../../components/constrained_window/constrained_window_views.h",
@@ -465,9 +468,13 @@ source_set("wasm_browser_window_factory") {
 source_set("wasm_browser") {
   public = [
     "wasm_browser.h",
+    "wasm_browser_security_warning_dialog.h",
   ]
 
-  sources = [ "wasm_browser.cc" ]
+  sources = [
+    "wasm_browser.cc",
+    "wasm_browser_security_warning_dialog.cc",
+  ]
 
   public_deps = [
     "//base",
@@ -481,11 +488,17 @@ source_set("wasm_browser") {
     ":wasm_browser_process",
     ":wasm_browser_window_factory",
     ":wasm_browser_window_features",
+    ":wasm_constrained_window",
     ":wasm_tab_bootstrap_delegate",
     ":wasm_tab_core",
     "//chrome/browser/profiles:profile",
     "//components/tabs:public",
+    "//components/web_modal",
     "//content/public/browser",
+    "//skia",
+    "//ui/base",
+    "//ui/base/mojom:ui_base_types",
+    "//ui/gfx/geometry",
     "//ui/views",
   ]
 }
@@ -1221,6 +1234,21 @@ source_set("wasm_browser_host_pointer_menu_smoke") {
   deps = [ "//content/public/browser" ]
 }
 
+# The trusted-DOM security-warning smoke exports only fixed menu/dialog/dismiss
+# ordinals and its final presentation acknowledgement. Browser-owned Views,
+# WCMDM, tab blocking, and shutdown state remain private to lifecycle C++.
+source_set("wasm_browser_host_security_warning_smoke") {
+  public = [ "wasm_browser_host_security_warning_smoke.h" ]
+
+  sources = [ "wasm_browser_host_security_warning_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
 # This test-only verifier exposes only fixed ordinal observations for the
 # trusted-DOM HTTP(S) -> History -> Downloads smoke. Browser lifecycle keeps
 # the actual text, pointer, WebUI, and journal state private to C++.
@@ -1299,6 +1327,7 @@ source_set("wasm_browser_lifecycle") {
     ":wasm_browser_host_history_downloads_smoke",
     ":wasm_browser_host_pointer_menu_smoke",
     ":wasm_browser_host_pointer_tab_smoke",
+    ":wasm_browser_host_security_warning_smoke",
     ":wasm_browser_host_text",
     ":wasm_browser_host_text_smoke",
     ":wasm_browser_manager",

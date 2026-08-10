@@ -11,6 +11,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/timer/timer.h"
 
 class Browser;
 class BrowserManagerService;
@@ -35,8 +36,9 @@ class WasmBrowserContinuousFlow;
 // profile.
 //
 // It deliberately remains narrower than ordinary Chrome startup: one normal
-// Browser, one no-unload tab, no general navigation or modal delegate, and no
-// desktop close controller.
+// Browser, one no-unload tab, no general navigation or page-modal delegate,
+// one explicit Browser-owned security-warning child dialog, and no desktop
+// close controller.
 class WasmBrowserLifecycle final {
  public:
   // |shutdown_complete| runs only after BrowserManagerService has physically
@@ -79,6 +81,12 @@ class WasmBrowserLifecycle final {
   // acknowledge presentation; it cannot invoke menu commands or navigation.
   void StartHostPointerMenuSmoke();
 
+  // Arms the separate trusted-DOM child-dialog smoke. The host may only
+  // deliver physical pointer records and fixed ordinals; C++ verifies the
+  // real Browser-owned WCMDM delegate, tab blocked state, Views widget, and
+  // post-dismiss presentation before beginning ordinary Browser shutdown.
+  void StartHostSecurityWarningSmoke();
+
   // Arms the test-only real-host route that journals two committed HTTPS tab
   // visits, then reaches the bounded History and Downloads WebUIs through the
   // normal text and pointer/Ozone paths. Its exported verifier only observes
@@ -108,6 +116,9 @@ class WasmBrowserLifecycle final {
   bool VerifyHostPointerMenuSmokeCheck(int stage);
   bool OnHostPointerMenuSmokePresented(int stage);
   void OnHostPointerMenuSettingsNavigationObserved();
+  bool VerifyHostSecurityWarningSmokeCheck(int stage);
+  bool OnHostSecurityWarningSmokePresented(int stage);
+  void OnHostSecurityWarningDialogInteractionReady();
   bool VerifyHostHistoryDownloadsSmokeCheck(int stage);
   bool OnHostHistoryDownloadsSmokePresented(int stage);
   void OnHostHistoryDownloadsFirstNavigationObserved();
@@ -149,6 +160,16 @@ class WasmBrowserLifecycle final {
   raw_ptr<content::WebContents> host_pointer_menu_contents_ = nullptr;
   std::unique_ptr<WasmBrowserHostPointerMenuNavigationObserver>
       host_pointer_menu_navigation_observer_;
+  bool host_security_warning_smoke_started_ = false;
+  bool host_security_warning_menu_open_verified_ = false;
+  bool host_security_warning_menu_presentation_verified_ = false;
+  bool host_security_warning_dialog_open_verified_ = false;
+  bool host_security_warning_dialog_interaction_ready_ = false;
+  bool host_security_warning_dismissed_verified_ = false;
+  bool host_security_warning_presentation_verified_ = false;
+  int host_security_warning_blocked_state_change_count_ = 0;
+  raw_ptr<content::WebContents> host_security_warning_contents_ = nullptr;
+  base::OneShotTimer host_security_warning_dialog_interaction_ready_timer_;
   bool host_history_downloads_smoke_started_ = false;
   bool host_history_downloads_first_navigation_verified_ = false;
   bool host_history_downloads_second_tab_verified_ = false;

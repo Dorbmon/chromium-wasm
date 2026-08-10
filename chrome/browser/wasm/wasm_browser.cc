@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/wasm/wasm_browser_security_warning_dialog.h"
 #include "chrome/browser/wasm/wasm_tab_bootstrap_delegate.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/tabs/public/tab_interface.h"
@@ -176,6 +177,13 @@ Browser::Browser(const CreateParams& params)
   window_observer_ = std::make_unique<WindowObserver>(this);
   window_observer_->Observe(browser_view.GetWidget());
 
+  // This Browser owns the shared modal-manager delegate for every current
+  // and future bounded-model WebContents.  It is constructed only after the
+  // real BrowserView exists, so a user-triggered child dialog can retrieve
+  // the active tab's in-canvas modal host through normal Browser ownership.
+  security_warning_dialog_ =
+      std::make_unique<chrome::WasmBrowserSecurityWarningDialog>(this);
+
   // The Wasm feature implementation intentionally omits the desktop
   // post-window Browser graph. It uses the real selected BrowserView instead.
   features_->InitPostBrowserViewConstruction(&browser_view);
@@ -205,6 +213,11 @@ Browser::Browser(const CreateParams& params)
           [](base::WeakPtr<Browser> browser, int index) {
             return browser && browser->CanCloseWasmUserTabAt(index);
           },
+          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(
+          [](base::WeakPtr<Browser> browser) {
+            return browser && browser->ShowWasmSecurityWarningDialog();
+          },
           weak_ptr_factory_.GetWeakPtr()));
 }
 
@@ -220,6 +233,7 @@ Browser::~Browser() {
 
   weak_ptr_factory_.InvalidateWeakPtrs();
   window_observer_.reset();
+  security_warning_dialog_.reset();
   if (!features_torn_down_) {
     features_->TearDownPreBrowserWindowDestruction();
   }
@@ -252,6 +266,12 @@ void Browser::OnWindowClosing() {
   CHECK(window_);
   CHECK(tab_strip_model_);
   close_requested_ = true;
+  CHECK(security_warning_dialog_);
+  // TabStripModel's bounded close contract requires no active constrained
+  // dialog or blocked tab.  Drain the Browser-owned WCMDM delegates while the
+  // model and BrowserWidget are both still live; do not rely on WebContents
+  // destruction to close a child Widget after model removal has begun.
+  security_warning_dialog_->CloseAllDialogsForBrowserClose();
   if (tab_strip_model_->empty()) {
     // The strict factory may expose an empty Browser before its first initial
     // WebContents is appended. It still owns a real Widget/BWF graph, so
@@ -491,6 +511,10 @@ bool Browser::CreateWasmUserTab() {
   return true;
 }
 
+bool Browser::ShowWasmSecurityWarningDialog() {
+  return security_warning_dialog_ && security_warning_dialog_->Show();
+}
+
 bool Browser::CanActivateWasmUserTabAt(int index) const {
   if (!window_ || !tab_strip_model_ || close_requested_ ||
       is_delete_scheduled_ || !tab_strip_model_->ContainsIndex(index)) {
@@ -564,6 +588,12 @@ void Browser::OnTabWillBeRemoved(tabs::TabInterface* tab, int index) {
 
   const bool was_active = tab == tab_strip_model_->GetActiveTab();
 
+  CHECK(security_warning_dialog_);
+  // Close and clear this manager before the model releases the WebContents.
+  // The controller owns one delegate across all tabs, so this also prevents a
+  // replacement/removal path from retaining a stale raw per-tab delegate.
+  security_warning_dialog_->OnTabWillBeRemoved(tab->GetContents());
+
   // The TabModel still owns the contents at this notification. Detach the
   // non-owning Views WebView before kRemoved observers and destruction can
   // release it. Background-tab removal deliberately leaves the currently
@@ -573,9 +603,11 @@ void Browser::OnTabWillBeRemoved(tabs::TabInterface* tab, int index) {
 
 void Browser::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
-    const TabStripModelChange& /*change*/,
+    const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
   CHECK_EQ(tab_strip_model, tab_strip_model_.get());
+  CHECK(security_warning_dialog_);
+  security_warning_dialog_->OnTabStripModelChanged(change);
   if (!selection.active_tab_changed()) {
     return;
   }

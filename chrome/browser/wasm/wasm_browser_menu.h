@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_WASM_WASM_BROWSER_MENU_H_
 
 #include "base/callback_list.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/command_observer.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -37,7 +38,8 @@ class WasmBrowserMenuView final : public views::View,
  public:
   WasmBrowserMenuView(
       BrowserWindowInterface* browser_window_interface,
-      chrome::BrowserCommandController* browser_command_controller);
+      chrome::BrowserCommandController* browser_command_controller,
+      base::RepeatingCallback<bool()> show_security_warning_callback);
   WasmBrowserMenuView(const WasmBrowserMenuView&) = delete;
   WasmBrowserMenuView& operator=(const WasmBrowserMenuView&) = delete;
   ~WasmBrowserMenuView() override;
@@ -63,6 +65,9 @@ class WasmBrowserMenuView final : public views::View,
   views::LabelButton* downloads_button_for_testing() const {
     return downloads_button_;
   }
+  views::LabelButton* security_warning_button_for_testing() const {
+    return security_warning_button_;
+  }
 
  private:
   void ActiveTabChanged(BrowserWindowInterface* browser_window_interface);
@@ -72,6 +77,7 @@ class WasmBrowserMenuView final : public views::View,
   void ShowSettings(const ui::Event& event);
   void ShowHistory(const ui::Event& event);
   void ShowDownloads(const ui::Event& event);
+  void ShowSecurityWarning(const ui::Event& event);
   bool NavigateTo(const char* url, const ui::Event& event);
 
   // CommandObserver:
@@ -80,11 +86,13 @@ class WasmBrowserMenuView final : public views::View,
   const raw_ptr<BrowserWindowInterface> browser_window_interface_;
   const raw_ptr<chrome::BrowserCommandController>
       browser_command_controller_;
+  base::RepeatingCallback<bool()> show_security_warning_callback_;
   raw_ptr<views::LabelButton> reload_button_ = nullptr;
   raw_ptr<views::LabelButton> about_button_ = nullptr;
   raw_ptr<views::LabelButton> settings_button_ = nullptr;
   raw_ptr<views::LabelButton> history_button_ = nullptr;
   raw_ptr<views::LabelButton> downloads_button_ = nullptr;
+  raw_ptr<views::LabelButton> security_warning_button_ = nullptr;
   base::CallbackListSubscription active_tab_changed_subscription_;
 };
 

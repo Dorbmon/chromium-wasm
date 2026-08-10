@@ -88,6 +88,8 @@ constexpr char kWasmBrowserHostPointerTabSmokeSwitch[] =
     "wasm-browser-host-pointer-tab-smoke";
 constexpr char kWasmBrowserHostPointerMenuSmokeSwitch[] =
     "wasm-browser-host-pointer-menu-smoke";
+constexpr char kWasmBrowserHostSecurityWarningSmokeSwitch[] =
+    "wasm-browser-host-security-warning-smoke";
 constexpr char kWasmBrowserHostHistoryDownloadsSmokeSwitch[] =
     "wasm-browser-host-history-downloads-smoke";
 constexpr char kWasmBrowserHostContinuousFlowSmokeSwitch[] =
@@ -341,6 +343,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_pointer_menu_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerMenuSmokeSwitch);
+  const bool browser_host_security_warning_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostSecurityWarningSmokeSwitch);
   const bool browser_host_history_downloads_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostHistoryDownloadsSmokeSwitch);
@@ -360,7 +365,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   }
   if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_pointer_tab_smoke ||
-      browser_host_pointer_menu_smoke || browser_host_history_downloads_smoke ||
+      browser_host_pointer_menu_smoke || browser_host_security_warning_smoke ||
+      browser_host_history_downloads_smoke ||
       browser_host_continuous_flow_smoke ||
       browser_host_continuous_flow_restart_smoke) {
     CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
@@ -368,6 +374,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                  static_cast<int>(browser_host_text_smoke) +
                  static_cast<int>(browser_host_pointer_tab_smoke) +
                  static_cast<int>(browser_host_pointer_menu_smoke) +
+                 static_cast<int>(browser_host_security_warning_smoke) +
                  static_cast<int>(browser_host_history_downloads_smoke) +
                  static_cast<int>(browser_host_continuous_flow_smoke) +
                  static_cast<int>(browser_host_continuous_flow_restart_smoke),
@@ -464,7 +471,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // Its host ABI can request shutdown once, but browser-main owns all actual
   // window close, manager-drain, and profile-teardown work. This is still the
   // bounded M6 surface: one blank tab at fixed bounds, no general OpenURL,
-  // modal, menu, history, or Settings lifecycle.
+  // page-modal, menu, history, or Settings lifecycle. The selected Browser
+  // may expose its explicit security-boundary child warning through Views.
   CHECK(!browser_lifecycle_);
   CHECK(!browser_lifecycle_smoke_requested_);
   CHECK(!browser_window_lifecycle_);
@@ -620,6 +628,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerMenuSmokeSwitch)) {
     browser_lifecycle_->StartHostPointerMenuSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostSecurityWarningSmokeSwitch)) {
+    browser_lifecycle_->StartHostSecurityWarningSmoke();
     return;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(

@@ -43,11 +43,14 @@ constexpr char kWasmDownloadsURL[] = "chrome://downloads/";
 
 WasmBrowserMenuView::WasmBrowserMenuView(
     BrowserWindowInterface* browser_window_interface,
-    chrome::BrowserCommandController* browser_command_controller)
+    chrome::BrowserCommandController* browser_command_controller,
+    base::RepeatingCallback<bool()> show_security_warning_callback)
     : browser_window_interface_(browser_window_interface),
-      browser_command_controller_(browser_command_controller) {
+      browser_command_controller_(browser_command_controller),
+      show_security_warning_callback_(std::move(show_security_warning_callback)) {
   CHECK(browser_window_interface_);
   CHECK(browser_command_controller_);
+  CHECK(show_security_warning_callback_);
 
   SetPreferredSize(gfx::Size(0, kWasmBrowserMenuHeight));
   auto layout = std::make_unique<views::BoxLayout>(
@@ -74,6 +77,11 @@ WasmBrowserMenuView::WasmBrowserMenuView(
       base::BindRepeating(&WasmBrowserMenuView::ShowDownloads,
                           base::Unretained(this)),
       u"Downloads"));
+  security_warning_button_ = AddChildView(
+      std::make_unique<views::LabelButton>(
+          base::BindRepeating(&WasmBrowserMenuView::ShowSecurityWarning,
+                              base::Unretained(this)),
+          u"Security warning"));
 
   // This menu is a collapsible child of the primary BrowserView, not another
   // Ozone Widget. Hidden Views do not participate in BoxLayout, so the active
@@ -134,6 +142,7 @@ void WasmBrowserMenuView::UpdateEnabledState() {
   CHECK(settings_button_);
   CHECK(history_button_);
   CHECK(downloads_button_);
+  CHECK(security_warning_button_);
   reload_button_->SetEnabled(
       browser_command_controller_->IsCommandEnabled(IDC_RELOAD));
 
@@ -146,6 +155,7 @@ void WasmBrowserMenuView::UpdateEnabledState() {
   settings_button_->SetEnabled(has_live_contents);
   history_button_->SetEnabled(has_live_contents);
   downloads_button_->SetEnabled(has_live_contents);
+  security_warning_button_->SetEnabled(has_live_contents);
 }
 
 void WasmBrowserMenuView::Reload(const ui::Event& event) {
@@ -191,6 +201,18 @@ void WasmBrowserMenuView::ShowDownloads(const ui::Event& event) {
   UpdateEnabledState();
   if (!downloads_button_->GetEnabled() ||
       !NavigateTo(kWasmDownloadsURL, event)) {
+    Close();
+  }
+}
+
+void WasmBrowserMenuView::ShowSecurityWarning(const ui::Event& /*event*/) {
+  CHECK(security_warning_button_);
+  UpdateEnabledState();
+  if (security_warning_button_->GetEnabled() &&
+      show_security_warning_callback_.Run()) {
+    // The warning is an actual kChild dialog in this BrowserWidget's Aura
+    // tree.  Dismissing the in-canvas menu keeps the dialog as the only
+    // transient input surface rather than leaving a stale panel beneath it.
     Close();
   }
 }

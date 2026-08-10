@@ -12,6 +12,7 @@
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
@@ -25,8 +26,10 @@
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_menu_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_tab_smoke.h"
+#include "chrome/browser/wasm/wasm_browser_host_security_warning_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_host_text_smoke.h"
+#include "chrome/browser/wasm/wasm_browser_security_warning_dialog.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_downloads_ui.h"
 #include "chrome/browser/wasm/wasm_browser_menu.h"
@@ -35,6 +38,7 @@
 #include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
@@ -51,6 +55,7 @@
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/metrics.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
@@ -329,6 +334,20 @@ constexpr char kHostPointerMenuSettingsNavigatedMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_MENU:SETTINGS_NAVIGATED";
 constexpr char kHostPointerMenuPassMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_MENU:PASS";
+constexpr char kHostSecurityWarningReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_SECURITY_WARNING:READY";
+constexpr char kHostSecurityWarningMenuOpenedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_SECURITY_WARNING:MENU_OPEN";
+constexpr char kHostSecurityWarningMenuPresentedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_SECURITY_WARNING:MENU_PRESENTED";
+constexpr char kHostSecurityWarningDialogOpenedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_SECURITY_WARNING:DIALOG_OPEN";
+constexpr char kHostSecurityWarningDialogInteractionReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_SECURITY_WARNING:DIALOG_INTERACTION_READY";
+constexpr char kHostSecurityWarningDialogDismissedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_SECURITY_WARNING:DIALOG_DISMISSED";
+constexpr char kHostSecurityWarningPassMarker[] =
+    "CHROMIUM_WASM_M6_HOST_SECURITY_WARNING:PASS";
 constexpr char kHostPointerMenuSettingsUrl[] = "chrome://settings/";
 constexpr char16_t kHostPointerMenuSettingsTitle[] =
     u"Settings \u2014 Chromium Wasm";
@@ -370,6 +389,8 @@ constexpr char16_t kHostHistoryDownloadsDownloadsTitle[] =
     u"Downloads \u2014 Chromium Wasm";
 constexpr gfx::Rect kBrowserLifecycleSmokeBounds(0, 0, 640, 480);
 constexpr int kMaximumHostPointerCoordinate = 16383;
+constexpr base::TimeDelta kHostSecurityWarningInputProtectionMargin =
+    base::Milliseconds(1);
 
 gfx::Point GetHostPointerTarget(BrowserView& browser_view, views::View* view) {
   CHECK(view);
@@ -389,6 +410,17 @@ gfx::Point GetHostPointerTarget(BrowserView& browser_view, views::View* view) {
   CHECK_GE(target.y(), 0);
   CHECK_LE(target.y(), kMaximumHostPointerCoordinate);
   return target;
+}
+
+bool IsAuraDescendantOf(aura::Window* window, aura::Window* ancestor) {
+  CHECK(window);
+  CHECK(ancestor);
+  for (aura::Window* current = window; current; current = current->parent()) {
+    if (current == ancestor) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -412,6 +444,8 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
+  ClearWasmBrowserHostSecurityWarningSmokeVerificationForTesting();
+  host_security_warning_dialog_interaction_ready_timer_.Stop();
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
@@ -420,6 +454,7 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   host_text_contents_ = nullptr;
   host_pointer_menu_navigation_observer_.reset();
   host_pointer_menu_contents_ = nullptr;
+  host_security_warning_contents_ = nullptr;
   host_history_downloads_first_navigation_observer_.reset();
   host_history_downloads_second_navigation_observer_.reset();
   host_history_downloads_history_navigation_observer_.reset();
@@ -500,6 +535,7 @@ void WasmBrowserLifecycle::BeginShutdown() {
   CHECK(browser_);
   CHECK_EQ(browser_manager_->GetSize(), 1u);
 
+  host_security_warning_dialog_interaction_ready_timer_.Stop();
   shutdown_started_ = true;
   ClearWasmBrowserHostTextTarget();
   browser_->GetWindow()->Close();
@@ -659,6 +695,74 @@ void WasmBrowserLifecycle::StartHostPointerMenuSmoke() {
   std::fflush(stderr);
 }
 
+void WasmBrowserLifecycle::StartHostSecurityWarningSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!host_security_warning_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  CHECK(top_controls);
+  CHECK(browser_menu);
+  CHECK(contents_web_view);
+  CHECK(!browser_menu->IsOpen());
+  views::LabelButton* const menu_button =
+      top_controls->menu_button_for_testing();
+  CHECK(menu_button);
+
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  CHECK(tab_strip_model);
+  CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK(!host_security_warning_contents_);
+  host_security_warning_contents_ = tab_strip_model->GetActiveWebContents();
+  CHECK(host_security_warning_contents_);
+  CHECK_EQ(browser_view.GetActiveWebContents(),
+           host_security_warning_contents_);
+  CHECK(!tab_strip_model->IsTabBlocked(0));
+  tabs::TabInterface* const active_tab = tab_strip_model->GetActiveTab();
+  CHECK(active_tab);
+  CHECK_EQ(active_tab->GetContents(), host_security_warning_contents_);
+  CHECK(!active_tab->IsBlocked());
+
+  WasmBrowserSecurityWarningDialog* const warning_dialog =
+      browser_->wasm_security_warning_dialog_for_testing();
+  CHECK(warning_dialog);
+  CHECK(!warning_dialog->dialog_widget_for_testing());
+  CHECK(!warning_dialog->dialog_web_contents_for_testing());
+  web_modal::WebContentsModalDialogManager* const modal_manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(
+          host_security_warning_contents_);
+  CHECK(modal_manager);
+  CHECK_EQ(modal_manager->delegate(), warning_dialog);
+  CHECK(!modal_manager->IsDialogActive());
+  CHECK(!host_security_warning_menu_presentation_verified_);
+  CHECK(!host_security_warning_dialog_interaction_ready_);
+  CHECK(!host_security_warning_dialog_interaction_ready_timer_.IsRunning());
+  host_security_warning_blocked_state_change_count_ =
+      warning_dialog->blocked_state_change_count_for_testing();
+
+  host_security_warning_smoke_started_ = true;
+  SetWasmBrowserHostSecurityWarningSmokeVerificationForTesting(
+      base::BindRepeating(
+          &WasmBrowserLifecycle::VerifyHostSecurityWarningSmokeCheck,
+          base::Unretained(this)),
+      base::BindRepeating(
+          &WasmBrowserLifecycle::OnHostSecurityWarningSmokePresented,
+          base::Unretained(this)));
+
+  const gfx::Point target = GetHostPointerTarget(browser_view, menu_button);
+  std::fprintf(stderr, "%s x=%d y=%d\n", kHostSecurityWarningReadyMarker,
+               target.x(), target.y());
+  std::fflush(stderr);
+}
+
 void WasmBrowserLifecycle::StartHostHistoryDownloadsSmoke() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(initialized_);
@@ -779,6 +883,8 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
+  ClearWasmBrowserHostSecurityWarningSmokeVerificationForTesting();
+  host_security_warning_dialog_interaction_ready_timer_.Stop();
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
@@ -787,6 +893,7 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   host_text_contents_ = nullptr;
   host_pointer_menu_navigation_observer_.reset();
   host_pointer_menu_contents_ = nullptr;
+  host_security_warning_contents_ = nullptr;
   host_history_downloads_first_navigation_observer_.reset();
   host_history_downloads_second_navigation_observer_.reset();
   host_history_downloads_history_navigation_observer_.reset();
@@ -837,6 +944,8 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
+  ClearWasmBrowserHostSecurityWarningSmokeVerificationForTesting();
+  host_security_warning_dialog_interaction_ready_timer_.Stop();
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
@@ -845,6 +954,7 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   host_text_contents_ = nullptr;
   host_pointer_menu_navigation_observer_.reset();
   host_pointer_menu_contents_ = nullptr;
+  host_security_warning_contents_ = nullptr;
   host_history_downloads_first_navigation_observer_.reset();
   host_history_downloads_second_navigation_observer_.reset();
   host_history_downloads_history_navigation_observer_.reset();
@@ -1310,6 +1420,321 @@ void WasmBrowserLifecycle::OnHostPointerMenuSettingsNavigationObserved() {
   // itself emitted only after primary commit, loading completion, and target
   // first-visually-non-empty paint for the limited Settings bootstrap.
   browser_view.SchedulePaint();
+}
+
+bool WasmBrowserLifecycle::VerifyHostSecurityWarningSmokeCheck(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_security_warning_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_security_warning_contents_) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  WasmBrowserSecurityWarningDialog* const warning_dialog =
+      browser_->wasm_security_warning_dialog_for_testing();
+  if (!tab_strip_model || !browser_menu || !contents_web_view ||
+      !warning_dialog || tab_strip_model->count() != 1 ||
+      tab_strip_model->GetActiveWebContents() !=
+          host_security_warning_contents_ ||
+      browser_view.GetActiveWebContents() !=
+          host_security_warning_contents_) {
+    return false;
+  }
+  tabs::TabInterface* const active_tab = tab_strip_model->GetActiveTab();
+  web_modal::WebContentsModalDialogManager* const modal_manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(
+          host_security_warning_contents_);
+  if (!active_tab || active_tab->GetContents() != host_security_warning_contents_ ||
+      !modal_manager || modal_manager->delegate() != warning_dialog) {
+    return false;
+  }
+
+  if (stage == 1) {
+    if (host_security_warning_menu_open_verified_ ||
+        host_security_warning_menu_presentation_verified_ ||
+        host_security_warning_dialog_open_verified_ ||
+        host_security_warning_dialog_interaction_ready_ ||
+        host_security_warning_dismissed_verified_ ||
+        host_security_warning_presentation_verified_ ||
+        !browser_menu->IsOpen() || modal_manager->IsDialogActive() ||
+        tab_strip_model->IsTabBlocked(0) || active_tab->IsBlocked() ||
+        warning_dialog->dialog_widget_for_testing() ||
+        warning_dialog->dialog_web_contents_for_testing()) {
+      return false;
+    }
+
+    browser_view.DeprecatedLayoutImmediately();
+    views::LabelButton* const warning_button =
+        browser_menu->security_warning_button_for_testing();
+    if (!warning_button || !warning_button->GetVisible() ||
+        !warning_button->GetEnabled()) {
+      return false;
+    }
+    const gfx::Point target = GetHostPointerTarget(browser_view, warning_button);
+    host_security_warning_menu_open_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n",
+                 kHostSecurityWarningMenuOpenedMarker, target.x(), target.y());
+    std::fflush(stderr);
+    // The outer host refuses to click the dynamic warning target until a
+    // strictly later compositor frame has followed this layout-derived target.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 2) {
+    if (!host_security_warning_menu_open_verified_ ||
+        !host_security_warning_menu_presentation_verified_ ||
+        host_security_warning_dialog_open_verified_ ||
+        host_security_warning_dialog_interaction_ready_ ||
+        host_security_warning_dismissed_verified_ ||
+        host_security_warning_presentation_verified_ || browser_menu->IsOpen() ||
+        !modal_manager->IsDialogActive() || !tab_strip_model->IsTabBlocked(0) ||
+        !active_tab->IsBlocked() ||
+        warning_dialog->dialog_web_contents_for_testing() !=
+            host_security_warning_contents_ ||
+        warning_dialog->blocked_state_change_count_for_testing() !=
+            host_security_warning_blocked_state_change_count_ + 1) {
+      return false;
+    }
+
+    views::Widget* const dialog_widget =
+        warning_dialog->dialog_widget_for_testing();
+    if (!dialog_widget || !dialog_widget->IsVisible() ||
+        dialog_widget->is_top_level()) {
+      return false;
+    }
+    browser_view.DeprecatedLayoutImmediately();
+    dialog_widget->LayoutRootViewIfNecessary();
+    views::View* const dialog_client_contents =
+        dialog_widget->GetClientContentsView();
+    views::View* const dismiss_button =
+        warning_dialog->dismiss_button_for_testing();
+    const bool dismiss_button_in_dialog =
+        dismiss_button && dismiss_button->GetWidget() == dialog_widget;
+    views::Widget* const browser_widget = browser_view.GetWidget();
+    aura::Window* const dialog_native = dialog_widget->GetNativeWindow();
+    aura::Window* const browser_native =
+        browser_widget ? browser_widget->GetNativeWindow() : nullptr;
+    if (!dialog_client_contents || !dialog_client_contents->GetVisible() ||
+        !dismiss_button_in_dialog ||
+        !dismiss_button->GetVisible() || !dismiss_button->GetEnabled() ||
+        !dialog_native || !browser_native ||
+        !IsAuraDescendantOf(dialog_native, browser_native)) {
+      return false;
+    }
+    const gfx::Rect dialog_bounds = dialog_widget->GetWindowBoundsInScreen();
+    const gfx::Rect contents_bounds = contents_web_view->GetBoundsInScreen();
+    if (dialog_bounds.IsEmpty() || contents_bounds.IsEmpty() ||
+        !contents_bounds.Contains(dialog_bounds.CenterPoint())) {
+      return false;
+    }
+
+    const gfx::Point target = GetHostPointerTarget(browser_view, dismiss_button);
+    host_security_warning_dialog_open_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n",
+                 kHostSecurityWarningDialogOpenedMarker, target.x(), target.y());
+    std::fflush(stderr);
+    // DialogClientView deliberately ignores a pointer click during its
+    // platform double-click interval after becoming visible. Keep that real
+    // clickjacking protection enabled: the host is only told when it may make
+    // its one physical Dismiss click, after this lifecycle-owned timer and a
+    // subsequent compositor frame.
+    host_security_warning_dialog_interaction_ready_timer_.Start(
+        FROM_HERE,
+        views::GetDoubleClickInterval() +
+            kHostSecurityWarningInputProtectionMargin,
+        base::BindOnce(
+            &WasmBrowserLifecycle::OnHostSecurityWarningDialogInteractionReady,
+            base::Unretained(this)));
+    // The Dismiss click is likewise withheld until the actual child Widget has
+    // been presented in a strictly subsequent host-canvas frame.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 3) {
+    if (!host_security_warning_menu_open_verified_ ||
+        !host_security_warning_menu_presentation_verified_ ||
+        !host_security_warning_dialog_open_verified_ ||
+        !host_security_warning_dialog_interaction_ready_ ||
+        host_security_warning_dismissed_verified_ ||
+        host_security_warning_presentation_verified_ || browser_menu->IsOpen() ||
+        modal_manager->IsDialogActive() || tab_strip_model->IsTabBlocked(0) ||
+        active_tab->IsBlocked() || warning_dialog->dialog_widget_for_testing() ||
+        warning_dialog->dialog_web_contents_for_testing() ||
+        warning_dialog->blocked_state_change_count_for_testing() !=
+            host_security_warning_blocked_state_change_count_ + 2) {
+      return false;
+    }
+
+    host_security_warning_dismissed_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostSecurityWarningDialogDismissedMarker);
+    std::fflush(stderr);
+    // The final ordinal is not admitted until the host observes a frame
+    // strictly after C++ confirmed the tab's unblock and child-widget close.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  return false;
+}
+
+void WasmBrowserLifecycle::OnHostSecurityWarningDialogInteractionReady() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_security_warning_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_security_warning_contents_ ||
+      !host_security_warning_dialog_open_verified_ ||
+      host_security_warning_dialog_interaction_ready_ ||
+      host_security_warning_dismissed_verified_ ||
+      host_security_warning_presentation_verified_) {
+    return;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  WasmBrowserSecurityWarningDialog* const warning_dialog =
+      browser_->wasm_security_warning_dialog_for_testing();
+  web_modal::WebContentsModalDialogManager* const modal_manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(
+          host_security_warning_contents_);
+  tabs::TabInterface* const active_tab =
+      tab_strip_model ? tab_strip_model->GetActiveTab() : nullptr;
+  if (!tab_strip_model || !browser_menu || !warning_dialog || !modal_manager ||
+      !active_tab || tab_strip_model->count() != 1 || browser_menu->IsOpen() ||
+      tab_strip_model->GetActiveWebContents() !=
+          host_security_warning_contents_ ||
+      browser_view.GetActiveWebContents() != host_security_warning_contents_ ||
+      active_tab->GetContents() != host_security_warning_contents_ ||
+      !modal_manager->IsDialogActive() || !tab_strip_model->IsTabBlocked(0) ||
+      !active_tab->IsBlocked() ||
+      warning_dialog->dialog_web_contents_for_testing() !=
+          host_security_warning_contents_ ||
+      warning_dialog->blocked_state_change_count_for_testing() !=
+          host_security_warning_blocked_state_change_count_ + 1) {
+    return;
+  }
+
+  views::Widget* const dialog_widget =
+      warning_dialog->dialog_widget_for_testing();
+  if (!dialog_widget || !dialog_widget->IsVisible() ||
+      dialog_widget->is_top_level()) {
+    return;
+  }
+  browser_view.DeprecatedLayoutImmediately();
+  dialog_widget->LayoutRootViewIfNecessary();
+  views::View* const dialog_client_contents =
+      dialog_widget->GetClientContentsView();
+  views::View* const dismiss_button =
+      warning_dialog->dismiss_button_for_testing();
+  const bool dismiss_button_in_dialog =
+      dismiss_button && dismiss_button->GetWidget() == dialog_widget;
+  views::Widget* const browser_widget = browser_view.GetWidget();
+  aura::Window* const dialog_native = dialog_widget->GetNativeWindow();
+  aura::Window* const browser_native =
+      browser_widget ? browser_widget->GetNativeWindow() : nullptr;
+  if (!dialog_client_contents || !dialog_client_contents->GetVisible() ||
+      !dismiss_button_in_dialog || !dismiss_button->GetVisible() ||
+      !dismiss_button->GetEnabled() || !dialog_native || !browser_native ||
+      !IsAuraDescendantOf(dialog_native, browser_native)) {
+    return;
+  }
+  const gfx::Rect dialog_bounds = dialog_widget->GetWindowBoundsInScreen();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!contents_web_view || dialog_bounds.IsEmpty() ||
+      contents_web_view->GetBoundsInScreen().IsEmpty() ||
+      !contents_web_view->GetBoundsInScreen().Contains(
+          dialog_bounds.CenterPoint())) {
+    return;
+  }
+
+  const gfx::Point target = GetHostPointerTarget(browser_view, dismiss_button);
+  host_security_warning_dialog_interaction_ready_ = true;
+  std::fprintf(stderr, "%s x=%d y=%d\n",
+               kHostSecurityWarningDialogInteractionReadyMarker, target.x(),
+               target.y());
+  std::fflush(stderr);
+  browser_view.SchedulePaint();
+}
+
+bool WasmBrowserLifecycle::OnHostSecurityWarningSmokePresented(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_security_warning_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_security_warning_contents_) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  WasmBrowserSecurityWarningDialog* const warning_dialog =
+      browser_->wasm_security_warning_dialog_for_testing();
+  web_modal::WebContentsModalDialogManager* const modal_manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(
+          host_security_warning_contents_);
+  tabs::TabInterface* const active_tab =
+      tab_strip_model ? tab_strip_model->GetActiveTab() : nullptr;
+  if (!tab_strip_model || !browser_menu || !warning_dialog || !modal_manager ||
+      !active_tab ||
+      tab_strip_model->count() != 1 ||
+      browser_view.GetActiveWebContents() != host_security_warning_contents_ ||
+      tab_strip_model->GetActiveWebContents() !=
+          host_security_warning_contents_ ||
+      active_tab->GetContents() != host_security_warning_contents_ ||
+      modal_manager->delegate() != warning_dialog) {
+    return false;
+  }
+
+  if (stage == 1) {
+    if (!host_security_warning_menu_open_verified_ ||
+        host_security_warning_menu_presentation_verified_ ||
+        host_security_warning_dialog_open_verified_ ||
+        host_security_warning_dialog_interaction_ready_ ||
+        host_security_warning_dismissed_verified_ ||
+        host_security_warning_presentation_verified_ || !browser_menu->IsOpen() ||
+        modal_manager->IsDialogActive() || tab_strip_model->IsTabBlocked(0) ||
+        active_tab->IsBlocked() || warning_dialog->dialog_widget_for_testing() ||
+        warning_dialog->dialog_web_contents_for_testing()) {
+      return false;
+    }
+    browser_view.DeprecatedLayoutImmediately();
+    views::LabelButton* const warning_button =
+        browser_menu->security_warning_button_for_testing();
+    if (!warning_button || !warning_button->GetVisible() ||
+        !warning_button->GetEnabled()) {
+      return false;
+    }
+    host_security_warning_menu_presentation_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostSecurityWarningMenuPresentedMarker);
+    std::fflush(stderr);
+    return true;
+  }
+
+  if (stage != 2 || !host_security_warning_menu_open_verified_ ||
+      !host_security_warning_menu_presentation_verified_ ||
+      !host_security_warning_dialog_open_verified_ ||
+      !host_security_warning_dialog_interaction_ready_ ||
+      !host_security_warning_dismissed_verified_ ||
+      host_security_warning_presentation_verified_ || browser_menu->IsOpen() ||
+      modal_manager->IsDialogActive() || tab_strip_model->IsTabBlocked(0) ||
+      active_tab->IsBlocked() || warning_dialog->dialog_widget_for_testing() ||
+      warning_dialog->dialog_web_contents_for_testing() ||
+      warning_dialog->blocked_state_change_count_for_testing() !=
+          host_security_warning_blocked_state_change_count_ + 2) {
+    return false;
+  }
+
+  host_security_warning_presentation_verified_ = true;
+  std::fprintf(stderr, "%s\n", kHostSecurityWarningPassMarker);
+  std::fflush(stderr);
+  BeginShutdown();
+  return true;
 }
 
 bool WasmBrowserLifecycle::VerifyHostHistoryDownloadsSmokeCheck(int stage) {

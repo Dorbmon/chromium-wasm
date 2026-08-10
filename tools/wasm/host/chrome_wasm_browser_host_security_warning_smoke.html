@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm trusted security-warning smoke</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.4 system-ui, sans-serif; }
+    body { margin: 0; padding: 16px; background: Canvas; color: CanvasText; }
+    main { display: grid; gap: 12px; max-width: 760px; }
+    canvas { display: block; width: 640px; height: 480px; outline: 2px solid Highlight; outline-offset: 2px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+    dt { font-weight: 600; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    pre { margin: 0; max-height: 18rem; overflow: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main id="browser-host-security-warning-root" data-state="starting">
+    <h1>Trusted DOM security-warning child-dialog smoke</h1>
+    <p>Trusted pointer input only; Chrome owns the menu, dialog, and tab state.</p>
+    <canvas id="browser-canvas" width="640" height="480" tabindex="0"
+        aria-label="Chromium Wasm browser canvas"></canvas>
+    <dl id="versions" aria-label="Build versions"></dl>
+    <pre id="browser-host-security-warning-status" aria-live="polite">Starting…</pre>
+  </main>
+  <script type="module">
+    import {runChromeWasmBrowserHostSecurityWarningSmokeFromQuery} from
+        "./chrome_wasm_browser_host_security_warning_smoke_host.js";
+
+    runChromeWasmBrowserHostSecurityWarningSmokeFromQuery().catch((error) => {
+      document.querySelector("#browser-host-security-warning-root").dataset.state = "fail";
+      document.querySelector("#browser-host-security-warning-status").textContent =
+          `HOST FAILURE: ${String(error)}`;
+    });
+  </script>
+</body>
+</html>

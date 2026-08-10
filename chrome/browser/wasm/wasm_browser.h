@@ -30,6 +30,7 @@ class TabStripModelChange;
 struct TabStripSelectionChange;
 
 namespace chrome {
+class WasmBrowserSecurityWarningDialog;
 class WasmTabBootstrapDelegate;
 }  // namespace chrome
 
@@ -95,6 +96,10 @@ class Browser final : public BrowserWindowInterface {
   TabStripModel* tab_strip_model() const { return tab_strip_model_.get(); }
   BrowserWindowFeatures* browser_window_features() const {
     return features_.get();
+  }
+  chrome::WasmBrowserSecurityWarningDialog*
+  wasm_security_warning_dialog_for_testing() const {
+    return security_warning_dialog_.get();
   }
   SessionID session_id() const { return session_id_; }
   BrowserView& GetBrowserView();
@@ -166,6 +171,7 @@ class Browser final : public BrowserWindowInterface {
   views::CloseRequestResult OnWindowCloseRequested();
   bool CanCreateWasmUserTab() const;
   bool CreateWasmUserTab();
+  bool ShowWasmSecurityWarningDialog();
   bool CanActivateWasmUserTabAt(int index) const;
   bool CanCloseWasmUserTabAt(int index) const;
   bool CloseWasmUserTabAt(int index);
@@ -200,6 +206,8 @@ class Browser final : public BrowserWindowInterface {
   std::unique_ptr<chrome::WasmTabBootstrapDelegate> tab_delegate_;
   std::unique_ptr<TabStripModel> tab_strip_model_;
   std::unique_ptr<TabStripModelObserver> tab_strip_model_observer_;
+  std::unique_ptr<chrome::WasmBrowserSecurityWarningDialog>
+      security_warning_dialog_;
   std::unique_ptr<BrowserWindowFeatures> features_;
   std::unique_ptr<BrowserWindow, BrowserWindowDeleter> window_;
   std::unique_ptr<WindowObserver> window_observer_;

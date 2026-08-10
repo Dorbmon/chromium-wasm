@@ -94,7 +94,8 @@ class BrowserView final : public BrowserWindow,
       base::RepeatingCallback<bool()> can_create_tab_callback,
       base::RepeatingCallback<bool(int)> can_activate_tab_callback,
       base::RepeatingCallback<bool(int)> close_tab_callback,
-      base::RepeatingCallback<bool(int)> can_close_tab_callback);
+      base::RepeatingCallback<bool(int)> can_close_tab_callback,
+      base::RepeatingCallback<bool()> show_security_warning_callback);
 
   // True only while BrowserWindowDeleter is breaking a fully pre-closed
   // Browser-owned Widget/View cycle. BrowserWidget uses this to distinguish

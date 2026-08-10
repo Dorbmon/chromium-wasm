@@ -85,7 +85,8 @@ void BrowserView::InitializeWasmTopControls(
     base::RepeatingCallback<bool()> can_create_tab_callback,
     base::RepeatingCallback<bool(int)> can_activate_tab_callback,
     base::RepeatingCallback<bool(int)> close_tab_callback,
-    base::RepeatingCallback<bool(int)> can_close_tab_callback) {
+    base::RepeatingCallback<bool(int)> can_close_tab_callback,
+    base::RepeatingCallback<bool()> show_security_warning_callback) {
   CHECK(browser_)
       << "Wasm top controls require a Browser-owned BrowserView";
   CHECK(browser_window_interface);
@@ -95,6 +96,7 @@ void BrowserView::InitializeWasmTopControls(
   CHECK(can_activate_tab_callback);
   CHECK(close_tab_callback);
   CHECK(can_close_tab_callback);
+  CHECK(show_security_warning_callback);
   CHECK(!wasm_browser_menu_);
   CHECK(!wasm_tab_strip_);
   CHECK(!wasm_top_controls_);
@@ -107,7 +109,8 @@ void BrowserView::InitializeWasmTopControls(
   wasm_tab_strip_ = AddChildViewAt(std::move(tab_strip), 0);
 
   auto menu = std::make_unique<WasmBrowserMenuView>(
-      browser_window_interface, browser_command_controller);
+      browser_window_interface, browser_command_controller,
+      std::move(show_security_warning_callback));
   wasm_browser_menu_ = AddChildViewAt(std::move(menu), 1);
 
   auto top_controls = std::make_unique<WasmTopControlsView>(
