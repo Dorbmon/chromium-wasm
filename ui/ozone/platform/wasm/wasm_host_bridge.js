@@ -307,6 +307,33 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // This is a distinct one-way host-clipboard import acknowledgement. It is
+  // intentionally neither M4 composition delivery nor Chrome's committed
+  // text action: the only host data is a bounded trusted-DOM text/plain paste,
+  // and the native effect remains a normal Ozone Ctrl+V chord.
+  chromium_wasm_report_ozone_browser_clipboard_paste_delivery__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_ozone_browser_clipboard_paste_delivery__proxy: 'sync',
+  chromium_wasm_report_ozone_browser_clipboard_paste_delivery: (
+      requestId, accepted) => {
+    if (!Number.isSafeInteger(requestId) || requestId < 1 ||
+        (accepted !== 0 && accepted !== 1)) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportOzoneBrowserClipboardPasteDelivery !== 'function') {
+      return 0;
+    }
+    bridge.reportOzoneBrowserClipboardPasteDelivery({
+      protocol: ChromiumWasmHostBridge.version,
+      requestId,
+      accepted: accepted === 1,
+    });
+    return 1;
+  },
+
   chromium_wasm_report_navigation__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_navigation__proxy: 'sync',
   chromium_wasm_report_navigation: () => {

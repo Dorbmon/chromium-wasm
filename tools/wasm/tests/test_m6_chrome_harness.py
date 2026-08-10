@@ -205,6 +205,11 @@ class ChromeM6ServerTest(unittest.TestCase):
                 b"ChromiumWasmTrustedTextInput",
             ),
             (
+                "/__m6__/chrome_wasm_clipboard_input.js",
+                "text/javascript; charset=utf-8",
+                b"ChromiumWasmTrustedClipboardInput",
+            ),
+            (
                 "/__m6__/artifacts/chrome_wasm.js",
                 "text/javascript; charset=utf-8",
                 self.js_bytes,
@@ -531,7 +536,9 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
             "reportReadiness(report)",
             "reportOzoneFocusState(report)",
             "reportOzoneBrowserTextInputDelivery(report)",
+            "reportOzoneBrowserClipboardPasteDelivery(report)",
             'import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";',
+            'import {ChromiumWasmTrustedClipboardInput} from "./chrome_wasm_clipboard_input.js";',
             "MAX_NORMAL_BROWSER_TIMEOUT_MS = 120000",
             "requestAnimationFrame",
             "location.reload();",
@@ -571,6 +578,7 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
             ROOT_DIR / "tools/wasm/host/chrome_wasm_host.js",
             ROOT_DIR / "tools/wasm/host/chrome_wasm_pointer_input.js",
             ROOT_DIR / "tools/wasm/host/chrome_wasm_text_input.js",
+            ROOT_DIR / "tools/wasm/host/chrome_wasm_clipboard_input.js",
         ):
             with self.subTest(host=host.name):
                 completed = subprocess.run(

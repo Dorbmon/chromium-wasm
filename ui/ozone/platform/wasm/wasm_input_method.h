@@ -110,6 +110,12 @@ bool DispatchWasmTextInput(gfx::AcceleratedWidget widget,
 // transition rejects the record without consuming its sequence.
 std::optional<WasmTextInputFocusToken> CaptureWasmTextInputFocusToken(
     gfx::AcceleratedWidget widget);
+// Returns whether |focus_token| still names the same editable focused client.
+// This pure validation boundary is intentionally separate from committed-text
+// dispatch: callers such as the host clipboard import must retain normal Ozone
+// key handling rather than call TextInputClient::InsertText directly.
+bool IsWasmTextInputFocusTokenCurrent(gfx::AcceleratedWidget widget,
+                                      WasmTextInputFocusToken focus_token);
 bool DispatchWasmTextInputWithFocusToken(
     gfx::AcceleratedWidget widget,
     const WasmTextInputRecord& record,

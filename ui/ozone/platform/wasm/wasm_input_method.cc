@@ -317,6 +317,12 @@ std::optional<WasmTextInputFocusToken> CaptureWasmTextInputFocusToken(
   return WasmTextInputFocusToken{focus_state->second.generation};
 }
 
+bool IsWasmTextInputFocusTokenCurrent(
+    gfx::AcceleratedWidget widget,
+    WasmTextInputFocusToken focus_token) {
+  return IsCurrentInputMethodFocusToken(widget, focus_token);
+}
+
 bool DispatchWasmTextInputWithFocusToken(
     gfx::AcceleratedWidget widget,
     const WasmTextInputRecord& record,

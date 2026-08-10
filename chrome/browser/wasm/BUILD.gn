@@ -1150,6 +1150,31 @@ source_set("wasm_browser_host_text") {
   ]
 }
 
+# The host clipboard boundary is deliberately one-way: a trusted DOM paste
+# can import bounded text/plain into the existing volatile copy/paste buffer,
+# then it emits the normal Ozone Ctrl+V chord. It is not a ClipboardOzone or
+# PlatformClipboard implementation and exposes no Browser command surface.
+source_set("wasm_browser_host_clipboard") {
+  public = [ "wasm_browser_host_clipboard.h" ]
+
+  sources = [ "wasm_browser_host_clipboard.cc" ]
+
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_main_parts",
+  ]
+
+  deps = [
+    "//base",
+    "//content/public/browser",
+    "//ui/base/clipboard",
+    "//ui/events",
+    "//ui/gfx",
+    "//ui/ozone",
+    "//ui/ozone/platform/wasm:wasm",
+  ]
+}
+
 # The trusted-DOM text smoke can ask only for three ordered observations of
 # lifecycle-owned state. It deliberately exports neither text nor navigation
 # input, and production code does not use it.
@@ -1157,6 +1182,21 @@ source_set("wasm_browser_host_text_smoke") {
   public = [ "wasm_browser_host_text_smoke.h" ]
 
   sources = [ "wasm_browser_host_text_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
+# The trusted-DOM clipboard smoke observes only the ordered focus, normal
+# Ctrl+V effect, and navigation owned by Browser lifecycle code. It has no
+# authority to supply paste data or invoke a Browser command.
+source_set("wasm_browser_host_clipboard_smoke") {
+  public = [ "wasm_browser_host_clipboard_smoke.h" ]
+
+  sources = [ "wasm_browser_host_clipboard_smoke.cc" ]
 
   visibility = [ ":wasm_browser_lifecycle" ]
 
@@ -1322,6 +1362,8 @@ source_set("wasm_browser_lifecycle") {
     ":wasm_browser",
     ":wasm_browser_continuous_flow",
     ":wasm_browser_menu",
+    ":wasm_browser_host_clipboard",
+    ":wasm_browser_host_clipboard_smoke",
     ":wasm_browser_host_input",
     ":wasm_browser_host_continuous_flow_smoke",
     ":wasm_browser_host_history_downloads_smoke",
@@ -1660,6 +1702,7 @@ source_set("wasm_browser_main_parts") {
   ]
 
   deps = [
+    ":wasm_browser_host_clipboard",
     ":wasm_browser_host_input",
     ":wasm_browser_host_lifecycle",
     ":wasm_browser_host_pointer",

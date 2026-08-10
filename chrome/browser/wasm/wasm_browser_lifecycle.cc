@@ -21,6 +21,8 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_browser.h"
 #include "chrome/browser/wasm/wasm_browser_continuous_flow.h"
+#include "chrome/browser/wasm/wasm_browser_host_clipboard.h"
+#include "chrome/browser/wasm/wasm_browser_host_clipboard_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_continuous_flow_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_history_downloads_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
@@ -309,6 +311,16 @@ constexpr char kHostTextSmokeNavigatedMarker[] =
     "CHROMIUM_WASM_M6_HOST_TEXT:NAVIGATED";
 constexpr char kHostTextSmokePassMarker[] =
     "CHROMIUM_WASM_M6_HOST_TEXT:PASS";
+constexpr char kHostClipboardSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M7_HOST_CLIPBOARD:READY";
+constexpr char kHostClipboardSmokeFocusedMarker[] =
+    "CHROMIUM_WASM_M7_HOST_CLIPBOARD:FOCUSED";
+constexpr char kHostClipboardSmokePastedMarker[] =
+    "CHROMIUM_WASM_M7_HOST_CLIPBOARD:PASTED";
+constexpr char kHostClipboardSmokeNavigatedMarker[] =
+    "CHROMIUM_WASM_M7_HOST_CLIPBOARD:NAVIGATED";
+constexpr char kHostClipboardSmokePassMarker[] =
+    "CHROMIUM_WASM_M7_HOST_CLIPBOARD:PASS";
 constexpr char kHostTextSmokeUrl[] = "chrome://version/";
 constexpr char kHostPointerTabsReadyMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:READY";
@@ -392,6 +404,11 @@ constexpr int kMaximumHostPointerCoordinate = 16383;
 constexpr base::TimeDelta kHostSecurityWarningInputProtectionMargin =
     base::Milliseconds(1);
 
+bool IsWasmBrowserHostClipboardSmoke() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      "wasm-browser-host-clipboard-smoke");
+}
+
 gfx::Point GetHostPointerTarget(BrowserView& browser_view, views::View* view) {
   CHECK(view);
   CHECK(view->GetVisible());
@@ -442,6 +459,7 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   // coordinator's raw callbacks and Browser weak pointer disappear.
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
+  ClearWasmBrowserHostClipboardSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
   ClearWasmBrowserHostSecurityWarningSmokeVerificationForTesting();
@@ -449,6 +467,7 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostClipboardTarget();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
@@ -523,6 +542,7 @@ void WasmBrowserLifecycle::Initialize() {
   aura::WindowTreeHost* const host = native_window->GetHost();
   CHECK(host);
   CHECK(SetWasmBrowserHostTextTarget(host->GetAcceleratedWidget()));
+  CHECK(SetWasmBrowserHostClipboardTarget(host->GetAcceleratedWidget()));
 
   initialized_ = true;
 }
@@ -537,6 +557,7 @@ void WasmBrowserLifecycle::BeginShutdown() {
 
   host_security_warning_dialog_interaction_ready_timer_.Stop();
   shutdown_started_ = true;
+  ClearWasmBrowserHostClipboardTarget();
   ClearWasmBrowserHostTextTarget();
   browser_->GetWindow()->Close();
 }
@@ -583,19 +604,28 @@ void WasmBrowserLifecycle::StartHostTextSmoke() {
               &WasmBrowserLifecycle::OnHostTextNavigationObserved,
               base::Unretained(this)));
 
-  // The focused proof must establish that two trusted DOM insertText events
-  // were each admitted and focus-token-bound before either acknowledgement.
-  // This test-only native gate is armed before READY, never by page script.
-  CHECK(ArmWasmBrowserHostTextSmokeTwoRecordBarrier());
-
   // Install the observer and verifier before READY. The host may synchronously
-  // submit its first trusted DOM Ctrl+L as soon as it sees that marker.
+  // submit its first trusted DOM Ctrl+L as soon as it sees that marker. The
+  // M7 clipboard lane deliberately shares only lifecycle-owned observations;
+  // it does not reuse M6's direct TextInputClient insertion protocol.
   host_text_smoke_started_ = true;
-  SetWasmBrowserHostTextSmokeVerificationForTesting(base::BindRepeating(
-      &WasmBrowserLifecycle::VerifyHostTextSmokeCheck,
-      base::Unretained(this)));
-  std::fprintf(stderr, "%s\n%s\n", kHostTextSmokeBurstArmedMarker,
-               kHostTextSmokeReadyMarker);
+  if (IsWasmBrowserHostClipboardSmoke()) {
+    SetWasmBrowserHostClipboardSmokeVerificationForTesting(base::BindRepeating(
+        &WasmBrowserLifecycle::VerifyHostTextSmokeCheck,
+        base::Unretained(this)));
+    std::fprintf(stderr, "%s\n", kHostClipboardSmokeReadyMarker);
+  } else {
+    // The focused M6 proof must establish that two trusted DOM insertText
+    // events were each admitted and focus-token-bound before either
+    // acknowledgement. This test-only native gate is armed before READY,
+    // never by page script.
+    CHECK(ArmWasmBrowserHostTextSmokeTwoRecordBarrier());
+    SetWasmBrowserHostTextSmokeVerificationForTesting(base::BindRepeating(
+        &WasmBrowserLifecycle::VerifyHostTextSmokeCheck,
+        base::Unretained(this)));
+    std::fprintf(stderr, "%s\n%s\n", kHostTextSmokeBurstArmedMarker,
+                 kHostTextSmokeReadyMarker);
+  }
   std::fflush(stderr);
 }
 
@@ -881,6 +911,7 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   // active, before Browser posts manager deletion.
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
+  ClearWasmBrowserHostClipboardSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
   ClearWasmBrowserHostSecurityWarningSmokeVerificationForTesting();
@@ -888,6 +919,7 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostClipboardTarget();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
@@ -942,6 +974,7 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
 
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
+  ClearWasmBrowserHostClipboardSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
   ClearWasmBrowserHostSecurityWarningSmokeVerificationForTesting();
@@ -949,6 +982,7 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostClipboardTarget();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
@@ -1027,7 +1061,10 @@ bool WasmBrowserLifecycle::VerifyHostTextSmokeCheck(int stage) {
       return false;
     }
     host_text_focus_verified_ = true;
-    std::fprintf(stderr, "%s\n", kHostTextSmokeFocusedMarker);
+    std::fprintf(stderr, "%s\n",
+                 IsWasmBrowserHostClipboardSmoke()
+                     ? kHostClipboardSmokeFocusedMarker
+                     : kHostTextSmokeFocusedMarker);
     std::fflush(stderr);
     browser_view.SchedulePaint();
     return true;
@@ -1040,7 +1077,10 @@ bool WasmBrowserLifecycle::VerifyHostTextSmokeCheck(int stage) {
       return false;
     }
     host_text_inserted_verified_ = true;
-    std::fprintf(stderr, "%s\n", kHostTextSmokeInsertedMarker);
+    std::fprintf(stderr, "%s\n",
+                 IsWasmBrowserHostClipboardSmoke()
+                     ? kHostClipboardSmokePastedMarker
+                     : kHostTextSmokeInsertedMarker);
     std::fflush(stderr);
     browser_view.SchedulePaint();
     return true;
@@ -1054,7 +1094,10 @@ bool WasmBrowserLifecycle::VerifyHostTextSmokeCheck(int stage) {
         address_field->GetText() != u"chrome://version/") {
       return false;
     }
-    std::fprintf(stderr, "%s\n", kHostTextSmokePassMarker);
+    std::fprintf(stderr, "%s\n",
+                 IsWasmBrowserHostClipboardSmoke()
+                     ? kHostClipboardSmokePassMarker
+                     : kHostTextSmokePassMarker);
     std::fflush(stderr);
     BeginShutdown();
     return true;
@@ -1075,7 +1118,10 @@ void WasmBrowserLifecycle::OnHostTextNavigationObserved() {
     return;
   }
   host_text_navigation_observed_ = true;
-  std::fprintf(stderr, "%s\n", kHostTextSmokeNavigatedMarker);
+  std::fprintf(stderr, "%s\n",
+               IsWasmBrowserHostClipboardSmoke()
+                   ? kHostClipboardSmokeNavigatedMarker
+                   : kHostTextSmokeNavigatedMarker);
   std::fflush(stderr);
   browser_view.SchedulePaint();
 }

@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/actions/chrome_actions.h"
 #include "chrome/browser/ui/browser_manager_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_mixers.h"
+#include "chrome/browser/wasm/wasm_browser_host_clipboard.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_browser_host_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer.h"
@@ -84,6 +85,8 @@ constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
     "wasm-browser-host-accelerator-smoke";
 constexpr char kWasmBrowserHostTextSmokeSwitch[] =
     "wasm-browser-host-text-smoke";
+constexpr char kWasmBrowserHostClipboardSmokeSwitch[] =
+    "wasm-browser-host-clipboard-smoke";
 constexpr char kWasmBrowserHostPointerTabSmokeSwitch[] =
     "wasm-browser-host-pointer-tab-smoke";
 constexpr char kWasmBrowserHostPointerMenuSmokeSwitch[] =
@@ -276,12 +279,23 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
 
+  // Trusted DOM paste imports only text/plain into the existing volatile
+  // copy/paste buffer, then emits a complete normal Ozone Ctrl+V chord. It is
+  // intentionally separate from committed text and the physical-key ABI.
+  if (!chrome::InitializeWasmBrowserHostClipboard()) {
+    LOG(ERROR) << "chrome_wasm could not initialize its host clipboard bridge";
+    chrome::ShutdownWasmBrowserHostText();
+    chrome::ShutdownWasmBrowserHostInput();
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+
   // The ordinary Chrome host maps trusted DOM mouse records into physical
   // canvas coordinates and submits them through this distinct Ozone bridge.
   // Keep it separate from the narrow physical-key ABI: pointer lifetime has
   // no authority to invoke Browser commands or manipulate Chrome Views.
   if (!chrome::InitializeWasmBrowserHostPointer()) {
     LOG(ERROR) << "chrome_wasm could not create its Ozone pointer injector";
+    chrome::ShutdownWasmBrowserHostClipboard();
     chrome::ShutdownWasmBrowserHostText();
     chrome::ShutdownWasmBrowserHostInput();
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
@@ -337,6 +351,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_text_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostTextSmokeSwitch);
+  const bool browser_host_clipboard_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostClipboardSmokeSwitch);
   const bool browser_host_pointer_tab_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerTabSmokeSwitch);
@@ -364,7 +381,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
   if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
-      browser_host_text_smoke || browser_host_pointer_tab_smoke ||
+      browser_host_text_smoke || browser_host_clipboard_smoke ||
+      browser_host_pointer_tab_smoke ||
       browser_host_pointer_menu_smoke || browser_host_security_warning_smoke ||
       browser_host_history_downloads_smoke ||
       browser_host_continuous_flow_smoke ||
@@ -372,6 +390,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
+                 static_cast<int>(browser_host_clipboard_smoke) +
                  static_cast<int>(browser_host_pointer_tab_smoke) +
                  static_cast<int>(browser_host_pointer_menu_smoke) +
                  static_cast<int>(browser_host_security_warning_smoke) +
@@ -509,6 +528,7 @@ void WasmBrowserMainParts::PostMainMessageLoopRun() {
   // Ozone owner is still live. Queued records carry a generation token and
   // safely drop after this point.
   chrome::ShutdownWasmBrowserHostPointer();
+  chrome::ShutdownWasmBrowserHostClipboard();
   chrome::ShutdownWasmBrowserHostText();
   chrome::ShutdownWasmBrowserHostInput();
   if (ozone_main_loop_initialized_) {
@@ -616,7 +636,9 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
     return;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kWasmBrowserHostTextSmokeSwitch)) {
+          kWasmBrowserHostTextSmokeSwitch) ||
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostClipboardSmokeSwitch)) {
     browser_lifecycle_->StartHostTextSmoke();
     return;
   }

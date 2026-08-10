@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import {ChromiumWasmTrustedPointerInput} from "./chrome_wasm_pointer_input.js";
+import {ChromiumWasmTrustedClipboardInput} from "./chrome_wasm_clipboard_input.js";
 import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";
 
 // This is the ordinary, no-command-line-switch Chrome Wasm host lane.  It
@@ -252,12 +253,14 @@ class ChromiumWasmNormalBrowserHost {
   #ozoneTextInputStates = [];
   #ozoneTextInputDeliveries = [];
   #ozoneBrowserTextInputDeliveries = [];
+  #ozoneBrowserClipboardPasteDeliveries = [];
   #normalBrowserReadyMarkerObserved = false;
   #normalBrowserPassMarkerObserved = false;
   #shutdownResults = [];
   #visibleEvidenceAtShutdown = null;
   #pointerInput = null;
   #textInput = null;
+  #clipboardInput = null;
   #errorHandler;
   #rejectionHandler;
 
@@ -491,6 +494,7 @@ class ChromiumWasmNormalBrowserHost {
         canComposeInline: report.canComposeInline,
       });
       this.#textInput?.handleOzoneTextInputState(report);
+      this.#clipboardInput?.handleOzoneTextInputState(report);
     } catch (error) {
       this.#recordFatal(`invalid Ozone text-input state report: ${String(error)}`);
     }
@@ -539,6 +543,25 @@ class ChromiumWasmNormalBrowserHost {
     }
   }
 
+  #reportOzoneBrowserClipboardPasteDelivery(value) {
+    try {
+      const report = asReport(value, "browser clipboard-paste delivery report");
+      if (report.protocol !== HOST_PROTOCOL ||
+          !Number.isSafeInteger(report.requestId) || report.requestId < 1 ||
+          typeof report.accepted !== "boolean") {
+        throw new Error("browser clipboard-paste delivery metadata is invalid");
+      }
+      appendBounded(this.#ozoneBrowserClipboardPasteDeliveries, {
+        requestId: report.requestId,
+        accepted: report.accepted,
+      });
+      this.#clipboardInput?.handleOzoneBrowserClipboardPasteDelivery(report);
+    } catch (error) {
+      this.#recordFatal(
+          `invalid browser clipboard-paste delivery report: ${String(error)}`);
+    }
+  }
+
   #installBridge() {
     if (globalThis.__chromiumWasmHostBridgeV1 !== undefined) {
       throw new Error("normal-browser host bridge is already installed");
@@ -573,6 +596,9 @@ class ChromiumWasmNormalBrowserHost {
       reportOzoneBrowserTextInputDelivery(report) {
         host.#reportOzoneBrowserTextInputDelivery(report);
       },
+      reportOzoneBrowserClipboardPasteDelivery(report) {
+        host.#reportOzoneBrowserClipboardPasteDelivery(report);
+      },
     });
   }
 
@@ -600,9 +626,16 @@ class ChromiumWasmNormalBrowserHost {
           reportFatal: (message) => this.#recordFatal(message),
         });
     this.#textInput.attach();
+    this.#clipboardInput = new ChromiumWasmTrustedClipboardInput(
+        this.#textProxy, {
+          getModule: () => this.#module,
+          reportFatal: (message) => this.#recordFatal(message),
+        });
+    this.#clipboardInput.attach();
     const latest_text_state = this.#ozoneTextInputStates.at(-1);
     if (latest_text_state) {
       this.#textInput.handleOzoneTextInputState(latest_text_state);
+      this.#clipboardInput.handleOzoneTextInputState(latest_text_state);
     }
     this.#startHeartbeat();
   }
@@ -742,7 +775,10 @@ class ChromiumWasmNormalBrowserHost {
       ozoneTextInputStates: this.#ozoneTextInputStates,
       ozoneTextInputDeliveries: this.#ozoneTextInputDeliveries,
       ozoneBrowserTextInputDeliveries: this.#ozoneBrowserTextInputDeliveries,
+      ozoneBrowserClipboardPasteDeliveries:
+          this.#ozoneBrowserClipboardPasteDeliveries,
       trustedTextInput: this.#textInput?.snapshot() || null,
+      trustedClipboardInput: this.#clipboardInput?.snapshot() || null,
       canvasBackingStore: {
         width: this.#canvas.width,
         height: this.#canvas.height,
@@ -851,6 +887,8 @@ class ChromiumWasmNormalBrowserHost {
       this.#pointerInput = null;
       this.#textInput?.detach();
       this.#textInput = null;
+      this.#clipboardInput?.detach();
+      this.#clipboardInput = null;
       this.#stopHeartbeat();
       this.#releaseWindowErrors();
     }
