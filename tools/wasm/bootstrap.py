@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ast
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -110,6 +111,23 @@ M3_REQUIRED_NESTED_SUBMODULES = ("dawn_webgpu_headers",)
 REQUIRED_SUBMODULES = M3_REQUIRED_SUBMODULES
 
 
+EMSCRIPTEN_SOURCE_PIN_FIELDS = frozenset(
+    (
+        "source_remote",
+        "source_ref",
+        "source_revision",
+        "source_version",
+        "source_file_sha256",
+        "source_npm_tree_sha256",
+    )
+)
+EMSCRIPTEN_SOURCE_PIN_OPTIONAL_FIELDS = (
+    EMSCRIPTEN_SOURCE_PIN_FIELDS - {"source_revision"}
+)
+EMSCRIPTEN_SOURCE_CACHE = Path("out/wasm-emscripten-cache")
+EMSCRIPTEN_SOURCE_LOCK = Path("out/wasm-emscripten-source.lock")
+
+
 def require_equal(label: str, actual: str, expected: str) -> None:
     if actual != expected:
         raise M0Error(f"{label} mismatch: expected {expected}, got {actual}")
@@ -129,6 +147,14 @@ def sha1(path: Path) -> str:
         for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def is_lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def gitlink_revision(base_revision: str, path: str) -> str:
@@ -1765,6 +1791,797 @@ def ensure_v8_snapshot_runtime(
         verify_v8_snapshot_runtime(runtime)
 
 
+def emscripten_source_pin(
+    emscripten: dict[str, object],
+) -> dict[str, object] | None:
+    """Return an optional immutable Emscripten source-fork pin.
+
+    The normal emsdk release bundle remains the default. A source fork is an
+    all-or-nothing opt-in because mixing a mutable branch name with a release
+    source revision would make the bootstrap non-reproducible.
+    """
+    unexpected_fields = {
+        field
+        for field in emscripten
+        if field.startswith("source_")
+        and field
+        not in EMSCRIPTEN_SOURCE_PIN_FIELDS
+    }
+    if unexpected_fields:
+        raise M0Error(
+            "unknown Emscripten source fork fields: "
+            + ", ".join(sorted(unexpected_fields))
+        )
+
+    configured_optional_fields = {
+        field
+        for field in EMSCRIPTEN_SOURCE_PIN_OPTIONAL_FIELDS
+        if field in emscripten
+    }
+    if not configured_optional_fields:
+        return None
+    configured_fields = {
+        field for field in EMSCRIPTEN_SOURCE_PIN_FIELDS if field in emscripten
+    }
+    if configured_fields != EMSCRIPTEN_SOURCE_PIN_FIELDS:
+        raise M0Error(
+            "Emscripten source fork fields must be configured together: "
+            + ", ".join(sorted(EMSCRIPTEN_SOURCE_PIN_FIELDS))
+        )
+
+    remote = emscripten["source_remote"]
+    if (
+        not isinstance(remote, str)
+        or not remote.strip()
+        or "\0" in remote
+    ):
+        raise M0Error("Emscripten source fork remote must be a nonempty string")
+
+    source_ref = emscripten["source_ref"]
+    source_revision = emscripten["source_revision"]
+    if not is_lower_hex(source_ref, 40):
+        raise M0Error(
+            "Emscripten source fork ref must be a lowercase 40-character "
+            "Git hash"
+        )
+    if not is_lower_hex(source_revision, 40):
+        raise M0Error(
+            "Emscripten source revision must be a lowercase 40-character "
+            "Git hash"
+        )
+    require_equal(
+        "Emscripten source fork ref",
+        str(source_ref),
+        str(source_revision),
+    )
+
+    source_version = emscripten["source_version"]
+    if (
+        not isinstance(source_version, str)
+        or not source_version
+        or source_version != source_version.strip()
+    ):
+        raise M0Error(
+            "Emscripten source fork version must be a nonempty trimmed string"
+        )
+
+    npm_tree_sha256 = emscripten["source_npm_tree_sha256"]
+    if not is_lower_hex(npm_tree_sha256, 64):
+        raise M0Error(
+            "Emscripten source fork npm tree hash must be a lowercase "
+            "SHA-256"
+        )
+
+    raw_file_hashes = emscripten["source_file_sha256"]
+    if not isinstance(raw_file_hashes, dict) or not raw_file_hashes:
+        raise M0Error(
+            "Emscripten source fork file hashes must be a nonempty object"
+        )
+    file_hashes: dict[str, str] = {}
+    for raw_path, raw_hash in raw_file_hashes.items():
+        if not isinstance(raw_path, str):
+            raise M0Error("Emscripten source fork file path must be a string")
+        path = PurePosixPath(raw_path)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or any(part in (".", "..") for part in path.parts)
+            or path.as_posix() != raw_path
+        ):
+            raise M0Error(
+                "Emscripten source fork file path must be a relative "
+                f"canonical POSIX path: {raw_path}"
+            )
+        if not is_lower_hex(raw_hash, 64):
+            raise M0Error(
+                "Emscripten source fork file hash must be a lowercase "
+                f"SHA-256: {raw_path}"
+            )
+        file_hashes[raw_path] = str(raw_hash)
+
+    return {
+        "remote": remote,
+        "ref": source_ref,
+        "revision": source_revision,
+        "version": source_version,
+        "file_hashes": file_hashes,
+        "npm_tree_sha256": npm_tree_sha256,
+    }
+
+
+def emscripten_source_file(root: Path, relative_path: str) -> Path:
+    path = root.joinpath(*PurePosixPath(relative_path).parts)
+    if path.is_symlink() or not path.is_file():
+        raise M0Error(f"Emscripten source is missing {relative_path}")
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        raise M0Error(
+            "Emscripten source file escapes its distribution root: "
+            f"{relative_path}"
+        ) from exc
+    return path
+
+
+def emscripten_source_version(root: Path) -> str:
+    version_path = emscripten_source_file(root, "emscripten-version.txt")
+    contents = version_path.read_text(encoding="utf-8")
+    try:
+        json_version = json.loads(contents)
+    except json.JSONDecodeError:
+        # emsdk release bundles use a JSON string while source-fork install
+        # output may carry the upstream plain-text version marker. Accept only
+        # one canonical plain-text line, never arbitrary malformed JSON.
+        version = contents.removesuffix("\n")
+        if (
+            not version
+            or not version[0].isdigit()
+            or contents not in (version, version + "\n")
+            or any(
+                character not in "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "abcdefghijklmnopqrstuvwxyz._+-"
+                for character in version
+            )
+        ):
+            raise M0Error("Emscripten source version file is invalid")
+        return version
+    if not isinstance(json_version, str):
+        raise M0Error("Emscripten source version file must contain a string")
+    return json_version
+
+
+def emscripten_release_version(root: Path) -> str:
+    """Read the official emsdk release marker without accepting fork syntax."""
+    version_path = emscripten_source_file(root, "emscripten-version.txt")
+    try:
+        version = json.loads(version_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise M0Error("Emscripten release version file is invalid JSON") from exc
+    if not isinstance(version, str):
+        raise M0Error("Emscripten release version file must contain a string")
+    return version
+
+
+def emscripten_artifact_hash(
+    emscripten: dict[str, object], name: str
+) -> str:
+    artifact_hashes = emscripten["artifact_sha256"]
+    if not isinstance(artifact_hashes, dict):
+        raise M0Error("Emscripten artifact hashes must be an object")
+    expected_hash = artifact_hashes.get(name)
+    if not is_lower_hex(expected_hash, 64):
+        raise M0Error(
+            "Emscripten artifact hash must be a lowercase SHA-256: "
+            f"{name}"
+        )
+    return str(expected_hash)
+
+
+def verify_emscripten_source_tree(
+    source_pin: dict[str, object], root: Path
+) -> None:
+    if root.is_symlink() or not root.is_dir():
+        raise M0Error("pinned Emscripten source tree is not installed")
+    require_equal(
+        "Emscripten source version",
+        emscripten_source_version(root),
+        str(source_pin["version"]),
+    )
+    file_hashes = source_pin["file_hashes"]
+    assert isinstance(file_hashes, dict)
+    for relative_path, expected_hash in file_hashes.items():
+        path = emscripten_source_file(root, str(relative_path))
+        require_equal(
+            f"Emscripten source file {relative_path}",
+            sha256(path),
+            str(expected_hash),
+        )
+
+
+def verify_emscripten_source_checkout(
+    source_pin: dict[str, object], checkout_root: Path
+) -> None:
+    if checkout_root.is_symlink() or not (checkout_root / ".git").is_dir():
+        raise M0Error("pinned Emscripten source checkout is not installed")
+    require_equal(
+        "Emscripten source checkout root",
+        str(
+            Path(
+                checked_output(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=checkout_root,
+                )
+            ).resolve()
+        ),
+        str(checkout_root.resolve()),
+    )
+    require_equal(
+        "Emscripten source checkout",
+        checked_output(
+            ["git", "rev-parse", "HEAD^{commit}"], cwd=checkout_root
+        ),
+        str(source_pin["revision"]),
+    )
+    require_equal(
+        "Emscripten source HEAD",
+        checked_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=checkout_root,
+        ),
+        "HEAD",
+    )
+    require_equal(
+        "Emscripten source origin",
+        checked_output(
+            ["git", "remote", "get-url", "--all", "origin"],
+            cwd=checkout_root,
+        ),
+        str(source_pin["remote"]),
+    )
+    require_equal(
+        "Emscripten source worktree",
+        checked_output(
+            ["git", "status", "--short", "--untracked-files=all"],
+            cwd=checkout_root,
+        ),
+        "",
+    )
+    verify_emscripten_source_tree(source_pin, checkout_root)
+
+
+def verify_emscripten_source_distribution(
+    source_pin: dict[str, object],
+    emscripten: dict[str, object],
+    distribution_root: Path,
+) -> None:
+    verify_emscripten_source_tree(source_pin, distribution_root)
+    revision_path = emscripten_source_file(
+        distribution_root, "emscripten-revision.txt"
+    )
+    require_equal(
+        "Emscripten source revision",
+        revision_path.read_text(encoding="utf-8").strip(),
+        str(source_pin["revision"]),
+    )
+    for name in ("emcc", "emcc.py"):
+        path = emscripten_source_file(distribution_root, name)
+        require_equal(
+            f"Emscripten source artifact {name}",
+            sha256(path),
+            emscripten_artifact_hash(emscripten, name),
+        )
+
+
+def emscripten_binary_artifact_paths(
+    emscripten: dict[str, object], emsdk: Path
+) -> dict[str, Path]:
+    node = (
+        emsdk
+        / "node"
+        / f"{emscripten['node_version']}_64bit"
+        / "bin/node"
+    )
+    return {
+        "clang": emsdk / "upstream/bin/clang",
+        "wasm-ld": emsdk / "upstream/bin/wasm-ld",
+        "wasm-opt": emsdk / "upstream/bin/wasm-opt",
+        "node": node,
+    }
+
+
+def verify_emscripten_binary_artifacts(
+    emscripten: dict[str, object], emsdk: Path
+) -> None:
+    for name, path in emscripten_binary_artifact_paths(
+        emscripten, emsdk
+    ).items():
+        if not path.is_file():
+            raise M0Error(f"pinned Emscripten artifact is missing: {name}")
+        require_equal(
+            f"Emscripten artifact {name}",
+            sha256(path),
+            emscripten_artifact_hash(emscripten, name),
+        )
+
+
+def emscripten_npm_execution_closure_sha256(node: Path) -> str:
+    """Hash the pinned npm launcher and all JavaScript it can load.
+
+    ``tools/install.py`` executes ``npm ci``.  The Node executable already has
+    a manifest hash, but a hash for Node alone says nothing about the mutable
+    npm launcher and its bundled package tree.  Reject symlinks below the npm
+    tree so the closure cannot silently escape the pinned SDK directory.
+    """
+    if node.is_symlink() or not node.is_file() or not os.access(node, os.X_OK):
+        raise M0Error("pinned Emscripten Node executable is not a regular file")
+    node_root = node.parent.parent
+    if node_root.is_symlink() or not node_root.is_dir():
+        raise M0Error("pinned Emscripten Node root is not a directory")
+    node_root_resolved = node_root.resolve()
+    bin_directory = node.parent
+    lib_directory = node_root / "lib"
+    node_modules_directory = lib_directory / "node_modules"
+    for label, directory in (
+        ("bin", bin_directory),
+        ("lib", lib_directory),
+        ("node_modules", node_modules_directory),
+    ):
+        if directory.is_symlink() or not directory.is_dir():
+            raise M0Error(
+                "pinned Emscripten Node " + label + " directory is invalid"
+            )
+        try:
+            directory.resolve().relative_to(node_root_resolved)
+        except ValueError as exc:
+            raise M0Error(
+                "pinned Emscripten Node " + label + " directory escapes its root"
+            ) from exc
+    try:
+        node.resolve().relative_to(node_root_resolved)
+    except ValueError as exc:
+        raise M0Error("pinned Emscripten Node executable escapes its root") from exc
+    launcher = node.parent / "npm"
+    npm_root = node_modules_directory / "npm"
+    if npm_root.is_symlink() or not npm_root.is_dir():
+        raise M0Error("pinned Emscripten npm package is not installed")
+    try:
+        npm_root.resolve().relative_to(node_root_resolved)
+    except ValueError as exc:
+        raise M0Error("pinned Emscripten npm package escapes its Node root") from exc
+    if not os.path.lexists(launcher):
+        raise M0Error("pinned Emscripten npm launcher is not installed")
+
+    digest = hashlib.sha256()
+
+    def update_text(value: str) -> None:
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+
+    update_text("chromium-wasm-emscripten-npm-closure-v1")
+    for label, directory in (
+        ("node-root", node_root),
+        ("node-bin", bin_directory),
+        ("node-lib", lib_directory),
+        ("node-modules", node_modules_directory),
+        ("npm-root", npm_root),
+    ):
+        update_text(label + "-mode")
+        update_text(oct(directory.stat().st_mode & 0o777))
+    update_text("node-mode")
+    update_text(oct(node.stat().st_mode & 0o777))
+    if launcher.is_symlink():
+        launcher_target = launcher.resolve()
+        try:
+            launcher_target.relative_to(npm_root.resolve())
+        except ValueError as exc:
+            raise M0Error("pinned Emscripten npm launcher escapes its package") from exc
+        update_text("launcher-symlink")
+        update_text(os.readlink(launcher))
+        if not launcher_target.is_file() or not os.access(launcher_target, os.X_OK):
+            raise M0Error("pinned Emscripten npm launcher is not executable")
+        update_text("launcher-target-mode")
+        update_text(oct(launcher_target.stat().st_mode & 0o777))
+    elif launcher.is_file() and os.access(launcher, os.X_OK):
+        update_text("launcher-file")
+        update_text("launcher-mode")
+        update_text(oct(launcher.stat().st_mode & 0o777))
+        digest.update(bytes.fromhex(sha256(launcher)))
+    else:
+        raise M0Error("pinned Emscripten npm launcher is not a file")
+
+    for path in sorted(npm_root.rglob("*"), key=lambda item: item.as_posix()):
+        relative_path = path.relative_to(node_root).as_posix()
+        if path.is_symlink():
+            raise M0Error(
+                "pinned Emscripten npm package must not contain symlinks: "
+                + relative_path
+            )
+        if path.is_dir():
+            update_text("directory")
+            update_text(relative_path)
+            update_text(oct(path.stat().st_mode & 0o777))
+            continue
+        if not path.is_file():
+            raise M0Error(
+                "pinned Emscripten npm package has an unsupported entry: "
+                + relative_path
+            )
+        update_text("file")
+        update_text(relative_path)
+        update_text(oct(path.stat().st_mode & 0o777))
+        digest.update(bytes.fromhex(sha256(path)))
+    return digest.hexdigest()
+
+
+def verify_emscripten_npm_execution_closure(
+    source_pin: dict[str, object], node: Path
+) -> Path:
+    require_equal(
+        "Emscripten npm execution closure",
+        emscripten_npm_execution_closure_sha256(node),
+        str(source_pin["npm_tree_sha256"]),
+    )
+    return node.parent
+
+
+def emscripten_source_installer_path(staging_root: Path, node: Path) -> Path:
+    """Create a minimal PATH with only the verified installer executables."""
+    tools_root = staging_root / "installer-tools"
+    tools_root.mkdir()
+
+    def host_executable(name: str) -> Path:
+        value = shutil.which(name)
+        if value is None:
+            raise M0Error(f"required host executable is unavailable: {name}")
+        path = Path(value).resolve()
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise M0Error(f"required host executable is not executable: {name}")
+        return path
+
+    npm = node.parent / "npm"
+    npm_target = npm.resolve()
+    if not npm_target.is_file() or not os.access(npm_target, os.X_OK):
+        raise M0Error("pinned Emscripten npm launcher is not executable")
+    executables = {
+        "node": node.resolve(),
+        "npm": npm_target,
+        # Emscripten's source installer records the source revision with Git.
+        # Bootstrap already relies on the host Git binary to fetch/verify the
+        # detached checkout, so expose that same executable explicitly rather
+        # than preserving a mutable inherited PATH.
+        "git": host_executable("git"),
+        # npm may run shell hooks from its pinned package lock.
+        "sh": host_executable("sh"),
+    }
+    for name, executable in executables.items():
+        os.symlink(executable, tools_root / name)
+    return tools_root
+
+
+def emscripten_cache_path() -> Path:
+    cache_path = REPO_ROOT / EMSCRIPTEN_SOURCE_CACHE
+    try:
+        cache_path.parent.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise M0Error("Emscripten cache path escapes the checkout") from exc
+    return cache_path
+
+
+def emscripten_source_lock_path() -> Path:
+    lock_path = REPO_ROOT / EMSCRIPTEN_SOURCE_LOCK
+    try:
+        lock_path.parent.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise M0Error("Emscripten source lock path escapes the checkout") from exc
+    return lock_path
+
+
+def acquire_emscripten_source_update_lock() -> int:
+    """Acquire the lock shared by the compiler driver during source promotion."""
+    lock_path = emscripten_source_lock_path()
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise M0Error("cannot open Emscripten source update lock") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise M0Error("Emscripten source update lock is not a regular file")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError as exc:
+        os.close(descriptor)
+        raise M0Error("cannot acquire Emscripten source update lock") from exc
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def release_emscripten_source_update_lock(descriptor: int) -> None:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def remove_emscripten_source_recovery_path(path: Path) -> None:
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    if not path.is_dir():
+        raise M0Error("Emscripten source recovery path is not removable")
+    shutil.rmtree(path)
+
+
+def has_emscripten_source_recovery_copy(staging_root: Path) -> bool:
+    return any(
+        os.path.lexists(staging_root / name)
+        for name in ("previous-distribution", "previous-cache")
+    )
+
+
+def promote_emscripten_source_distribution(
+    candidate_root: Path,
+    distribution_root: Path,
+    staging_root: Path,
+    cache_path: Path,
+) -> None:
+    """Promote a verified source only while compilers are excluded."""
+    update_lock = acquire_emscripten_source_update_lock()
+    try:
+        _promote_emscripten_source_distribution(
+            candidate_root, distribution_root, staging_root, cache_path
+        )
+    finally:
+        release_emscripten_source_update_lock(update_lock)
+
+
+def _promote_emscripten_source_distribution(
+    candidate_root: Path,
+    distribution_root: Path,
+    staging_root: Path,
+    cache_path: Path,
+) -> None:
+    """Atomically promote source and invalidate its cache, or preserve recovery.
+
+    The active source is never removed until a verified candidate is present.
+    If a source or cache rollback itself fails, retain the staging directory and
+    its recovery copies rather than deleting the only remaining good SDK tree.
+    The matching compiler driver takes a shared advisory lock, so supported
+    GN builds drain before this source/cache hand-off. Direct or legacy emcc
+    invocations do not participate and remain unsupported during promotion.
+    """
+    if candidate_root.is_symlink() or not candidate_root.is_dir():
+        raise M0Error("staged Emscripten source distribution is invalid")
+    if distribution_root.is_symlink() or not distribution_root.is_dir():
+        raise M0Error("installed Emscripten source distribution is invalid")
+    distribution_backup = staging_root / "previous-distribution"
+    cache_backup = staging_root / "previous-cache"
+    if os.path.lexists(distribution_backup) or os.path.lexists(cache_backup):
+        raise M0Error("Emscripten source staging backup path already exists")
+
+    candidate_promoted = False
+    cache_moved = False
+    try:
+        os.replace(distribution_root, distribution_backup)
+        if os.path.lexists(cache_path):
+            os.replace(cache_path, cache_backup)
+            cache_moved = True
+        os.replace(candidate_root, distribution_root)
+        candidate_promoted = True
+    except BaseException as exc:
+        # A signal can land between the two rename operations.  Derive whether
+        # the source was already promoted from the on-disk state before trying
+        # to restore anything; never replace a successful new distribution with
+        # its old one merely because Python was interrupted at that boundary.
+        source_appears_promoted = (
+            os.path.lexists(distribution_root)
+            and not os.path.lexists(candidate_root)
+            and os.path.lexists(distribution_backup)
+        )
+        cache_appears_moved = (
+            os.path.lexists(cache_backup) and not os.path.lexists(cache_path)
+        )
+        restoration_errors: list[BaseException] = []
+        if not candidate_promoted and not source_appears_promoted:
+            if os.path.lexists(distribution_backup) and not os.path.lexists(
+                distribution_root
+            ):
+                try:
+                    os.replace(distribution_backup, distribution_root)
+                except BaseException as rollback_error:
+                    restoration_errors.append(rollback_error)
+        if not (source_appears_promoted or candidate_promoted) and (
+            cache_moved or cache_appears_moved
+        ) and os.path.lexists(cache_backup) and not os.path.lexists(cache_path):
+            try:
+                os.replace(cache_backup, cache_path)
+            except BaseException as rollback_error:
+                restoration_errors.append(rollback_error)
+        if restoration_errors or source_appears_promoted or candidate_promoted:
+            raise M0Error(
+                "Emscripten source promotion was interrupted; recovery copies "
+                "were preserved"
+            ) from exc
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        raise M0Error(
+            "cannot promote staged Emscripten source distribution; the "
+            "previous distribution and cache were restored"
+        ) from exc
+
+    # Discard the old, now-incompatible cache only after the new source became
+    # active.  If cleanup is interrupted, retain the backup for manual
+    # recovery instead of risking data loss in the finally block.
+    try:
+        remove_emscripten_source_recovery_path(distribution_backup)
+        if cache_moved:
+            remove_emscripten_source_recovery_path(cache_backup)
+    except BaseException as exc:
+        try:
+            # There is no safe rollback after the new distribution is active.
+            # Leave any recovery copy in place and require an explicit retry.
+            if not has_emscripten_source_recovery_copy(staging_root):
+                raise M0Error("Emscripten source recovery copy disappeared")
+        except M0Error:
+            raise
+        raise M0Error(
+            "Emscripten source promotion completed but recovery cleanup was "
+            "interrupted; recovery copies were preserved"
+        ) from exc
+
+
+def install_emscripten_source_pin(
+    source_pin: dict[str, object],
+    emscripten: dict[str, object],
+    emsdk: Path,
+    bootstrap_python: Path,
+) -> None:
+    distribution_root = emsdk / "upstream/emscripten"
+    if distribution_root.parent.is_symlink():
+        raise M0Error("Emscripten upstream directory must not be a symlink")
+    if distribution_root.is_symlink() or not distribution_root.is_dir():
+        raise M0Error("installed Emscripten source distribution is invalid")
+
+    staging_root = Path(
+        tempfile.mkdtemp(
+            prefix=".emscripten-source-pin-",
+            dir=distribution_root.parent,
+        )
+    )
+    checkout_root = staging_root / "source"
+    candidate_root = staging_root / "distribution"
+    try:
+        run(["git", "init", "--quiet", str(checkout_root)])
+        run(
+            ["git", "remote", "add", "origin", str(source_pin["remote"])],
+            cwd=checkout_root,
+        )
+        run(
+            [
+                "git",
+                "fetch",
+                "--depth=1",
+                "--no-tags",
+                "origin",
+                str(source_pin["ref"]),
+            ],
+            cwd=checkout_root,
+            capture_output=False,
+        )
+        require_equal(
+            "Emscripten source fetched revision",
+            checked_output(
+                ["git", "rev-parse", "FETCH_HEAD^{commit}"],
+                cwd=checkout_root,
+            ),
+            str(source_pin["revision"]),
+        )
+        run(
+            [
+                "git",
+                "-c",
+                "advice.detachedHead=false",
+                "checkout",
+                "--quiet",
+                "--detach",
+                "FETCH_HEAD",
+            ],
+            cwd=checkout_root,
+        )
+        verify_emscripten_source_checkout(source_pin, checkout_root)
+
+        install_script = emscripten_source_file(
+            checkout_root, "tools/install.py"
+        )
+        binary_artifacts = emscripten_binary_artifact_paths(
+            emscripten, emsdk
+        )
+        node = binary_artifacts["node"]
+        verify_emscripten_binary_artifacts(emscripten, emsdk)
+        verify_emscripten_npm_execution_closure(source_pin, node)
+        installer_tools = emscripten_source_installer_path(staging_root, node)
+        installer_home = staging_root / "installer-home"
+        installer_tmp = staging_root / "installer-tmp"
+        installer_npm_cache = staging_root / "installer-npm-cache"
+        installer_npm_user_config = staging_root / "installer-npmrc"
+        installer_npm_global_config = staging_root / "installer-npm-globalrc"
+        for path in (installer_home, installer_tmp, installer_npm_cache):
+            path.mkdir()
+        installer_npm_user_config.touch()
+        installer_npm_global_config.touch()
+
+        # Run the source-provided installer with an empty inherited environment.
+        # In particular, never allow NODE_OPTIONS, NPM_CONFIG_*, or a host npm
+        # launcher to influence the pinned source distribution.  The private
+        # PATH contains only the verified SDK Node/npm pair and the explicit
+        # host Git/sh executables needed by Emscripten's installer.
+        run(
+            [
+                str(bootstrap_python),
+                str(install_script),
+                str(candidate_root),
+            ],
+            cwd=checkout_root,
+            capture_output=False,
+            env={
+                "PATH": str(installer_tools),
+                "HOME": str(installer_home),
+                "TMPDIR": str(installer_tmp),
+                "NPM_CONFIG_CACHE": str(installer_npm_cache),
+                "NPM_CONFIG_USERCONFIG": str(installer_npm_user_config),
+                "NPM_CONFIG_GLOBALCONFIG": str(installer_npm_global_config),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "LANG": "C",
+                "LC_ALL": "C",
+            },
+            clear_env=True,
+        )
+        verify_emscripten_source_checkout(source_pin, checkout_root)
+        verify_emscripten_source_distribution(
+            source_pin, emscripten, candidate_root
+        )
+
+        # The candidate is fully verified before either the active source tree
+        # or the driver-owned cache is touched. Promotion moves the exact cache
+        # selected by build/toolchain/wasm/emscripten_driver.py into the same
+        # recovery transaction as the source distribution.
+        promote_emscripten_source_distribution(
+            candidate_root,
+            distribution_root,
+            staging_root,
+            emscripten_cache_path(),
+        )
+    finally:
+        if not has_emscripten_source_recovery_copy(staging_root):
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def ensure_emscripten_source_pin(
+    emscripten: dict[str, object],
+    emsdk: Path,
+    bootstrap_python: Path,
+    *,
+    install: bool,
+) -> dict[str, object] | None:
+    source_pin = emscripten_source_pin(emscripten)
+    if source_pin is None:
+        return None
+    if install:
+        install_emscripten_source_pin(
+            source_pin, emscripten, emsdk, bootstrap_python
+        )
+    verify_emscripten_source_distribution(
+        source_pin, emscripten, emsdk / "upstream/emscripten"
+    )
+    return source_pin
+
+
 def ensure_emscripten(
     manifest: dict[str, object],
     bootstrap_python: Path,
@@ -1773,6 +2590,7 @@ def ensure_emscripten(
 ) -> None:
     emscripten = manifest["emscripten"]
     assert isinstance(emscripten, dict)
+    requested_source_pin = emscripten_source_pin(emscripten)
     emsdk = REPO_ROOT / "third_party/emsdk"
     expected_revision = str(emscripten["emsdk_revision"])
 
@@ -1814,26 +2632,38 @@ def ensure_emscripten(
 
     emcc = emsdk / "upstream/emscripten/emcc"
     if install:
-        run(
-            [
-                str(bootstrap_python),
-                "emsdk.py",
-                "install",
-                str(emscripten["sdk_version"]),
-            ],
-            cwd=emsdk,
-            capture_output=False,
+        update_lock = (
+            acquire_emscripten_source_update_lock()
+            if requested_source_pin is not None
+            else None
         )
-        run(
-            [
-                str(bootstrap_python),
-                "emsdk.py",
-                "activate",
-                str(emscripten["sdk_version"]),
-            ],
-            cwd=emsdk,
-            capture_output=False,
-        )
+        try:
+            run(
+                [
+                    str(bootstrap_python),
+                    "emsdk.py",
+                    "install",
+                    str(emscripten["sdk_version"]),
+                ],
+                cwd=emsdk,
+                capture_output=False,
+            )
+            run(
+                [
+                    str(bootstrap_python),
+                    "emsdk.py",
+                    "activate",
+                    str(emscripten["sdk_version"]),
+                ],
+                cwd=emsdk,
+                capture_output=False,
+            )
+        finally:
+            if update_lock is not None:
+                release_emscripten_source_update_lock(update_lock)
+    source_pin = ensure_emscripten_source_pin(
+        emscripten, emsdk, bootstrap_python, install=install
+    )
     if not emcc.is_file():
         raise M0Error("pinned Emscripten SDK is not installed")
     emscripten_config = emsdk / ".emscripten"
@@ -1847,12 +2677,16 @@ def ensure_emscripten(
 
     require_equal(
         "Emscripten version",
-        json.loads(
-            (
-                emsdk / "upstream/emscripten/emscripten-version.txt"
-            ).read_text(encoding="utf-8")
+        (
+            emscripten_source_version
+            if source_pin is not None
+            else emscripten_release_version
+        )(emsdk / "upstream/emscripten"),
+        (
+            str(source_pin["version"])
+            if source_pin is not None
+            else str(emscripten["sdk_version"])
         ),
-        str(emscripten["sdk_version"]),
     )
     require_equal(
         "Emscripten source revision",

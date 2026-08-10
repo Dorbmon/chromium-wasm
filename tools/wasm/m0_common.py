@@ -186,9 +186,10 @@ def run(
     capture_output: bool = True,
     check: bool = True,
     env: dict[str, str] | None = None,
+    clear_env: bool = False,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    process_env = os.environ.copy()
+    process_env = {} if clear_env else os.environ.copy()
     if env:
         process_env.update(env)
     try:

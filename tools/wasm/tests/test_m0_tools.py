@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import fcntl
 import hashlib
 from io import BytesIO
 from io import StringIO
@@ -18,6 +19,8 @@ import queue
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -472,6 +475,233 @@ class BootstrapTest(unittest.TestCase):
             emscripten_driver.split_tool_and_args(["-c", "input.cc"]),
             ("em++", ["-c", "input.cc"]),
         )
+
+    def test_compiler_driver_holds_the_source_update_shared_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            lock_path = Path(temporary_directory) / "source.lock"
+            with mock.patch.object(
+                emscripten_driver, "EMSCRIPTEN_SOURCE_LOCK", lock_path
+            ), mock.patch.object(
+                emscripten_driver, "REPO_ROOT", lock_path.parent
+            ):
+                descriptor = emscripten_driver.acquire_emscripten_source_lock()
+                try:
+                    self.assertTrue(os.get_inheritable(descriptor))
+                    self.assertTrue(lock_path.is_file())
+                    competing = os.open(lock_path, os.O_RDWR)
+                    try:
+                        with self.assertRaises(BlockingIOError):
+                            fcntl.flock(
+                                competing, fcntl.LOCK_EX | fcntl.LOCK_NB
+                            )
+                    finally:
+                        os.close(competing)
+                finally:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    os.close(descriptor)
+
+    def test_compiler_and_bootstrap_share_the_same_source_update_lock(self) -> None:
+        self.assertEqual(
+            emscripten_driver.EMSCRIPTEN_SOURCE_LOCK,
+            bootstrap.REPO_ROOT / bootstrap.EMSCRIPTEN_SOURCE_LOCK,
+        )
+
+    def test_source_update_waits_for_an_active_compiler_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            lock_path = root / "out/wasm-emscripten-source.lock"
+            acquired = threading.Event()
+            release = threading.Event()
+            failures: list[BaseException] = []
+
+            with (
+                mock.patch.object(bootstrap, "REPO_ROOT", root),
+                mock.patch.object(
+                    emscripten_driver, "EMSCRIPTEN_SOURCE_LOCK", lock_path
+                ),
+                mock.patch.object(emscripten_driver, "REPO_ROOT", root),
+            ):
+                compiler_lock = emscripten_driver.acquire_emscripten_source_lock()
+
+                def wait_for_update_lock() -> None:
+                    try:
+                        update_lock = bootstrap.acquire_emscripten_source_update_lock()
+                        acquired.set()
+                        release.wait(timeout=2)
+                        bootstrap.release_emscripten_source_update_lock(update_lock)
+                    except BaseException as exc:
+                        failures.append(exc)
+
+                thread = threading.Thread(target=wait_for_update_lock)
+                thread.start()
+                try:
+                    self.assertFalse(acquired.wait(timeout=0.1))
+                finally:
+                    fcntl.flock(compiler_lock, fcntl.LOCK_UN)
+                    os.close(compiler_lock)
+                try:
+                    self.assertTrue(acquired.wait(timeout=2))
+                finally:
+                    release.set()
+                    thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(failures, [])
+
+    def test_driver_exec_lock_blocks_source_and_cache_promotion(self) -> None:
+        def compiler_script(
+            started_path: Path,
+            release_path: Path | None,
+            result_name: str,
+        ) -> str:
+            wait_for_release = ""
+            if release_path is not None:
+                wait_for_release = (
+                    f"deadline = time.monotonic() + 5\n"
+                    f"while not Path({str(release_path)!r}).exists():\n"
+                    "    if time.monotonic() >= deadline:\n"
+                    "        raise SystemExit('release sentinel timed out')\n"
+                    "    time.sleep(0.01)\n"
+                )
+            return f"""#!{sys.executable}
+import os
+from pathlib import Path
+import time
+
+Path({str(started_path)!r}).write_text("started\\n", encoding="utf-8")
+{wait_for_release}cache = Path(os.environ["EM_CACHE"])
+cache.mkdir(parents=True, exist_ok=True)
+(cache / {result_name!r}).write_text("ok\\n", encoding="utf-8")
+"""
+
+        def wait_for_path(path: Path) -> None:
+            deadline = time.monotonic() + 2
+            while not path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(path.exists(), f"timed out waiting for {path}")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            driver_path = root / "build/toolchain/wasm/emscripten_driver.py"
+            driver_path.parent.mkdir(parents=True)
+            driver_path.write_text(
+                DRIVER_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            emsdk = root / "third_party/emsdk"
+            active = emsdk / "upstream/emscripten"
+            active.mkdir(parents=True)
+            (emsdk / ".emscripten").write_text("config\n", encoding="utf-8")
+            depot_tools = root / "third_party/depot_tools"
+            depot_tools.mkdir(parents=True)
+            (depot_tools / "python3_bin_reldir.txt").write_text(
+                "python-bin\n", encoding="utf-8"
+            )
+            python_bin = depot_tools / "python-bin"
+            python_bin.mkdir()
+            (python_bin / "python3").symlink_to(Path(sys.executable))
+
+            started = root / "old-started"
+            release = root / "allow-old-exit"
+            old_compiler = active / "em++"
+            old_compiler.write_text(
+                compiler_script(started, release, "old-result"), encoding="utf-8"
+            )
+            old_compiler.chmod(0o755)
+
+            staging = root / "staging"
+            staging.mkdir()
+            candidate = staging / "distribution"
+            candidate.mkdir()
+            new_started = root / "new-started"
+            new_compiler = candidate / "em++"
+            new_compiler_contents = compiler_script(
+                new_started, None, "new-result"
+            )
+            new_compiler.write_text(new_compiler_contents, encoding="utf-8")
+            new_compiler.chmod(0o755)
+            cache = root / "out/wasm-emscripten-cache"
+            cache.mkdir(parents=True)
+            (cache / "stale-result").write_text("old\n", encoding="utf-8")
+
+            environment = os.environ.copy()
+            environment["TEST_UNUSED"] = "driver-lock-test"
+            compiler = subprocess.Popen(
+                [str(sys.executable), str(driver_path), "em++"],
+                env=environment,
+            )
+            promotion_done = threading.Event()
+            promotion_errors: list[BaseException] = []
+
+            def promote() -> None:
+                try:
+                    bootstrap.promote_emscripten_source_distribution(
+                        candidate, active, staging, cache
+                    )
+                except BaseException as exc:
+                    promotion_errors.append(exc)
+                finally:
+                    promotion_done.set()
+
+            try:
+                wait_for_path(started)
+                promotion_thread = threading.Thread(target=promote)
+                with mock.patch.object(bootstrap, "REPO_ROOT", root):
+                    promotion_thread.start()
+                    self.assertFalse(promotion_done.wait(timeout=0.1))
+                    release.touch()
+                    self.assertEqual(compiler.wait(timeout=5), 0)
+                    self.assertTrue(promotion_done.wait(timeout=2))
+                    promotion_thread.join(timeout=2)
+                    self.assertFalse(promotion_thread.is_alive())
+                    self.assertEqual(promotion_errors, [])
+                    self.assertEqual(
+                        (active / "em++").read_text(encoding="utf-8"),
+                        new_compiler_contents,
+                    )
+                    self.assertFalse(cache.exists())
+
+                    new_compiler_process = subprocess.run(
+                        [str(sys.executable), str(driver_path), "em++"],
+                        env=environment,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                self.assertEqual(new_compiler_process.returncode, 0)
+                wait_for_path(new_started)
+                self.assertTrue((cache / "new-result").is_file())
+                self.assertFalse((cache / "old-result").exists())
+
+                blocked_started = root / "blocked-started"
+                blocked_compiler_contents = compiler_script(
+                    blocked_started, None, "blocked-result"
+                )
+                (active / "em++").write_text(
+                    blocked_compiler_contents, encoding="utf-8"
+                )
+                (active / "em++").chmod(0o755)
+                with mock.patch.object(bootstrap, "REPO_ROOT", root):
+                    update_lock = bootstrap.acquire_emscripten_source_update_lock()
+                    blocked_compiler: subprocess.Popen[bytes] | None = None
+                    try:
+                        blocked_compiler = subprocess.Popen(
+                            [str(sys.executable), str(driver_path), "em++"],
+                            env=environment,
+                        )
+                        deadline = time.monotonic() + 0.1
+                        while time.monotonic() < deadline:
+                            self.assertFalse(blocked_started.exists())
+                            time.sleep(0.01)
+                    finally:
+                        bootstrap.release_emscripten_source_update_lock(update_lock)
+                assert blocked_compiler is not None
+                self.assertEqual(blocked_compiler.wait(timeout=5), 0)
+                wait_for_path(blocked_started)
+                self.assertTrue((cache / "blocked-result").is_file())
+            finally:
+                if compiler.poll() is None:
+                    release.touch()
+                    compiler.wait(timeout=5)
 
     def test_generated_configuration_includes_milestone_profiles(self) -> None:
         manifest = load_manifest()

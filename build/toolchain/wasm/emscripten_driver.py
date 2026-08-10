@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 from pathlib import Path
+import stat
 import sys
 
 
@@ -16,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 EMSDK_ROOT = REPO_ROOT / "third_party/emsdk"
 SUPPORTED_TOOLS = frozenset(("emcc", "em++"))
 DEFAULT_TOOL = "em++"
+EMSCRIPTEN_SOURCE_LOCK = REPO_ROOT / "out/wasm-emscripten-source.lock"
 
 
 def split_tool_and_args(arguments: list[str]) -> tuple[str, list[str]]:
@@ -82,22 +85,68 @@ def pinned_environment() -> dict[str, str]:
     return environment
 
 
+def acquire_emscripten_source_lock() -> int:
+    """Hold a shared source/cache lock until the compiler process exits.
+
+    The optional Emscripten source-pin bootstrap takes the matching exclusive
+    lock while replacing the source distribution and its EM_CACHE directory.
+    Make the descriptor inheritable so the flock survives ``os.execve`` into
+    emcc/em++ and is released only when that compiler invocation exits.
+    """
+    try:
+        EMSCRIPTEN_SOURCE_LOCK.parent.resolve().relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise RuntimeError(
+            "Emscripten source update lock escapes the checkout"
+        ) from exc
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        EMSCRIPTEN_SOURCE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(EMSCRIPTEN_SOURCE_LOCK, flags, 0o600)
+    except OSError as exc:
+        raise RuntimeError("cannot open Emscripten source update lock") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError("Emscripten source update lock is not a regular file")
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        os.set_inheritable(descriptor, True)
+    except OSError as exc:
+        os.close(descriptor)
+        raise RuntimeError("cannot acquire Emscripten source update lock") from exc
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def main() -> int:
     tool_name, arguments = split_tool_and_args(sys.argv[1:])
-    tool = EMSDK_ROOT / "upstream/emscripten" / tool_name
-    if not tool.is_file():
-        print("pinned Emscripten SDK is not installed", file=sys.stderr)
-        return 1
     try:
-        environment = pinned_environment()
+        source_lock = acquire_emscripten_source_lock()
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    os.execve(
-        tool,
-        [str(tool), *arguments],
-        environment,
-    )
+    try:
+        tool = EMSDK_ROOT / "upstream/emscripten" / tool_name
+        if not tool.is_file():
+            print("pinned Emscripten SDK is not installed", file=sys.stderr)
+            return 1
+        environment = pinned_environment()
+        os.execve(
+            tool,
+            [str(tool), *arguments],
+            environment,
+        )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"cannot execute pinned Emscripten compiler: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        os.close(source_lock)
 
 
 if __name__ == "__main__":
