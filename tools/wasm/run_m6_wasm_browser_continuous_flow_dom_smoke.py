@@ -1,0 +1,1258 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+"""Run the formal Target-6 continuous flow through trusted DOM/Ozone input.
+
+The first phase keeps one Chrome Browser lifetime through controlled HTTPS,
+new-tab/version/tab-switch/menu/Settings/close-B/reload/screenshot. It issues
+only trusted CDP keyboard, Input.insertText, and pointer records against the
+frozen host witness. After normal lifecycle close, the host outer document
+navigates to a fresh page that launches and normally closes a restart Browser.
+No runner path calls a Wasm navigation, command, menu, or Browser ABI.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+from collections import deque
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import math
+from pathlib import Path
+import queue
+import re
+import secrets
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from typing import Any
+from urllib.parse import urlencode, urlsplit
+
+from check_m6_chrome_boundary import check_boundary
+from m0_common import (
+    M0Error,
+    REPO_ROOT,
+    checked_output,
+    load_manifest,
+    parse_timeout,
+    print_context,
+)
+from m3_content_server import compare_screenshots, decode_png
+from m4_cdp import unused_loopback_port, wait_for_page_client
+from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
+from run_content_shell_smoke import manifest_versions
+from run_m5_wisp_smoke import (
+    find_node,
+    m5_host_origin,
+    relay_command,
+    verify_no_private_key_pem_artifacts,
+)
+import run_m6_wasm_browser_controlled_https_smoke as controlled_https
+import run_wasm_browser_view_smoke as browser_view_smoke
+
+
+SENTINEL = "CHROMIUM_WASM_M6_CONTINUOUS_FLOW_DOM"
+CASE = "browser_continuous_flow_target6_m6"
+SCOPE = "formal-target-6-trusted-dom-one-browser-lifetime"
+FLOW_PHASE = "flow"
+RESTART_PHASE = "restart"
+FLOW_SWITCH = "--wasm-browser-host-continuous-flow-smoke"
+RESTART_SWITCH = "--wasm-browser-host-continuous-flow-restart-smoke"
+URL_SWITCH = "--wasm-browser-controlled-https-url"
+HTTPS_TEXT = "https://a.test/m5/m6-ui"
+VERSION_TEXT = "chrome://version/"
+DEFAULT_OUT_DIR = Path("out/wasm-chrome-m6")
+DEFAULT_MODULE_NAME = "chrome_wasm_m6_https_test"
+CONTROLLED_HTTPS_GN_TARGET = "//chrome:chrome_wasm_m6_https_test"
+HOST_ROOT = "/__m6_browser_continuous_flow__"
+MAX_RESULT_BYTES = 8 * 1024 * 1024
+MAX_FRAME_DIMENSION = 16384
+MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
+MAX_SCREENSHOT_BASE64_LENGTH = ((MAX_SCREENSHOT_BYTES + 2) // 3) * 4
+MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+CONTROLLED_HTTPS_SCREENSHOT_CONTRACT = (
+    Path(__file__).with_name("testdata")
+    / "m6_controlled_https_screenshot_contract.json"
+)
+
+MARKERS = (
+    "CHROMIUM_WASM_M6_CONTINUOUS:READY",
+    "CHROMIUM_WASM_M6_CONTINUOUS:HTTPS_NAVIGATED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:VERSION_READY",
+    "CHROMIUM_WASM_M6_CONTINUOUS:VERSION_NAVIGATED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:FIRST_TAB_SELECTED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:MENU_READY",
+    "CHROMIUM_WASM_M6_CONTINUOUS:MENU_OPENED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:SETTINGS_NAVIGATED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:FIRST_TAB_RETURNED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:SECOND_TAB_CLOSED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:RELOAD_READY",
+    "CHROMIUM_WASM_M6_CONTINUOUS:RELOADED",
+    "CHROMIUM_WASM_M6_CONTINUOUS:PASS",
+)
+RESTART_MARKERS = (
+    "CHROMIUM_WASM_M6_CONTINUOUS:RESTART_READY",
+    "CHROMIUM_WASM_M6_CONTINUOUS:RESTART_CLOSING",
+)
+
+
+class ContinuousFlowServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    out_dir: Path
+    module_name: str
+    result_token: str
+    result_queue: queue.Queue[tuple[str, dict[str, Any]]]
+    result_lock: threading.Lock
+    received_phases: set[str]
+    html_bytes: bytes
+    host_js_bytes: bytes
+    text_input_js_bytes: bytes
+    pointer_input_js_bytes: bytes
+
+
+class ContinuousFlowRequestHandler(BaseHTTPRequestHandler):
+    server: ContinuousFlowServer
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+    def end_headers(self) -> None:
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        super().end_headers()
+
+    def _send_bytes(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _not_found(self) -> None:
+        self._send_bytes(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
+
+    def _artifact_path(self, requested: str) -> Path | None:
+        if requested not in {
+            f"{self.server.module_name}.js",
+            f"{self.server.module_name}.wasm",
+        }:
+            return None
+        candidate = (self.server.out_dir / requested).resolve()
+        try:
+            candidate.relative_to(self.server.out_dir)
+        except ValueError:
+            return None
+        return candidate if candidate.is_file() else None
+
+    def do_GET(self) -> None:
+        path = urlsplit(self.path).path
+        if path in (HOST_ROOT, f"{HOST_ROOT}/"):
+            self._send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", self.server.html_bytes)
+            return
+        static = {
+            f"{HOST_ROOT}/chrome_wasm_browser_continuous_flow_smoke_host.js": (
+                "text/javascript; charset=utf-8",
+                self.server.host_js_bytes,
+            ),
+            f"{HOST_ROOT}/chrome_wasm_text_input.js": (
+                "text/javascript; charset=utf-8",
+                self.server.text_input_js_bytes,
+            ),
+            f"{HOST_ROOT}/chrome_wasm_pointer_input.js": (
+                "text/javascript; charset=utf-8",
+                self.server.pointer_input_js_bytes,
+            ),
+        }.get(path)
+        if static is not None:
+            self._send_bytes(HTTPStatus.OK, static[0], static[1])
+            return
+        prefix = f"{HOST_ROOT}/artifacts/"
+        if path.startswith(prefix):
+            artifact = self._artifact_path(path[len(prefix) :])
+            if artifact is not None:
+                self._send_bytes(
+                    HTTPStatus.OK,
+                    "application/wasm" if artifact.suffix == ".wasm" else "text/javascript; charset=utf-8",
+                    artifact.read_bytes(),
+                )
+                return
+        self._not_found()
+
+    def do_POST(self) -> None:
+        path = urlsplit(self.path).path
+        prefix = f"{HOST_ROOT}/result/{self.server.result_token}/"
+        if not path.startswith(prefix):
+            self._not_found()
+            return
+        phase = path[len(prefix) :]
+        if phase not in (FLOW_PHASE, RESTART_PHASE) or "/" in phase:
+            self._not_found()
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "-1"))
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_RESULT_BYTES:
+            self._send_bytes(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "text/plain; charset=utf-8",
+                b"invalid result size\n",
+            )
+            return
+        result = parse_result_payload(self.rfile.read(length), phase)
+        if result is None:
+            self._send_bytes(
+                HTTPStatus.BAD_REQUEST,
+                "text/plain; charset=utf-8",
+                b"invalid continuous-flow result\n",
+            )
+            return
+        with self.server.result_lock:
+            if phase in self.server.received_phases:
+                self._send_bytes(
+                    HTTPStatus.CONFLICT,
+                    "text/plain; charset=utf-8",
+                    b"duplicate continuous-flow phase\n",
+                )
+                return
+            self.server.received_phases.add(phase)
+            try:
+                self.server.result_queue.put_nowait((phase, result))
+            except queue.Full:
+                self._send_bytes(
+                    HTTPStatus.CONFLICT,
+                    "text/plain; charset=utf-8",
+                    b"continuous-flow result queue is full\n",
+                )
+                return
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.end_headers()
+
+
+def _json_object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def parse_result_payload(payload: bytes, phase: str) -> dict[str, Any] | None:
+    try:
+        result = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_json_object_without_duplicate_keys
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if (
+        not isinstance(result, dict)
+        or result.get("protocol") != 1
+        or result.get("case") != CASE
+        or result.get("scope") != SCOPE
+        or result.get("phase") != phase
+    ):
+        return None
+    return result
+
+
+def create_server(
+    host: str,
+    port: int,
+    out_dir: Path,
+    token: str,
+    result_queue: queue.Queue[tuple[str, dict[str, Any]]],
+    *,
+    module_name: str,
+) -> ContinuousFlowServer:
+    if not MODULE_NAME_RE.fullmatch(module_name):
+        raise M0Error("module name must contain only ASCII letters, digits, or _")
+    if not out_dir.is_dir():
+        raise M0Error(f"continuous-flow output directory is missing: {out_dir}")
+    host_dir = Path(__file__).with_name("host")
+    server = ContinuousFlowServer((host, port), ContinuousFlowRequestHandler)
+    server.out_dir = out_dir.resolve()
+    server.module_name = module_name
+    server.result_token = token
+    server.result_queue = result_queue
+    server.result_lock = threading.Lock()
+    server.received_phases = set()
+    server.html_bytes = (
+        host_dir / "chrome_wasm_browser_continuous_flow_smoke.html"
+    ).read_bytes()
+    server.host_js_bytes = (
+        host_dir / "chrome_wasm_browser_continuous_flow_smoke_host.js"
+    ).read_bytes()
+    server.text_input_js_bytes = (host_dir / "chrome_wasm_text_input.js").read_bytes()
+    server.pointer_input_js_bytes = (
+        host_dir / "chrome_wasm_pointer_input.js"
+    ).read_bytes()
+    return server
+
+
+def smoke_url(
+    server: ContinuousFlowServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    relay_ready: controlled_https.RelayReady,
+    module_name: str,
+    timeout_seconds: float,
+) -> str:
+    wisp_endpoint = controlled_https.validate_controlled_wisp_endpoint(
+        relay_ready.wisp_endpoint
+    )
+    controlled_https.validate_m6_ui_url(relay_ready.m6_ui_url)
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "token": token,
+            "module": module_name,
+            "phase": FLOW_PHASE,
+            "timeoutMs": str(max(1000, min(180000, int(timeout_seconds * 1000)))),
+            "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
+            "wispEndpoint": wisp_endpoint,
+            "fixtureUrl": HTTPS_TEXT,
+        }
+    )
+    return f"http://{host}:{port}{HOST_ROOT}/?{query}"
+
+
+def verify_required_exports(module_loader: Path) -> None:
+    try:
+        loader = module_loader.read_text(encoding="utf-8")
+    except OSError as error:
+        raise M0Error(f"cannot read continuous-flow module loader: {error}") from error
+    for export in (
+        'Module["_chromium_wasm_browser_host_key"]',
+        'Module["_chromium_wasm_browser_host_text"]',
+        'Module["_chromium_wasm_browser_host_pointer"]',
+        'Module["_chromium_wasm_browser_host_pointer_exit"]',
+        'Module["_chromium_wasm_browser_host_continuous_flow_check"]',
+        'Module["_chromium_wasm_browser_host_continuous_flow_presented"]',
+        'Module["_malloc"]',
+        'Module["_free"]',
+        'Module["ccall"]',
+        'Module["HEAPU8"]',
+    ):
+        if export not in loader:
+            raise M0Error(f"continuous-flow module lacks required export {export}")
+
+
+def _require_equal(value: object, expected: object, description: str) -> None:
+    if not browser_view_smoke._exact_json_value_equal(value, expected):
+        raise M0Error(f"{description}: expected {expected!r}, got {value!r}")
+
+
+def _validate_target(value: object, name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise M0Error(f"continuous-flow {name} target is missing")
+    for field in ("x", "y"):
+        coordinate = value.get(field)
+        if type(coordinate) is not int or not 0 <= coordinate < MAX_FRAME_DIMENSION:
+            raise M0Error(f"continuous-flow {name} target {field} is invalid")
+    for field in ("clientX", "clientY"):
+        coordinate = value.get(field)
+        if not isinstance(coordinate, (int, float)) or not 0 <= coordinate < 10000:
+            raise M0Error(f"continuous-flow {name} target {field} is invalid")
+    return value
+
+
+def _validate_frame_after(proof: dict[str, Any], before: str, after: str) -> None:
+    start = proof.get(before)
+    finish = proof.get(after)
+    if type(start) is not int or type(finish) is not int or start < 0 or finish <= start:
+        raise M0Error(f"continuous-flow lacks strict frame ordering {before}->{after}")
+
+
+def _validate_pointer_action(
+    record: object, target: dict[str, object], event_type: str, buttons: int, index: int
+) -> None:
+    if not isinstance(record, dict):
+        raise M0Error(f"continuous-flow pointer action {index} is invalid")
+    expected = {
+        "type": event_type,
+        "trusted": True,
+        "cancelable": True,
+        "pointerType": "mouse",
+        "primary": True,
+        "button": 0,
+        "buttons": buttons,
+        "accepted": True,
+        "defaultPrevented": True,
+        "x": target["x"],
+        "y": target["y"],
+        "reason": None,
+    }
+    for field, expected_value in expected.items():
+        if record.get(field) != expected_value:
+            raise M0Error(
+                f"continuous-flow pointer action {index} {field} is invalid"
+            )
+
+
+def _validate_text_transaction(transaction: object, phase: str, sequence: int) -> None:
+    if not isinstance(transaction, dict):
+        raise M0Error(f"continuous-flow {phase} text transaction is invalid")
+    for field, expected in {
+        "phase": phase,
+        "adapterId": 1,
+        "expectedSequence": sequence,
+        "ctrlLComplete": True,
+        "proxyFocused": True,
+        "admissionCount": 1,
+        "deliveryCount": 1,
+        "deliverySequences": [sequence],
+        "deliveryAccepted": True,
+        "enterComplete": True,
+        "rejected": False,
+    }.items():
+        if transaction.get(field) != expected:
+            raise M0Error(f"continuous-flow {phase} text {field} is invalid")
+    adapter = transaction.get("adapter")
+    if not isinstance(adapter, dict) or "textareaValue" in adapter:
+        raise M0Error(f"continuous-flow {phase} text metadata is invalid")
+    expected_text = HTTPS_TEXT if phase == "https" else VERSION_TEXT
+    before_input = adapter.get("beforeInputRecords")
+    if not isinstance(before_input, list) or len(before_input) != 1:
+        raise M0Error(f"continuous-flow {phase} beforeinput evidence is invalid")
+    record = before_input[0]
+    expected_before_input = {
+        "inputType": "insertText",
+        "dataOmitted": True,
+        "dataUtf16Units": len(expected_text),
+        "dataUtf8Bytes": len(expected_text.encode("utf-8")),
+        "trusted": True,
+        "cancelable": True,
+        "isComposing": False,
+        "proxyFocused": True,
+        "queued": True,
+        "defaultPrevented": True,
+        "sequence": sequence,
+        "nativeDispatched": True,
+        "nativeAccepted": True,
+    }
+    if not isinstance(record, dict) or "data" in record:
+        raise M0Error(f"continuous-flow {phase} retained raw text")
+    for field, expected in expected_before_input.items():
+        if record.get(field) != expected:
+            raise M0Error(f"continuous-flow {phase} beforeinput {field} is invalid")
+    if adapter.get("browserTextDeliveryReports") != [
+        {"action": 4, "sessionId": 0, "sequence": sequence, "accepted": True}
+    ]:
+        raise M0Error(f"continuous-flow {phase} action-4 delivery is invalid")
+    ctrl_l = adapter.get("ctrlLRecords")
+    expected_ctrl_l = [
+        ("keydown", "ControlLeft"),
+        ("keydown", "KeyL"),
+        ("keyup", "KeyL"),
+        ("keyup", "ControlLeft"),
+    ]
+    if not isinstance(ctrl_l, list) or len(ctrl_l) != len(expected_ctrl_l):
+        raise M0Error(f"continuous-flow {phase} Ctrl+L evidence is invalid")
+    for index, (event_type, code) in enumerate(expected_ctrl_l):
+        item = ctrl_l[index]
+        if not isinstance(item, dict) or any(
+            item.get(field) != expected
+            for field, expected in {
+                "type": event_type,
+                "code": code,
+                "trusted": True,
+                "cancelable": True,
+                "canvasFocused": True,
+                "accepted": True,
+                "defaultPrevented": True,
+            }.items()
+        ):
+            raise M0Error(f"continuous-flow {phase} Ctrl+L record is invalid")
+    enter = adapter.get("enterRecords")
+    if not isinstance(enter, list) or len(enter) != 2:
+        raise M0Error(f"continuous-flow {phase} Enter evidence is invalid")
+    for index, event_type in enumerate(("keydown", "keyup")):
+        item = enter[index]
+        if not isinstance(item, dict) or any(
+            item.get(field) != expected
+            for field, expected in {
+                "type": event_type,
+                "code": "Enter",
+                "key": "Enter",
+                "trusted": True,
+                "cancelable": True,
+                "proxyFocused": True,
+                "accepted": True,
+                "defaultPrevented": True,
+            }.items()
+        ):
+            raise M0Error(f"continuous-flow {phase} Enter record is invalid")
+    if adapter.get("rejectedRecords") != [] or adapter.get("cleanupRecords") != []:
+        raise M0Error(f"continuous-flow {phase} has rejected or cleanup text input")
+
+
+def _validate_screenshot(
+    result: dict[str, Any], proof: dict[str, Any], frames: list[dict[str, Any]],
+    screenshot_contract: dict[str, Any],
+) -> bytes:
+    screenshot = result.get("screenshot")
+    required = {
+        "mimeType", "dataBase64", "width", "height", "frameId", "timestampMs",
+        "observationSequence",
+    }
+    if not isinstance(screenshot, dict) or set(screenshot) != required:
+        raise M0Error("continuous-flow screenshot metadata is invalid")
+    if screenshot.get("mimeType") != "image/png":
+        raise M0Error("continuous-flow screenshot is not PNG")
+    data = screenshot.get("dataBase64")
+    if not isinstance(data, str) or not data or len(data) > MAX_SCREENSHOT_BASE64_LENGTH:
+        raise M0Error("continuous-flow screenshot base64 is invalid")
+    try:
+        png = base64.b64decode(data.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as error:
+        raise M0Error("continuous-flow screenshot base64 is invalid") from error
+    if not png or len(png) > MAX_SCREENSHOT_BYTES:
+        raise M0Error("continuous-flow screenshot PNG is out of bounds")
+    for field in ("width", "height", "frameId", "observationSequence"):
+        if type(screenshot.get(field)) is not int or screenshot[field] < 1:
+            raise M0Error(f"continuous-flow screenshot {field} is invalid")
+    if (
+        screenshot["width"] != screenshot_contract["width"]
+        or screenshot["height"] != screenshot_contract["height"]
+        or screenshot["frameId"] != proof.get("frameAfterSecondFvp")
+        or screenshot["frameId"] <= proof.get("frameAtReloaded", -1)
+        or screenshot["frameId"] <= proof.get("frameAtSecondFvp", -1)
+    ):
+        raise M0Error("continuous-flow screenshot is not after reload and phase-2 FVP")
+    matching = [frame for frame in frames if frame["id"] == screenshot["frameId"]]
+    if len(matching) != 1 or any(
+        screenshot[field] != matching[0][field] for field in ("width", "height", "timestampMs")
+    ):
+        raise M0Error("continuous-flow screenshot does not match its frame")
+    image = decode_png(png)
+    if image.width != screenshot["width"] or image.height != screenshot["height"]:
+        raise M0Error("continuous-flow screenshot PNG dimensions disagree")
+    return png
+
+
+def validate_flow_result(
+    result: dict[str, Any], *, expected_versions: dict[str, str],
+    screenshot_contract: dict[str, Any]
+) -> bytes:
+    for field, expected in {
+        "protocol": 1,
+        "case": CASE,
+        "scope": SCOPE,
+        "phase": FLOW_PHASE,
+        "status": "pass",
+        "formalTarget6AcceptanceFlow": True,
+        "m6ProductBreadthComplete": False,
+        "runtimeExitCode": 0,
+        "runtimeInitialized": True,
+        "factorySettled": True,
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "abort": None,
+        "error": None,
+    }.items():
+        _require_equal(result.get(field), expected, f"continuous-flow result {field}")
+    if result.get("processExitCode") not in (None, 0):
+        raise M0Error("continuous-flow process exit disagrees with runtime")
+    _require_equal(result.get("versions"), expected_versions, "continuous-flow versions")
+    for field in ("fatalErrors", "windowErrors", "unhandledRejections"):
+        if not isinstance(result.get(field), list) or result[field]:
+            raise M0Error(f"continuous-flow {field} is not empty")
+    output = "\n".join(
+        str(line) for name in ("stdout", "stderr") for line in result.get(name, [])
+    )
+    for marker in MARKERS:
+        if marker not in output:
+            raise M0Error(f"continuous-flow output is missing {marker}")
+    proof = result.get("continuousFlow")
+    if not isinstance(proof, dict):
+        raise M0Error("continuous-flow proof is missing")
+    for field in (
+        "wispConfigured", "runtimeArgumentsConfigured", "configurationPrecededFactory",
+        "readyObserved", "httpsNavigatedObserved", "versionReadyObserved",
+        "versionNavigatedObserved", "firstTabSelectedObserved", "menuReadyObserved",
+        "menuOpenedObserved", "settingsNavigatedObserved", "firstTabReturnedObserved",
+        "secondTabClosedObserved", "reloadReadyObserved", "reloadedObserved",
+        "firstFvpObserved", "secondFvpObserved", "check1Queued", "check2Queued",
+        "check3Queued", "check4Queued", "check5Queued", "check6Queued",
+        "finalPresentationQueued", "passObserved",
+    ):
+        if proof.get(field) is not True:
+            raise M0Error(f"continuous-flow proof {field} is not true")
+    if proof.get("timeoutObserved") is not False:
+        raise M0Error("continuous-flow native watchdog fired")
+    for before, after in (
+        ("frameAtHttpsNavigated", "frameAfterHttpsNavigated"),
+        ("frameAtFirstFvp", "frameAfterFirstFvp"),
+        ("frameAtVersionReady", "frameAfterVersionReady"),
+        ("frameAtVersionNavigated", "frameAfterVersionNavigated"),
+        ("frameAtFirstTabSelected", "frameAfterFirstTabSelected"),
+        ("frameAtMenuReady", "frameAfterMenuReady"),
+        ("frameAtMenuOpened", "frameAfterMenuOpened"),
+        ("frameAtSettingsNavigated", "frameAfterSettingsNavigated"),
+        ("frameAtFirstTabReturned", "frameAfterFirstTabReturned"),
+        ("frameAtReloadReady", "frameAfterReloadReady"),
+        ("frameAtReloaded", "frameAfterReloaded"),
+        ("frameAtSecondFvp", "frameAfterSecondFvp"),
+    ):
+        _validate_frame_after(proof, before, after)
+    if proof["frameAfterFirstFvp"] <= proof["frameAtHttpsNavigated"]:
+        raise M0Error("first Target-FVP frame was not after HTTPS marker")
+    if proof["frameAfterSecondFvp"] <= proof["frameAtReloaded"]:
+        raise M0Error("second Target-FVP frame was not after RELOADED marker")
+    frames = result.get("frameReports")
+    browser_view_smoke._validate_frame_reports(frames)
+    assert isinstance(frames, list)
+    browser_view_smoke._validate_readiness(
+        result.get("readiness"), result.get("readinessReports")
+    )
+    browser_view_smoke._validate_focus_reports(result.get("ozoneFocusReports"))
+    host_input = result.get("hostInput")
+    if not isinstance(host_input, dict):
+        raise M0Error("continuous-flow host input is missing")
+    for field, expected in {
+        "singlePersistentAction4Adapter": True,
+        "action4SessionId": 0,
+        "textAdapterDetachedAfterSecondSequence": True,
+        "proxyTextEmpty": True,
+        "reloadRejectedRecords": [],
+        "reloadCleanupRecords": [],
+    }.items():
+        if host_input.get(field) != expected:
+            raise M0Error(f"continuous-flow host input {field} is invalid")
+    transactions = host_input.get("textTransactions")
+    if not isinstance(transactions, list) or len(transactions) != 2:
+        raise M0Error("continuous-flow does not retain two text transactions")
+    _validate_text_transaction(transactions[0], "https", 1)
+    _validate_text_transaction(transactions[1], "version", 2)
+    targets = [
+        ("newTabTarget", "newTabActionOffset"),
+        ("switchFirstTarget", "switchFirstActionOffset"),
+        ("switchSecondTarget", "switchSecondActionOffset"),
+        ("menuTarget", "menuActionOffset"),
+        ("settingsTarget", "settingsActionOffset"),
+        ("returnFirstTarget", "returnFirstActionOffset"),
+        ("closeSecondTarget", "closeSecondActionOffset"),
+    ]
+    pointer_records = host_input.get("pointerRecords")
+    if not isinstance(pointer_records, list):
+        raise M0Error("continuous-flow pointer records are missing")
+    actions = [
+        record for record in pointer_records
+        if isinstance(record, dict) and record.get("type") in ("down", "up")
+    ]
+    if len(actions) != 14:
+        raise M0Error("continuous-flow lacks exactly seven trusted pointer clicks")
+    for index, (target_field, offset_field) in enumerate(targets):
+        target = _validate_target(proof.get(target_field), target_field)
+        if proof.get(offset_field) != index * 2:
+            raise M0Error(f"continuous-flow {offset_field} is not ordered")
+        _validate_pointer_action(actions[index * 2], target, "down", 1, index * 2)
+        _validate_pointer_action(actions[index * 2 + 1], target, "up", 0, index * 2 + 1)
+    ctrl_r = host_input.get("ctrlRRecords")
+    expected_ctrl_r = [
+        ("keydown", "ControlLeft"),
+        ("keydown", "KeyR"),
+        ("keyup", "KeyR"),
+        ("keyup", "ControlLeft"),
+    ]
+    if not isinstance(ctrl_r, list) or len(ctrl_r) != len(expected_ctrl_r):
+        raise M0Error("continuous-flow Ctrl+R evidence is invalid")
+    for record, (event_type, code) in zip(ctrl_r, expected_ctrl_r):
+        if not isinstance(record, dict) or any(
+            record.get(field) != expected
+            for field, expected in {
+                "type": event_type,
+                "code": code,
+                "trusted": True,
+                "cancelable": True,
+                "canvasFocused": True,
+                "accepted": True,
+                "defaultPrevented": True,
+            }.items()
+        ):
+            raise M0Error("continuous-flow Ctrl+R record is invalid")
+    return _validate_screenshot(result, proof, frames, screenshot_contract)
+
+
+def validate_restart_result(
+    result: dict[str, Any], *, expected_versions: dict[str, str]
+) -> None:
+    for field, expected in {
+        "protocol": 1,
+        "case": CASE,
+        "scope": SCOPE,
+        "phase": RESTART_PHASE,
+        "status": "pass",
+        "formalTarget6AcceptanceFlow": False,
+        "m6ProductBreadthComplete": False,
+        "outerPageFreshRestart": True,
+        "runtimeExitCode": 0,
+        "runtimeInitialized": True,
+        "factorySettled": True,
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "abort": None,
+        "error": None,
+    }.items():
+        _require_equal(result.get(field), expected, f"restart result {field}")
+    _require_equal(result.get("versions"), expected_versions, "restart versions")
+    for field in ("fatalErrors", "windowErrors", "unhandledRejections"):
+        if not isinstance(result.get(field), list) or result[field]:
+            raise M0Error(f"restart {field} is not empty")
+    proof = result.get("continuousFlow")
+    if not isinstance(proof, dict):
+        raise M0Error("restart proof is missing")
+    for field in (
+        "restartReadyObserved", "restartPresentationQueued", "restartClosingObserved",
+    ):
+        if proof.get(field) is not True:
+            raise M0Error(f"restart proof {field} is not true")
+    _validate_frame_after(proof, "frameAtRestartReady", "frameAfterRestartReady")
+    output = "\n".join(
+        str(line) for name in ("stdout", "stderr") for line in result.get(name, [])
+    )
+    for marker in RESTART_MARKERS:
+        if marker not in output:
+            raise M0Error(f"restart output is missing {marker}")
+
+
+def _drain_relay_stdout(
+    stream: Any, destination: deque[str], ready_lines: queue.Queue[str | None]
+) -> None:
+    for line in stream:
+        text = line.rstrip()
+        destination.append(text)
+        if text:
+            ready_lines.put(text)
+    ready_lines.put(None)
+
+
+def wait_for_state(
+    client: Any,
+    browser: subprocess.Popen[str],
+    browser_stderr: deque[str],
+    results: dict[str, dict[str, Any]],
+    result_queue: queue.Queue[tuple[str, dict[str, Any]]],
+    desired: str,
+    deadline: float,
+) -> dict[str, object]:
+    """Poll only a frozen read-only host witness before a trusted CDP input."""
+
+    expression = "globalThis.__chromiumWasmM6ContinuousFlowState || null"
+    last_state: object = None
+    while time.monotonic() < deadline:
+        if browser.poll() is not None:
+            raise M0Error(f"host browser exited before {desired}: " + "\n".join(browser_stderr))
+        _drain_results(result_queue, results)
+        if results:
+            raise M0Error(
+                f"continuous-flow finished before {desired}: "
+                + json.dumps(results, sort_keys=True, separators=(",", ":"))
+            )
+        try:
+            last_state = client.evaluate(expression)
+        except Exception as error:
+            last_state = {"evaluationError": str(error)}
+        if isinstance(last_state, dict) and last_state.get("state") == desired:
+            return last_state
+        time.sleep(0.05)
+    raise M0Error(
+        f"continuous-flow did not reach {desired}: "
+        + json.dumps(last_state, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def click_target(client: Any, state: dict[str, object], field: str) -> None:
+    target = state.get(field)
+    if not isinstance(target, dict):
+        raise M0Error(f"continuous-flow state lacks {field}")
+    x = target.get("clientX")
+    y = target.get("clientY")
+    if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+        raise M0Error(f"continuous-flow {field} client target is invalid")
+    client.dispatch_primary_click(float(x), float(y))
+
+
+def dispatch_unmodified_enter(client: Any) -> None:
+    for event_type in ("rawKeyDown", "keyUp"):
+        params: dict[str, Any] = {
+            "type": event_type,
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+            "nativeVirtualKeyCode": 13,
+            "modifiers": 0,
+        }
+        if event_type == "rawKeyDown":
+            params["text"] = ""
+            params["unmodifiedText"] = ""
+        client.call("Input.dispatchKeyEvent", params)
+
+
+def dispatch_address_transaction(
+    client: Any,
+    browser: subprocess.Popen[str],
+    browser_stderr: deque[str],
+    results: dict[str, dict[str, Any]],
+    result_queue: queue.Queue[tuple[str, dict[str, Any]]],
+    deadline: float,
+    *,
+    phase: str,
+    text: str,
+) -> None:
+    wait_for_state(
+        client, browser, browser_stderr, results, result_queue,
+        f"awaiting-trusted-dom-{phase}-ctrl-l", deadline,
+    )
+    client.dispatch_control_shortcut("KeyL", "l", 76)
+    wait_for_state(
+        client, browser, browser_stderr, results, result_queue,
+        f"awaiting-trusted-dom-{phase}-insert-text", deadline,
+    )
+    # Input.insertText creates the sole trusted DOM beforeinput record. It is
+    # the fixed input text only; no result/state evaluation carries it back.
+    client.call("Input.insertText", {"text": text})
+    wait_for_state(
+        client, browser, browser_stderr, results, result_queue,
+        f"awaiting-trusted-dom-{phase}-enter", deadline,
+    )
+    dispatch_unmodified_enter(client)
+
+
+def _drain_results(
+    result_queue: queue.Queue[tuple[str, dict[str, Any]]],
+    results: dict[str, dict[str, Any]],
+) -> None:
+    while True:
+        try:
+            phase, result = result_queue.get_nowait()
+        except queue.Empty:
+            return
+        if phase in results:
+            raise M0Error(f"continuous-flow result phase was duplicated: {phase}")
+        results[phase] = result
+
+
+def wait_for_phase_result(
+    browser: subprocess.Popen[str],
+    browser_stderr: deque[str],
+    results: dict[str, dict[str, Any]],
+    result_queue: queue.Queue[tuple[str, dict[str, Any]]],
+    phase: str,
+    deadline: float,
+) -> dict[str, Any]:
+    while time.monotonic() < deadline:
+        _drain_results(result_queue, results)
+        if phase in results:
+            return results[phase]
+        if browser.poll() is not None:
+            raise M0Error(
+                f"host browser exited before {phase} result: " + "\n".join(browser_stderr)
+            )
+        time.sleep(0.05)
+    raise M0Error(f"continuous-flow did not post its {phase} result")
+
+
+def _redact(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _redact(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return value.replace(HTTPS_TEXT, "<redacted-url>").replace(
+            VERSION_TEXT, "<redacted-url>"
+        )
+    return value
+
+
+def write_failure_diagnostics(
+    diagnostics_dir: Path,
+    *,
+    stage: str,
+    error: Exception,
+    context: dict[str, object] | None,
+    browser_path: Path | None,
+    browser_version: str | None,
+    browser: subprocess.Popen[str] | None,
+    browser_stderr: deque[str],
+    relay: subprocess.Popen[str] | None,
+    relay_stderr: deque[str],
+    relay_status: dict[str, Any] | None,
+    results: dict[str, dict[str, Any]],
+) -> Path:
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    path = diagnostics_dir / "chrome-browser-continuous-flow-target6-failure.json"
+    payload = {
+        "schema_version": 1,
+        "runner": "run_m6_wasm_browser_continuous_flow_dom_smoke.py",
+        "case": CASE,
+        "scope": SCOPE,
+        "stage": stage,
+        "failure": {"type": type(error).__name__, "message": str(error)},
+        "context": context,
+        "host_browser": {
+            "path": str(browser_path) if browser_path else None,
+            "version": browser_version,
+            "return_code": browser.poll() if browser else None,
+            "stderr_tail": list(browser_stderr),
+        },
+        "relay": {
+            "return_code": relay.poll() if relay else None,
+            "stderr_tail": list(relay_stderr),
+            "status": relay_status,
+        },
+        "results": results,
+    }
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(_redact(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run the formal Target-6 trusted-DOM continuous Chrome flow."
+    )
+    parser.add_argument("--browser", type=Path)
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--module-name", default=DEFAULT_MODULE_NAME)
+    parser.add_argument("--node", type=Path)
+    parser.add_argument(
+        "--relay-script",
+        type=Path,
+        default=REPO_ROOT / "tools/wasm/m5_wisp_test_server.js",
+    )
+    parser.add_argument("--diagnostics-dir", type=Path)
+    parser.add_argument("--no-sandbox", action="store_true")
+    parser.add_argument("--timeout", type=parse_timeout, default=120.0)
+    args = parser.parse_args()
+    if args.timeout < 10.0:
+        parser.error("--timeout must be at least ten seconds")
+    if not MODULE_NAME_RE.fullmatch(args.module_name):
+        parser.error("--module-name must contain only ASCII letters, digits, or _")
+
+    out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
+    diagnostics_dir = args.diagnostics_dir or out_dir / "diagnostics"
+    if not diagnostics_dir.is_absolute():
+        diagnostics_dir = REPO_ROOT / diagnostics_dir
+    relay_script = args.relay_script if args.relay_script.is_absolute() else REPO_ROOT / args.relay_script
+
+    server: ContinuousFlowServer | None = None
+    server_thread: threading.Thread | None = None
+    browser: subprocess.Popen[str] | None = None
+    client: Any = None
+    browser_path: Path | None = None
+    browser_version: str | None = None
+    browser_stderr: deque[str] = deque(maxlen=300)
+    browser_stderr_thread: threading.Thread | None = None
+    relay: subprocess.Popen[str] | None = None
+    relay_stdout: deque[str] = deque(maxlen=300)
+    relay_stderr: deque[str] = deque(maxlen=300)
+    relay_stdout_thread: threading.Thread | None = None
+    relay_stderr_thread: threading.Thread | None = None
+    relay_ready: controlled_https.RelayReady | None = None
+    relay_status: dict[str, Any] | None = None
+    profile: tempfile.TemporaryDirectory[str] | None = None
+    results: dict[str, dict[str, Any]] = {}
+    context: dict[str, object] | None = None
+    stage = "check_artifacts"
+
+    try:
+        stage = "check_boundary"
+        check_boundary(out_dir)
+        controlled_https.check_controlled_https_boundary(out_dir)
+        for suffix in (".js", ".wasm"):
+            artifact = out_dir / f"{args.module_name}{suffix}"
+            if not artifact.is_file():
+                raise M0Error(f"continuous-flow artifact is missing: {artifact}")
+        verify_required_exports(out_dir / f"{args.module_name}.js")
+        verify_no_private_key_pem_artifacts(out_dir, args.module_name)
+        screenshot_contract = controlled_https.load_controlled_https_screenshot_contract()
+        baseline_path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT.with_name(
+            str(screenshot_contract["baseline"])
+        )
+        if not baseline_path.is_file():
+            raise M0Error(f"reviewed controlled-HTTPS screenshot baseline is missing: {baseline_path}")
+
+        stage = "load_manifest"
+        manifest = load_manifest()
+        versions = manifest_versions(manifest, checked_output(["git", "rev-parse", "HEAD"]))
+        context = print_context(
+            "run_m6_wasm_browser_continuous_flow_dom_smoke.py",
+            manifest,
+            case=CASE,
+            scope=SCOPE,
+            gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
+            module_name=args.module_name,
+            host_browser_sandbox=not args.no_sandbox,
+            runtime_arguments=[FLOW_SWITCH, URL_SWITCH + "=" + HTTPS_TEXT],
+            restart_runtime_arguments=[RESTART_SWITCH],
+            transport="WISP v2.1 over local controlled relay",
+            h2_fixture_requests=2,
+            screenshot_baseline=str(baseline_path),
+        )
+        stage = "find_browser"
+        browser_path, browser_version = find_browser(args.browser)
+        stage = "find_node"
+        node = find_node(args.node)
+        if not relay_script.is_file():
+            raise M0Error(f"continuous-flow relay script is missing: {relay_script}")
+
+        token = secrets.token_urlsafe(24)
+        result_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=2)
+        stage = "create_host_server"
+        server = create_server("127.0.0.1", 0, out_dir, token, result_queue, module_name=args.module_name)
+        server_thread = threading.Thread(
+            target=server.serve_forever,
+            name="chromium-wasm-m6-continuous-flow-server",
+            daemon=True,
+        )
+        server_thread.start()
+
+        stage = "launch_relay"
+        relay = subprocess.Popen(
+            relay_command(node, relay_script, m5_host_origin(server)),
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        assert relay.stdout is not None and relay.stderr is not None
+        ready_lines: queue.Queue[str | None] = queue.Queue()
+        relay_stdout_thread = threading.Thread(
+            target=_drain_relay_stdout,
+            args=(relay.stdout, relay_stdout, ready_lines),
+            name="chromium-wasm-m6-continuous-flow-relay-stdout",
+            daemon=True,
+        )
+        relay_stdout_thread.start()
+        relay_stderr_thread = threading.Thread(
+            target=drain_stream,
+            args=(relay.stderr, relay_stderr),
+            name="chromium-wasm-m6-continuous-flow-relay-stderr",
+            daemon=True,
+        )
+        relay_stderr_thread.start()
+        stage = "wait_for_relay"
+        relay_ready = controlled_https.wait_for_relay_ready(
+            relay,
+            ready_lines,
+            relay_stderr,
+            time.monotonic() + min(30.0, max(1.0, args.timeout - 1.0)),
+        )
+
+        url = smoke_url(
+            server,
+            token,
+            versions,
+            relay_ready=relay_ready,
+            module_name=args.module_name,
+            timeout_seconds=max(1.0, args.timeout - 1.0),
+        )
+        profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m6-continuous-flow-")
+        debug_port = unused_loopback_port()
+        stage = "launch_browser"
+        command = browser_command(browser_path, profile.name, url, no_sandbox=args.no_sandbox)
+        command[1:1] = [
+            "--enable-logging=stderr",
+            "--window-size=1280,800",
+            "--remote-allow-origins=http://localhost",
+            "--remote-debugging-address=127.0.0.1",
+            f"--remote-debugging-port={debug_port}",
+        ]
+        browser = subprocess.Popen(
+            command,
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        assert browser.stderr is not None
+        browser_stderr_thread = threading.Thread(
+            target=drain_stream,
+            args=(browser.stderr, browser_stderr),
+            name="chromium-wasm-m6-continuous-flow-browser-stderr",
+            daemon=True,
+        )
+        browser_stderr_thread.start()
+        deadline = time.monotonic() + args.timeout
+        stage = "connect_devtools"
+        client = wait_for_page_client(debug_port, url.split("?", 1)[0], deadline)
+
+        stage = "trusted_https_transaction"
+        dispatch_address_transaction(
+            client, browser, browser_stderr, results, result_queue, deadline,
+            phase="https", text=HTTPS_TEXT,
+        )
+        stage = "trusted_new_tab"
+        state = wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-new-tab", deadline,
+        )
+        click_target(client, state, "newTabTarget")
+        stage = "trusted_version_transaction"
+        dispatch_address_transaction(
+            client, browser, browser_stderr, results, result_queue, deadline,
+            phase="version", text=VERSION_TEXT,
+        )
+        stage = "trusted_switch_a"
+        state = wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-switch-a", deadline,
+        )
+        click_target(client, state, "switchFirstTarget")
+        stage = "trusted_switch_b"
+        state = wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-switch-b", deadline,
+        )
+        click_target(client, state, "switchSecondTarget")
+        stage = "trusted_menu"
+        state = wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-menu", deadline,
+        )
+        click_target(client, state, "menuTarget")
+        stage = "trusted_settings"
+        state = wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-settings", deadline,
+        )
+        click_target(client, state, "settingsTarget")
+        stage = "trusted_return_a"
+        state = wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-return-a", deadline,
+        )
+        click_target(client, state, "returnFirstTarget")
+        stage = "trusted_close_b"
+        state = wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-close-b", deadline,
+        )
+        click_target(client, state, "closeSecondTarget")
+        stage = "trusted_reload"
+        wait_for_state(
+            client, browser, browser_stderr, results, result_queue,
+            "awaiting-trusted-dom-ctrl-r", deadline,
+        )
+        client.dispatch_control_shortcut("KeyR", "r", 82)
+
+        stage = "wait_for_flow_result"
+        flow_result = wait_for_phase_result(
+            browser, browser_stderr, results, result_queue, FLOW_PHASE, deadline
+        )
+        stage = "validate_flow_result"
+        actual_png = validate_flow_result(
+            flow_result, expected_versions=versions, screenshot_contract=screenshot_contract
+        )
+        stage = "compare_reviewed_baseline"
+        comparison = compare_screenshots(
+            actual_png,
+            baseline_path.read_bytes(),
+            channel_tolerance=int(screenshot_contract["channel_tolerance"]),
+            maximum_different_pixel_ratio=float(
+                screenshot_contract["maximum_different_pixel_ratio"]
+            ),
+        )
+        if not comparison.matches:
+            raise M0Error(
+                "final single-A reload screenshot differs from the reviewed baseline: "
+                + json.dumps(comparison.as_dict(), sort_keys=True, separators=(",", ":"))
+            )
+
+        stage = "wait_for_outer_restart_result"
+        restart_result = wait_for_phase_result(
+            browser, browser_stderr, results, result_queue, RESTART_PHASE, deadline
+        )
+        stage = "validate_outer_restart_result"
+        validate_restart_result(restart_result, expected_versions=versions)
+        stage = "validate_relay"
+        assert relay_ready is not None
+        relay_status = controlled_https.fetch_relay_status(
+            relay_ready.transcript_url,
+            timeout_seconds=min(10.0, max(1.0, deadline - time.monotonic())),
+        )
+        controlled_https.validate_relay_status(relay_status)
+        print(
+            f"{SENTINEL}:SCREENSHOT "
+            + json.dumps(comparison.as_dict(), sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+        print(
+            f"{SENTINEL}:FLOW_RESULT "
+            + json.dumps(_redact(flow_result), sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+        print(
+            f"{SENTINEL}:RESTART_RESULT "
+            + json.dumps(_redact(restart_result), sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+        print(f"{SENTINEL}:PASS", flush=True)
+        return 0
+    except (M0Error, OSError, KeyError, TypeError, ValueError) as error:
+        if browser is not None:
+            stop_browser(browser)
+        try:
+            diagnostic = write_failure_diagnostics(
+                diagnostics_dir,
+                stage=stage,
+                error=error,
+                context=context,
+                browser_path=browser_path,
+                browser_version=browser_version,
+                browser=browser,
+                browser_stderr=browser_stderr,
+                relay=relay,
+                relay_stderr=relay_stderr,
+                relay_status=relay_status,
+                results=results,
+            )
+            print(f"{SENTINEL}:DIAGNOSTICS " + json.dumps({"path": str(diagnostic)}), file=sys.stderr)
+        except (OSError, TypeError, ValueError) as diagnostic_error:
+            print(f"{SENTINEL}:DIAGNOSTICS_FAIL reason={diagnostic_error}", file=sys.stderr)
+        print(f"{SENTINEL}:FAIL reason={error}", file=sys.stderr, flush=True)
+        return 1
+    finally:
+        if client is not None:
+            client.close()
+        if browser is not None:
+            stop_browser(browser)
+        if browser_stderr_thread is not None:
+            browser_stderr_thread.join(timeout=1)
+        if relay is not None:
+            stop_browser(relay)
+        if relay_stdout_thread is not None:
+            relay_stdout_thread.join(timeout=1)
+        if relay_stderr_thread is not None:
+            relay_stderr_thread.join(timeout=1)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if server_thread is not None:
+            server_thread.join(timeout=1)
+        if profile is not None:
+            profile.cleanup()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

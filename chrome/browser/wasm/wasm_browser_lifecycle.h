@@ -26,6 +26,7 @@ namespace chrome {
 class WasmBrowserHostTextNavigationObserver;
 class WasmBrowserHostPointerMenuNavigationObserver;
 class WasmBrowserHostHistoryDownloadsNavigationObserver;
+class WasmBrowserContinuousFlow;
 
 // Owns the process-lifetime side of one bounded slim Browser. The
 // BrowserManagerService retains the Browser itself; this coordinator attaches
@@ -83,6 +84,12 @@ class WasmBrowserLifecycle final {
   // normal text and pointer/Ozone paths. Its exported verifier only observes
   // ordinal stages and a post-presentation acknowledgement.
   void StartHostHistoryDownloadsSmoke();
+
+  // Arms the formal Target-6 acceptance flow in one Browser lifetime. The
+  // host receives only native-armed Views targets and fixed ordinal/frame
+  // verifier exports; navigation, tabs, menu commands, and shutdown remain
+  // owned by the existing Chrome/Ozone paths.
+  void StartHostContinuousFlowSmoke();
 
   bool IsVisible() const;
   bool IsShutdownStarted() const { return shutdown_started_; }
@@ -168,6 +175,7 @@ class WasmBrowserLifecycle final {
       host_history_downloads_history_navigation_observer_;
   std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
       host_history_downloads_downloads_navigation_observer_;
+  std::unique_ptr<WasmBrowserContinuousFlow> host_continuous_flow_;
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;

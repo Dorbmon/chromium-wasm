@@ -90,6 +90,10 @@ constexpr char kWasmBrowserHostPointerMenuSmokeSwitch[] =
     "wasm-browser-host-pointer-menu-smoke";
 constexpr char kWasmBrowserHostHistoryDownloadsSmokeSwitch[] =
     "wasm-browser-host-history-downloads-smoke";
+constexpr char kWasmBrowserHostContinuousFlowSmokeSwitch[] =
+    "wasm-browser-host-continuous-flow-smoke";
+constexpr char kWasmBrowserHostContinuousFlowRestartSmokeSwitch[] =
+    "wasm-browser-host-continuous-flow-restart-smoke";
 constexpr char kWasmBrowserLifecycleSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY";
 constexpr char kWasmBrowserLifecycleSmokePassMarker[] =
@@ -340,21 +344,33 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_history_downloads_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostHistoryDownloadsSmokeSwitch);
-  if (browser_host_history_downloads_smoke &&
+  const bool browser_host_continuous_flow_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostContinuousFlowSmokeSwitch);
+  const bool browser_host_continuous_flow_restart_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostContinuousFlowRestartSmokeSwitch);
+  if ((browser_host_history_downloads_smoke ||
+       browser_host_continuous_flow_smoke ||
+       browser_host_continuous_flow_restart_smoke) &&
       !chrome::IsWasmM6ControlledHttpsTestModeEnabled()) {
-    LOG(ERROR) << "chrome_wasm rejects the host History/Downloads smoke "
+    LOG(ERROR) << "chrome_wasm rejects the controlled M6 host flow "
                   "outside its dedicated controlled HTTPS test executable";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
   if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_pointer_tab_smoke ||
-      browser_host_pointer_menu_smoke || browser_host_history_downloads_smoke) {
+      browser_host_pointer_menu_smoke || browser_host_history_downloads_smoke ||
+      browser_host_continuous_flow_smoke ||
+      browser_host_continuous_flow_restart_smoke) {
     CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
                  static_cast<int>(browser_host_pointer_tab_smoke) +
                  static_cast<int>(browser_host_pointer_menu_smoke) +
-                 static_cast<int>(browser_host_history_downloads_smoke),
+                 static_cast<int>(browser_host_history_downloads_smoke) +
+                 static_cast<int>(browser_host_continuous_flow_smoke) +
+                 static_cast<int>(browser_host_continuous_flow_restart_smoke),
              1);
     CHECK(!browser_lifecycle_);
     CHECK(!browser_lifecycle_smoke_requested_);
@@ -609,6 +625,13 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostHistoryDownloadsSmokeSwitch)) {
     browser_lifecycle_->StartHostHistoryDownloadsSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostContinuousFlowSmokeSwitch) ||
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostContinuousFlowRestartSmokeSwitch)) {
+    browser_lifecycle_->StartHostContinuousFlowSmoke();
     return;
   }
   std::fprintf(stderr, "%s\n", kWasmBrowserLifecycleSmokeReadyMarker);

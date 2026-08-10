@@ -39,6 +39,10 @@ constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
 constexpr char kWasmBrowserHostHistoryDownloadsSmokeSwitch[] =
     "wasm-browser-host-history-downloads-smoke";
+constexpr char kWasmBrowserHostContinuousFlowSmokeSwitch[] =
+    "wasm-browser-host-continuous-flow-smoke";
+constexpr char kWasmBrowserHostContinuousFlowRestartSmokeSwitch[] =
+    "wasm-browser-host-continuous-flow-restart-smoke";
 #endif
 
 }  // namespace
@@ -61,7 +65,11 @@ extern "C" int ChromeMain(int argc, const char** argv) {
   if (controlled_test_command_line->HasSwitch(
           kWasmBrowserControlledHttpsSmokeSwitch) ||
       controlled_test_command_line->HasSwitch(
-          kWasmBrowserHostHistoryDownloadsSmokeSwitch)) {
+          kWasmBrowserHostHistoryDownloadsSmokeSwitch) ||
+      controlled_test_command_line->HasSwitch(
+          kWasmBrowserHostContinuousFlowSmokeSwitch) ||
+      controlled_test_command_line->HasSwitch(
+          kWasmBrowserHostContinuousFlowRestartSmokeSwitch)) {
     // Install only for dedicated controlled-HTTPS test routes, after Chrome
     // initialized its command line but before ContentMain can construct the
     // Network Service and its certificate verifier. The normal Wasm Chrome

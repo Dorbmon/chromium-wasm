@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm Target-6 continuous flow</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.4 system-ui, sans-serif; }
+    body { margin: 0; background: Canvas; color: CanvasText; }
+    main { display: grid; gap: 12px; padding: 12px; }
+    canvas { display: block; max-width: 100%; outline: 2px solid transparent; }
+    canvas:focus { outline-color: Highlight; }
+    textarea { position: fixed; width: 1px; height: 1px; opacity: 0; }
+    pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; }
+    dt { font-weight: 600; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main id="browser-continuous-flow-root" data-state="starting">
+    <h1>Chromium Wasm Target-6 continuous flow</h1>
+    <canvas id="browser-canvas" tabindex="0" aria-label="Chromium browser canvas"></canvas>
+    <textarea id="browser-text-proxy" aria-label="Trusted browser text proxy"></textarea>
+    <section aria-label="Build versions"><dl id="versions"></dl></section>
+    <pre id="browser-continuous-flow-status" aria-live="polite"></pre>
+  </main>
+  <script type="module">
+    import {runChromeWasmBrowserContinuousFlowSmokeFromQuery} from
+        "./chrome_wasm_browser_continuous_flow_smoke_host.js";
+    runChromeWasmBrowserContinuousFlowSmokeFromQuery().catch((error) => {
+      const status = document.querySelector("#browser-continuous-flow-status");
+      if (status) {
+        status.textContent = String(error);
+      }
+      document.querySelector("#browser-continuous-flow-root")?.setAttribute(
+          "data-state", "fail");
+    });
+  </script>
+</body>
+</html>

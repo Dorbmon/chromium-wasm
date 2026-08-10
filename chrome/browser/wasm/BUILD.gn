@@ -249,6 +249,7 @@ source_set("wasm_tab_strip") {
   # owners. Keep this narrow so a later caller cannot accidentally treat these
   # two model-backed buttons as the full desktop tab-strip implementation.
   visibility = [
+    ":wasm_browser_continuous_flow",
     ":wasm_browser_lifecycle",
     ":wasm_browser_smoke",
     ":wasm_browser_view",
@@ -284,6 +285,7 @@ source_set("wasm_top_controls") {
   # owners. Keep this narrow so a later caller cannot accidentally make these
   # controls look like a general Chrome toolbar implementation.
   visibility = [
+    ":wasm_browser_continuous_flow",
     ":wasm_browser_lifecycle",
     ":wasm_browser_smoke",
     ":wasm_browser_view",
@@ -319,6 +321,7 @@ source_set("wasm_top_controls") {
 # selected slim Browser can actually execute.
 source_set("wasm_browser_menu") {
   visibility = [
+    ":wasm_browser_continuous_flow",
     ":wasm_browser_lifecycle",
     ":wasm_browser_smoke",
     ":wasm_browser_view",
@@ -528,6 +531,7 @@ source_set("wasm_browser_smoke") {
 # enables it after installing its local test root.
 source_set("wasm_m6_controlled_https_test_mode") {
   visibility = [
+    ":wasm_browser_continuous_flow",
     ":wasm_browser_main_parts",
     "//chrome:chrome_wasm_m6_https_test",
   ]
@@ -546,6 +550,7 @@ source_set("wasm_m6_controlled_https_test_mode") {
 # durable preference support.
 source_set("wasm_settings_ui") {
   visibility = [
+    ":wasm_browser_continuous_flow",
     ":wasm_browser_lifecycle",
     ":wasm_browser_main_parts",
     ":wasm_browser_smoke",
@@ -1231,6 +1236,51 @@ source_set("wasm_browser_host_history_downloads_smoke") {
   deps = [ "//content/public/browser" ]
 }
 
+# The formal Target-6 flow keeps one Chrome Browser alive while the host
+# reports only fixed ordinals and compositor presentations after its trusted
+# DOM/Ozone inputs. It exports no Browser, View, command, or navigation API.
+source_set("wasm_browser_host_continuous_flow_smoke") {
+  public = [ "wasm_browser_host_continuous_flow_smoke.h" ]
+
+  sources = [ "wasm_browser_host_continuous_flow_smoke.cc" ]
+
+  visibility = [
+    ":wasm_browser_continuous_flow",
+    ":wasm_browser_lifecycle",
+  ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
+# A test-only UI-thread coordinator for the formal M6 acceptance flow. It
+# arms each exact navigation observer before publishing a real Views target to
+# the host. The coordinator cannot be reached from production chrome_wasm.
+source_set("wasm_browser_continuous_flow") {
+  public = [ "wasm_browser_continuous_flow.h" ]
+
+  sources = [ "wasm_browser_continuous_flow.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [
+    ":wasm_browser",
+    ":wasm_browser_host_continuous_flow_smoke",
+    ":wasm_browser_menu",
+    ":wasm_m6_controlled_https_test_mode",
+    ":wasm_settings_ui",
+    ":wasm_tab_strip",
+    ":wasm_top_controls",
+    "//content/public/browser",
+    "//net",
+    "//ui/gfx/geometry",
+    "//ui/views/controls/webview:webview",
+  ]
+}
+
 source_set("wasm_browser_lifecycle") {
   public = [ "wasm_browser_lifecycle.h" ]
 
@@ -1242,8 +1292,10 @@ source_set("wasm_browser_lifecycle") {
 
   deps = [
     ":wasm_browser",
+    ":wasm_browser_continuous_flow",
     ":wasm_browser_menu",
     ":wasm_browser_host_input",
+    ":wasm_browser_host_continuous_flow_smoke",
     ":wasm_browser_host_history_downloads_smoke",
     ":wasm_browser_host_pointer_menu_smoke",
     ":wasm_browser_host_pointer_tab_smoke",
