@@ -2,15 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// This host starts the dedicated controlled-HTTPS Chrome executable.  The
-// fixture URL reaches Chromium only through the browser's restricted address
-// field, while this outer page supplies only the WISP transport configuration
-// before Emscripten creates the application.
+import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";
+
+// This host starts the dedicated controlled-HTTPS Chrome executable. The
+// fixture URL reaches Chromium only through trusted DOM Ctrl+L, bounded
+// beforeinput text, and physical Enter routed through Ozone. The outer page
+// supplies only WISP configuration before Emscripten creates the application.
 const HOST_PROTOCOL = 1;
 const CASE = "browser_controlled_https_m6";
 const SCOPE = "chrome-views-wisp-controlled-https";
 const SWITCH = "--wasm-browser-controlled-https-smoke";
 const URL_SWITCH = "--wasm-browser-controlled-https-url";
+const ADDRESS_TEXT_CHUNKS = Object.freeze(["https://a.test/m5/m6-ui"]);
+const ADDRESS_TEXT = ADDRESS_TEXT_CHUNKS.join("");
 const READY_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY";
 const NAVIGATED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED";
 const PASS_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS";
@@ -209,7 +213,10 @@ function isCapturedPngScreenshot(value) {
 
 class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #canvas;
+  #proxy;
   #versions;
+  #module = null;
+  #textInput = null;
   #stdout = [];
   #stderr = [];
   #fatalErrors = [];
@@ -249,16 +256,35 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #wispConfigured = false;
   #runtimeArgumentsConfigured = false;
   #configurationPrecededFactory = false;
+  #state = "starting";
+  #input = {
+    readyObserved: false,
+    nativeTextAdmissionCount: 0,
+    nativeTextDeliveryCount: 0,
+    nativeTextDeliverySequences: [],
+    ctrlLComplete: false,
+    proxyFocusedAfterCtrlL: false,
+    textDeliveryAccepted: false,
+    enterComplete: false,
+    navigatedObserved: false,
+    screenshotObserved: false,
+    passObserved: false,
+    navigationMarkerFrameId: null,
+    screenshotFrameId: null,
+  };
 
-  constructor(canvas, versions) {
-    if (!(canvas instanceof HTMLCanvasElement)) {
-      throw new Error("controlled-HTTPS smoke requires a canvas");
+  constructor(canvas, proxy, versions) {
+    if (!(canvas instanceof HTMLCanvasElement) ||
+        !(proxy instanceof HTMLTextAreaElement)) {
+      throw new Error("controlled-HTTPS smoke requires a canvas and textarea proxy");
     }
     this.#canvas = canvas;
+    this.#proxy = proxy;
     this.#versions = versions;
     this.#runtimeExitPromise = new Promise((resolve) => {
       this.#runtimeExitResolver = resolve;
     });
+    this.#publishState();
   }
 
   #recordFatal(message) {
@@ -269,6 +295,8 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     const text = String(value);
     if (text.includes(READY_MARKER)) {
       this.#readyMarkerObserved = true;
+      this.#input.readyObserved = true;
+      this.#updateReadyState();
     }
     if (text.includes(NAVIGATED_MARKER)) {
       if (this.#navigatedMarkerObserved) {
@@ -278,10 +306,15 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
         this.#frameIdAtNavigatedMarker = this.#frameReports.at(-1)?.id || 0;
         this.#navigatedMarkerObservationSequence =
             ++this.#observationSequence;
+        this.#input.navigatedObserved = true;
+        this.#input.navigationMarkerFrameId = this.#frameIdAtNavigatedMarker;
+        this.#advanceInputState();
       }
     }
     if (text.includes(PASS_MARKER)) {
       this.#passMarkerObserved = true;
+      this.#input.passObserved = true;
+      this.#setState("pass-observed");
     }
   }
 
@@ -402,6 +435,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
         this.#postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved = true;
         this.#captureScreenshotForFirstEligibleFrame(report, observationSequence);
       }
+      this.#advanceInputState();
     } catch (error) {
       this.#recordFatal("invalid frame report: " + String(error));
     }
@@ -449,6 +483,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       this.#targetFirstVisuallyNonEmptyPaintSignalObserved = true;
       this.#targetFirstVisuallyNonEmptyPaintSignalObservationSequence =
           observationSequence;
+      this.#advanceInputState();
     } catch (error) {
       this.#recordFatal("invalid controlled-HTTPS target FVP report: " +
           String(error));
@@ -484,6 +519,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
         editable: report.editable,
         canComposeInline: report.canComposeInline,
       });
+      this.#textInput?.handleOzoneTextInputState(report);
     } catch (error) {
       this.#recordFatal("invalid Ozone text-input state: " + String(error));
     }
@@ -508,6 +544,14 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     } catch (error) {
       this.#recordFatal("invalid Ozone text-input delivery: " + String(error));
     }
+  }
+
+  #reportBrowserTextDelivery(value) {
+    if (!this.#textInput) {
+      this.#recordFatal("browser text delivery arrived before trusted adapter");
+      return;
+    }
+    this.#textInput.handleOzoneBrowserTextInputDelivery(value);
   }
 
   #reportCursor(value) {
@@ -566,13 +610,174 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       reportOzoneTextInputDelivery(report) {
         host.#reportTextInputDelivery(report);
       },
+      reportOzoneBrowserTextInputDelivery(report) {
+        host.#reportBrowserTextDelivery(report);
+      },
       reportOzoneCursor(report) {
         return host.#reportCursor(report);
       },
     });
   }
 
+  #textSnapshot() {
+    return this.#textInput?.snapshot() || {
+      attached: false,
+      deliveryAccepted: false,
+      deliveryRejected: false,
+      proxyFocused: false,
+      ctrlLRecords: [],
+      beforeInputRecords: [],
+      browserTextDeliveryReports: [],
+      enterRecords: [],
+      rejectedRecords: [],
+      cleanupRecords: [],
+    };
+  }
+
+  #publishState() {
+    const text = this.#textSnapshot();
+    globalThis.__chromiumWasmM6ControlledHttpsHostTextState = Object.freeze({
+      state: this.#state,
+      attached: text.attached,
+      readyObserved: this.#input.readyObserved,
+      ctrlLComplete: this.#input.ctrlLComplete,
+      proxyFocused: text.proxyFocused,
+      deliveryAccepted: text.deliveryAccepted,
+      pendingDeliveryCount: text.pendingDeliveryCount,
+      enterComplete: this.#input.enterComplete,
+      passObserved: this.#input.passObserved,
+    });
+  }
+
+  #setState(state) {
+    this.#state = state;
+    this.#publishState();
+  }
+
+  #updateReadyState() {
+    const text = this.#textSnapshot();
+    if (!text.attached || !this.#input.readyObserved ||
+        this.#input.passObserved || text.deliveryRejected) {
+      return;
+    }
+    if (!this.#input.ctrlLComplete) {
+      this.#setState("awaiting-trusted-dom-ctrl-l");
+      return;
+    }
+    if (!this.#input.proxyFocusedAfterCtrlL || !text.proxyFocused) {
+      return;
+    }
+    if (this.#input.nativeTextAdmissionCount === 0) {
+      this.#setState("awaiting-trusted-dom-insert-text");
+      return;
+    }
+    if (!this.#input.textDeliveryAccepted || text.pendingDeliveryCount !== 0) {
+      return;
+    }
+    if (!this.#input.enterComplete) {
+      this.#setState("awaiting-trusted-dom-enter");
+      return;
+    }
+    this.#setState("awaiting-native-navigation");
+  }
+
+  #advanceInputState() {
+    if (this.#input.navigatedObserved &&
+        this.#targetFirstVisuallyNonEmptyPaintSignalObserved &&
+        this.#screenshot && !this.#input.screenshotObserved) {
+      this.#input.screenshotObserved = true;
+      this.#input.screenshotFrameId = this.#screenshot.frameId;
+    }
+    this.#updateReadyState();
+  }
+
+  #recordNativeTextAdmission(record) {
+    const expectedIndex = this.#input.nativeTextAdmissionCount;
+    const expectedText = ADDRESS_TEXT_CHUNKS[expectedIndex];
+    if (record.action !== undefined || record.sessionId !== undefined ||
+        record.sequence !== expectedIndex + 1 ||
+        record.dataUtf8Bytes !== expectedText?.length) {
+      this.#recordFatal("native text admission did not match the canonical request");
+      return;
+    }
+    ++this.#input.nativeTextAdmissionCount;
+    // An action-4 acknowledgement can synchronously arrive during the C ABI
+    // call, before this post-call bookkeeping callback. Re-evaluate after the
+    // count changes rather than treating one-record admission as a burst-order
+    // witness (that stricter proof lives in the dedicated text smoke).
+    this.#updateReadyState();
+  }
+
+  #recordNativeTextDelivery(report) {
+    const expectedIndex = this.#input.nativeTextDeliveryCount;
+    if (report.action !== 4 || report.sessionId !== 0 ||
+        report.sequence !== expectedIndex + 1 ||
+        report.text !== ADDRESS_TEXT_CHUNKS[expectedIndex]) {
+      this.#recordFatal("native text delivery did not match the canonical URL");
+      return;
+    }
+    ++this.#input.nativeTextDeliveryCount;
+    this.#input.nativeTextDeliverySequences.push(report.sequence);
+    this.#input.textDeliveryAccepted = true;
+    // This callback originates in a synchronous UI->JS delivery import. It
+    // only updates local evidence; no Wasm export is re-entered on this stack.
+    this.#updateReadyState();
+  }
+
+  #setModule(module) {
+    if (!module || typeof module !== "object" || this.#module !== null) {
+      this.#recordFatal("onRuntimeInitialized supplied an invalid Module object");
+      return;
+    }
+    if (typeof module.ccall !== "function" ||
+        typeof module._chromium_wasm_browser_host_text !== "function" ||
+        typeof module._malloc !== "function" ||
+        typeof module._free !== "function" ||
+        !(module.HEAPU8 instanceof Uint8Array)) {
+      this.#recordFatal("controlled-HTTPS module lacks trusted text heap exports");
+      return;
+    }
+    this.#module = module;
+    this.#runtimeInitialized = true;
+    this.#textInput = new ChromiumWasmTrustedTextInput(
+        this.#canvas, this.#proxy, {
+          getModule: () => this.#module,
+          reportFatal: (message) => this.#recordFatal(message),
+          validateBeforeInput: (event) =>
+            event.data ===
+                    ADDRESS_TEXT_CHUNKS[this.#input.nativeTextAdmissionCount]
+                ? null
+                : "controlled-HTTPS smoke requires its exact canonical URL",
+          canSubmitEnter: () => this.#input.textDeliveryAccepted,
+          onCtrlLComplete: () => {
+            this.#input.ctrlLComplete = true;
+            this.#updateReadyState();
+          },
+          onProxyFocused: () => {
+            this.#input.proxyFocusedAfterCtrlL = true;
+            this.#updateReadyState();
+          },
+          onBeforeInputQueued: (record) => this.#recordNativeTextAdmission(record),
+          onNativeDelivery: (report) => this.#recordNativeTextDelivery(report),
+          onNativeDeliveryRejected: () =>
+            this.#setState("native-text-delivery-rejected"),
+          onEnterComplete: () => {
+            this.#input.enterComplete = true;
+            this.#updateReadyState();
+          },
+          onStateChange: () => this.#publishState(),
+        });
+    this.#textInput.attach();
+    const latestState = this.#textInputStates.at(-1);
+    if (latestState) {
+      this.#textInput.handleOzoneTextInputState(latestState);
+    }
+    this.#updateReadyState();
+  }
+
   #result(status, error) {
+    const text = this.#textSnapshot();
+    const {textareaValue, ...textMetadata} = text;
     return {
       protocol: HOST_PROTOCOL,
       case: CASE,
@@ -585,7 +790,8 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       factorySettled: this.#factorySettled,
       crossOriginIsolated,
       sharedArrayBuffer: typeof SharedArrayBuffer === "function",
-      canvasFocused: document.activeElement === this.#canvas,
+      canvasFocusedAtStart: text.ctrlLRecords[0]?.canvasFocused === true,
+      proxyFocused: text.proxyFocused,
       controlledHttps: {
         wispConfigured: this.#wispConfigured,
         runtimeArgumentsConfigured: this.#runtimeArgumentsConfigured,
@@ -625,6 +831,11 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       ozoneTextInputStates: this.#textInputStates,
       ozoneTextInputDeliveries: this.#textInputDeliveries,
       ozoneCursorReports: this.#cursorReports,
+      hostInput: {
+        ...this.#input,
+        ...textMetadata,
+        proxyTextEmpty: textareaValue === "",
+      },
       screenshot: this.#screenshot,
       canvasBackingStore: {
         width: this.#canvas.width,
@@ -694,7 +905,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
           host.#recordOutput(text);
         },
         onRuntimeInitialized() {
-          host.#runtimeInitialized = true;
+          host.#setModule(this);
         },
         onAbort(reason) {
           host.#abort = String(reason);
@@ -713,8 +924,10 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
           this.#wispConfigured && this.#runtimeArgumentsConfigured;
       const factoryPromise = namespace.default(moduleOptions).then((module) => {
         this.#factorySettled = true;
-        this.#runtimeInitialized = true;
         module.chromiumWasmHostBridge = globalThis.__chromiumWasmHostBridgeV1;
+        if (this.#module === null) {
+          this.#setModule(module);
+        }
         return module;
       }).catch((error) => {
         this.#factorySettled = true;
@@ -737,6 +950,8 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     } catch (error) {
       return this.#result("fail", String(error));
     } finally {
+      this.#textInput?.detach();
+      this.#textInput = null;
       this.#releaseWindowErrors();
     }
   }
@@ -759,7 +974,10 @@ function validateResult(result) {
   require(result.factorySettled === true, "factory did not settle");
   require(result.crossOriginIsolated === true, "host is not isolated");
   require(result.sharedArrayBuffer === true, "SharedArrayBuffer is unavailable");
-  require(result.canvasFocused === true, "canvas focus was lost");
+  require(result.canvasFocusedAtStart === true,
+      "canvas was not focused for the trusted Ctrl+L transaction");
+  require(result.proxyFocused === true,
+      "trusted textarea proxy lost focus before exit");
   require(result.abort === null, "runtime aborted");
   require(Array.isArray(result.fatalErrors) && result.fatalErrors.length === 0,
       "host recorded a fatal error");
@@ -851,6 +1069,67 @@ function validateResult(result) {
                 isFocusReport(report) && report.keyboardTargetPresent === true &&
                 report.active === true),
           "no active Ozone keyboard target was observed");
+  const input = result.hostInput;
+  require(input && typeof input === "object",
+      "trusted controlled-HTTPS input evidence is absent");
+  require(input?.readyObserved === true,
+      "controlled-HTTPS text target was not ready before Ctrl+L");
+  require(input?.ctrlLComplete === true,
+      "trusted Ctrl+L transaction did not complete");
+  require(input?.proxyFocusedAfterCtrlL === true,
+      "trusted textarea was not focused after Ctrl+L");
+  require(input?.nativeTextAdmissionCount === ADDRESS_TEXT_CHUNKS.length,
+      "canonical trusted text was not admitted exactly once");
+  require(input?.nativeTextDeliveryCount === ADDRESS_TEXT_CHUNKS.length &&
+              JSON.stringify(input?.nativeTextDeliverySequences) ===
+                  JSON.stringify([1]),
+          "canonical text delivery did not acknowledge action 4 sequence 1");
+  require(input?.textDeliveryAccepted === true &&
+              input?.deliveryAccepted === true &&
+              input?.deliveryRejected === false &&
+              input?.pendingDeliveryCount === 0 &&
+              input?.pendingTextUtf8Bytes === 0 && input?.proxyTextEmpty === true,
+          "canonical text delivery did not drain cleanly");
+  require(input?.enterComplete === true,
+      "trusted physical Enter transaction did not complete");
+  require(input?.navigatedObserved === true && input?.screenshotObserved === true,
+      "trusted input was not bound to the post-navigation screenshot");
+  require(input?.passObserved === true,
+      "controlled-HTTPS native pass marker is absent from input evidence");
+  require(Array.isArray(input?.ctrlLRecords) && input.ctrlLRecords.length === 4 &&
+              input.ctrlLRecords.every((record) => record?.trusted === true &&
+                  record.cancelable === true && record.canvasFocused === true &&
+                  record.accepted === true && record.defaultPrevented === true),
+          "trusted Ctrl+L DOM evidence is invalid");
+  const beforeInput = input?.beforeInputRecords;
+  require(Array.isArray(beforeInput) && beforeInput.length === 1 &&
+              !("data" in (beforeInput[0] || {})) &&
+              beforeInput[0]?.inputType === "insertText" &&
+              beforeInput[0]?.dataOmitted === true &&
+              beforeInput[0]?.dataUtf16Units === ADDRESS_TEXT.length &&
+              beforeInput[0]?.dataUtf8Bytes === ADDRESS_TEXT.length &&
+              beforeInput[0]?.trusted === true &&
+              beforeInput[0]?.cancelable === true &&
+              beforeInput[0]?.isComposing === false &&
+              beforeInput[0]?.proxyFocused === true &&
+              beforeInput[0]?.queued === true &&
+              beforeInput[0]?.defaultPrevented === true &&
+              beforeInput[0]?.sequence === 1 &&
+              beforeInput[0]?.nativeDispatched === true &&
+              beforeInput[0]?.nativeAccepted === true,
+          "trusted canonical beforeinput evidence is invalid");
+  require(JSON.stringify(input?.browserTextDeliveryReports) === JSON.stringify([
+    {action: 4, sessionId: 0, sequence: 1, accepted: true},
+  ]), "controlled-HTTPS action 4 delivery evidence is invalid");
+  require(Array.isArray(input?.enterRecords) && input.enterRecords.length === 2 &&
+              input.enterRecords.every((record) => record?.code === "Enter" &&
+                  record.key === "Enter" && record.trusted === true &&
+                  record.cancelable === true && record.proxyFocused === true &&
+                  record.accepted === true && record.defaultPrevented === true),
+          "trusted physical Enter evidence is invalid");
+  require(JSON.stringify(input?.rejectedRecords) === "[]" &&
+              JSON.stringify(input?.cleanupRecords) === "[]",
+          "trusted controlled-HTTPS input has unexpected rejection or cleanup");
   result.failedChecks = failures;
   if (failures.length > 0) {
     result.status = "fail";
@@ -884,13 +1163,15 @@ export async function runChromeWasmBrowserControlledHttpsSmokeFromQuery() {
   const versions = parseVersions(query.get("versions"));
   const root = document.querySelector("#browser-controlled-https-root");
   const canvas = document.querySelector("#browser-canvas");
+  const proxy = document.querySelector("#browser-text-proxy");
   const status = document.querySelector("#browser-controlled-https-status");
   if (!(root instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement) ||
-      !(status instanceof HTMLElement)) {
+      !(proxy instanceof HTMLTextAreaElement) || !(status instanceof HTMLElement)) {
     throw new Error("controlled-HTTPS page is missing required elements");
   }
   renderVersions(document.querySelector("#versions"), versions);
-  const host = new ChromiumWasmBrowserControlledHttpsSmokeHost(canvas, versions);
+  const host = new ChromiumWasmBrowserControlledHttpsSmokeHost(
+      canvas, proxy, versions);
   const result = validateResult(await host.run(
       location.pathname.replace(/\/$/, "") + "/artifacts/" + moduleName + ".js",
       timeoutMs, query.get("wispEndpoint"), query.get("fixtureUrl")));

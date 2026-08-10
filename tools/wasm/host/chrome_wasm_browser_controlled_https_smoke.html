@@ -42,6 +42,21 @@
       border-color: #72ddf7;
     }
 
+    #browser-text-proxy {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+      padding: 0;
+      opacity: 0;
+      border: 0;
+      outline: 0;
+      overflow: clip;
+      white-space: nowrap;
+    }
+
     aside {
       min-width: 0;
       padding: 12px;
@@ -96,6 +111,13 @@
       height="480"
       tabindex="0"
       aria-label="Chromium browser controlled HTTPS output"></canvas>
+    <textarea
+      id="browser-text-proxy"
+      aria-label="Chromium trusted text input proxy"
+      autocomplete="off"
+      autocapitalize="off"
+      spellcheck="false"
+      inputmode="none"></textarea>
     <aside aria-label="Controlled HTTPS smoke diagnostics">
       <h1>Chromium Wasm controlled HTTPS smoke</h1>
       <dl id="versions"></dl>

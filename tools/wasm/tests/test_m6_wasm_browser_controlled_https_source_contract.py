@@ -175,6 +175,38 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
             run.index("chromium_wasm_report_readiness("),
             run.index("browser_view.SchedulePaint();"),
         )
+        # The controlled fixture must use the same real Ozone TextInputClient
+        # boundary as ordinary trusted DOM text. Its C++ branch owns the one
+        # BrowserView widget lifetime, but never supplies text or a Return.
+        for required in (
+            '#include "chrome/browser/wasm/wasm_browser_host_text.h"',
+            "CHECK(SetWasmBrowserHostTextTarget(",
+            "window_tree_host->GetAcceleratedWidget()",
+            "ClearWasmBrowserHostTextTarget();",
+            "base::BindOnce([] {",
+            "std::puts(kControlledHttpsSmokeReadyMarker);",
+        ):
+            with self.subTest(trusted_text_required=required):
+                self.assertIn(required, smoke if required.startswith("#include") else run)
+        self.assertLess(
+            run.index("CHECK(SetWasmBrowserHostTextTarget("),
+            run.index("net::BeginWasmWispTransportDiagnostics("),
+        )
+        self.assertLess(
+            run.index("net::BeginWasmWispTransportDiagnostics("),
+            run.index("std::puts(kControlledHttpsSmokeReadyMarker);"),
+        )
+        self.assertLess(
+            run.index("ActiveTabNavigationObserver navigation_observer"),
+            run.index("std::puts(kControlledHttpsSmokeReadyMarker);"),
+        )
+        self.assertLess(
+            run.index("ClearWasmBrowserHostTextTarget();"),
+            run.index("raw_browser->GetWindow()->Close();"),
+        )
+        self.assertNotIn("address_field->SetText", run)
+        self.assertNotIn("address_field->RequestFocus", run)
+        self.assertNotIn("SendKeyPress(browser_widget", run)
         navigated = run.index(
             "std::puts(kControlledHttpsSmokeNavigatedMarker);"
         )
@@ -187,6 +219,8 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
         build = source("chrome/browser/wasm/BUILD.gn")
         smoke_target = source_set_body(build, "wasm_browser_smoke")
         self.assertIn('"//net",', smoke_target)
+        self.assertIn('":wasm_browser_host_text",', smoke_target)
+        self.assertIn('"//ui/aura",', smoke_target)
         self.assertNotIn("//chrome/browser/ui:ui", smoke_target)
         self.assertNotIn("//components/constrained_window", smoke_target)
 

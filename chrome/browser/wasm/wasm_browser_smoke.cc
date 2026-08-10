@@ -21,6 +21,7 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/wasm/wasm_browser.h"
+#include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_menu.h"
 #include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
@@ -46,6 +47,8 @@
 #include "net/socket/wisp_transport_wasm.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/aura/window.h"
+#include "ui/aura/window_tree_host.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -1168,7 +1171,6 @@ bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile) {
   browser_view.Show();
   CHECK(browser_view.IsVisible());
   WaitForBrowserSmokePresentation();
-  std::puts(kControlledHttpsSmokeReadyMarker);
 
   WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
   CHECK(top_controls);
@@ -1177,6 +1179,15 @@ bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile) {
   views::Widget* const browser_widget = browser_view.GetWidget();
   CHECK(address_field);
   CHECK(browser_widget);
+  aura::Window* const native_window = browser_widget->GetNativeWindow();
+  CHECK(native_window);
+  aura::WindowTreeHost* const window_tree_host = native_window->GetHost();
+  CHECK(window_tree_host);
+  // Bind the one real BrowserView widget before READY. The host never selects
+  // this target; every copied action-4 record remains focus-token-bound to
+  // this Ozone TextInputClient and is cleared before Browser destruction.
+  CHECK(SetWasmBrowserHostTextTarget(
+      window_tree_host->GetAcceleratedWidget()));
 
   const int port = controlled_https_url.EffectiveIntPort();
   CHECK_GT(port, 0);
@@ -1195,19 +1206,16 @@ bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile) {
            0);
 
   ActiveTabNavigationObserver navigation_observer(raw_contents);
+  // WaitForNavigationAndFirstVisuallyNonEmptyPaint arms the exact URL,
+  // typed-transition, user-gesture, loading, and target-FVP observer state
+  // before it invokes this closure. READY therefore never exposes a route
+  // before the target binding, WISP baseline, and navigation observer exist.
   navigation_observer.WaitForNavigationAndFirstVisuallyNonEmptyPaint(
       controlled_https_url, /*expect_typed_user_navigation=*/true,
-      base::BindOnce(
-          [](views::Widget* widget, views::Textfield* address_field,
-             const GURL& expected_url) {
-            address_field->SetText(base::UTF8ToUTF16(expected_url.spec()));
-            address_field->RequestFocus();
-            CHECK_EQ(widget->GetFocusManager()->GetFocusedView(),
-                     address_field);
-            SendKeyPress(widget, ui::VKEY_RETURN);
-          },
-          base::Unretained(browser_widget), base::Unretained(address_field),
-          controlled_https_url),
+      base::BindOnce([] {
+        std::puts(kControlledHttpsSmokeReadyMarker);
+        std::fflush(stdout);
+      }),
       base::BindOnce([] { std::puts(kControlledHttpsSmokeNavigatedMarker); }),
       base::BindOnce([] {
         CHECK_EQ(chromium_wasm_report_controlled_https_target_fvp(), 1);
@@ -1252,6 +1260,7 @@ bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile) {
   // Close through the same real BaseWindow route that an end-user close
   // request uses. The Browser's ordered model -> BWF -> BrowserWindowDeleter
   // path must complete before the test-only Chrome process exits.
+  ClearWasmBrowserHostTextTarget();
   raw_browser->GetWindow()->Close();
   CHECK(weak_browser);
   CHECK(tab_strip_model->empty());

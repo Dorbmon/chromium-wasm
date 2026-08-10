@@ -6,9 +6,9 @@
 """Run Chrome's controlled HTTPS UI smoke over the local M5 WISP relay.
 
 This harness serves the dedicated test-only Chrome executable from a
-cross-origin-isolated page.  The host configures the WISP bridge before the
-Emscripten factory starts, while the C++ smoke performs the only controlled
-HTTPS navigation through its real Views address field.
+cross-origin-isolated page. The host configures WISP before the Emscripten
+factory starts, then uses only trusted CDP Ctrl+L, Input.insertText, and
+physical Enter events to navigate Chromium's real Views address field.
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ from m0_common import (
     parse_timeout,
     print_context,
 )
+from m4_cdp import unused_loopback_port, wait_for_page_client
 from run_browser_smoke import (
     browser_command,
     drain_stream,
@@ -74,6 +75,8 @@ URL_SWITCH = "--wasm-browser-controlled-https-url"
 READY_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY"
 NAVIGATED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED"
 PASS_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS"
+ADDRESS_TEXT_CHUNKS = ("https://a.test/m5/m6-ui",)
+ADDRESS_TEXT = "".join(ADDRESS_TEXT_CHUNKS)
 M6_UI_PATH = "/m5/m6-ui"
 GATEWAY_FIXTURE_URL = "https://a.test/m5/m6-ui"
 GATEWAY_LOGICAL_PORT = 443
@@ -242,6 +245,13 @@ class ControlledHttpsSmokeRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 "text/javascript; charset=utf-8",
                 self.server.host_js_bytes,
+            )
+            return
+        if path == f"{HOST_ROOT}/chrome_wasm_text_input.js":
+            self._send_bytes(
+                HTTPStatus.OK,
+                "text/javascript; charset=utf-8",
+                self.server.text_input_js_bytes,
             )
             return
         prefix = f"{HOST_ROOT}/artifacts/"
@@ -484,6 +494,7 @@ def create_server(
     server.host_js_bytes = (
         host_dir / "chrome_wasm_browser_controlled_https_smoke_host.js"
     ).read_bytes()
+    server.text_input_js_bytes = (host_dir / "chrome_wasm_text_input.js").read_bytes()
     return server
 
 
@@ -650,6 +661,116 @@ def _decode_screenshot_evidence(
     return png
 
 
+def _validate_trusted_host_input(value: object) -> None:
+    """Require the sole canonical URL to cross the trusted Ozone text ABI."""
+
+    if not isinstance(value, dict):
+        raise M0Error("controlled-HTTPS trusted host input evidence is missing")
+    for field, expected in {
+        "readyObserved": True,
+        "ctrlLComplete": True,
+        "proxyFocusedAfterCtrlL": True,
+        "textDeliveryAccepted": True,
+        "deliveryAccepted": True,
+        "deliveryRejected": False,
+        "pendingDeliveryCount": 0,
+        "pendingTextUtf8Bytes": 0,
+        "proxyTextEmpty": True,
+        "enterComplete": True,
+        "navigatedObserved": True,
+        "screenshotObserved": True,
+        "passObserved": True,
+        "tombstonedDeliveryCount": 0,
+    }.items():
+        if value.get(field) != expected:
+            raise M0Error(f"controlled-HTTPS host input {field} is invalid")
+    if "textareaValue" in value:
+        raise M0Error("controlled-HTTPS host input retained textarea text")
+    if value.get("nativeTextAdmissionCount") != len(ADDRESS_TEXT_CHUNKS):
+        raise M0Error("controlled-HTTPS did not admit its canonical text once")
+    if value.get("nativeTextDeliveryCount") != len(ADDRESS_TEXT_CHUNKS) or value.get(
+        "nativeTextDeliverySequences"
+    ) != [1]:
+        raise M0Error("controlled-HTTPS action-4 delivery ordering is invalid")
+
+    expected_ctrl_l = [
+        ("keydown", "ControlLeft"),
+        ("keydown", "KeyL"),
+        ("keyup", "KeyL"),
+        ("keyup", "ControlLeft"),
+    ]
+    ctrl_l = value.get("ctrlLRecords")
+    if not isinstance(ctrl_l, list) or len(ctrl_l) != len(expected_ctrl_l):
+        raise M0Error("controlled-HTTPS trusted Ctrl+L record count is invalid")
+    for index, (event_type, code) in enumerate(expected_ctrl_l):
+        record = ctrl_l[index]
+        if not isinstance(record, dict) or any(
+            record.get(field) != expected
+            for field, expected in {
+                "type": event_type,
+                "code": code,
+                "trusted": True,
+                "cancelable": True,
+                "canvasFocused": True,
+                "accepted": True,
+                "defaultPrevented": True,
+            }.items()
+        ):
+            raise M0Error(f"controlled-HTTPS Ctrl+L record {index} is invalid")
+
+    before_input = value.get("beforeInputRecords")
+    if not isinstance(before_input, list) or len(before_input) != 1:
+        raise M0Error("controlled-HTTPS beforeinput record count is invalid")
+    record = before_input[0]
+    expected_before_input = {
+        "inputType": "insertText",
+        "dataOmitted": True,
+        "dataUtf16Units": len(ADDRESS_TEXT),
+        "dataUtf8Bytes": len(ADDRESS_TEXT),
+        "trusted": True,
+        "cancelable": True,
+        "isComposing": False,
+        "proxyFocused": True,
+        "queued": True,
+        "defaultPrevented": True,
+        "sequence": 1,
+        "nativeDispatched": True,
+        "nativeAccepted": True,
+    }
+    if not isinstance(record, dict) or "data" in record or any(
+        record.get(field) != expected
+        for field, expected in expected_before_input.items()
+    ):
+        raise M0Error("controlled-HTTPS trusted beforeinput evidence is invalid")
+    if value.get("browserTextDeliveryReports") != [
+        {"action": 4, "sessionId": 0, "sequence": 1, "accepted": True}
+    ]:
+        raise M0Error("controlled-HTTPS action-4 delivery report is invalid")
+
+    enter = value.get("enterRecords")
+    if not isinstance(enter, list) or len(enter) != 2:
+        raise M0Error("controlled-HTTPS trusted Enter record count is invalid")
+    for index, event_type in enumerate(("keydown", "keyup")):
+        record = enter[index]
+        if not isinstance(record, dict) or any(
+            record.get(field) != expected
+            for field, expected in {
+                "type": event_type,
+                "code": "Enter",
+                "key": "Enter",
+                "trusted": True,
+                "cancelable": True,
+                "proxyFocused": True,
+                "accepted": True,
+                "defaultPrevented": True,
+            }.items()
+        ):
+            raise M0Error(f"controlled-HTTPS Enter record {index} is invalid")
+    for field in ("rejectedRecords", "cleanupRecords"):
+        if value.get(field) != []:
+            raise M0Error(f"controlled-HTTPS has unexpected {field}")
+
+
 def validate_result(
     result: dict[str, Any],
     *,
@@ -672,7 +793,8 @@ def validate_result(
         "factorySettled": True,
         "crossOriginIsolated": True,
         "sharedArrayBuffer": True,
-        "canvasFocused": True,
+        "canvasFocusedAtStart": True,
+        "proxyFocused": True,
         "abort": None,
         "failedChecks": [],
         "error": None,
@@ -787,6 +909,15 @@ def validate_result(
             "controlled-HTTPS first visually non-empty paint was never reported"
         )
     browser_view_smoke._validate_focus_reports(result.get("ozoneFocusReports"))
+    text_states = result.get("ozoneTextInputStates")
+    if not isinstance(text_states, list) or not any(
+        isinstance(state, dict)
+        and state.get("focusedClientPresent") is True
+        and state.get("editable") is True
+        for state in text_states
+    ):
+        raise M0Error("controlled-HTTPS has no editable Ozone TextInputClient state")
+    _validate_trusted_host_input(result.get("hostInput"))
     backing_store = result.get("canvasBackingStore")
     if not browser_view_smoke._exact_json_value_equal(
         backing_store,
@@ -921,6 +1052,87 @@ def validate_relay_status(status: dict[str, Any]) -> None:
         raise M0Error(
             "controlled-HTTPS relay transcript lacks exactly one M6 UI event"
         )
+
+
+def verify_explicit_text_heap_exports(module_loader: Path) -> None:
+    """The adapter copies bounded UTF-8 through these explicit Wasm exports."""
+
+    try:
+        loader = module_loader.read_text(encoding="utf-8")
+    except OSError as error:
+        raise M0Error(
+            f"cannot read controlled-HTTPS module loader: {error}"
+        ) from error
+    for export in (
+        'Module["_chromium_wasm_browser_host_text"]',
+        'Module["_malloc"]',
+        'Module["_free"]',
+        'Module["ccall"]',
+        'Module["HEAPU8"]',
+    ):
+        if export not in loader:
+            raise M0Error(
+                "controlled-HTTPS module lacks required trusted-text heap export "
+                + export
+            )
+
+
+def wait_for_state(
+    client: Any,
+    browser: subprocess.Popen[str],
+    browser_stderr: deque[str],
+    result_queue: queue.Queue[dict[str, Any]],
+    deadline: float,
+    state: str,
+) -> None:
+    """Poll only the host's read-only state witness between CDP input steps."""
+
+    last_state: object = None
+    expression = "globalThis.__chromiumWasmM6ControlledHttpsHostTextState || null"
+    while time.monotonic() < deadline:
+        if browser.poll() is not None:
+            raise M0Error(
+                f"host browser exited before {state}: " + "\n".join(browser_stderr)
+            )
+        try:
+            early_result = result_queue.get_nowait()
+        except queue.Empty:
+            early_result = None
+        if early_result is not None:
+            raise M0Error(
+                f"controlled-HTTPS smoke finished before {state}: "
+                + json.dumps(early_result, sort_keys=True, separators=(",", ":"))
+            )
+        last_state = client.evaluate(expression)
+        if (
+            isinstance(last_state, dict)
+            and last_state.get("state") == state
+            and last_state.get("attached") is True
+        ):
+            return
+        time.sleep(0.05)
+    raise M0Error(
+        f"controlled-HTTPS smoke did not become ready for {state}: "
+        + json.dumps(last_state, sort_keys=True, separators=(",", ":"))
+    )
+
+
+def dispatch_unmodified_enter(client: Any) -> None:
+    """Dispatch a physical CDP Enter sequence without a DOM navigation call."""
+
+    for event_type in ("rawKeyDown", "keyUp"):
+        params: dict[str, Any] = {
+            "type": event_type,
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+            "nativeVirtualKeyCode": 13,
+            "modifiers": 0,
+        }
+        if event_type == "rawKeyDown":
+            params["text"] = ""
+            params["unmodifiedText"] = ""
+        client.call("Input.dispatchKeyEvent", params)
 
 
 def wait_for_result(
@@ -1118,6 +1330,7 @@ def main() -> int:
     server: ControlledHttpsSmokeServer | None = None
     server_thread: threading.Thread | None = None
     browser: subprocess.Popen[str] | None = None
+    client: Any | None = None
     browser_path: Path | None = None
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
@@ -1143,6 +1356,7 @@ def main() -> int:
             artifact = out_dir / f"{args.module_name}{suffix}"
             if not artifact.is_file():
                 raise M0Error(f"controlled-HTTPS artifact is missing: {artifact}")
+        verify_explicit_text_heap_exports(out_dir / f"{args.module_name}.js")
         stage = "verify_test_artifacts"
         verify_no_private_key_pem_artifacts(out_dir, args.module_name)
         stage = "load_manifest"
@@ -1255,11 +1469,18 @@ def main() -> int:
         profile = tempfile.TemporaryDirectory(
             prefix="chromium-wasm-m6-controlled-https-"
         )
+        debug_port = unused_loopback_port()
         stage = "launch_browser"
         command = browser_command(
             browser_path, profile.name, url, no_sandbox=args.no_sandbox
         )
-        command[1:1] = ["--enable-logging=stderr", "--window-size=1280,800"]
+        command[1:1] = [
+            "--enable-logging=stderr",
+            "--window-size=1280,800",
+            "--remote-allow-origins=http://localhost",
+            "--remote-debugging-address=127.0.0.1",
+            f"--remote-debugging-port={debug_port}",
+        ]
         browser = subprocess.Popen(
             command,
             cwd=REPO_ROOT,
@@ -1278,6 +1499,42 @@ def main() -> int:
         browser_stderr_thread.start()
 
         deadline = time.monotonic() + args.timeout
+        stage = "connect_devtools"
+        client = wait_for_page_client(debug_port, url.split("?", 1)[0], deadline)
+        stage = "wait_for_ctrl_l_listener"
+        wait_for_state(
+            client,
+            browser,
+            browser_stderr,
+            result_queue,
+            deadline,
+            "awaiting-trusted-dom-ctrl-l",
+        )
+        stage = "dispatch_trusted_dom_ctrl_l"
+        client.dispatch_control_shortcut("KeyL", "l", 76)
+        stage = "wait_for_beforeinput_proxy"
+        wait_for_state(
+            client,
+            browser,
+            browser_stderr,
+            result_queue,
+            deadline,
+            "awaiting-trusted-dom-insert-text",
+        )
+        stage = "dispatch_trusted_input_insert_text"
+        for text_chunk in ADDRESS_TEXT_CHUNKS:
+            client.call("Input.insertText", {"text": text_chunk})
+        stage = "wait_for_enter_proxy"
+        wait_for_state(
+            client,
+            browser,
+            browser_stderr,
+            result_queue,
+            deadline,
+            "awaiting-trusted-dom-enter",
+        )
+        stage = "dispatch_trusted_physical_enter"
+        dispatch_unmodified_enter(client)
         stage = "wait_for_result"
         result = wait_for_result(browser, browser_stderr, result_queue, deadline)
         stage = "validate_result"
@@ -1400,6 +1657,8 @@ def main() -> int:
         print(f"{SENTINEL}:FAIL reason={exc}", file=sys.stderr, flush=True)
         return 1
     finally:
+        if client is not None:
+            client.close()
         if browser is not None:
             stop_browser(browser)
         if relay is not None:

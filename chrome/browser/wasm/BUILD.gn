@@ -496,6 +496,7 @@ source_set("wasm_browser_smoke") {
 
   deps = [
     ":wasm_browser",
+    ":wasm_browser_host_text",
     ":wasm_browser_manager",
     ":wasm_browser_menu",
     ":wasm_browser_view",
@@ -511,6 +512,7 @@ source_set("wasm_browser_smoke") {
     "//content/public/common",
     "//net",
     "//ui/base",
+    "//ui/aura",
     "//ui/events",
     "//ui/gfx/geometry",
     "//ui/views",
@@ -1064,6 +1066,7 @@ source_set("wasm_browser_host_text") {
   sources = [ "wasm_browser_host_text.cc" ]
 
   visibility = [
+    ":wasm_browser_smoke",
     ":wasm_browser_lifecycle",
     ":wasm_browser_main_parts",
   ]

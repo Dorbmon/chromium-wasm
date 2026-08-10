@@ -84,6 +84,51 @@ def relay_ready_json() -> str:
 
 
 def passing_result() -> dict[str, object]:
+    ctrl_l = [
+        {
+            "type": event_type,
+            "code": code,
+            "trusted": True,
+            "cancelable": True,
+            "canvasFocused": True,
+            "accepted": True,
+            "defaultPrevented": True,
+        }
+        for event_type, code in (
+            ("keydown", "ControlLeft"),
+            ("keydown", "KeyL"),
+            ("keyup", "KeyL"),
+            ("keyup", "ControlLeft"),
+        )
+    ]
+    before_input = {
+        "inputType": "insertText",
+        "dataOmitted": True,
+        "dataUtf16Units": len(smoke.ADDRESS_TEXT),
+        "dataUtf8Bytes": len(smoke.ADDRESS_TEXT),
+        "trusted": True,
+        "cancelable": True,
+        "isComposing": False,
+        "proxyFocused": True,
+        "queued": True,
+        "defaultPrevented": True,
+        "sequence": 1,
+        "nativeDispatched": True,
+        "nativeAccepted": True,
+    }
+    enter = [
+        {
+            "type": event_type,
+            "code": "Enter",
+            "key": "Enter",
+            "trusted": True,
+            "cancelable": True,
+            "proxyFocused": True,
+            "accepted": True,
+            "defaultPrevented": True,
+        }
+        for event_type in ("keydown", "keyup")
+    ]
     return {
         "protocol": 1,
         "case": smoke.CASE,
@@ -96,7 +141,8 @@ def passing_result() -> dict[str, object]:
         "factorySettled": True,
         "crossOriginIsolated": True,
         "sharedArrayBuffer": True,
-        "canvasFocused": True,
+        "canvasFocusedAtStart": True,
+        "proxyFocused": True,
         "controlledHttps": {
             "wispConfigured": True,
             "runtimeArgumentsConfigured": True,
@@ -139,9 +185,52 @@ def passing_result() -> dict[str, object]:
             }
         ],
         "ozoneFocusReports": [{"keyboardTargetPresent": True, "active": True}],
-        "ozoneTextInputStates": [],
+        "ozoneTextInputStates": [
+            {
+                "focusedClientPresent": True,
+                "editable": True,
+                "canComposeInline": True,
+            }
+        ],
         "ozoneTextInputDeliveries": [],
         "ozoneCursorReports": [],
+        "hostInput": {
+            "attached": True,
+            "editable": True,
+            "shortcutComplete": True,
+            "proxyFocused": True,
+            "textQueued": True,
+            "deliveryAccepted": True,
+            "deliveryRejected": False,
+            "focusGeneration": 1,
+            "acceptedDeliveryFocusGeneration": 1,
+            "proxySessionCleared": False,
+            "pendingDeliveryCount": 0,
+            "pendingTextUtf8Bytes": 0,
+            "tombstonedDeliveryCount": 0,
+            "proxyTextEmpty": True,
+            "readyObserved": True,
+            "nativeTextAdmissionCount": 1,
+            "nativeTextDeliveryCount": 1,
+            "nativeTextDeliverySequences": [1],
+            "ctrlLComplete": True,
+            "proxyFocusedAfterCtrlL": True,
+            "textDeliveryAccepted": True,
+            "enterComplete": True,
+            "navigatedObserved": True,
+            "screenshotObserved": True,
+            "passObserved": True,
+            "navigationMarkerFrameId": 1,
+            "screenshotFrameId": 2,
+            "ctrlLRecords": ctrl_l,
+            "beforeInputRecords": [before_input],
+            "browserTextDeliveryReports": [
+                {"action": 4, "sessionId": 0, "sequence": 1, "accepted": True}
+            ],
+            "enterRecords": enter,
+            "rejectedRecords": [],
+            "cleanupRecords": [],
+        },
         "screenshot": {
             "mimeType": "image/png",
             "dataBase64": SCREENSHOT_DATA_BASE64,
@@ -418,7 +507,7 @@ class ControlledHttpsHostServerTest(unittest.TestCase):
         self.assertEqual(headers.get("Cache-Control"), "no-store")
         self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
 
-    def test_serves_only_its_loader_host_and_two_artifacts(self) -> None:
+    def test_serves_only_its_loader_host_shared_text_adapter_and_artifacts(self) -> None:
         expectations = (
             (
                 smoke.HOST_ROOT + "/",
@@ -430,6 +519,11 @@ class ControlledHttpsHostServerTest(unittest.TestCase):
                 + "/chrome_wasm_browser_controlled_https_smoke_host.js",
                 "text/javascript; charset=utf-8",
                 b"chromiumWasmWisp",
+            ),
+            (
+                smoke.HOST_ROOT + "/chrome_wasm_text_input.js",
+                "text/javascript; charset=utf-8",
+                b"ChromiumWasmTrustedTextInput",
             ),
             (
                 smoke.HOST_ROOT + "/artifacts/chrome_wasm_m6_https_test.js",
@@ -580,6 +674,28 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
                 "active Ozone",
             ),
             (
+                lambda result: result.__setitem__("canvasFocusedAtStart", False),
+                "canvasFocusedAtStart",
+            ),
+            (
+                lambda result: result["hostInput"].__setitem__(
+                    "deliveryAccepted", False
+                ),
+                "deliveryAccepted",
+            ),
+            (
+                lambda result: result["hostInput"].__setitem__(
+                    "textareaValue", "https://a.test/m5/m6-ui"
+                ),
+                "retained textarea text",
+            ),
+            (
+                lambda result: result["hostInput"]["beforeInputRecords"][0].__setitem__(
+                    "data", "https://a.test/m5/m6-ui"
+                ),
+                "beforeinput evidence",
+            ),
+            (
                 lambda result: result["controlledHttps"].__setitem__(
                     "screenshotCaptureAttempted", False
                 ),
@@ -714,6 +830,13 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "reportFrame(report)",
             "reportReadiness(report)",
             "reportOzoneFocusState(report)",
+            "reportOzoneTextInputState(report)",
+            "reportOzoneBrowserTextInputDelivery(report)",
+            'import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";',
+            'const ADDRESS_TEXT_CHUNKS = Object.freeze(["https://a.test/m5/m6-ui"]);',
+            "canvasFocusedAtStart",
+            "proxyTextEmpty",
+            "textareaValue, ...textMetadata",
             "postNavigatedFrameObserved",
             "postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved",
             "targetFirstVisuallyNonEmptyPaintSignalObserved",
@@ -733,6 +856,9 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             host.index("URL_SWITCH + \"=\" + controlledUrl.href"),
             host.index("namespace.default(moduleOptions)"),
         )
+        self.assertNotIn("ccall(", host)
+        self.assertNotIn("location.assign(", host)
+        self.assertNotIn("location.replace(", host)
         capture_start = host.index("#captureScreenshotForFirstEligibleFrame")
         capture_end = host.index("#reportFrame", capture_start)
         capture = host[capture_start:capture_end]
@@ -787,10 +913,25 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "compare_screenshots(",
             "redact_screenshot_data",
             "MAX_RESULT_BYTES = 8 * 1024 * 1024",
+            "from m4_cdp import unused_loopback_port, wait_for_page_client",
+            "wait_for_page_client(debug_port",
+            "client.dispatch_control_shortcut(\"KeyL\", \"l\", 76)",
+            "client.call(\"Input.insertText\", {\"text\": text_chunk})",
+            "Input.dispatchKeyEvent",
+            "__chromiumWasmM6ControlledHttpsHostTextState",
+            "chrome_wasm_text_input.js",
+            "verify_explicit_text_heap_exports",
+            'Module["_chromium_wasm_browser_host_text"]',
+            'Module["_malloc"]',
+            'Module["_free"]',
+            'Module["ccall"]',
+            'Module["HEAPU8"]',
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, runner)
         self.assertNotIn("ccall(", runner)
+        self.assertNotIn("Input.dispatchMouseEvent", runner)
+        self.assertNotIn("Runtime.evaluate", runner)
         self.assertNotIn("SCREENSHOT_CAPTURED_UNCOMPARED", runner)
 
     def test_target_fvp_uses_a_dedicated_nonsticky_host_bridge_signal(
