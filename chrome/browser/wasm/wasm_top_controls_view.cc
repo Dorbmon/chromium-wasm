@@ -42,6 +42,8 @@ namespace {
 constexpr int kWasmTopControlsHeight = 40;
 constexpr char kWasmVersionURL[] = "chrome://version/";
 constexpr char kWasmSettingsURL[] = "chrome://settings/";
+constexpr char kWasmHistoryURL[] = "chrome://history/";
+constexpr char kWasmDownloadsURL[] = "chrome://downloads/";
 
 bool IsWasmTopControlsUrl(const GURL& target_url) {
   return target_url.is_valid() &&
@@ -49,7 +51,9 @@ bool IsWasmTopControlsUrl(const GURL& target_url) {
           target_url.SchemeIs(url::kDataScheme) ||
           target_url == GURL(url::kAboutBlankURL) ||
           target_url == GURL(kWasmVersionURL) ||
-          target_url == GURL(kWasmSettingsURL));
+          target_url == GURL(kWasmSettingsURL) ||
+          target_url == GURL(kWasmHistoryURL) ||
+          target_url == GURL(kWasmDownloadsURL));
 }
 
 }  // namespace

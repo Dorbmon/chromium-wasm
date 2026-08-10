@@ -14,6 +14,7 @@
 #include "base/task/thread_pool.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/wasm/wasm_session_navigation_journal.h"
 #include "chrome/common/pref_names.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/dependency_manager.h"
@@ -49,7 +50,8 @@ WasmProfile::WasmProfile(base::FilePath profile_path)
       start_time_(creation_time_),
       io_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN})),
-      pref_registry_(base::MakeRefCounted<user_prefs::PrefRegistrySyncable>()) {
+      pref_registry_(base::MakeRefCounted<user_prefs::PrefRegistrySyncable>()),
+      session_navigation_journal_(std::make_unique<WasmSessionNavigationJournal>()) {
   CHECK(!profile_path_.empty());
   CHECK(io_task_runner_);
 
@@ -95,6 +97,15 @@ void WasmProfile::Shutdown() {
   }
   shutdown_ = true;
 
+  // The journal has weak observers on every model-owned WebContents. History
+  // URLDataSources hold immutable snapshots instead of live profile state.
+  // Permanently disarm the observers before profile notifications or
+  // keyed-service teardown can run callbacks.
+  if (session_navigation_journal_) {
+    session_navigation_journal_->Shutdown();
+    session_navigation_journal_.reset();
+  }
+
   // Notify consumers before closing StoragePartition-backed services. This
   // establishes the same ordering required by BrowserContext and avoids
   // allowing late profile callbacks to manufacture a new storage partition.
@@ -111,6 +122,14 @@ void WasmProfile::Shutdown() {
       SimpleDependencyManager::GetInstance(), key_.get());
   SimpleKeyMap::GetInstance()->Dissociate(this);
   ShutdownStoragePartitions();
+}
+
+base::WeakPtr<WasmSessionNavigationJournal>
+WasmProfile::GetSessionNavigationJournalWeakPtr() {
+  if (shutdown_ || !session_navigation_journal_) {
+    return nullptr;
+  }
+  return session_navigation_journal_->GetWeakPtr();
 }
 
 std::unique_ptr<content::ZoomLevelDelegate>

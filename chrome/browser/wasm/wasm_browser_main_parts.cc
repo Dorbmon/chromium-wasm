@@ -26,6 +26,8 @@
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
+#include "chrome/browser/wasm/wasm_downloads_ui.h"
+#include "chrome/browser/wasm/wasm_history_ui.h"
 #include "chrome/browser/wasm/wasm_m6_controlled_https_test_mode.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_browser_smoke.h"
@@ -86,6 +88,8 @@ constexpr char kWasmBrowserHostPointerTabSmokeSwitch[] =
     "wasm-browser-host-pointer-tab-smoke";
 constexpr char kWasmBrowserHostPointerMenuSmokeSwitch[] =
     "wasm-browser-host-pointer-menu-smoke";
+constexpr char kWasmBrowserHostHistoryDownloadsSmokeSwitch[] =
+    "wasm-browser-host-history-downloads-smoke";
 constexpr char kWasmBrowserLifecycleSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY";
 constexpr char kWasmBrowserLifecycleSmokePassMarker[] =
@@ -233,11 +237,14 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   EnsureWasmBrowserKeyedServiceFactoriesBuilt();
 
   // The source-selected WebUI configurations are process-global and must
-  // exist before the first Wasm WebContents is created. They intentionally
-  // add only VersionUI plus the explicit Wasm settings bootstrap rather than
-  // the desktop Chrome WebUI registry.
+  // exist before the first Wasm WebContents is created. This registration is
+  // intentionally mutually exclusive with RegisterChromeWebUIConfigs(): the
+  // generic desktop registry owns HistoryUI/DownloadsUI and would duplicate
+  // these exact Wasm root hosts and pull unsupported service/resource graphs.
   chrome::EnsureWasmVersionWebUIConfigRegistered();
   chrome::EnsureWasmSettingsWebUIConfigRegistered();
+  chrome::EnsureWasmHistoryWebUIConfigRegistered();
+  chrome::EnsureWasmDownloadsWebUIConfigRegistered();
 
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.
@@ -330,14 +337,24 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_pointer_menu_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerMenuSmokeSwitch);
+  const bool browser_host_history_downloads_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostHistoryDownloadsSmokeSwitch);
+  if (browser_host_history_downloads_smoke &&
+      !chrome::IsWasmM6ControlledHttpsTestModeEnabled()) {
+    LOG(ERROR) << "chrome_wasm rejects the host History/Downloads smoke "
+                  "outside its dedicated controlled HTTPS test executable";
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
   if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_pointer_tab_smoke ||
-      browser_host_pointer_menu_smoke) {
+      browser_host_pointer_menu_smoke || browser_host_history_downloads_smoke) {
     CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
                  static_cast<int>(browser_host_pointer_tab_smoke) +
-                 static_cast<int>(browser_host_pointer_menu_smoke),
+                 static_cast<int>(browser_host_pointer_menu_smoke) +
+                 static_cast<int>(browser_host_history_downloads_smoke),
              1);
     CHECK(!browser_lifecycle_);
     CHECK(!browser_lifecycle_smoke_requested_);
@@ -587,6 +604,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerMenuSmokeSwitch)) {
     browser_lifecycle_->StartHostPointerMenuSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostHistoryDownloadsSmokeSwitch)) {
+    browser_lifecycle_->StartHostHistoryDownloadsSmoke();
     return;
   }
   std::fprintf(stderr, "%s\n", kWasmBrowserLifecycleSmokeReadyMarker);

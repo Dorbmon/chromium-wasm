@@ -36,6 +36,8 @@ namespace {
 constexpr int kWasmBrowserMenuHeight = 72;
 constexpr char kWasmVersionURL[] = "chrome://version/";
 constexpr char kWasmSettingsURL[] = "chrome://settings/";
+constexpr char kWasmHistoryURL[] = "chrome://history/";
+constexpr char kWasmDownloadsURL[] = "chrome://downloads/";
 
 }  // namespace
 
@@ -64,6 +66,14 @@ WasmBrowserMenuView::WasmBrowserMenuView(
       base::BindRepeating(&WasmBrowserMenuView::ShowSettings,
                           base::Unretained(this)),
       u"Settings"));
+  history_button_ = AddChildView(std::make_unique<views::LabelButton>(
+      base::BindRepeating(&WasmBrowserMenuView::ShowHistory,
+                          base::Unretained(this)),
+      u"History"));
+  downloads_button_ = AddChildView(std::make_unique<views::LabelButton>(
+      base::BindRepeating(&WasmBrowserMenuView::ShowDownloads,
+                          base::Unretained(this)),
+      u"Downloads"));
 
   // This menu is a collapsible child of the primary BrowserView, not another
   // Ozone Widget. Hidden Views do not participate in BoxLayout, so the active
@@ -122,6 +132,8 @@ void WasmBrowserMenuView::UpdateEnabledState() {
   CHECK(reload_button_);
   CHECK(about_button_);
   CHECK(settings_button_);
+  CHECK(history_button_);
+  CHECK(downloads_button_);
   reload_button_->SetEnabled(
       browser_command_controller_->IsCommandEnabled(IDC_RELOAD));
 
@@ -132,6 +144,8 @@ void WasmBrowserMenuView::UpdateEnabledState() {
   const bool has_live_contents = contents && !contents->IsBeingDestroyed();
   about_button_->SetEnabled(has_live_contents);
   settings_button_->SetEnabled(has_live_contents);
+  history_button_->SetEnabled(has_live_contents);
+  downloads_button_->SetEnabled(has_live_contents);
 }
 
 void WasmBrowserMenuView::Reload(const ui::Event& event) {
@@ -160,6 +174,23 @@ void WasmBrowserMenuView::ShowSettings(const ui::Event& event) {
   UpdateEnabledState();
   if (!settings_button_->GetEnabled() ||
       !NavigateTo(kWasmSettingsURL, event)) {
+    Close();
+  }
+}
+
+void WasmBrowserMenuView::ShowHistory(const ui::Event& event) {
+  CHECK(history_button_);
+  UpdateEnabledState();
+  if (!history_button_->GetEnabled() || !NavigateTo(kWasmHistoryURL, event)) {
+    Close();
+  }
+}
+
+void WasmBrowserMenuView::ShowDownloads(const ui::Event& event) {
+  CHECK(downloads_button_);
+  UpdateEnabledState();
+  if (!downloads_button_->GetEnabled() ||
+      !NavigateTo(kWasmDownloadsURL, event)) {
     Close();
   }
 }

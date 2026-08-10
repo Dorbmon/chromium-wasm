@@ -57,6 +57,12 @@ class WasmBrowserMenuView final : public views::View,
   views::LabelButton* settings_button_for_testing() const {
     return settings_button_;
   }
+  views::LabelButton* history_button_for_testing() const {
+    return history_button_;
+  }
+  views::LabelButton* downloads_button_for_testing() const {
+    return downloads_button_;
+  }
 
  private:
   void ActiveTabChanged(BrowserWindowInterface* browser_window_interface);
@@ -64,6 +70,8 @@ class WasmBrowserMenuView final : public views::View,
   void Reload(const ui::Event& event);
   void ShowVersion(const ui::Event& event);
   void ShowSettings(const ui::Event& event);
+  void ShowHistory(const ui::Event& event);
+  void ShowDownloads(const ui::Event& event);
   bool NavigateTo(const char* url, const ui::Event& event);
 
   // CommandObserver:
@@ -75,6 +83,8 @@ class WasmBrowserMenuView final : public views::View,
   raw_ptr<views::LabelButton> reload_button_ = nullptr;
   raw_ptr<views::LabelButton> about_button_ = nullptr;
   raw_ptr<views::LabelButton> settings_button_ = nullptr;
+  raw_ptr<views::LabelButton> history_button_ = nullptr;
+  raw_ptr<views::LabelButton> downloads_button_ = nullptr;
   base::CallbackListSubscription active_tab_changed_subscription_;
 };
 

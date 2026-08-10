@@ -25,9 +25,9 @@ void TabFeatures::Init(TabInterface& tab, Profile* profile) {
   CHECK(!initialized_);
   initialized_ = true;
 
-  // This reduced feature owner has no profile-backed controller. Keep the
-  // canonical argument so the later Wasm TabModel can use the normal
-  // TabFeatures initialization seam without inventing a second API.
+  // Per-WebContents Wasm policy belongs to PrepareWasmTabWebContents, which
+  // also runs for TabModel::DiscardContents replacements. TabFeatures itself
+  // retains only the UI helper lifetime.
   static_cast<void>(profile);
   tab_ui_helper_ = std::make_unique<TabUIHelper>(tab);
 }

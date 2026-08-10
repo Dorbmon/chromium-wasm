@@ -25,6 +25,7 @@ namespace chrome {
 
 class WasmBrowserHostTextNavigationObserver;
 class WasmBrowserHostPointerMenuNavigationObserver;
+class WasmBrowserHostHistoryDownloadsNavigationObserver;
 
 // Owns the process-lifetime side of one bounded slim Browser. The
 // BrowserManagerService retains the Browser itself; this coordinator attaches
@@ -77,6 +78,12 @@ class WasmBrowserLifecycle final {
   // acknowledge presentation; it cannot invoke menu commands or navigation.
   void StartHostPointerMenuSmoke();
 
+  // Arms the test-only real-host route that journals two committed HTTPS tab
+  // visits, then reaches the bounded History and Downloads WebUIs through the
+  // normal text and pointer/Ozone paths. Its exported verifier only observes
+  // ordinal stages and a post-presentation acknowledgement.
+  void StartHostHistoryDownloadsSmoke();
+
   bool IsVisible() const;
   bool IsShutdownStarted() const { return shutdown_started_; }
   bool IsShutdownComplete() const { return shutdown_complete_; }
@@ -94,6 +101,14 @@ class WasmBrowserLifecycle final {
   bool VerifyHostPointerMenuSmokeCheck(int stage);
   bool OnHostPointerMenuSmokePresented(int stage);
   void OnHostPointerMenuSettingsNavigationObserved();
+  bool VerifyHostHistoryDownloadsSmokeCheck(int stage);
+  bool OnHostHistoryDownloadsSmokePresented(int stage);
+  void OnHostHistoryDownloadsFirstNavigationObserved();
+  void OnHostHistoryDownloadsSecondNavigationObserved();
+  void OnHostHistoryDownloadsHistoryNavigationObserved();
+  void OnHostHistoryDownloadsDownloadsNavigationObserved();
+  void MaybeCompleteHostHistoryDownloadsHistoryNavigation();
+  void MaybeCompleteHostHistoryDownloadsDownloadsNavigation();
 
   const raw_ptr<WasmProfile> profile_;
   const raw_ptr<BrowserManagerService> browser_manager_;
@@ -127,6 +142,32 @@ class WasmBrowserLifecycle final {
   raw_ptr<content::WebContents> host_pointer_menu_contents_ = nullptr;
   std::unique_ptr<WasmBrowserHostPointerMenuNavigationObserver>
       host_pointer_menu_navigation_observer_;
+  bool host_history_downloads_smoke_started_ = false;
+  bool host_history_downloads_first_navigation_verified_ = false;
+  bool host_history_downloads_second_tab_verified_ = false;
+  bool host_history_downloads_second_navigation_verified_ = false;
+  bool host_history_downloads_history_target_fvp_observed_ = false;
+  bool host_history_downloads_history_navigation_verified_ = false;
+  bool host_history_downloads_history_menu_open_verified_ = false;
+  bool host_history_downloads_history_menu_close_verified_ = false;
+  bool host_history_downloads_downloads_menu_open_verified_ = false;
+  bool host_history_downloads_downloads_menu_close_verified_ = false;
+  bool host_history_downloads_downloads_target_fvp_observed_ = false;
+  bool host_history_downloads_downloads_navigation_verified_ = false;
+  bool host_history_downloads_presentation_verified_ = false;
+  int host_history_downloads_closed_contents_y_ = 0;
+  raw_ptr<content::WebContents> host_history_downloads_first_contents_ =
+      nullptr;
+  raw_ptr<content::WebContents> host_history_downloads_second_contents_ =
+      nullptr;
+  std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
+      host_history_downloads_first_navigation_observer_;
+  std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
+      host_history_downloads_second_navigation_observer_;
+  std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
+      host_history_downloads_history_navigation_observer_;
+  std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
+      host_history_downloads_downloads_navigation_observer_;
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;

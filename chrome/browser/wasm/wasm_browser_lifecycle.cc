@@ -7,8 +7,10 @@
 #include <cstdio>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_manager_service.h"
@@ -17,13 +19,17 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_browser.h"
+#include "chrome/browser/wasm/wasm_browser_host_history_downloads_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_menu_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_tab_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_host_text_smoke.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "chrome/browser/wasm/wasm_downloads_ui.h"
 #include "chrome/browser/wasm/wasm_browser_menu.h"
+#include "chrome/browser/wasm/wasm_history_ui.h"
+#include "chrome/browser/wasm/wasm_session_navigation_journal.h"
 #include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
@@ -179,6 +185,107 @@ class WasmBrowserHostPointerMenuNavigationObserver final
   bool observed_ = false;
 };
 
+// A compact observer for the trusted host WebUI flow. Navigation initiation is
+// never supplied by this observer: the lifecycle arms it before each host
+// phase, then it requires the real primary commit, user gesture, completion,
+// and target first-visually-non-empty paint before notifying the owner.
+class WasmBrowserHostHistoryDownloadsNavigationObserver final
+    : public content::WebContentsObserver {
+ public:
+  enum class ExpectedNavigation {
+    kTypedUser,
+    kGeneratedUser,
+  };
+
+  WasmBrowserHostHistoryDownloadsNavigationObserver(
+      content::WebContents* web_contents,
+      GURL expected_url,
+      ExpectedNavigation expected_navigation,
+      base::RepeatingClosure navigation_observed)
+      : content::WebContentsObserver(web_contents),
+        expected_url_(std::move(expected_url)),
+        expected_navigation_(expected_navigation),
+        navigation_observed_(std::move(navigation_observed)) {
+    CHECK(web_contents);
+    CHECK(expected_url_.is_valid());
+    CHECK(navigation_observed_);
+  }
+
+  WasmBrowserHostHistoryDownloadsNavigationObserver(
+      const WasmBrowserHostHistoryDownloadsNavigationObserver&) = delete;
+  WasmBrowserHostHistoryDownloadsNavigationObserver& operator=(
+      const WasmBrowserHostHistoryDownloadsNavigationObserver&) = delete;
+  ~WasmBrowserHostHistoryDownloadsNavigationObserver() override = default;
+
+  // content::WebContentsObserver:
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (observed_ || committed_ || !navigation_handle ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->IsSameDocument() ||
+        !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage() ||
+        navigation_handle->GetURL() != expected_url_ ||
+        !navigation_handle->HasUserGesture() || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+
+    const ui::PageTransition expected_transition =
+        expected_navigation_ == ExpectedNavigation::kTypedUser
+            ? ui::PAGE_TRANSITION_TYPED
+            : ui::PAGE_TRANSITION_GENERATED;
+    if (!ui::PageTransitionCoreTypeIs(navigation_handle->GetPageTransition(),
+                                      expected_transition)) {
+      return;
+    }
+
+    committed_ = true;
+    if (web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
+      first_visually_nonempty_paint_after_commit_ = true;
+    }
+    if (!web_contents()->IsLoading()) {
+      stopped_loading_after_commit_ = true;
+    }
+    MaybeNotify();
+  }
+
+  void DidStopLoading() override {
+    if (!committed_ || observed_) {
+      return;
+    }
+    stopped_loading_after_commit_ = true;
+    MaybeNotify();
+  }
+
+  void DidFirstVisuallyNonEmptyPaint() override {
+    if (!committed_ || observed_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+    CHECK(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+    first_visually_nonempty_paint_after_commit_ = true;
+    MaybeNotify();
+  }
+
+ private:
+  void MaybeNotify() {
+    if (observed_ || !committed_ || !stopped_loading_after_commit_ ||
+        !first_visually_nonempty_paint_after_commit_) {
+      return;
+    }
+    observed_ = true;
+    navigation_observed_.Run();
+  }
+
+  const GURL expected_url_;
+  const ExpectedNavigation expected_navigation_;
+  const base::RepeatingClosure navigation_observed_;
+  bool committed_ = false;
+  bool stopped_loading_after_commit_ = false;
+  bool first_visually_nonempty_paint_after_commit_ = false;
+  bool observed_ = false;
+};
+
 namespace {
 
 constexpr char kHostAcceleratorsSmokeMarker[] =
@@ -223,6 +330,42 @@ constexpr char kHostPointerMenuPassMarker[] =
 constexpr char kHostPointerMenuSettingsUrl[] = "chrome://settings/";
 constexpr char16_t kHostPointerMenuSettingsTitle[] =
     u"Settings \u2014 Chromium Wasm";
+constexpr char kHostHistoryDownloadsReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:READY";
+constexpr char kHostHistoryDownloadsFirstNavigatedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:FIRST_NAVIGATED";
+constexpr char kHostHistoryDownloadsSecondTabReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:SECOND_TAB_READY";
+constexpr char kHostHistoryDownloadsSecondNavigatedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:SECOND_NAVIGATED";
+constexpr char kHostHistoryDownloadsHistoryNavigatedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:HISTORY_NAVIGATED";
+constexpr char kHostHistoryDownloadsMenuOpenedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:MENU_OPEN_HISTORY";
+constexpr char kHostHistoryDownloadsHistoryMenuClosedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:MENU_CLOSED_HISTORY";
+constexpr char kHostHistoryDownloadsDownloadsMenuOpenedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:MENU_OPEN_DOWNLOADS";
+constexpr char kHostHistoryDownloadsDownloadsMenuClosedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:MENU_CLOSED_DOWNLOADS";
+constexpr char kHostHistoryDownloadsDownloadsNavigatedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:DOWNLOADS_NAVIGATED";
+constexpr char kHostHistoryDownloadsPassMarker[] =
+    "CHROMIUM_WASM_M6_HOST_HISTORY_DOWNLOADS:PASS";
+constexpr char kHostHistoryDownloadsUrlSwitch[] =
+    "wasm-browser-controlled-https-url";
+constexpr char kHostHistoryDownloadsFirstJournalUrl[] =
+    "https://a.test/m5/m6-ui#wasm_journal=1";
+constexpr char kHostHistoryDownloadsSecondJournalUrl[] =
+    "https://a.test/m5/m6-ui";
+constexpr char kHostHistoryDownloadsRedactedJournalUrl[] =
+    "https://a.test/m5/m6-ui";
+constexpr char kHostHistoryDownloadsHistoryUrl[] = "chrome://history/";
+constexpr char kHostHistoryDownloadsDownloadsUrl[] = "chrome://downloads/";
+constexpr char16_t kHostHistoryDownloadsHistoryTitle[] =
+    u"History \u2014 Chromium Wasm";
+constexpr char16_t kHostHistoryDownloadsDownloadsTitle[] =
+    u"Downloads \u2014 Chromium Wasm";
 constexpr gfx::Rect kBrowserLifecycleSmokeBounds(0, 0, 640, 480);
 constexpr int kMaximumHostPointerCoordinate = 16383;
 
@@ -267,11 +410,18 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
+  ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
   host_pointer_menu_navigation_observer_.reset();
   host_pointer_menu_contents_ = nullptr;
+  host_history_downloads_first_navigation_observer_.reset();
+  host_history_downloads_second_navigation_observer_.reset();
+  host_history_downloads_history_navigation_observer_.reset();
+  host_history_downloads_downloads_navigation_observer_.reset();
+  host_history_downloads_first_contents_ = nullptr;
+  host_history_downloads_second_contents_ = nullptr;
   // BrowserManagerService owns the Browser. This lifecycle can disappear only
   // after the manager's physical destruction callback invalidates |browser_|.
   CHECK(!browser_);
@@ -505,6 +655,84 @@ void WasmBrowserLifecycle::StartHostPointerMenuSmoke() {
   std::fflush(stderr);
 }
 
+void WasmBrowserLifecycle::StartHostHistoryDownloadsSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!host_history_downloads_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+
+  // This route is activated only by chrome_wasm_m6_https_test. Production
+  // chrome_wasm rejects its switch before this lifecycle exists and never
+  // installs the local trust root. Keep the controlled root contract explicit
+  // here as a second boundary: host DOM input can choose neither a journal
+  // destination nor an arbitrary WebUI URL through this ordinal verifier.
+  const base::CommandLine* const command_line =
+      base::CommandLine::ForCurrentProcess();
+  CHECK(command_line);
+  CHECK_EQ(command_line->GetSwitchValueASCII(kHostHistoryDownloadsUrlSwitch),
+           kHostHistoryDownloadsSecondJournalUrl);
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTabStripView* const tab_strip = browser_view.wasm_tab_strip();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  CHECK(tab_strip);
+  CHECK(top_controls);
+  CHECK(top_controls->address_field_for_testing());
+  CHECK(browser_menu);
+  CHECK(!browser_menu->IsOpen());
+  CHECK(contents_web_view);
+
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  CHECK(tab_strip_model);
+  CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK(!host_history_downloads_first_contents_);
+  CHECK(!host_history_downloads_second_contents_);
+  CHECK(!host_history_downloads_first_navigation_observer_);
+  CHECK(!host_history_downloads_second_navigation_observer_);
+  CHECK(!host_history_downloads_history_navigation_observer_);
+  CHECK(!host_history_downloads_downloads_navigation_observer_);
+
+  host_history_downloads_first_contents_ =
+      tab_strip_model->GetActiveWebContents();
+  CHECK(host_history_downloads_first_contents_);
+  CHECK_EQ(browser_view.GetActiveWebContents(),
+           host_history_downloads_first_contents_);
+
+  browser_view.DeprecatedLayoutImmediately();
+  host_history_downloads_closed_contents_y_ = contents_web_view->bounds().y();
+  CHECK_GE(host_history_downloads_closed_contents_y_, 0);
+
+  // Arm the first typed-navigation observer before READY. The host's first
+  // trusted Ctrl+L / insertText / Enter transaction may begin as soon as it
+  // consumes this marker.
+  host_history_downloads_first_navigation_observer_ =
+      std::make_unique<WasmBrowserHostHistoryDownloadsNavigationObserver>(
+          host_history_downloads_first_contents_,
+          GURL(kHostHistoryDownloadsFirstJournalUrl),
+          WasmBrowserHostHistoryDownloadsNavigationObserver::
+              ExpectedNavigation::kTypedUser,
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnHostHistoryDownloadsFirstNavigationObserved,
+              base::Unretained(this)));
+
+  host_history_downloads_smoke_started_ = true;
+  SetWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting(
+      base::BindRepeating(
+          &WasmBrowserLifecycle::VerifyHostHistoryDownloadsSmokeCheck,
+          base::Unretained(this)),
+      base::BindRepeating(
+          &WasmBrowserLifecycle::OnHostHistoryDownloadsSmokePresented,
+          base::Unretained(this)));
+  std::fprintf(stderr, "%s\n", kHostHistoryDownloadsReadyMarker);
+  std::fflush(stderr);
+}
+
 bool WasmBrowserLifecycle::IsVisible() const {
   CHECK(initialized_);
   CHECK(!shutdown_complete_);
@@ -526,11 +754,18 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
+  ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
   host_pointer_menu_navigation_observer_.reset();
   host_pointer_menu_contents_ = nullptr;
+  host_history_downloads_first_navigation_observer_.reset();
+  host_history_downloads_second_navigation_observer_.reset();
+  host_history_downloads_history_navigation_observer_.reset();
+  host_history_downloads_downloads_navigation_observer_.reset();
+  host_history_downloads_first_contents_ = nullptr;
+  host_history_downloads_second_contents_ = nullptr;
   shutdown_started_ = true;
   ArmBrowserDestructionBarrier();
 }
@@ -575,11 +810,18 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
+  ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
   host_pointer_menu_navigation_observer_.reset();
   host_pointer_menu_contents_ = nullptr;
+  host_history_downloads_first_navigation_observer_.reset();
+  host_history_downloads_second_navigation_observer_.reset();
+  host_history_downloads_history_navigation_observer_.reset();
+  host_history_downloads_downloads_navigation_observer_.reset();
+  host_history_downloads_first_contents_ = nullptr;
+  host_history_downloads_second_contents_ = nullptr;
 
   // This callback may reset and destroy this lifecycle in main-parts.
   std::move(shutdown_complete_callback_).Run();
@@ -1038,6 +1280,494 @@ void WasmBrowserLifecycle::OnHostPointerMenuSettingsNavigationObserved() {
   // The host records a compositor frame strictly after this marker, which is
   // itself emitted only after primary commit, loading completion, and target
   // first-visually-non-empty paint for the limited Settings bootstrap.
+  browser_view.SchedulePaint();
+}
+
+bool WasmBrowserLifecycle::VerifyHostHistoryDownloadsSmokeCheck(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_history_downloads_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_first_contents_) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  WasmTabStripView* const tab_strip = browser_view.wasm_tab_strip();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!tab_strip_model || !tab_strip || !top_controls || !browser_menu ||
+      !contents_web_view) {
+    return false;
+  }
+
+  if (stage == 1) {
+    if (!host_history_downloads_first_navigation_verified_ ||
+        host_history_downloads_second_tab_verified_ ||
+        host_history_downloads_second_contents_ || tab_strip_model->count() != 2 ||
+        tab_strip_model->GetWebContentsAt(0) !=
+            host_history_downloads_first_contents_) {
+      return false;
+    }
+
+    content::WebContents* const second_contents =
+        tab_strip_model->GetWebContentsAt(1);
+    if (!second_contents ||
+        second_contents == host_history_downloads_first_contents_ ||
+        tab_strip_model->active_index() != 1 ||
+        tab_strip_model->GetActiveWebContents() != second_contents ||
+        browser_view.GetActiveWebContents() != second_contents) {
+      return false;
+    }
+
+    // Arm the exact second typed-navigation observer before publishing the
+    // stage marker. The host cannot race a second Ctrl+L transaction ahead of
+    // this lifecycle-owned WebContents observer.
+    host_history_downloads_second_navigation_observer_ =
+        std::make_unique<WasmBrowserHostHistoryDownloadsNavigationObserver>(
+            second_contents, GURL(kHostHistoryDownloadsSecondJournalUrl),
+            WasmBrowserHostHistoryDownloadsNavigationObserver::
+                ExpectedNavigation::kTypedUser,
+            base::BindRepeating(
+                &WasmBrowserLifecycle::OnHostHistoryDownloadsSecondNavigationObserved,
+                base::Unretained(this)));
+    host_history_downloads_second_contents_ = second_contents;
+    host_history_downloads_second_tab_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostHistoryDownloadsSecondTabReadyMarker);
+    std::fflush(stderr);
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 2) {
+    if (!host_history_downloads_first_navigation_verified_ ||
+        !host_history_downloads_second_tab_verified_ ||
+        !host_history_downloads_second_navigation_verified_ ||
+        !host_history_downloads_second_contents_ ||
+        host_history_downloads_history_menu_open_verified_ ||
+        host_history_downloads_history_menu_close_verified_ ||
+        host_history_downloads_history_navigation_verified_ ||
+        host_history_downloads_downloads_menu_open_verified_ ||
+        host_history_downloads_downloads_menu_close_verified_ ||
+        host_history_downloads_downloads_navigation_verified_ ||
+        browser_view.GetActiveWebContents() !=
+            host_history_downloads_second_contents_ ||
+        !browser_menu->IsOpen()) {
+      return false;
+    }
+
+    browser_view.DeprecatedLayoutImmediately();
+    if (contents_web_view->bounds().y() <=
+        host_history_downloads_closed_contents_y_) {
+      return false;
+    }
+    views::LabelButton* const history_button =
+        browser_menu->history_button_for_testing();
+    if (!history_button || !history_button->GetVisible() ||
+        !history_button->GetEnabled()) {
+      return false;
+    }
+
+    const gfx::Point history_target =
+        GetHostPointerTarget(browser_view, history_button);
+    host_history_downloads_history_menu_open_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n",
+                 kHostHistoryDownloadsMenuOpenedMarker, history_target.x(),
+                 history_target.y());
+    std::fflush(stderr);
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 3) {
+    if (!host_history_downloads_history_menu_open_verified_ ||
+        host_history_downloads_history_menu_close_verified_ ||
+        host_history_downloads_downloads_menu_open_verified_ ||
+        host_history_downloads_downloads_menu_close_verified_ ||
+        browser_view.GetActiveWebContents() !=
+            host_history_downloads_second_contents_ ||
+        browser_menu->IsOpen()) {
+      return false;
+    }
+    browser_view.DeprecatedLayoutImmediately();
+    if (contents_web_view->bounds().y() !=
+        host_history_downloads_closed_contents_y_) {
+      return false;
+    }
+
+    host_history_downloads_history_menu_close_verified_ = true;
+    std::fprintf(stderr, "%s\n",
+                 kHostHistoryDownloadsHistoryMenuClosedMarker);
+    std::fflush(stderr);
+    // The local History WebUI can reach target FVP before the deferred host
+    // ordinal callback arrives. Join its latched target-FVP state with this
+    // required close proof rather than allowing a pre-close marker.
+    MaybeCompleteHostHistoryDownloadsHistoryNavigation();
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 4) {
+    if (!host_history_downloads_history_menu_open_verified_ ||
+        !host_history_downloads_history_menu_close_verified_ ||
+        !host_history_downloads_history_navigation_verified_ ||
+        host_history_downloads_downloads_menu_open_verified_ ||
+        host_history_downloads_downloads_menu_close_verified_ ||
+        host_history_downloads_downloads_navigation_verified_ ||
+        browser_view.GetActiveWebContents() !=
+            host_history_downloads_second_contents_ ||
+        !browser_menu->IsOpen()) {
+      return false;
+    }
+
+    browser_view.DeprecatedLayoutImmediately();
+    if (contents_web_view->bounds().y() <=
+        host_history_downloads_closed_contents_y_) {
+      return false;
+    }
+    views::LabelButton* const downloads_button =
+        browser_menu->downloads_button_for_testing();
+    if (!downloads_button || !downloads_button->GetVisible() ||
+        !downloads_button->GetEnabled()) {
+      return false;
+    }
+
+    const gfx::Point downloads_target =
+        GetHostPointerTarget(browser_view, downloads_button);
+    host_history_downloads_downloads_menu_open_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n",
+                 kHostHistoryDownloadsDownloadsMenuOpenedMarker,
+                 downloads_target.x(), downloads_target.y());
+    std::fflush(stderr);
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 5) {
+    if (!host_history_downloads_downloads_menu_open_verified_ ||
+        host_history_downloads_downloads_menu_close_verified_ ||
+        browser_view.GetActiveWebContents() !=
+            host_history_downloads_second_contents_ ||
+        browser_menu->IsOpen()) {
+      return false;
+    }
+    browser_view.DeprecatedLayoutImmediately();
+    if (contents_web_view->bounds().y() !=
+        host_history_downloads_closed_contents_y_) {
+      return false;
+    }
+
+    host_history_downloads_downloads_menu_close_verified_ = true;
+    std::fprintf(stderr, "%s\n",
+                 kHostHistoryDownloadsDownloadsMenuClosedMarker);
+    std::fflush(stderr);
+    // Mirror History: an already completed local Downloads WebUI observer is
+    // joined only after this physical menu-close verification succeeds.
+    MaybeCompleteHostHistoryDownloadsDownloadsNavigation();
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  return false;
+}
+
+bool WasmBrowserLifecycle::OnHostHistoryDownloadsSmokePresented(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (stage != 6 || !host_history_downloads_smoke_started_ ||
+      !host_history_downloads_first_navigation_verified_ ||
+      !host_history_downloads_second_tab_verified_ ||
+      !host_history_downloads_second_navigation_verified_ ||
+      !host_history_downloads_history_menu_open_verified_ ||
+      !host_history_downloads_history_menu_close_verified_ ||
+      !host_history_downloads_history_navigation_verified_ ||
+      !host_history_downloads_downloads_menu_open_verified_ ||
+      !host_history_downloads_downloads_menu_close_verified_ ||
+      !host_history_downloads_downloads_navigation_verified_ ||
+      host_history_downloads_presentation_verified_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_second_contents_) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!browser_menu || !contents_web_view || browser_menu->IsOpen() ||
+      browser_view.GetActiveWebContents() !=
+          host_history_downloads_second_contents_) {
+    return false;
+  }
+  browser_view.DeprecatedLayoutImmediately();
+  if (contents_web_view->bounds().y() !=
+      host_history_downloads_closed_contents_y_) {
+    return false;
+  }
+
+  host_history_downloads_presentation_verified_ = true;
+  std::fprintf(stderr, "%s\n", kHostHistoryDownloadsPassMarker);
+  std::fflush(stderr);
+  BeginShutdown();
+  return true;
+}
+
+void WasmBrowserLifecycle::OnHostHistoryDownloadsFirstNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_history_downloads_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_first_contents_ ||
+      host_history_downloads_first_navigation_verified_) {
+    return;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  WasmTabStripView* const tab_strip = browser_view.wasm_tab_strip();
+  if (!tab_strip_model || !tab_strip || tab_strip_model->count() != 1 ||
+      tab_strip_model->GetActiveWebContents() !=
+          host_history_downloads_first_contents_ ||
+      browser_view.GetActiveWebContents() !=
+          host_history_downloads_first_contents_ ||
+      host_history_downloads_first_contents_->GetLastCommittedURL() !=
+          GURL(kHostHistoryDownloadsFirstJournalUrl)) {
+    return;
+  }
+
+  const gfx::Point new_tab_target = GetHostPointerTarget(
+      browser_view, tab_strip->new_tab_button_for_testing());
+  host_history_downloads_first_navigation_verified_ = true;
+  std::fprintf(stderr, "%s x=%d y=%d\n",
+               kHostHistoryDownloadsFirstNavigatedMarker, new_tab_target.x(),
+               new_tab_target.y());
+  std::fflush(stderr);
+  // A later host click must follow a canvas frame that is strictly after the
+  // target's typed commit, load completion, and first non-empty paint.
+  browser_view.SchedulePaint();
+}
+
+void WasmBrowserLifecycle::OnHostHistoryDownloadsSecondNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_history_downloads_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_second_contents_ ||
+      host_history_downloads_second_navigation_verified_) {
+    return;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  if (!top_controls || !browser_menu || browser_menu->IsOpen() ||
+      browser_view.GetActiveWebContents() !=
+          host_history_downloads_second_contents_ ||
+      host_history_downloads_second_contents_->GetLastCommittedURL() !=
+          GURL(kHostHistoryDownloadsSecondJournalUrl) ||
+      host_history_downloads_history_navigation_observer_) {
+    return;
+  }
+
+  // The actual History menu action may commit immediately on local WebUI
+  // tasks. Arm its generated-user observer before exposing the real menu
+  // center to host JavaScript.
+  host_history_downloads_history_navigation_observer_ =
+      std::make_unique<WasmBrowserHostHistoryDownloadsNavigationObserver>(
+          host_history_downloads_second_contents_,
+          GURL(kHostHistoryDownloadsHistoryUrl),
+          WasmBrowserHostHistoryDownloadsNavigationObserver::
+              ExpectedNavigation::kGeneratedUser,
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnHostHistoryDownloadsHistoryNavigationObserved,
+              base::Unretained(this)));
+
+  const gfx::Point menu_target = GetHostPointerTarget(
+      browser_view, top_controls->menu_button_for_testing());
+  host_history_downloads_second_navigation_verified_ = true;
+  std::fprintf(stderr, "%s x=%d y=%d\n",
+               kHostHistoryDownloadsSecondNavigatedMarker, menu_target.x(),
+               menu_target.y());
+  std::fflush(stderr);
+  browser_view.SchedulePaint();
+}
+
+void WasmBrowserLifecycle::OnHostHistoryDownloadsHistoryNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_history_downloads_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_second_contents_ ||
+      host_history_downloads_history_navigation_verified_) {
+    return;
+  }
+
+  // The observer invokes this only after exact primary generated-user commit,
+  // loading completion, and target FVP. Latch that fact independently: the
+  // host's deferred menu-close ordinal can arrive on a later UI task.
+  host_history_downloads_history_target_fvp_observed_ = true;
+  MaybeCompleteHostHistoryDownloadsHistoryNavigation();
+}
+
+void WasmBrowserLifecycle::MaybeCompleteHostHistoryDownloadsHistoryNavigation() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_history_downloads_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_second_contents_ ||
+      !host_history_downloads_history_target_fvp_observed_ ||
+      !host_history_downloads_history_menu_close_verified_ ||
+      host_history_downloads_history_navigation_verified_) {
+    return;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!top_controls || !browser_menu || !contents_web_view ||
+      browser_menu->IsOpen() ||
+      browser_view.GetActiveWebContents() !=
+          host_history_downloads_second_contents_ ||
+      host_history_downloads_second_contents_->GetLastCommittedURL() !=
+          GURL(kHostHistoryDownloadsHistoryUrl) ||
+      host_history_downloads_second_contents_->GetTitle() !=
+          kHostHistoryDownloadsHistoryTitle ||
+      host_history_downloads_downloads_navigation_observer_) {
+    return;
+  }
+
+  browser_view.DeprecatedLayoutImmediately();
+  if (contents_web_view->bounds().y() !=
+      host_history_downloads_closed_contents_y_) {
+    return;
+  }
+
+  content::WebUI* const history_web_ui =
+      host_history_downloads_second_contents_->GetWebUI();
+  content::WebUIConfig* const history_web_ui_config =
+      history_web_ui ? history_web_ui->GetWebUIConfig() : nullptr;
+  content::WebUIController* const history_web_ui_controller =
+      history_web_ui ? history_web_ui->GetController() : nullptr;
+  WasmHistoryUI* const history_ui =
+      history_web_ui_controller
+          ? history_web_ui_controller->GetAs<WasmHistoryUI>()
+          : nullptr;
+  if (!history_web_ui_config || !history_web_ui_controller || !history_ui ||
+      history_web_ui_config->scheme() != content::kChromeUIScheme ||
+      history_web_ui_config->host() != "history" ||
+      history_ui->web_ui() != history_web_ui ||
+      history_ui->entry_count_for_testing() != 2u) {
+    return;
+  }
+
+  base::WeakPtr<WasmSessionNavigationJournal> journal =
+      profile_->GetSessionNavigationJournalWeakPtr();
+  if (!journal) {
+    return;
+  }
+  const std::vector<WasmSessionNavigationJournal::Entry> entries =
+      journal->GetSnapshot();
+  if (entries.size() != 2u || entries[0].sequence != 1u ||
+      entries[1].sequence != 2u ||
+      entries[0].display_url != kHostHistoryDownloadsRedactedJournalUrl ||
+      entries[1].display_url != kHostHistoryDownloadsRedactedJournalUrl) {
+    return;
+  }
+
+  // Arm Downloads before publishing the second menu target. This preserves
+  // observer ownership even if the static local WebUI commits before the
+  // host's ordinal menu-close report runs.
+  host_history_downloads_downloads_navigation_observer_ =
+      std::make_unique<WasmBrowserHostHistoryDownloadsNavigationObserver>(
+          host_history_downloads_second_contents_,
+          GURL(kHostHistoryDownloadsDownloadsUrl),
+          WasmBrowserHostHistoryDownloadsNavigationObserver::
+              ExpectedNavigation::kGeneratedUser,
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnHostHistoryDownloadsDownloadsNavigationObserved,
+              base::Unretained(this)));
+
+  const gfx::Point menu_target = GetHostPointerTarget(
+      browser_view, top_controls->menu_button_for_testing());
+  host_history_downloads_history_navigation_verified_ = true;
+  std::fprintf(stderr, "%s x=%d y=%d\n",
+               kHostHistoryDownloadsHistoryNavigatedMarker, menu_target.x(),
+               menu_target.y());
+  std::fflush(stderr);
+  browser_view.SchedulePaint();
+}
+
+void WasmBrowserLifecycle::OnHostHistoryDownloadsDownloadsNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_history_downloads_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_second_contents_ ||
+      host_history_downloads_downloads_navigation_verified_) {
+    return;
+  }
+
+  // The observer's callback is target-FVP-complete, but must be joined with
+  // the separately deferred physical Downloads menu-close ordinal below.
+  host_history_downloads_downloads_target_fvp_observed_ = true;
+  MaybeCompleteHostHistoryDownloadsDownloadsNavigation();
+}
+
+void WasmBrowserLifecycle::MaybeCompleteHostHistoryDownloadsDownloadsNavigation() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_history_downloads_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      !host_history_downloads_second_contents_ ||
+      !host_history_downloads_downloads_target_fvp_observed_ ||
+      !host_history_downloads_downloads_menu_close_verified_ ||
+      host_history_downloads_downloads_navigation_verified_) {
+    return;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!browser_menu || !contents_web_view || browser_menu->IsOpen() ||
+      !host_history_downloads_downloads_menu_open_verified_ ||
+      browser_view.GetActiveWebContents() !=
+          host_history_downloads_second_contents_ ||
+      host_history_downloads_second_contents_->GetLastCommittedURL() !=
+          GURL(kHostHistoryDownloadsDownloadsUrl) ||
+      host_history_downloads_second_contents_->GetTitle() !=
+          kHostHistoryDownloadsDownloadsTitle) {
+    return;
+  }
+
+  browser_view.DeprecatedLayoutImmediately();
+  if (contents_web_view->bounds().y() !=
+      host_history_downloads_closed_contents_y_) {
+    return;
+  }
+
+  content::WebUI* const downloads_web_ui =
+      host_history_downloads_second_contents_->GetWebUI();
+  content::WebUIConfig* const downloads_web_ui_config =
+      downloads_web_ui ? downloads_web_ui->GetWebUIConfig() : nullptr;
+  content::WebUIController* const downloads_web_ui_controller =
+      downloads_web_ui ? downloads_web_ui->GetController() : nullptr;
+  WasmDownloadsUI* const downloads_ui =
+      downloads_web_ui_controller
+          ? downloads_web_ui_controller->GetAs<WasmDownloadsUI>()
+          : nullptr;
+  if (!downloads_web_ui_config || !downloads_web_ui_controller ||
+      !downloads_ui ||
+      downloads_web_ui_config->scheme() != content::kChromeUIScheme ||
+      downloads_web_ui_config->host() != "downloads" ||
+      downloads_ui->web_ui() != downloads_web_ui ||
+      profile_->GetDownloadManagerDelegate() != nullptr) {
+    return;
+  }
+
+  host_history_downloads_downloads_navigation_verified_ = true;
+  std::fprintf(stderr, "%s\n", kHostHistoryDownloadsDownloadsNavigatedMarker);
+  std::fflush(stderr);
+  // The host must record a canvas frame strictly after this target-FVP marker
+  // before it can acknowledge presentation and start ordinary shutdown.
   browser_view.SchedulePaint();
 }
 

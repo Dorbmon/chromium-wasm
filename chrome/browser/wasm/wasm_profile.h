@@ -12,6 +12,7 @@
 
 #include "base/files/file_path.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,6 +22,7 @@ class ExtensionSpecialStoragePolicy;
 class GURL;
 class PrefService;
 class ProfileKey;
+class WasmSessionNavigationJournal;
 
 namespace base {
 class SequencedTaskRunner;
@@ -86,6 +88,12 @@ class WasmProfile final : public Profile {
   // profile has been destroyed. It is idempotent so main-parts teardown can
   // call it before ownership is released.
   void Shutdown();
+
+  // The M6 history bootstrap reads this process-local journal through a weak
+  // reference. It is intentionally not HistoryService and becomes inert
+  // before any Profile keyed-service shutdown begins.
+  base::WeakPtr<WasmSessionNavigationJournal>
+  GetSessionNavigationJournalWeakPtr();
 
   // content::BrowserContext:
   std::unique_ptr<content::ZoomLevelDelegate> CreateZoomLevelDelegate(
@@ -189,6 +197,11 @@ class WasmProfile final : public Profile {
   // ProfileKey is associated with this BrowserContext for the lifetime of the
   // profile and is torn down only after storage partitions have shut down.
   std::unique_ptr<ProfileKey> key_;
+
+  // Direct profile ownership keeps the volatile M6 journal out of the
+  // desktop HistoryService graph and gives profile shutdown one clear place
+  // to invalidate every WebContents observer and WebUI data source.
+  std::unique_ptr<WasmSessionNavigationJournal> session_navigation_journal_;
 
   bool shutdown_ = false;
   uint32_t primary_main_frame_navigations_ = 0;

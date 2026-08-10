@@ -37,6 +37,8 @@ std::optional<base::CommandLine>& GetInitialCommandLineStorage() {
 #if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
 constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
+constexpr char kWasmBrowserHostHistoryDownloadsSmokeSwitch[] =
+    "wasm-browser-host-history-downloads-smoke";
 #endif
 
 }  // namespace
@@ -54,12 +56,17 @@ extern "C" int ChromeMain(int argc, const char** argv) {
   base::CommandLine::Init(params.argc, params.argv);
 
 #if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kWasmBrowserControlledHttpsSmokeSwitch)) {
-    // Install only for the dedicated controlled-HTTPS smoke, after Chrome has
+  const base::CommandLine* const controlled_test_command_line =
+      base::CommandLine::ForCurrentProcess();
+  if (controlled_test_command_line->HasSwitch(
+          kWasmBrowserControlledHttpsSmokeSwitch) ||
+      controlled_test_command_line->HasSwitch(
+          kWasmBrowserHostHistoryDownloadsSmokeSwitch)) {
+    // Install only for dedicated controlled-HTTPS test routes, after Chrome
     // initialized its command line but before ContentMain can construct the
     // Network Service and its certificate verifier. The normal Wasm Chrome
-    // target never calls this initializer.
+    // target never calls this initializer, so a switch alone cannot add local
+    // test trust to production.
     chrome::InstallWasmM6TestTrustRoot();
     chrome::EnableWasmM6ControlledHttpsTestMode();
   }

@@ -564,6 +564,54 @@ source_set("wasm_settings_ui") {
   ]
 }
 
+# The M6 History bootstrap uses only a profile-owned volatile journal. It does
+# not source-select desktop HistoryUI, HistoryService, sync, bookmarks, or
+# bundled WebUI resources.
+source_set("wasm_history_ui") {
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_main_parts",
+    ":wasm_browser_smoke",
+  ]
+
+  public = [ "wasm_history_ui.h" ]
+
+  sources = [ "wasm_history_ui.cc" ]
+
+  public_deps = [ "//content/public/browser" ]
+
+  deps = [
+    ":wasm_profile",
+    ":wasm_session_navigation_journal",
+    "//base",
+    "//content/public/common",
+    "//url",
+  ]
+}
+
+# Downloads has no M6 backend because WasmProfile intentionally exposes no
+# DownloadManagerDelegate until the M7 OPFS/export slice. This root-only WebUI
+# is a static unavailable status, not desktop DownloadsUI or a fake list.
+source_set("wasm_downloads_ui") {
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_main_parts",
+    ":wasm_browser_smoke",
+  ]
+
+  public = [ "wasm_downloads_ui.h" ]
+
+  sources = [ "wasm_downloads_ui.cc" ]
+
+  public_deps = [ "//content/public/browser" ]
+
+  deps = [
+    "//base",
+    "//content/public/common",
+    "//url",
+  ]
+}
+
 # The first Wasm WebUI source-selects Chrome's real VersionUI resources and
 # handler without registering the desktop WebUI registry or ThemeService. Its
 # static chrome://theme source serves only VersionUI's bundled product logos.
@@ -867,7 +915,10 @@ source_set("wasm_session_tab_helper") {
   ]
 
   deps = [
+    ":wasm_profile",
+    ":wasm_session_navigation_journal",
     "//base",
+    "//chrome/browser/profiles:profile",
     "//content/public/browser",
     "//content/public/common",
     "//services/network/public/cpp",
@@ -1165,6 +1216,21 @@ source_set("wasm_browser_host_pointer_menu_smoke") {
   deps = [ "//content/public/browser" ]
 }
 
+# This test-only verifier exposes only fixed ordinal observations for the
+# trusted-DOM HTTP(S) -> History -> Downloads smoke. Browser lifecycle keeps
+# the actual text, pointer, WebUI, and journal state private to C++.
+source_set("wasm_browser_host_history_downloads_smoke") {
+  public = [ "wasm_browser_host_history_downloads_smoke.h" ]
+
+  sources = [ "wasm_browser_host_history_downloads_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
 source_set("wasm_browser_lifecycle") {
   public = [ "wasm_browser_lifecycle.h" ]
 
@@ -1178,6 +1244,7 @@ source_set("wasm_browser_lifecycle") {
     ":wasm_browser",
     ":wasm_browser_menu",
     ":wasm_browser_host_input",
+    ":wasm_browser_host_history_downloads_smoke",
     ":wasm_browser_host_pointer_menu_smoke",
     ":wasm_browser_host_pointer_tab_smoke",
     ":wasm_browser_host_text",
@@ -1185,6 +1252,9 @@ source_set("wasm_browser_lifecycle") {
     ":wasm_browser_manager",
     ":wasm_browser_view",
     ":wasm_profile",
+    ":wasm_downloads_ui",
+    ":wasm_history_ui",
+    ":wasm_session_navigation_journal",
     ":wasm_settings_ui",
     ":wasm_tab_core",
     ":wasm_tab_strip",
@@ -1452,6 +1522,7 @@ source_set("wasm_profile") {
   ]
 
   deps = [
+    ":wasm_session_navigation_journal",
     "//base",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_key",
@@ -1462,6 +1533,36 @@ source_set("wasm_profile") {
     "//components/prefs",
     "//components/profile_metrics",
     "//components/user_prefs",
+    "//content/public/browser",
+    "//url",
+  ]
+}
+
+# A direct WasmProfile member records committed primary-main-frame web visits
+# for chrome://history. Each WebContents owns only a weak observer; it neither
+# creates HistoryService nor persists data across the Wasm process lifetime.
+source_set("wasm_session_navigation_journal") {
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_smoke",
+    ":wasm_history_ui",
+    ":wasm_profile",
+    ":wasm_session_tab_helper",
+    ":wasm_tab_features",
+  ]
+
+  public = [
+    "wasm_session_navigation_journal.h",
+    "wasm_session_navigation_observer.h",
+  ]
+
+  sources = [
+    "wasm_session_navigation_journal.cc",
+    "wasm_session_navigation_observer.cc",
+  ]
+
+  deps = [
+    "//base",
     "//content/public/browser",
     "//url",
   ]
@@ -1486,6 +1587,8 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_manager",
     ":wasm_m6_controlled_https_test_mode",
     ":wasm_browser_smoke",
+    ":wasm_downloads_ui",
+    ":wasm_history_ui",
     ":wasm_settings_ui",
     ":wasm_version_ui",
     ":wasm_browser_process",

@@ -22,8 +22,17 @@ namespace {
 
 constexpr char kWasmVersionHost[] = "version";
 constexpr char kWasmSettingsHost[] = "settings";
+constexpr char kWasmHistoryHost[] = "history";
+constexpr char kWasmDownloadsHost[] = "downloads";
 constexpr char kWasmThemeHost[] = "theme";
 constexpr char kWasmResourcesHost[] = "resources";
+
+bool IsWasmRootChromeUrl(const GURL& url, const char* host) {
+  return url.SchemeIs(content::kChromeUIScheme) && url.host() == host &&
+         (url.path() == "/" || url.path().empty()) && !url.has_username() &&
+         !url.has_password() && !url.has_port() && !url.has_query() &&
+         !url.has_ref();
+}
 
 }  // namespace
 
@@ -65,12 +74,14 @@ bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
     return false;
 
   // The M6 foundation supports ordinary web navigation and empty documents.
-  // It source-selects VersionUI plus a static Wasm settings bootstrap. Theme
-  // and resources remain dependency-only subresource origins rather than
-  // general user-navigable Chrome routes.
+  // It source-selects VersionUI plus bounded static Settings/History/Downloads
+  // roots. Theme and resources remain dependency-only subresource origins
+  // rather than general user-navigable Chrome routes.
   return url.SchemeIsHTTPOrHTTPS() || url.SchemeIs(url::kAboutScheme) ||
          url.SchemeIs(url::kDataScheme) || url.SchemeIs(url::kBlobScheme) ||
          (url.SchemeIs(content::kChromeUIScheme) &&
           (url.host() == kWasmVersionHost || url.host() == kWasmSettingsHost ||
+           IsWasmRootChromeUrl(url, kWasmHistoryHost) ||
+           IsWasmRootChromeUrl(url, kWasmDownloadsHost) ||
            url.host() == kWasmThemeHost || url.host() == kWasmResourcesHost));
 }
