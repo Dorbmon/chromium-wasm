@@ -647,10 +647,16 @@ class M4OzoneImeBridgeContractTest(unittest.TestCase):
             "RenderWidgetHost",
             "WebInputEvent",
             "ForwardInputEvent",
-            "client->InsertText",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, dispatch)
+
+        # M6 adds its separately tagged committed-text action, but it must not
+        # turn any of M4's composition actions into an InsertText shortcut.
+        m4_composition_dispatch = dispatch.split(
+            "case WasmTextInputAction::kInsertText:", 1
+        )[0]
+        self.assertNotIn("client->InsertText", m4_composition_dispatch)
 
         for marker in (
             "GetInputMethods()",

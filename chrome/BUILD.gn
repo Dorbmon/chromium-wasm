@@ -481,6 +481,10 @@ if (is_wasm && enable_chromium_wasm_chrome) {
 
   config("chrome_wasm_assets") {
     ldflags = [
+      # The trusted DOM text adapter uses explicit short-lived Wasm heap
+      # storage rather than ccall's string conversion, so expose only malloc
+      # and free alongside the application entry point.
+      "-sEXPORTED_FUNCTIONS=_main,_malloc,_free",
       "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8",
       "-sSTACK_SIZE=2097152",
       "--embed-file=" +

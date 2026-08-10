@@ -19,17 +19,24 @@
 #include "chrome/browser/wasm/wasm_browser.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_tab_smoke.h"
+#include "chrome/browser/wasm/wasm_browser_host_text.h"
+#include "chrome/browser/wasm/wasm_browser_host_text_smoke.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "ui/aura/window.h"
+#include "ui/aura/window_tree_host.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
+#include "url/gurl.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_browser_lifecycle.cc must only be built for WebAssembly"
@@ -37,10 +44,63 @@
 
 namespace chrome {
 
+class WasmBrowserHostTextNavigationObserver final
+    : public content::WebContentsObserver {
+ public:
+  WasmBrowserHostTextNavigationObserver(
+      content::WebContents* web_contents,
+      GURL expected_url,
+      base::RepeatingClosure navigation_observed)
+      : content::WebContentsObserver(web_contents),
+        expected_url_(std::move(expected_url)),
+        navigation_observed_(std::move(navigation_observed)) {
+    CHECK(web_contents);
+    CHECK(expected_url_.is_valid());
+    CHECK(navigation_observed_);
+  }
+
+  WasmBrowserHostTextNavigationObserver(
+      const WasmBrowserHostTextNavigationObserver&) = delete;
+  WasmBrowserHostTextNavigationObserver& operator=(
+      const WasmBrowserHostTextNavigationObserver&) = delete;
+  ~WasmBrowserHostTextNavigationObserver() override = default;
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (observed_ || !navigation_handle ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->IsSameDocument() ||
+        !navigation_handle->HasCommitted() ||
+        navigation_handle->GetURL() != expected_url_) {
+      return;
+    }
+    observed_ = true;
+    navigation_observed_.Run();
+  }
+
+ private:
+  const GURL expected_url_;
+  const base::RepeatingClosure navigation_observed_;
+  bool observed_ = false;
+};
+
 namespace {
 
 constexpr char kHostAcceleratorsSmokeMarker[] =
     "CHROMIUM_WASM_M6_HOST_ACCELERATORS:PASS";
+constexpr char kHostTextSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_TEXT:READY";
+constexpr char kHostTextSmokeBurstArmedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_TEXT:BURST_ARMED";
+constexpr char kHostTextSmokeFocusedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_TEXT:FOCUSED";
+constexpr char kHostTextSmokeInsertedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_TEXT:TEXT_INSERTED";
+constexpr char kHostTextSmokeNavigatedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_TEXT:NAVIGATED";
+constexpr char kHostTextSmokePassMarker[] =
+    "CHROMIUM_WASM_M6_HOST_TEXT:PASS";
+constexpr char kHostTextSmokeUrl[] = "chrome://version/";
 constexpr char kHostPointerTabsReadyMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:READY";
 constexpr char kHostPointerTabsInsertedMarker[] =
@@ -94,7 +154,11 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   // close barrier always runs on UI before destruction, so clear it before the
   // coordinator's raw callbacks and Browser weak pointer disappear.
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
+  ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
+  ClearWasmBrowserHostTextTarget();
+  host_text_navigation_observer_.reset();
+  host_text_contents_ = nullptr;
   // BrowserManagerService owns the Browser. This lifecycle can disappear only
   // after the manager's physical destruction callback invalidates |browser_|.
   CHECK(!browser_);
@@ -147,6 +211,17 @@ void WasmBrowserLifecycle::Initialize() {
   browser_view.Show();
   CHECK(browser_view.IsVisible());
 
+  // The host never controls this widget identifier. Browser lifecycle owns
+  // the single Ozone target and invalidates it before the Browser can be
+  // destroyed, so copied text records cannot outlive Aura's TextInputClient.
+  views::Widget* const widget = browser_view.GetWidget();
+  CHECK(widget);
+  aura::Window* const native_window = widget->GetNativeWindow();
+  CHECK(native_window);
+  aura::WindowTreeHost* const host = native_window->GetHost();
+  CHECK(host);
+  CHECK(SetWasmBrowserHostTextTarget(host->GetAcceleratedWidget()));
+
   initialized_ = true;
 }
 
@@ -159,6 +234,7 @@ void WasmBrowserLifecycle::BeginShutdown() {
   CHECK_EQ(browser_manager_->GetSize(), 1u);
 
   shutdown_started_ = true;
+  ClearWasmBrowserHostTextTarget();
   browser_->GetWindow()->Close();
 }
 
@@ -178,6 +254,46 @@ void WasmBrowserLifecycle::StartHostAcceleratorSmoke() {
       base::BindOnce(
           &WasmBrowserLifecycle::OnHostAcceleratorDeliveryVerified,
           base::Unretained(this)));
+}
+
+void WasmBrowserLifecycle::StartHostTextSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!host_text_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  CHECK(top_controls);
+  CHECK(top_controls->address_field_for_testing());
+  CHECK(!host_text_contents_);
+  host_text_contents_ = browser_view.GetActiveWebContents();
+  CHECK(host_text_contents_);
+  CHECK(!host_text_navigation_observer_);
+  host_text_navigation_observer_ =
+      std::make_unique<WasmBrowserHostTextNavigationObserver>(
+          host_text_contents_, GURL(kHostTextSmokeUrl),
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnHostTextNavigationObserved,
+              base::Unretained(this)));
+
+  // The focused proof must establish that two trusted DOM insertText events
+  // were each admitted and focus-token-bound before either acknowledgement.
+  // This test-only native gate is armed before READY, never by page script.
+  CHECK(ArmWasmBrowserHostTextSmokeTwoRecordBarrier());
+
+  // Install the observer and verifier before READY. The host may synchronously
+  // submit its first trusted DOM Ctrl+L as soon as it sees that marker.
+  host_text_smoke_started_ = true;
+  SetWasmBrowserHostTextSmokeVerificationForTesting(base::BindRepeating(
+      &WasmBrowserLifecycle::VerifyHostTextSmokeCheck,
+      base::Unretained(this)));
+  std::fprintf(stderr, "%s\n%s\n", kHostTextSmokeBurstArmedMarker,
+               kHostTextSmokeReadyMarker);
+  std::fflush(stderr);
 }
 
 void WasmBrowserLifecycle::StartHostPointerTabSmoke() {
@@ -235,7 +351,11 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   // without BeginShutdown(). Both paths converge while did-close dispatch is
   // active, before Browser posts manager deletion.
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
+  ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
+  ClearWasmBrowserHostTextTarget();
+  host_text_navigation_observer_.reset();
+  host_text_contents_ = nullptr;
   shutdown_started_ = true;
   ArmBrowserDestructionBarrier();
 }
@@ -277,7 +397,11 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   shutdown_complete_ = true;
 
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
+  ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
+  ClearWasmBrowserHostTextTarget();
+  host_text_navigation_observer_.reset();
+  host_text_contents_ = nullptr;
 
   // This callback may reset and destroy this lifecycle in main-parts.
   std::move(shutdown_complete_callback_).Run();
@@ -317,6 +441,84 @@ void WasmBrowserLifecycle::OnHostAcceleratorDeliveryVerified() {
   std::fprintf(stderr, "%s\n", kHostAcceleratorsSmokeMarker);
   std::fflush(stderr);
   BeginShutdown();
+}
+
+bool WasmBrowserLifecycle::VerifyHostTextSmokeCheck(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_text_smoke_started_ || shutdown_started_ || shutdown_complete_ ||
+      !browser_ || !host_text_contents_) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  if (browser_view.GetActiveWebContents() != host_text_contents_) {
+    return false;
+  }
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  views::Textfield* const address_field =
+      top_controls ? top_controls->address_field_for_testing() : nullptr;
+  if (!address_field) {
+    return false;
+  }
+
+  if (stage == 1) {
+    if (host_text_focus_verified_ || !address_field->HasFocus() ||
+        address_field->GetText().empty() ||
+        address_field->GetSelectedText() != address_field->GetText()) {
+      return false;
+    }
+    host_text_focus_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostTextSmokeFocusedMarker);
+    std::fflush(stderr);
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 2) {
+    if (!host_text_focus_verified_ || host_text_inserted_verified_ ||
+        !address_field->HasFocus() ||
+        address_field->GetText() != u"chrome://version/") {
+      return false;
+    }
+    host_text_inserted_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostTextSmokeInsertedMarker);
+    std::fflush(stderr);
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 3) {
+    if (!host_text_inserted_verified_ || !host_text_navigation_observed_ ||
+        address_field->HasFocus() ||
+        host_text_contents_->GetLastCommittedURL() !=
+            GURL(kHostTextSmokeUrl) ||
+        address_field->GetText() != u"chrome://version/") {
+      return false;
+    }
+    std::fprintf(stderr, "%s\n", kHostTextSmokePassMarker);
+    std::fflush(stderr);
+    BeginShutdown();
+    return true;
+  }
+
+  return false;
+}
+
+void WasmBrowserLifecycle::OnHostTextNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_text_smoke_started_ || shutdown_started_ || shutdown_complete_ ||
+      !browser_ || !host_text_contents_ || host_text_navigation_observed_) {
+    return;
+  }
+  BrowserView& browser_view = browser_->GetBrowserView();
+  if (browser_view.GetActiveWebContents() != host_text_contents_ ||
+      host_text_contents_->GetLastCommittedURL() != GURL(kHostTextSmokeUrl)) {
+    return;
+  }
+  host_text_navigation_observed_ = true;
+  std::fprintf(stderr, "%s\n", kHostTextSmokeNavigatedMarker);
+  std::fflush(stderr);
+  browser_view.SchedulePaint();
 }
 
 bool WasmBrowserLifecycle::VerifyHostPointerTabSmokeCheck(int stage) {

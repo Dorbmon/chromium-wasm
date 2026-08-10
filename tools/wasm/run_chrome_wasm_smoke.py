@@ -146,6 +146,13 @@ class ChromeM6RequestHandler(BaseHTTPRequestHandler):
                 self.server.pointer_input_js_bytes,
             )
             return
+        if path == "/__m6__/chrome_wasm_text_input.js":
+            self._send_bytes(
+                HTTPStatus.OK,
+                "text/javascript; charset=utf-8",
+                self.server.text_input_js_bytes,
+            )
+            return
         prefix = "/__m6__/artifacts/"
         if path.startswith(prefix):
             artifact = self._artifact_path(path[len(prefix) :])
@@ -274,6 +281,9 @@ def create_chrome_m6_server(
     pointer_input_js_path = (
         Path(__file__).with_name("host") / "chrome_wasm_pointer_input.js"
     )
+    text_input_js_path = (
+        Path(__file__).with_name("host") / "chrome_wasm_text_input.js"
+    )
     server = ChromeM6Server((host, port), ChromeM6RequestHandler)
     server.out_dir = resolved_out_dir
     server.module_name = module_name
@@ -285,6 +295,7 @@ def create_chrome_m6_server(
     server.html_bytes = html_path.read_bytes()
     server.host_js_bytes = host_js_path.read_bytes()
     server.pointer_input_js_bytes = pointer_input_js_path.read_bytes()
+    server.text_input_js_bytes = text_input_js_path.read_bytes()
     return server
 
 

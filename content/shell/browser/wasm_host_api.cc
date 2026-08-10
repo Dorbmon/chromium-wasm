@@ -1621,6 +1621,11 @@ std::optional<ui::WasmTextInputAction> ParseWasmTextInputAction(int action) {
       return ui::WasmTextInputAction::kConfirmComposition;
     case static_cast<int>(ui::WasmTextInputAction::kClearComposition):
       return ui::WasmTextInputAction::kClearComposition;
+    // Chrome's committed-text action has a distinct Chrome-owned C ABI and
+    // delivery protocol. Content Shell's M4 bridge must not quietly inherit
+    // it merely because the shared Ozone enum gained a new value.
+    case static_cast<int>(ui::WasmTextInputAction::kInsertText):
+      return std::nullopt;
   }
   return std::nullopt;
 }
@@ -1686,6 +1691,8 @@ bool CopyM4TextInputRecord(int action,
         return false;
       }
       break;
+    case ui::WasmTextInputAction::kInsertText:
+      return false;
   }
 
   *record = {*parsed_action, static_cast<uint32_t>(session_id),

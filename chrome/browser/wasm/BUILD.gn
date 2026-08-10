@@ -1054,6 +1054,43 @@ source_set("wasm_browser_host_input") {
   ]
 }
 
+# Committed host text is a separate Chrome-owned Ozone boundary. It accepts a
+# copied UTF-8 record only after Browser lifecycle code has bound the one
+# current BrowserView widget; it cannot create focus, choose a widget, or
+# navigate a WebContents.
+source_set("wasm_browser_host_text") {
+  public = [ "wasm_browser_host_text.h" ]
+
+  sources = [ "wasm_browser_host_text.cc" ]
+
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_main_parts",
+  ]
+
+  deps = [
+    "//base",
+    "//content/public/browser",
+    "//ui/gfx",
+    "//ui/ozone/platform/wasm:wasm",
+  ]
+}
+
+# The trusted-DOM text smoke can ask only for three ordered observations of
+# lifecycle-owned state. It deliberately exports neither text nor navigation
+# input, and production code does not use it.
+source_set("wasm_browser_host_text_smoke") {
+  public = [ "wasm_browser_host_text_smoke.h" ]
+
+  sources = [ "wasm_browser_host_text_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
 # Trusted DOM pointer records use a separate Chrome-owned lifetime from the
 # physical-key ABI. The bridge exposes only bounded mouse coordinates/types to
 # JavaScript and routes them through Ozone's public SystemInputInjector; it
@@ -1120,6 +1157,8 @@ source_set("wasm_browser_lifecycle") {
     ":wasm_browser",
     ":wasm_browser_host_input",
     ":wasm_browser_host_pointer_tab_smoke",
+    ":wasm_browser_host_text",
+    ":wasm_browser_host_text_smoke",
     ":wasm_browser_manager",
     ":wasm_browser_view",
     ":wasm_profile",
@@ -1417,6 +1456,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_host_input",
     ":wasm_browser_host_lifecycle",
     ":wasm_browser_host_pointer",
+    ":wasm_browser_host_text",
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
     ":wasm_m6_controlled_https_test_mode",

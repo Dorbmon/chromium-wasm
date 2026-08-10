@@ -45,7 +45,8 @@ bool IsSupportedWasmAcceleratorDomCode(DomCode dom_code) {
   return dom_code == DomCode::SHIFT_LEFT || dom_code == DomCode::ALT_LEFT ||
          dom_code == DomCode::US_L || dom_code == DomCode::US_R ||
          dom_code == DomCode::ARROW_LEFT ||
-         dom_code == DomCode::ARROW_RIGHT || dom_code == DomCode::TAB;
+         dom_code == DomCode::ARROW_RIGHT || dom_code == DomCode::TAB ||
+         dom_code == DomCode::ENTER;
 }
 
 bool IsM4RepeatableDomCode(DomCode dom_code) {
@@ -128,8 +129,8 @@ class WasmSystemInputInjector final : public SystemInputInjector {
       NOTIMPLEMENTED_LOG_ONCE()
           << "ozone_wasm M4 raw-key input supports ArrowDown, KeyA, KeyB, "
              "Backspace, and Ctrl+C/Ctrl+V; the bounded BrowserView slice "
-             "also supports Ctrl+L/R/Tab, Ctrl+Shift+R/Tab, and Alt+Left/"
-             "Right";
+             "also supports Ctrl+L/R/Tab, Ctrl+Shift+R/Tab, Alt+Left/"
+             "Right, and an unmodified Enter";
       return;
     }
     const auto modifier_flags_for_key = [this](DomCode physical_key) {
@@ -172,6 +173,8 @@ class WasmSystemInputInjector final : public SystemInputInjector {
       key_down = &arrow_right_;
     } else if (physical_key == DomCode::TAB) {
       key_down = &tab_;
+    } else if (physical_key == DomCode::ENTER) {
+      key_down = &enter_;
     } else {
       DCHECK_EQ(physical_key, DomCode::BACKSPACE);
     }
@@ -196,7 +199,8 @@ class WasmSystemInputInjector final : public SystemInputInjector {
     if (down && !IsAcceleratorChordSatisfied(physical_key)) {
       NOTIMPLEMENTED_LOG_ONCE()
           << "ozone_wasm only accepts the bounded BrowserView accelerator "
-             "chords Ctrl+L/R/Tab, Ctrl+Shift+R/Tab, and Alt+Left/Right";
+             "chords Ctrl+L/R/Tab, Ctrl+Shift+R/Tab, Alt+Left/Right, and "
+             "an unmodified Enter";
       return;
     }
     // Retain each modifier in its own press/release and in every accepted
@@ -223,6 +227,8 @@ class WasmSystemInputInjector final : public SystemInputInjector {
         return alt_left_ && !control_left_ && !shift_left_;
       case DomCode::TAB:
         return control_left_ && !alt_left_;
+      case DomCode::ENTER:
+        return !control_left_ && !shift_left_ && !alt_left_;
       default:
         return true;
     }
@@ -246,6 +252,7 @@ class WasmSystemInputInjector final : public SystemInputInjector {
   bool arrow_left_ = false;
   bool arrow_right_ = false;
   bool tab_ = false;
+  bool enter_ = false;
 };
 
 }  // namespace

@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_WASM_WASM_BROWSER_LIFECYCLE_H_
 #define CHROME_BROWSER_WASM_WASM_BROWSER_LIFECYCLE_H_
 
+#include <memory>
+
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -20,6 +22,8 @@ class WebContents;
 }  // namespace content
 
 namespace chrome {
+
+class WasmBrowserHostTextNavigationObserver;
 
 // Owns the process-lifetime side of one bounded slim Browser. The
 // BrowserManagerService retains the Browser itself; this coordinator attaches
@@ -55,6 +59,11 @@ class WasmBrowserLifecycle final {
   // UI event path; it cannot directly invoke browser commands.
   void StartHostAcceleratorSmoke();
 
+  // Arms the separate trusted-DOM committed-text smoke. Its only exported
+  // test action is an ordered observation request; text itself still enters
+  // through the Chrome-owned Ozone TextInputClient bridge.
+  void StartHostTextSmoke();
+
   // Arms the separate real-browser smoke that accepts only trusted DOM mouse
   // records through Chrome's Ozone pointer bridge. Its exported test ABI can
   // ask this owner to inspect the model after a pointer action and acknowledge
@@ -71,6 +80,8 @@ class WasmBrowserLifecycle final {
   void OnBrowserDestructionsComplete();
   bool VerifyHostAcceleratorDelivery();
   void OnHostAcceleratorDeliveryVerified();
+  bool VerifyHostTextSmokeCheck(int stage);
+  void OnHostTextNavigationObserved();
   bool VerifyHostPointerTabSmokeCheck(int stage);
   bool OnHostPointerTabSmokePresented(int stage);
 
@@ -81,6 +92,13 @@ class WasmBrowserLifecycle final {
   base::OnceClosure shutdown_complete_callback_;
   bool initialized_ = false;
   bool host_accelerator_smoke_started_ = false;
+  bool host_text_smoke_started_ = false;
+  bool host_text_focus_verified_ = false;
+  bool host_text_inserted_verified_ = false;
+  bool host_text_navigation_observed_ = false;
+  raw_ptr<content::WebContents> host_text_contents_ = nullptr;
+  std::unique_ptr<WasmBrowserHostTextNavigationObserver>
+      host_text_navigation_observer_;
   bool host_pointer_tab_smoke_started_ = false;
   bool host_pointer_tab_insert_verified_ = false;
   bool host_pointer_tab_first_selection_verified_ = false;

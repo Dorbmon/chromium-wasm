@@ -27,6 +27,11 @@ enum class WasmTextInputAction : int {
   kSetComposition = 1,
   kConfirmComposition = 2,
   kClearComposition = 3,
+  // A non-composing committed text transaction.  This is intentionally
+  // distinct from M4's composition actions above: a host that has observed a
+  // trusted DOM `beforeinput` with `inputType == "insertText"` can submit one
+  // copied string without pretending it is an IME composition.
+  kInsertText = 4,
 };
 
 struct WasmTextInputRecord {
@@ -35,6 +40,14 @@ struct WasmTextInputRecord {
   uint32_t sequence;
   std::u16string text;
   gfx::Range selection;
+};
+
+// An opaque Ozone-owned epoch for the focused editable TextInputClient of one
+// widget. Chrome's committed-text bridge captures this before it queues a
+// host record and Ozone verifies it again on the UI sequence. The token never
+// exposes a client pointer, text, or selection to the host.
+struct WasmTextInputFocusToken {
+  uint64_t generation = 0;
 };
 
 // Keeps M4's existing direct-key behavior while reporting the authoritative
@@ -75,6 +88,7 @@ class WasmInputMethod final : public InputMethodMinimal {
   };
 
   bool CanDispatchTextInput(TextInputClient* client) const;
+  bool CanInsertText(TextInputClient* client) const;
   void ClearActiveComposition(TextInputClient* client);
   void ReportTextInputState();
 
@@ -89,6 +103,17 @@ class WasmInputMethod final : public InputMethodMinimal {
 // IME operations.
 bool DispatchWasmTextInput(gfx::AcceleratedWidget widget,
                            const WasmTextInputRecord& record);
+
+// Chrome's committed-text path is narrower than the M4 composition boundary:
+// it must bind a queued record to the same editable focused client that was
+// current when the host C ABI admitted it. A missing token or focus/type
+// transition rejects the record without consuming its sequence.
+std::optional<WasmTextInputFocusToken> CaptureWasmTextInputFocusToken(
+    gfx::AcceleratedWidget widget);
+bool DispatchWasmTextInputWithFocusToken(
+    gfx::AcceleratedWidget widget,
+    const WasmTextInputRecord& record,
+    WasmTextInputFocusToken focus_token);
 void CancelWasmTextInputForWidget(gfx::AcceleratedWidget widget);
 
 }  // namespace ui

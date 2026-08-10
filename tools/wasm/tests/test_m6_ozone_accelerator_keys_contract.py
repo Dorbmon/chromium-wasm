@@ -57,6 +57,7 @@ class M6OzoneAcceleratorKeysContractTest(unittest.TestCase):
                 "ARROW_LEFT",
                 "ARROW_RIGHT",
                 "TAB",
+                "ENTER",
             ],
         )
 
@@ -80,6 +81,7 @@ class M6OzoneAcceleratorKeysContractTest(unittest.TestCase):
             "DomCode::ARROW_LEFT",
             "DomCode::ARROW_RIGHT",
             "DomCode::TAB",
+            "DomCode::ENTER",
             "shift_left_",
             "alt_left_",
             "key_l_",
@@ -87,6 +89,7 @@ class M6OzoneAcceleratorKeysContractTest(unittest.TestCase):
             "arrow_left_",
             "arrow_right_",
             "tab_",
+            "enter_",
             "if (down && !IsAcceleratorChordSatisfied(physical_key))",
             "*key_down == down",
         ):
@@ -118,6 +121,11 @@ class M6OzoneAcceleratorKeysContractTest(unittest.TestCase):
         self.assertRegex(
             chord_policy,
             r"case DomCode::TAB:\s*return control_left_ && !alt_left_;",
+        )
+        self.assertRegex(
+            chord_policy,
+            r"case DomCode::ENTER:\s*"
+            r"return !control_left_ && !shift_left_ && !alt_left_;",
         )
 
     def test_modifier_flags_and_repeat_policy_remain_physical_and_bounded(

@@ -272,6 +272,36 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // Chrome's address-field committed-text ABI is intentionally not folded
+  // into M4's composition delivery protocol. It uses one fixed action/session
+  // and reports only the opaque request key plus native acceptance; the host
+  // never receives the focused client, focus token, text, or selection.
+  chromium_wasm_report_ozone_browser_text_input_delivery__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_ozone_browser_text_input_delivery__proxy: 'sync',
+  chromium_wasm_report_ozone_browser_text_input_delivery: (
+      action, sessionId, sequence, accepted) => {
+    if (action !== 4 || sessionId !== 0 ||
+        !Number.isSafeInteger(sequence) || sequence < 1 ||
+        (accepted !== 0 && accepted !== 1)) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportOzoneBrowserTextInputDelivery !== 'function') {
+      return 0;
+    }
+    bridge.reportOzoneBrowserTextInputDelivery({
+      protocol: ChromiumWasmHostBridge.version,
+      action,
+      sessionId,
+      sequence,
+      accepted: accepted === 1,
+    });
+    return 1;
+  },
+
   chromium_wasm_report_navigation__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_navigation__proxy: 'sync',
   chromium_wasm_report_navigation: () => {

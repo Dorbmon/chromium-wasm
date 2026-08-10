@@ -4,10 +4,13 @@
 
 #include "ui/ozone/platform/wasm/wasm_input_method.h"
 
+#include <limits>
+
 #include "base/check.h"
 #include "base/containers/flat_map.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
+#include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/ime/composition_text.h"
@@ -28,9 +31,66 @@ namespace {
 using InputMethodMap =
     base::flat_map<gfx::AcceleratedWidget, raw_ptr<WasmInputMethod>>;
 
+struct WasmTextInputFocusState {
+  uint64_t generation = 0;
+  bool has_editable_client = false;
+};
+
+using InputMethodFocusMap =
+    base::flat_map<gfx::AcceleratedWidget, WasmTextInputFocusState>;
+
 InputMethodMap& GetInputMethods() {
   static base::NoDestructor<InputMethodMap> input_methods;
   return *input_methods;
+}
+
+InputMethodFocusMap& GetInputMethodFocusStates() {
+  static base::NoDestructor<InputMethodFocusMap> focus_states;
+  return *focus_states;
+}
+
+base::Lock& GetInputMethodFocusStatesLock() {
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
+}
+
+void RegisterInputMethodFocusState(gfx::AcceleratedWidget widget) {
+  base::AutoLock lock(GetInputMethodFocusStatesLock());
+  WasmTextInputFocusState state;
+  state.generation = 1;
+  const bool inserted = GetInputMethodFocusStates()
+                            .emplace(widget, std::move(state))
+                            .second;
+  CHECK(inserted);
+}
+
+void UnregisterInputMethodFocusState(gfx::AcceleratedWidget widget) {
+  base::AutoLock lock(GetInputMethodFocusStatesLock());
+  const size_t erased = GetInputMethodFocusStates().erase(widget);
+  CHECK_EQ(erased, 1u);
+}
+
+void AdvanceInputMethodFocusState(gfx::AcceleratedWidget widget,
+                                  bool has_editable_client) {
+  base::AutoLock lock(GetInputMethodFocusStatesLock());
+  auto focus_state = GetInputMethodFocusStates().find(widget);
+  CHECK(focus_state != GetInputMethodFocusStates().end());
+  CHECK_LT(focus_state->second.generation,
+           std::numeric_limits<uint64_t>::max());
+  ++focus_state->second.generation;
+  focus_state->second.has_editable_client = has_editable_client;
+}
+
+bool IsCurrentInputMethodFocusToken(gfx::AcceleratedWidget widget,
+                                    WasmTextInputFocusToken focus_token) {
+  if (focus_token.generation == 0) {
+    return false;
+  }
+  base::AutoLock lock(GetInputMethodFocusStatesLock());
+  const auto focus_state = GetInputMethodFocusStates().find(widget);
+  return focus_state != GetInputMethodFocusStates().end() &&
+         focus_state->second.has_editable_client &&
+         focus_state->second.generation == focus_token.generation;
 }
 
 base::ThreadChecker& GetInputMethodThreadChecker() {
@@ -52,6 +112,8 @@ WasmInputMethod::WasmInputMethod(
   CHECK(window_manager_);
   const bool inserted = GetInputMethods().emplace(widget_, this).second;
   CHECK(inserted);
+  RegisterInputMethodFocusState(widget_);
+  AdvanceInputMethodFocusState(widget_, CanInsertText(GetTextInputClient()));
   // Establish an explicit initial state. The host bridge queues this report
   // until its one owning host instance has finished initialization.
   ReportTextInputState();
@@ -64,6 +126,7 @@ WasmInputMethod::~WasmInputMethod() {
   CHECK(input_method != GetInputMethods().end());
   CHECK_EQ(input_method->second, this);
   GetInputMethods().erase(input_method);
+  UnregisterInputMethodFocusState(widget_);
 }
 
 void WasmInputMethod::OnTextInputTypeChanged(TextInputClient* client) {
@@ -72,6 +135,7 @@ void WasmInputMethod::OnTextInputTypeChanged(TextInputClient* client) {
   if (active_composition_ && !CanDispatchTextInput(focused_client)) {
     ClearActiveComposition(focused_client);
   }
+  AdvanceInputMethodFocusState(widget_, CanInsertText(focused_client));
   ReportTextInputState();
 }
 
@@ -90,7 +154,12 @@ bool WasmInputMethod::DispatchTextInput(const WasmTextInputRecord& record) {
   }
 
   TextInputClient* client = GetTextInputClient();
-  if (!CanDispatchTextInput(client)) {
+  // M4's composition contract remains intentionally stricter than direct
+  // committed text: only composition needs an inline-composition-capable
+  // client.  The action-specific checks below still require an editable
+  // TextInputClient for every accepted record.
+  if (record.action != WasmTextInputAction::kInsertText &&
+      !CanDispatchTextInput(client)) {
     return false;
   }
 
@@ -145,6 +214,23 @@ bool WasmInputMethod::DispatchTextInput(const WasmTextInputRecord& record) {
       active_composition_.reset();
       client->ClearCompositionText();
       return true;
+    case WasmTextInputAction::kInsertText:
+      // Direct committed text is a separate, non-composing transaction.  It
+      // cannot adopt or overwrite M4's active composition session, and its
+      // zero session/range prevents this narrow path from becoming a generic
+      // host selection or composition API.
+      if (record.session_id != 0 || record.text.empty() ||
+          !record.selection.IsValid() || !record.selection.is_empty() ||
+          !CanInsertText(client) || active_composition_) {
+        return false;
+      }
+      last_sequence_ = record.sequence;
+      // InsertText can synchronously change focus.  Do not retain or use
+      // |client| after this normal TextInputClient operation.
+      client->InsertText(
+          record.text,
+          TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+      return true;
   }
   NOTREACHED();
 }
@@ -159,6 +245,10 @@ void WasmInputMethod::OnWillChangeFocusedClient(
     TextInputClient* focused_before,
     TextInputClient* /*focused*/) {
   ClearActiveComposition(focused_before);
+  // Make the old client unavailable before InputMethodBase installs the next
+  // one. A host C ABI call that races this transition receives no token, and
+  // a pre-existing token becomes stale even if the new client is editable.
+  AdvanceInputMethodFocusState(widget_, /*has_editable_client=*/false);
 }
 
 void WasmInputMethod::OnDidChangeFocusedClient(
@@ -167,12 +257,17 @@ void WasmInputMethod::OnDidChangeFocusedClient(
   // InputMethodBase has already installed |focused| when this hook runs. Do
   // not use the callback arguments as authoritative state: focus callbacks can
   // synchronously reenter and alter the client again.
+  AdvanceInputMethodFocusState(widget_, CanInsertText(GetTextInputClient()));
   ReportTextInputState();
 }
 
 bool WasmInputMethod::CanDispatchTextInput(TextInputClient* client) const {
   return client && GetTextInputType() != TEXT_INPUT_TYPE_NONE &&
          client->CanComposeInline();
+}
+
+bool WasmInputMethod::CanInsertText(TextInputClient* client) const {
+  return client && GetTextInputType() != TEXT_INPUT_TYPE_NONE;
 }
 
 void WasmInputMethod::ClearActiveComposition(TextInputClient* client) {
@@ -205,6 +300,32 @@ void WasmInputMethod::ReportTextInputState() {
 bool DispatchWasmTextInput(gfx::AcceleratedWidget widget,
                            const WasmTextInputRecord& record) {
   DCHECK(GetInputMethodThreadChecker().CalledOnValidThread());
+  auto input_method = GetInputMethods().find(widget);
+  return input_method != GetInputMethods().end() &&
+         input_method->second->DispatchTextInput(record);
+}
+
+std::optional<WasmTextInputFocusToken> CaptureWasmTextInputFocusToken(
+    gfx::AcceleratedWidget widget) {
+  base::AutoLock lock(GetInputMethodFocusStatesLock());
+  const auto focus_state = GetInputMethodFocusStates().find(widget);
+  if (focus_state == GetInputMethodFocusStates().end() ||
+      !focus_state->second.has_editable_client ||
+      focus_state->second.generation == 0) {
+    return std::nullopt;
+  }
+  return WasmTextInputFocusToken{focus_state->second.generation};
+}
+
+bool DispatchWasmTextInputWithFocusToken(
+    gfx::AcceleratedWidget widget,
+    const WasmTextInputRecord& record,
+    WasmTextInputFocusToken focus_token) {
+  DCHECK(GetInputMethodThreadChecker().CalledOnValidThread());
+  if (record.action != WasmTextInputAction::kInsertText ||
+      !IsCurrentInputMethodFocusToken(widget, focus_token)) {
+    return false;
+  }
   auto input_method = GetInputMethods().find(widget);
   return input_method != GetInputMethods().end() &&
          input_method->second->DispatchTextInput(record);

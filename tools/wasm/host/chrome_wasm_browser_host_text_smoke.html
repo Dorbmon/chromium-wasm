@@ -8,7 +8,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chromium Wasm normal browser lifecycle</title>
+  <title>Chromium Wasm trusted DOM text smoke</title>
   <style>
     :root {
       color-scheme: dark;
@@ -24,15 +24,15 @@
 
     main {
       display: grid;
-      grid-template-columns: minmax(800px, 1fr) 320px;
+      grid-template-columns: minmax(640px, 1fr) 320px;
       gap: 16px;
       align-items: start;
     }
 
     #browser-canvas {
       display: block;
-      width: 800px;
-      height: 600px;
+      width: 640px;
+      height: 480px;
       border: 1px solid #53657d;
       background: #000;
       outline: none;
@@ -42,9 +42,9 @@
       border-color: #72ddf7;
     }
 
-    /* The ordinary Chrome host shares the real, focusable text proxy with the
-       trusted committed-text adapter. It is visually inert, not hidden or
-       disabled, so trusted beforeinput can retain browser DOM semantics. */
+    /* This remains focusable and receives only the one trusted beforeinput
+       transaction. It is visually inert, but never hidden/disabled/readonly
+       because browser DOM input requires a genuine focused editing element. */
     #browser-text-proxy {
       position: fixed;
       top: 0;
@@ -79,15 +79,8 @@
       margin: 0 0 12px;
     }
 
-    dt {
-      color: #8da9c4;
-    }
-
-    dd {
-      min-width: 0;
-      margin: 0;
-      overflow-wrap: anywhere;
-    }
+    dt { color: #8da9c4; }
+    dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 
     pre {
       max-height: 420px;
@@ -97,23 +90,18 @@
       overflow-wrap: anywhere;
     }
 
-    main[data-state="pass"] h1 {
-      color: #80ed99;
-    }
-
-    main[data-state="fail"] h1 {
-      color: #ff758f;
-    }
+    main[data-state="pass"] h1 { color: #80ed99; }
+    main[data-state="fail"] h1 { color: #ff758f; }
   </style>
 </head>
 <body>
-  <main id="chrome-root" data-state="running">
+  <main id="browser-host-text-root" data-state="running">
     <canvas
       id="browser-canvas"
-      width="800"
-      height="600"
+      width="640"
+      height="480"
       tabindex="0"
-      aria-label="Chromium Chrome output"></canvas>
+      aria-label="Chromium browser text output"></canvas>
     <textarea
       id="browser-text-proxy"
       aria-label="Chromium browser trusted text input proxy"
@@ -121,19 +109,19 @@
       autocapitalize="off"
       spellcheck="false"
       inputmode="none"></textarea>
-    <aside aria-label="Chrome normal-browser loader diagnostics">
-      <h1>Chromium Wasm normal browser lifecycle</h1>
+    <aside aria-label="Trusted DOM text smoke diagnostics">
+      <h1>Chromium Wasm trusted DOM text smoke</h1>
       <dl id="versions"></dl>
-      <pre id="chrome-status">Starting Chrome browser…</pre>
+      <pre id="browser-host-text-status">Starting trusted DOM text smoke…</pre>
     </aside>
   </main>
   <script type="module">
-    import {runChromeWasmNormalBrowserFromQuery} from "/__m6__/chrome_wasm_host.js";
+    import {runChromeWasmBrowserHostTextSmokeFromQuery} from "/__m6_browser_host_text__/chrome_wasm_browser_host_text_smoke_host.js";
 
-    runChromeWasmNormalBrowserFromQuery().catch((error) => {
-      document.querySelector("#chrome-root").dataset.state = "fail";
-      document.querySelector("#chrome-status").textContent =
-        `HOST FAILURE: ${String(error)}`;
+    runChromeWasmBrowserHostTextSmokeFromQuery().catch((error) => {
+      document.querySelector("#browser-host-text-root").dataset.state = "fail";
+      document.querySelector("#browser-host-text-status").textContent =
+          `HOST FAILURE: ${String(error)}`;
     });
   </script>
 </body>

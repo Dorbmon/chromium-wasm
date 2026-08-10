@@ -200,6 +200,11 @@ class ChromeM6ServerTest(unittest.TestCase):
                 b"ChromiumWasmTrustedPointerInput",
             ),
             (
+                "/__m6__/chrome_wasm_text_input.js",
+                "text/javascript; charset=utf-8",
+                b"ChromiumWasmTrustedTextInput",
+            ),
+            (
                 "/__m6__/artifacts/chrome_wasm.js",
                 "text/javascript; charset=utf-8",
                 self.js_bytes,
@@ -503,6 +508,7 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
         for token in (
             'id="browser-canvas"',
             'tabindex="0"',
+            'id="browser-text-proxy"',
             'id="versions"',
             'id="chrome-status"',
             'import {runChromeWasmNormalBrowserFromQuery}',
@@ -524,6 +530,8 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
             "reportFrame(report)",
             "reportReadiness(report)",
             "reportOzoneFocusState(report)",
+            "reportOzoneBrowserTextInputDelivery(report)",
+            'import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";',
             "MAX_NORMAL_BROWSER_TIMEOUT_MS = 120000",
             "requestAnimationFrame",
             "location.reload();",
@@ -562,6 +570,7 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
         for host in (
             ROOT_DIR / "tools/wasm/host/chrome_wasm_host.js",
             ROOT_DIR / "tools/wasm/host/chrome_wasm_pointer_input.js",
+            ROOT_DIR / "tools/wasm/host/chrome_wasm_text_input.js",
         ):
             with self.subTest(host=host.name):
                 completed = subprocess.run(

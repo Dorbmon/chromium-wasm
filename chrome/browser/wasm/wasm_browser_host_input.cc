@@ -54,6 +54,8 @@ bool ParseWasmBrowserHostDomCode(std::string_view code,
     *physical_key = ui::DomCode::ARROW_RIGHT;
   } else if (code == "Tab") {
     *physical_key = ui::DomCode::TAB;
+  } else if (code == "Enter") {
+    *physical_key = ui::DomCode::ENTER;
   } else {
     return false;
   }
@@ -191,6 +193,8 @@ class WasmBrowserHostInputState {
         return alt_left_down_ && !control_left_down_ && !shift_left_down_;
       case ui::DomCode::TAB:
         return control_left_down_ && !alt_left_down_;
+      case ui::DomCode::ENTER:
+        return !control_left_down_ && !shift_left_down_ && !alt_left_down_;
       case ui::DomCode::CONTROL_LEFT:
       case ui::DomCode::SHIFT_LEFT:
       case ui::DomCode::ALT_LEFT:
@@ -219,6 +223,8 @@ class WasmBrowserHostInputState {
         return &arrow_right_down_;
       case ui::DomCode::TAB:
         return &tab_down_;
+      case ui::DomCode::ENTER:
+        return &enter_down_;
       default:
         NOTREACHED();
     }
@@ -239,6 +245,7 @@ class WasmBrowserHostInputState {
     arrow_left_down_ = false;
     arrow_right_down_ = false;
     tab_down_ = false;
+    enter_down_ = false;
   }
 
   bool IsCurrentGeneration(uint64_t generation) const {
@@ -299,6 +306,7 @@ class WasmBrowserHostInputState {
   bool arrow_left_down_ GUARDED_BY(lock_) = false;
   bool arrow_right_down_ GUARDED_BY(lock_) = false;
   bool tab_down_ GUARDED_BY(lock_) = false;
+  bool enter_down_ GUARDED_BY(lock_) = false;
   base::RepeatingCallback<bool()> verifier_ GUARDED_BY(lock_);
   base::OnceClosure verified_callback_ GUARDED_BY(lock_);
   std::unique_ptr<ui::SystemInputInjector> input_injector_;

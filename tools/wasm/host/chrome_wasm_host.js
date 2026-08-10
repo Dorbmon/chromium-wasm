@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import {ChromiumWasmTrustedPointerInput} from "./chrome_wasm_pointer_input.js";
+import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";
 
 // This is the ordinary, no-command-line-switch Chrome Wasm host lane.  It
 // proves a bounded normal Browser lifecycle and clean host-driven shutdown;
@@ -222,6 +223,7 @@ function navigationType() {
 
 class ChromiumWasmNormalBrowserHost {
   #canvas;
+  #textProxy;
   #versions;
   #restart;
   #module = null;
@@ -249,19 +251,25 @@ class ChromiumWasmNormalBrowserHost {
   #ozoneCursorReports = [];
   #ozoneTextInputStates = [];
   #ozoneTextInputDeliveries = [];
+  #ozoneBrowserTextInputDeliveries = [];
   #normalBrowserReadyMarkerObserved = false;
   #normalBrowserPassMarkerObserved = false;
   #shutdownResults = [];
   #visibleEvidenceAtShutdown = null;
   #pointerInput = null;
+  #textInput = null;
   #errorHandler;
   #rejectionHandler;
 
-  constructor(canvas, versions, restart) {
+  constructor(canvas, textProxy, versions, restart) {
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("normal-browser host requires a canvas");
     }
+    if (!(textProxy instanceof HTMLTextAreaElement)) {
+      throw new Error("normal-browser host requires a text proxy");
+    }
     this.#canvas = canvas;
+    this.#textProxy = textProxy;
     this.#versions = versions;
     this.#restart = restart;
   }
@@ -482,6 +490,7 @@ class ChromiumWasmNormalBrowserHost {
         editable: report.editable,
         canComposeInline: report.canComposeInline,
       });
+      this.#textInput?.handleOzoneTextInputState(report);
     } catch (error) {
       this.#recordFatal(`invalid Ozone text-input state report: ${String(error)}`);
     }
@@ -506,6 +515,27 @@ class ChromiumWasmNormalBrowserHost {
     } catch (error) {
       this.#recordFatal(
           `invalid Ozone text-input delivery report: ${String(error)}`);
+    }
+  }
+
+  #reportOzoneBrowserTextInputDelivery(value) {
+    try {
+      const report = asReport(value, "browser text-input delivery report");
+      if (report.protocol !== HOST_PROTOCOL || report.action !== 4 ||
+          report.sessionId !== 0 || !Number.isSafeInteger(report.sequence) ||
+          report.sequence < 1 || typeof report.accepted !== "boolean") {
+        throw new Error("browser text-input delivery metadata is invalid");
+      }
+      appendBounded(this.#ozoneBrowserTextInputDeliveries, {
+        action: report.action,
+        sessionId: report.sessionId,
+        sequence: report.sequence,
+        accepted: report.accepted,
+      });
+      this.#textInput?.handleOzoneBrowserTextInputDelivery(report);
+    } catch (error) {
+      this.#recordFatal(
+          `invalid browser text-input delivery report: ${String(error)}`);
     }
   }
 
@@ -540,6 +570,9 @@ class ChromiumWasmNormalBrowserHost {
       reportOzoneTextInputDelivery(report) {
         host.#reportOzoneTextInputDelivery(report);
       },
+      reportOzoneBrowserTextInputDelivery(report) {
+        host.#reportOzoneBrowserTextInputDelivery(report);
+      },
     });
   }
 
@@ -561,6 +594,16 @@ class ChromiumWasmNormalBrowserHost {
       maximumFrameDimension: MAX_FRAME_DIMENSION,
     });
     this.#pointerInput.attach();
+    this.#textInput = new ChromiumWasmTrustedTextInput(
+        this.#canvas, this.#textProxy, {
+          getModule: () => this.#module,
+          reportFatal: (message) => this.#recordFatal(message),
+        });
+    this.#textInput.attach();
+    const latest_text_state = this.#ozoneTextInputStates.at(-1);
+    if (latest_text_state) {
+      this.#textInput.handleOzoneTextInputState(latest_text_state);
+    }
     this.#startHeartbeat();
   }
 
@@ -621,6 +664,7 @@ class ChromiumWasmNormalBrowserHost {
     }
     this.#visibleEvidenceAtShutdown = evidence;
     this.#pointerInput?.releaseActivePointer("host-shutdown");
+    this.#textInput?.releaseActiveInput("host-shutdown");
     let first;
     let second;
     try {
@@ -697,6 +741,8 @@ class ChromiumWasmNormalBrowserHost {
       ozoneCursorReports: this.#ozoneCursorReports,
       ozoneTextInputStates: this.#ozoneTextInputStates,
       ozoneTextInputDeliveries: this.#ozoneTextInputDeliveries,
+      ozoneBrowserTextInputDeliveries: this.#ozoneBrowserTextInputDeliveries,
+      trustedTextInput: this.#textInput?.snapshot() || null,
       canvasBackingStore: {
         width: this.#canvas.width,
         height: this.#canvas.height,
@@ -803,6 +849,8 @@ class ChromiumWasmNormalBrowserHost {
     } finally {
       this.#pointerInput?.detach();
       this.#pointerInput = null;
+      this.#textInput?.detach();
+      this.#textInput = null;
       this.#stopHeartbeat();
       this.#releaseWindowErrors();
     }
@@ -948,14 +996,15 @@ export async function runChromeWasmNormalBrowserFromQuery() {
   const versions = parseVersions(query.get("versions"));
   const root = document.querySelector("#chrome-root");
   const canvas = document.querySelector("#browser-canvas");
+  const textProxy = document.querySelector("#browser-text-proxy");
   const status = document.querySelector("#chrome-status");
   if (!(root instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement) ||
-      !(status instanceof HTMLElement)) {
+      !(textProxy instanceof HTMLTextAreaElement) || !(status instanceof HTMLElement)) {
     throw new Error("normal-browser page is missing required elements");
   }
   renderVersions(document.querySelector("#versions"), versions);
   const {attempt, key} = nextRestartAttempt(token, restartAttempts);
-  const host = new ChromiumWasmNormalBrowserHost(canvas, versions, {
+  const host = new ChromiumWasmNormalBrowserHost(canvas, textProxy, versions, {
     attempt,
     attempts: restartAttempts,
     navigationType: navigationType(),
