@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 OPFS writer-exclusivity smoke</title>
+<main id="m7-opfs-exclusivity-root" data-state="starting">
+  <h1>Chromium Wasm M7 OPFS writer-exclusivity smoke</h1>
+  <pre id="m7-opfs-exclusivity-status">starting</pre>
+</main>
+<script type="module">
+  import {runM7WasmfsOpfsExclusivitySmokeFromQuery} from
+      "./m7_wasmfs_opfs_exclusivity_smoke.js";
+  runM7WasmfsOpfsExclusivitySmokeFromQuery().catch((error) => {
+    const root = document.querySelector("#m7-opfs-exclusivity-root");
+    const status = document.querySelector("#m7-opfs-exclusivity-status");
+    if (root instanceof HTMLElement) {
+      root.dataset.state = "fail";
+    }
+    if (status instanceof HTMLElement) {
+      status.textContent = String(error);
+    }
+    throw error;
+  });
+</script>

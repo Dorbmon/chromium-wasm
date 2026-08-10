@@ -157,6 +157,12 @@ if (enable_chromium_wasm_port) {
     ldflags = [ "-sWASMFS=1" ]
   }
 
+  # This intentionally remains target-local. Neither Chrome nor the existing
+  # M7 primitive-persistence smoke opt into WasmFS through this target.
+  config("m7_wasmfs_opfs_exclusivity_smoke_link") {
+    ldflags = [ "-sWASMFS=1" ]
+  }
+
   executable("m7_wasmfs_opfs_smoke") {
     testonly = true
     sources = [ "m7_wasmfs_opfs_smoke.cc" ]
@@ -165,6 +171,19 @@ if (enable_chromium_wasm_port) {
     # Emscripten supplies the WasmFS C++ runtime and compiler builtins.  This
     # mirrors the other standalone Wasm smokes rather than pulling Chrome's
     # regular runtime closure into the feasibility experiment.
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  # A separate same-origin, two-module probe for SyncAccessHandle writer
+  # exclusion. It is not a Chrome profile target and does not claim database
+  # locking, crash recovery, or orderly runtime teardown.
+  executable("m7_wasmfs_opfs_exclusivity_smoke") {
+    testonly = true
+    sources = [ "m7_wasmfs_opfs_exclusivity_smoke.cc" ]
+    configs += [ ":m7_wasmfs_opfs_exclusivity_smoke_link" ]
+
     no_default_deps = true
     use_libcxx_modules = false
     configs -= [ "//build/config/compiler:runtime_library" ]
