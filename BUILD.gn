@@ -36,7 +36,10 @@ if (enable_chromium_wasm_port) {
   group("gn_all") {
     testonly = true
     if (enable_chromium_wasm_chrome) {
-      deps = [ "//chrome:chrome_wasm($default_toolchain)" ]
+      deps = [
+        "//chrome:chrome_wasm($default_toolchain)",
+        "//tools/wasm:m7_wasmfs_opfs_smoke($default_toolchain)",
+      ]
     } else if (enable_chromium_wasm_content) {
       deps = [
         "//content/shell:content_shell_wasm($default_toolchain)",

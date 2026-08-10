@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm M7 OPFS smoke</title>
+</head>
+<body>
+  <main id="m7-opfs-root" data-state="starting">
+    <h1>Chromium Wasm M7 OPFS smoke</h1>
+    <pre id="m7-opfs-status" aria-live="polite">Starting…</pre>
+  </main>
+  <script type="module">
+    import {runM7WasmfsOpfsSmokeFromQuery} from "./m7_wasmfs_opfs_smoke.js";
+
+    runM7WasmfsOpfsSmokeFromQuery().catch((error) => {
+      const root = document.querySelector("#m7-opfs-root");
+      const status = document.querySelector("#m7-opfs-status");
+      if (root instanceof HTMLElement) {
+        root.dataset.state = "fail";
+      }
+      if (status instanceof HTMLElement) {
+        status.textContent = "M7 OPFS host failure: " + String(error);
+      }
+      // Rethrow on a later turn so the browser keeps the failure visible while
+      // the runner's bounded wait detects the missing result upload.
+      setTimeout(() => { throw error; }, 0);
+    });
+  </script>
+</body>
+</html>

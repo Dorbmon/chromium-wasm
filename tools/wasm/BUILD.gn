@@ -147,3 +147,26 @@ if (enable_chromium_wasm_content) {
     configs -= [ "//build/config/compiler:runtime_library" ]
   }
 }
+
+# Keep the experimental WasmFS/OPFS closure isolated from the current Chrome
+# executable.  The M7 feasibility target is deliberately a standalone binary:
+# it must establish the pinned backend's real semantics before `/profile` or
+# Chromium's embedded asset filesystem changes away from the proven MEMFS path.
+if (enable_chromium_wasm_port) {
+  config("m7_wasmfs_opfs_smoke_link") {
+    ldflags = [ "-sWASMFS=1" ]
+  }
+
+  executable("m7_wasmfs_opfs_smoke") {
+    testonly = true
+    sources = [ "m7_wasmfs_opfs_smoke.cc" ]
+    configs += [ ":m7_wasmfs_opfs_smoke_link" ]
+
+    # Emscripten supplies the WasmFS C++ runtime and compiler builtins.  This
+    # mirrors the other standalone Wasm smokes rather than pulling Chrome's
+    # regular runtime closure into the feasibility experiment.
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+}
