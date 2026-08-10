@@ -18,22 +18,31 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_browser.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
+#include "chrome/browser/wasm/wasm_browser_host_pointer_menu_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_tab_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_host_text_smoke.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "chrome/browser/wasm/wasm_browser_menu.h"
+#include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/web_ui.h"
+#include "content/public/browser/web_ui_controller.h"
+#include "content/public/browser/webui_config.h"
+#include "content/public/common/url_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
@@ -84,6 +93,92 @@ class WasmBrowserHostTextNavigationObserver final
   bool observed_ = false;
 };
 
+// Observes the Settings navigation independently of the ordinal verifier.
+// The local WebUI can commit before the host's second verifier task runs, so
+// completion is joined later with the Ozone-delivered Settings click rather
+// than making the observer depend on that scheduling detail.
+class WasmBrowserHostPointerMenuNavigationObserver final
+    : public content::WebContentsObserver {
+ public:
+  WasmBrowserHostPointerMenuNavigationObserver(
+      content::WebContents* web_contents,
+      GURL expected_url,
+      base::RepeatingClosure navigation_observed)
+      : content::WebContentsObserver(web_contents),
+        expected_url_(std::move(expected_url)),
+        navigation_observed_(std::move(navigation_observed)) {
+    CHECK(web_contents);
+    CHECK(expected_url_.is_valid());
+    CHECK(navigation_observed_);
+  }
+
+  WasmBrowserHostPointerMenuNavigationObserver(
+      const WasmBrowserHostPointerMenuNavigationObserver&) = delete;
+  WasmBrowserHostPointerMenuNavigationObserver& operator=(
+      const WasmBrowserHostPointerMenuNavigationObserver&) = delete;
+  ~WasmBrowserHostPointerMenuNavigationObserver() override = default;
+
+  // content::WebContentsObserver:
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (observed_ || committed_ || !navigation_handle ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->IsSameDocument() ||
+        !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage() ||
+        navigation_handle->GetURL() != expected_url_ ||
+        !ui::PageTransitionCoreTypeIs(navigation_handle->GetPageTransition(),
+                                      ui::PAGE_TRANSITION_GENERATED) ||
+        !navigation_handle->HasUserGesture() || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+
+    committed_ = true;
+    if (web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
+      first_visually_nonempty_paint_after_commit_ = true;
+    }
+    if (!web_contents()->IsLoading()) {
+      stopped_loading_after_commit_ = true;
+    }
+    MaybeNotify();
+  }
+
+  void DidStopLoading() override {
+    if (!committed_ || observed_) {
+      return;
+    }
+    stopped_loading_after_commit_ = true;
+    MaybeNotify();
+  }
+
+  void DidFirstVisuallyNonEmptyPaint() override {
+    if (!committed_ || observed_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+    CHECK(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+    first_visually_nonempty_paint_after_commit_ = true;
+    MaybeNotify();
+  }
+
+ private:
+  void MaybeNotify() {
+    if (observed_ || !committed_ || !stopped_loading_after_commit_ ||
+        !first_visually_nonempty_paint_after_commit_) {
+      return;
+    }
+    observed_ = true;
+    navigation_observed_.Run();
+  }
+
+  const GURL expected_url_;
+  const base::RepeatingClosure navigation_observed_;
+  bool committed_ = false;
+  bool stopped_loading_after_commit_ = false;
+  bool first_visually_nonempty_paint_after_commit_ = false;
+  bool observed_ = false;
+};
+
 namespace {
 
 constexpr char kHostAcceleratorsSmokeMarker[] =
@@ -113,6 +208,21 @@ constexpr char kHostPointerTabsClosedMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:CLOSED";
 constexpr char kHostPointerTabsPassMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:PASS";
+constexpr char kHostPointerMenuReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_MENU:READY";
+constexpr char kHostPointerMenuOpenedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_MENU:MENU_OPEN";
+constexpr char kHostPointerMenuPresentedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_MENU:MENU_PRESENTED";
+constexpr char kHostPointerMenuClosedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_MENU:MENU_CLOSED";
+constexpr char kHostPointerMenuSettingsNavigatedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_MENU:SETTINGS_NAVIGATED";
+constexpr char kHostPointerMenuPassMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_MENU:PASS";
+constexpr char kHostPointerMenuSettingsUrl[] = "chrome://settings/";
+constexpr char16_t kHostPointerMenuSettingsTitle[] =
+    u"Settings \u2014 Chromium Wasm";
 constexpr gfx::Rect kBrowserLifecycleSmokeBounds(0, 0, 640, 480);
 constexpr int kMaximumHostPointerCoordinate = 16383;
 
@@ -156,9 +266,12 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
+  ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
+  host_pointer_menu_navigation_observer_.reset();
+  host_pointer_menu_contents_ = nullptr;
   // BrowserManagerService owns the Browser. This lifecycle can disappear only
   // after the manager's physical destruction callback invalidates |browser_|.
   CHECK(!browser_);
@@ -333,6 +446,65 @@ void WasmBrowserLifecycle::StartHostPointerTabSmoke() {
   std::fflush(stderr);
 }
 
+void WasmBrowserLifecycle::StartHostPointerMenuSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!host_pointer_menu_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  CHECK(top_controls);
+  CHECK(browser_menu);
+  CHECK(!browser_menu->IsOpen());
+  views::LabelButton* const menu_button =
+      top_controls->menu_button_for_testing();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  CHECK(menu_button);
+  CHECK(contents_web_view);
+
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  CHECK(tab_strip_model);
+  CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK(!host_pointer_menu_contents_);
+  CHECK(!host_pointer_menu_navigation_observer_);
+  host_pointer_menu_contents_ = tab_strip_model->GetActiveWebContents();
+  CHECK(host_pointer_menu_contents_);
+  CHECK_EQ(browser_view.GetActiveWebContents(), host_pointer_menu_contents_);
+
+  browser_view.DeprecatedLayoutImmediately();
+  host_pointer_menu_closed_contents_y_ = contents_web_view->bounds().y();
+  CHECK_GE(host_pointer_menu_closed_contents_y_, 0);
+
+  // The observer is deliberately installed before READY and independent of
+  // check stage 2. A fast local WebUI can commit while the host's ordinal
+  // callback is still queued; final presentation joins both proofs below.
+  host_pointer_menu_navigation_observer_ =
+      std::make_unique<WasmBrowserHostPointerMenuNavigationObserver>(
+          host_pointer_menu_contents_, GURL(kHostPointerMenuSettingsUrl),
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnHostPointerMenuSettingsNavigationObserved,
+              base::Unretained(this)));
+
+  host_pointer_menu_smoke_started_ = true;
+  SetWasmBrowserHostPointerMenuSmokeVerificationForTesting(
+      base::BindRepeating(&WasmBrowserLifecycle::VerifyHostPointerMenuSmokeCheck,
+                          base::Unretained(this)),
+      base::BindRepeating(
+          &WasmBrowserLifecycle::OnHostPointerMenuSmokePresented,
+          base::Unretained(this)));
+
+  const gfx::Point target = GetHostPointerTarget(browser_view, menu_button);
+  std::fprintf(stderr, "%s x=%d y=%d\n", kHostPointerMenuReadyMarker,
+               target.x(), target.y());
+  std::fflush(stderr);
+}
+
 bool WasmBrowserLifecycle::IsVisible() const {
   CHECK(initialized_);
   CHECK(!shutdown_complete_);
@@ -353,9 +525,12 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
+  ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
+  host_pointer_menu_navigation_observer_.reset();
+  host_pointer_menu_contents_ = nullptr;
   shutdown_started_ = true;
   ArmBrowserDestructionBarrier();
 }
@@ -399,9 +574,12 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
   ClearWasmBrowserHostTextSmokeVerificationForTesting();
   ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
+  ClearWasmBrowserHostPointerMenuSmokeVerificationForTesting();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
   host_text_contents_ = nullptr;
+  host_pointer_menu_navigation_observer_.reset();
+  host_pointer_menu_contents_ = nullptr;
 
   // This callback may reset and destroy this lifecycle in main-parts.
   std::move(shutdown_complete_callback_).Run();
@@ -672,6 +850,195 @@ bool WasmBrowserLifecycle::OnHostPointerTabSmokePresented(int stage) {
   std::fflush(stderr);
   BeginShutdown();
   return true;
+}
+
+bool WasmBrowserLifecycle::VerifyHostPointerMenuSmokeCheck(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_pointer_menu_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_pointer_menu_contents_ ||
+      !host_pointer_menu_navigation_observer_) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!top_controls || !browser_menu || !contents_web_view ||
+      browser_view.GetActiveWebContents() != host_pointer_menu_contents_) {
+    return false;
+  }
+
+  if (stage == 1) {
+    if (host_pointer_menu_open_verified_ ||
+        host_pointer_menu_open_presentation_verified_ ||
+        host_pointer_menu_settings_click_verified_ ||
+        host_pointer_menu_settings_navigation_verified_ ||
+        host_pointer_menu_settings_presentation_verified_ ||
+        !browser_menu->IsOpen()) {
+      return false;
+    }
+
+    browser_view.DeprecatedLayoutImmediately();
+    if (contents_web_view->bounds().y() <=
+        host_pointer_menu_closed_contents_y_) {
+      return false;
+    }
+    views::LabelButton* const settings_button =
+        browser_menu->settings_button_for_testing();
+    if (!settings_button || !settings_button->GetVisible() ||
+        !settings_button->GetEnabled()) {
+      return false;
+    }
+
+    // The Settings center is published only after the real BrowserView has
+    // laid out the now-visible child panel. JS cannot supply this coordinate.
+    const gfx::Point settings_target =
+        GetHostPointerTarget(browser_view, settings_button);
+    host_pointer_menu_open_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n", kHostPointerMenuOpenedMarker,
+                 settings_target.x(), settings_target.y());
+    std::fflush(stderr);
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 2) {
+    if (!host_pointer_menu_open_verified_ ||
+        !host_pointer_menu_open_presentation_verified_ ||
+        host_pointer_menu_settings_click_verified_ ||
+        host_pointer_menu_settings_presentation_verified_ ||
+        browser_menu->IsOpen()) {
+      return false;
+    }
+
+    browser_view.DeprecatedLayoutImmediately();
+    if (contents_web_view->bounds().y() !=
+        host_pointer_menu_closed_contents_y_) {
+      return false;
+    }
+    host_pointer_menu_settings_click_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostPointerMenuClosedMarker);
+    std::fflush(stderr);
+    // A later observer marker additionally requires target FVP. Scheduling
+    // here preserves an independent post-click canvas frame even when the
+    // local WebUI commits on the next browser task.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  return false;
+}
+
+bool WasmBrowserLifecycle::OnHostPointerMenuSmokePresented(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_pointer_menu_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_pointer_menu_contents_) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!browser_menu || !contents_web_view ||
+      browser_view.GetActiveWebContents() != host_pointer_menu_contents_) {
+    return false;
+  }
+
+  if (stage == 1) {
+    if (!host_pointer_menu_open_verified_ ||
+        host_pointer_menu_open_presentation_verified_ ||
+        host_pointer_menu_settings_click_verified_ ||
+        host_pointer_menu_settings_navigation_verified_ ||
+        host_pointer_menu_settings_presentation_verified_ ||
+        !browser_menu->IsOpen()) {
+      return false;
+    }
+    browser_view.DeprecatedLayoutImmediately();
+    if (contents_web_view->bounds().y() <=
+        host_pointer_menu_closed_contents_y_) {
+      return false;
+    }
+    host_pointer_menu_open_presentation_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostPointerMenuPresentedMarker);
+    std::fflush(stderr);
+    return true;
+  }
+
+  if (stage != 2 || !host_pointer_menu_open_verified_ ||
+      !host_pointer_menu_open_presentation_verified_ ||
+      !host_pointer_menu_settings_click_verified_ ||
+      !host_pointer_menu_settings_navigation_verified_ ||
+      host_pointer_menu_settings_presentation_verified_ ||
+      browser_menu->IsOpen()) {
+    return false;
+  }
+  browser_view.DeprecatedLayoutImmediately();
+  if (contents_web_view->bounds().y() !=
+      host_pointer_menu_closed_contents_y_) {
+    return false;
+  }
+
+  host_pointer_menu_settings_presentation_verified_ = true;
+  std::fprintf(stderr, "%s\n", kHostPointerMenuPassMarker);
+  std::fflush(stderr);
+  BeginShutdown();
+  return true;
+}
+
+void WasmBrowserLifecycle::OnHostPointerMenuSettingsNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_pointer_menu_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_pointer_menu_contents_ ||
+      host_pointer_menu_settings_navigation_verified_) {
+    return;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmBrowserMenuView* const browser_menu =
+      browser_view.wasm_browser_menu();
+  views::WebView* const contents_web_view = browser_view.contents_web_view();
+  if (!browser_menu || !contents_web_view || browser_menu->IsOpen() ||
+      browser_view.GetActiveWebContents() != host_pointer_menu_contents_ ||
+      host_pointer_menu_contents_->GetLastCommittedURL() !=
+          GURL(kHostPointerMenuSettingsUrl) ||
+      host_pointer_menu_contents_->GetTitle() !=
+          kHostPointerMenuSettingsTitle) {
+    return;
+  }
+
+  browser_view.DeprecatedLayoutImmediately();
+  if (contents_web_view->bounds().y() !=
+      host_pointer_menu_closed_contents_y_) {
+    return;
+  }
+
+  content::WebUI* const settings_web_ui =
+      host_pointer_menu_contents_->GetWebUI();
+  content::WebUIConfig* const settings_web_ui_config =
+      settings_web_ui ? settings_web_ui->GetWebUIConfig() : nullptr;
+  content::WebUIController* const settings_web_ui_controller =
+      settings_web_ui ? settings_web_ui->GetController() : nullptr;
+  WasmSettingsUI* const settings_ui = settings_web_ui_controller
+                                          ? settings_web_ui_controller
+                                                ->GetAs<WasmSettingsUI>()
+                                          : nullptr;
+  if (!settings_web_ui_config || !settings_web_ui_controller || !settings_ui ||
+      settings_web_ui_config->scheme() != content::kChromeUIScheme ||
+      settings_web_ui_config->host() != "settings" ||
+      settings_ui->web_ui() != settings_web_ui) {
+    return;
+  }
+
+  host_pointer_menu_settings_navigation_verified_ = true;
+  std::fprintf(stderr, "%s\n", kHostPointerMenuSettingsNavigatedMarker);
+  std::fflush(stderr);
+  // The host records a compositor frame strictly after this marker, which is
+  // itself emitted only after primary commit, loading completion, and target
+  // first-visually-non-empty paint for the limited Settings bootstrap.
+  browser_view.SchedulePaint();
 }
 
 }  // namespace chrome

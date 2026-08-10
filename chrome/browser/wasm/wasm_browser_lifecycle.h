@@ -24,6 +24,7 @@ class WebContents;
 namespace chrome {
 
 class WasmBrowserHostTextNavigationObserver;
+class WasmBrowserHostPointerMenuNavigationObserver;
 
 // Owns the process-lifetime side of one bounded slim Browser. The
 // BrowserManagerService retains the Browser itself; this coordinator attaches
@@ -70,6 +71,12 @@ class WasmBrowserLifecycle final {
   // a host-presented frame; it has no create/close/select command surface.
   void StartHostPointerTabSmoke();
 
+  // Arms the separate real-browser smoke that opens the actual in-canvas
+  // BrowserView menu and selects its Settings child through trusted DOM mouse
+  // records. The exported verifier can only inspect the ensuing state and
+  // acknowledge presentation; it cannot invoke menu commands or navigation.
+  void StartHostPointerMenuSmoke();
+
   bool IsVisible() const;
   bool IsShutdownStarted() const { return shutdown_started_; }
   bool IsShutdownComplete() const { return shutdown_complete_; }
@@ -84,6 +91,9 @@ class WasmBrowserLifecycle final {
   void OnHostTextNavigationObserved();
   bool VerifyHostPointerTabSmokeCheck(int stage);
   bool OnHostPointerTabSmokePresented(int stage);
+  bool VerifyHostPointerMenuSmokeCheck(int stage);
+  bool OnHostPointerMenuSmokePresented(int stage);
+  void OnHostPointerMenuSettingsNavigationObserved();
 
   const raw_ptr<WasmProfile> profile_;
   const raw_ptr<BrowserManagerService> browser_manager_;
@@ -107,6 +117,16 @@ class WasmBrowserLifecycle final {
   bool host_pointer_tab_presentation_verified_ = false;
   raw_ptr<content::WebContents> host_pointer_tab_initial_contents_ = nullptr;
   raw_ptr<content::WebContents> host_pointer_tab_second_contents_ = nullptr;
+  bool host_pointer_menu_smoke_started_ = false;
+  bool host_pointer_menu_open_verified_ = false;
+  bool host_pointer_menu_open_presentation_verified_ = false;
+  bool host_pointer_menu_settings_click_verified_ = false;
+  bool host_pointer_menu_settings_navigation_verified_ = false;
+  bool host_pointer_menu_settings_presentation_verified_ = false;
+  int host_pointer_menu_closed_contents_y_ = 0;
+  raw_ptr<content::WebContents> host_pointer_menu_contents_ = nullptr;
+  std::unique_ptr<WasmBrowserHostPointerMenuNavigationObserver>
+      host_pointer_menu_navigation_observer_;
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;

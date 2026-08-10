@@ -319,6 +319,7 @@ source_set("wasm_top_controls") {
 # selected slim Browser can actually execute.
 source_set("wasm_browser_menu") {
   visibility = [
+    ":wasm_browser_lifecycle",
     ":wasm_browser_smoke",
     ":wasm_browser_view",
   ]
@@ -545,6 +546,7 @@ source_set("wasm_m6_controlled_https_test_mode") {
 # durable preference support.
 source_set("wasm_settings_ui") {
   visibility = [
+    ":wasm_browser_lifecycle",
     ":wasm_browser_main_parts",
     ":wasm_browser_smoke",
   ]
@@ -1147,6 +1149,22 @@ source_set("wasm_browser_host_pointer_tab_smoke") {
   deps = [ "//content/public/browser" ]
 }
 
+# The real-browser trusted-pointer Menu -> Settings smoke exposes only ordered
+# observations and presentation acknowledgements. The lifecycle retains the
+# Browser, Views, and WebUI state, so JavaScript cannot use this target as a
+# command or navigation surface.
+source_set("wasm_browser_host_pointer_menu_smoke") {
+  public = [ "wasm_browser_host_pointer_menu_smoke.h" ]
+
+  sources = [ "wasm_browser_host_pointer_menu_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
 source_set("wasm_browser_lifecycle") {
   public = [ "wasm_browser_lifecycle.h" ]
 
@@ -1158,18 +1176,22 @@ source_set("wasm_browser_lifecycle") {
 
   deps = [
     ":wasm_browser",
+    ":wasm_browser_menu",
     ":wasm_browser_host_input",
+    ":wasm_browser_host_pointer_menu_smoke",
     ":wasm_browser_host_pointer_tab_smoke",
     ":wasm_browser_host_text",
     ":wasm_browser_host_text_smoke",
     ":wasm_browser_manager",
     ":wasm_browser_view",
     ":wasm_profile",
+    ":wasm_settings_ui",
     ":wasm_tab_core",
     ":wasm_tab_strip",
     ":wasm_top_controls",
     "//content/public/browser",
     "//ui/gfx/geometry",
+    "//ui/views/controls/webview:webview",
   ]
 }
 

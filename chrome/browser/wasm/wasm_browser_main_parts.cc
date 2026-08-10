@@ -84,6 +84,8 @@ constexpr char kWasmBrowserHostTextSmokeSwitch[] =
     "wasm-browser-host-text-smoke";
 constexpr char kWasmBrowserHostPointerTabSmokeSwitch[] =
     "wasm-browser-host-pointer-tab-smoke";
+constexpr char kWasmBrowserHostPointerMenuSmokeSwitch[] =
+    "wasm-browser-host-pointer-menu-smoke";
 constexpr char kWasmBrowserLifecycleSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY";
 constexpr char kWasmBrowserLifecycleSmokePassMarker[] =
@@ -325,12 +327,17 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_pointer_tab_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerTabSmokeSwitch);
+  const bool browser_host_pointer_menu_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostPointerMenuSmokeSwitch);
   if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
-      browser_host_text_smoke || browser_host_pointer_tab_smoke) {
+      browser_host_text_smoke || browser_host_pointer_tab_smoke ||
+      browser_host_pointer_menu_smoke) {
     CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
-                 static_cast<int>(browser_host_pointer_tab_smoke),
+                 static_cast<int>(browser_host_pointer_tab_smoke) +
+                 static_cast<int>(browser_host_pointer_menu_smoke),
              1);
     CHECK(!browser_lifecycle_);
     CHECK(!browser_lifecycle_smoke_requested_);
@@ -575,6 +582,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerTabSmokeSwitch)) {
     browser_lifecycle_->StartHostPointerTabSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostPointerMenuSmokeSwitch)) {
+    browser_lifecycle_->StartHostPointerMenuSmoke();
     return;
   }
   std::fprintf(stderr, "%s\n", kWasmBrowserLifecycleSmokeReadyMarker);
