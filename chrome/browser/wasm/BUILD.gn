@@ -508,6 +508,7 @@ source_set("wasm_browser_smoke") {
     "//chrome/app:command_ids",
     "//content/public/browser",
     "//content/public/common",
+    "//net",
     "//ui/base",
     "//ui/events",
     "//ui/gfx/geometry",
@@ -515,6 +516,23 @@ source_set("wasm_browser_smoke") {
     "//ui/views/controls/webview:webview",
     "//url",
   ]
+}
+
+# A process-level capability for the dedicated controlled-HTTPS test target.
+# Production Chrome links the inert query so browser-main can reject a copied
+# test switch before creating a Browser; only the separate test executable
+# enables it after installing its local test root.
+source_set("wasm_m6_controlled_https_test_mode") {
+  visibility = [
+    ":wasm_browser_main_parts",
+    "//chrome:chrome_wasm_m6_https_test",
+  ]
+
+  public = [ "wasm_m6_controlled_https_test_mode.h" ]
+
+  sources = [ "wasm_m6_controlled_https_test_mode.cc" ]
+
+  deps = [ "//base" ]
 }
 
 # The desktop SettingsUI target is intentionally not source-selected: it owns
@@ -1360,6 +1378,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_host_lifecycle",
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
+    ":wasm_m6_controlled_https_test_mode",
     ":wasm_browser_smoke",
     ":wasm_settings_ui",
     ":wasm_version_ui",

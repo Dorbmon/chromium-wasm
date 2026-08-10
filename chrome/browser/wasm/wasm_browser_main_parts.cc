@@ -24,6 +24,7 @@
 #include "chrome/browser/wasm/wasm_browser_host_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
+#include "chrome/browser/wasm/wasm_m6_controlled_https_test_mode.h"
 #include "chrome/browser/wasm/wasm_browser_process.h"
 #include "chrome/browser/wasm/wasm_browser_smoke.h"
 #include "chrome/browser/wasm/wasm_settings_ui.h"
@@ -71,6 +72,8 @@ constexpr char kWasmBrowserViewSmokeSwitch[] = "wasm-browser-view-smoke";
 constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
     "wasm-browser-window-core-smoke";
 constexpr char kWasmBrowserSmokeSwitch[] = "wasm-browser-smoke";
+constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
+    "wasm-browser-controlled-https-smoke";
 constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
     "wasm-browser-lifecycle-smoke";
 constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
@@ -246,6 +249,25 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // Exercise the factory while the profile is live. Browser::Create() will
   // retrieve this same manager when the real window lifecycle is selected.
   CHECK(BrowserManagerServiceFactory::GetForProfile(profile_.get()));
+
+  // This dedicated Chrome target installs Chromium's local test root before
+  // ContentMain. The smoke then reaches one exact H2 fixture through the
+  // visible address field and a host-configured WISP transport. Production
+  // chrome_wasm neither links that root nor accepts this test-only contract.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserControlledHttpsSmokeSwitch)) {
+    if (!chrome::IsWasmM6ControlledHttpsTestModeEnabled()) {
+      LOG(ERROR) << "chrome_wasm rejects the controlled HTTPS smoke switch "
+                    "outside its dedicated test executable";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    if (!chrome::RunWasmBrowserControlledHttpsSmoke(profile_.get())) {
+      LOG(ERROR) << "chrome_wasm controlled HTTPS browser smoke failed";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
 
   // This switch-gated proof creates the first real Wasm Browser through the
   // normal BrowserWindow factory/deleter seam, attaches one model-owned tab,

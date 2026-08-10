@@ -15,6 +15,13 @@
 #include "content/public/app/content_main.h"
 #include "content/public/common/content_switches.h"
 
+#if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
+// Only the controlled M6 target supplies this header. GN's include checker
+// does not evaluate the target-specific preprocessor definition.
+#include "chrome/browser/wasm/wasm_m6_controlled_https_test_mode.h"  // nogncheck
+#include "chrome/browser/wasm/wasm_m6_test_trust.h"  // nogncheck
+#endif
+
 #if !BUILDFLAG(IS_WASM)
 #error "chrome_main_wasm.cc must only be built for WebAssembly"
 #endif
@@ -26,6 +33,11 @@ std::optional<base::CommandLine>& GetInitialCommandLineStorage() {
       initial_command_line;
   return *initial_command_line;
 }
+
+#if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
+constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
+    "wasm-browser-controlled-https-smoke";
+#endif
 
 }  // namespace
 
@@ -40,6 +52,18 @@ extern "C" int ChromeMain(int argc, const char** argv) {
   params.argv = argv;
 
   base::CommandLine::Init(params.argc, params.argv);
+
+#if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserControlledHttpsSmokeSwitch)) {
+    // Install only for the dedicated controlled-HTTPS smoke, after Chrome has
+    // initialized its command line but before ContentMain can construct the
+    // Network Service and its certificate verifier. The normal Wasm Chrome
+    // target never calls this initializer.
+    chrome::InstallWasmM6TestTrustRoot();
+    chrome::EnableWasmM6ControlledHttpsTestMode();
+  }
+#endif
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   if (!command_line->HasSwitch(switches::kProcessType)) {

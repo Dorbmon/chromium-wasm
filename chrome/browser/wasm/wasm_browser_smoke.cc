@@ -6,10 +6,12 @@
 
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
@@ -41,6 +43,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
+#include "net/socket/wisp_transport_wasm.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/events/event.h"
@@ -55,10 +58,19 @@
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_browser_smoke.cc must only be built for WebAssembly"
 #endif
+
+// This import is implemented by ozone_wasm's host bridge. The controlled
+// HTTPS smoke reports a real WebContents paint only after its exact fixture
+// has committed; it must not infer page readiness from a surface frame alone.
+extern "C" int chromium_wasm_report_readiness(
+    int shell_ready,
+    int surface_ready,
+    int first_visually_nonempty_paint);
 
 namespace chrome {
 
@@ -80,6 +92,12 @@ constexpr char kSettingsBootstrapSmokeMarker[] =
     "CHROMIUM_WASM_M6_SETTINGS_BOOTSTRAP:PASS";
 constexpr char kBrowserMenuSmokeMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_MENU:PASS";
+constexpr char kControlledHttpsSmokeMarker[] =
+    "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS";
+constexpr char kControlledHttpsSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY";
+constexpr char kControlledHttpsSmokeNavigatedMarker[] =
+    "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED";
 constexpr gfx::Rect kBrowserSmokeBounds(0, 0, 640, 480);
 constexpr base::TimeDelta kBrowserSmokeVisibleDuration = base::Milliseconds(250);
 constexpr base::TimeDelta kNavigationTimeout = base::Seconds(5);
@@ -91,6 +109,11 @@ constexpr char kSecondNavigationUrl[] =
     "PCFkb2N0eXBlIGh0bWw+PHRpdGxlPndhc20tdG9wLWNvbnRyb2xzLWI8L3RpdGxlPjxib2R5Pndhc20tdG9wLWNvbnRyb2xzLWI8L2JvZHk+";
 constexpr char kVersionWebUIUrl[] = "chrome://version/";
 constexpr char kSettingsWebUIUrl[] = "chrome://settings/";
+constexpr char kControlledHttpsUrlSwitch[] =
+    "wasm-browser-controlled-https-url";
+constexpr char kControlledHttpsHost[] = "a.test";
+constexpr char kControlledHttpsPath[] = "/m5/m6-ui";
+constexpr char16_t kControlledHttpsTitle[] = u"Chromium Wasm M6 UI fixture";
 
 struct BrowserSmokeState {
   BrowserWindowInterface* expected_browser = nullptr;
@@ -210,6 +233,33 @@ class ActiveTabNavigationObserver final
   void WaitForNavigation(const GURL& expected_url,
                          bool expect_typed_user_navigation,
                          base::OnceClosure start_navigation) {
+    WaitForNavigationImpl(expected_url, expect_typed_user_navigation,
+                          /*require_first_visually_nonempty_paint=*/false,
+                          std::move(start_navigation), base::OnceClosure());
+  }
+
+  // Waits for the primary-main-frame commit, loading completion, and the
+  // renderer's first non-empty layout paint for this exact navigation. This is
+  // deliberately distinct from a compositor turn: a canvas frame could still
+  // contain the prior page while the new document is unpainted.
+  void WaitForNavigationAndFirstVisuallyNonEmptyPaint(
+      const GURL& expected_url,
+      bool expect_typed_user_navigation,
+      base::OnceClosure start_navigation,
+      base::OnceClosure on_primary_main_frame_commit) {
+    WaitForNavigationImpl(expected_url, expect_typed_user_navigation,
+                          /*require_first_visually_nonempty_paint=*/true,
+                          std::move(start_navigation),
+                          std::move(on_primary_main_frame_commit));
+  }
+
+ private:
+  void WaitForNavigationImpl(
+      const GURL& expected_url,
+      bool expect_typed_user_navigation,
+      bool require_first_visually_nonempty_paint,
+      base::OnceClosure start_navigation,
+      base::OnceClosure on_primary_main_frame_commit) {
     CHECK(expected_url.is_valid());
     CHECK(start_navigation);
     CHECK(!waiting_for_navigation_);
@@ -218,9 +268,13 @@ class ActiveTabNavigationObserver final
 
     expected_url_ = expected_url;
     expect_typed_user_navigation_ = expect_typed_user_navigation;
+    require_first_visually_nonempty_paint_ =
+        require_first_visually_nonempty_paint;
+    on_primary_main_frame_commit_ = std::move(on_primary_main_frame_commit);
     waiting_for_navigation_ = true;
     committed_primary_main_frame_ = false;
     stopped_loading_after_commit_ = false;
+    first_visually_nonempty_paint_after_commit_ = false;
     timed_out_ = false;
 
     base::RunLoop navigation_run_loop;
@@ -236,15 +290,19 @@ class ActiveTabNavigationObserver final
     CHECK(!timed_out_);
     CHECK(committed_primary_main_frame_);
     CHECK(stopped_loading_after_commit_);
+    if (require_first_visually_nonempty_paint_) {
+      CHECK(first_visually_nonempty_paint_after_commit_);
+    }
+    CHECK(!on_primary_main_frame_commit_);
     CHECK(web_contents());
     CHECK_EQ(web_contents()->GetLastCommittedURL(), expected_url_);
 
     waiting_for_navigation_ = false;
     expected_url_ = GURL();
     expect_typed_user_navigation_ = false;
+    require_first_visually_nonempty_paint_ = false;
   }
 
- private:
   // content::WebContentsObserver:
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override {
@@ -266,12 +324,28 @@ class ActiveTabNavigationObserver final
     CHECK_EQ(web_contents()->GetLastCommittedURL(), expected_url_);
     committed_primary_main_frame_ = true;
 
+    // Notify the host at the verified commit boundary. The ensuing first
+    // non-empty paint and compositor presentation must therefore follow this
+    // marker, rather than merely describing the prior about:blank frame.
+    if (on_primary_main_frame_commit_) {
+      std::move(on_primary_main_frame_commit_).Run();
+    }
+
+    // `CompletedFirstVisuallyNonEmptyPaint()` is scoped to the current primary
+    // Page. This catches a paint that completed synchronously during the
+    // navigation callback while still excluding the superseded about:blank
+    // Page.
+    if (require_first_visually_nonempty_paint_ &&
+        web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
+      first_visually_nonempty_paint_after_commit_ = true;
+    }
+
     // A synchronous completion may not produce a later DidStopLoading()
     // callback after this observer starts waiting. The WebContents loading
     // state remains the authoritative completion signal in that case.
     if (!web_contents()->IsLoading()) {
       stopped_loading_after_commit_ = true;
-      FinishNavigationWait();
+      MaybeFinishNavigationWait();
     }
   }
 
@@ -281,15 +355,40 @@ class ActiveTabNavigationObserver final
     }
 
     stopped_loading_after_commit_ = true;
-    FinishNavigationWait();
+    MaybeFinishNavigationWait();
+  }
+
+  void DidFirstVisuallyNonEmptyPaint() override {
+    // Do not credit an initial about:blank paint or an unrelated navigation.
+    // This observer becomes eligible only after the exact fixture navigation
+    // committed in the primary main frame above.
+    if (!waiting_for_navigation_ ||
+        !require_first_visually_nonempty_paint_ ||
+        !committed_primary_main_frame_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+
+    CHECK(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+    first_visually_nonempty_paint_after_commit_ = true;
+    MaybeFinishNavigationWait();
   }
 
   void OnNavigationTimeout() {
     timed_out_ = true;
-    FinishNavigationWait();
+    QuitNavigationWait();
   }
 
-  void FinishNavigationWait() {
+  void MaybeFinishNavigationWait() {
+    if (!committed_primary_main_frame_ || !stopped_loading_after_commit_ ||
+        (require_first_visually_nonempty_paint_ &&
+         !first_visually_nonempty_paint_after_commit_)) {
+      return;
+    }
+    QuitNavigationWait();
+  }
+
+  void QuitNavigationWait() {
     if (wait_quit_closure_) {
       std::move(wait_quit_closure_).Run();
     }
@@ -297,11 +396,14 @@ class ActiveTabNavigationObserver final
 
   base::OneShotTimer navigation_timeout_;
   base::OnceClosure wait_quit_closure_;
+  base::OnceClosure on_primary_main_frame_commit_;
   GURL expected_url_;
   bool expect_typed_user_navigation_ = false;
+  bool require_first_visually_nonempty_paint_ = false;
   bool waiting_for_navigation_ = false;
   bool committed_primary_main_frame_ = false;
   bool stopped_loading_after_commit_ = false;
+  bool first_visually_nonempty_paint_after_commit_ = false;
   bool timed_out_ = false;
 };
 
@@ -399,6 +501,39 @@ void CloseEmptyBrowserForSmoke(Profile* profile,
   CHECK(!weak_browser);
   CHECK(browser_manager->IsEmpty());
   CHECK(global_collection->IsEmpty());
+}
+
+GURL GetControlledHttpsSmokeUrl() {
+  const base::CommandLine* const command_line =
+      base::CommandLine::ForCurrentProcess();
+  CHECK(command_line);
+  CHECK(command_line->HasSwitch(kControlledHttpsUrlSwitch));
+
+  const GURL url(
+      command_line->GetSwitchValueASCII(kControlledHttpsUrlSwitch));
+  CHECK(url.is_valid());
+  CHECK(url.SchemeIs(url::kHttpsScheme));
+  CHECK_EQ(url.host(), kControlledHttpsHost);
+  // The local relay deliberately chooses an ephemeral H2 port. Requiring an
+  // explicit port prevents this test-only command line from silently widening
+  // into a normal public-navigation input surface.
+  CHECK(url.has_port());
+  CHECK_GT(url.EffectiveIntPort(), 0);
+  CHECK_LE(url.EffectiveIntPort(), 65535);
+  CHECK(!url.has_username());
+  CHECK(!url.has_password());
+  CHECK(!url.has_query());
+  CHECK(!url.has_ref());
+  CHECK_EQ(url.path(), kControlledHttpsPath);
+  return url;
+}
+
+void WaitForBrowserSmokePresentation() {
+  base::RunLoop visible_run_loop;
+  base::OneShotTimer visible_timer;
+  visible_timer.Start(FROM_HERE, kBrowserSmokeVisibleDuration,
+                      visible_run_loop.QuitClosure());
+  visible_run_loop.Run();
 }
 
 }  // namespace
@@ -883,6 +1018,149 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(global_collection->IsEmpty());
 
   std::puts(kBrowserSmokeMarker);
+  return true;
+}
+
+bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile) {
+  CHECK(profile);
+  BrowserManagerService* const browser_manager =
+      BrowserManagerServiceFactory::GetForProfile(profile);
+  CHECK(browser_manager);
+  CHECK(browser_manager->IsEmpty());
+
+  GlobalBrowserCollection* const global_collection =
+      GlobalBrowserCollection::GetInstance();
+  CHECK(global_collection);
+  CHECK(global_collection->IsEmpty());
+
+  const GURL controlled_https_url = GetControlledHttpsSmokeUrl();
+  CHECK(net::IsWasmWispTransportConfigured())
+      << "controlled HTTPS smoke requires an explicitly configured WISP "
+         "transport";
+
+  Browser::CreateParams params(profile, /*user_gesture=*/true);
+  Browser* const raw_browser = Browser::Create(params);
+  CHECK(raw_browser);
+  CHECK_EQ(browser_manager->GetSize(), 1u);
+  CHECK(raw_browser->window());
+
+  content::WebContents::CreateParams create_params(profile);
+  std::unique_ptr<content::WebContents> contents =
+      content::WebContents::Create(create_params);
+  CHECK(contents);
+  content::WebContents* const raw_contents = contents.get();
+  TabStripModel* const tab_strip_model = raw_browser->tab_strip_model();
+  CHECK(tab_strip_model);
+  CHECK(tab_strip_model->empty());
+  tab_strip_model->AppendWebContents(std::move(contents),
+                                     /*foreground=*/true);
+  CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_contents);
+
+  BrowserView& browser_view = raw_browser->GetBrowserView();
+  CHECK_EQ(browser_view.browser(), raw_browser);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_contents);
+  browser_view.SetBounds(kBrowserSmokeBounds);
+  CHECK_EQ(browser_view.GetBounds(), kBrowserSmokeBounds);
+  browser_view.Show();
+  CHECK(browser_view.IsVisible());
+  WaitForBrowserSmokePresentation();
+  std::puts(kControlledHttpsSmokeReadyMarker);
+
+  WasmTopControlsView* const top_controls = browser_view.wasm_top_controls();
+  CHECK(top_controls);
+  views::Textfield* const address_field =
+      top_controls->address_field_for_testing();
+  views::Widget* const browser_widget = browser_view.GetWidget();
+  CHECK(address_field);
+  CHECK(browser_widget);
+
+  const int port = controlled_https_url.EffectiveIntPort();
+  CHECK_GT(port, 0);
+  CHECK_LE(port, 65535);
+  CHECK(net::BeginWasmWispTransportDiagnostics(
+      controlled_https_url.host(), static_cast<uint16_t>(port)));
+  const std::optional<net::WasmWispTransportDiagnostics>
+      initial_wisp_diagnostics = net::GetWasmWispTransportDiagnostics();
+  CHECK(initial_wisp_diagnostics);
+  // WebSocket-open and handshake bits are process-lifetime carrier counters;
+  // only the stream bit is scoped by BeginWasmWispTransportDiagnostics(). A
+  // preexisting carrier is therefore harmless, but no matching destination
+  // stream may be credited before this exact address-field navigation.
+  CHECK_EQ(initial_wisp_diagnostics->completion_flags &
+               net::kWasmWispDiagnosticStreamConfirmed,
+           0);
+
+  ActiveTabNavigationObserver navigation_observer(raw_contents);
+  navigation_observer.WaitForNavigationAndFirstVisuallyNonEmptyPaint(
+      controlled_https_url, /*expect_typed_user_navigation=*/true,
+      base::BindOnce(
+          [](views::Widget* widget, views::Textfield* address_field,
+             const GURL& expected_url) {
+            address_field->SetText(base::UTF8ToUTF16(expected_url.spec()));
+            address_field->RequestFocus();
+            CHECK_EQ(widget->GetFocusManager()->GetFocusedView(),
+                     address_field);
+            SendKeyPress(widget, ui::VKEY_RETURN);
+          },
+          base::Unretained(browser_widget), base::Unretained(address_field),
+          controlled_https_url),
+      base::BindOnce([] { std::puts(kControlledHttpsSmokeNavigatedMarker); }));
+  CHECK_EQ(raw_contents->GetLastCommittedURL(), controlled_https_url);
+  CHECK_EQ(raw_contents->GetTitle(), kControlledHttpsTitle);
+  CHECK_EQ(address_field->GetText(),
+           base::UTF8ToUTF16(controlled_https_url.spec()));
+  CHECK(!address_field->GetInvalid());
+  CHECK_EQ(chromium_wasm_report_readiness(
+               /*shell_ready=*/-1, /*surface_ready=*/-1,
+               /*first_visually_nonempty_paint=*/1),
+           1);
+  // Force a normal Views invalidation after the exact page has both committed
+  // and reported its first non-empty paint. This yields a fresh Ozone canvas
+  // presentation after the commit marker rather than accepting a retained
+  // about:blank frame from before navigation.
+  browser_view.SchedulePaint();
+
+  const std::optional<net::WasmWispTransportDiagnostics> wisp_diagnostics =
+      net::GetWasmWispTransportDiagnostics();
+  CHECK(wisp_diagnostics);
+  CHECK_EQ(wisp_diagnostics->completion_flags,
+           net::kWasmWispDiagnosticAllRequired);
+
+  // The commit marker and real invalidation above precede this bounded
+  // compositor turn. The host independently requires its new canvas frame
+  // before close rather than accepting the initial about:blank window.
+  WaitForBrowserSmokePresentation();
+
+  BrowserSmokeState state;
+  state.expected_browser = raw_browser;
+  state.expected_active_contents.push_back(nullptr);
+  base::CallbackListSubscription active_tab_subscription =
+      raw_browser->RegisterActiveTabDidChange(
+          base::BindRepeating(&OnActiveTabChanged, &state));
+  base::CallbackListSubscription close_subscription =
+      raw_browser->RegisterBrowserDidClose(
+          base::BindRepeating(&OnBrowserDidClose, &state));
+  base::WeakPtr<Browser> weak_browser = raw_browser->AsWeakPtr();
+
+  // Close through the same real BaseWindow route that an end-user close
+  // request uses. The Browser's ordered model -> BWF -> BrowserWindowDeleter
+  // path must complete before the test-only Chrome process exits.
+  raw_browser->GetWindow()->Close();
+  CHECK(weak_browser);
+  CHECK(tab_strip_model->empty());
+  CHECK(!raw_browser->IsDeleteScheduled());
+  CHECK(!browser_view.GetActiveWebContents());
+  base::RunLoop().RunUntilIdle();
+
+  CHECK(state.did_close);
+  CHECK_EQ(state.active_tab_change_count,
+           state.expected_active_contents.size());
+  CHECK(!weak_browser);
+  CHECK(browser_manager->IsEmpty());
+  CHECK(global_collection->IsEmpty());
+
+  std::puts(kControlledHttpsSmokeMarker);
   return true;
 }
 

@@ -503,6 +503,20 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ]
   }
 
+  # The source PEM also contains a test private key. This action deliberately
+  # extracts only the CERTIFICATE block into a generated C++ include for the
+  # dedicated M6 controlled-HTTPS executable; it is never an embedded runtime
+  # asset.
+  action("generate_wasm_m6_test_root_cert") {
+    testonly = true
+    visibility = [ ":chrome_wasm_m6_https_test" ]
+    script = "//net/data/ssl/scripts/generate-fuzzer-cert-include.py"
+    sources = [ "//net/data/ssl/certificates/root_ca_cert.pem" ]
+    outputs = [ "$target_gen_dir/browser/wasm/wasm_m6_test_root_cert.inc" ]
+    args = [ rebase_path(sources[0], root_build_dir) ] +
+           rebase_path(outputs, root_build_dir)
+  }
+
   executable("chrome_wasm") {
     sources = [
       "app/chrome_exe_main_aura.cc",
@@ -527,6 +541,46 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "//chrome/common:buildflags",
       "//content/public/app",
       "//content/public/common",
+      "//third_party/icu:icudata",
+      "//ui/ozone",
+    ]
+  }
+
+  # This executable exists solely for the controlled M6 HTTPS browser-flow
+  # smoke. The production Wasm Chrome binary contains neither the local test
+  # root nor an expanded trust boundary.
+  executable("chrome_wasm_m6_https_test") {
+    testonly = true
+    sources = [
+      "app/chrome_exe_main_aura.cc",
+      "app/chrome_main.h",
+      "app/chrome_main_wasm.cc",
+      "browser/wasm/wasm_m6_test_trust.cc",
+      "browser/wasm/wasm_m6_test_trust.h",
+    ]
+    inputs = [
+      "$root_out_dir/chrome_100_percent.pak",
+      "$root_out_dir/chrome_200_percent.pak",
+      "$root_out_dir/resources.pak",
+      "$root_out_dir/locales/en-US.pak",
+      "$root_out_dir/icudtl.dat",
+      wasm_default_font_asset,
+    ]
+    configs += [ ":chrome_wasm_assets" ]
+    defines = [ "CHROME_WASM_M6_CONTROLLED_HTTPS_TEST=1" ]
+    deps = [
+      ":generate_wasm_m6_test_root_cert",
+      ":wasm_packed_resources",
+      "//base",
+      "//chrome/app:generated_resources",
+      "//chrome/browser/wasm:wasm_browser_views_platform",
+      "//chrome/browser/wasm:wasm_chrome_main_delegate",
+      "//chrome/browser/wasm:wasm_chrome_result_codes",
+      "//chrome/browser/wasm:wasm_m6_controlled_https_test_mode",
+      "//chrome/common:buildflags",
+      "//content/public/app",
+      "//content/public/common",
+      "//net",
       "//third_party/icu:icudata",
       "//ui/ozone",
     ]

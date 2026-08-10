@@ -26,6 +26,13 @@ const FIXTURE = "chromium-wasm-m5-network-v1";
 const WISP_PATH = "/wisp/";
 const STATUS_PATH = "/status";
 const TEST_HOSTNAME = "a.test";
+// Keep the M6 browser-UI navigation fixture independent from the M5 page's
+// redirect/cookie workflow. It is a fixed HTTPS document on the same H2
+// listener, so it still traverses Chromium networking and WISP without
+// extending the relay destination allowlist.
+const M6_UI_PATH = "/m5/m6-ui";
+const M6_UI_TITLE = "Chromium Wasm M6 UI fixture";
+const M6_UI_BODY = "CHROMIUM_WASM_M6_UI_READY";
 // The controlled local-gateway proof deliberately presents an ordinary
 // HTTPS authority to Chromium while keeping the actual target listener on an
 // ephemeral loopback port. The relay owns this exact logical-destination
@@ -782,6 +789,7 @@ function statusSnapshot(context) {
     localGateway443StreamsOpened: context.stats.localGateway443StreamsOpened,
     localGatewayBlockedPortAttempts:
       context.stats.localGatewayBlockedPortAttempts,
+    m6UiRequests: context.stats.m6UiRequests,
     multiplexBarrierReleases: context.stats.multiplexBarrierReleases,
     multiplexBarrierTimeouts: context.stats.multiplexBarrierTimeouts,
     multiplexBothStreamsOpen: context.stats.multiplexBothStreamsOpen,
@@ -3272,6 +3280,16 @@ function h2Page(context) {
 </script>`;
 }
 
+function m6UiPage() {
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>${M6_UI_TITLE}</title>
+<main>
+<h1>${M6_UI_TITLE}</h1>
+<p id="m6-ui-status">${M6_UI_BODY}</p>
+</main>`;
+}
+
 function hasExpectedRedirectCookie(headers, context) {
   const header = headers.cookie;
   const cookieLine = Array.isArray(header) ? header.join(";") : header;
@@ -3301,6 +3319,18 @@ function createH2Server(context, tlsMaterial) {
       return;
     }
     context.stats.h2Requests += 1;
+    if (requestPath === M6_UI_PATH) {
+      const body = Buffer.from(m6UiPage());
+      incrementBoundedCounter(context, "m6UiRequests");
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-length": String(body.length),
+        "content-type": "text/html; charset=utf-8",
+      }));
+      stream.end(body);
+      context.transcript.add("h2-m6-ui");
+      return;
+    }
     if (requestPath === "/m5/redirect-cookie") {
       context.stats.redirectRequests += 1;
       stream.respond(h2Headers({
@@ -4068,6 +4098,7 @@ async function start(options) {
       localGateway443Requests: 0,
       localGateway443StreamsOpened: 0,
       localGatewayBlockedPortAttempts: 0,
+      m6UiRequests: 0,
       multiplexBarrierReleases: 0,
       multiplexBarrierTimeouts: 0,
       multiplexBothStreamsOpen: false,
@@ -4189,6 +4220,7 @@ async function start(options) {
       "m5/csp-connect-src-target",
     http1Url: `https://${TEST_HOSTNAME}:${context.h1Port}/m5/cors-resource`,
     httpsUrl: `https://${TEST_HOSTNAME}:${context.h2Port}/m5/`,
+    m6UiUrl: `https://${TEST_HOSTNAME}:${context.h2Port}${M6_UI_PATH}`,
     protocol: 1,
     schema_version: 1,
     statusUrl: `http://${LOOPBACK_HOST}:${context.wispPort}${STATUS_PATH}`,

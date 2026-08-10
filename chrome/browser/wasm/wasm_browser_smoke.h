@@ -16,6 +16,12 @@ namespace chrome {
 // smoke, not ordinary Chrome startup.
 bool RunWasmBrowserSmoke(WasmProfile* profile);
 
+// Navigates the visible address field to the one local HTTPS/H2 M6 fixture
+// through a host-configured WISP transport. This is test-only: the dedicated
+// executable installs Chromium's local test root, while production
+// chrome_wasm never links that root or expands its certificate policy.
+bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile);
+
 }  // namespace chrome
 
 #endif  // CHROME_BROWSER_WASM_WASM_BROWSER_SMOKE_H_

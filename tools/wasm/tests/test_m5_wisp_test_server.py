@@ -234,15 +234,18 @@ class M5WispTestServerTest(unittest.TestCase):
             time.sleep(0.05)
         self.fail("TLS failure endpoint did not observe a TCP connection")
 
-    def _h2_resource(self) -> bytes:
+    def _h2_resource(self, request_path: str = "/m5/h2-resource") -> bytes:
         connection, parsed = self._tls_connection("httpsUrl", alpn=["h2"])
         with connection:
             self.assertEqual(connection.selected_alpn_protocol(), "h2")
             authority = f"a.test:{parsed.port}".encode("ascii")
+            encoded_path = request_path.encode("ascii")
+            self.assertLessEqual(len(encoded_path), 127)
             # HPACK: indexed :method GET/:scheme https, then literal :path
             # and :authority fields without dynamic-table indexing.
             header_block = (
-                b"\x82\x87\x04\x0f/m5/h2-resource\x01" +
+                b"\x82\x87\x04" + bytes([len(encoded_path)]) + encoded_path +
+                b"\x01" +
                 bytes([len(authority)]) + authority)
 
             def frame(frame_type: int, flags: int, stream_id: int,
@@ -270,6 +273,35 @@ class M5WispTestServerTest(unittest.TestCase):
                     if flags & 0x01:
                         return bytes(body)
             self.fail("H2 response did not end its data stream")
+
+    def test_m6_ui_fixture_is_deterministic_and_records_bounded_evidence(
+        self,
+    ) -> None:
+        m6_ui_url = urlsplit(self.metadata["m6UiUrl"])
+        h2_url = urlsplit(self.metadata["httpsUrl"])
+        self.assertEqual(m6_ui_url.scheme, "https")
+        self.assertEqual(m6_ui_url.hostname, "a.test")
+        self.assertEqual(m6_ui_url.path, "/m5/m6-ui")
+        self.assertFalse(m6_ui_url.query)
+        self.assertFalse(m6_ui_url.fragment)
+        self.assertEqual(m6_ui_url.port, h2_url.port)
+
+        before = self._status()
+        self.assertEqual(before["m6UiRequests"], 0)
+        body = self._h2_resource(m6_ui_url.path)
+        self.assertIn(b"<title>Chromium Wasm M6 UI fixture</title>", body)
+        self.assertIn(
+            b'<p id="m6-ui-status">CHROMIUM_WASM_M6_UI_READY</p>', body
+        )
+
+        status = self._status()
+        self.assertEqual(status["m6UiRequests"], 1)
+        transcript = status["transcript"]
+        self.assertIsInstance(transcript, list)
+        self.assertLessEqual(len(transcript), 256)
+        self.assertEqual(
+            [entry["event"] for entry in transcript].count("h2-m6-ui"), 1
+        )
 
     def _exercise_redirect_cookie_gate(self) -> dict[str, object]:
         node = node_executable()
