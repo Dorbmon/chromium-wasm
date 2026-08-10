@@ -14,6 +14,8 @@ HTTPS navigation through its real Views address field.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from collections import deque
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -21,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import http.client
 import ipaddress
 import json
+import math
 from pathlib import Path
 import queue
 import re
@@ -50,6 +53,7 @@ from run_browser_smoke import (
     stop_browser,
 )
 from run_content_shell_smoke import manifest_versions
+from m3_content_server import compare_screenshots, decode_png
 from run_m5_wisp_smoke import (
     find_node,
     m5_host_origin,
@@ -71,12 +75,20 @@ READY_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:READY"
 NAVIGATED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED"
 PASS_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS"
 M6_UI_PATH = "/m5/m6-ui"
+GATEWAY_FIXTURE_URL = "https://a.test/m5/m6-ui"
+GATEWAY_LOGICAL_PORT = 443
 RELAY_FIXTURE = "chromium-wasm-m5-network-v1"
 DEFAULT_OUT_DIR = Path("out/wasm-chrome-m6")
 DEFAULT_MODULE_NAME = "chrome_wasm_m6_https_test"
 CONTROLLED_HTTPS_GN_TARGET = "//chrome:chrome_wasm_m6_https_test"
 HOST_ROOT = "/__m6_browser_controlled_https__"
-MAX_RESULT_BYTES = 1024 * 1024
+MAX_RESULT_BYTES = 8 * 1024 * 1024
+MAX_SCREENSHOT_PNG_BYTES = 4 * 1024 * 1024
+MAX_SCREENSHOT_BASE64_LENGTH = ((MAX_SCREENSHOT_PNG_BYTES + 2) // 3) * 4
+CONTROLLED_HTTPS_SCREENSHOT_CONTRACT = (
+    Path(__file__).with_name("testdata")
+    / "m6_controlled_https_screenshot_contract.json"
+)
 MAX_RELAY_READY_LINE_BYTES = 16 * 1024
 MAX_RELAY_STATUS_BYTES = 256 * 1024
 MAX_RELAY_TRANSCRIPT_ENTRIES = 256
@@ -93,6 +105,75 @@ class RelayReady:
     wisp_endpoint: str
     m6_ui_url: str
     transcript_url: str
+
+
+def _require_screenshot_contract_string(
+    contract: dict[str, Any], field: str
+) -> str:
+    value = contract.get(field)
+    if not isinstance(value, str) or not value:
+        raise M0Error(f"controlled-HTTPS screenshot contract {field} is invalid")
+    return value
+
+
+def load_controlled_https_screenshot_contract(
+    path: Path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT,
+) -> dict[str, Any]:
+    """Load the narrow, unmasked visual comparison policy for this lane."""
+
+    try:
+        contract = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise M0Error(
+            f"cannot read controlled-HTTPS screenshot contract: {exc}"
+        ) from exc
+    expected_fields = {
+        "schema_version",
+        "fixture",
+        "gateway_url",
+        "baseline",
+        "baseline_policy",
+        "visual_strategy",
+        "width",
+        "height",
+        "channel_tolerance",
+        "maximum_different_pixel_ratio",
+        "comparison",
+    }
+    if not isinstance(contract, dict) or set(contract) != expected_fields:
+        raise M0Error("controlled-HTTPS screenshot contract shape is unsupported")
+    if contract.get("schema_version") != 1:
+        raise M0Error("controlled-HTTPS screenshot contract schema is unsupported")
+    if contract.get("fixture") != "chromium-wasm-m6-controlled-https-v1":
+        raise M0Error("controlled-HTTPS screenshot fixture is unsupported")
+    if contract.get("gateway_url") != GATEWAY_FIXTURE_URL:
+        raise M0Error("controlled-HTTPS screenshot gateway URL is unsupported")
+    baseline = _require_screenshot_contract_string(contract, "baseline")
+    baseline_path = Path(baseline)
+    if baseline_path.name != baseline or baseline_path.suffix != ".png":
+        raise M0Error("controlled-HTTPS screenshot baseline name is invalid")
+    for field in ("baseline_policy", "visual_strategy", "comparison"):
+        _require_screenshot_contract_string(contract, field)
+    if (
+        type(contract.get("width")) is not int
+        or contract["width"] != 640
+        or type(contract.get("height")) is not int
+        or contract["height"] != 480
+    ):
+        raise M0Error("controlled-HTTPS screenshot dimensions are unsupported")
+    tolerance = contract.get("channel_tolerance")
+    if type(tolerance) is not int or not 0 <= tolerance <= 255:
+        raise M0Error("controlled-HTTPS screenshot channel tolerance is invalid")
+    ratio = contract.get("maximum_different_pixel_ratio")
+    if (
+        type(ratio) not in (int, float)
+        or isinstance(ratio, bool)
+        or not 0 <= float(ratio) <= 1
+    ):
+        raise M0Error(
+            "controlled-HTTPS maximum different-pixel ratio is invalid"
+        )
+    return contract
 
 
 class ControlledHttpsSmokeServer(ThreadingHTTPServer):
@@ -267,7 +348,7 @@ def _fixture_port(url: str, description: str) -> int:
 
 
 def validate_m6_ui_url(value: object) -> str:
-    """Accept only the exact local M6 H2 document."""
+    """Accept the relay's private-H2 M6 document as infrastructure evidence."""
 
     return validate_m5_https_url(
         value,
@@ -418,7 +499,12 @@ def smoke_url(
     """Build the tokenized page URL after validating every relay value again."""
 
     wisp_endpoint = validate_controlled_wisp_endpoint(relay_ready.wisp_endpoint)
-    fixture_url = validate_m6_ui_url(relay_ready.m6_ui_url)
+    # The relay's m6UiUrl is its private ephemeral H2 listener, which remains
+    # useful infrastructure evidence but must never reach the visible browser
+    # address. Chrome instead receives the fixed public-looking gateway URL;
+    # WISP maps its logical a.test:443 connect to that private listener.
+    validate_m6_ui_url(relay_ready.m6_ui_url)
+    fixture_url = GATEWAY_FIXTURE_URL
     validate_relay_transcript_url(relay_ready.transcript_url)
     host, port = server.server_address[:2]
     query = urlencode(
@@ -478,8 +564,102 @@ def _require_equal(result: dict[str, Any], field: str, expected: object) -> None
         )
 
 
-def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]) -> None:
+def _decode_screenshot_evidence(
+    result: dict[str, Any],
+    controlled: dict[str, Any],
+    frame_reports: list[dict[str, Any]],
+    screenshot_contract: dict[str, Any],
+) -> bytes:
+    """Decode one bounded PNG and bind it to the first eligible frame."""
+
+    screenshot = result.get("screenshot")
+    expected_fields = {
+        "mimeType",
+        "dataBase64",
+        "width",
+        "height",
+        "frameId",
+        "timestampMs",
+        "observationSequence",
+    }
+    if not isinstance(screenshot, dict) or set(screenshot) != expected_fields:
+        raise M0Error("controlled-HTTPS screenshot metadata is invalid")
+    if screenshot.get("mimeType") != "image/png":
+        raise M0Error("controlled-HTTPS screenshot is not a PNG")
+    data_base64 = screenshot.get("dataBase64")
+    if (
+        not isinstance(data_base64, str)
+        or not data_base64
+        or len(data_base64) > MAX_SCREENSHOT_BASE64_LENGTH
+    ):
+        raise M0Error("controlled-HTTPS screenshot base64 is invalid")
+    try:
+        png = base64.b64decode(data_base64.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
+        raise M0Error("controlled-HTTPS screenshot base64 is invalid") from exc
+    if not png or len(png) > MAX_SCREENSHOT_PNG_BYTES:
+        raise M0Error("controlled-HTTPS screenshot PNG exceeds its byte limit")
+    for field in ("width", "height", "frameId", "observationSequence"):
+        if type(screenshot.get(field)) is not int or screenshot[field] < 1:
+            raise M0Error(f"controlled-HTTPS screenshot {field} is invalid")
+    timestamp_ms = screenshot.get("timestampMs")
+    if (
+        type(timestamp_ms) not in (int, float)
+        or isinstance(timestamp_ms, bool)
+        or not math.isfinite(float(timestamp_ms))
+        or timestamp_ms < 0
+    ):
+        raise M0Error("controlled-HTTPS screenshot timestamp is invalid")
+    if (
+        screenshot["width"] != screenshot_contract["width"]
+        or screenshot["height"] != screenshot_contract["height"]
+    ):
+        raise M0Error("controlled-HTTPS screenshot dimensions violate the contract")
+    image = decode_png(png)
+    if (
+        image.width != screenshot["width"]
+        or image.height != screenshot["height"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS screenshot PNG dimensions do not match metadata"
+        )
+    if (
+        screenshot["frameId"] != controlled["firstEligibleScreenshotFrameId"]
+        or screenshot["frameId"] != controlled["screenshotFrameId"]
+        or screenshot["observationSequence"]
+        != controlled["screenshotObservationSequence"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS screenshot is not bound to its first eligible "
+            "frame"
+        )
+    matching_frames = [
+        frame for frame in frame_reports if frame["id"] == screenshot["frameId"]
+    ]
+    if len(matching_frames) != 1:
+        raise M0Error("controlled-HTTPS screenshot frame was not reported")
+    captured_frame = matching_frames[0]
+    if (
+        screenshot["width"] != captured_frame["width"]
+        or screenshot["height"] != captured_frame["height"]
+        or screenshot["timestampMs"] != captured_frame["timestampMs"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS screenshot does not match the captured frame"
+        )
+    return png
+
+
+def validate_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+    screenshot_contract: dict[str, Any] | None = None,
+) -> bytes:
     """Require real C++ terminal markers and presentation/focus evidence."""
+
+    if screenshot_contract is None:
+        screenshot_contract = load_controlled_https_screenshot_contract()
 
     for field, expected in {
         "protocol": 1,
@@ -531,18 +711,61 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
         "navigatedMarkerObserved",
         "postNavigatedFrameObserved",
         "firstVisuallyNonEmptyPaintReportObserved",
+        "targetFirstVisuallyNonEmptyPaintSignalObserved",
         "postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved",
+        "screenshotCaptureAttempted",
         "passMarkerObserved",
     ):
         if controlled.get(field) is not True:
             raise M0Error(f"controlled-HTTPS setup {field} is not true")
 
-    last_frame = browser_view_smoke._validate_frame_reports(
-        result.get("frameReports")
-    )
+    for field in (
+        "navigatedMarkerObservationSequence",
+        "firstVisuallyNonEmptyPaintObservationSequence",
+        "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+        "firstEligibleScreenshotFrameId",
+        "screenshotFrameId",
+        "screenshotObservationSequence",
+    ):
+        if type(controlled.get(field)) is not int or controlled[field] < 1:
+            raise M0Error(f"controlled-HTTPS setup {field} is invalid")
     navigated_frame_id = controlled.get("frameIdAtNavigatedMarker")
     if type(navigated_frame_id) is not int or navigated_frame_id < 0:
         raise M0Error("controlled-HTTPS NAVIGATED frame ID is invalid")
+    if (
+        controlled["firstEligibleScreenshotFrameId"]
+        <= navigated_frame_id
+        or controlled["screenshotFrameId"]
+        != controlled["firstEligibleScreenshotFrameId"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS screenshot was not captured from the first "
+            "post-NAVIGATED frame eligible after FVP"
+        )
+    if (
+        controlled["targetFirstVisuallyNonEmptyPaintSignalObservationSequence"]
+        <= controlled["navigatedMarkerObservationSequence"]
+    ):
+        raise M0Error(
+            "controlled-HTTPS target first visually non-empty paint signal "
+            "was not observed after NAVIGATED"
+        )
+    if (
+        controlled["screenshotObservationSequence"]
+        <= controlled["navigatedMarkerObservationSequence"]
+        or controlled["screenshotObservationSequence"]
+        <= controlled[
+            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+        ]
+    ):
+        raise M0Error(
+            "controlled-HTTPS screenshot was not observed after NAVIGATED "
+            "and target first visually non-empty paint signal"
+        )
+
+    last_frame = browser_view_smoke._validate_frame_reports(
+        result.get("frameReports")
+    )
     if not any(
         frame["id"] > navigated_frame_id for frame in result["frameReports"]
     ):
@@ -572,6 +795,15 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
         raise M0Error(
             "controlled-HTTPS canvas backing store does not match the final frame"
         )
+    frame_reports = result.get("frameReports")
+    if not isinstance(frame_reports, list):
+        raise M0Error("controlled-HTTPS frame reports are invalid")
+    return _decode_screenshot_evidence(
+        result,
+        controlled,
+        frame_reports,
+        screenshot_contract,
+    )
 
 
 def fetch_relay_status(url: str, *, timeout_seconds: float) -> dict[str, Any]:
@@ -643,6 +875,23 @@ def validate_relay_status(status: dict[str, Any]) -> None:
         or h2_requests["count"] != 1
     ):
         raise M0Error("controlled-HTTPS relay lacks exactly one HTTP/2 request")
+    if status.get("localGateway443StreamsOpened") != 1:
+        raise M0Error(
+            "controlled-HTTPS relay did not open exactly one mapped "
+            "a.test:443 WISP stream"
+        )
+    if status.get("localGateway443Requests") != 0:
+        raise M0Error(
+            "controlled-HTTPS relay received an unexpected local-gateway probe"
+        )
+    requested_destinations = status.get("requestedDestinations")
+    if requested_destinations != [
+        {"hostname": "a.test", "port": GATEWAY_LOGICAL_PORT}
+    ]:
+        raise M0Error(
+            "controlled-HTTPS relay lacks the exact WISP CONNECT for "
+            "a.test:443"
+        )
     transcript = status.get("transcript")
     if (
         not isinstance(transcript, list)
@@ -697,6 +946,19 @@ def wait_for_result(
             continue
 
 
+def redact_screenshot_data(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep PNG base64 out of terminal and JSON diagnostics output."""
+
+    redacted = dict(result)
+    screenshot = redacted.get("screenshot")
+    if isinstance(screenshot, dict):
+        redacted_screenshot = dict(screenshot)
+        if isinstance(redacted_screenshot.get("dataBase64"), str):
+            redacted_screenshot["dataBase64"] = "<omitted>"
+        redacted["screenshot"] = redacted_screenshot
+    return redacted
+
+
 def write_failure_diagnostics(
     diagnostics_dir: Path,
     *,
@@ -714,9 +976,23 @@ def write_failure_diagnostics(
     relay_stderr: deque[str],
     relay_status: dict[str, Any] | None,
     runtime_result: dict[str, Any] | None,
+    actual_png: bytes | None,
 ) -> Path:
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    if actual_png is not None:
+        (diagnostics_dir / "chrome-browser-controlled-https-m6-actual.png").write_bytes(
+            actual_png
+        )
     path = diagnostics_dir / "chrome-browser-controlled-https-m6-failure.json"
+    sanitized_result = (
+        redact_screenshot_data(runtime_result) if runtime_result is not None else None
+    )
+    if isinstance(sanitized_result, dict) and actual_png is not None:
+        screenshot = sanitized_result.get("screenshot")
+        if isinstance(screenshot, dict):
+            screenshot["dataBase64"] = (
+                "<saved as chrome-browser-controlled-https-m6-actual.png>"
+            )
     payload = {
         "schema_version": 1,
         "runner": "run_m6_wasm_browser_controlled_https_smoke.py",
@@ -747,7 +1023,7 @@ def write_failure_diagnostics(
             "stderr_tail": list(relay_stderr),
             "status": relay_status,
         },
-        "runtime_result": runtime_result,
+        "runtime_result": sanitized_result,
     }
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(
@@ -771,9 +1047,27 @@ def main() -> int:
         default=REPO_ROOT / "tools/wasm/m5_wisp_test_server.js",
     )
     parser.add_argument("--diagnostics-dir", type=Path)
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help=(
+            "reviewed full-canvas PNG baseline (default is the named M6 "
+            "contract baseline when present)"
+        ),
+    )
+    parser.add_argument(
+        "--capture-baseline",
+        type=Path,
+        help=(
+            "write one unreviewed PNG candidate and exit 2; this never "
+            "reports the controlled-HTTPS lane as passing"
+        ),
+    )
     parser.add_argument("--no-sandbox", action="store_true")
     parser.add_argument("--timeout", type=parse_timeout, default=120.0)
     args = parser.parse_args()
+    if args.baseline is not None and args.capture_baseline is not None:
+        parser.error("--baseline and --capture-baseline are mutually exclusive")
     if args.timeout < 5.0:
         parser.error("--timeout must be at least five seconds")
     if not MODULE_NAME_RE.fullmatch(args.module_name):
@@ -787,6 +1081,39 @@ def main() -> int:
     if not relay_script.is_absolute():
         relay_script = REPO_ROOT / relay_script
     relay_script = relay_script.resolve()
+
+    screenshot_contract: dict[str, Any] | None = None
+    baseline_path: Path | None = None
+    capture_path: Path | None = None
+    try:
+        screenshot_contract = load_controlled_https_screenshot_contract()
+        if args.baseline is not None:
+            baseline_path = args.baseline
+            if not baseline_path.is_absolute():
+                baseline_path = REPO_ROOT / baseline_path
+        else:
+            baseline_path = (
+                CONTROLLED_HTTPS_SCREENSHOT_CONTRACT.parent
+                / str(screenshot_contract["baseline"])
+            )
+        if args.capture_baseline is not None:
+            capture_path = args.capture_baseline
+            if not capture_path.is_absolute():
+                capture_path = REPO_ROOT / capture_path
+            if capture_path.suffix != ".png":
+                raise M0Error("controlled-HTTPS baseline path must end in .png")
+            if capture_path.exists():
+                raise M0Error(
+                    f"refusing to overwrite existing baseline: {capture_path}"
+                )
+        if capture_path is None and not baseline_path.is_file():
+            raise M0Error(
+                "controlled-HTTPS screenshot baseline is missing; use "
+                "--capture-baseline, review the image, then rerun with "
+                "--baseline"
+            )
+    except (M0Error, OSError, TypeError, ValueError) as exc:
+        parser.error(str(exc))
 
     server: ControlledHttpsSmokeServer | None = None
     server_thread: threading.Thread | None = None
@@ -805,6 +1132,7 @@ def main() -> int:
     relay_status: dict[str, Any] | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
     result: dict[str, Any] | None = None
+    actual_png: bytes | None = None
     context: dict[str, object] | None = None
     stage = "check_artifacts"
 
@@ -828,8 +1156,14 @@ def main() -> int:
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
             module_name=args.module_name,
             host_browser_sandbox=not args.no_sandbox,
-            runtime_arguments=[SMOKE_SWITCH, URL_SWITCH + "=<relay-m6-ui-url>"],
+            runtime_arguments=[SMOKE_SWITCH, URL_SWITCH + "=" + GATEWAY_FIXTURE_URL],
             transport="WISP v2.1 over the local controlled relay",
+            screenshot_gateway_url=GATEWAY_FIXTURE_URL,
+            screenshot_channel_tolerance=screenshot_contract["channel_tolerance"],
+            screenshot_maximum_different_pixel_ratio=(
+                screenshot_contract["maximum_different_pixel_ratio"]
+            ),
+            screenshot_baseline=(str(baseline_path) if baseline_path else None),
         )
 
         stage = "find_browser"
@@ -947,7 +1281,11 @@ def main() -> int:
         stage = "wait_for_result"
         result = wait_for_result(browser, browser_stderr, result_queue, deadline)
         stage = "validate_result"
-        validate_result(result, expected_versions=versions)
+        actual_png = validate_result(
+            result,
+            expected_versions=versions,
+            screenshot_contract=screenshot_contract,
+        )
         stage = "fetch_relay_status"
         relay_status = fetch_relay_status(
             relay_ready.transcript_url,
@@ -955,9 +1293,59 @@ def main() -> int:
         )
         stage = "validate_relay_status"
         validate_relay_status(relay_status)
+        if capture_path is not None:
+            stage = "capture_baseline"
+            capture_path.parent.mkdir(parents=True, exist_ok=True)
+            capture_path.write_bytes(actual_png)
+            print(
+                f"{SENTINEL}:BASELINE_CAPTURED_REVIEW_REQUIRED "
+                + json.dumps(
+                    {
+                        "path": str(capture_path),
+                        "gatewayUrl": GATEWAY_FIXTURE_URL,
+                        "frameId": result["screenshot"]["frameId"],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+            return 2
+        assert baseline_path is not None
+        stage = "compare_screenshot"
+        comparison = compare_screenshots(
+            actual_png,
+            baseline_path.read_bytes(),
+            channel_tolerance=int(screenshot_contract["channel_tolerance"]),
+            maximum_different_pixel_ratio=float(
+                screenshot_contract["maximum_different_pixel_ratio"]
+            ),
+        )
+        if not comparison.matches:
+            raise M0Error(
+                "controlled-HTTPS screenshot exceeded tolerance: "
+                + json.dumps(
+                    comparison.as_dict(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        print(
+            f"{SENTINEL}:SCREENSHOT "
+            + json.dumps(
+                comparison.as_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
         print(
             f"{SENTINEL}:BROWSER_RESULT "
-            + json.dumps(result, sort_keys=True, separators=(",", ":")),
+            + json.dumps(
+                redact_screenshot_data(result),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             flush=True,
         )
         print(
@@ -995,6 +1383,7 @@ def main() -> int:
                 relay_stderr=relay_stderr,
                 relay_status=relay_status,
                 runtime_result=result,
+                actual_png=actual_png,
             )
             print(
                 f"{SENTINEL}:DIAGNOSTICS "

@@ -97,15 +97,17 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
             '"wasm-browser-controlled-https-url"',
             'constexpr char kControlledHttpsHost[] = "a.test";',
             'constexpr char kControlledHttpsPath[] = "/m5/m6-ui";',
+            'constexpr char kControlledHttpsUrl[] = "https://a.test/m5/m6-ui";',
+            "CHECK_EQ(url.spec(), kControlledHttpsUrl);",
             "url.SchemeIs(url::kHttpsScheme)",
-            "CHECK(url.has_port());",
-            "CHECK_GT(url.EffectiveIntPort(), 0);",
-            "CHECK_LE(url.EffectiveIntPort(), 65535);",
+            "CHECK(!url.has_port());",
+            "CHECK_EQ(url.EffectiveIntPort(), 443);",
             "CHECK(!url.has_username());",
             "CHECK(!url.has_password());",
             "CHECK(!url.has_query());",
             "CHECK(!url.has_ref());",
             "CHECK_EQ(url.path(), kControlledHttpsPath);",
+            "extern \"C\" int chromium_wasm_report_controlled_https_target_fvp();",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, smoke)
@@ -121,6 +123,7 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
             "net::kWasmWispDiagnosticStreamConfirmed",
             "net::kWasmWispDiagnosticAllRequired",
             "WaitForNavigationAndFirstVisuallyNonEmptyPaint(",
+            "chromium_wasm_report_controlled_https_target_fvp(), 1",
             "chromium_wasm_report_readiness(",
             "browser_view.SchedulePaint();",
             "CHECK_EQ(raw_contents->GetTitle(), kControlledHttpsTitle);",
@@ -137,6 +140,8 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
             "void DidFirstVisuallyNonEmptyPaint() override",
             "web_contents()->CompletedFirstVisuallyNonEmptyPaint()",
             "web_contents()->GetLastCommittedURL() != expected_url_",
+            "on_target_first_visually_nonempty_paint",
+            "MarkFirstVisuallyNonEmptyPaintAfterCommit();",
         ):
             with self.subTest(observer_required=required):
                 self.assertIn(required, observer)
@@ -160,6 +165,10 @@ class M6WasmBrowserControlledHttpsSourceContractTest(unittest.TestCase):
         )
         self.assertLess(
             run.index("std::puts(kControlledHttpsSmokeNavigatedMarker);"),
+            run.index("chromium_wasm_report_controlled_https_target_fvp(), 1"),
+        )
+        self.assertLess(
+            run.index("chromium_wasm_report_controlled_https_target_fvp(), 1"),
             run.index("chromium_wasm_report_readiness("),
         )
         self.assertLess(

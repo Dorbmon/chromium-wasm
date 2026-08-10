@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "fixture": "chromium-wasm-m6-controlled-https-v1",
+  "gateway_url": "https://a.test/m5/m6-ui",
+  "baseline": "m6_controlled_https_browser_baseline.png",
+  "baseline_policy": "Capture only from a controlled-HTTPS run whose non-pixel runtime, C++ marker, target first-visually-non-empty-paint, and a.test:443 WISP-route checks pass. --capture-baseline writes a candidate and exits 2 so it never reports this lane as passing. Review the full unmasked image, then rerun with --baseline PATH. If a reviewed baseline is later checked in at the named path, ordinary runs compare against it automatically.",
+  "visual_strategy": "No canvas region is masked. Chrome receives the canonical https://a.test/m5/m6-ui address; the WISP relay maps only the logical a.test:443 TCP destination to its private ephemeral H2 listener. The relay's changing backend port is infrastructure evidence only and is never rendered into the omnibox.",
+  "width": 640,
+  "height": 480,
+  "channel_tolerance": 2,
+  "maximum_different_pixel_ratio": 0.0025,
+  "comparison": "A pixel differs when any RGBA channel delta exceeds channel_tolerance. The screenshot passes only when the differing-pixel ratio does not exceed maximum_different_pixel_ratio; the complete 640x480 browser canvas participates in the comparison."
+}

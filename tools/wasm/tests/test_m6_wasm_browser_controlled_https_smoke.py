@@ -7,17 +7,20 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import http.client
 import json
 from pathlib import Path
 import queue
+import struct
 import sys
 import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
+import zlib
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -35,8 +38,36 @@ VERSIONS = {
     "port": "port-revision",
 }
 WISP_ENDPOINT = "ws://127.0.0.1:43210/wisp/"
-FIXTURE_URL = "https://a.test:43211/m5/m6-ui"
+RELAY_FIXTURE_URL = "https://a.test:43211/m5/m6-ui"
 TRANSCRIPT_URL = "http://127.0.0.1:43210/status"
+
+
+def png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
+    checksum = zlib.crc32(chunk_type)
+    checksum = zlib.crc32(payload, checksum) & 0xFFFFFFFF
+    return (
+        struct.pack(">I", len(payload))
+        + chunk_type
+        + payload
+        + struct.pack(">I", checksum)
+    )
+
+
+def make_screenshot_png() -> bytes:
+    width = 640
+    height = 480
+    row = b"\x00" + bytes((24, 32, 48, 255)) * width
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", header)
+        + png_chunk(b"IDAT", zlib.compress(row * height, level=9))
+        + png_chunk(b"IEND", b"")
+    )
+
+
+SCREENSHOT_PNG = make_screenshot_png()
+SCREENSHOT_DATA_BASE64 = base64.b64encode(SCREENSHOT_PNG).decode("ascii")
 
 
 def relay_ready_json() -> str:
@@ -44,7 +75,7 @@ def relay_ready_json() -> str:
         {
             "schema_version": 1,
             "httpsUrl": "https://a.test:43211/m5/",
-            "m6UiUrl": FIXTURE_URL,
+            "m6UiUrl": RELAY_FIXTURE_URL,
             "transcriptUrl": TRANSCRIPT_URL,
             "wispEndpoint": WISP_ENDPOINT,
         },
@@ -73,9 +104,17 @@ def passing_result() -> dict[str, object]:
             "readyMarkerObserved": True,
             "navigatedMarkerObserved": True,
             "frameIdAtNavigatedMarker": 1,
+            "navigatedMarkerObservationSequence": 1,
             "postNavigatedFrameObserved": True,
             "firstVisuallyNonEmptyPaintReportObserved": True,
+            "firstVisuallyNonEmptyPaintObservationSequence": 3,
+            "targetFirstVisuallyNonEmptyPaintSignalObserved": True,
+            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence": 3,
             "postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved": True,
+            "firstEligibleScreenshotFrameId": 2,
+            "screenshotCaptureAttempted": True,
+            "screenshotFrameId": 2,
+            "screenshotObservationSequence": 4,
             "passMarkerObserved": True,
         },
         "abort": None,
@@ -103,6 +142,15 @@ def passing_result() -> dict[str, object]:
         "ozoneTextInputStates": [],
         "ozoneTextInputDeliveries": [],
         "ozoneCursorReports": [],
+        "screenshot": {
+            "mimeType": "image/png",
+            "dataBase64": SCREENSHOT_DATA_BASE64,
+            "width": 640,
+            "height": 480,
+            "frameId": 2,
+            "timestampMs": 2.0,
+            "observationSequence": 4,
+        },
         "canvasBackingStore": {"width": 640, "height": 480},
         "stdout": [smoke.READY_MARKER, smoke.NAVIGATED_MARKER],
         "stderr": [smoke.PASS_MARKER],
@@ -115,7 +163,7 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
     def test_parses_only_the_exact_relay_m6_ui_fixture(self) -> None:
         ready = smoke.parse_relay_ready_line(relay_ready_json())
         self.assertEqual(ready.wisp_endpoint, WISP_ENDPOINT)
-        self.assertEqual(ready.m6_ui_url, FIXTURE_URL)
+        self.assertEqual(ready.m6_ui_url, RELAY_FIXTURE_URL)
         self.assertEqual(ready.transcript_url, TRANSCRIPT_URL)
 
         for mutate, expression in (
@@ -171,7 +219,7 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "not valid JSON"):
             smoke.parse_relay_ready_line(duplicate)
 
-    def test_smoke_url_carries_only_the_validated_wisp_and_fixture_values(self) -> None:
+    def test_smoke_url_uses_the_stable_gateway_not_the_relay_backend(self) -> None:
         ready = smoke.parse_relay_ready_line(relay_ready_json())
         server = SimpleNamespace(server_address=("127.0.0.1", 8000))
         url = smoke.smoke_url(
@@ -186,7 +234,8 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
         self.assertEqual(parsed.path, smoke.HOST_ROOT + "/")
         query = parse_qs(parsed.query, strict_parsing=True)
         self.assertEqual(query["wispEndpoint"], [WISP_ENDPOINT])
-        self.assertEqual(query["fixtureUrl"], [FIXTURE_URL])
+        self.assertEqual(query["fixtureUrl"], [smoke.GATEWAY_FIXTURE_URL])
+        self.assertNotEqual(query["fixtureUrl"], [ready.m6_ui_url])
         self.assertEqual(query["module"], ["chrome_wasm_m6_https_test"])
         self.assertNotIn("m5_url", query)
 
@@ -217,6 +266,11 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
             "ready": True,
             "m6UiRequests": 1,
             "h2Requests": {"protocol": "h2", "count": 1},
+            "localGateway443StreamsOpened": 1,
+            "localGateway443Requests": 0,
+            "requestedDestinations": [
+                {"hostname": "a.test", "port": smoke.GATEWAY_LOGICAL_PORT}
+            ],
             "transcript": [
                 {"sequence": 1, "event": "fixture-ready"},
                 {"sequence": 2, "event": "h2-m6-ui"},
@@ -254,6 +308,25 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
                     "h2Requests", {"protocol": "h2", "count": 2}
                 ),
                 "exactly one HTTP/2",
+            ),
+            (
+                lambda payload: payload.__setitem__(
+                    "localGateway443StreamsOpened", 0
+                ),
+                "exactly one mapped",
+            ),
+            (
+                lambda payload: payload.__setitem__(
+                    "localGateway443Requests", 1
+                ),
+                "unexpected local-gateway",
+            ),
+            (
+                lambda payload: payload.__setitem__(
+                    "requestedDestinations",
+                    [{"hostname": "a.test", "port": 43211}],
+                ),
+                "exact WISP CONNECT",
             ),
             (
                 lambda payload: payload.__setitem__(
@@ -433,7 +506,26 @@ class ControlledHttpsHostServerTest(unittest.TestCase):
 
 class ControlledHttpsResultContractTest(unittest.TestCase):
     def test_accepts_complete_cxx_marker_wisp_and_presentation_evidence(self) -> None:
-        smoke.validate_result(passing_result(), expected_versions=VERSIONS)
+        self.assertEqual(
+            smoke.validate_result(
+                passing_result(), expected_versions=VERSIONS
+            ),
+            SCREENSHOT_PNG,
+        )
+
+    def test_screenshot_comparison_uses_the_full_contract_image(self) -> None:
+        contract = smoke.load_controlled_https_screenshot_contract()
+        comparison = smoke.compare_screenshots(
+            SCREENSHOT_PNG,
+            SCREENSHOT_PNG,
+            channel_tolerance=contract["channel_tolerance"],
+            maximum_different_pixel_ratio=contract[
+                "maximum_different_pixel_ratio"
+            ],
+        )
+        self.assertTrue(comparison.matches)
+        self.assertEqual((comparison.width, comparison.height), (640, 480))
+        self.assertEqual(comparison.different_pixels, 0)
 
     def test_rejects_missing_terminal_or_host_setup_evidence(self) -> None:
         for mutate, expression in (
@@ -463,7 +555,7 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
                 lambda result: result["controlledHttps"].__setitem__(
                     "frameIdAtNavigatedMarker", 2
                 ),
-                "canvas frame after the NAVIGATED marker",
+                "first post-NAVIGATED frame eligible after FVP",
             ),
             (
                 lambda result: result["controlledHttps"].__setitem__(
@@ -487,12 +579,97 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
                 lambda result: result["ozoneFocusReports"].clear(),
                 "active Ozone",
             ),
+            (
+                lambda result: result["controlledHttps"].__setitem__(
+                    "screenshotCaptureAttempted", False
+                ),
+                "screenshotCaptureAttempted",
+            ),
+            (
+                lambda result: result["controlledHttps"].__setitem__(
+                    "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+                    4,
+                ),
+                "after NAVIGATED and target first visually non-empty paint "
+                "signal",
+            ),
+            (
+                lambda result: result["screenshot"].__setitem__(
+                    "dataBase64", "not-valid-base64"
+                ),
+                "base64",
+            ),
+            (
+                lambda result: result["screenshot"].__setitem__(
+                    "frameId", 1
+                ),
+                "not bound to its first eligible frame",
+            ),
         ):
             with self.subTest(expression=expression):
                 result = passing_result()
                 mutate(result)
                 with self.assertRaisesRegex(M0Error, expression):
                     smoke.validate_result(result, expected_versions=VERSIONS)
+
+    def test_rejects_target_fvp_signal_before_navigation(self) -> None:
+        result = passing_result()
+        controlled = result["controlledHttps"]
+        controlled["navigatedMarkerObservationSequence"] = 2
+        # Even the dedicated signal cannot be credited before NAVIGATED.
+        controlled["firstVisuallyNonEmptyPaintObservationSequence"] = 1
+        controlled[
+            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+        ] = 1
+        with self.assertRaisesRegex(
+            M0Error,
+            "target first visually non-empty paint signal was not observed "
+            "after NAVIGATED",
+        ):
+            smoke.validate_result(result, expected_versions=VERSIONS)
+
+    def test_rejects_sticky_pre_navigation_fvp_without_target_signal(
+        self,
+    ) -> None:
+        result = passing_result()
+        controlled = result["controlledHttps"]
+        # The generic readiness FVP can remain true from an initial page. It
+        # must not substitute for the separate C++ target-FVP protocol signal.
+        controlled["navigatedMarkerObservationSequence"] = 2
+        controlled["firstVisuallyNonEmptyPaintObservationSequence"] = 1
+        controlled["targetFirstVisuallyNonEmptyPaintSignalObserved"] = False
+        controlled[
+            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence"
+        ] = 0
+        with self.assertRaisesRegex(
+            M0Error,
+            "targetFirstVisuallyNonEmptyPaintSignalObserved is not true",
+        ):
+            smoke.validate_result(result, expected_versions=VERSIONS)
+
+
+class ControlledHttpsScreenshotPolicyTest(unittest.TestCase):
+    def test_contract_requires_a_full_unmasked_canonical_gateway_comparison(
+        self,
+    ) -> None:
+        contract = smoke.load_controlled_https_screenshot_contract()
+        self.assertEqual(contract["gateway_url"], smoke.GATEWAY_FIXTURE_URL)
+        self.assertEqual(contract["width"], 640)
+        self.assertEqual(contract["height"], 480)
+        self.assertEqual(contract["channel_tolerance"], 2)
+        self.assertEqual(contract["maximum_different_pixel_ratio"], 0.0025)
+        self.assertTrue(contract["baseline"].endswith(".png"))
+        self.assertIn("No canvas region is masked", contract["visual_strategy"])
+        self.assertIn("complete 640x480 browser canvas", contract["comparison"])
+
+    def test_contract_rejects_a_noncanonical_gateway(self) -> None:
+        contract = smoke.load_controlled_https_screenshot_contract()
+        contract["gateway_url"] = "https://a.test:443/m5/m6-ui"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(json.dumps(contract), encoding="utf-8")
+            with self.assertRaisesRegex(M0Error, "gateway URL"):
+                smoke.load_controlled_https_screenshot_contract(path)
 
     def test_parser_rejects_duplicate_or_wrong_scope_results(self) -> None:
         encoded = json.dumps(passing_result(), separators=(",", ":")).encode()
@@ -521,6 +698,7 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             'const NAVIGATED_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:NAVIGATED";',
             'const PASS_MARKER = "CHROMIUM_WASM_M6_CONTROLLED_HTTPS:PASS";',
             'const FIXTURE_PATH = "/m5/m6-ui";',
+            'const FIXTURE_URL = "https://a.test/m5/m6-ui";',
             "moduleOptions.chromiumWasmWisp = wispConfiguration;",
             "subprotocol: WISP_SUBPROTOCOL,",
             "!isLoopbackHostname(endpoint.hostname)",
@@ -529,6 +707,8 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "endpoint.password",
             "endpoint.search",
             "endpoint.hash",
+            'url.port !== ""',
+            "url.href !== FIXTURE_URL",
             "URL_SWITCH + \"=\" + controlledUrl.href",
             "namespace.default(moduleOptions)",
             "reportFrame(report)",
@@ -536,6 +716,11 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "reportOzoneFocusState(report)",
             "postNavigatedFrameObserved",
             "postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved",
+            "targetFirstVisuallyNonEmptyPaintSignalObserved",
+            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
+            "firstEligibleScreenshotFrameId",
+            "screenshotCaptureAttempted",
+            "screenshotObservationSequence",
             "firstVisuallyNonEmptyPaint === true",
         ):
             with self.subTest(expected=expected):
@@ -548,25 +733,84 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             host.index("URL_SWITCH + \"=\" + controlledUrl.href"),
             host.index("namespace.default(moduleOptions)"),
         )
+        capture_start = host.index("#captureScreenshotForFirstEligibleFrame")
+        capture_end = host.index("#reportFrame", capture_start)
+        capture = host[capture_start:capture_end]
+        self.assertIn('this.#canvas.toDataURL("image/png")', capture)
+        self.assertIn("this.#screenshotCaptureAttempted = true", capture)
+        report_frame_end = host.index("#reportReadiness", capture_end)
+        report_frame = host[capture_end:report_frame_end]
+        self.assertIn("this.#navigatedMarkerObserved", report_frame)
+        self.assertIn(
+            "this.#targetFirstVisuallyNonEmptyPaintSignalObserved",
+            report_frame,
+        )
+        self.assertIn(
+            "this.#captureScreenshotForFirstEligibleFrame(", report_frame
+        )
+        target_fvp_start = host.index("#reportControlledHttpsTargetFvp")
+        target_fvp_end = host.index("#reportFocus", target_fvp_start)
+        target_fvp = host[target_fvp_start:target_fvp_end]
+        self.assertIn("Object.keys(report).length !== 1", target_fvp)
+        self.assertIn("this.#navigatedMarkerObserved", target_fvp)
+        self.assertIn(
+            "observationSequence <= this.#navigatedMarkerObservationSequence",
+            target_fvp,
+        )
+        self.assertIn(
+            "this.#targetFirstVisuallyNonEmptyPaintSignalObserved = true",
+            target_fvp,
+        )
 
     def test_runner_uses_fresh_relay_then_requires_exact_fixture_evidence(self) -> None:
         runner = source("tools/wasm/run_m6_wasm_browser_controlled_https_smoke.py")
         for expected in (
             "chrome_wasm_m6_https_test",
             "m6UiUrl",
+            "GATEWAY_FIXTURE_URL",
             "validate_m6_ui_url",
             "--wasm-browser-controlled-https-smoke",
             "--wasm-browser-controlled-https-url",
             "validate_controlled_wisp_endpoint",
             "m6UiRequests",
+            "localGateway443StreamsOpened",
+            "requestedDestinations",
+            "targetFirstVisuallyNonEmptyPaintSignalObserved",
+            "targetFirstVisuallyNonEmptyPaintSignalObservationSequence",
             "h2-m6-ui",
             "chromium-wasm-m5-network-v1",
             "check_controlled_https_boundary(out_dir)",
             "CONTROLLED_HTTPS_GN_TARGET",
+            "--baseline",
+            "--capture-baseline",
+            "BASELINE_CAPTURED_REVIEW_REQUIRED",
+            "compare_screenshots(",
+            "redact_screenshot_data",
+            "MAX_RESULT_BYTES = 8 * 1024 * 1024",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, runner)
         self.assertNotIn("ccall(", runner)
+        self.assertNotIn("SCREENSHOT_CAPTURED_UNCOMPARED", runner)
+
+    def test_target_fvp_uses_a_dedicated_nonsticky_host_bridge_signal(
+        self,
+    ) -> None:
+        bridge = source("ui/ozone/platform/wasm/wasm_host_bridge.js")
+        start = bridge.index(
+            "chromium_wasm_report_controlled_https_target_fvp__deps"
+        )
+        end = bridge.index("chromium_wasm_report_ozone_focus_state__deps", start)
+        target_fvp = bridge[start:end]
+        for expected in (
+            "chromium_wasm_report_controlled_https_target_fvp__proxy: 'sync'",
+            "chromium_wasm_report_controlled_https_target_fvp: () =>",
+            "bridge.reportControlledHttpsTargetFvp({",
+            "protocol: ChromiumWasmHostBridge.version",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, target_fvp)
+        self.assertNotIn("reportReadiness", target_fvp)
 
 
 if __name__ == "__main__":

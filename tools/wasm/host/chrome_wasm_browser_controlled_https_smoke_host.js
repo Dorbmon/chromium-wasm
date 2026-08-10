@@ -18,9 +18,18 @@ const WISP_CONFIGURATION_VERSION = 1;
 const WISP_SUBPROTOCOL = "wisp";
 const FIXTURE_HOSTNAME = "a.test";
 const FIXTURE_PATH = "/m5/m6-ui";
+// This is intentionally the canonical default-HTTPS authority. The relay
+// maps only the corresponding WISP CONNECT for a.test:443 to its private H2
+// listener, leaving the visible browser address and screenshot deterministic.
+const FIXTURE_URL = "https://a.test/m5/m6-ui";
 const MAX_TIMEOUT_MS = 180000;
 const MAX_FRAME_DIMENSION = 16384;
 const MAX_REPORT_HISTORY = 128;
+const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
+const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
+const MAX_SCREENSHOT_BASE64_LENGTH =
+    Math.ceil(MAX_SCREENSHOT_BYTES / 3) * 4;
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -76,14 +85,33 @@ function parseFixtureUrl(value) {
   } catch (_) {
     throw new Error("controlled-HTTPS fixture URL is invalid");
   }
-  const port = Number(url.port);
   if (url.protocol !== "https:" || url.hostname !== FIXTURE_HOSTNAME ||
       url.pathname !== FIXTURE_PATH || url.search || url.hash ||
-      url.username || url.password || !Number.isSafeInteger(port) ||
-      port < 1 || port > 65535) {
+      url.username || url.password || url.port !== "" ||
+      url.href !== FIXTURE_URL) {
     throw new Error("controlled-HTTPS fixture URL violates the fixture policy");
   }
   return url;
+}
+
+function decodePngDataUrl(dataUrl) {
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith(PNG_DATA_URL_PREFIX)) {
+    throw new Error("canvas did not produce a PNG data URL");
+  }
+  const dataBase64 = dataUrl.slice(PNG_DATA_URL_PREFIX.length);
+  if (!dataBase64 || dataBase64.length > MAX_SCREENSHOT_BASE64_LENGTH ||
+      !BASE64_PATTERN.test(dataBase64)) {
+    throw new Error("canvas PNG data URL is outside the bounded base64 contract");
+  }
+  const binary = atob(dataBase64);
+  if (binary.length < 8 || binary.length > MAX_SCREENSHOT_BYTES ||
+      binary.charCodeAt(0) !== 0x89 || binary.charCodeAt(1) !== 0x50 ||
+      binary.charCodeAt(2) !== 0x4e || binary.charCodeAt(3) !== 0x47 ||
+      binary.charCodeAt(4) !== 0x0d || binary.charCodeAt(5) !== 0x0a ||
+      binary.charCodeAt(6) !== 0x1a || binary.charCodeAt(7) !== 0x0a) {
+    throw new Error("canvas PNG data URL is invalid");
+  }
+  return dataBase64;
 }
 
 function isLoopbackHostname(hostname) {
@@ -158,6 +186,27 @@ function isFocusReport(value) {
       typeof value.active === "boolean";
 }
 
+function isCapturedPngScreenshot(value) {
+  if (!value || typeof value !== "object" ||
+      value.mimeType !== "image/png" ||
+      typeof value.dataBase64 !== "string" ||
+      !Number.isSafeInteger(value.width) || value.width < 1 ||
+      value.width > MAX_FRAME_DIMENSION || !Number.isSafeInteger(value.height) ||
+      value.height < 1 || value.height > MAX_FRAME_DIMENSION ||
+      !Number.isSafeInteger(value.frameId) || value.frameId < 1 ||
+      !Number.isFinite(value.timestampMs) || value.timestampMs < 0 ||
+      !Number.isSafeInteger(value.observationSequence) ||
+      value.observationSequence < 1) {
+    return false;
+  }
+  try {
+    decodePngDataUrl(PNG_DATA_URL_PREFIX + value.dataBase64);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #canvas;
   #versions;
@@ -185,9 +234,17 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
   #readyMarkerObserved = false;
   #navigatedMarkerObserved = false;
   #frameIdAtNavigatedMarker = 0;
+  #navigatedMarkerObservationSequence = 0;
   #postNavigatedFrameObserved = false;
   #firstVisuallyNonEmptyPaintReportObserved = false;
+  #firstVisuallyNonEmptyPaintObservationSequence = 0;
+  #targetFirstVisuallyNonEmptyPaintSignalObserved = false;
+  #targetFirstVisuallyNonEmptyPaintSignalObservationSequence = 0;
   #postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved = false;
+  #firstEligibleScreenshotFrameId = 0;
+  #screenshotCaptureAttempted = false;
+  #screenshot = null;
+  #observationSequence = 0;
   #passMarkerObserved = false;
   #wispConfigured = false;
   #runtimeArgumentsConfigured = false;
@@ -219,6 +276,8 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       } else {
         this.#navigatedMarkerObserved = true;
         this.#frameIdAtNavigatedMarker = this.#frameReports.at(-1)?.id || 0;
+        this.#navigatedMarkerObservationSequence =
+            ++this.#observationSequence;
       }
     }
     if (text.includes(PASS_MARKER)) {
@@ -278,6 +337,33 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
     }
   }
 
+  #captureScreenshotForFirstEligibleFrame(report, observationSequence) {
+    if (this.#screenshotCaptureAttempted) {
+      return;
+    }
+    this.#screenshotCaptureAttempted = true;
+    this.#firstEligibleScreenshotFrameId = report.id;
+    try {
+      // chromium_wasm_present_frame copies the compositor pixels into this
+      // canvas before reportFrame runs. Take the synchronous snapshot here so
+      // it is exactly the first presented frame observed after both the C++
+      // NAVIGATED marker and the verified target-FVP protocol signal.
+      const dataBase64 = decodePngDataUrl(this.#canvas.toDataURL("image/png"));
+      this.#screenshot = {
+        mimeType: "image/png",
+        dataBase64,
+        width: report.width,
+        height: report.height,
+        frameId: report.id,
+        timestampMs: report.timestampMs,
+        observationSequence,
+      };
+    } catch (error) {
+      this.#recordFatal("failed to capture controlled-HTTPS screenshot: " +
+          String(error));
+    }
+  }
+
   #reportFrame(value) {
     try {
       const report = asReport(value, "frame report");
@@ -288,22 +374,33 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       if (previous && report.id <= previous.id) {
         throw new Error("frame IDs must increase");
       }
+      // chromium_wasm_present_frame copies into the host canvas before this
+      // callback. This check rejects a metadata-only presentation claim before
+      // the screenshot capture below reads the canvas.
       if (this.#canvas.width !== report.width ||
           this.#canvas.height !== report.height) {
         throw new Error("canvas backing store differs from the frame report");
       }
+      const observationSequence = ++this.#observationSequence;
       appendBounded(this.#frameReports, {
         id: report.id,
         width: report.width,
         height: report.height,
         timestampMs: report.timestampMs,
       });
-      if (this.#navigatedMarkerObserved &&
-          report.id > this.#frameIdAtNavigatedMarker) {
+      const isPostNavigatedFrame = this.#navigatedMarkerObserved &&
+          report.id > this.#frameIdAtNavigatedMarker &&
+          observationSequence > this.#navigatedMarkerObservationSequence;
+      if (isPostNavigatedFrame) {
         this.#postNavigatedFrameObserved = true;
-        if (this.#firstVisuallyNonEmptyPaintReportObserved) {
-          this.#postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved = true;
-        }
+      }
+      const isFirstEligibleScreenshotFrame = isPostNavigatedFrame &&
+          this.#targetFirstVisuallyNonEmptyPaintSignalObserved &&
+          observationSequence >
+              this.#targetFirstVisuallyNonEmptyPaintSignalObservationSequence;
+      if (isFirstEligibleScreenshotFrame) {
+        this.#postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved = true;
+        this.#captureScreenshotForFirstEligibleFrame(report, observationSequence);
       }
     } catch (error) {
       this.#recordFatal("invalid frame report: " + String(error));
@@ -316,17 +413,45 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       if (report.protocol !== HOST_PROTOCOL || !isReadinessReport(report)) {
         throw new Error("readiness report is invalid");
       }
+      const observationSequence = ++this.#observationSequence;
       this.#readiness = {
         shellReady: report.shellReady,
         surfaceReady: report.surfaceReady,
         firstVisuallyNonEmptyPaint: report.firstVisuallyNonEmptyPaint,
       };
-      if (report.firstVisuallyNonEmptyPaint) {
+      if (report.firstVisuallyNonEmptyPaint &&
+          !this.#firstVisuallyNonEmptyPaintReportObserved) {
         this.#firstVisuallyNonEmptyPaintReportObserved = true;
+        this.#firstVisuallyNonEmptyPaintObservationSequence =
+            observationSequence;
       }
       appendBounded(this.#readinessReports, this.#readiness);
     } catch (error) {
       this.#recordFatal("invalid readiness report: " + String(error));
+    }
+  }
+
+  #reportControlledHttpsTargetFvp(value) {
+    try {
+      const report = asReport(value, "controlled-HTTPS target FVP report");
+      if (report.protocol !== HOST_PROTOCOL ||
+          Object.keys(report).length !== 1) {
+        throw new Error("controlled-HTTPS target FVP report is invalid");
+      }
+      if (this.#targetFirstVisuallyNonEmptyPaintSignalObserved) {
+        throw new Error("controlled-HTTPS target FVP was reported twice");
+      }
+      const observationSequence = ++this.#observationSequence;
+      if (!this.#navigatedMarkerObserved ||
+          observationSequence <= this.#navigatedMarkerObservationSequence) {
+        throw new Error("controlled-HTTPS target FVP preceded NAVIGATED");
+      }
+      this.#targetFirstVisuallyNonEmptyPaintSignalObserved = true;
+      this.#targetFirstVisuallyNonEmptyPaintSignalObservationSequence =
+          observationSequence;
+    } catch (error) {
+      this.#recordFatal("invalid controlled-HTTPS target FVP report: " +
+          String(error));
     }
   }
 
@@ -429,6 +554,9 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       reportReadiness(report) {
         host.#reportReadiness(report);
       },
+      reportControlledHttpsTargetFvp(report) {
+        host.#reportControlledHttpsTargetFvp(report);
+      },
       reportOzoneFocusState(report) {
         host.#reportFocus(report);
       },
@@ -465,11 +593,24 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
         readyMarkerObserved: this.#readyMarkerObserved,
         navigatedMarkerObserved: this.#navigatedMarkerObserved,
         frameIdAtNavigatedMarker: this.#frameIdAtNavigatedMarker,
+        navigatedMarkerObservationSequence:
+            this.#navigatedMarkerObservationSequence,
         postNavigatedFrameObserved: this.#postNavigatedFrameObserved,
         firstVisuallyNonEmptyPaintReportObserved:
             this.#firstVisuallyNonEmptyPaintReportObserved,
+        firstVisuallyNonEmptyPaintObservationSequence:
+            this.#firstVisuallyNonEmptyPaintObservationSequence,
+        targetFirstVisuallyNonEmptyPaintSignalObserved:
+            this.#targetFirstVisuallyNonEmptyPaintSignalObserved,
+        targetFirstVisuallyNonEmptyPaintSignalObservationSequence:
+            this.#targetFirstVisuallyNonEmptyPaintSignalObservationSequence,
         postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved:
             this.#postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved,
+        firstEligibleScreenshotFrameId: this.#firstEligibleScreenshotFrameId,
+        screenshotCaptureAttempted: this.#screenshotCaptureAttempted,
+        screenshotFrameId: this.#screenshot?.frameId || 0,
+        screenshotObservationSequence:
+            this.#screenshot?.observationSequence || 0,
         passMarkerObserved: this.#passMarkerObserved,
       },
       abort: this.#abort,
@@ -484,6 +625,7 @@ class ChromiumWasmBrowserControlledHttpsSmokeHost {
       ozoneTextInputStates: this.#textInputStates,
       ozoneTextInputDeliveries: this.#textInputDeliveries,
       ozoneCursorReports: this.#cursorReports,
+      screenshot: this.#screenshot,
       canvasBackingStore: {
         width: this.#canvas.width,
         height: this.#canvas.height,
@@ -642,10 +784,49 @@ function validateResult(result) {
               true,
           "controlled-HTTPS first visually non-empty paint report is absent");
   require(result.controlledHttps
+              ?.targetFirstVisuallyNonEmptyPaintSignalObserved === true,
+          "controlled-HTTPS target first visually non-empty paint signal is " +
+              "absent");
+  require(result.controlledHttps
               ?.postNavigatedFrameAfterFirstVisuallyNonEmptyPaintObserved ===
               true,
           "no post-NAVIGATED canvas frame followed the first visually non-empty " +
               "paint report");
+  require(result.controlledHttps?.screenshotCaptureAttempted === true,
+      "the first eligible screenshot capture was not attempted");
+  require(Number.isSafeInteger(result.controlledHttps
+              ?.firstEligibleScreenshotFrameId) &&
+              result.controlledHttps.firstEligibleScreenshotFrameId >
+                  result.controlledHttps.frameIdAtNavigatedMarker,
+          "the first eligible screenshot frame is invalid");
+  require(result.controlledHttps?.screenshotFrameId ===
+              result.controlledHttps?.firstEligibleScreenshotFrameId,
+          "the screenshot was not captured from the first eligible frame");
+  require(Number.isSafeInteger(result.controlledHttps
+              ?.navigatedMarkerObservationSequence) &&
+              Number.isSafeInteger(result.controlledHttps
+                  ?.targetFirstVisuallyNonEmptyPaintSignalObservationSequence) &&
+              result.controlledHttps
+                      .targetFirstVisuallyNonEmptyPaintSignalObservationSequence >
+                  result.controlledHttps.navigatedMarkerObservationSequence,
+          "the target first visually non-empty paint signal was not observed " +
+              "after NAVIGATED");
+  require(Number.isSafeInteger(result.controlledHttps
+              ?.screenshotObservationSequence) &&
+              result.controlledHttps.screenshotObservationSequence >
+                  result.controlledHttps.navigatedMarkerObservationSequence &&
+              result.controlledHttps.screenshotObservationSequence >
+                  result.controlledHttps
+                      .targetFirstVisuallyNonEmptyPaintSignalObservationSequence,
+          "the screenshot was not observed after NAVIGATED and target FVP " +
+              "signal");
+  require(isCapturedPngScreenshot(result.screenshot),
+      "controlled-HTTPS PNG screenshot evidence is invalid");
+  require(result.screenshot?.frameId === result.controlledHttps?.screenshotFrameId,
+      "screenshot frame ID does not match capture evidence");
+  require(result.screenshot?.observationSequence ===
+              result.controlledHttps?.screenshotObservationSequence,
+          "screenshot observation sequence does not match capture evidence");
   require(result.controlledHttps?.passMarkerObserved === true,
       "controlled-HTTPS PASS marker is absent");
   require(Array.isArray(result.frameReports) && result.frameReports.length >= 1,
@@ -678,6 +859,20 @@ function validateResult(result) {
   return result;
 }
 
+function resultForDisplay(result) {
+  if (!result?.screenshot || typeof result.screenshot !== "object" ||
+      typeof result.screenshot.dataBase64 !== "string") {
+    return result;
+  }
+  return {
+    ...result,
+    screenshot: {
+      ...result.screenshot,
+      dataBase64: "<omitted from host diagnostics>",
+    },
+  };
+}
+
 export async function runChromeWasmBrowserControlledHttpsSmokeFromQuery() {
   const query = new URLSearchParams(location.search);
   const token = asNonemptyString(query.get("token"), "result token");
@@ -700,7 +895,7 @@ export async function runChromeWasmBrowserControlledHttpsSmokeFromQuery() {
       location.pathname.replace(/\/$/, "") + "/artifacts/" + moduleName + ".js",
       timeoutMs, query.get("wispEndpoint"), query.get("fixtureUrl")));
   root.dataset.state = result.status;
-  status.textContent = JSON.stringify(result, null, 2);
+  status.textContent = JSON.stringify(resultForDisplay(result), null, 2);
   const response = await fetch(
       location.pathname.replace(/\/$/, "") + "/result/" +
           encodeURIComponent(token),
@@ -719,6 +914,7 @@ export async function runChromeWasmBrowserControlledHttpsSmokeFromQuery() {
 export const chromeWasmBrowserControlledHttpsSmokeContract = Object.freeze({
   CASE,
   FIXTURE_PATH,
+  FIXTURE_URL,
   HOST_PROTOCOL,
   NAVIGATED_MARKER,
   PASS_MARKER,

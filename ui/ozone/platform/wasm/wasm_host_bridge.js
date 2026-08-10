@@ -158,6 +158,26 @@ mergeInto(LibraryManager.library, {
     return ChromiumWasmHostBridge.reportReadiness(update) ? 1 : 0;
   },
 
+  // This one-shot test-only witness is deliberately separate from readiness:
+  // readiness FVP is sticky, while the controlled HTTPS smoke emits this only
+  // from its observer after the exact target document has committed and
+  // reached first visually non-empty paint.
+  chromium_wasm_report_controlled_https_target_fvp__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_controlled_https_target_fvp__proxy: 'sync',
+  chromium_wasm_report_controlled_https_target_fvp: () => {
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportControlledHttpsTargetFvp !== 'function') {
+      return 0;
+    }
+    bridge.reportControlledHttpsTargetFvp({
+      protocol: ChromiumWasmHostBridge.version,
+    });
+    return 1;
+  },
+
   chromium_wasm_report_ozone_focus_state__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_ozone_focus_state__proxy: 'sync',
   chromium_wasm_report_ozone_focus_state: (
