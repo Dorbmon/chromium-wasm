@@ -157,6 +157,12 @@ if (enable_chromium_wasm_port) {
     ldflags = [ "-sWASMFS=1" ]
   }
 
+  # This target intentionally keeps WasmFS and the normal-exit experiment out
+  # of Chrome and the existing M7 persistence/exclusivity experiments.
+  config("m7_wasmfs_opfs_shutdown_smoke_link") {
+    ldflags = [ "-sWASMFS=1" ]
+  }
+
   # This intentionally remains target-local. Neither Chrome nor the existing
   # M7 primitive-persistence smoke opt into WasmFS through this target.
   config("m7_wasmfs_opfs_exclusivity_smoke_link") {
@@ -171,6 +177,19 @@ if (enable_chromium_wasm_port) {
     # Emscripten supplies the WasmFS C++ runtime and compiler builtins.  This
     # mirrors the other standalone Wasm smokes rather than pulling Chrome's
     # regular runtime closure into the feasibility experiment.
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  # A normal-return smoke for the pinned WasmFS OPFS backend. Its dedicated
+  # host Worker is responsible for keeping normal Emscripten global teardown
+  # away from the page's browser-main thread.
+  executable("m7_wasmfs_opfs_shutdown_smoke") {
+    testonly = true
+    sources = [ "m7_wasmfs_opfs_shutdown_smoke.cc" ]
+    configs += [ ":m7_wasmfs_opfs_shutdown_smoke_link" ]
+
     no_default_deps = true
     use_libcxx_modules = false
     configs -= [ "//build/config/compiler:runtime_library" ]

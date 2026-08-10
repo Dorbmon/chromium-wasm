@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 OPFS normal-shutdown smoke</title>
+<main id="m7-opfs-shutdown-root" data-state="starting">
+  <h1>Chromium Wasm M7 OPFS normal-shutdown smoke</h1>
+  <pre id="m7-opfs-shutdown-status">starting</pre>
+</main>
+<script type="module">
+  import {runM7WasmfsOpfsShutdownSmokeFromQuery} from
+      "./m7_wasmfs_opfs_shutdown_smoke.js";
+  runM7WasmfsOpfsShutdownSmokeFromQuery().catch((error) => {
+    const root = document.querySelector("#m7-opfs-shutdown-root");
+    const status = document.querySelector("#m7-opfs-shutdown-status");
+    if (root instanceof HTMLElement) {
+      root.dataset.state = "fail";
+    }
+    if (status instanceof HTMLElement) {
+      status.textContent = String(error);
+    }
+    throw error;
+  });
+</script>

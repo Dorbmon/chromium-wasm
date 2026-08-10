@@ -40,6 +40,7 @@ if (enable_chromium_wasm_port) {
         "//chrome:chrome_wasm($default_toolchain)",
         "//tools/wasm:m7_wasmfs_opfs_exclusivity_smoke($default_toolchain)",
         "//tools/wasm:m7_wasmfs_opfs_smoke($default_toolchain)",
+        "//tools/wasm:m7_wasmfs_opfs_shutdown_smoke($default_toolchain)",
       ]
     } else if (enable_chromium_wasm_content) {
       deps = [
