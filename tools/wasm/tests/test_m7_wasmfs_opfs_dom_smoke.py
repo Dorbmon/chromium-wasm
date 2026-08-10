@@ -51,6 +51,8 @@ def passing_result(phase: str) -> dict[str, object]:
         "opfsCapability": True,
         "opfsFallbackUsed": False,
         "persistenceScope": smoke.PERSISTENCE_SCOPE,
+        "completedRenameReplacePersistence": True,
+        "atomicRecoveryProven": False,
         "fileLockSemanticsProven": False,
         "concurrentAccessHandleSemanticsProven": False,
         "outerReload": not is_write,
@@ -70,7 +72,11 @@ def passing_result(phase: str) -> dict[str, object]:
         "factorySettled": True,
         "runtimeInitialized": True,
         "abort": None,
-        "stdout": [marker, f"{smoke.PASS_MARKER} phase={phase}"],
+        "stdout": [
+            marker,
+            smoke.RENAME_REPLACE_MARKER,
+            f"{smoke.PASS_MARKER} phase={phase}",
+        ],
         "stderr": [],
         "error": None,
     }
@@ -101,6 +107,37 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
                         expected_run_namespace=RUN_NAMESPACE,
                         expected_origin=ORIGIN,
                     )
+
+    def test_validate_result_pair_requires_completed_rename_replace_only(self) -> None:
+        for field, value in (
+            ("completedRenameReplacePersistence", False),
+            ("atomicRecoveryProven", True),
+        ):
+            with self.subTest(field=field):
+                write = passing_result(smoke.WRITE_PHASE)
+                verify = passing_result(smoke.VERIFY_PHASE)
+                verify[field] = value
+                with self.assertRaises(M0Error):
+                    smoke.validate_result_pair(
+                        write,
+                        verify,
+                        expected_run_namespace=RUN_NAMESPACE,
+                        expected_origin=ORIGIN,
+                    )
+
+    def test_validate_result_pair_requires_rename_replace_native_marker(self) -> None:
+        write = passing_result(smoke.WRITE_PHASE)
+        write["stdout"] = [
+            smoke.WRITE_READY_MARKER,
+            f"{smoke.PASS_MARKER} phase={smoke.WRITE_PHASE}",
+        ]
+        with self.assertRaises(M0Error):
+            smoke.validate_result_pair(
+                write,
+                passing_result(smoke.VERIFY_PHASE),
+                expected_run_namespace=RUN_NAMESPACE,
+                expected_origin=ORIGIN,
+            )
 
     def test_validate_result_pair_rejects_missing_fresh_reload_evidence(self) -> None:
         for field, value in (
@@ -323,6 +360,9 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
             'typeof FileSystemFileHandle.prototype.createSyncAccessHandle === "function"',
             host,
         )
+        self.assertIn(
+            'typeof FileSystemFileHandle.prototype.move === "function"', host
+        )
         self.assertIn("const CAPABILITY_PROBE_SOURCE = `", host)
         self.assertIn("new Worker(workerUrl, {", host)
         self.assertIn("CAPABILITY_PROBE_TIMEOUT_MS", host)
@@ -338,6 +378,10 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         self.assertIn("if (!result.opfsCapability)", host)
         self.assertIn("opfsFallbackUsed: false", host)
         self.assertIn("persistenceScope: PERSISTENCE_SCOPE", host)
+        self.assertIn("completedRenameReplacePersistence: false", host)
+        self.assertIn("atomicRecoveryProven: false", host)
+        self.assertIn("const RENAME_REPLACE_MARKER =", host)
+        self.assertIn("outputContains(runtime.output, RENAME_REPLACE_MARKER)", host)
         self.assertIn("fileLockSemanticsProven: false", host)
         self.assertIn("concurrentAccessHandleSemanticsProven: false", host)
         self.assertIn("await postResult(context, result);", host)
@@ -408,6 +452,9 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         self.assertIn("location.replace()", runner)
         self.assertIn("redact_opaque_value(results, result_token, run_namespace)", runner)
         self.assertIn('"runtimeExitCode": None', runner)
+        self.assertIn('"completedRenameReplacePersistence": True', runner)
+        self.assertIn('"atomicRecoveryProven": False', runner)
+        self.assertIn("RENAME_REPLACE_MARKER", runner)
         self.assertIn('"completionObserved": True', runner)
         self.assertIn('"runtimeLifecycle": "live-runtime"', runner)
         self.assertIn('"teardownMode": "outer-document"', runner)

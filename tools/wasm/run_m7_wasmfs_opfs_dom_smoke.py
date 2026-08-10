@@ -56,6 +56,7 @@ WRITE_READY_MARKER = "CHROMIUM_WASM_M7_OPFS:WRITE_READY"
 VERIFY_STARTED_MARKER = "CHROMIUM_WASM_M7_OPFS:VERIFY_STARTED"
 PASS_MARKER = "CHROMIUM_WASM_M7_OPFS:PASS"
 FAIL_MARKER = "CHROMIUM_WASM_M7_OPFS:FAIL"
+RENAME_REPLACE_MARKER = "rename_replace=ok atomic_recovery=not_claimed"
 
 
 class M7WasmfsOpfsSmokeServer(ThreadingHTTPServer):
@@ -380,6 +381,8 @@ def validate_phase_result(
         "opfsCapability": True,
         "opfsFallbackUsed": False,
         "persistenceScope": PERSISTENCE_SCOPE,
+        "completedRenameReplacePersistence": True,
+        "atomicRecoveryProven": False,
         "fileLockSemanticsProven": False,
         "concurrentAccessHandleSemanticsProven": False,
         # The target intentionally uses emscripten_exit_with_live_runtime()
@@ -420,6 +423,7 @@ def validate_phase_result(
             raise M0Error("M7 OPFS verify result prior Module identity is invalid")
         _require_output(result, VERIFY_STARTED_MARKER)
     _require_exact_output(result, f"{PASS_MARKER} phase={expected_phase}")
+    _require_output(result, RENAME_REPLACE_MARKER)
 
 
 def validate_result_pair(

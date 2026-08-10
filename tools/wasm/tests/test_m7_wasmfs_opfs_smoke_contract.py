@@ -74,6 +74,61 @@ class M7WasmfsOpfsSmokeContractTest(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, smoke)
 
+    def test_rename_replace_persists_only_completed_overwrites(self) -> None:
+        smoke = source("tools/wasm/m7_wasmfs_opfs_smoke.cc")
+        write = re.search(
+            r"void RunWritePhase\(const FixturePaths& paths\) "
+            r"\{(?P<body>.*?)\n\}",
+            smoke,
+            re.DOTALL,
+        )
+        verify = re.search(
+            r"void RunVerifyPhase\(const FixturePaths& paths\) "
+            r"\{(?P<body>.*?)\n\}",
+            smoke,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(write)
+        self.assertIsNotNone(verify)
+        write_body = write.group("body")
+        verify_body = verify.group("body")
+
+        generation_a = "WriteDurableNewFile(paths.commit, kCommitGenerationAData"
+        generation_a_verify = "VerifyExactFile(paths.commit, kCommitGenerationAData"
+        generation_b = (
+            "WriteDurableNewFile(paths.temporary_commit, kCommitGenerationBData"
+        )
+        rename = "rename(paths.temporary_commit.c_str(), paths.commit.c_str())"
+        generation_b_verify = "VerifyExactFile(paths.commit, kCommitGenerationBData"
+        for token in (
+            "kCommitGenerationAData",
+            "kCommitGenerationBData",
+            generation_a,
+            generation_a_verify,
+            generation_b,
+            rename,
+            generation_b_verify,
+            "rename_replace=ok atomic_recovery=not_claimed",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, smoke)
+
+        self.assertLess(write_body.index(generation_a), write_body.index(generation_a_verify))
+        self.assertLess(
+            write_body.index(generation_a_verify), write_body.index(generation_b)
+        )
+        self.assertLess(write_body.index(generation_b), write_body.index(rename))
+        self.assertLess(write_body.index(rename), write_body.index(generation_b_verify))
+        self.assertIn(generation_b_verify, verify_body)
+        self.assertLess(
+            verify_body.index(generation_b_verify),
+            verify_body.index("Require(IsMissing(paths.temporary_commit)"),
+        )
+        self.assertEqual(
+            smoke.count("rename_replace=ok atomic_recovery=not_claimed"), 2
+        )
+        self.assertIn("does not claim atomic\n  // crash recovery semantics", smoke)
+
     def test_same_instance_open_is_explicitly_not_a_lock_claim(self) -> None:
         smoke = source("tools/wasm/m7_wasmfs_opfs_smoke.cc")
 

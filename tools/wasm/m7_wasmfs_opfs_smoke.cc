@@ -53,8 +53,11 @@ constexpr std::array<uint8_t, 3> kPatchData{0xa0, 0x00, 0xb0};
 constexpr std::array<uint8_t, 7> kSchemaData{
     'M', '7', 'O', 'P', 'F', 'S', static_cast<uint8_t>(kSchemaVersion),
 };
-constexpr std::array<uint8_t, 8> kCommitData{
-    0x73, 0x74, 0x61, 0x74, 0x65, 0x00, 0x31, 0x0a,
+constexpr std::array<uint8_t, 8> kCommitGenerationAData{
+    0x73, 0x74, 0x61, 0x74, 0x65, 0x00, 0x41, 0x0a,
+};
+constexpr std::array<uint8_t, 8> kCommitGenerationBData{
+    0x73, 0x74, 0x61, 0x74, 0x65, 0x00, 0x42, 0x0a,
 };
 constexpr std::array<uint8_t, 5> kNestedData{
     0x6e, 0x65, 0x73, 0x74, 0x00,
@@ -361,13 +364,26 @@ void RunWritePhase(const FixturePaths& paths) {
   PrintPhase("temp_rename_and_tree");
   WriteDurableNewFile(paths.schema, kSchemaData, "schema_create",
                       "schema_write", "schema_fdatasync", "schema_close");
-  WriteDurableNewFile(paths.temporary_commit, kCommitData, "temp_create",
-                      "temp_write", "temp_fdatasync", "temp_close");
+  WriteDurableNewFile(paths.commit, kCommitGenerationAData,
+                      "commit_generation_a_create", "commit_generation_a_write",
+                      "commit_generation_a_fdatasync",
+                      "commit_generation_a_close");
+  VerifyExactFile(paths.commit, kCommitGenerationAData,
+                  "commit_generation_a_reopen", "commit_generation_a_stat",
+                  "commit_generation_a_read", "commit_generation_a_reopen_close");
+  WriteDurableNewFile(paths.temporary_commit, kCommitGenerationBData,
+                      "commit_generation_b_create", "commit_generation_b_write",
+                      "commit_generation_b_fdatasync",
+                      "commit_generation_b_close");
   Require(rename(paths.temporary_commit.c_str(), paths.commit.c_str()) == 0,
-          "temp_to_final_rename");
+          "temp_to_existing_final_rename");
   Require(IsMissing(paths.temporary_commit), "temp_present_after_rename");
-  VerifyExactFile(paths.commit, kCommitData, "final_open", "final_stat",
-                  "final_read", "final_close");
+  // This observes a completed replacement only. The isolated smoke has no
+  // pending-move interruption hook, so it deliberately does not claim atomic
+  // crash recovery semantics.
+  VerifyExactFile(paths.commit, kCommitGenerationBData,
+                  "rename_replace_final_open", "rename_replace_final_stat",
+                  "rename_replace_final_read", "rename_replace_final_close");
   WriteDurableNewFile(paths.nested_child, kNestedData, "nested_create",
                       "nested_write", "nested_fdatasync", "nested_close");
   WriteDurableNewFile(paths.deleted, kDeletedData, "delete_create",
@@ -392,7 +408,8 @@ void RunWritePhase(const FixturePaths& paths) {
   std::fprintf(stdout,
                "%s:WRITE_READY schema=%d random_access=ok truncate=ok "
                "fdatasync=ok reopen=ok metadata=ok directories=ok "
-               "temp_rename=ok delete=ok same_instance_open=coalesced "
+               "temp_rename=ok rename_replace=ok atomic_recovery=not_claimed "
+               "delete=ok same_instance_open=coalesced "
                "lock_proof=not_claimed\n",
                kPrefix, kSchemaVersion);
   std::fflush(stdout);
@@ -420,9 +437,11 @@ void RunVerifyPhase(const FixturePaths& paths) {
   VerifyExactFile(paths.schema, kSchemaData, "verify_schema_open",
                   "verify_schema_stat", "verify_schema_read",
                   "verify_schema_close");
-  VerifyExactFile(paths.commit, kCommitData, "verify_final_open",
-                  "verify_final_stat", "verify_final_read",
-                  "verify_final_close");
+  VerifyExactFile(paths.commit, kCommitGenerationBData,
+                  "verify_rename_replace_final_open",
+                  "verify_rename_replace_final_stat",
+                  "verify_rename_replace_final_read",
+                  "verify_rename_replace_final_close");
   VerifyExactFile(paths.nested_child, kNestedData, "verify_nested_open",
                   "verify_nested_stat", "verify_nested_read",
                   "verify_nested_close");
@@ -453,7 +472,8 @@ void RunVerifyPhase(const FixturePaths& paths) {
 
   std::fprintf(stdout,
                "%s:VERIFY_READY schema=%d persisted_bytes=ok persisted_tree=ok "
-               "temp_absent=ok deleted_absent=ok cleanup=ok\n",
+               "temp_absent=ok rename_replace=ok atomic_recovery=not_claimed "
+               "deleted_absent=ok cleanup=ok\n",
                kPrefix, kSchemaVersion);
   std::fflush(stdout);
 }

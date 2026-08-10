@@ -20,6 +20,8 @@ const WRITE_READY_MARKER = "CHROMIUM_WASM_M7_OPFS:WRITE_READY";
 const VERIFY_STARTED_MARKER = "CHROMIUM_WASM_M7_OPFS:VERIFY_STARTED";
 const PASS_MARKER = "CHROMIUM_WASM_M7_OPFS:PASS";
 const FAIL_MARKER = "CHROMIUM_WASM_M7_OPFS:FAIL";
+const RENAME_REPLACE_MARKER =
+    "rename_replace=ok atomic_recovery=not_claimed";
 const MAX_TIMEOUT_MS = 180000;
 const MAX_OUTPUT_LINES = 128;
 const CAPABILITY_PROBE_TIMEOUT_MS = 5000;
@@ -43,6 +45,7 @@ const capability = self.isSecureContext === true &&
     typeof navigator.storage === "object" && navigator.storage !== null &&
     typeof navigator.storage.getDirectory === "function" &&
     typeof FileSystemFileHandle === "function" &&
+    typeof FileSystemFileHandle.prototype.move === "function" &&
     typeof FileSystemFileHandle.prototype.createSyncAccessHandle === "function";
 self.postMessage({protocol: ${CAPABILITY_PROBE_PROTOCOL}, capability});
 `;
@@ -246,6 +249,9 @@ function nativeMarkerFailure(context, output) {
   if (!outputContains(output, expected)) {
     return "native WasmFS OPFS smoke did not emit its phase marker";
   }
+  if (!outputContains(output, RENAME_REPLACE_MARKER)) {
+    return "native WasmFS OPFS smoke did not confirm completed rename replacement";
+  }
   return null;
 }
 
@@ -445,6 +451,11 @@ function baseResult(context) {
     // so it must not be represented as cross-module access-handle or Chromium
     // file-lock evidence.
     persistenceScope: PERSISTENCE_SCOPE,
+    // The native smoke verifies a completed replacement of an existing durable
+    // file after a fresh document. It cannot interrupt the underlying async
+    // move, so it must not be represented as atomic crash-recovery proof.
+    completedRenameReplacePersistence: false,
+    atomicRecoveryProven: false,
     fileLockSemanticsProven: false,
     concurrentAccessHandleSemanticsProven: false,
     outerReload: context.outerReload,
@@ -498,6 +509,8 @@ async function executePhase(context) {
         context.priorModuleIdentity !== null &&
         result.moduleIdentity !== context.priorModuleIdentity;
     const markerFailure = nativeMarkerFailure(context, runtime.output);
+    result.completedRenameReplacePersistence =
+        outputContains(runtime.output, RENAME_REPLACE_MARKER);
     result.runtimeLifecycle = runtime.completionObserved &&
         runtime.runtimeExitCode === null && runtime.abort === null ?
         "live-runtime" : "not-live-runtime";
@@ -547,6 +560,8 @@ function verifyResultShape(result) {
       result.crossOriginIsolated !== true || result.sharedArrayBuffer !== true ||
       result.opfsCapability !== true || result.origin !== location.origin ||
       result.persistenceScope !== PERSISTENCE_SCOPE ||
+      result.completedRenameReplacePersistence !== true ||
+      result.atomicRecoveryProven !== false ||
       result.fileLockSemanticsProven !== false ||
       result.concurrentAccessHandleSemanticsProven !== false ||
       result.runtimeInitialized !== true ||
@@ -599,6 +614,7 @@ export const m7WasmfsOpfsSmokeContract = Object.freeze({
   nativeMarkers: Object.freeze([
     WRITE_READY_MARKER,
     VERIFY_STARTED_MARKER,
+    RENAME_REPLACE_MARKER,
     PASS_MARKER,
     FAIL_MARKER,
   ]),
