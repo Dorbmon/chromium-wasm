@@ -48,14 +48,22 @@ def pointer_record(
 
 def successful_result() -> dict[str, object]:
     new_target = {"x": 618, "y": 16, "clientX": 635.5, "clientY": 33.5}
-    close_target = {"x": 586, "y": 16, "clientX": 603.5, "clientY": 33.5}
+    first_target = {"x": 76, "y": 16, "clientX": 93.5, "clientY": 33.5}
+    second_target = {"x": 226, "y": 16, "clientX": 243.5, "clientY": 33.5}
+    close_target = {"x": 294, "y": 16, "clientX": 311.5, "clientY": 33.5}
     records = [
         pointer_record("move", 618, 16, button=-1, buttons=0),
         pointer_record("down", 618, 16, button=0, buttons=1),
         pointer_record("up", 618, 16, button=0, buttons=0),
-        pointer_record("move", 586, 16, button=-1, buttons=0),
-        pointer_record("down", 586, 16, button=0, buttons=1),
-        pointer_record("up", 586, 16, button=0, buttons=0),
+        pointer_record("move", 76, 16, button=-1, buttons=0),
+        pointer_record("down", 76, 16, button=0, buttons=1),
+        pointer_record("up", 76, 16, button=0, buttons=0),
+        pointer_record("move", 226, 16, button=-1, buttons=0),
+        pointer_record("down", 226, 16, button=0, buttons=1),
+        pointer_record("up", 226, 16, button=0, buttons=0),
+        pointer_record("move", 294, 16, button=-1, buttons=0),
+        pointer_record("down", 294, 16, button=0, buttons=1),
+        pointer_record("up", 294, 16, button=0, buttons=0),
     ]
     return {
         "protocol": 1,
@@ -79,7 +87,9 @@ def successful_result() -> dict[str, object]:
         "stdout": [],
         "stderr": [
             f"{smoke.READY_MARKER} x=618 y=16",
-            f"{smoke.INSERTED_MARKER} x=586 y=16",
+            f"{smoke.INSERTED_MARKER} x=76 y=16",
+            f"{smoke.FIRST_SELECTED_MARKER} x=226 y=16",
+            f"{smoke.SECOND_SELECTED_MARKER} x=294 y=16",
             smoke.CLOSED_MARKER,
             smoke.PASS_MARKER,
         ],
@@ -88,6 +98,7 @@ def successful_result() -> dict[str, object]:
             {"id": 2, "width": 640, "height": 480, "timestampMs": 2.0},
             {"id": 3, "width": 640, "height": 480, "timestampMs": 3.0},
             {"id": 4, "width": 640, "height": 480, "timestampMs": 4.0},
+            {"id": 5, "width": 640, "height": 480, "timestampMs": 5.0},
         ],
         "readiness": {
             "shellReady": True,
@@ -106,15 +117,25 @@ def successful_result() -> dict[str, object]:
             "attached": True,
             "readyObserved": True,
             "insertedObserved": True,
+            "firstSelectedObserved": True,
+            "secondSelectedObserved": True,
             "closedObserved": True,
             "passObserved": True,
             "newTabTarget": new_target,
+            "firstTabTarget": first_target,
+            "secondTabTarget": second_target,
             "closeTabTarget": close_target,
             "frameIdAtInsertedMarker": 1,
             "frameIdAfterInsert": 2,
-            "frameIdAtClosedMarker": 3,
-            "frameIdAfterClose": 4,
+            "frameIdAtFirstSelectedMarker": 2,
+            "frameIdAfterFirstSelection": 3,
+            "frameIdAtSecondSelectedMarker": 3,
+            "frameIdAfterSecondSelection": 4,
+            "frameIdAtClosedMarker": 4,
+            "frameIdAfterClose": 5,
             "insertCheckQueued": True,
+            "firstSelectionCheckQueued": True,
+            "secondSelectionCheckQueued": True,
             "closeCheckQueued": True,
             "presentationQueued": True,
             "pointerRecords": records,
@@ -139,8 +160,14 @@ class M6WasmBrowserHostPointerTabsDomSmokeTest(unittest.TestCase):
             "chromium_wasm_browser_host_pointer_tab_check",
             "chromium_wasm_browser_host_pointer_tab_presented",
             "frameIdAtInsertedMarker",
+            "frameIdAtFirstSelectedMarker",
+            "frameIdAtSecondSelectedMarker",
             "frameIdAtClosedMarker",
+            "FIRST_SELECTED_MARKER",
+            "SECOND_SELECTED_MARKER",
             "awaiting-trusted-dom-new-tab",
+            "awaiting-trusted-dom-select-first-tab",
+            "awaiting-trusted-dom-select-second-tab",
             "awaiting-trusted-dom-close-tab",
         ):
             with self.subTest(expected=expected):
@@ -171,6 +198,8 @@ class M6WasmBrowserHostPointerTabsDomSmokeTest(unittest.TestCase):
         for expected in (
             "wait_for_page_client",
             "awaiting-trusted-dom-new-tab",
+            "awaiting-trusted-dom-select-first-tab",
+            "awaiting-trusted-dom-select-second-tab",
             "awaiting-trusted-dom-close-tab",
             "client.dispatch_primary_click",
             "--wasm-browser-host-pointer-tab-smoke",
@@ -198,6 +227,18 @@ class M6WasmBrowserHostPointerTabsDomSmokeTest(unittest.TestCase):
                 "ordered presentation",
             ),
             (
+                lambda result: result["hostInput"].__setitem__(
+                    "firstSelectedObserved", False
+                ),
+                "firstSelectedObserved",
+            ),
+            (
+                lambda result: result["hostInput"].__setitem__(
+                    "frameIdAfterSecondSelection", 3
+                ),
+                "ordered presentation",
+            ),
+            (
                 lambda result: result["hostInput"]["pointerRecords"][1].__setitem__(
                     "trusted", False
                 ),
@@ -205,7 +246,7 @@ class M6WasmBrowserHostPointerTabsDomSmokeTest(unittest.TestCase):
             ),
             (
                 lambda result: result["hostInput"]["pointerRecords"].pop(),
-                "exactly two pointer clicks",
+                "exactly four pointer clicks",
             ),
         ):
             with self.subTest(expression=expression):

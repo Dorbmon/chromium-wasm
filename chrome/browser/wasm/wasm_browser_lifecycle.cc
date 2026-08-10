@@ -45,6 +45,10 @@ constexpr char kHostPointerTabsReadyMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:READY";
 constexpr char kHostPointerTabsInsertedMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:INSERTED";
+constexpr char kHostPointerTabsFirstSelectedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:FIRST_SELECTED";
+constexpr char kHostPointerTabsSecondSelectedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:SECOND_SELECTED";
 constexpr char kHostPointerTabsClosedMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:CLOSED";
 constexpr char kHostPointerTabsPassMarker[] =
@@ -191,6 +195,7 @@ void WasmBrowserLifecycle::StartHostPointerTabSmoke() {
   TabStripModel* const tab_strip_model = browser_->tab_strip_model();
   CHECK(tab_strip_model);
   CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK(!host_pointer_tab_second_contents_);
   host_pointer_tab_initial_contents_ = tab_strip_model->GetWebContentsAt(0);
   CHECK(host_pointer_tab_initial_contents_);
 
@@ -334,14 +339,22 @@ bool WasmBrowserLifecycle::VerifyHostPointerTabSmokeCheck(int stage) {
   if (stage == 1) {
     if (host_pointer_tab_insert_verified_ || tab_strip_model->count() != 2 ||
         tab_strip_model->GetWebContentsAt(0) !=
-            host_pointer_tab_initial_contents_ ||
-        tab_strip_model->GetWebContentsAt(1) ==
             host_pointer_tab_initial_contents_) {
       return false;
     }
 
+    content::WebContents* const second_contents =
+        tab_strip_model->GetWebContentsAt(1);
+    if (!second_contents || second_contents == host_pointer_tab_initial_contents_ ||
+        tab_strip_model->active_index() != 1 ||
+        tab_strip_model->GetActiveWebContents() != second_contents ||
+        browser_view.GetActiveWebContents() != second_contents) {
+      return false;
+    }
+
     const gfx::Point target = GetHostPointerTarget(
-        browser_view, tab_strip->close_tab_button_for_testing(1));
+        browser_view, tab_strip->tab_button_for_testing(0));
+    host_pointer_tab_second_contents_ = second_contents;
     host_pointer_tab_insert_verified_ = true;
     std::fprintf(stderr, "%s x=%d y=%d\n", kHostPointerTabsInsertedMarker,
                  target.x(), target.y());
@@ -353,17 +366,81 @@ bool WasmBrowserLifecycle::VerifyHostPointerTabSmokeCheck(int stage) {
   }
 
   if (stage == 2) {
-    views::LabelButton* const new_tab_button =
-        tab_strip->new_tab_button_for_testing();
     if (!host_pointer_tab_insert_verified_ ||
-        host_pointer_tab_close_verified_ || tab_strip_model->count() != 1 ||
+        host_pointer_tab_first_selection_verified_ ||
+        tab_strip_model->count() != 2 ||
         tab_strip_model->GetWebContentsAt(0) !=
             host_pointer_tab_initial_contents_ ||
-        !new_tab_button || !new_tab_button->GetVisible() ||
-        !new_tab_button->GetEnabled()) {
+        tab_strip_model->GetWebContentsAt(1) !=
+            host_pointer_tab_second_contents_ ||
+        tab_strip_model->active_index() != 0 ||
+        tab_strip_model->GetActiveWebContents() !=
+            host_pointer_tab_initial_contents_ ||
+        browser_view.GetActiveWebContents() !=
+            host_pointer_tab_initial_contents_) {
       return false;
     }
 
+    const gfx::Point target = GetHostPointerTarget(
+        browser_view, tab_strip->tab_button_for_testing(1));
+    host_pointer_tab_first_selection_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n",
+                 kHostPointerTabsFirstSelectedMarker, target.x(), target.y());
+    std::fflush(stderr);
+    // The host waits for this presentation before it dispatches the second
+    // trusted tab-selector click. This keeps both selection assertions tied
+    // to a visibly updated Chromium BrowserView rather than only model state.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 3) {
+    if (!host_pointer_tab_first_selection_verified_ ||
+        host_pointer_tab_second_selection_verified_ ||
+        tab_strip_model->count() != 2 ||
+        tab_strip_model->GetWebContentsAt(0) !=
+            host_pointer_tab_initial_contents_ ||
+        tab_strip_model->GetWebContentsAt(1) !=
+            host_pointer_tab_second_contents_ ||
+        tab_strip_model->active_index() != 1 ||
+        tab_strip_model->GetActiveWebContents() !=
+            host_pointer_tab_second_contents_ ||
+        browser_view.GetActiveWebContents() !=
+            host_pointer_tab_second_contents_) {
+      return false;
+    }
+
+    const gfx::Point target = GetHostPointerTarget(
+        browser_view, tab_strip->close_tab_button_for_testing(1));
+    host_pointer_tab_second_selection_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n",
+                 kHostPointerTabsSecondSelectedMarker, target.x(), target.y());
+    std::fflush(stderr);
+    // The host waits for this presentation before it closes the active second
+    // tab through the same trusted DOM pointer/Ozone path.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 4) {
+    views::LabelButton* const new_tab_button =
+        tab_strip->new_tab_button_for_testing();
+    if (!host_pointer_tab_second_selection_verified_ ||
+        host_pointer_tab_close_verified_ || tab_strip_model->count() != 1 ||
+        tab_strip_model->GetWebContentsAt(0) !=
+            host_pointer_tab_initial_contents_ ||
+        tab_strip_model->active_index() != 0 ||
+        tab_strip_model->GetActiveWebContents() !=
+            host_pointer_tab_initial_contents_ ||
+        browser_view.GetActiveWebContents() !=
+            host_pointer_tab_initial_contents_ || !new_tab_button ||
+        !new_tab_button->GetVisible() || !new_tab_button->GetEnabled()) {
+      return false;
+    }
+
+    // The closed WebContents is no longer model-owned; never carry its raw
+    // pointer beyond this verification point.
+    host_pointer_tab_second_contents_ = nullptr;
     host_pointer_tab_close_verified_ = true;
     std::fprintf(stderr, "%s\n", kHostPointerTabsClosedMarker);
     std::fflush(stderr);
@@ -378,10 +455,13 @@ bool WasmBrowserLifecycle::VerifyHostPointerTabSmokeCheck(int stage) {
 
 bool WasmBrowserLifecycle::OnHostPointerTabSmokePresented(int stage) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (stage != 2 || !host_pointer_tab_smoke_started_ ||
-      !host_pointer_tab_insert_verified_ || !host_pointer_tab_close_verified_ ||
+  if (stage != 4 || !host_pointer_tab_smoke_started_ ||
+      !host_pointer_tab_insert_verified_ ||
+      !host_pointer_tab_first_selection_verified_ ||
+      !host_pointer_tab_second_selection_verified_ ||
+      !host_pointer_tab_close_verified_ ||
       host_pointer_tab_presentation_verified_ || shutdown_started_ ||
-      shutdown_complete_ || !browser_) {
+      shutdown_complete_ || !browser_ || host_pointer_tab_second_contents_) {
     return false;
   }
 

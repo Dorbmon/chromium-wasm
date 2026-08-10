@@ -15,6 +15,10 @@ const SCOPE = "trusted-dom-pointer-ozone-aura-views-tab-flow";
 const SWITCH = "--wasm-browser-host-pointer-tab-smoke";
 const READY_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:READY";
 const INSERTED_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:INSERTED";
+const FIRST_SELECTED_MARKER =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:FIRST_SELECTED";
+const SECOND_SELECTED_MARKER =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:SECOND_SELECTED";
 const CLOSED_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:CLOSED";
 const PASS_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:PASS";
 const MAX_TIMEOUT_MS = 120000;
@@ -187,15 +191,25 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
     attached: false,
     readyObserved: false,
     insertedObserved: false,
+    firstSelectedObserved: false,
+    secondSelectedObserved: false,
     closedObserved: false,
     passObserved: false,
     newTabTarget: null,
+    firstTabTarget: null,
+    secondTabTarget: null,
     closeTabTarget: null,
     frameIdAtInsertedMarker: null,
     frameIdAfterInsert: null,
+    frameIdAtFirstSelectedMarker: null,
+    frameIdAfterFirstSelection: null,
+    frameIdAtSecondSelectedMarker: null,
+    frameIdAfterSecondSelection: null,
     frameIdAtClosedMarker: null,
     frameIdAfterClose: null,
     insertCheckQueued: false,
+    firstSelectionCheckQueued: false,
+    secondSelectionCheckQueued: false,
     closeCheckQueued: false,
     presentationQueued: false,
     pointerRecords: [],
@@ -395,15 +409,25 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
       attached: input.attached,
       readyObserved: input.readyObserved,
       insertedObserved: input.insertedObserved,
+      firstSelectedObserved: input.firstSelectedObserved,
+      secondSelectedObserved: input.secondSelectedObserved,
       closedObserved: input.closedObserved,
       passObserved: input.passObserved,
       newTabTarget: input.newTabTarget,
+      firstTabTarget: input.firstTabTarget,
+      secondTabTarget: input.secondTabTarget,
       closeTabTarget: input.closeTabTarget,
       frameIdAtInsertedMarker: input.frameIdAtInsertedMarker,
       frameIdAfterInsert: input.frameIdAfterInsert,
+      frameIdAtFirstSelectedMarker: input.frameIdAtFirstSelectedMarker,
+      frameIdAfterFirstSelection: input.frameIdAfterFirstSelection,
+      frameIdAtSecondSelectedMarker: input.frameIdAtSecondSelectedMarker,
+      frameIdAfterSecondSelection: input.frameIdAfterSecondSelection,
       frameIdAtClosedMarker: input.frameIdAtClosedMarker,
       frameIdAfterClose: input.frameIdAfterClose,
       insertCheckQueued: input.insertCheckQueued,
+      firstSelectionCheckQueued: input.firstSelectionCheckQueued,
+      secondSelectionCheckQueued: input.secondSelectionCheckQueued,
       closeCheckQueued: input.closeCheckQueued,
       presentationQueued: input.presentationQueued,
     });
@@ -421,6 +445,24 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
         this.#input.frameIdAfterInsert = frame.id;
       }
     }
+    if (this.#input.firstSelectedObserved &&
+        this.#input.frameIdAfterFirstSelection === null &&
+        this.#input.frameIdAtFirstSelectedMarker !== null) {
+      const frame = this.#firstFrameAfter(
+          this.#input.frameIdAtFirstSelectedMarker);
+      if (frame) {
+        this.#input.frameIdAfterFirstSelection = frame.id;
+      }
+    }
+    if (this.#input.secondSelectedObserved &&
+        this.#input.frameIdAfterSecondSelection === null &&
+        this.#input.frameIdAtSecondSelectedMarker !== null) {
+      const frame = this.#firstFrameAfter(
+          this.#input.frameIdAtSecondSelectedMarker);
+      if (frame) {
+        this.#input.frameIdAfterSecondSelection = frame.id;
+      }
+    }
     if (this.#input.closedObserved && this.#input.frameIdAfterClose === null &&
         this.#input.frameIdAtClosedMarker !== null) {
       const frame = this.#firstFrameAfter(this.#input.frameIdAtClosedMarker);
@@ -431,7 +473,7 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
     if (this.#input.closedObserved && this.#input.frameIdAfterClose !== null &&
         !this.#input.presentationQueued) {
       const queued = this.#callSmokeVerifier(
-          "chromium_wasm_browser_host_pointer_tab_presented", 2);
+          "chromium_wasm_browser_host_pointer_tab_presented", 4);
       if (queued) {
         this.#input.presentationQueued = true;
       }
@@ -449,9 +491,22 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
           "awaiting-orderly-shutdown" : "awaiting-post-close-frame");
       return;
     }
+    if (this.#input.secondSelectedObserved) {
+      this.#publishState(this.#input.frameIdAfterSecondSelection !== null ?
+          "awaiting-trusted-dom-close-tab" :
+          "awaiting-post-second-selection-frame");
+      return;
+    }
+    if (this.#input.firstSelectedObserved) {
+      this.#publishState(this.#input.frameIdAfterFirstSelection !== null ?
+          "awaiting-trusted-dom-select-second-tab" :
+          "awaiting-post-first-selection-frame");
+      return;
+    }
     if (this.#input.insertedObserved) {
       this.#publishState(this.#input.frameIdAfterInsert !== null ?
-          "awaiting-trusted-dom-close-tab" : "awaiting-post-insert-frame");
+          "awaiting-trusted-dom-select-first-tab" :
+          "awaiting-post-insert-frame");
       return;
     }
     if (this.#module && this.#input.attached && this.#input.readyObserved) {
@@ -483,11 +538,45 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
           throw new Error("tab-flow INSERTED target cannot map to the canvas");
         }
         this.#input.insertedObserved = true;
-        this.#input.closeTabTarget = target;
+        this.#input.firstTabTarget = target;
         // C++ has just verified the real 1→2 model transition. The smoke
         // requires a frame reported strictly after this marker, rather than a
         // frame that happened while its verification task was merely queued.
         this.#input.frameIdAtInsertedMarker = this.#currentFrameId();
+      }
+      const firstSelected = parseTargetMarker(text, FIRST_SELECTED_MARKER);
+      if (firstSelected) {
+        if (!this.#input.firstSelectionCheckQueued ||
+            this.#input.firstSelectedObserved) {
+          throw new Error("tab-flow FIRST_SELECTED marker is out of order");
+        }
+        const target = this.#targetForClientPoint(firstSelected);
+        if (!target) {
+          throw new Error(
+              "tab-flow FIRST_SELECTED target cannot map to the canvas");
+        }
+        this.#input.firstSelectedObserved = true;
+        this.#input.secondTabTarget = target;
+        // The first trusted inactive-tab click has reached the Browser model
+        // and BrowserView. The next click is withheld until a later frame.
+        this.#input.frameIdAtFirstSelectedMarker = this.#currentFrameId();
+      }
+      const secondSelected = parseTargetMarker(text, SECOND_SELECTED_MARKER);
+      if (secondSelected) {
+        if (!this.#input.secondSelectionCheckQueued ||
+            this.#input.secondSelectedObserved) {
+          throw new Error("tab-flow SECOND_SELECTED marker is out of order");
+        }
+        const target = this.#targetForClientPoint(secondSelected);
+        if (!target) {
+          throw new Error(
+              "tab-flow SECOND_SELECTED target cannot map to the canvas");
+        }
+        this.#input.secondSelectedObserved = true;
+        this.#input.closeTabTarget = target;
+        // As above, the close affordance is clicked only after a presentation
+        // strictly following the model/UI selection verification.
+        this.#input.frameIdAtSecondSelectedMarker = this.#currentFrameId();
       }
       if (text.includes(CLOSED_MARKER)) {
         if (!this.#input.closeCheckQueued || this.#input.closedObserved) {
@@ -559,8 +648,18 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
       target = this.#input.newTabTarget;
     } else if (this.#input.insertedObserved &&
                this.#input.frameIdAfterInsert !== null &&
-               !this.#input.closeCheckQueued) {
+               !this.#input.firstSelectionCheckQueued) {
       stage = 2;
+      target = this.#input.firstTabTarget;
+    } else if (this.#input.firstSelectedObserved &&
+               this.#input.frameIdAfterFirstSelection !== null &&
+               !this.#input.secondSelectionCheckQueued) {
+      stage = 3;
+      target = this.#input.secondTabTarget;
+    } else if (this.#input.secondSelectedObserved &&
+               this.#input.frameIdAfterSecondSelection !== null &&
+               !this.#input.closeCheckQueued) {
+      stage = 4;
       target = this.#input.closeTabTarget;
     }
     if (stage === 0 || !this.#acceptedActionPairForTarget(target)) {
@@ -572,6 +671,10 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
     }
     if (stage === 1) {
       this.#input.insertCheckQueued = true;
+    } else if (stage === 2) {
+      this.#input.firstSelectionCheckQueued = true;
+    } else if (stage === 3) {
+      this.#input.secondSelectionCheckQueued = true;
     } else {
       this.#input.closeCheckQueued = true;
     }
@@ -629,15 +732,27 @@ class ChromiumWasmBrowserHostPointerTabsSmokeHost {
         attached: this.#input.attached,
         readyObserved: this.#input.readyObserved,
         insertedObserved: this.#input.insertedObserved,
+        firstSelectedObserved: this.#input.firstSelectedObserved,
+        secondSelectedObserved: this.#input.secondSelectedObserved,
         closedObserved: this.#input.closedObserved,
         passObserved: this.#input.passObserved,
         newTabTarget: this.#input.newTabTarget,
+        firstTabTarget: this.#input.firstTabTarget,
+        secondTabTarget: this.#input.secondTabTarget,
         closeTabTarget: this.#input.closeTabTarget,
         frameIdAtInsertedMarker: this.#input.frameIdAtInsertedMarker,
         frameIdAfterInsert: this.#input.frameIdAfterInsert,
+        frameIdAtFirstSelectedMarker:
+            this.#input.frameIdAtFirstSelectedMarker,
+        frameIdAfterFirstSelection: this.#input.frameIdAfterFirstSelection,
+        frameIdAtSecondSelectedMarker:
+            this.#input.frameIdAtSecondSelectedMarker,
+        frameIdAfterSecondSelection: this.#input.frameIdAfterSecondSelection,
         frameIdAtClosedMarker: this.#input.frameIdAtClosedMarker,
         frameIdAfterClose: this.#input.frameIdAfterClose,
         insertCheckQueued: this.#input.insertCheckQueued,
+        firstSelectionCheckQueued: this.#input.firstSelectionCheckQueued,
+        secondSelectionCheckQueued: this.#input.secondSelectionCheckQueued,
         closeCheckQueued: this.#input.closeCheckQueued,
         presentationQueued: this.#input.presentationQueued,
         pointerRecords: this.#input.pointerRecords,
@@ -745,7 +860,7 @@ function validateResult(result) {
   require(result.windowErrors.length === 0, "host recorded a window error");
   require(result.unhandledRejections.length === 0,
       "host recorded an unhandled rejection");
-  require(result.frameReports.length >= 3, "too few host-canvas frames");
+  require(result.frameReports.length >= 5, "too few host-canvas frames");
   require(result.readiness?.surfaceReady === true,
       "surface readiness was not reported");
   require(result.ozoneFocusReports.some((report) =>
@@ -753,14 +868,21 @@ function validateResult(result) {
   "no active Ozone keyboard target was observed");
   const input = result.hostInput;
   for (const field of [
-    "attached", "readyObserved", "insertedObserved", "closedObserved",
-    "passObserved", "insertCheckQueued", "closeCheckQueued",
-    "presentationQueued",
+    "attached", "readyObserved", "insertedObserved", "firstSelectedObserved",
+    "secondSelectedObserved", "closedObserved", "passObserved",
+    "insertCheckQueued", "firstSelectionCheckQueued",
+    "secondSelectionCheckQueued", "closeCheckQueued", "presentationQueued",
   ]) {
     require(input?.[field] === true, `host input ${field} is not true`);
   }
   require(input?.frameIdAfterInsert > input?.frameIdAtInsertedMarker,
       "insert action has no later presented frame");
+  require(input?.frameIdAfterFirstSelection >
+      input?.frameIdAtFirstSelectedMarker,
+  "first selection action has no later presented frame");
+  require(input?.frameIdAfterSecondSelection >
+      input?.frameIdAtSecondSelectedMarker,
+  "second selection action has no later presented frame");
   require(input?.frameIdAfterClose > input?.frameIdAtClosedMarker,
       "close action has no later presented frame");
   result.failedChecks = failures;
@@ -811,10 +933,12 @@ export async function runChromeWasmBrowserHostPointerTabsSmokeFromQuery() {
 export const chromeWasmBrowserHostPointerTabsSmokeContract = Object.freeze({
   CASE,
   CLOSED_MARKER,
+  FIRST_SELECTED_MARKER,
   HOST_PROTOCOL,
   INSERTED_MARKER,
   PASS_MARKER,
   READY_MARKER,
+  SECOND_SELECTED_MARKER,
   SCOPE,
   SWITCH,
 });

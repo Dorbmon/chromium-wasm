@@ -7,8 +7,9 @@
 
 The runner drives only physical DevTools mouse events at marker-provided canvas
 coordinates. The product shared pointer adapter submits those records to the
-bounded Chrome Ozone bridge; C++ verifies the model and the host then proves a
-later canvas presentation before orderly Browser shutdown.
+bounded Chrome Ozone bridge; C++ verifies create, inactive-tab selection in
+both directions, and close model transitions. The host requires a later canvas
+presentation after every action before orderly Browser shutdown.
 """
 
 from __future__ import annotations
@@ -56,6 +57,8 @@ SCOPE = "trusted-dom-pointer-ozone-aura-views-tab-flow"
 SWITCH = "--wasm-browser-host-pointer-tab-smoke"
 READY_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:READY"
 INSERTED_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:INSERTED"
+FIRST_SELECTED_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:FIRST_SELECTED"
+SECOND_SELECTED_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:SECOND_SELECTED"
 CLOSED_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:CLOSED"
 PASS_MARKER = "CHROMIUM_WASM_M6_HOST_POINTER_TABS:PASS"
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -304,21 +307,36 @@ def _validate_host_input(value: object) -> None:
         "attached",
         "readyObserved",
         "insertedObserved",
+        "firstSelectedObserved",
+        "secondSelectedObserved",
         "closedObserved",
         "passObserved",
         "insertCheckQueued",
+        "firstSelectionCheckQueued",
+        "secondSelectionCheckQueued",
         "closeCheckQueued",
         "presentationQueued",
     ):
         if value.get(field) is not True:
             raise M0Error(f"host-pointer-tab input {field} is not true")
     new_target = _validate_target(value.get("newTabTarget"), "new-tab")
+    first_target = _validate_target(value.get("firstTabTarget"), "first-tab")
+    second_target = _validate_target(value.get("secondTabTarget"), "second-tab")
     close_target = _validate_target(value.get("closeTabTarget"), "close-tab")
-    if new_target["x"] == close_target["x"] and new_target["y"] == close_target["y"]:
-        raise M0Error("host-pointer-tab plus and close targets are identical")
+    target_points = {
+        (target["x"], target["y"])
+        for target in (new_target, first_target, second_target, close_target)
+    }
+    if len(target_points) != 4:
+        raise M0Error(
+            "host-pointer-tab create, first-select, second-select, and close "
+            "targets must be distinct"
+        )
 
     for before_field, after_field in (
         ("frameIdAtInsertedMarker", "frameIdAfterInsert"),
+        ("frameIdAtFirstSelectedMarker", "frameIdAfterFirstSelection"),
+        ("frameIdAtSecondSelectedMarker", "frameIdAfterSecondSelection"),
         ("frameIdAtClosedMarker", "frameIdAfterClose"),
     ):
         before = value.get(before_field)
@@ -326,6 +344,23 @@ def _validate_host_input(value: object) -> None:
         if type(before) is not int or type(after) is not int or before < 0 or after <= before:
             raise M0Error(
                 f"host-pointer-tab has no ordered presentation evidence for {after_field}"
+            )
+
+    for earlier_frame_field, later_marker_field in (
+        ("frameIdAfterInsert", "frameIdAtFirstSelectedMarker"),
+        ("frameIdAfterFirstSelection", "frameIdAtSecondSelectedMarker"),
+        ("frameIdAfterSecondSelection", "frameIdAtClosedMarker"),
+    ):
+        earlier_frame = value.get(earlier_frame_field)
+        later_marker = value.get(later_marker_field)
+        if (
+            type(earlier_frame) is not int
+            or type(later_marker) is not int
+            or later_marker < earlier_frame
+        ):
+            raise M0Error(
+                "host-pointer-tab action ordering lacks the prior "
+                f"presentation before {later_marker_field}"
             )
 
     records = value.get("pointerRecords")
@@ -339,11 +374,15 @@ def _validate_host_input(value: object) -> None:
         for record in records
         if isinstance(record, dict) and record.get("type") in ("down", "up")
     ]
-    if len(actions) != 4:
-        raise M0Error("host-pointer-tab has not recorded exactly two pointer clicks")
+    if len(actions) != 8:
+        raise M0Error("host-pointer-tab has not recorded exactly four pointer clicks")
     expected = [
         ("down", new_target, 1),
         ("up", new_target, 0),
+        ("down", first_target, 1),
+        ("up", first_target, 0),
+        ("down", second_target, 1),
+        ("up", second_target, 0),
         ("down", close_target, 1),
         ("up", close_target, 0),
     ]
@@ -399,7 +438,14 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
         if not isinstance(result.get(field), list):
             raise M0Error(f"host-pointer-tab {field} is not a list")
     stderr = "\n".join(str(value) for value in result["stderr"])
-    for marker in (READY_MARKER, INSERTED_MARKER, CLOSED_MARKER, PASS_MARKER):
+    for marker in (
+        READY_MARKER,
+        INSERTED_MARKER,
+        FIRST_SELECTED_MARKER,
+        SECOND_SELECTED_MARKER,
+        CLOSED_MARKER,
+        PASS_MARKER,
+    ):
         if marker not in stderr:
             raise M0Error(f"host-pointer-tab stderr is missing {marker}")
     browser_view_smoke._validate_frame_reports(result.get("frameReports"))
@@ -636,6 +682,28 @@ def main() -> int:
         )
         stage = "dispatch_trusted_dom_new_tab"
         click_target(client, state, "newTabTarget")
+        stage = "wait_for_first_tab_target_and_presentation"
+        state = wait_for_state(
+            client,
+            browser,
+            browser_stderr,
+            result_queue,
+            "awaiting-trusted-dom-select-first-tab",
+            deadline,
+        )
+        stage = "dispatch_trusted_dom_select_first_tab"
+        click_target(client, state, "firstTabTarget")
+        stage = "wait_for_second_tab_target_and_presentation"
+        state = wait_for_state(
+            client,
+            browser,
+            browser_stderr,
+            result_queue,
+            "awaiting-trusted-dom-select-second-tab",
+            deadline,
+        )
+        stage = "dispatch_trusted_dom_select_second_tab"
+        click_target(client, state, "secondTabTarget")
         stage = "wait_for_close_tab_target_and_presentation"
         state = wait_for_state(
             client,

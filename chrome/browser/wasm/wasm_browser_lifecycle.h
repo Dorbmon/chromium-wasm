@@ -83,9 +83,12 @@ class WasmBrowserLifecycle final {
   bool host_accelerator_smoke_started_ = false;
   bool host_pointer_tab_smoke_started_ = false;
   bool host_pointer_tab_insert_verified_ = false;
+  bool host_pointer_tab_first_selection_verified_ = false;
+  bool host_pointer_tab_second_selection_verified_ = false;
   bool host_pointer_tab_close_verified_ = false;
   bool host_pointer_tab_presentation_verified_ = false;
   raw_ptr<content::WebContents> host_pointer_tab_initial_contents_ = nullptr;
+  raw_ptr<content::WebContents> host_pointer_tab_second_contents_ = nullptr;
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;

@@ -33,7 +33,9 @@ enum class HostPointerTabSmokeCallback {
 enum class HostPointerTabSmokeExpectedCallback {
   kFirstCheck,
   kSecondCheck,
-  kSecondPresentation,
+  kThirdCheck,
+  kFourthCheck,
+  kFourthPresentation,
   kFinished,
 };
 
@@ -106,9 +108,13 @@ class WasmBrowserHostPointerTabSmokeState {
         return callback == HostPointerTabSmokeCallback::kCheck && stage == 1;
       case HostPointerTabSmokeExpectedCallback::kSecondCheck:
         return callback == HostPointerTabSmokeCallback::kCheck && stage == 2;
-      case HostPointerTabSmokeExpectedCallback::kSecondPresentation:
+      case HostPointerTabSmokeExpectedCallback::kThirdCheck:
+        return callback == HostPointerTabSmokeCallback::kCheck && stage == 3;
+      case HostPointerTabSmokeExpectedCallback::kFourthCheck:
+        return callback == HostPointerTabSmokeCallback::kCheck && stage == 4;
+      case HostPointerTabSmokeExpectedCallback::kFourthPresentation:
         return callback == HostPointerTabSmokeCallback::kPresentation &&
-               stage == 2;
+               stage == 4;
       case HostPointerTabSmokeExpectedCallback::kFinished:
         return false;
     }
@@ -122,9 +128,17 @@ class WasmBrowserHostPointerTabSmokeState {
         return;
       case HostPointerTabSmokeExpectedCallback::kSecondCheck:
         expected_callback_ =
-            HostPointerTabSmokeExpectedCallback::kSecondPresentation;
+            HostPointerTabSmokeExpectedCallback::kThirdCheck;
         return;
-      case HostPointerTabSmokeExpectedCallback::kSecondPresentation:
+      case HostPointerTabSmokeExpectedCallback::kThirdCheck:
+        expected_callback_ =
+            HostPointerTabSmokeExpectedCallback::kFourthCheck;
+        return;
+      case HostPointerTabSmokeExpectedCallback::kFourthCheck:
+        expected_callback_ =
+            HostPointerTabSmokeExpectedCallback::kFourthPresentation;
+        return;
+      case HostPointerTabSmokeExpectedCallback::kFourthPresentation:
         expected_callback_ = HostPointerTabSmokeExpectedCallback::kFinished;
         return;
       case HostPointerTabSmokeExpectedCallback::kFinished:
