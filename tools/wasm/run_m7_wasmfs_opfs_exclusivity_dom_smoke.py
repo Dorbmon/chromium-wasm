@@ -554,13 +554,31 @@ def _failure_progress_summary(result: dict[str, Any]) -> str:
     if not isinstance(stage, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", stage):
         stage = "invalid"
     timed_out = diagnostics.get("timedOut") is True
-    native_start = diagnostics.get("nativeStartObserved") is True
-    open_begin = diagnostics.get("contenderOpenBeginObserved") is True
+    opfs_capability = result.get("opfsCapability") is True
+    holder_registered = diagnostics.get("holderRegistered") is True
+    contender_registered = diagnostics.get("contenderRegistered") is True
+    reopen_registered = diagnostics.get("reopenRegistered") is True
+    holder_native_start = diagnostics.get("holderNativeStartObserved") is True
+    holder_ready = diagnostics.get("holderReadyObserved") is True
+    contender_native_start = (
+        diagnostics.get("contenderNativeStartObserved") is True
+    )
+    contender_open_begin = diagnostics.get("contenderOpenBeginObserved") is True
+    contender_eacces = diagnostics.get("contenderEaccesObserved") is True
+    reopen_native_start = diagnostics.get("reopenNativeStartObserved") is True
+    reopen_ok = diagnostics.get("reopenOkObserved") is True
     return (
         " [stage="
         + stage
-        + f" timed_out={timed_out} contender_native_start={native_start}"
-        + f" contender_open_begin={open_begin}]"
+        + f" timed_out={timed_out} opfs_capability={opfs_capability}"
+        + f" holder_registered={holder_registered}"
+        + f" holder_native_start={holder_native_start} holder_ready={holder_ready}"
+        + f" contender_registered={contender_registered}"
+        + f" contender_native_start={contender_native_start}"
+        + f" contender_open_begin={contender_open_begin}"
+        + f" contender_eacces={contender_eacces}"
+        + f" reopen_registered={reopen_registered}"
+        + f" reopen_native_start={reopen_native_start} reopen_ok={reopen_ok}]"
     )
 
 

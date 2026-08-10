@@ -30,7 +30,6 @@ const REOPEN_OK_MARKER =
 const FAIL_MARKER = "CHROMIUM_WASM_M7_OPFS_EXCLUSIVITY:FAIL";
 const MAX_TIMEOUT_MS = 180000;
 const MAX_OUTPUT_LINES = 128;
-const CAPABILITY_PROBE_TIMEOUT_MS = 5000;
 const CAPABILITY_PROBE_PROTOCOL = 1;
 const COMPLETION_SETTLE_MS = 25;
 const RUN_NAMESPACE_RE = /^[A-Za-z0-9_-]{16,128}$/;
@@ -129,7 +128,9 @@ function hasRequiredDocumentPrerequisites() {
       typeof navigator.storage.getDirectory === "function";
 }
 
-async function probeRequiredOpfsCapability() {
+async function probeRequiredOpfsCapability(deadline, progress) {
+  const stage = "capability";
+  const remainingMs = remainingDeadlineMs(deadline, stage, progress);
   if (!hasRequiredDocumentPrerequisites() || typeof Worker !== "function" ||
       typeof Blob !== "function" || typeof URL.createObjectURL !== "function") {
     return false;
@@ -137,11 +138,11 @@ async function probeRequiredOpfsCapability() {
   const workerUrl = URL.createObjectURL(new Blob([CAPABILITY_PROBE_SOURCE], {
     type: "text/javascript",
   }));
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let finished = false;
     let probeWorker = null;
     let timeoutId = null;
-    const finish = (capability) => {
+    const finish = (capability, error = null) => {
       if (finished) {
         return;
       }
@@ -151,7 +152,11 @@ async function probeRequiredOpfsCapability() {
       }
       probeWorker?.terminate();
       URL.revokeObjectURL(workerUrl);
-      resolve(capability === true);
+      if (error !== null) {
+        reject(error);
+      } else {
+        resolve(capability === true);
+      }
     };
     try {
       probeWorker = new Worker(workerUrl, {
@@ -163,7 +168,8 @@ async function probeRequiredOpfsCapability() {
       resolve(false);
       return;
     }
-    timeoutId = setTimeout(() => finish(false), CAPABILITY_PROBE_TIMEOUT_MS);
+    timeoutId = setTimeout(
+        () => finish(false, deadlineError(stage, progress)), remainingMs);
     probeWorker.onmessage = (event) => {
       const payload = event.data;
       finish(payload !== null && typeof payload === "object" &&
@@ -296,20 +302,27 @@ function createPhaseDeadline(context) {
   return {expiresAt: performance.now() + context.timeoutMs};
 }
 
-async function awaitBeforeDeadline(value, deadline, stage, progress) {
+function deadlineError(stage, progress) {
+  progress.stage = stage;
+  progress.timedOut = true;
+  return new Error("M7 OPFS " + stage + " exceeded its shared phase deadline");
+}
+
+function remainingDeadlineMs(deadline, stage, progress) {
   progress.stage = stage;
   const remainingMs = deadline.expiresAt - performance.now();
   if (remainingMs <= 0) {
-    progress.timedOut = true;
-    throw new Error("M7 OPFS " + stage + " exceeded its shared phase deadline");
+    throw deadlineError(stage, progress);
   }
+  return Math.ceil(remainingMs);
+}
+
+async function awaitBeforeDeadline(value, deadline, stage, progress) {
+  const remainingMs = remainingDeadlineMs(deadline, stage, progress);
   let timeoutId = null;
   const timeout = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      progress.timedOut = true;
-      reject(new Error("M7 OPFS " + stage +
-          " exceeded its shared phase deadline"));
-    }, remainingMs);
+    timeoutId = setTimeout(
+        () => reject(deadlineError(stage, progress)), remainingMs);
   });
   return Promise.race([Promise.resolve(value), timeout]).finally(() => {
     if (timeoutId !== null) {
@@ -499,17 +512,48 @@ function failureDiagnostics(progress, context) {
       snapshotRuntime(progress.holder, context);
   const contender = progress.contender === null ? null :
       snapshotRuntime(progress.contender, context);
+  const reopen = progress.reopen === null ? null :
+      snapshotRuntime(progress.reopen, context);
   return {
     stage: progress.stage,
     timedOut: progress.timedOut,
     holder,
     contender,
-    reopen: progress.reopen === null ? null :
-        snapshotRuntime(progress.reopen, context),
+    reopen,
+    holderRegistered: holder !== null,
+    contenderRegistered: contender !== null,
+    reopenRegistered: reopen !== null,
+    holderNativeStartObserved: holder !== null && holder.nativeStartObserved,
+    holderReadyObserved: holder !== null &&
+        outputContainsExact(holder, HOLDER_READY_MARKER),
+    contenderNativeStartObserved: contender !== null &&
+        contender.nativeStartObserved,
     nativeStartObserved: contender !== null && contender.nativeStartObserved,
     contenderOpenBeginObserved: contender !== null &&
         contender.contenderOpenBeginObserved,
+    contenderEaccesObserved: contender !== null &&
+        outputContainsExact(contender, CONTENDER_EACCES_MARKER),
+    reopenNativeStartObserved: reopen !== null && reopen.nativeStartObserved,
+    reopenOkObserved: reopen !== null &&
+        outputContainsExact(reopen, REOPEN_OK_MARKER),
   };
+}
+
+function copyPartialRuntimeSnapshots(result, progress, context) {
+  for (const field of ["holder", "contender", "reopen"]) {
+    if (progress[field] !== null) {
+      result[field] = snapshotRuntime(progress[field], context);
+    }
+  }
+}
+
+function recordFailure(result, progress, context, error) {
+  // The host posts failures too. Keep the last bounded, redacted runtime
+  // snapshots at both the result boundary and in diagnostics so a timeout or
+  // factory rejection does not erase evidence collected before the catch.
+  copyPartialRuntimeSnapshots(result, progress, context);
+  result.failureDiagnostics = failureDiagnostics(progress, context);
+  result.error = redactedError(formatError(error), context.runNamespace);
 }
 
 function baseResult(context) {
@@ -608,8 +652,8 @@ async function runReopenPhase(context, result, deadline, progress) {
 }
 
 async function executePhase(context) {
-  const result = baseResult(context);
   const deadline = createPhaseDeadline(context);
+  const result = baseResult(context);
   const progress = {
     stage: "capability",
     timedOut: false,
@@ -618,15 +662,12 @@ async function executePhase(context) {
     reopen: null,
   };
   try {
-    result.opfsCapability = await awaitBeforeDeadline(
-        probeRequiredOpfsCapability(), deadline, "capability", progress);
+    result.opfsCapability = await probeRequiredOpfsCapability(deadline, progress);
     if (!result.opfsCapability) {
-      result.error = "required OPFS synchronous-access capability is unavailable";
-      return result;
+      throw new Error("required OPFS synchronous-access capability is unavailable");
     }
     if (context.phase === REOPEN_PHASE && !result.freshOuterDocument) {
-      result.error = "reopen phase did not start in a fresh outer document";
-      return result;
+      throw new Error("reopen phase did not start in a fresh outer document");
     }
     if (context.phase === CONTENTION_PHASE) {
       await runContentionPhase(context, result, deadline, progress);
@@ -635,8 +676,7 @@ async function executePhase(context) {
     }
     result.status = "pass";
   } catch (error) {
-    result.error = redactedError(formatError(error), context.runNamespace);
-    result.failureDiagnostics = failureDiagnostics(progress, context);
+    recordFailure(result, progress, context, error);
   }
   return result;
 }

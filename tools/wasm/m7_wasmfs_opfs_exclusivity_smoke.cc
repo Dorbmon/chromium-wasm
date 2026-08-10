@@ -225,9 +225,9 @@ void RequireExactRead(int descriptor, const uint8_t* expected, size_t size,
   // This is a diagnostic boundary only. A held SyncAccessHandle should make
   // the following writable open return EACCES; it must never be treated as a
   // successful or queued lock operation.
+  errno = 0;
   std::fprintf(stdout, "%s\n", kContenderOpenBeginMarker);
   std::fflush(stdout);
-  errno = 0;
   const int descriptor = open(paths.writer.c_str(), O_RDWR);
   const int open_errno = errno;
   Require(descriptor == -1 && open_errno == EACCES,

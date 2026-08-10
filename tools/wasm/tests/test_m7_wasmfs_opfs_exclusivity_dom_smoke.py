@@ -264,11 +264,21 @@ class M7WasmfsOpfsExclusivityDomSmokeTest(unittest.TestCase):
         failed = passing_result(smoke.CONTENTION_PHASE)
         failed["status"] = "fail"
         failed["error"] = "shared phase deadline"
+        failed["opfsCapability"] = True
         failed["failureDiagnostics"] = {
             "stage": "contender-marker",
             "timedOut": True,
+            "holderRegistered": True,
+            "contenderRegistered": True,
+            "reopenRegistered": False,
+            "holderNativeStartObserved": True,
+            "holderReadyObserved": True,
+            "contenderNativeStartObserved": True,
             "nativeStartObserved": True,
             "contenderOpenBeginObserved": True,
+            "contenderEaccesObserved": False,
+            "reopenNativeStartObserved": False,
+            "reopenOkObserved": False,
             "holder": failed["holder"],
             "contender": failed["contender"],
             "reopen": None,
@@ -279,7 +289,11 @@ class M7WasmfsOpfsExclusivityDomSmokeTest(unittest.TestCase):
         with self.assertRaisesRegex(
             M0Error,
             r"stage=contender-marker timed_out=True "
-            r"contender_native_start=True contender_open_begin=True",
+            r"opfs_capability=True holder_registered=True "
+            r"holder_native_start=True holder_ready=True "
+            r"contender_registered=True contender_native_start=True "
+            r"contender_open_begin=True contender_eacces=False "
+            r"reopen_registered=False reopen_native_start=False reopen_ok=False",
         ):
             smoke.wait_for_result_pair(
                 browser,
@@ -391,8 +405,11 @@ class M7WasmfsOpfsExclusivityDomSmokeTest(unittest.TestCase):
         self.assertIn("const CAPABILITY_PROBE_SOURCE = `", host)
         self.assertIn("const CONTENDER_OPEN_BEGIN_MARKER =", host)
         self.assertIn("new Worker(workerUrl, {", host)
-        self.assertIn("probeRequiredOpfsCapability(), deadline, \"capability\"", host)
+        self.assertIn("async function probeRequiredOpfsCapability(deadline, progress)", host)
+        self.assertIn("probeRequiredOpfsCapability(deadline, progress)", host)
+        self.assertNotIn("CAPABILITY_PROBE_TIMEOUT_MS", host)
         self.assertIn("function createPhaseDeadline(context)", host)
+        self.assertIn("function remainingDeadlineMs(deadline, stage, progress)", host)
         self.assertIn("async function awaitBeforeDeadline", host)
         self.assertIn("onRuntimeCreated(runtime);", host)
         self.assertIn("const holder = startRuntime", host)
@@ -400,7 +417,10 @@ class M7WasmfsOpfsExclusivityDomSmokeTest(unittest.TestCase):
         self.assertIn("const contender = startRuntime", host)
         self.assertIn("await requireLiveCompletion(contender, deadline, \"contender-marker\"", host)
         self.assertIn("failureDiagnostics(progress, context)", host)
+        self.assertIn("copyPartialRuntimeSnapshots(result, progress, context);", host)
+        self.assertIn("function recordFailure(result, progress, context, error)", host)
         self.assertIn("contenderOpenBeginObserved", host)
+        self.assertIn("contenderEaccesObserved", host)
         self.assertLess(
             host.index("await requireLiveCompletion(holder, deadline, \"holder-marker\""),
             host.index("const contender = startRuntime"),
@@ -409,6 +429,14 @@ class M7WasmfsOpfsExclusivityDomSmokeTest(unittest.TestCase):
         self.assertIn("holderLiveAfterContender = true", host)
         self.assertIn("const ACTIVE_RUNTIMES_PROPERTY =", host)
         self.assertIn("activeRuntimes.push(runtime);", host)
+        self.assertLess(
+            host.index("onRuntimeCreated(runtime);"),
+            host.index("const factory = loader.namespace.default({"),
+        )
+        self.assertLess(
+            host.index("const deadline = createPhaseDeadline(context);"),
+            host.index("const result = baseResult(context);"),
+        )
         self.assertIn("location.replace(reopenUrl.href);", host)
         self.assertLess(
             host.index("await postResult(context, result);"),
@@ -450,6 +478,9 @@ class M7WasmfsOpfsExclusivityDomSmokeTest(unittest.TestCase):
         self.assertIn('"runtimeLifecycle": "live-runtime"', runner)
         self.assertIn('"teardownMode": "outer-document"', runner)
         self.assertIn("redact_opaque_value(results, result_token, run_namespace)", runner)
+        self.assertIn("def _failure_progress_summary", runner)
+        self.assertIn("holder_registered=", runner)
+        self.assertIn("contender_open_begin=", runner)
 
 
 if __name__ == "__main__":

@@ -96,9 +96,16 @@ class M7WasmfsOpfsExclusivitySmokeContractTest(unittest.TestCase):
         self.assertIn("RetainLiveRuntime();", body)
         self.assertNotIn("stat(", body)
         self.assertNotIn("pread(", body)
+        self.assertLess(body.index("errno = 0;"), body.index("kContenderOpenBeginMarker"))
         self.assertLess(
             body.index("kContenderOpenBeginMarker"),
             body.index("open(paths.writer.c_str(), O_RDWR)"),
+        )
+        self.assertRegex(
+            body,
+            r"errno = 0;\s+std::fprintf\(stdout, \"%s\\n\", "
+            r"kContenderOpenBeginMarker\);\s+std::fflush\(stdout\);\s+"
+            r"const int descriptor = open\(paths\.writer\.c_str\(\), O_RDWR\);",
         )
         self.assertNotIn("errno=13", smoke)
         self.assertNotIn("F_SETLK", smoke)
