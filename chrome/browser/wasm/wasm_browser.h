@@ -164,6 +164,11 @@ class Browser final : public BrowserWindowInterface {
 
   void OnWindowActivationChanged(bool active);
   views::CloseRequestResult OnWindowCloseRequested();
+  bool CanCreateWasmUserTab() const;
+  bool CreateWasmUserTab();
+  bool CanActivateWasmUserTabAt(int index) const;
+  bool CanCloseWasmUserTabAt(int index) const;
+  bool CloseWasmUserTabAt(int index);
   void OnTabWillBeRemoved(tabs::TabInterface* tab, int index);
   void OnTabStripModelChanged(TabStripModel* tab_strip_model,
                               const TabStripModelChange& change,

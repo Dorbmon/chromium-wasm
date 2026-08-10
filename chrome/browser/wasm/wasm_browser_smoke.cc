@@ -119,6 +119,8 @@ struct BrowserSmokeState {
   BrowserWindowInterface* expected_browser = nullptr;
   std::vector<content::WebContents*> expected_active_contents;
   size_t active_tab_change_count = 0;
+  size_t expected_active_contents_index = 0;
+  bool accept_next_non_null_active_contents = false;
   bool did_close = false;
 };
 
@@ -127,14 +129,21 @@ void OnActiveTabChanged(BrowserSmokeState* state,
   CHECK(state);
   CHECK(browser);
   CHECK_EQ(browser, state->expected_browser);
-  CHECK_LT(state->active_tab_change_count,
-           state->expected_active_contents.size());
 
   tabs::TabInterface* const active_tab = browser->GetActiveTabInterface();
   content::WebContents* const active_contents =
       active_tab ? active_tab->GetContents() : nullptr;
-  CHECK_EQ(active_contents,
-           state->expected_active_contents[state->active_tab_change_count]);
+  if (state->accept_next_non_null_active_contents) {
+    CHECK(active_contents);
+    state->accept_next_non_null_active_contents = false;
+  } else {
+    CHECK_LT(state->expected_active_contents_index,
+             state->expected_active_contents.size());
+    CHECK_EQ(active_contents,
+             state->expected_active_contents
+                 [state->expected_active_contents_index]);
+    ++state->expected_active_contents_index;
+  }
   ++state->active_tab_change_count;
 }
 
@@ -581,16 +590,6 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK_EQ(raw_browser->GetActiveTabInterface(),
            tab_strip_model->GetActiveTab());
 
-  std::unique_ptr<content::WebContents> second_contents =
-      content::WebContents::Create(create_params);
-  CHECK(second_contents);
-  content::WebContents* const raw_second_contents = second_contents.get();
-  tab_strip_model->AppendWebContents(std::move(second_contents),
-                                     /*foreground=*/false);
-  CHECK_EQ(tab_strip_model->count(), 2);
-  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_first_contents);
-  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
-
   browser_view.Show();
   CHECK(browser_view.IsVisible());
 
@@ -607,8 +606,9 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
 
   // Exercise the purpose-built Views strips through their public input paths.
   // This is intentionally not a desktop tab strip, Toolbar, or omnibox proof:
-  // it verifies two model-owned tab buttons plus selected
-  // BrowserCommandController-backed navigation and a restricted URL field.
+  // it verifies bounded Browser-owned tab creation/close controls plus
+  // selected BrowserCommandController-backed navigation and a restricted URL
+  // field.
   WasmTabStripView* const wasm_tab_strip = browser_view.wasm_tab_strip();
   CHECK(wasm_tab_strip);
   CHECK(raw_browser->IsTabStripVisible());
@@ -628,14 +628,27 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
       wasm_tab_strip->tab_button_for_testing(0);
   views::LabelButton* const second_tab_button =
       wasm_tab_strip->tab_button_for_testing(1);
+  views::LabelButton* const new_tab_button =
+      wasm_tab_strip->new_tab_button_for_testing();
+  views::LabelButton* const first_close_tab_button =
+      wasm_tab_strip->close_tab_button_for_testing(0);
+  views::LabelButton* const second_close_tab_button =
+      wasm_tab_strip->close_tab_button_for_testing(1);
   CHECK(first_tab_button);
   CHECK(second_tab_button);
+  CHECK(new_tab_button);
+  CHECK(first_close_tab_button);
+  CHECK(second_close_tab_button);
   CHECK(first_tab_button->GetVisible());
-  CHECK(second_tab_button->GetVisible());
+  CHECK(!second_tab_button->GetVisible());
   CHECK(first_tab_button->GetEnabled());
-  CHECK(second_tab_button->GetEnabled());
+  CHECK(!second_tab_button->GetEnabled());
   CHECK(first_tab_button->GetBackground());
   CHECK(!second_tab_button->GetBackground());
+  CHECK(new_tab_button->GetVisible());
+  CHECK(new_tab_button->GetEnabled());
+  CHECK(!first_close_tab_button->GetVisible());
+  CHECK(!second_close_tab_button->GetVisible());
 
   views::Textfield* const address_field =
       top_controls->address_field_for_testing();
@@ -661,6 +674,49 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(reload_button->GetEnabled());
   CHECK(!stop_button->GetEnabled());
   CHECK(!browser_menu->IsOpen());
+
+  // A real Views '+' control must create the second model-owned WebContents.
+  // It becomes active like an ordinary browser new tab; click the first tab
+  // back through the same UI before exercising its navigation history.
+  ClickButton(new_tab_button);
+  CHECK_EQ(tab_strip_model->count(), 2);
+  content::WebContents* const raw_second_contents =
+      tab_strip_model->GetWebContentsAt(1);
+  CHECK(raw_second_contents);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  CHECK(first_tab_button->GetVisible());
+  CHECK(second_tab_button->GetVisible());
+  CHECK(!new_tab_button->GetEnabled());
+  CHECK(first_close_tab_button->GetVisible());
+  CHECK(second_close_tab_button->GetVisible());
+  CHECK(first_close_tab_button->GetEnabled());
+  CHECK(second_close_tab_button->GetEnabled());
+  CHECK(!first_tab_button->GetBackground());
+  CHECK(second_tab_button->GetBackground());
+
+  UserGestureTabSelectionObserver tab_selection_observer(tab_strip_model);
+  tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(0));
+  ClickButton(first_tab_button);
+  tab_selection_observer.VerifyAndReset();
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  CHECK(first_tab_button->GetBackground());
+  CHECK(!second_tab_button->GetBackground());
+
+  // The bounded model treats a blocked tab as an active modal boundary. The
+  // visible strip must reject selection before TabStripModel's fatal modal
+  // precondition and refresh the blocked tab's close affordance immediately.
+  tab_strip_model->SetTabBlocked(0, true);
+  CHECK(!first_tab_button->GetEnabled());
+  CHECK(!second_tab_button->GetEnabled());
+  CHECK(!first_close_tab_button->GetEnabled());
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_first_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_first_contents);
+  tab_strip_model->SetTabBlocked(0, false);
+  CHECK(first_tab_button->GetEnabled());
+  CHECK(second_tab_button->GetEnabled());
+  CHECK(first_close_tab_button->GetEnabled());
 
   // Verify that the source-selected browser accelerators are registered with
   // the real Views FocusManager, then exercise focus through a keyboard event
@@ -867,7 +923,6 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(browser_menu->IsOpen());
   browser_widget->GetRootView()->DeprecatedLayoutImmediately();
   CHECK_GT(browser_view.contents_web_view()->bounds().y(), closed_contents_y);
-  UserGestureTabSelectionObserver tab_selection_observer(tab_strip_model);
   tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(1));
   ClickButton(second_tab_button);
   tab_selection_observer.VerifyAndReset();
@@ -939,58 +994,77 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   base::WeakPtr<Browser> weak_browser = raw_browser->AsWeakPtr();
 
   // The model owns both WebContents while BrowserView owns only the selected
-  // native view. Verify an explicit switch, a background close, then an
-  // active close that selects and reattaches the surviving tab.
+  // native view. Verify that the visible controls perform an explicit switch,
+  // a background close, then an active close that selects and reattaches the
+  // surviving tab. No direct model mutation stands in for these UI actions.
   state.expected_active_contents.push_back(raw_second_contents);
-  tab_strip_model->ActivateTabAt(1);
+  tab_selection_observer.Expect(tab_strip_model->GetTabAtIndex(1));
+  ClickButton(second_tab_button);
+  tab_selection_observer.VerifyAndReset();
   CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
   CHECK_EQ(state.active_tab_change_count, 1u);
 
-  tab_strip_model->GetTabAtIndex(0)->Close();
+  ClickButton(first_close_tab_button);
   CHECK_EQ(tab_strip_model->count(), 1);
   CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
   CHECK(first_tab_button->GetVisible());
   CHECK(!second_tab_button->GetVisible());
+  CHECK(new_tab_button->GetEnabled());
+  CHECK(!first_close_tab_button->GetVisible());
+  CHECK(!second_close_tab_button->GetVisible());
   CHECK_EQ(state.active_tab_change_count, 1u);
 
-  std::unique_ptr<content::WebContents> third_contents =
-      content::WebContents::Create(create_params);
-  CHECK(third_contents);
-  content::WebContents* const raw_third_contents = third_contents.get();
-  tab_strip_model->AppendWebContents(std::move(third_contents),
-                                     /*foreground=*/false);
+  // Browser owns foreground insertion and rejects it while its only active
+  // tab is modal-blocked. This must be a no-op rather than a selection change
+  // that backgrounds a modal WebContents.
+  tab_strip_model->SetTabBlocked(0, true);
+  CHECK(!new_tab_button->GetEnabled());
+  CHECK_EQ(tab_strip_model->count(), 1);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
+  tab_strip_model->SetTabBlocked(0, false);
+  CHECK(new_tab_button->GetEnabled());
+
+  state.accept_next_non_null_active_contents = true;
+  ClickButton(new_tab_button);
   CHECK_EQ(tab_strip_model->count(), 2);
-  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  content::WebContents* const raw_third_contents =
+      tab_strip_model->GetWebContentsAt(1);
+  CHECK(raw_third_contents);
+  CHECK_NE(raw_third_contents, raw_second_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_third_contents);
   CHECK(first_tab_button->GetVisible());
   CHECK(second_tab_button->GetVisible());
-
-  state.expected_active_contents.push_back(raw_third_contents);
-  tab_strip_model->ActivateTabAt(1);
-  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_third_contents);
-  CHECK_EQ(browser_view.GetActiveWebContents(), raw_third_contents);
   CHECK_EQ(state.active_tab_change_count, 2u);
 
   state.expected_active_contents.push_back(raw_second_contents);
-  tab_strip_model->GetTabAtIndex(1)->Close();
+  ClickButton(second_close_tab_button);
   CHECK_EQ(tab_strip_model->count(), 1);
   CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
   CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
   CHECK(first_tab_button->GetVisible());
   CHECK(!second_tab_button->GetVisible());
+  CHECK(new_tab_button->GetEnabled());
+  CHECK(!first_close_tab_button->GetVisible());
+  CHECK(!second_close_tab_button->GetVisible());
   CHECK_EQ(state.active_tab_change_count, 3u);
 
-  std::unique_ptr<content::WebContents> fourth_contents =
-      content::WebContents::Create(create_params);
-  CHECK(fourth_contents);
-  tab_strip_model->AppendWebContents(std::move(fourth_contents),
-                                     /*foreground=*/false);
+  state.accept_next_non_null_active_contents = true;
+  ClickButton(new_tab_button);
   CHECK_EQ(tab_strip_model->count(), 2);
-  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_second_contents);
-  CHECK_EQ(browser_view.GetActiveWebContents(), raw_second_contents);
+  content::WebContents* const raw_fourth_contents =
+      tab_strip_model->GetWebContentsAt(1);
+  CHECK(raw_fourth_contents);
+  CHECK_NE(raw_fourth_contents, raw_second_contents);
+  CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_fourth_contents);
+  CHECK_EQ(browser_view.GetActiveWebContents(), raw_fourth_contents);
   CHECK(first_tab_button->GetVisible());
   CHECK(second_tab_button->GetVisible());
+  CHECK(!new_tab_button->GetEnabled());
+  CHECK(first_close_tab_button->GetVisible());
+  CHECK(second_close_tab_button->GetVisible());
+  CHECK_EQ(state.active_tab_change_count, 4u);
 
   // Exercise both BaseWindow close requests before the model's non-nestable
   // finish task runs. BrowserView must keep the Widget alive and absorb the
@@ -1005,8 +1079,10 @@ bool RunWasmBrowserSmoke(WasmProfile* profile) {
   CHECK(!browser_view.GetActiveWebContents());
   CHECK(!first_tab_button->GetVisible());
   CHECK(!second_tab_button->GetVisible());
-  CHECK_EQ(state.active_tab_change_count,
+  CHECK(!state.accept_next_non_null_active_contents);
+  CHECK_EQ(state.expected_active_contents_index,
            state.expected_active_contents.size());
+  CHECK_EQ(state.active_tab_change_count, 5u);
 
   std::puts(kTabStripSmokeMarker);
 

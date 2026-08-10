@@ -89,7 +89,12 @@ class BrowserView final : public BrowserWindow,
   // call it and retain the simple FillLayout path.
   void InitializeWasmTopControls(
       BrowserWindowInterface* browser_window_interface,
-      chrome::BrowserCommandController* browser_command_controller);
+      chrome::BrowserCommandController* browser_command_controller,
+      base::RepeatingCallback<bool()> create_tab_callback,
+      base::RepeatingCallback<bool()> can_create_tab_callback,
+      base::RepeatingCallback<bool(int)> can_activate_tab_callback,
+      base::RepeatingCallback<bool(int)> close_tab_callback,
+      base::RepeatingCallback<bool(int)> can_close_tab_callback);
 
   // True only while BrowserWindowDeleter is breaking a fully pre-closed
   // Browser-owned Widget/View cycle. BrowserWidget uses this to distinguish

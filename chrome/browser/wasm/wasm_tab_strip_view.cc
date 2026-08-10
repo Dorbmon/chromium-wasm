@@ -35,14 +35,32 @@ namespace {
 constexpr int kWasmMaximumTabCount = 2;
 constexpr int kWasmTabStripHeight = 32;
 constexpr int kWasmTabButtonMinimumWidth = 120;
+constexpr int kWasmTabActionButtonWidth = 28;
 constexpr char16_t kWasmUntitledTab[] = u"New tab";
+constexpr char16_t kWasmNewTabButtonLabel[] = u"+";
+constexpr char16_t kWasmCloseTabButtonLabel[] = u"\u00d7";
 
 }  // namespace
 
 WasmTabStripView::WasmTabStripView(
-    BrowserWindowInterface* browser_window_interface)
-    : browser_window_interface_(browser_window_interface) {
+    BrowserWindowInterface* browser_window_interface,
+    base::RepeatingCallback<bool()> create_tab_callback,
+    base::RepeatingCallback<bool()> can_create_tab_callback,
+    base::RepeatingCallback<bool(int)> can_activate_tab_callback,
+    base::RepeatingCallback<bool(int)> close_tab_callback,
+    base::RepeatingCallback<bool(int)> can_close_tab_callback)
+    : browser_window_interface_(browser_window_interface),
+      create_tab_callback_(std::move(create_tab_callback)),
+      can_create_tab_callback_(std::move(can_create_tab_callback)),
+      can_activate_tab_callback_(std::move(can_activate_tab_callback)),
+      close_tab_callback_(std::move(close_tab_callback)),
+      can_close_tab_callback_(std::move(can_close_tab_callback)) {
   CHECK(browser_window_interface_);
+  CHECK(create_tab_callback_);
+  CHECK(can_create_tab_callback_);
+  CHECK(can_activate_tab_callback_);
+  CHECK(close_tab_callback_);
+  CHECK(can_close_tab_callback_);
   tab_strip_model_ = browser_window_interface_->GetTabStripModel();
   CHECK(tab_strip_model_);
 
@@ -61,8 +79,23 @@ WasmTabStripView::WasmTabStripView(
         gfx::Size(kWasmTabButtonMinimumWidth, 0));
     layout_ptr->SetFlexForView(tab_buttons_[index], 1,
                                /*use_min_size=*/true);
+
+    close_tab_buttons_[index] =
+        AddChildView(std::make_unique<views::LabelButton>(
+            base::BindRepeating(&WasmTabStripView::CloseTab,
+                                base::Unretained(this), index),
+            kWasmCloseTabButtonLabel));
+    close_tab_buttons_[index]->SetMinSize(
+        gfx::Size(kWasmTabActionButtonWidth, 0));
     ClearButton(index);
   }
+
+  new_tab_button_ = AddChildView(std::make_unique<views::LabelButton>(
+      base::BindRepeating(&WasmTabStripView::CreateTab,
+                          base::Unretained(this)),
+      kWasmNewTabButtonLabel));
+  new_tab_button_->SetMinSize(gfx::Size(kWasmTabActionButtonWidth, 0));
+  new_tab_button_->SetAccessibleName(u"New tab");
 
   tab_strip_model_->AddObserver(this);
   SyncFromModel();
@@ -84,6 +117,17 @@ views::LabelButton* WasmTabStripView::tab_button_for_testing(int index) const {
   return tab_buttons_[index];
 }
 
+views::LabelButton* WasmTabStripView::new_tab_button_for_testing() const {
+  return new_tab_button_;
+}
+
+views::LabelButton* WasmTabStripView::close_tab_button_for_testing(
+    int index) const {
+  CHECK_GE(index, 0);
+  CHECK_LT(index, kWasmMaximumTabCount);
+  return close_tab_buttons_[index];
+}
+
 bool WasmTabStripView::ActivateRelativeTabForAccelerator(
     bool previous,
     base::TimeTicks time_stamp) {
@@ -100,6 +144,9 @@ bool WasmTabStripView::ActivateRelativeTabForAccelerator(
       previous ? (active_index + tab_count - 1) % tab_count
                : (active_index + 1) % tab_count;
   CHECK_NE(target_index, active_index);
+  if (!can_activate_tab_callback_.Run(target_index)) {
+    return false;
+  }
   tab_strip_model_->ActivateTabAt(
       target_index,
       TabStripUserGestureDetails(
@@ -132,6 +179,7 @@ void WasmTabStripView::SyncFromModel() {
             &WasmTabStripView::OnTabUIChanged, base::Unretained(this), tab));
     UpdateButtonForTab(index);
   }
+  UpdateActionButtons();
 }
 
 void WasmTabStripView::UpdateButtonForTab(int index) {
@@ -152,7 +200,7 @@ void WasmTabStripView::UpdateButtonForTab(int index) {
   button->SetText(title);
   button->SetTooltipText(title);
   button->SetAccessibleName(title);
-  button->SetEnabled(true);
+  button->SetEnabled(can_activate_tab_callback_.Run(index));
   button->SetVisible(true);
   if (tab_strip_model_->active_index() == index) {
     button->SetBackground(
@@ -160,6 +208,29 @@ void WasmTabStripView::UpdateButtonForTab(int index) {
   } else {
     button->SetBackground(nullptr);
   }
+
+  views::LabelButton* const close_button = close_tab_buttons_[index];
+  CHECK(close_button);
+  const std::u16string close_tab_name = std::u16string(u"Close ") + title;
+  close_button->SetAccessibleName(close_tab_name);
+  close_button->SetTooltipText(close_tab_name);
+  close_button->SetVisible(tab_strip_model_->count() > 1);
+  close_button->SetEnabled(tab_strip_model_->count() > 1 &&
+                           can_close_tab_callback_.Run(index));
+}
+
+void WasmTabStripView::UpdateActionButtons() {
+  CHECK(new_tab_button_);
+  if (!tab_strip_model_) {
+    new_tab_button_->SetVisible(false);
+    new_tab_button_->SetEnabled(false);
+    return;
+  }
+
+  new_tab_button_->SetVisible(true);
+  new_tab_button_->SetEnabled(tab_strip_model_->count() <
+                                  kWasmMaximumTabCount &&
+                              can_create_tab_callback_.Run());
 }
 
 void WasmTabStripView::ClearButton(int index) {
@@ -170,6 +241,11 @@ void WasmTabStripView::ClearButton(int index) {
   button->SetBackground(nullptr);
   button->SetVisible(false);
   button->SetEnabled(false);
+
+  views::LabelButton* const close_button = close_tab_buttons_[index];
+  CHECK(close_button);
+  close_button->SetVisible(false);
+  close_button->SetEnabled(false);
 }
 
 void WasmTabStripView::OnTabUIChanged(tabs::TabInterface* tab) {
@@ -185,12 +261,39 @@ void WasmTabStripView::OnTabUIChanged(tabs::TabInterface* tab) {
 }
 
 void WasmTabStripView::ActivateTab(int index, const ui::Event& event) {
-  CHECK(tab_strip_model_);
-  CHECK(tab_strip_model_->ContainsIndex(index));
+  if (!tab_strip_model_ || !tab_strip_model_->ContainsIndex(index) ||
+      !can_activate_tab_callback_.Run(index)) {
+    return;
+  }
   tab_strip_model_->ActivateTabAt(
       index, TabStripUserGestureDetails(
                  TabStripUserGestureDetails::GestureType::kMouse,
                  event.time_stamp()));
+}
+
+void WasmTabStripView::CreateTab(const ui::Event& /*event*/) {
+  if (!tab_strip_model_ || tab_strip_model_->count() >= kWasmMaximumTabCount ||
+      !create_tab_callback_ || !can_create_tab_callback_.Run()) {
+    return;
+  }
+
+  // Browser owns WebContents and may synchronously notify this model while it
+  // adds the foreground tab. Do not retain model/tab pointers across the
+  // callback; OnTabStripModelChanged() refreshes the visible state.
+  create_tab_callback_.Run();
+}
+
+void WasmTabStripView::CloseTab(int index, const ui::Event& /*event*/) {
+  if (!tab_strip_model_ || tab_strip_model_->count() <= 1 ||
+      !tab_strip_model_->ContainsIndex(index) || !close_tab_callback_ ||
+      !can_close_tab_callback_.Run(index)) {
+    return;
+  }
+
+  // The Browser callback rejects unsupported close state and may synchronously
+  // remove the selected or background tab. Do not retain model/tab pointers
+  // after this call; model observers drop TabUIHelper subscriptions first.
+  close_tab_callback_.Run(index);
 }
 
 void WasmTabStripView::OnTabStripModelChanged(
@@ -198,6 +301,20 @@ void WasmTabStripView::OnTabStripModelChanged(
     const TabStripModelChange& /*change*/,
     const TabStripSelectionChange& /*selection*/) {
   CHECK_EQ(tab_strip_model, tab_strip_model_);
+  SyncFromModel();
+}
+
+void WasmTabStripView::OnTabChangedAt(tabs::TabInterface* tab,
+                                      int index,
+                                      TabChangeType /*change_type*/) {
+  if (!tab_strip_model_ || !tab_strip_model_->ContainsIndex(index) ||
+      tab_strip_model_->GetTabAtIndex(index) != tab) {
+    return;
+  }
+
+  // Blocking state is published separately from a model/selection change.
+  // Refresh every control because a modal on the active tab can make a
+  // different target's selection or creation action unsafe as well.
   SyncFromModel();
 }
 
@@ -221,9 +338,15 @@ void WasmTabStripView::OnTabStripModelDestroyed(
     subscription = base::CallbackListSubscription();
   }
   tab_strip_model_ = nullptr;
+  create_tab_callback_.Reset();
+  can_create_tab_callback_.Reset();
+  can_activate_tab_callback_.Reset();
+  close_tab_callback_.Reset();
+  can_close_tab_callback_.Reset();
   for (int index = 0; index < kWasmMaximumTabCount; ++index) {
     ClearButton(index);
   }
+  UpdateActionButtons();
 }
 
 BEGIN_METADATA(WasmTabStripView)

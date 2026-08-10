@@ -80,18 +80,30 @@ void BrowserView::SetWasmCloseRequestCallback(
 
 void BrowserView::InitializeWasmTopControls(
     BrowserWindowInterface* browser_window_interface,
-    chrome::BrowserCommandController* browser_command_controller) {
+    chrome::BrowserCommandController* browser_command_controller,
+    base::RepeatingCallback<bool()> create_tab_callback,
+    base::RepeatingCallback<bool()> can_create_tab_callback,
+    base::RepeatingCallback<bool(int)> can_activate_tab_callback,
+    base::RepeatingCallback<bool(int)> close_tab_callback,
+    base::RepeatingCallback<bool(int)> can_close_tab_callback) {
   CHECK(browser_)
       << "Wasm top controls require a Browser-owned BrowserView";
   CHECK(browser_window_interface);
   CHECK(browser_command_controller);
+  CHECK(create_tab_callback);
+  CHECK(can_create_tab_callback);
+  CHECK(can_activate_tab_callback);
+  CHECK(close_tab_callback);
+  CHECK(can_close_tab_callback);
   CHECK(!wasm_browser_menu_);
   CHECK(!wasm_tab_strip_);
   CHECK(!wasm_top_controls_);
   CHECK(contents_web_view_);
 
-  auto tab_strip =
-      std::make_unique<WasmTabStripView>(browser_window_interface);
+  auto tab_strip = std::make_unique<WasmTabStripView>(
+      browser_window_interface, std::move(create_tab_callback),
+      std::move(can_create_tab_callback), std::move(can_activate_tab_callback),
+      std::move(close_tab_callback), std::move(can_close_tab_callback));
   wasm_tab_strip_ = AddChildViewAt(std::move(tab_strip), 0);
 
   auto menu = std::make_unique<WasmBrowserMenuView>(

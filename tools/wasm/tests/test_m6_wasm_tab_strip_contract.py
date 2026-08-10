@@ -64,7 +64,7 @@ class M6WasmTabStripContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-    def test_buttons_reflect_real_model_selection_and_title_lifetime(self) -> None:
+    def test_buttons_reflect_real_model_selection_title_lifetime_and_actions(self) -> None:
         header = source("chrome/browser/wasm/wasm_tab_strip_view.h")
         implementation = source("chrome/browser/wasm/wasm_tab_strip_view.cc")
 
@@ -72,10 +72,20 @@ class M6WasmTabStripContractTest(unittest.TestCase):
             "class WasmTabStripView final",
             "public TabStripModelObserver",
             "tab_button_for_testing",
+            "new_tab_button_for_testing",
+            "close_tab_button_for_testing",
+            "base::RepeatingCallback<bool()> create_tab_callback",
+            "base::RepeatingCallback<bool()> can_create_tab_callback",
+            "base::RepeatingCallback<bool(int)> can_activate_tab_callback",
+            "base::RepeatingCallback<bool(int)> close_tab_callback",
+            "base::RepeatingCallback<bool(int)> can_close_tab_callback",
             "OnTabStripModelChanged",
+            "OnTabChangedAt",
             "OnTabWillBeRemoved",
             "OnTabStripModelDestroyed",
             "std::array<raw_ptr<views::LabelButton>, 2>",
+            "close_tab_buttons_",
+            "new_tab_button_",
             "std::array<base::CallbackListSubscription, 2>",
         ):
             with self.subTest(expected=expected):
@@ -91,8 +101,20 @@ class M6WasmTabStripContractTest(unittest.TestCase):
             "event.time_stamp()",
             "TabStripUserGestureDetails::GestureType::kMouse",
             "tab_strip_model_->ActivateTabAt(",
+            "kWasmNewTabButtonLabel",
+            "kWasmCloseTabButtonLabel",
+            "void WasmTabStripView::CreateTab",
+            "void WasmTabStripView::CloseTab",
+            "create_tab_callback_.Run()",
+            "can_create_tab_callback_.Run()",
+            "can_activate_tab_callback_.Run(index)",
+            "close_tab_callback_.Run(index)",
+            "can_close_tab_callback_.Run(index)",
+            "UpdateActionButtons();",
             "views::CreateRoundedRectBackground",
             "OnTabWillBeRemoved",
+            "void WasmTabStripView::OnTabChangedAt",
+            "Blocking state is published separately",
             "OnTabStripModelDestroyed",
         ):
             with self.subTest(expected=expected):
@@ -114,7 +136,7 @@ class M6WasmTabStripContractTest(unittest.TestCase):
             "AppendWebContents(",
             "BrowserTabStripController",
             "TabDragController",
-            "NewTabButton",
+            "views::NewTabButton",
             "TabSearch",
             "ToolbarView",
             "LocationBarView",
@@ -137,7 +159,12 @@ class M6WasmTabStripContractTest(unittest.TestCase):
                 self.assertIn(expected, header)
 
         for expected in (
-            "std::make_unique<WasmTabStripView>(browser_window_interface)",
+            "std::make_unique<WasmTabStripView>(",
+            "std::move(create_tab_callback)",
+            "std::move(can_create_tab_callback)",
+            "std::move(can_activate_tab_callback)",
+            "std::move(close_tab_callback)",
+            "std::move(can_close_tab_callback)",
             "wasm_tab_strip_ = AddChildViewAt(std::move(tab_strip), 0);",
             "wasm_top_controls_ = AddChildViewAt(std::move(top_controls), 1);",
             "GetWasmTopChromeHeight()",
@@ -164,6 +191,14 @@ class M6WasmTabStripContractTest(unittest.TestCase):
             "UserGestureTabSelectionObserver",
             "ClickButton(second_tab_button);",
             "ClickButton(first_tab_button);",
+            "ClickButton(new_tab_button);",
+            "ClickButton(first_close_tab_button);",
+            "ClickButton(second_close_tab_button);",
+            "tab_strip_model->SetTabBlocked(0, true);",
+            "CHECK(!second_tab_button->GetEnabled());",
+            "CHECK(!new_tab_button->GetEnabled());",
+            "CHECK_EQ(tab_strip_model->count(), 2);",
+            "CHECK_EQ(tab_strip_model->count(), 1);",
             "TabStripModelObserver::CHANGE_REASON_USER_GESTURE",
             'CHECK_EQ(first_tab_button->GetText(), u"wasm-top-controls-a");',
             'CHECK_EQ(first_tab_button->GetText(), u"wasm-top-controls-b");',

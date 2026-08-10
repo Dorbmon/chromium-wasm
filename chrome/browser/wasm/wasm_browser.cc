@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_tab_bootstrap_delegate.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/views/widget/widget.h"
@@ -179,7 +180,32 @@ Browser::Browser(const CreateParams& params)
   // post-window Browser graph. It uses the real selected BrowserView instead.
   features_->InitPostBrowserViewConstruction(&browser_view);
   browser_view.InitializeWasmTopControls(
-      this, features_->browser_command_controller());
+      this, features_->browser_command_controller(),
+      base::BindRepeating(
+          [](base::WeakPtr<Browser> browser) {
+            return browser && browser->CreateWasmUserTab();
+          },
+          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(
+          [](base::WeakPtr<Browser> browser) {
+            return browser && browser->CanCreateWasmUserTab();
+          },
+          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(
+          [](base::WeakPtr<Browser> browser, int index) {
+            return browser && browser->CanActivateWasmUserTabAt(index);
+          },
+          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(
+          [](base::WeakPtr<Browser> browser, int index) {
+            return browser && browser->CloseWasmUserTabAt(index);
+          },
+          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(
+          [](base::WeakPtr<Browser> browser, int index) {
+            return browser && browser->CanCloseWasmUserTabAt(index);
+          },
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
 Browser::~Browser() {
@@ -422,6 +448,111 @@ views::CloseRequestResult Browser::OnWindowCloseRequested() {
   // Keep BrowserWidget client ownership alive until TabStripModel observer
   // dispatch has returned and FinishClose reaches BrowserWindowDeleter.
   return views::CloseRequestResult::kCannotClose;
+}
+
+bool Browser::CanCreateWasmUserTab() const {
+  if (!window_ || !tab_strip_model_ || close_requested_ ||
+      is_delete_scheduled_ || tab_strip_model_->count() >= 2) {
+    return false;
+  }
+
+  tabs::TabInterface* const active_tab = tab_strip_model_->GetActiveTab();
+  if (!active_tab || active_tab->IsBlocked()) {
+    return false;
+  }
+  content::WebContents* const active_contents = active_tab->GetContents();
+  if (!active_contents) {
+    return false;
+  }
+  const web_modal::WebContentsModalDialogManager* const modal_manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(
+          active_contents);
+  return modal_manager && !modal_manager->IsDialogActive();
+}
+
+bool Browser::CreateWasmUserTab() {
+  if (!CanCreateWasmUserTab()) {
+    return false;
+  }
+
+  content::WebContents::CreateParams create_params(profile_);
+  std::unique_ptr<content::WebContents> contents =
+      content::WebContents::Create(create_params);
+  if (!contents) {
+    return false;
+  }
+
+  // The bounded model owns the new blank WebContents before it notifies the
+  // selected BrowserView. It is foregrounded so the visible '+' affordance
+  // follows ordinary browser tab-creation expectations without widening the
+  // unsupported generic TabStripModelDelegate::AddTabAt() path.
+  tab_strip_model_->AppendWebContents(std::move(contents),
+                                      /*foreground=*/true);
+  return true;
+}
+
+bool Browser::CanActivateWasmUserTabAt(int index) const {
+  if (!window_ || !tab_strip_model_ || close_requested_ ||
+      is_delete_scheduled_ || !tab_strip_model_->ContainsIndex(index)) {
+    return false;
+  }
+
+  tabs::TabInterface* const active_tab = tab_strip_model_->GetActiveTab();
+  tabs::TabInterface* const requested_tab =
+      tab_strip_model_->GetTabAtIndex(index);
+  if (!active_tab || !requested_tab) {
+    return false;
+  }
+
+  for (tabs::TabInterface* const tab : {active_tab, requested_tab}) {
+    if (tab->IsBlocked()) {
+      return false;
+    }
+    content::WebContents* const contents = tab->GetContents();
+    if (!contents) {
+      return false;
+    }
+    const web_modal::WebContentsModalDialogManager* const modal_manager =
+        web_modal::WebContentsModalDialogManager::FromWebContents(contents);
+    if (!modal_manager || modal_manager->IsDialogActive()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Browser::CanCloseWasmUserTabAt(int index) const {
+  if (!window_ || !tab_strip_model_ || close_requested_ ||
+      is_delete_scheduled_ || tab_strip_model_->count() <= 1 ||
+      !tab_strip_model_->ContainsIndex(index)) {
+    return false;
+  }
+
+  tabs::TabInterface* const tab = tab_strip_model_->GetTabAtIndex(index);
+  if (!tab || tab->IsBlocked()) {
+    return false;
+  }
+
+  content::WebContents* const contents = tab->GetContents();
+  if (!contents || contents->NeedToFireBeforeUnloadOrUnloadEvents()) {
+    return false;
+  }
+  const web_modal::WebContentsModalDialogManager* const modal_manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(contents);
+  return modal_manager && !modal_manager->IsDialogActive();
+}
+
+bool Browser::CloseWasmUserTabAt(int index) {
+  if (!CanCloseWasmUserTabAt(index)) {
+    return false;
+  }
+
+  const int tab_count_before_close = tab_strip_model_->count();
+  base::WeakPtr<Browser> weak_browser = weak_ptr_factory_.GetWeakPtr();
+  tab_strip_model_->GetTabAtIndex(index)->Close();
+  return weak_browser && weak_browser->tab_strip_model_ &&
+         weak_browser->tab_strip_model_->count() ==
+             tab_count_before_close - 1;
 }
 
 void Browser::OnTabWillBeRemoved(tabs::TabInterface* tab, int index) {
