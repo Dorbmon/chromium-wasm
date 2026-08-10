@@ -85,13 +85,26 @@ class M6WasmVersionUIContractTest(unittest.TestCase):
         version_ui = source("chrome/browser/ui/webui/version/version_ui.cc")
 
         self.assertIn('DefaultWebUIConfig(content::kChromeUIScheme, "version")', version_header)
-        self.assertIn("return \"wasm-single-process\";", version_ui)
         self.assertIn("std::make_unique<chrome::WasmVersionThemeSource>()", version_ui)
         self.assertIn("base::Time::Now().UTCExplode(&now);", version_ui)
         self.assertIn("u\"Copyright \"", version_ui)
         self.assertIn("html_source->AddString(version_ui::kVariationsSource, std::string());", version_ui)
         self.assertIn("html_source->AddString(version_ui::kVariationsSeed, std::string());", version_ui)
         self.assertIn("#elif !BUILDFLAG(IS_WASM)", version_ui)
+
+    def test_wasm_version_modifier_explicitly_discloses_security_boundary(self) -> None:
+        version_ui = source("chrome/browser/ui/webui/version/version_ui.cc")
+        version_template = source("components/webui/version/resources/about_version.html")
+
+        self.assertIn("#if BUILDFLAG(IS_WASM)", version_ui)
+        self.assertIn(
+            'return "wasm-single-process (lacks Site Isolation and the Chromium sandbox; "',
+            version_ui,
+        )
+        self.assertIn('"not security-equivalent to desktop Chrome)";', version_ui)
+        # The real VersionUI template renders this backend value in the visible
+        # product-version row rather than retaining it as an internal label.
+        self.assertIn("$i18n{version_modifier}", version_template)
 
     def test_theme_source_serves_only_version_logo_resources(self) -> None:
         theme_source = source("chrome/browser/wasm/wasm_version_theme_source.cc")

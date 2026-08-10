@@ -138,9 +138,10 @@ void CreateAndAddVersionUIDataSource(Profile* profile) {
 std::string GetProductModifier() {
 #if BUILDFLAG(IS_WASM)
   // Wasm deliberately has no release-channel service in its first
-  // single-process profile. Label the product honestly rather than invoking
-  // the desktop channel/configuration stack.
-  return "wasm-single-process";
+  // single-process profile. Keep the user-visible diagnostics explicit: this
+  // configuration lacks Chromium's process-isolation security boundaries.
+  return "wasm-single-process (lacks Site Isolation and the Chromium sandbox; "
+         "not security-equivalent to desktop Chrome)";
 #else
   std::vector<std::string> modifier_parts;
   if (std::string channel_name =
