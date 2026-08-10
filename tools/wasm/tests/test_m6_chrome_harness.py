@@ -195,6 +195,11 @@ class ChromeM6ServerTest(unittest.TestCase):
                 b"runChromeWasmNormalBrowserFromQuery",
             ),
             (
+                "/__m6__/chrome_wasm_pointer_input.js",
+                "text/javascript; charset=utf-8",
+                b"ChromiumWasmTrustedPointerInput",
+            ),
+            (
                 "/__m6__/artifacts/chrome_wasm.js",
                 "text/javascript; charset=utf-8",
                 self.js_bytes,
@@ -554,20 +559,24 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
         if node is None:
             self.skipTest("Node is unavailable")
 
-        host = ROOT_DIR / "tools/wasm/host/chrome_wasm_host.js"
-        completed = subprocess.run(
-            [node, "--check", str(host)],
-            capture_output=True,
-            encoding="utf-8",
-            check=False,
-        )
-        self.assertEqual(
-            completed.returncode,
-            0,
-            "Node rejected the normal Chrome Wasm host:\n"
-            + completed.stdout
-            + completed.stderr,
-        )
+        for host in (
+            ROOT_DIR / "tools/wasm/host/chrome_wasm_host.js",
+            ROOT_DIR / "tools/wasm/host/chrome_wasm_pointer_input.js",
+        ):
+            with self.subTest(host=host.name):
+                completed = subprocess.run(
+                    [node, "--check", str(host)],
+                    capture_output=True,
+                    encoding="utf-8",
+                    check=False,
+                )
+                self.assertEqual(
+                    completed.returncode,
+                    0,
+                    "Node rejected the Chrome Wasm host asset:\n"
+                    + completed.stdout
+                    + completed.stderr,
+                )
 
 
 class ChromeM6BoundaryCheckerTest(unittest.TestCase):

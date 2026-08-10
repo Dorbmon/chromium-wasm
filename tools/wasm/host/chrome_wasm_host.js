@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {ChromiumWasmTrustedPointerInput} from "./chrome_wasm_pointer_input.js";
+
 // This is the ordinary, no-command-line-switch Chrome Wasm host lane.  It
 // proves a bounded normal Browser lifecycle and clean host-driven shutdown;
 // it is not the complete M6 browser-UI acceptance gate.
@@ -251,6 +253,7 @@ class ChromiumWasmNormalBrowserHost {
   #normalBrowserPassMarkerObserved = false;
   #shutdownResults = [];
   #visibleEvidenceAtShutdown = null;
+  #pointerInput = null;
   #errorHandler;
   #rejectionHandler;
 
@@ -552,6 +555,12 @@ class ChromiumWasmNormalBrowserHost {
     this.#module = module;
     this.#runtimeInitialized = true;
     this.#runtimeInitializedAt = performance.now();
+    this.#pointerInput = new ChromiumWasmTrustedPointerInput(this.#canvas, {
+      getModule: () => this.#module,
+      recordFatal: (message) => this.#recordFatal(message),
+      maximumFrameDimension: MAX_FRAME_DIMENSION,
+    });
+    this.#pointerInput.attach();
     this.#startHeartbeat();
   }
 
@@ -611,6 +620,7 @@ class ChromiumWasmNormalBrowserHost {
       throw new Error("normal browser host shutdown was already requested");
     }
     this.#visibleEvidenceAtShutdown = evidence;
+    this.#pointerInput?.releaseActivePointer("host-shutdown");
     let first;
     let second;
     try {
@@ -791,6 +801,8 @@ class ChromiumWasmNormalBrowserHost {
     } catch (error) {
       return this.#result("fail", String(error));
     } finally {
+      this.#pointerInput?.detach();
+      this.#pointerInput = null;
       this.#stopHeartbeat();
       this.#releaseWindowErrors();
     }

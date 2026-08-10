@@ -1,0 +1,54 @@
+<!doctype html>
+<!--
+  Copyright 2026 The Chromium Authors
+  Use of this source code is governed by a BSD-style license that can be
+  found in the LICENSE file.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm trusted DOM pointer tab smoke</title>
+  <style>
+    :root { color-scheme: dark; font: 13px/1.5 ui-monospace, monospace;
+      background: #10141b; color: #dbe7f5; }
+    body { margin: 0; padding: 16px; }
+    main { display: grid; grid-template-columns: minmax(640px, 1fr) 320px;
+      gap: 16px; align-items: start; }
+    #browser-canvas { display: block; width: 640px; height: 480px;
+      border: 1px solid #53657d; background: #000; outline: none; }
+    #browser-canvas:focus { border-color: #72ddf7; }
+    aside { min-width: 0; padding: 12px; border: 1px solid #53657d;
+      background: #171e28; }
+    h1 { margin: 0 0 12px; font-size: 16px; }
+    dl { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+      gap: 4px 12px; margin: 0 0 12px; }
+    dt { color: #8da9c4; }
+    dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+    pre { max-height: 420px; margin: 0; overflow: auto; white-space: pre-wrap;
+      overflow-wrap: anywhere; }
+    main[data-state="pass"] h1 { color: #80ed99; }
+    main[data-state="fail"] h1 { color: #ff758f; }
+  </style>
+</head>
+<body>
+  <main id="browser-host-pointer-tabs-root" data-state="running">
+    <canvas id="browser-canvas" width="640" height="480" tabindex="0"
+        aria-label="Chromium browser tab-flow output"></canvas>
+    <aside aria-label="Trusted DOM pointer tab smoke diagnostics">
+      <h1>Chromium Wasm trusted DOM pointer tab smoke</h1>
+      <dl id="versions"></dl>
+      <pre id="browser-host-pointer-tabs-status">Starting trusted DOM pointer tab smoke…</pre>
+    </aside>
+  </main>
+  <script type="module">
+    import {runChromeWasmBrowserHostPointerTabsSmokeFromQuery} from "/__m6_browser_host_pointer_tabs__/chrome_wasm_browser_host_pointer_tabs_smoke_host.js";
+
+    runChromeWasmBrowserHostPointerTabsSmokeFromQuery().catch((error) => {
+      document.querySelector("#browser-host-pointer-tabs-root").dataset.state = "fail";
+      document.querySelector("#browser-host-pointer-tabs-status").textContent =
+          `HOST FAILURE: ${String(error)}`;
+    });
+  </script>
+</body>
+</html>

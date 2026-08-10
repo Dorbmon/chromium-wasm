@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/color/chrome_color_mixers.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_browser_host_lifecycle.h"
+#include "chrome/browser/wasm/wasm_browser_host_pointer.h"
 #include "chrome/browser/wasm/wasm_browser_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
 #include "chrome/browser/wasm/wasm_m6_controlled_https_test_mode.h"
@@ -78,6 +79,8 @@ constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
     "wasm-browser-lifecycle-smoke";
 constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
     "wasm-browser-host-accelerator-smoke";
+constexpr char kWasmBrowserHostPointerTabSmokeSwitch[] =
+    "wasm-browser-host-pointer-tab-smoke";
 constexpr char kWasmBrowserLifecycleSmokeReadyMarker[] =
     "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:READY";
 constexpr char kWasmBrowserLifecycleSmokePassMarker[] =
@@ -246,6 +249,16 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
 
+  // The ordinary Chrome host maps trusted DOM mouse records into physical
+  // canvas coordinates and submits them through this distinct Ozone bridge.
+  // Keep it separate from the narrow physical-key ABI: pointer lifetime has
+  // no authority to invoke Browser commands or manipulate Chrome Views.
+  if (!chrome::InitializeWasmBrowserHostPointer()) {
+    LOG(ERROR) << "chrome_wasm could not create its Ozone pointer injector";
+    chrome::ShutdownWasmBrowserHostInput();
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+
   // Exercise the factory while the profile is live. Browser::Create() will
   // retrieve this same manager when the real window lifecycle is selected.
   CHECK(BrowserManagerServiceFactory::GetForProfile(profile_.get()));
@@ -293,8 +306,15 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_accelerator_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostAcceleratorSmokeSwitch);
-  if (browser_lifecycle_smoke || browser_host_accelerator_smoke) {
-    CHECK(!(browser_lifecycle_smoke && browser_host_accelerator_smoke));
+  const bool browser_host_pointer_tab_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostPointerTabSmokeSwitch);
+  if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
+      browser_host_pointer_tab_smoke) {
+    CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
+                 static_cast<int>(browser_host_accelerator_smoke) +
+                 static_cast<int>(browser_host_pointer_tab_smoke),
+             1);
     CHECK(!browser_lifecycle_);
     CHECK(!browser_lifecycle_smoke_requested_);
     CHECK(!browser_window_lifecycle_);
@@ -423,6 +443,7 @@ void WasmBrowserMainParts::PostMainMessageLoopRun() {
   // Invalidate the host ABI and release its SystemInputInjector while its
   // Ozone owner is still live. Queued records carry a generation token and
   // safely drop after this point.
+  chrome::ShutdownWasmBrowserHostPointer();
   chrome::ShutdownWasmBrowserHostInput();
   if (ozone_main_loop_initialized_) {
     ui::OzonePlatform::GetInstance()->PostMainMessageLoopRun();
@@ -526,6 +547,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
     browser_lifecycle_->StartHostAcceleratorSmoke();
     std::fprintf(stderr, "%s\n", kWasmBrowserHostAcceleratorSmokeReadyMarker);
     std::fflush(stderr);
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostPointerTabSmokeSwitch)) {
+    browser_lifecycle_->StartHostPointerTabSmoke();
     return;
   }
   std::fprintf(stderr, "%s\n", kWasmBrowserLifecycleSmokeReadyMarker);

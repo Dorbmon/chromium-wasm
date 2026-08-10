@@ -18,12 +18,18 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_browser.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
+#include "chrome/browser/wasm/wasm_browser_host_pointer_tab_smoke.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/view.h"
+#include "ui/views/widget/widget.h"
 
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_browser_lifecycle.cc must only be built for WebAssembly"
@@ -35,7 +41,36 @@ namespace {
 
 constexpr char kHostAcceleratorsSmokeMarker[] =
     "CHROMIUM_WASM_M6_HOST_ACCELERATORS:PASS";
+constexpr char kHostPointerTabsReadyMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:READY";
+constexpr char kHostPointerTabsInsertedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:INSERTED";
+constexpr char kHostPointerTabsClosedMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:CLOSED";
+constexpr char kHostPointerTabsPassMarker[] =
+    "CHROMIUM_WASM_M6_HOST_POINTER_TABS:PASS";
 constexpr gfx::Rect kBrowserLifecycleSmokeBounds(0, 0, 640, 480);
+constexpr int kMaximumHostPointerCoordinate = 16383;
+
+gfx::Point GetHostPointerTarget(BrowserView& browser_view, views::View* view) {
+  CHECK(view);
+  CHECK(view->GetVisible());
+  CHECK(view->GetEnabled());
+  browser_view.DeprecatedLayoutImmediately();
+
+  views::Widget* const widget = browser_view.GetWidget();
+  CHECK(widget);
+  CHECK(widget->IsVisible());
+  const gfx::Rect target_bounds = view->GetBoundsInScreen();
+  CHECK(!target_bounds.IsEmpty());
+  const gfx::Point target = target_bounds.CenterPoint();
+  CHECK(widget->GetWindowBoundsInScreen().Contains(target));
+  CHECK_GE(target.x(), 0);
+  CHECK_LE(target.x(), kMaximumHostPointerCoordinate);
+  CHECK_GE(target.y(), 0);
+  CHECK_LE(target.y(), kMaximumHostPointerCoordinate);
+  return target;
+}
 
 }  // namespace
 
@@ -55,6 +90,7 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   // close barrier always runs on UI before destruction, so clear it before the
   // coordinator's raw callbacks and Browser weak pointer disappear.
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
+  ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   // BrowserManagerService owns the Browser. This lifecycle can disappear only
   // after the manager's physical destruction callback invalidates |browser_|.
   CHECK(!browser_);
@@ -140,6 +176,42 @@ void WasmBrowserLifecycle::StartHostAcceleratorSmoke() {
           base::Unretained(this)));
 }
 
+void WasmBrowserLifecycle::StartHostPointerTabSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!host_pointer_tab_smoke_started_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTabStripView* const tab_strip = browser_view.wasm_tab_strip();
+  CHECK(tab_strip);
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  CHECK(tab_strip_model);
+  CHECK_EQ(tab_strip_model->count(), 1);
+  host_pointer_tab_initial_contents_ = tab_strip_model->GetWebContentsAt(0);
+  CHECK(host_pointer_tab_initial_contents_);
+
+  // Install the UI verifier before reporting READY: the real host observes
+  // this marker then dispatches trusted DOM pointer events immediately.
+  host_pointer_tab_smoke_started_ = true;
+  SetWasmBrowserHostPointerTabSmokeVerificationForTesting(
+      base::BindRepeating(
+          &WasmBrowserLifecycle::VerifyHostPointerTabSmokeCheck,
+          base::Unretained(this)),
+      base::BindRepeating(
+          &WasmBrowserLifecycle::OnHostPointerTabSmokePresented,
+          base::Unretained(this)));
+
+  const gfx::Point target = GetHostPointerTarget(
+      browser_view, tab_strip->new_tab_button_for_testing());
+  std::fprintf(stderr, "%s x=%d y=%d\n", kHostPointerTabsReadyMarker,
+               target.x(), target.y());
+  std::fflush(stderr);
+}
+
 bool WasmBrowserLifecycle::IsVisible() const {
   CHECK(initialized_);
   CHECK(!shutdown_complete_);
@@ -158,6 +230,7 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   // without BeginShutdown(). Both paths converge while did-close dispatch is
   // active, before Browser posts manager deletion.
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
+  ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
   shutdown_started_ = true;
   ArmBrowserDestructionBarrier();
 }
@@ -199,6 +272,7 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   shutdown_complete_ = true;
 
   ClearWasmBrowserHostAcceleratorVerificationForTesting();
+  ClearWasmBrowserHostPointerTabSmokeVerificationForTesting();
 
   // This callback may reset and destroy this lifecycle in main-parts.
   std::move(shutdown_complete_callback_).Run();
@@ -238,6 +312,84 @@ void WasmBrowserLifecycle::OnHostAcceleratorDeliveryVerified() {
   std::fprintf(stderr, "%s\n", kHostAcceleratorsSmokeMarker);
   std::fflush(stderr);
   BeginShutdown();
+}
+
+bool WasmBrowserLifecycle::VerifyHostPointerTabSmokeCheck(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_pointer_tab_smoke_started_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_pointer_tab_initial_contents_) {
+    return false;
+  }
+
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  if (!tab_strip_model) {
+    return false;
+  }
+  BrowserView& browser_view = browser_->GetBrowserView();
+  WasmTabStripView* const tab_strip = browser_view.wasm_tab_strip();
+  if (!tab_strip) {
+    return false;
+  }
+
+  if (stage == 1) {
+    if (host_pointer_tab_insert_verified_ || tab_strip_model->count() != 2 ||
+        tab_strip_model->GetWebContentsAt(0) !=
+            host_pointer_tab_initial_contents_ ||
+        tab_strip_model->GetWebContentsAt(1) ==
+            host_pointer_tab_initial_contents_) {
+      return false;
+    }
+
+    const gfx::Point target = GetHostPointerTarget(
+        browser_view, tab_strip->close_tab_button_for_testing(1));
+    host_pointer_tab_insert_verified_ = true;
+    std::fprintf(stderr, "%s x=%d y=%d\n", kHostPointerTabsInsertedMarker,
+                 target.x(), target.y());
+    std::fflush(stderr);
+    // The host must observe a canvas frame after this model action before it
+    // dispatches the second trusted DOM click.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  if (stage == 2) {
+    views::LabelButton* const new_tab_button =
+        tab_strip->new_tab_button_for_testing();
+    if (!host_pointer_tab_insert_verified_ ||
+        host_pointer_tab_close_verified_ || tab_strip_model->count() != 1 ||
+        tab_strip_model->GetWebContentsAt(0) !=
+            host_pointer_tab_initial_contents_ ||
+        !new_tab_button || !new_tab_button->GetVisible() ||
+        !new_tab_button->GetEnabled()) {
+      return false;
+    }
+
+    host_pointer_tab_close_verified_ = true;
+    std::fprintf(stderr, "%s\n", kHostPointerTabsClosedMarker);
+    std::fflush(stderr);
+    // The host acknowledges this exact post-close presentation before this
+    // lifecycle begins its normal ordered Browser shutdown.
+    browser_view.SchedulePaint();
+    return true;
+  }
+
+  return false;
+}
+
+bool WasmBrowserLifecycle::OnHostPointerTabSmokePresented(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (stage != 2 || !host_pointer_tab_smoke_started_ ||
+      !host_pointer_tab_insert_verified_ || !host_pointer_tab_close_verified_ ||
+      host_pointer_tab_presentation_verified_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_) {
+    return false;
+  }
+
+  host_pointer_tab_presentation_verified_ = true;
+  std::fprintf(stderr, "%s\n", kHostPointerTabsPassMarker);
+  std::fflush(stderr);
+  BeginShutdown();
+  return true;
 }
 
 }  // namespace chrome

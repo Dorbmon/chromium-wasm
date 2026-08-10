@@ -15,6 +15,10 @@ class BrowserManagerService;
 class BrowserWindowInterface;
 class WasmProfile;
 
+namespace content {
+class WebContents;
+}  // namespace content
+
 namespace chrome {
 
 // Owns the process-lifetime side of one bounded slim Browser. The
@@ -51,6 +55,12 @@ class WasmBrowserLifecycle final {
   // UI event path; it cannot directly invoke browser commands.
   void StartHostAcceleratorSmoke();
 
+  // Arms the separate real-browser smoke that accepts only trusted DOM mouse
+  // records through Chrome's Ozone pointer bridge. Its exported test ABI can
+  // ask this owner to inspect the model after a pointer action and acknowledge
+  // a host-presented frame; it has no create/close/select command surface.
+  void StartHostPointerTabSmoke();
+
   bool IsVisible() const;
   bool IsShutdownStarted() const { return shutdown_started_; }
   bool IsShutdownComplete() const { return shutdown_complete_; }
@@ -61,6 +71,8 @@ class WasmBrowserLifecycle final {
   void OnBrowserDestructionsComplete();
   bool VerifyHostAcceleratorDelivery();
   void OnHostAcceleratorDeliveryVerified();
+  bool VerifyHostPointerTabSmokeCheck(int stage);
+  bool OnHostPointerTabSmokePresented(int stage);
 
   const raw_ptr<WasmProfile> profile_;
   const raw_ptr<BrowserManagerService> browser_manager_;
@@ -69,6 +81,11 @@ class WasmBrowserLifecycle final {
   base::OnceClosure shutdown_complete_callback_;
   bool initialized_ = false;
   bool host_accelerator_smoke_started_ = false;
+  bool host_pointer_tab_smoke_started_ = false;
+  bool host_pointer_tab_insert_verified_ = false;
+  bool host_pointer_tab_close_verified_ = false;
+  bool host_pointer_tab_presentation_verified_ = false;
+  raw_ptr<content::WebContents> host_pointer_tab_initial_contents_ = nullptr;
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;

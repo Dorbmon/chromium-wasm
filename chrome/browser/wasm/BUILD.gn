@@ -249,6 +249,7 @@ source_set("wasm_tab_strip") {
   # owners. Keep this narrow so a later caller cannot accidentally treat these
   # two model-backed buttons as the full desktop tab-strip implementation.
   visibility = [
+    ":wasm_browser_lifecycle",
     ":wasm_browser_smoke",
     ":wasm_browser_view",
   ]
@@ -1053,6 +1054,27 @@ source_set("wasm_browser_host_input") {
   ]
 }
 
+# Trusted DOM pointer records use a separate Chrome-owned lifetime from the
+# physical-key ABI. The bridge exposes only bounded mouse coordinates/types to
+# JavaScript and routes them through Ozone's public SystemInputInjector; it
+# cannot create, close, or otherwise control a Browser.
+source_set("wasm_browser_host_pointer") {
+  public = [ "wasm_browser_host_pointer.h" ]
+
+  sources = [ "wasm_browser_host_pointer.cc" ]
+
+  visibility = [ ":wasm_browser_main_parts" ]
+
+  deps = [
+    "//base",
+    "//content/public/browser",
+    "//ui/events",
+    "//ui/gfx/geometry",
+    "//ui/ozone",
+    "//ui/ozone/platform/wasm:wasm",
+  ]
+}
+
 # Browser-main owns this one-shot host shutdown bridge for ordinary Wasm
 # startup. It deliberately has no input-injection or Browser/WebContents API:
 # host JavaScript can request the already-owned close/drain sequence exactly
@@ -1063,6 +1085,22 @@ source_set("wasm_browser_host_lifecycle") {
   sources = [ "wasm_browser_host_lifecycle.cc" ]
 
   visibility = [ ":wasm_browser_main_parts" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
+# The real-browser trusted-pointer smoke asks this verifier only to inspect
+# the lifecycle-owned tab model after the fixed Ozone input path ran, then to
+# acknowledge a host-presented frame. It deliberately exports no Browser or
+# View command surface to JavaScript.
+source_set("wasm_browser_host_pointer_tab_smoke") {
+  public = [ "wasm_browser_host_pointer_tab_smoke.h" ]
+
+  sources = [ "wasm_browser_host_pointer_tab_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
 
   public_deps = [ "//base" ]
 
@@ -1081,10 +1119,12 @@ source_set("wasm_browser_lifecycle") {
   deps = [
     ":wasm_browser",
     ":wasm_browser_host_input",
+    ":wasm_browser_host_pointer_tab_smoke",
     ":wasm_browser_manager",
     ":wasm_browser_view",
     ":wasm_profile",
     ":wasm_tab_core",
+    ":wasm_tab_strip",
     ":wasm_top_controls",
     "//content/public/browser",
     "//ui/gfx/geometry",
@@ -1376,6 +1416,7 @@ source_set("wasm_browser_main_parts") {
   deps = [
     ":wasm_browser_host_input",
     ":wasm_browser_host_lifecycle",
+    ":wasm_browser_host_pointer",
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",
     ":wasm_m6_controlled_https_test_mode",
