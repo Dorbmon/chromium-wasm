@@ -29,6 +29,8 @@
 #include "chrome/browser/wasm/wasm_browser_host_pointer_menu_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_tab_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_security_warning_smoke.h"
+#include "chrome/browser/wasm/wasm_browser_host_storage_estimate.h"
+#include "chrome/browser/wasm/wasm_browser_host_storage_estimate_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_host_text_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_security_warning_dialog.h"
@@ -42,6 +44,7 @@
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -148,6 +151,87 @@ class WasmBrowserHostPointerMenuNavigationObserver final
       return;
     }
 
+    committed_ = true;
+    if (web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
+      first_visually_nonempty_paint_after_commit_ = true;
+    }
+    if (!web_contents()->IsLoading()) {
+      stopped_loading_after_commit_ = true;
+    }
+    MaybeNotify();
+  }
+
+  void DidStopLoading() override {
+    if (!committed_ || observed_) {
+      return;
+    }
+    stopped_loading_after_commit_ = true;
+    MaybeNotify();
+  }
+
+  void DidFirstVisuallyNonEmptyPaint() override {
+    if (!committed_ || observed_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+    CHECK(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+    first_visually_nonempty_paint_after_commit_ = true;
+    MaybeNotify();
+  }
+
+ private:
+  void MaybeNotify() {
+    if (observed_ || !committed_ || !stopped_loading_after_commit_ ||
+        !first_visually_nonempty_paint_after_commit_) {
+      return;
+    }
+    observed_ = true;
+    navigation_observed_.Run();
+  }
+
+  const GURL expected_url_;
+  const base::RepeatingClosure navigation_observed_;
+  bool committed_ = false;
+  bool stopped_loading_after_commit_ = false;
+  bool first_visually_nonempty_paint_after_commit_ = false;
+  bool observed_ = false;
+};
+
+// Observes the fixed native Settings navigation used by the storage-estimate
+// smoke. Unlike the pointer-menu flow, this switch-gated diagnostic test does
+// not claim a host gesture: JavaScript can only acknowledge the already
+// accepted outer-origin estimate and a later presentation frame.
+class WasmBrowserHostStorageEstimateNavigationObserver final
+    : public content::WebContentsObserver {
+ public:
+  WasmBrowserHostStorageEstimateNavigationObserver(
+      content::WebContents* web_contents,
+      GURL expected_url,
+      base::RepeatingClosure navigation_observed)
+      : content::WebContentsObserver(web_contents),
+        expected_url_(std::move(expected_url)),
+        navigation_observed_(std::move(navigation_observed)) {
+    CHECK(web_contents);
+    CHECK(expected_url_.is_valid());
+    CHECK(navigation_observed_);
+  }
+
+  WasmBrowserHostStorageEstimateNavigationObserver(
+      const WasmBrowserHostStorageEstimateNavigationObserver&) = delete;
+  WasmBrowserHostStorageEstimateNavigationObserver& operator=(
+      const WasmBrowserHostStorageEstimateNavigationObserver&) = delete;
+  ~WasmBrowserHostStorageEstimateNavigationObserver() override = default;
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (observed_ || committed_ || !navigation_handle ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->IsSameDocument() ||
+        !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage() ||
+        navigation_handle->GetURL() != expected_url_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
     committed_ = true;
     if (web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
       first_visually_nonempty_paint_after_commit_ = true;
@@ -321,7 +405,16 @@ constexpr char kHostClipboardSmokeNavigatedMarker[] =
     "CHROMIUM_WASM_M7_HOST_CLIPBOARD:NAVIGATED";
 constexpr char kHostClipboardSmokePassMarker[] =
     "CHROMIUM_WASM_M7_HOST_CLIPBOARD:PASS";
+constexpr char kHostStorageEstimateSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M7_HOST_STORAGE_ESTIMATE:READY";
+constexpr char kHostStorageEstimateSmokeNavigatedMarker[] =
+    "CHROMIUM_WASM_M7_HOST_STORAGE_ESTIMATE:SETTINGS_NAVIGATED";
+constexpr char kHostStorageEstimateSmokePassMarker[] =
+    "CHROMIUM_WASM_M7_HOST_STORAGE_ESTIMATE:PASS";
 constexpr char kHostTextSmokeUrl[] = "chrome://version/";
+constexpr char kHostStorageEstimateSettingsUrl[] = "chrome://settings/";
+constexpr char16_t kHostStorageEstimateSettingsTitle[] =
+    u"Settings \u2014 Chromium Wasm";
 constexpr char kHostPointerTabsReadyMarker[] =
     "CHROMIUM_WASM_M6_HOST_POINTER_TABS:READY";
 constexpr char kHostPointerTabsInsertedMarker[] =
@@ -467,6 +560,9 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostStorageEstimateSmokeVerificationForTesting();
+  host_storage_estimate_navigation_observer_.reset();
+  host_storage_estimate_contents_ = nullptr;
   ClearWasmBrowserHostClipboardTarget();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
@@ -892,6 +988,158 @@ void WasmBrowserLifecycle::StartHostContinuousFlowSmoke() {
   host_continuous_flow_->Start();
 }
 
+void WasmBrowserLifecycle::StartHostStorageEstimateSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+  CHECK(!host_storage_estimate_smoke_started_);
+  CHECK(!host_storage_estimate_navigation_observer_);
+
+  // Install before READY. The host may already have an accepted deferred
+  // estimate result when it sees this marker, but can submit only fixed stage
+  // one; this lifecycle owns the exact Settings URL and navigation call.
+  host_storage_estimate_smoke_started_ = true;
+  SetWasmBrowserHostStorageEstimateSmokeVerificationForTesting(
+      base::BindRepeating(
+          &WasmBrowserLifecycle::VerifyHostStorageEstimateSmokeCheck,
+          base::Unretained(this)),
+      base::BindRepeating(
+          &WasmBrowserLifecycle::OnHostStorageEstimateSmokePresented,
+          base::Unretained(this)));
+  std::fprintf(stderr, "%s\n", kHostStorageEstimateSmokeReadyMarker);
+  std::fflush(stderr);
+}
+
+bool WasmBrowserLifecycle::VerifyHostStorageEstimateSmokeCheck(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (stage != 1 || !host_storage_estimate_smoke_started_ ||
+      host_storage_estimate_check_verified_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ ||
+      host_storage_estimate_navigation_observer_) {
+    return false;
+  }
+
+  const scoped_refptr<const WasmBrowserHostStorageEstimateSnapshot> snapshot =
+      GetWasmBrowserHostStorageEstimateSnapshot();
+  if (!snapshot || snapshot->state() !=
+                       WasmBrowserHostStorageEstimateSnapshot::State::kAvailable ||
+      snapshot->generation() == 0 ||
+      snapshot->usage_bytes() > snapshot->quota_bytes()) {
+    return false;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  content::WebContents* const contents = browser_view.GetActiveWebContents();
+  if (!contents || contents->IsBeingDestroyed()) {
+    return false;
+  }
+
+  const GURL settings_url(kHostStorageEstimateSettingsUrl);
+  CHECK(settings_url.is_valid());
+  host_storage_estimate_generation_ = snapshot->generation();
+  host_storage_estimate_usage_bytes_ = snapshot->usage_bytes();
+  host_storage_estimate_quota_bytes_ = snapshot->quota_bytes();
+  host_storage_estimate_contents_ = contents;
+  host_storage_estimate_navigation_observer_ =
+      std::make_unique<WasmBrowserHostStorageEstimateNavigationObserver>(
+          contents, settings_url,
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnHostStorageEstimateSettingsNavigationObserved,
+              base::Unretained(this)));
+
+  content::NavigationController::LoadURLParams params(settings_url);
+  // This is a fixed, switch-gated test navigation, not a reported host
+  // gesture. Do not synthesize a user gesture or let the host choose a URL.
+  params.transition_type = ui::PAGE_TRANSITION_GENERATED;
+  // A local chrome:// WebUI can synchronously commit during LoadURLWithParams.
+  // Mark the prerequisite before initiation so the one-shot observer can join
+  // that commit to the immutable snapshot check; roll it back on rejection.
+  host_storage_estimate_check_verified_ = true;
+  const base::WeakPtr<content::NavigationHandle> navigation_handle =
+      contents->GetController().LoadURLWithParams(params);
+  if (!navigation_handle) {
+    host_storage_estimate_check_verified_ = false;
+    host_storage_estimate_navigation_observer_.reset();
+    host_storage_estimate_contents_ = nullptr;
+    return false;
+  }
+  return true;
+}
+
+void WasmBrowserLifecycle::OnHostStorageEstimateSettingsNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!host_storage_estimate_smoke_started_ ||
+      !host_storage_estimate_check_verified_ ||
+      host_storage_estimate_navigation_verified_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_storage_estimate_contents_) {
+    return;
+  }
+
+  BrowserView& browser_view = browser_->GetBrowserView();
+  if (browser_view.GetActiveWebContents() != host_storage_estimate_contents_ ||
+      host_storage_estimate_contents_->GetLastCommittedURL() !=
+          GURL(kHostStorageEstimateSettingsUrl) ||
+      host_storage_estimate_contents_->GetTitle() !=
+          kHostStorageEstimateSettingsTitle) {
+    return;
+  }
+
+  content::WebUI* const settings_web_ui =
+      host_storage_estimate_contents_->GetWebUI();
+  content::WebUIConfig* const settings_web_ui_config =
+      settings_web_ui ? settings_web_ui->GetWebUIConfig() : nullptr;
+  content::WebUIController* const settings_web_ui_controller =
+      settings_web_ui ? settings_web_ui->GetController() : nullptr;
+  WasmSettingsUI* const settings_ui = settings_web_ui_controller
+                                          ? settings_web_ui_controller
+                                                ->GetAs<WasmSettingsUI>()
+                                          : nullptr;
+  const scoped_refptr<const WasmBrowserHostStorageEstimateSnapshot>
+      controller_snapshot = settings_ui
+                                ? settings_ui->GetStorageEstimateSnapshotForTesting()
+                                : nullptr;
+  if (!settings_web_ui_config || !settings_web_ui_controller || !settings_ui ||
+      !controller_snapshot ||
+      settings_web_ui_config->scheme() != content::kChromeUIScheme ||
+      settings_web_ui_config->host() != "settings" ||
+      settings_ui->web_ui() != settings_web_ui ||
+      controller_snapshot->state() !=
+          WasmBrowserHostStorageEstimateSnapshot::State::kAvailable ||
+      controller_snapshot->generation() != host_storage_estimate_generation_ ||
+      controller_snapshot->usage_bytes() != host_storage_estimate_usage_bytes_ ||
+      controller_snapshot->quota_bytes() != host_storage_estimate_quota_bytes_) {
+    return;
+  }
+
+  host_storage_estimate_navigation_verified_ = true;
+  std::fprintf(stderr, "%s\n", kHostStorageEstimateSmokeNavigatedMarker);
+  std::fflush(stderr);
+  // A host callback can finish only after it observes a strictly later canvas
+  // frame. That makes the result proof include native Settings presentation,
+  // not just controller construction or a committed URL.
+  browser_view.SchedulePaint();
+}
+
+bool WasmBrowserLifecycle::OnHostStorageEstimateSmokePresented(int stage) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (stage != 2 || !host_storage_estimate_smoke_started_ ||
+      !host_storage_estimate_check_verified_ ||
+      !host_storage_estimate_navigation_verified_ || shutdown_started_ ||
+      shutdown_complete_ || !browser_ || !host_storage_estimate_contents_ ||
+      browser_->GetBrowserView().GetActiveWebContents() !=
+          host_storage_estimate_contents_) {
+    return false;
+  }
+
+  std::fprintf(stderr, "%s\n", kHostStorageEstimateSmokePassMarker);
+  std::fflush(stderr);
+  BeginShutdown();
+  return true;
+}
+
 bool WasmBrowserLifecycle::IsVisible() const {
   CHECK(initialized_);
   CHECK(!shutdown_complete_);
@@ -919,6 +1167,9 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostStorageEstimateSmokeVerificationForTesting();
+  host_storage_estimate_navigation_observer_.reset();
+  host_storage_estimate_contents_ = nullptr;
   ClearWasmBrowserHostClipboardTarget();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();
@@ -982,6 +1233,9 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostStorageEstimateSmokeVerificationForTesting();
+  host_storage_estimate_navigation_observer_.reset();
+  host_storage_estimate_contents_ = nullptr;
   ClearWasmBrowserHostClipboardTarget();
   ClearWasmBrowserHostTextTarget();
   host_text_navigation_observer_.reset();

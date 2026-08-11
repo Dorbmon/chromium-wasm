@@ -5,10 +5,15 @@
 #ifndef CHROME_BROWSER_WASM_WASM_SETTINGS_UI_H_
 #define CHROME_BROWSER_WASM_WASM_SETTINGS_UI_H_
 
+#include "base/memory/scoped_refptr.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/webui_config.h"
 
 class GURL;
+
+namespace chrome {
+class WasmBrowserHostStorageEstimateSnapshot;
+}  // namespace chrome
 
 namespace chrome {
 
@@ -24,7 +29,17 @@ class WasmSettingsUI final : public content::WebUIController {
   WasmSettingsUI& operator=(const WasmSettingsUI&) = delete;
   ~WasmSettingsUI() override;
 
+  // The switch-gated Wasm smoke reads only the immutable snapshot captured by
+  // this real WebUI controller. It cannot query or refresh host state through
+  // Settings, and does not expose a browser command or preference surface.
+  scoped_refptr<const WasmBrowserHostStorageEstimateSnapshot>
+  GetStorageEstimateSnapshotForTesting() const;
+
   WEB_UI_CONTROLLER_TYPE_DECL();
+
+ private:
+  const scoped_refptr<const WasmBrowserHostStorageEstimateSnapshot>
+      storage_estimate_snapshot_;
 };
 
 // Keeps chrome://settings in the Wasm-owned WebUI registry instead of pulling

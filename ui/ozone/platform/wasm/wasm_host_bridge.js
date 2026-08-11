@@ -334,6 +334,31 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // This synchronous import is an admission request only. The host must defer
+  // navigator.storage.estimate() completion until after this proxy call has
+  // returned, then invoke the fixed scalar C ABI with the same generation.
+  // It exposes no origin string, filesystem handle, persistence request, or
+  // Chromium profile quota.
+  chromium_wasm_request_outer_origin_storage_estimate__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_request_outer_origin_storage_estimate__proxy: 'sync',
+  chromium_wasm_request_outer_origin_storage_estimate: (generation) => {
+    if (!Number.isSafeInteger(generation) || generation < 1 ||
+        generation > 0x7fffffff) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.requestOuterOriginStorageEstimate !== 'function') {
+      return 0;
+    }
+    return bridge.requestOuterOriginStorageEstimate({
+      protocol: ChromiumWasmHostBridge.version,
+      generation,
+    }) === true ? 1 : 0;
+  },
+
   chromium_wasm_report_navigation__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_navigation__proxy: 'sync',
   chromium_wasm_report_navigation: () => {

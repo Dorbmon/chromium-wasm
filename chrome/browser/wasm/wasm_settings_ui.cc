@@ -10,7 +10,10 @@
 
 #include "base/check.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
+#include "chrome/browser/wasm/wasm_browser_host_storage_estimate.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
@@ -32,13 +35,84 @@ constexpr char kWasmSettingsHost[] = "settings";
 bool IsWasmSettingsRootURL(const GURL& url) {
   return url.SchemeIs(content::kChromeUIScheme) &&
          url.host() == kWasmSettingsHost &&
-         (url.path() == "/" || url.path().empty());
+         (url.path() == "/" || url.path().empty()) && !url.has_username() &&
+         !url.has_password() && !url.has_port() && !url.has_query() &&
+         !url.has_ref();
+}
+
+std::string BytesForWasmSettings(uint64_t bytes) {
+  return base::StrCat({base::NumberToString(bytes), " bytes"});
+}
+
+// This renders only an already-captured immutable snapshot. It never queries
+// the host bridge, profile, filesystem, or a mutable singleton while a
+// URLDataSource request is in progress.
+std::string BuildWasmSettingsStorageEstimateHtml(
+    const WasmBrowserHostStorageEstimateSnapshot& snapshot) {
+  std::string details;
+  switch (snapshot.state()) {
+    case WasmBrowserHostStorageEstimateSnapshot::State::kPending:
+      details = R"HTML(
+        <dd id="wasm-settings-storage-estimate-state">Pending a read-only
+        outer-origin estimate from the host browser.</dd>)HTML";
+      break;
+    case WasmBrowserHostStorageEstimateSnapshot::State::kAvailable: {
+      details = base::StrCat(
+          {R"HTML(
+        <dd id="wasm-settings-storage-estimate-state">Available from the
+        host browser.</dd>
+        <dt>Aggregate usage</dt>
+        <dd id="wasm-settings-storage-estimate-usage">)HTML",
+           BytesForWasmSettings(snapshot.usage_bytes()),
+           R"HTML(</dd>
+        <dt>Aggregate quota</dt>
+        <dd id="wasm-settings-storage-estimate-quota">)HTML",
+           BytesForWasmSettings(snapshot.quota_bytes()),
+           R"HTML(</dd>)HTML"});
+      details = base::StrCat(
+          {std::move(details), R"HTML(
+        <dt>Estimated remaining capacity</dt>
+        <dd id="wasm-settings-storage-estimate-remaining">)HTML",
+           BytesForWasmSettings(snapshot.quota_bytes() -
+                                snapshot.usage_bytes()),
+           R"HTML(</dd>)HTML"});
+      break;
+    }
+    case WasmBrowserHostStorageEstimateSnapshot::State::kUnavailable:
+      details = R"HTML(
+        <dd id="wasm-settings-storage-estimate-state">Unavailable. The host
+        browser does not expose an outer-origin storage estimate.</dd>)HTML";
+      break;
+    case WasmBrowserHostStorageEstimateSnapshot::State::kError:
+      details = R"HTML(
+        <dd id="wasm-settings-storage-estimate-state">Error. The host
+        browser did not provide a valid outer-origin storage estimate.</dd>)HTML";
+      break;
+  }
+
+  return base::StrCat(
+      {R"HTML(
+    <section aria-labelledby="storage-estimate-title">
+      <h2 id="storage-estimate-title">Host-origin storage capacity</h2>
+      <p id="wasm-settings-storage-estimate-scope">This is an
+      <strong>outer-origin aggregate estimate</strong> from the host page's
+      <code>navigator.storage.estimate()</code>. It is <strong>not Chromium
+      Wasm profile quota</strong>, profile usage, an OPFS reservation, a
+      persistence grant, or an enforcement limit.</p>
+      <dl id="wasm-settings-storage-estimate">
+        <dt>Estimate status</dt>)HTML",
+       std::move(details), R"HTML(
+      </dl>
+      <p>This read-only diagnostic is captured during Chrome startup. It does
+      not request persistent storage, create files, or enable durable profile
+      data.</p>
+    </section>)HTML"});
 }
 
 // Keep this document self-contained. In particular, it has no script, host
 // bridge, desktop SettingsUI resources, or setting-changing control. That
 // lets the standard trusted chrome:// WebUI CSP remain in force.
-constexpr char kWasmSettingsBootstrapHtml[] = R"HTML(<!doctype html>
+constexpr char kWasmSettingsBootstrapHtmlPrefix[] = R"HTML(<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -89,6 +163,10 @@ constexpr char kWasmSettingsBootstrapHtml[] = R"HTML(<!doctype html>
       </dl>
     </section>
 
+    <!-- wasm-settings-host-storage-estimate -->
+)HTML";
+
+constexpr char kWasmSettingsBootstrapHtmlSuffix[] = R"HTML(
     <section aria-labelledby="future-title">
       <h2 id="future-title">Not yet implemented</h2>
       <ul>
@@ -105,12 +183,24 @@ constexpr char kWasmSettingsBootstrapHtml[] = R"HTML(<!doctype html>
 </body>
 </html>)HTML";
 
+std::string BuildWasmSettingsBootstrapHtml(
+    const WasmBrowserHostStorageEstimateSnapshot& snapshot) {
+  return base::StrCat({kWasmSettingsBootstrapHtmlPrefix,
+                       BuildWasmSettingsStorageEstimateHtml(snapshot),
+                       kWasmSettingsBootstrapHtmlSuffix});
+}
+
 // A native URLDataSource keeps the status page inside Chromium's WebUI load
 // path. It deliberately serves only the document root and returns no data for
 // unselected subpaths rather than pretending to implement Settings routes.
 class WasmSettingsDataSource final : public content::URLDataSource {
  public:
-  WasmSettingsDataSource() = default;
+  explicit WasmSettingsDataSource(
+      scoped_refptr<const WasmBrowserHostStorageEstimateSnapshot>
+          storage_estimate_snapshot)
+      : storage_estimate_snapshot_(std::move(storage_estimate_snapshot)) {
+    CHECK(storage_estimate_snapshot_);
+  }
   WasmSettingsDataSource(const WasmSettingsDataSource&) = delete;
   WasmSettingsDataSource& operator=(const WasmSettingsDataSource&) = delete;
   ~WasmSettingsDataSource() override = default;
@@ -129,7 +219,7 @@ class WasmSettingsDataSource final : public content::URLDataSource {
     }
 
     std::move(callback).Run(base::MakeRefCounted<base::RefCountedString>(
-        std::string(kWasmSettingsBootstrapHtml)));
+        BuildWasmSettingsBootstrapHtml(*storage_estimate_snapshot_)));
   }
 
   std::string GetMimeType(const GURL& /*url*/) override {
@@ -139,23 +229,41 @@ class WasmSettingsDataSource final : public content::URLDataSource {
   // The status deliberately describes volatile M6 state. Avoid carrying a
   // stale document across a later source-selection or lifecycle change.
   bool AllowCaching() override { return false; }
+
+ private:
+  // This snapshot is captured by the owning WebUI while it is created on the
+  // browser UI sequence. StartDataRequest serves this immutable object rather
+  // than reaching into live host state on a URLDataSource I/O path.
+  const scoped_refptr<const WasmBrowserHostStorageEstimateSnapshot>
+      storage_estimate_snapshot_;
 };
 
 }  // namespace
 
 WasmSettingsUI::WasmSettingsUI(content::WebUI* web_ui)
-    : content::WebUIController(web_ui) {
+    : content::WebUIController(web_ui),
+      storage_estimate_snapshot_(GetWasmBrowserHostStorageEstimateSnapshot()) {
   DCHECK(web_ui);
   DCHECK(web_ui->GetWebContents());
+  DCHECK(storage_estimate_snapshot_);
 
   // BrowserContext owns the source. No Profile, SettingsUI, preference, or
   // desktop browser-service dependency is needed for this read-only document.
+  // Capture the generation-stamped diagnostic now. A later Promise completion
+  // belongs to a later Settings navigation; it cannot mutate this document's
+  // URLDataSource payload while that payload is being served.
   content::URLDataSource::Add(
       web_ui->GetWebContents()->GetBrowserContext(),
-      std::make_unique<WasmSettingsDataSource>());
+      std::make_unique<WasmSettingsDataSource>(
+          storage_estimate_snapshot_));
 }
 
 WasmSettingsUI::~WasmSettingsUI() = default;
+
+scoped_refptr<const WasmBrowserHostStorageEstimateSnapshot>
+WasmSettingsUI::GetStorageEstimateSnapshotForTesting() const {
+  return storage_estimate_snapshot_;
+}
 
 WEB_UI_CONTROLLER_TYPE_IMPL(WasmSettingsUI)
 

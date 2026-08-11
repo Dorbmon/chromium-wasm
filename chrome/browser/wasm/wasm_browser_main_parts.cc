@@ -24,6 +24,7 @@
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
 #include "chrome/browser/wasm/wasm_browser_host_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer.h"
+#include "chrome/browser/wasm/wasm_browser_host_storage_estimate.h"
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_lifecycle.h"
 #include "chrome/browser/wasm/wasm_browser_manager.h"
@@ -87,6 +88,8 @@ constexpr char kWasmBrowserHostTextSmokeSwitch[] =
     "wasm-browser-host-text-smoke";
 constexpr char kWasmBrowserHostClipboardSmokeSwitch[] =
     "wasm-browser-host-clipboard-smoke";
+constexpr char kWasmBrowserHostStorageEstimateSmokeSwitch[] =
+    "wasm-browser-host-storage-estimate-smoke";
 constexpr char kWasmBrowserHostPointerTabSmokeSwitch[] =
     "wasm-browser-host-pointer-tab-smoke";
 constexpr char kWasmBrowserHostPointerMenuSmokeSwitch[] =
@@ -301,6 +304,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
 
+  // This does not mount OPFS or make a persistence claim. It schedules one
+  // read-only outer-host navigator.storage.estimate() diagnostic whose
+  // immutable result can be shown by the native chrome://settings WebUI.
+  // Missing host support becomes an explicit unavailable snapshot instead of
+  // making the browser fail to start.
+  if (!chrome::InitializeWasmBrowserHostStorageEstimate()) {
+    LOG(ERROR) << "chrome_wasm could not initialize its host storage estimate";
+    chrome::ShutdownWasmBrowserHostPointer();
+    chrome::ShutdownWasmBrowserHostClipboard();
+    chrome::ShutdownWasmBrowserHostText();
+    chrome::ShutdownWasmBrowserHostInput();
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+
   // Exercise the factory while the profile is live. Browser::Create() will
   // retrieve this same manager when the real window lifecycle is selected.
   CHECK(BrowserManagerServiceFactory::GetForProfile(profile_.get()));
@@ -354,6 +371,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_clipboard_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostClipboardSmokeSwitch);
+  const bool browser_host_storage_estimate_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostStorageEstimateSmokeSwitch);
   const bool browser_host_pointer_tab_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerTabSmokeSwitch);
@@ -382,6 +402,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   }
   if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_clipboard_smoke ||
+      browser_host_storage_estimate_smoke ||
       browser_host_pointer_tab_smoke ||
       browser_host_pointer_menu_smoke || browser_host_security_warning_smoke ||
       browser_host_history_downloads_smoke ||
@@ -391,6 +412,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
                  static_cast<int>(browser_host_clipboard_smoke) +
+                 static_cast<int>(browser_host_storage_estimate_smoke) +
                  static_cast<int>(browser_host_pointer_tab_smoke) +
                  static_cast<int>(browser_host_pointer_menu_smoke) +
                  static_cast<int>(browser_host_security_warning_smoke) +
@@ -524,6 +546,7 @@ void WasmBrowserMainParts::PostMainMessageLoopRun() {
   // Shut down the lifecycle request ABI first: it owns a callback into these
   // main-parts and must become inert before the profile/Ozone teardown path.
   chrome::ShutdownWasmBrowserHostLifecycle();
+  chrome::ShutdownWasmBrowserHostStorageEstimate();
   // Invalidate the host ABI and release its SystemInputInjector while its
   // Ozone owner is still live. Queued records carry a generation token and
   // safely drop after this point.
@@ -640,6 +663,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostClipboardSmokeSwitch)) {
     browser_lifecycle_->StartHostTextSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostStorageEstimateSmokeSwitch)) {
+    browser_lifecycle_->StartHostStorageEstimateSmoke();
     return;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(

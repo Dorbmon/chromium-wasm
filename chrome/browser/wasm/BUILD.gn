@@ -576,6 +576,7 @@ source_set("wasm_settings_ui") {
   public_deps = [ "//content/public/browser" ]
 
   deps = [
+    ":wasm_browser_host_storage_estimate",
     "//base",
     "//content/public/common",
     "//url",
@@ -1175,6 +1176,42 @@ source_set("wasm_browser_host_clipboard") {
   ]
 }
 
+# This is a read-only diagnostic for the outer host page's aggregate storage
+# estimate. It is deliberately not an OPFS/profile backend, a quota enforcer,
+# or a persistent-storage request. The native Settings source captures an
+# immutable result while this bridge rejects late Promise completions.
+source_set("wasm_browser_host_storage_estimate") {
+  public = [ "wasm_browser_host_storage_estimate.h" ]
+
+  sources = [ "wasm_browser_host_storage_estimate.cc" ]
+
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_main_parts",
+    ":wasm_settings_ui",
+  ]
+
+  deps = [
+    "//base",
+    "//content/public/browser",
+  ]
+}
+
+# The host-origin capacity smoke owns only fixed check/presentation ordinals.
+# The test URL, WebUI identity, immutable snapshot comparison, and teardown
+# remain in WasmBrowserLifecycle; this target does not offer a Browser action.
+source_set("wasm_browser_host_storage_estimate_smoke") {
+  public = [ "wasm_browser_host_storage_estimate_smoke.h" ]
+
+  sources = [ "wasm_browser_host_storage_estimate_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
 # The trusted-DOM text smoke can ask only for three ordered observations of
 # lifecycle-owned state. It deliberately exports neither text nor navigation
 # input, and production code does not use it.
@@ -1370,6 +1407,8 @@ source_set("wasm_browser_lifecycle") {
     ":wasm_browser_host_pointer_menu_smoke",
     ":wasm_browser_host_pointer_tab_smoke",
     ":wasm_browser_host_security_warning_smoke",
+    ":wasm_browser_host_storage_estimate",
+    ":wasm_browser_host_storage_estimate_smoke",
     ":wasm_browser_host_text",
     ":wasm_browser_host_text_smoke",
     ":wasm_browser_manager",
@@ -1706,6 +1745,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_host_input",
     ":wasm_browser_host_lifecycle",
     ":wasm_browser_host_pointer",
+    ":wasm_browser_host_storage_estimate",
     ":wasm_browser_host_text",
     ":wasm_browser_lifecycle",
     ":wasm_browser_manager",

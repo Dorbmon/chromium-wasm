@@ -4,6 +4,7 @@
 
 import {ChromiumWasmTrustedPointerInput} from "./chrome_wasm_pointer_input.js";
 import {ChromiumWasmTrustedClipboardInput} from "./chrome_wasm_clipboard_input.js";
+import {ChromiumWasmOuterOriginStorageEstimate} from "./chrome_wasm_storage_estimate.js";
 import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";
 
 // This is the ordinary, no-command-line-switch Chrome Wasm host lane.  It
@@ -254,6 +255,7 @@ class ChromiumWasmNormalBrowserHost {
   #ozoneTextInputDeliveries = [];
   #ozoneBrowserTextInputDeliveries = [];
   #ozoneBrowserClipboardPasteDeliveries = [];
+  #outerOriginStorageEstimateReports = [];
   #normalBrowserReadyMarkerObserved = false;
   #normalBrowserPassMarkerObserved = false;
   #shutdownResults = [];
@@ -261,6 +263,7 @@ class ChromiumWasmNormalBrowserHost {
   #pointerInput = null;
   #textInput = null;
   #clipboardInput = null;
+  #storageEstimate = null;
   #errorHandler;
   #rejectionHandler;
 
@@ -369,6 +372,10 @@ class ChromiumWasmNormalBrowserHost {
       return;
     }
     this.#runtimeExitCode = code;
+    // A delayed navigator.storage.estimate() completion has no authority
+    // after Emscripten's runtime exits. Make it inert before the clean-exit
+    // observer's deliberate post-exit delay.
+    this.#storageEstimate?.dispose();
   }
 
   #reportProcessExit(value) {
@@ -562,6 +569,26 @@ class ChromiumWasmNormalBrowserHost {
     }
   }
 
+  #reportOuterOriginStorageEstimate(value) {
+    try {
+      const report = asReport(value, "outer-origin storage-estimate report");
+      if (!Number.isSafeInteger(report.generation) || report.generation < 1 ||
+          report.generation > 0x7fffffff ||
+          !["available", "unavailable", "error"].includes(report.status) ||
+          typeof report.delivered !== "boolean") {
+        throw new Error("outer-origin storage-estimate metadata is invalid");
+      }
+      appendBounded(this.#outerOriginStorageEstimateReports, {
+        generation: report.generation,
+        status: report.status,
+        delivered: report.delivered,
+      });
+    } catch (error) {
+      this.#recordFatal(
+          `invalid outer-origin storage-estimate report: ${String(error)}`);
+    }
+  }
+
   #installBridge() {
     if (globalThis.__chromiumWasmHostBridgeV1 !== undefined) {
       throw new Error("normal-browser host bridge is already installed");
@@ -599,6 +626,9 @@ class ChromiumWasmNormalBrowserHost {
       reportOzoneBrowserClipboardPasteDelivery(report) {
         host.#reportOzoneBrowserClipboardPasteDelivery(report);
       },
+      requestOuterOriginStorageEstimate(report) {
+        return host.#storageEstimate?.request(report) === true;
+      },
     });
   }
 
@@ -632,6 +662,11 @@ class ChromiumWasmNormalBrowserHost {
           reportFatal: (message) => this.#recordFatal(message),
         });
     this.#clipboardInput.attach();
+    this.#storageEstimate = new ChromiumWasmOuterOriginStorageEstimate({
+      getModule: () => this.#module,
+      recordFatal: (message) => this.#recordFatal(message),
+      onResult: (report) => this.#reportOuterOriginStorageEstimate(report),
+    });
     const latest_text_state = this.#ozoneTextInputStates.at(-1);
     if (latest_text_state) {
       this.#textInput.handleOzoneTextInputState(latest_text_state);
@@ -777,6 +812,7 @@ class ChromiumWasmNormalBrowserHost {
       ozoneBrowserTextInputDeliveries: this.#ozoneBrowserTextInputDeliveries,
       ozoneBrowserClipboardPasteDeliveries:
           this.#ozoneBrowserClipboardPasteDeliveries,
+      outerOriginStorageEstimateReports: this.#outerOriginStorageEstimateReports,
       trustedTextInput: this.#textInput?.snapshot() || null,
       trustedClipboardInput: this.#clipboardInput?.snapshot() || null,
       canvasBackingStore: {
@@ -889,6 +925,8 @@ class ChromiumWasmNormalBrowserHost {
       this.#textInput = null;
       this.#clipboardInput?.detach();
       this.#clipboardInput = null;
+      this.#storageEstimate?.dispose();
+      this.#storageEstimate = null;
       this.#stopHeartbeat();
       this.#releaseWindowErrors();
     }

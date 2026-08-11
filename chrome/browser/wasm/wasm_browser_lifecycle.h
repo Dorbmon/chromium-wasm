@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_WASM_WASM_BROWSER_LIFECYCLE_H_
 #define CHROME_BROWSER_WASM_WASM_BROWSER_LIFECYCLE_H_
 
+#include <stdint.h>
+
 #include <memory>
 
 #include "base/callback_list.h"
@@ -27,6 +29,7 @@ namespace chrome {
 class WasmBrowserHostTextNavigationObserver;
 class WasmBrowserHostPointerMenuNavigationObserver;
 class WasmBrowserHostHistoryDownloadsNavigationObserver;
+class WasmBrowserHostStorageEstimateNavigationObserver;
 class WasmBrowserContinuousFlow;
 
 // Owns the process-lifetime side of one bounded slim Browser. The
@@ -99,6 +102,12 @@ class WasmBrowserLifecycle final {
   // owned by the existing Chrome/Ozone paths.
   void StartHostContinuousFlowSmoke();
 
+  // Arms the switch-gated outer-origin storage estimate proof. JavaScript can
+  // only acknowledge an already accepted estimate and a later canvas frame;
+  // native lifecycle code owns the fixed Settings navigation and validates the
+  // immutable snapshot retained by its real WebUI controller.
+  void StartHostStorageEstimateSmoke();
+
   bool IsVisible() const;
   bool IsShutdownStarted() const { return shutdown_started_; }
   bool IsShutdownComplete() const { return shutdown_complete_; }
@@ -127,6 +136,9 @@ class WasmBrowserLifecycle final {
   void OnHostHistoryDownloadsDownloadsNavigationObserved();
   void MaybeCompleteHostHistoryDownloadsHistoryNavigation();
   void MaybeCompleteHostHistoryDownloadsDownloadsNavigation();
+  bool VerifyHostStorageEstimateSmokeCheck(int stage);
+  bool OnHostStorageEstimateSmokePresented(int stage);
+  void OnHostStorageEstimateSettingsNavigationObserved();
 
   const raw_ptr<WasmProfile> profile_;
   const raw_ptr<BrowserManagerService> browser_manager_;
@@ -197,6 +209,15 @@ class WasmBrowserLifecycle final {
   std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
       host_history_downloads_downloads_navigation_observer_;
   std::unique_ptr<WasmBrowserContinuousFlow> host_continuous_flow_;
+  bool host_storage_estimate_smoke_started_ = false;
+  bool host_storage_estimate_check_verified_ = false;
+  bool host_storage_estimate_navigation_verified_ = false;
+  uint32_t host_storage_estimate_generation_ = 0;
+  uint64_t host_storage_estimate_usage_bytes_ = 0;
+  uint64_t host_storage_estimate_quota_bytes_ = 0;
+  raw_ptr<content::WebContents> host_storage_estimate_contents_ = nullptr;
+  std::unique_ptr<WasmBrowserHostStorageEstimateNavigationObserver>
+      host_storage_estimate_navigation_observer_;
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;
