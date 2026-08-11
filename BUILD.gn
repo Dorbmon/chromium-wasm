@@ -39,6 +39,7 @@ if (enable_chromium_wasm_port) {
       deps = [
         "//chrome:chrome_wasm($default_toolchain)",
         "//tools/wasm:m7_wasmfs_opfs_exclusivity_smoke($default_toolchain)",
+        "//tools/wasm:m7_wasmfs_opfs_handle_lifecycle_smoke($default_toolchain)",
         "//tools/wasm:m7_wasmfs_opfs_smoke($default_toolchain)",
         "//tools/wasm:m7_wasmfs_opfs_shutdown_smoke($default_toolchain)",
       ]

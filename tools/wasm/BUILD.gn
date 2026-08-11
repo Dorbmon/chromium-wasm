@@ -169,6 +169,12 @@ if (enable_chromium_wasm_port) {
     ldflags = [ "-sWASMFS=1" ]
   }
 
+  # This target is deliberately limited to a bounded direct-close lifecycle
+  # experiment. It does not opt Chrome or the M7 profile target into WasmFS.
+  config("m7_wasmfs_opfs_handle_lifecycle_smoke_link") {
+    ldflags = [ "-sWASMFS=1" ]
+  }
+
   executable("m7_wasmfs_opfs_smoke") {
     testonly = true
     sources = [ "m7_wasmfs_opfs_smoke.cc" ]
@@ -202,6 +208,19 @@ if (enable_chromium_wasm_port) {
     testonly = true
     sources = [ "m7_wasmfs_opfs_exclusivity_smoke.cc" ]
     configs += [ ":m7_wasmfs_opfs_exclusivity_smoke_link" ]
+
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  # A separate same-document, two-module direct-close probe followed by a
+  # fresh-document verifier/reaper. It establishes no handle-limit,
+  # persistence, database-locking, or crash-recovery semantics.
+  executable("m7_wasmfs_opfs_handle_lifecycle_smoke") {
+    testonly = true
+    sources = [ "m7_wasmfs_opfs_handle_lifecycle_smoke.cc" ]
+    configs += [ ":m7_wasmfs_opfs_handle_lifecycle_smoke_link" ]
 
     no_default_deps = true
     use_libcxx_modules = false
