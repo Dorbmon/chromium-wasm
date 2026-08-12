@@ -20,6 +20,7 @@ const M4_COPY_PASTE_CASE = "ozone_copy_paste_m4";
 const M4_FOCUS_CASE = "ozone_focus_m4";
 const M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4";
 const M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4";
+const M8_DEDICATED_WORKER_CASE = "dedicated_worker_m8";
 const M5_NETWORK_CASE = "wisp_network_m5";
 const M5_CONTROLLED_PREFLIGHT_CASE = "wisp_controlled_preflight_m5";
 const M5_PUBLIC_HTTPS_CASE = "wisp_public_https_m5";
@@ -43,6 +44,8 @@ const M4_FOCUS_FIXTURE = "chromium-wasm-m4-ozone-focus-v1";
 const M4_FOCUS_RETENTION_FIXTURE =
   "chromium-wasm-m4-ozone-focus-retention-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
+const M8_DEDICATED_WORKER_FIXTURE =
+  "chromium-wasm-m8-dedicated-worker-v1";
 const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
 const M5_CONTROLLED_PREFLIGHT_FIXTURE =
   "chromium-wasm-m5-controlled-preflight-v1";
@@ -6143,6 +6146,171 @@ async function postResult(token, result) {
   if (!response.ok) {
     throw new Error(`result endpoint returned HTTP ${response.status}`);
   }
+}
+
+function hasM8DedicatedWorkerProbe(probe) {
+  return probe?.protocol === HOST_PROTOCOL &&
+    probe?.fixture === M8_DEDICATED_WORKER_FIXTURE &&
+    probe?.workerSource === "blob-data-url" &&
+    probe?.ready === true &&
+    probe?.workerCreated === true &&
+    probe?.mainTransferDetached === true &&
+    probe?.receivedSequence === 37 &&
+    probe?.receivedPayload === "worker-message:reply" &&
+    probe?.receivedByteLength === 4 &&
+    Array.isArray(probe?.receivedBytes) &&
+    probe.receivedBytes.length === 4 &&
+    probe.receivedBytes[0] === 5 && probe.receivedBytes[1] === 8 &&
+    probe.receivedBytes[2] === 15 && probe.receivedBytes[3] === 16 &&
+    Number.isInteger(probe?.workerTimerTicks) &&
+    probe.workerTimerTicks >= 2 &&
+    Number.isInteger(probe?.workerHeartbeatCount) &&
+    probe.workerHeartbeatCount >= 2 &&
+    Number.isInteger(probe?.workerHeartbeatsBeforeBusy) &&
+    probe.workerHeartbeatsBeforeBusy >= 2 &&
+    probe?.workerBusyStarted === true &&
+    Number.isFinite(probe?.workerBusyDurationMs) &&
+    probe.workerBusyDurationMs >= 65 &&
+    Number.isInteger(probe?.workerBusyIterations) &&
+    probe.workerBusyIterations >= 1 &&
+    Number.isInteger(probe?.mainTimerTicksDuringBusy) &&
+    probe.mainTimerTicksDuringBusy >= 1 &&
+    Number.isInteger(probe?.mainTimerTicks) && probe.mainTimerTicks >= 1 &&
+    probe?.terminationRequested === true &&
+    Number.isInteger(probe?.heartbeatsAtTermination) &&
+    probe.heartbeatsAtTermination >= 2 &&
+    probe?.postTerminationHeartbeatCount === 0 &&
+    probe?.workerTerminated === true && probe?.failure === null;
+}
+
+export async function runM8DedicatedWorkerSmokeFromQuery() {
+  const parameters = new URLSearchParams(location.search);
+  const versions = {
+    chromium: normalizeVersion(parameters.get("chromium")),
+    v8: normalizeVersion(parameters.get("v8")),
+    emscripten: normalizeVersion(parameters.get("emscripten")),
+    port: normalizeVersion(parameters.get("port")),
+  };
+  renderVersions(versions);
+  const statusElement = document.querySelector("#smoke-status");
+  const root = document.querySelector("#smoke-root");
+  const canvas = document.querySelector("#browser-canvas");
+  const token = parameters.get("token") || "";
+  const timeoutMs = Math.max(
+    1000, Math.min(180000, Number(parameters.get("timeout_ms")) || 90000));
+  let host = null;
+  let readiness = null;
+  let shutdown = null;
+  let result;
+
+  try {
+    if (parameters.get("case") !== M8_DEDICATED_WORKER_CASE) {
+      throw new Error("M8 dedicated-worker case query mismatch");
+    }
+    if (!token) {
+      throw new Error("missing M8 dedicated-worker result token");
+    }
+    host = new ChromiumWasmM3Host(
+        canvas, versions, {fixture: M8_DEDICATED_WORKER_FIXTURE});
+    window.chromiumWasmHost = host;
+    const deadline = performance.now() + timeoutMs;
+    await host.initialize({
+      modulePath: parameters.get("module"),
+      readyTimeoutMs: Math.min(60000, Math.max(1000, timeoutMs - 1000)),
+    });
+    await host.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT, 1);
+    const fixtureURL = await buildFixtureDataURL(
+        parameters.get("fixture"), parameters.get("font"));
+    await host.loadURL(fixtureURL);
+
+    while (performance.now() < deadline) {
+      readiness = await host.readiness();
+      if (readiness.navigationCommitted &&
+          hasM8DedicatedWorkerProbe(readiness.pageProbe)) {
+        break;
+      }
+      await delay(25);
+    }
+    if (!readiness?.navigationCommitted ||
+        !hasM8DedicatedWorkerProbe(readiness.pageProbe)) {
+      throw new Error(
+          "M8 dedicated worker did not complete: " +
+          JSON.stringify(readiness?.pageProbe ?? null));
+    }
+
+    const shutdownTimeoutMs = Math.max(
+        1000, Math.min(60000, deadline - performance.now()));
+    shutdown = await host.shutdown(shutdownTimeoutMs);
+    const logs = await host.logs();
+    const checks = {
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      navigation: readiness.navigationCommitted === true,
+      dedicatedWorker: hasM8DedicatedWorkerProbe(readiness.pageProbe),
+      shutdown: shutdown.ok === true && shutdown.complete === true &&
+        shutdown.exitCode === 0 && shutdown.runtimeExitCode === 0,
+      versions: Object.values(versions).every((value) => value !== "missing"),
+    };
+    const failedChecks = Object.entries(checks)
+      .filter(([, passed]) => !passed)
+      .map(([name]) => name);
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M8_DEDICATED_WORKER_CASE,
+      status: failedChecks.length === 0 ? "pass" : "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      logs,
+      shutdown,
+      failedChecks,
+      error: failedChecks.length === 0
+        ? null : `failed checks: ${failedChecks.join(", ")}`,
+    };
+  } catch (error) {
+    result = {
+      protocol: HOST_PROTOCOL,
+      case: M8_DEDICATED_WORKER_CASE,
+      status: "fail",
+      crossOriginIsolated,
+      sharedArrayBuffer: typeof SharedArrayBuffer === "function",
+      canvasFocused: document.activeElement === canvas,
+      versions,
+      readiness,
+      logs: null,
+      shutdown,
+      failedChecks: ["exception"],
+      error: String(error),
+    };
+    if (host) {
+      try {
+        result.logs = await host.logs();
+      } catch (diagnosticError) {
+        result.error += `; diagnostics: ${String(diagnosticError)}`;
+      }
+      try {
+        result.readiness = await host.readiness();
+      } catch (diagnosticError) {
+        result.error += `; readiness diagnostics: ${String(diagnosticError)}`;
+      }
+      try {
+        if (shutdown === null) {
+          shutdown = await host.shutdown(1000);
+          result.shutdown = shutdown;
+        }
+      } catch (shutdownError) {
+        result.error += `; shutdown diagnostics: ${String(shutdownError)}`;
+      }
+    }
+  }
+
+  root.dataset.state = result.status;
+  statusElement.textContent = JSON.stringify(result, null, 2);
+  await postResult(token, result);
+  return result;
 }
 
 export async function runM3SmokeFromQuery() {
@@ -14201,6 +14369,9 @@ export async function runContentShellSmokeFromQuery() {
   }
   if (selectedCase === M4_IME_BRIDGE_CASE) {
     return runM4OzoneImeBridgeSmokeFromQuery();
+  }
+  if (selectedCase === M8_DEDICATED_WORKER_CASE) {
+    return runM8DedicatedWorkerSmokeFromQuery();
   }
   if (selectedCase === M4_FOCUS_CASE) {
     return runM4OzoneFocusSmokeFromQuery();

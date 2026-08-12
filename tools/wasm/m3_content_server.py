@@ -41,6 +41,7 @@ M4_BACKSPACE_CASE = "ozone_backspace_m4"
 M4_FOCUS_CASE = "ozone_focus_m4"
 M4_FOCUS_RETENTION_CASE = "ozone_focus_retention_m4"
 M4_IME_BRIDGE_CASE = "ozone_ime_bridge_m4"
+M8_DEDICATED_WORKER_CASE = "dedicated_worker_m8"
 M5_WISP_CASE = "wisp_network_m5"
 M5_CONTROLLED_PREFLIGHT_CASE = "wisp_controlled_preflight_m5"
 M5_PUBLIC_HTTPS_CASE = "wisp_public_https_m5"
@@ -61,6 +62,7 @@ M3_RESULT_CASES = (
     M4_PRINTABLE_KEY_CASE,
     M4_BACKSPACE_CASE,
     M4_IME_BRIDGE_CASE,
+    M8_DEDICATED_WORKER_CASE,
     M4_FOCUS_CASE,
     M4_FOCUS_RETENTION_CASE,
     M5_WISP_CASE,
@@ -113,6 +115,9 @@ M4_FOCUS_RETENTION_FIXTURE = (
     M3_TESTDATA_DIR / "m4_ozone_focus_retention_page.html"
 )
 M4_IME_BRIDGE_FIXTURE = M3_TESTDATA_DIR / "m4_ozone_ime_bridge_page.html"
+M8_DEDICATED_WORKER_FIXTURE = (
+    M3_TESTDATA_DIR / "m8_dedicated_worker_page.html"
+)
 
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
@@ -358,6 +363,9 @@ class M3RequestHandler(BaseHTTPRequestHandler):
                 M4_FOCUS_RETENTION_FIXTURE
             ),
             "/__m3__/m4-ime-bridge-fixture.html": M4_IME_BRIDGE_FIXTURE,
+            "/__m3__/m8-dedicated-worker-fixture.html": (
+                M8_DEDICATED_WORKER_FIXTURE
+            ),
             "/__m3__/Ahem.woff2": M3_AHEM_FONT,
             "/__m3__/screenshot-contract.json": M3_SCREENSHOT_CONTRACT,
         }
@@ -532,6 +540,36 @@ def m4_smoke_url(
             "chromium": versions["chromium"],
             "emscripten": versions["emscripten"],
             "fixture": "/__m3__/m4-fixture.html",
+            "font": "/__m3__/Ahem.woff2",
+            "module": f"/__m3__/artifacts/{module_name}.js",
+            "port": versions["port"],
+            "token": token,
+            "timeout_ms": max(
+                1000, min(180000, int(timeout_seconds * 1000))
+            ),
+            "v8": versions["v8"],
+        }
+    )
+    return f"http://{host}:{port}/__m3__/?{query}"
+
+
+def m8_dedicated_worker_smoke_url(
+    server: M3HTTPServer,
+    token: str,
+    versions: dict[str, str],
+    *,
+    module_name: str = "content_shell_wasm",
+    timeout_seconds: float = 90.0,
+) -> str:
+    """Build the bounded M8 dedicated-worker smoke URL."""
+
+    host, port = server.server_address[:2]
+    query = urlencode(
+        {
+            "case": M8_DEDICATED_WORKER_CASE,
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "fixture": "/__m3__/m8-dedicated-worker-fixture.html",
             "font": "/__m3__/Ahem.woff2",
             "module": f"/__m3__/artifacts/{module_name}.js",
             "port": versions["port"],

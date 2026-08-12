@@ -1,0 +1,254 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M8 dedicated worker</title>
+<style>
+  @font-face {
+    font-family: "M8Ahem";
+    src: url("data:font/woff2;base64,__M3_AHEM_WOFF2_BASE64__")
+      format("woff2");
+    font-display: block;
+  }
+
+  html,
+  body {
+    margin: 0;
+    width: 800px;
+    height: 600px;
+    background: #f3f7fb;
+    color: #102a43;
+    font-family: "M8Ahem", monospace;
+  }
+
+  main {
+    margin: 32px;
+    padding: 24px;
+    border: 4px solid #102a43;
+    background: #ffffff;
+  }
+</style>
+<main>
+  <h1>Dedicated worker</h1>
+  <p id="status">Starting worker…</p>
+</main>
+<script>
+(() => {
+  "use strict";
+
+  const protocol = 1;
+  const fixture = "chromium-wasm-m8-dedicated-worker-v1";
+  const expectedSequence = 37;
+  const expectedPayload = "worker-message";
+  const expectedBytes = [4, 8, 15, 16];
+  const workerHeartbeatIntervalMs = 5;
+  const workerBusyDurationMs = 75;
+  const workerTerminationQuietPeriodMs = 75;
+  // This is deliberately a Blob-backed worker baseline. Script fetch, CSP,
+  // CORS, and origin-policy coverage require a separate controlled URL case.
+  const status = document.querySelector("#status");
+  const state = {
+    protocol,
+    fixture,
+    workerSource: "blob-data-url",
+    ready: false,
+    workerCreated: false,
+    mainTimerTicks: 0,
+    mainTransferDetached: false,
+    receivedSequence: null,
+    receivedPayload: null,
+    receivedByteLength: null,
+    receivedBytes: null,
+    workerTimerTicks: null,
+    workerHeartbeatCount: 0,
+    workerHeartbeatsBeforeBusy: null,
+    workerBusyStarted: false,
+    workerBusyDurationMs: null,
+    workerBusyIterations: null,
+    mainTimerTicksDuringBusy: null,
+    terminationRequested: false,
+    heartbeatsAtTermination: null,
+    postTerminationHeartbeatCount: 0,
+    workerTerminated: false,
+    failure: null,
+  };
+
+  const mainTimer = setInterval(() => {
+    ++state.mainTimerTicks;
+  }, 5);
+
+  const workerSource = `
+    "use strict";
+    const heartbeatIntervalMs = ${workerHeartbeatIntervalMs};
+    const busyDurationMs = ${workerBusyDurationMs};
+    let heartbeatCount = 0;
+    setInterval(() => {
+      ++heartbeatCount;
+      self.postMessage({type: "heartbeat", heartbeatCount});
+    }, heartbeatIntervalMs);
+    self.onmessage = ({data}) => {
+      if (!data || data.type !== "start") return;
+      const bytes = new Uint8Array(data.buffer);
+      bytes[0] += 1;
+      self.postMessage({type: "busy-start", heartbeatCount});
+      const startedAt = performance.now();
+      let busyIterations = 0;
+      while (performance.now() - startedAt < busyDurationMs) {
+        ++busyIterations;
+      }
+      self.postMessage({
+        type: "reply",
+        protocol: data.protocol,
+        sequence: data.sequence,
+        payload: data.payload + ":reply",
+        heartbeatCount,
+        workerBusyDurationMs: performance.now() - startedAt,
+        busyIterations,
+        buffer: bytes.buffer,
+      }, [bytes.buffer]);
+    };
+  `;
+
+  let worker = null;
+  let workerUrl = null;
+  let startMessageSent = false;
+  let terminationTimer = null;
+
+  function fail(error) {
+    if (state.failure !== null) {
+      return;
+    }
+    state.failure = String(error);
+    status.textContent = "Dedicated worker failed";
+    clearInterval(mainTimer);
+    if (terminationTimer !== null) {
+      clearTimeout(terminationTimer);
+      terminationTimer = null;
+    }
+    if (worker) {
+      worker.terminate();
+    }
+    if (workerUrl) {
+      URL.revokeObjectURL(workerUrl);
+      workerUrl = null;
+    }
+  }
+
+  function beginTermination() {
+    if (state.terminationRequested) {
+      throw new Error("worker termination was already requested");
+    }
+    state.terminationRequested = true;
+    state.heartbeatsAtTermination = state.workerHeartbeatCount;
+    worker.terminate();
+    URL.revokeObjectURL(workerUrl);
+    workerUrl = null;
+    terminationTimer = setTimeout(() => {
+      if (state.postTerminationHeartbeatCount !== 0 ||
+          state.workerHeartbeatCount !== state.heartbeatsAtTermination) {
+        fail("worker emitted a heartbeat after termination");
+        return;
+      }
+      state.workerTerminated = true;
+      state.ready = true;
+      status.textContent = "Dedicated worker complete";
+      clearInterval(mainTimer);
+      terminationTimer = null;
+    }, workerTerminationQuietPeriodMs);
+  }
+
+  try {
+    workerUrl = URL.createObjectURL(
+        new Blob([workerSource], {type: "text/javascript"}));
+    worker = new Worker(workerUrl);
+    state.workerCreated = true;
+    worker.onerror = (event) => {
+      fail(event.message || "worker error");
+    };
+    worker.onmessageerror = () => {
+      fail("worker message error");
+    };
+    worker.onmessage = ({data}) => {
+      try {
+        if (!data || typeof data.type !== "string") {
+          throw new Error("worker message has no type");
+        }
+        if (data.type === "heartbeat") {
+          if (!Number.isInteger(data.heartbeatCount) ||
+              data.heartbeatCount <= state.workerHeartbeatCount) {
+            throw new Error("worker heartbeat sequence mismatch");
+          }
+          if (state.terminationRequested) {
+            ++state.postTerminationHeartbeatCount;
+            return;
+          }
+          state.workerHeartbeatCount = data.heartbeatCount;
+          if (state.workerHeartbeatCount >= 2 && !startMessageSent) {
+            startMessageSent = true;
+            const transferred = new Uint8Array(expectedBytes).buffer;
+            worker.postMessage({
+              type: "start",
+              protocol,
+              sequence: expectedSequence,
+              payload: expectedPayload,
+              buffer: transferred,
+            }, [transferred]);
+            state.mainTransferDetached = transferred.byteLength === 0;
+            if (!state.mainTransferDetached) {
+              throw new Error(
+                  "main-to-worker transfer did not detach the source buffer");
+            }
+          }
+          return;
+        }
+        if (data.type === "busy-start") {
+          if (!startMessageSent || state.workerBusyStarted ||
+              !Number.isInteger(data.heartbeatCount) ||
+              data.heartbeatCount < 2) {
+            throw new Error("worker busy-start protocol mismatch");
+          }
+          state.workerBusyStarted = true;
+          state.workerHeartbeatsBeforeBusy = data.heartbeatCount;
+          state.mainTimerTicksDuringBusy = -state.mainTimerTicks;
+          return;
+        }
+        if (data.type !== "reply" || !state.workerBusyStarted ||
+            data.protocol !== protocol || data.sequence !== expectedSequence ||
+            data.payload !== expectedPayload + ":reply" ||
+            !Number.isInteger(data.heartbeatCount) || data.heartbeatCount < 2 ||
+            !Number.isFinite(data.workerBusyDurationMs) ||
+            data.workerBusyDurationMs < workerBusyDurationMs - 10 ||
+            !Number.isInteger(data.busyIterations) || data.busyIterations < 1 ||
+            !(data.buffer instanceof ArrayBuffer)) {
+          throw new Error("worker reply protocol mismatch");
+        }
+        const returned = new Uint8Array(data.buffer);
+        if (returned.byteLength !== expectedBytes.length ||
+            returned[0] !== expectedBytes[0] + 1 ||
+            returned[1] !== expectedBytes[1] ||
+            returned[2] !== expectedBytes[2] ||
+            returned[3] !== expectedBytes[3]) {
+          throw new Error("worker transfer payload mismatch");
+        }
+        state.receivedSequence = data.sequence;
+        state.receivedPayload = data.payload;
+        state.receivedByteLength = returned.byteLength;
+        state.receivedBytes = Array.from(returned);
+        state.workerTimerTicks = data.heartbeatCount;
+        state.workerBusyDurationMs = data.workerBusyDurationMs;
+        state.workerBusyIterations = data.busyIterations;
+        state.mainTimerTicksDuringBusy += state.mainTimerTicks;
+        if (state.mainTimerTicksDuringBusy < 1) {
+          throw new Error("main page timer did not run during worker CPU work");
+        }
+        beginTermination();
+      } catch (error) {
+        fail(error);
+      }
+    };
+  } catch (error) {
+    fail(error);
+  }
+
+  window.__chromiumWasmM3Probe = () => JSON.stringify(state);
+})();
+</script>
