@@ -12,6 +12,7 @@ import socket
 import tempfile
 import unittest
 from copy import deepcopy
+from unittest import mock
 
 from tools.wasm import package
 from tools.wasm.m0_common import REPO_ROOT, load_manifest
@@ -19,6 +20,7 @@ from tools.wasm.run_m9_package_smoke import package_response, run_package_smoke
 
 
 PORT_REVISION = "a" * 40
+ATTESTED_CHECKOUT = {"commit": PORT_REVISION, "tree": "b" * 40}
 
 
 class M9PackageTest(unittest.TestCase):
@@ -26,8 +28,11 @@ class M9PackageTest(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
         self.manifest = load_manifest()
+        self.clean_output_directories: list[tempfile.TemporaryDirectory[str]] = []
 
     def tearDown(self) -> None:
+        for directory in self.clean_output_directories:
+            directory.cleanup()
         self.temporary_directory.cleanup()
 
     def _make_out_dir(self, name: str = "out") -> Path:
@@ -57,6 +62,48 @@ class M9PackageTest(unittest.TestCase):
             port_revision=PORT_REVISION,
         )
         return dist_dir
+
+    def _make_attested_out_dir(self) -> tuple[Path, dict[str, object]]:
+        directory = tempfile.TemporaryDirectory(
+            prefix="m9-package-attested-", dir=REPO_ROOT / "out"
+        )
+        self.clean_output_directories.append(directory)
+        out_dir = Path(directory.name)
+        (out_dir / "chrome_wasm.js").write_text(
+            'const wasm = "chrome_wasm.wasm";\n'
+            "export default async function() { return {wasm}; }\n",
+            encoding="utf-8",
+        )
+        (out_dir / "chrome_wasm.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+        attestation = package.clean_build_attestation
+        (out_dir / "args.gn").write_bytes(
+            attestation.expected_m6_chrome_gn_args(self.manifest)
+        )
+        current_manifest, manifest_identity = attestation.load_manifest_snapshot()
+        self.assertEqual(self.manifest, current_manifest)
+        record = attestation.make_attestation(
+            checkout=ATTESTED_CHECKOUT,
+            manifest=manifest_identity,
+            gn_args=attestation.require_exact_generated_gn_args(
+                out_dir,
+                attestation.expected_m6_chrome_gn_args(current_manifest),
+            ),
+            artifacts=attestation.module_artifact_records(out_dir),
+            out_dir=out_dir,
+        )
+        (out_dir / attestation.ATTESTATION_FILENAME).write_bytes(
+            attestation._canonical_json_bytes(record)
+        )
+        return out_dir, record
+
+    def _clean_attestation_patches(self) -> tuple[mock._patch, mock._patch]:
+        attestation = package.clean_build_attestation
+        return (
+            mock.patch.object(attestation, "require_clean_top_level_checkout"),
+            mock.patch.object(
+                attestation, "checkout_identity", return_value=ATTESTED_CHECKOUT
+            ),
+        )
 
     def _snapshot(self, root: Path) -> dict[str, bytes]:
         return {
@@ -125,6 +172,189 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual(self._snapshot(first), self._snapshot(second))
         self.assertEqual(0, (first / "chromium-wasm.js").stat().st_mtime)
         self.assertEqual(0, (second / "VERSION.json").stat().st_mtime)
+
+    def test_default_stage_ignores_an_optional_clean_build_record(self) -> None:
+        out_dir, _ = self._make_attested_out_dir()
+        attestation = package.clean_build_attestation
+        with mock.patch.object(
+            attestation,
+            "require_clean_top_level_checkout",
+            side_effect=AssertionError("default package staging must not attest"),
+        ):
+            dist_dir = self._stage(out_dir=out_dir)
+
+        version = json.loads((dist_dir / "VERSION.json").read_text("utf-8"))
+        self.assertEqual(
+            package.ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED,
+            version["build"]["artifact_source_provenance"],
+        )
+        self.assertIn(
+            "not a verified source identity",
+            (dist_dir / "README.txt").read_text("utf-8"),
+        )
+
+    def test_stages_exact_matching_clean_build_attestation(self) -> None:
+        out_dir, record = self._make_attested_out_dir()
+        first_patch, second_patch = self._clean_attestation_patches()
+        with first_patch as clean, second_patch as checkout:
+            result = package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "attested-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision=ATTESTED_CHECKOUT["commit"],
+                clean_build_attestation_path=(
+                    out_dir / package.clean_build_attestation.ATTESTATION_FILENAME
+                ),
+            )
+
+        self.assertEqual(
+            package.ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED,
+            result["artifact_source_provenance"],
+        )
+        self.assertEqual(2, clean.call_count)
+        self.assertEqual(2, checkout.call_count)
+        self.assertEqual(
+            package.ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED,
+            package.verify_release_tree(self.root / "attested-dist")[
+                "artifact_source_provenance"
+            ],
+        )
+        version = json.loads(
+            (self.root / "attested-dist" / "VERSION.json").read_text("utf-8")
+        )
+        self.assertEqual(
+            package.ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED,
+            version["build"]["artifact_source_provenance"],
+        )
+        self.assertEqual(
+            ATTESTED_CHECKOUT["commit"], version["build"]["staging_checkout"]
+        )
+        self.assertEqual(record["artifacts"]["chrome_wasm.js"]["sha256"], next(
+            item["sha256"]
+            for item in version["artifacts"]
+            if item["path"] == "chromium-wasm.js"
+        ))
+        self.assertIn(
+            "local clean-build attestation",
+            (self.root / "attested-dist" / "README.txt").read_text("utf-8"),
+        )
+        self.assertIn(
+            "not release provenance",
+            " ".join(version["known_limitations"]),
+        )
+
+    def test_attested_stage_rejects_record_that_does_not_match_artifacts(self) -> None:
+        out_dir, record = self._make_attested_out_dir()
+        record["artifacts"]["chrome_wasm.wasm"]["sha256"] = "0" * 64
+        attestation_path = (
+            out_dir / package.clean_build_attestation.ATTESTATION_FILENAME
+        )
+        attestation_path.write_bytes(
+            package.clean_build_attestation._canonical_json_bytes(record)
+        )
+        first_patch, second_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, self.assertRaisesRegex(
+            package.PackageError, "does not exactly match"
+        ):
+            package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "mismatched-attested-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision=ATTESTED_CHECKOUT["commit"],
+                clean_build_attestation_path=attestation_path,
+            )
+
+    def test_attested_stage_rejects_stale_selected_artifact(self) -> None:
+        out_dir, _ = self._make_attested_out_dir()
+        (out_dir / "chrome_wasm.wasm").write_bytes(b"\x00asm-stale-module")
+        first_patch, second_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, self.assertRaisesRegex(
+            package.PackageError, "does not exactly match"
+        ):
+            package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "stale-attested-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision=ATTESTED_CHECKOUT["commit"],
+                clean_build_attestation_path=(
+                    out_dir / package.clean_build_attestation.ATTESTATION_FILENAME
+                ),
+            )
+
+    def test_attested_stage_rejects_gn_args_that_no_longer_match_m6(self) -> None:
+        out_dir, _ = self._make_attested_out_dir()
+        (out_dir / "args.gn").write_text('is_debug = true\n', encoding="utf-8")
+        first_patch, second_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, self.assertRaisesRegex(
+            package.PackageError, "cannot be validated"
+        ):
+            package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "wrong-args-attested-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision=ATTESTED_CHECKOUT["commit"],
+                clean_build_attestation_path=(
+                    out_dir / package.clean_build_attestation.ATTESTATION_FILENAME
+                ),
+            )
+
+    def test_attested_stage_rejects_record_outside_selected_output(self) -> None:
+        out_dir, _ = self._make_attested_out_dir()
+        copied_record = self.root / "copied-attestation.json"
+        copied_record.write_bytes(
+            (
+                out_dir / package.clean_build_attestation.ATTESTATION_FILENAME
+            ).read_bytes()
+        )
+        with self.assertRaisesRegex(package.PackageError, "selected build output"):
+            package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "wrong-attestation-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision=ATTESTED_CHECKOUT["commit"],
+                clean_build_attestation_path=copied_record,
+            )
+
+    def test_attested_stage_requires_current_clean_checkout(self) -> None:
+        out_dir, _ = self._make_attested_out_dir()
+        attestation = package.clean_build_attestation
+        with mock.patch.object(
+            attestation,
+            "require_clean_top_level_checkout",
+            side_effect=attestation.M0Error("source is dirty"),
+        ), self.assertRaisesRegex(package.PackageError, "cannot be validated"):
+            package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "dirty-attested-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision=ATTESTED_CHECKOUT["commit"],
+                clean_build_attestation_path=(
+                    out_dir / attestation.ATTESTATION_FILENAME
+                ),
+            )
+
+    def test_attested_stage_requires_the_current_attested_commit(self) -> None:
+        out_dir, _ = self._make_attested_out_dir()
+        first_patch, second_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, self.assertRaisesRegex(
+            package.PackageError, "staging checkout does not match"
+        ):
+            package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "wrong-commit-attested-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision="c" * 40,
+                clean_build_attestation_path=(
+                    out_dir / package.clean_build_attestation.ATTESTATION_FILENAME
+                ),
+            )
 
     def test_rejects_nonempty_or_overlapping_destination(self) -> None:
         out_dir = self._make_out_dir()
@@ -209,11 +439,21 @@ class M9PackageTest(unittest.TestCase):
         with self.assertRaisesRegex(package.PackageError, "hash mismatch"):
             package.verify_release_tree(dist_dir)
 
-    def test_verification_requires_unverified_artifact_source_provenance(self) -> None:
+    def test_verification_rejects_unknown_artifact_source_provenance(self) -> None:
         dist_dir = self._stage()
         version_path = dist_dir / "VERSION.json"
         version = json.loads(version_path.read_text("utf-8"))
         version["build"]["artifact_source_provenance"] = "verified"
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(package.PackageError, "source provenance"):
+            package.verify_release_tree(dist_dir)
+
+    def test_verification_rejects_nonstring_artifact_source_provenance(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        version["build"]["artifact_source_provenance"] = []
         version_path.write_bytes(package._canonical_json(version))
 
         with self.assertRaisesRegex(package.PackageError, "source provenance"):
@@ -286,8 +526,10 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn("not passed the M7/M8/M9", index)
         self.assertIn("staging checkout", host)
         self.assertIn("artifact source provenance", host)
-        self.assertIn('artifact_source_provenance !== "unverified"', host)
-        self.assertIn("not verified as the source identity", index)
+        self.assertIn("ALLOWED_ARTIFACT_SOURCE_PROVENANCE", host)
+        self.assertIn('"unverified"', host)
+        self.assertIn('"local_clean_build_attested"', host)
+        self.assertIn("local clean-build attestation", index)
 
     def test_browser_smoke_requires_the_blob_backed_renamed_loader_path(self) -> None:
         smoke = (REPO_ROOT / "tools/wasm/run_m9_package_browser_smoke.py").read_text(
@@ -307,6 +549,7 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn("pending: true", smoke)
         self.assertIn("displayedVersions", smoke)
         self.assertIn("artifact source provenance", smoke)
+        self.assertIn('"local_clean_build_attested" in displayed_versions', smoke)
         self.assertIn("mainScriptUrlOrBlob", host)
         self.assertIn("inputModuleName", host)
         self.assertIn('"./chromium-wasm.wasm"', host)

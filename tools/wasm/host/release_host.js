@@ -18,6 +18,10 @@ const MAX_LOG_LINES = 32;
 const MAX_LOG_LINE_CHARS = 512;
 const MAX_STATUS_BYTES = 64 * 1024;
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
+const ALLOWED_ARTIFACT_SOURCE_PROVENANCE = new Set([
+  "unverified",
+  "local_clean_build_attested",
+]);
 
 function appendBounded(records, record) {
   records.push(record);
@@ -216,9 +220,10 @@ class ChromiumWasmPreReleaseHost {
         !build || typeof build !== "object") {
       throw new Error("VERSION.json does not contain revisions");
     }
-    if (build.artifact_source_provenance !== "unverified") {
+    if (!ALLOWED_ARTIFACT_SOURCE_PROVENANCE.has(
+        build.artifact_source_provenance)) {
       throw new Error(
-          "VERSION.json does not declare unverified artifact provenance");
+          "VERSION.json has unsupported artifact source provenance");
     }
     this.#versionsElement.replaceChildren();
     const displayedValues = [

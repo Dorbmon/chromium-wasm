@@ -129,7 +129,10 @@ def _is_ready(status: dict[str, Any]) -> bool:
         and isinstance(displayed_versions, str)
         and "staging checkout" in displayed_versions
         and "artifact source provenance" in displayed_versions
-        and "unverified" in displayed_versions
+        and (
+            "unverified" in displayed_versions
+            or "local_clean_build_attested" in displayed_versions
+        )
     )
 
 

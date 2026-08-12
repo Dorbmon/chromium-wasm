@@ -26,6 +26,7 @@ import tempfile
 from typing import Any, Iterable
 
 if __package__:
+    from . import run_m9_clean_build_attestation as clean_build_attestation
     from .m0_common import (
         M0Error,
         REPO_ROOT,
@@ -34,6 +35,8 @@ if __package__:
         print_context,
     )
 else:
+    import run_m9_clean_build_attestation as clean_build_attestation
+
     from m0_common import (
         M0Error,
         REPO_ROOT,
@@ -51,6 +54,18 @@ PRODUCT_NAME = "chromium-wasm"
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
+MAX_CLEAN_BUILD_ATTESTATION_BYTES = 1024 * 1024
+
+ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED = "unverified"
+ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED = (
+    "local_clean_build_attested"
+)
+ALLOWED_ARTIFACT_SOURCE_PROVENANCE = frozenset(
+    (
+        ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED,
+        ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED,
+    )
+)
 
 REQUIRED_HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -143,6 +158,21 @@ checkout's top-level Chromium license only. A distributable release must add a
 reviewed, complete third-party license closure before its release status can be
 changed.
 """
+
+
+README_LOCAL_CLEAN_BUILD_ATTESTED_TEXT = README_TEXT.replace(
+    'The copied build artifacts have\n'
+    'build.artifact_source_provenance = "unverified"; staging does not assert that\n'
+    'they were built from that checkout.',
+    'The copied build artifacts have\n'
+    'build.artifact_source_provenance = "local_clean_build_attested"; at staging\n'
+    'time they exactly matched a local clean-build attestation for this checkout.',
+).replace(
+    '  * The recorded staging checkout is not a verified source identity for the\n'
+    '    copied build artifacts.',
+    '  * The copied module bytes matched a local clean-build attestation at staging\n'
+    '    time. This is not release provenance or a completed M9 acceptance result.',
+)
 
 
 class PackageError(M0Error):
@@ -268,6 +298,204 @@ def _read_gn_args(path: Path) -> tuple[str, str]:
     return _sha256_bytes(raw), "\n".join(arguments)
 
 
+def _canonical_clean_build_attestation(value: object) -> bytes:
+    """Return the canonical encoding written by the clean-build runner."""
+
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _stable_file_bytes(path: Path, description: str, maximum_bytes: int) -> bytes:
+    """Read one bounded regular file while rejecting an observable replacement."""
+
+    _require_regular_file(path, description)
+    before = path.stat()
+    if before.st_size > maximum_bytes:
+        raise PackageError(f"{description} is too large: {path}")
+    try:
+        contents = path.read_bytes()
+    except OSError as exc:
+        raise PackageError(f"could not read {description}: {path}") from exc
+    _require_regular_file(path, description)
+    after = path.stat()
+    identity = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    if identity(before) != identity(after) or len(contents) != after.st_size:
+        raise PackageError(f"{description} changed while it was read")
+    return contents
+
+
+def _load_clean_build_attestation(
+    *, out_dir: Path, attestation_path: Path
+) -> dict[str, object]:
+    """Load exactly the canonical record paired with this selected output."""
+
+    expected_path = out_dir / clean_build_attestation.ATTESTATION_FILENAME
+    _require_regular_file(attestation_path, "clean-build attestation")
+    _require_regular_file(expected_path, "clean-build attestation")
+    if attestation_path.resolve() != expected_path.resolve():
+        raise PackageError(
+            "clean-build attestation must be the record in the selected build output"
+        )
+    contents = _stable_file_bytes(
+        expected_path,
+        "clean-build attestation",
+        MAX_CLEAN_BUILD_ATTESTATION_BYTES,
+    )
+    try:
+        value = json.loads(
+            contents.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {constant}")
+            ),
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise PackageError(f"clean-build attestation is invalid: {exc}") from exc
+    if type(value) is not dict:
+        raise PackageError("clean-build attestation must contain an object")
+    if _canonical_clean_build_attestation(value) != contents:
+        raise PackageError(
+            "clean-build attestation is not canonical deterministic JSON"
+        )
+    return value
+
+
+def _expected_clean_build_attestation(
+    *,
+    out_dir: Path,
+    module_name: str,
+    manifest: dict[str, Any],
+    port_revision: str,
+) -> dict[str, object]:
+    """Recompute the runner's record against the current clean source state."""
+
+    if module_name != clean_build_attestation.MODULE_NAME:
+        raise PackageError(
+            "clean-build attestation only supports the chrome_wasm input module"
+        )
+    try:
+        clean_build_attestation.require_clean_top_level_checkout()
+        checkout = clean_build_attestation.checkout_identity()
+        current_manifest, manifest_identity = (
+            clean_build_attestation.load_manifest_snapshot()
+        )
+        if current_manifest != manifest:
+            raise PackageError(
+                "clean-build attestation manifest does not match the current checkout"
+            )
+        expected_args = clean_build_attestation.expected_m6_chrome_gn_args(
+            current_manifest
+        )
+        gn_args = clean_build_attestation.require_exact_generated_gn_args(
+            out_dir, expected_args
+        )
+        artifacts = clean_build_attestation.module_artifact_records(out_dir)
+        expected = clean_build_attestation.make_attestation(
+            checkout=checkout,
+            manifest=manifest_identity,
+            gn_args=gn_args,
+            artifacts=artifacts,
+            out_dir=out_dir,
+        )
+    except PackageError:
+        raise
+    except (
+        M0Error,
+        clean_build_attestation.M0Error,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise PackageError(
+            f"clean-build attestation cannot be validated: {exc}"
+        ) from exc
+    if port_revision != checkout["commit"]:
+        raise PackageError(
+            "staging checkout does not match the clean-build attestation checkout"
+        )
+    return expected
+
+
+def _validate_clean_build_attestation(
+    *,
+    out_dir: Path,
+    module_name: str,
+    manifest: dict[str, Any],
+    port_revision: str,
+    attestation_path: Path,
+) -> dict[str, object]:
+    """Bind a requested local attestation to current bytes and source identity."""
+
+    supplied = _load_clean_build_attestation(
+        out_dir=out_dir, attestation_path=attestation_path
+    )
+    expected = _expected_clean_build_attestation(
+        out_dir=out_dir,
+        module_name=module_name,
+        manifest=manifest,
+        port_revision=port_revision,
+    )
+    if supplied != expected:
+        raise PackageError(
+            "clean-build attestation does not exactly match the selected output "
+            "and current clean source identity"
+        )
+    return supplied
+
+
+def _validate_staged_attested_module_artifacts(
+    staging: Path, attestation: dict[str, object]
+) -> None:
+    """Require the staged renamed module bytes to retain the attested identity."""
+
+    artifacts = attestation.get("artifacts")
+    if type(artifacts) is not dict:
+        raise PackageError("clean-build attestation module artifacts are invalid")
+    for source_name, staged_name in (
+        ("chrome_wasm.js", "chromium-wasm.js"),
+        ("chrome_wasm.wasm", "chromium-wasm.wasm"),
+    ):
+        expected = artifacts.get(source_name)
+        if type(expected) is not dict:
+            raise PackageError("clean-build attestation module artifacts are invalid")
+        staged = staging / staged_name
+        _require_regular_file(staged, f"staged attested module artifact {staged_name}")
+        if (
+            staged.stat().st_size != expected.get("bytes")
+            or sha256_file(staged) != expected.get("sha256")
+        ):
+            raise PackageError(
+                "staged module artifact does not match the clean-build attestation: "
+                f"{staged_name}"
+            )
+
+
+def _readme_text(artifact_source_provenance: str) -> str:
+    if artifact_source_provenance == ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED:
+        return README_TEXT
+    if (
+        artifact_source_provenance
+        == ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED
+    ):
+        return README_LOCAL_CLEAN_BUILD_ATTESTED_TEXT
+    raise PackageError("artifact source provenance is invalid")
+
+
 def _copy_file(source: Path, destination: Path) -> None:
     _require_regular_file(source, "package input")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -341,15 +569,27 @@ def _version_manifest(
     gn_args_sha256: str,
     gn_args: str,
     artifacts: list[dict[str, object]],
+    artifact_source_provenance: str,
 ) -> dict[str, object]:
     if not GIT_REVISION_RE.fullmatch(port_revision):
         raise PackageError(
             "staging checkout must be a lowercase 40-character Git hash"
         )
+    if artifact_source_provenance not in ALLOWED_ARTIFACT_SOURCE_PROVENANCE:
+        raise PackageError("artifact source provenance is invalid")
+    source_identity_limitation = (
+        "The staging checkout is not verified as the source identity of the copied "
+        "build artifacts."
+        if artifact_source_provenance == ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED
+        else (
+            "The copied module bytes matched a local clean-build attestation at "
+            "staging time; this is not release provenance or completed M9 validation."
+        )
+    )
     return {
         "artifacts": artifacts,
         "build": {
-            "artifact_source_provenance": "unverified",
+            "artifact_source_provenance": artifact_source_provenance,
             "gn_args": gn_args.split("\n"),
             "gn_args_sha256": gn_args_sha256,
             "input_module_name": module_name,
@@ -367,10 +607,7 @@ def _version_manifest(
             "M9 stress, reliability, and final release validation are incomplete.",
             "The single-process Wasm port is not security-equivalent to desktop Chromium.",
             "The LICENSES directory is not a complete third-party attribution closure.",
-            (
-                "The staging checkout is not verified as the source identity "
-                "of the copied build artifacts."
-            ),
+            source_identity_limitation,
         ],
         "product": PRODUCT_NAME,
         "release_status": RELEASE_STATUS,
@@ -483,6 +720,7 @@ def package_release(
     manifest: dict[str, Any],
     port_revision: str,
     host_dir: Path | None = None,
+    clean_build_attestation_path: Path | None = None,
 ) -> dict[str, object]:
     """Stage one deterministic, explicitly non-releasable package directory."""
     module_name = _validate_module_name(module_name)
@@ -516,6 +754,20 @@ def package_release(
     manifest_sha256 = sha256_file(manifest_path)
     _manifest_versions(manifest)
 
+    artifact_source_provenance = ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED
+    attestation: dict[str, object] | None = None
+    if clean_build_attestation_path is not None:
+        attestation = _validate_clean_build_attestation(
+            out_dir=resolved_out_dir,
+            module_name=module_name,
+            manifest=manifest,
+            port_revision=port_revision,
+            attestation_path=clean_build_attestation_path,
+        )
+        artifact_source_provenance = (
+            ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED
+        )
+
     staging = Path(
         tempfile.mkdtemp(
             prefix=f".{resolved_dist_dir.name}.staging-",
@@ -529,7 +781,28 @@ def package_release(
             host_dir=resolved_host_dir,
         ).items():
             _copy_file(source, staging / destination)
-        _write_file(staging / "README.txt", README_TEXT.encode("utf-8"))
+        if attestation is not None:
+            _validate_staged_attested_module_artifacts(staging, attestation)
+            # Recompute after all package inputs are copied so an attested label
+            # is never published if output bytes, manifest, or checkout identity
+            # changed during staging.
+            if (
+                _validate_clean_build_attestation(
+                    out_dir=resolved_out_dir,
+                    module_name=module_name,
+                    manifest=manifest,
+                    port_revision=port_revision,
+                    attestation_path=clean_build_attestation_path,
+                )
+                != attestation
+            ):
+                raise PackageError(
+                    "clean-build attestation changed while the package was staged"
+                )
+        _write_file(
+            staging / "README.txt",
+            _readme_text(artifact_source_provenance).encode("utf-8"),
+        )
         _write_file(
             staging / "LICENSES/PRE_RELEASE_NOTICE.txt",
             LICENSE_NOTICE_TEXT.encode("utf-8"),
@@ -544,6 +817,7 @@ def package_release(
             gn_args_sha256=gn_args_sha256,
             gn_args=gn_args,
             artifacts=_file_records(staging, artifact_paths),
+            artifact_source_provenance=artifact_source_provenance,
         )
         _write_file(staging / "VERSION.json", _canonical_json(version))
         verify_release_tree(staging)
@@ -627,7 +901,11 @@ def _validate_version(version: dict[str, Any], root: Path) -> None:
         raise PackageError("VERSION.json module name is invalid")
     if build["resource_delivery"] != "embedded-in-wasm-current-build":
         raise PackageError("VERSION.json resource delivery declaration is invalid")
-    if build["artifact_source_provenance"] != "unverified":
+    if (
+        type(build["artifact_source_provenance"]) is not str
+        or build["artifact_source_provenance"]
+        not in ALLOWED_ARTIFACT_SOURCE_PROVENANCE
+    ):
         raise PackageError("VERSION.json artifact source provenance is invalid")
     if not isinstance(build["staging_checkout"], str) or not GIT_REVISION_RE.fullmatch(
         build["staging_checkout"]
@@ -705,6 +983,9 @@ def verify_release_tree(dist_dir: Path) -> dict[str, object]:
     _validate_version(version, root)
     return {
         "artifact_count": len(version["artifacts"]),
+        "artifact_source_provenance": version["build"][
+            "artifact_source_provenance"
+        ],
         "dist_dir": str(root),
         "release_status": version["release_status"],
         "version_sha256": sha256_file(root / "VERSION.json"),
@@ -719,6 +1000,14 @@ def main() -> int:
     parser.add_argument("--dist-dir", type=Path, required=True)
     parser.add_argument("--module-name", default="chrome_wasm")
     parser.add_argument(
+        "--clean-build-attestation",
+        type=Path,
+        help=(
+            "require this selected output's m9_clean_build_attestation.json and "
+            "label matching module bytes local_clean_build_attested"
+        ),
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="verify an existing package without staging files",
@@ -727,6 +1016,10 @@ def main() -> int:
 
     try:
         if args.verify:
+            if args.clean_build_attestation is not None:
+                raise PackageError(
+                    "--clean-build-attestation is only valid while staging a package"
+                )
             result = verify_release_tree(args.dist_dir)
         else:
             manifest = load_manifest()
@@ -736,6 +1029,9 @@ def main() -> int:
                 manifest,
                 mode="stage-pre-release",
                 input_module_name=args.module_name,
+                requested_clean_build_attestation=(
+                    args.clean_build_attestation is not None
+                ),
                 release_status=RELEASE_STATUS,
             )
             result = package_release(
@@ -744,6 +1040,7 @@ def main() -> int:
                 module_name=args.module_name,
                 manifest=manifest,
                 port_revision=port_revision,
+                clean_build_attestation_path=args.clean_build_attestation,
             )
         print(
             f"{SENTINEL}:PASS "
