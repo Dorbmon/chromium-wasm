@@ -98,6 +98,8 @@ constexpr char kWasmBrowserHostPointerTabSmokeSwitch[] =
     "wasm-browser-host-pointer-tab-smoke";
 constexpr char kWasmBrowserHostTabChurnSmokeSwitch[] =
     "wasm-browser-host-tab-churn-smoke";
+constexpr char kWasmBrowserHostNavigationChurnSmokeSwitch[] =
+    "wasm-browser-host-navigation-churn-smoke";
 constexpr char kWasmBrowserHostPointerMenuSmokeSwitch[] =
     "wasm-browser-host-pointer-menu-smoke";
 constexpr char kWasmBrowserHostSecurityWarningSmokeSwitch[] =
@@ -392,6 +394,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_host_tab_churn_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostTabChurnSmokeSwitch);
+  const bool browser_host_navigation_churn_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostNavigationChurnSmokeSwitch);
   const bool browser_host_pointer_menu_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostPointerMenuSmokeSwitch);
@@ -422,6 +427,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       browser_host_storage_estimate_smoke ||
       browser_host_pointer_tab_smoke ||
       browser_host_tab_churn_smoke ||
+      browser_host_navigation_churn_smoke ||
       browser_host_pointer_menu_smoke || browser_host_security_warning_smoke ||
       browser_host_history_downloads_smoke ||
       browser_host_continuous_flow_smoke ||
@@ -435,6 +441,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                  static_cast<int>(browser_host_storage_estimate_smoke) +
                  static_cast<int>(browser_host_pointer_tab_smoke) +
                  static_cast<int>(browser_host_tab_churn_smoke) +
+                 static_cast<int>(browser_host_navigation_churn_smoke) +
                  static_cast<int>(browser_host_pointer_menu_smoke) +
                  static_cast<int>(browser_host_security_warning_smoke) +
                  static_cast<int>(browser_host_history_downloads_smoke) +
@@ -709,6 +716,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostTabChurnSmokeSwitch)) {
     browser_lifecycle_->StartHostTabChurnSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserHostNavigationChurnSmokeSwitch)) {
+    browser_lifecycle_->StartHostNavigationChurnSmoke();
     return;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(

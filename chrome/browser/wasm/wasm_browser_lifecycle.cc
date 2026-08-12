@@ -29,6 +29,7 @@
 #include "chrome/browser/wasm/wasm_browser_host_continuous_flow_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_history_downloads_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_input.h"
+#include "chrome/browser/wasm/wasm_browser_host_navigation_churn_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_menu_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_pointer_tab_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_security_warning_smoke.h"
@@ -38,6 +39,7 @@
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_host_text_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_security_warning_dialog.h"
+#include "chrome/browser/wasm/wasm_browser_navigation_churn_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_tab_churn_smoke.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_downloads_ui.h"
@@ -715,6 +717,8 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   host_continuous_flow_.reset();
   ClearWasmBrowserHostTabChurnSmokeVerificationForTesting();
   host_tab_churn_smoke_.reset();
+  ClearWasmBrowserHostNavigationChurnSmokeVerificationForTesting();
+  host_navigation_churn_smoke_.reset();
   devtools_protocol_smoke_navigation_observer_.reset();
   devtools_protocol_smoke_contents_ = nullptr;
   devtools_protocol_smoke_.reset();
@@ -1165,6 +1169,23 @@ void WasmBrowserLifecycle::StartHostTabChurnSmoke() {
   host_tab_churn_smoke_->Start();
 }
 
+void WasmBrowserLifecycle::StartHostNavigationChurnSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+  CHECK(!host_navigation_churn_smoke_);
+
+  host_navigation_churn_smoke_ =
+      std::make_unique<WasmBrowserNavigationChurnSmoke>(
+          browser_.get(),
+          base::BindOnce(&WasmBrowserLifecycle::BeginNavigationChurnShutdown,
+                         weak_ptr_factory_.GetWeakPtr()));
+  host_navigation_churn_smoke_->Start();
+}
+
 void WasmBrowserLifecycle::StartHostStorageEstimateSmoke() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(initialized_);
@@ -1556,6 +1577,17 @@ bool WasmBrowserLifecycle::IsVisible() const {
   return browser_->GetBrowserView().IsVisible();
 }
 
+void WasmBrowserLifecycle::BeginNavigationChurnShutdown() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  // The coordinator posts this weak callback after its own verification stack
+  // returns. A direct Browser close can win that turn and reset/destroy the
+  // coordinator, so leave the lifecycle's one-shot close state untouched.
+  if (shutdown_started_ || shutdown_complete_ || !browser_) {
+    return;
+  }
+  BeginShutdown();
+}
+
 void WasmBrowserLifecycle::OnBrowserDidClose(
     BrowserWindowInterface* browser) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -1578,6 +1610,8 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   host_continuous_flow_.reset();
   ClearWasmBrowserHostTabChurnSmokeVerificationForTesting();
   host_tab_churn_smoke_.reset();
+  ClearWasmBrowserHostNavigationChurnSmokeVerificationForTesting();
+  host_navigation_churn_smoke_.reset();
   devtools_protocol_smoke_navigation_observer_.reset();
   devtools_protocol_smoke_contents_ = nullptr;
   devtools_protocol_smoke_.reset();
@@ -1652,6 +1686,8 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   host_continuous_flow_.reset();
   ClearWasmBrowserHostTabChurnSmokeVerificationForTesting();
   host_tab_churn_smoke_.reset();
+  ClearWasmBrowserHostNavigationChurnSmokeVerificationForTesting();
+  host_navigation_churn_smoke_.reset();
   devtools_protocol_smoke_navigation_observer_.reset();
   devtools_protocol_smoke_contents_ = nullptr;
   devtools_protocol_smoke_.reset();

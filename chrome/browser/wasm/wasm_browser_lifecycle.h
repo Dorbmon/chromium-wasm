@@ -32,6 +32,7 @@ class WasmBrowserHostHistoryDownloadsNavigationObserver;
 class WasmBrowserHostStorageEstimateNavigationObserver;
 class WasmBrowserContinuousFlow;
 class WasmBrowserTabChurnSmoke;
+class WasmBrowserNavigationChurnSmoke;
 class WasmBrowserDevToolsProtocolSmoke;
 class WasmBrowserDevToolsProtocolNavigationObserver;
 class WasmBrowserAccessibilitySnapshotSmoke;
@@ -112,6 +113,12 @@ class WasmBrowserLifecycle final {
   // does not navigate, persist data, use WISP, or measure worker behavior.
   void StartHostTabChurnSmoke();
 
+  // Arms the M9 preparation smoke that retains one Browser and its original
+  // tab through three fixed local data: navigation cycles. The host can only
+  // acknowledge later backing-store copies; it cannot select or initiate a
+  // navigation, and the documents contain no page script or WebAssembly.
+  void StartHostNavigationChurnSmoke();
+
   // Arms the switch-gated outer-origin storage estimate proof. JavaScript can
   // only acknowledge an already accepted estimate and a later canvas frame;
   // native lifecycle code owns the fixed Settings navigation and validates the
@@ -136,6 +143,7 @@ class WasmBrowserLifecycle final {
   void OnBrowserDidClose(BrowserWindowInterface* browser);
   void ArmBrowserDestructionBarrier();
   void OnBrowserDestructionsComplete();
+  void BeginNavigationChurnShutdown();
   bool VerifyHostAcceleratorDelivery();
   void OnHostAcceleratorDeliveryVerified();
   bool VerifyHostTextSmokeCheck(int stage);
@@ -236,6 +244,8 @@ class WasmBrowserLifecycle final {
       host_history_downloads_downloads_navigation_observer_;
   std::unique_ptr<WasmBrowserContinuousFlow> host_continuous_flow_;
   std::unique_ptr<WasmBrowserTabChurnSmoke> host_tab_churn_smoke_;
+  std::unique_ptr<WasmBrowserNavigationChurnSmoke>
+      host_navigation_churn_smoke_;
   bool devtools_protocol_smoke_started_ = false;
   bool devtools_protocol_smoke_succeeded_ = false;
   raw_ptr<content::WebContents> devtools_protocol_smoke_contents_ = nullptr;

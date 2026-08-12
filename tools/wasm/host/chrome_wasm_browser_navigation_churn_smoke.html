@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm same-instance navigation churn smoke</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-monospace, monospace; }
+    body { margin: 0; background: #16181d; color: #e8eaed; }
+    main { display: grid; gap: 12px; padding: 12px; }
+    canvas { background: #fff; outline: 1px solid #5f6368; }
+    pre { margin: 0; max-height: 40vh; overflow: auto; white-space: pre-wrap; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
+    dt { color: #9aa0a6; } dd { margin: 0; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main id="browser-navigation-churn-root" data-state="running">
+    <canvas id="browser-canvas" width="640" height="480" tabindex="0"
+        aria-label="Chromium browser same-instance navigation churn output"></canvas>
+    <aside aria-label="Same-instance navigation churn smoke diagnostics">
+      <h1>Chromium Wasm same-instance navigation churn smoke</h1>
+      <dl id="versions"></dl>
+      <pre id="browser-navigation-churn-status">Starting same-instance navigation churn smoke…</pre>
+    </aside>
+  </main>
+  <script type="module">
+    import {runChromeWasmBrowserNavigationChurnSmokeFromQuery} from "/__m9_browser_navigation_churn__/chrome_wasm_browser_navigation_churn_smoke_host.js";
+
+    runChromeWasmBrowserNavigationChurnSmokeFromQuery().catch((error) => {
+      document.querySelector("#browser-navigation-churn-root").dataset.state = "fail";
+      document.querySelector("#browser-navigation-churn-status").textContent =
+          `host bootstrap failed: ${String(error)}`;
+      throw error;
+    });
+  </script>
+</body>
+</html>
