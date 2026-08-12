@@ -35,6 +35,15 @@ const FRAME_TRANSITION_POLICY =
 const MAX_TIMEOUT_MS = 120000;
 const MAX_FRAME_DIMENSION = 16384;
 const MAX_RECORD_HISTORY = 128;
+const WASM_PAGE_SIZE_BYTES = 64 * 1024;
+const WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT = STAGE_COUNT + 2;
+const WASM_HEAP_BUFFER_CAPACITY_DEFINITION =
+    "Module.HEAPU8.buffer.byteLength capacity observed at runtime initialization, " +
+    "each stage's later Canvas2D backing-store-copy observation, and runtime " +
+    "exit; not allocated or resident memory usage";
+const WASM_HEAP_BUFFER_CAPACITY_LIMITATION =
+    "Module.HEAPU8.buffer.byteLength capacity is not allocations, residency, " +
+    "address-space headroom, a leak, out-of-memory, or drain proof";
 const ARTIFACT_SOURCE_PROVENANCE = "unverified";
 const ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot";
 const SOURCE_SNAPSHOT_PROVENANCE =
@@ -48,7 +57,7 @@ const LIMITATIONS = Object.freeze([
   "does_not_exercise_wisp_or_network_reconnect",
   "does_not_prove_opfs_persistence_or_recovery",
   "does_not_claim_m7_profile_persistence",
-  "does_not_measure_memory_growth_or_address_space_pressure",
+  WASM_HEAP_BUFFER_CAPACITY_LIMITATION,
   "does_not_measure_or_exhaust_the_pthread_pool",
   "does_not_prove_raster_compositor_display_or_vsync_presentation",
   "does_not_claim_m8_feature_compatibility",
@@ -193,6 +202,34 @@ function isReadinessReport(value) {
       typeof value.firstVisuallyNonEmptyPaint === "boolean";
 }
 
+function wasmHeapBufferCapacitySample(module, observation, stage, frameId) {
+  // Reacquire HEAPU8 and its buffer for every observation. Emscripten may
+  // replace typed-array views after Wasm memory growth, so this host never
+  // retains a buffer or view between observations.
+  const heap = module?.HEAPU8;
+  if (!(heap instanceof Uint8Array)) {
+    throw new Error("navigation-churn Module.HEAPU8 is not a Uint8Array");
+  }
+  const buffer = heap.buffer;
+  if (typeof SharedArrayBuffer !== "function" ||
+      !(buffer instanceof SharedArrayBuffer)) {
+    throw new Error("navigation-churn Module.HEAPU8 is not backed by SharedArrayBuffer");
+  }
+  const capacityBytes = buffer.byteLength;
+  if (!Number.isSafeInteger(capacityBytes) || capacityBytes <= 0 ||
+      capacityBytes % WASM_PAGE_SIZE_BYTES !== 0) {
+    throw new Error("navigation-churn Wasm heap capacity is not a positive page multiple");
+  }
+  return Object.freeze({
+    bufferKind: "SharedArrayBuffer",
+    capacityBytes,
+    frameId,
+    heapU8Exported: true,
+    observation,
+    stage,
+  });
+}
+
 function stageInfo(stage) {
   if (!Number.isSafeInteger(stage) || stage < 1 || stage > STAGE_COUNT) {
     return null;
@@ -300,6 +337,7 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
   #passObserved = false;
   #lifecyclePassObserved = false;
   #stages = [];
+  #wasmHeapBufferCapacitySamples = [];
 
   constructor(canvas, versions, artifact, captureHarness) {
     if (!(canvas instanceof HTMLCanvasElement)) {
@@ -354,6 +392,9 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
       this.#recordFatal(`runtime reported multiple exits: ${code}`);
       return;
     }
+    // This only records current Wasm linear-memory capacity. It does not
+    // establish allocation, residency, headroom, leak, OOM, or drain state.
+    this.#recordWasmHeapBufferCapacity("runtime_exit", null, null);
     this.#runtimeExitCode = code;
     this.#runtimeExitResolver(code);
   }
@@ -377,6 +418,38 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
 
   #firstFrameAfter(frameId) {
     return this.#frameReports.find((frame) => frame.id > frameId) ?? null;
+  }
+
+  #recordWasmHeapBufferCapacity(observation, stage, frameId) {
+    try {
+      if (this.#wasmHeapBufferCapacitySamples.length >=
+          WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT) {
+        throw new Error("navigation-churn recorded too many Wasm capacity samples");
+      }
+      const sample = wasmHeapBufferCapacitySample(
+          this.#module, observation, stage, frameId);
+      this.#wasmHeapBufferCapacitySamples.push(sample);
+      return true;
+    } catch (error) {
+      this.#recordFatal(`invalid navigation-churn Wasm capacity sample: ${String(error)}`);
+      return false;
+    }
+  }
+
+  #wasmHeapBufferCapacitySnapshot() {
+    const samples = this.#wasmHeapBufferCapacitySamples.map((sample) => ({...sample}));
+    const capacities = samples.map((sample) => sample.capacityBytes);
+    const highWaterBytes = capacities.length === 0 ? null : Math.max(...capacities);
+    return {
+      definition: WASM_HEAP_BUFFER_CAPACITY_DEFINITION,
+      grew: capacities.length !== 0 && highWaterBytes > capacities[0],
+      highWaterBytes,
+      nondecreasing: capacities.length !== 0 &&
+          capacities.every((capacity, index) =>
+            index === 0 || capacity >= capacities[index - 1]),
+      sampleCount: samples.length,
+      samples,
+    };
   }
 
   #reportFrame(value) {
@@ -484,6 +557,12 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
     const frame = this.#firstFrameAfter(active.navigationMarkerFrameId);
     if (!frame) return;
     active.backingStoreCopyFrameId = frame.id;
+    // This is the fixed stage/frame-bound later Canvas2D-copy observation
+    // already used to acknowledge each native navigation stage.
+    if (!this.#recordWasmHeapBufferCapacity(
+        "stage_backing_store_copy", active.stage, frame.id)) {
+      return;
+    }
     this.#queueBackingStoreCopy(active);
   }
 
@@ -568,6 +647,7 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
     }
     this.#module = module;
     this.#runtimeInitialized = true;
+    this.#recordWasmHeapBufferCapacity("runtime_initialized", null, null);
   }
 
   #stageSnapshot(stage) {
@@ -628,6 +708,7 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
         lifecyclePassObserved: this.#lifecyclePassObserved,
         stages: this.#stages.map((stage) => this.#stageSnapshot(stage)),
       },
+      wasmHeapBufferCapacity: this.#wasmHeapBufferCapacitySnapshot(),
       stdout: this.#stdout,
       stderr: this.#stderr,
       failedChecks: [],
@@ -744,6 +825,81 @@ function frameIds(result) {
   return new Set((result.frameReports || []).map((frame) => frame?.id));
 }
 
+function hasExactFields(value, fields) {
+  return value && typeof value === "object" && !Array.isArray(value) &&
+      Object.keys(value).length === fields.length &&
+      fields.every((field) => Object.hasOwn(value, field));
+}
+
+function validateWasmHeapBufferCapacity(result, churn, require) {
+  const capacity = result.wasmHeapBufferCapacity;
+  const capacityFields = [
+    "definition", "grew", "highWaterBytes", "nondecreasing", "sampleCount",
+    "samples",
+  ];
+  const sampleFields = [
+    "bufferKind", "capacityBytes", "frameId", "heapU8Exported",
+    "observation", "stage",
+  ];
+  require(hasExactFields(capacity, capacityFields),
+      "navigation-churn Wasm capacity evidence schema is invalid");
+  if (!hasExactFields(capacity, capacityFields)) return;
+  require(capacity.definition === WASM_HEAP_BUFFER_CAPACITY_DEFINITION,
+      "navigation-churn Wasm capacity definition is invalid");
+  require(capacity.sampleCount === WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT &&
+      Array.isArray(capacity.samples) &&
+      capacity.samples.length === WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT,
+  "navigation-churn Wasm capacity sample count is invalid");
+  if (!Array.isArray(capacity.samples) ||
+      capacity.samples.length !== WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT) {
+    return;
+  }
+
+  const capacities = [];
+  for (let index = 0; index < capacity.samples.length; ++index) {
+    const sample = capacity.samples[index];
+    let expectedObservation = "stage_backing_store_copy";
+    let expectedStage = null;
+    let expectedFrameId = null;
+    if (index === 0) {
+      expectedObservation = "runtime_initialized";
+    } else if (index === capacity.samples.length - 1) {
+      expectedObservation = "runtime_exit";
+    } else {
+      const observedStage = churn?.stages?.[index - 1];
+      expectedStage = index;
+      expectedFrameId = observedStage?.backingStoreCopyFrameId;
+    }
+    require(hasExactFields(sample, sampleFields),
+        `navigation-churn Wasm capacity sample ${index} schema is invalid`);
+    if (!hasExactFields(sample, sampleFields)) continue;
+    require(sample.bufferKind === "SharedArrayBuffer" &&
+        sample.heapU8Exported === true,
+    `navigation-churn Wasm capacity sample ${index} lacks shared Uint8Array evidence`);
+    require(Number.isSafeInteger(sample.capacityBytes) && sample.capacityBytes > 0 &&
+        sample.capacityBytes % WASM_PAGE_SIZE_BYTES === 0,
+    `navigation-churn Wasm capacity sample ${index} is not a positive page multiple`);
+    require(sample.observation === expectedObservation &&
+        sample.stage === expectedStage && sample.frameId === expectedFrameId,
+    `navigation-churn Wasm capacity sample ${index} is not bound to its observation`);
+    if (Number.isSafeInteger(sample.capacityBytes) && sample.capacityBytes > 0 &&
+        sample.capacityBytes % WASM_PAGE_SIZE_BYTES === 0) {
+      capacities.push(sample.capacityBytes);
+    }
+  }
+  if (capacities.length !== WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT) return;
+  const nondecreasing = capacities.every((value, index) =>
+    index === 0 || value >= capacities[index - 1]);
+  const highWaterBytes = Math.max(...capacities);
+  require(capacity.nondecreasing === true && capacity.nondecreasing === nondecreasing,
+      "navigation-churn Wasm capacity is not nondecreasing");
+  require(capacity.highWaterBytes === highWaterBytes,
+      "navigation-churn Wasm capacity high water is invalid");
+  require(typeof capacity.grew === "boolean" &&
+      capacity.grew === (highWaterBytes > capacities[0]),
+  "navigation-churn Wasm capacity growth flag is invalid");
+}
+
 function validateResult(result) {
   const failures = [];
   const require = (condition, message) => {
@@ -834,6 +990,7 @@ function validateResult(result) {
   }
   require(Array.isArray(result.frameReports) && result.frameReports.length >= STAGE_COUNT,
       "navigation churn has too few frame reports");
+  validateWasmHeapBufferCapacity(result, churn, require);
   require(result.artifact?.artifact_source_provenance ===
       ARTIFACT_SOURCE_PROVENANCE,
   "navigation-churn artifact source provenance is not unverified");

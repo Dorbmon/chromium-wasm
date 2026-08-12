@@ -9,8 +9,10 @@ This runner serves immutable byte snapshots of one Chrome Wasm artifact and
 the narrow host harness. The host never supplies a URL or invokes a navigation
 command: C++ owns six fixed, script-free data: documents, their history/title/
 RFH/FVP checks, and shutdown. The host reports a later Canvas2D backing-store
-copy for each verified native stage. It is not a navigation-performance,
-network, persistence, worker, memory-pressure, or M8 feature test.
+copy and current Wasm linear-memory capacity for each verified native stage.
+Capacity is a bounded observation only, not a navigation-performance, network,
+persistence, worker, allocation, residency, headroom, leak, out-of-memory,
+drain, or M8 feature test.
 """
 
 from __future__ import annotations
@@ -61,6 +63,18 @@ STAGE_COUNT = CYCLE_COUNT * NAVIGATIONS_PER_CYCLE
 FRAME_TRANSITION_POLICY = (
     "previous-backing-store-copy-may-share-next-navigation-marker-frame"
 )
+WASM_PAGE_SIZE_BYTES = 64 * 1024
+WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT = STAGE_COUNT + 2
+WASM_HEAP_BUFFER_CAPACITY_DEFINITION = (
+    "Module.HEAPU8.buffer.byteLength capacity observed at runtime initialization, "
+    "each stage's later Canvas2D backing-store-copy observation, and runtime "
+    "exit; not allocated or resident memory usage"
+)
+WASM_HEAP_BUFFER_CAPACITY_LIMITATION = (
+    "Module.HEAPU8.buffer.byteLength capacity is not allocations, residency, "
+    "address-space headroom, a leak, out-of-memory, or drain proof"
+)
+MAX_SAFE_INTEGER = (1 << 53) - 1
 LIMITATIONS = (
     "does_not_exercise_omnibox_or_trusted_dom_navigation_input",
     "does_not_exercise_page_javascript",
@@ -68,7 +82,7 @@ LIMITATIONS = (
     "does_not_exercise_wisp_or_network_reconnect",
     "does_not_prove_opfs_persistence_or_recovery",
     "does_not_claim_m7_profile_persistence",
-    "does_not_measure_memory_growth_or_address_space_pressure",
+    WASM_HEAP_BUFFER_CAPACITY_LIMITATION,
     "does_not_measure_or_exhaust_the_pthread_pool",
     "does_not_prove_raster_compositor_display_or_vsync_presentation",
     "does_not_claim_m8_feature_compatibility",
@@ -104,6 +118,26 @@ _CAPTURE_HARNESS_FIELDS = frozenset(
         "runner_source",
         "source_snapshot_provenance",
         "version_provenance",
+    )
+)
+_WASM_HEAP_BUFFER_CAPACITY_FIELDS = frozenset(
+    (
+        "definition",
+        "grew",
+        "highWaterBytes",
+        "nondecreasing",
+        "sampleCount",
+        "samples",
+    )
+)
+_WASM_HEAP_BUFFER_CAPACITY_SAMPLE_FIELDS = frozenset(
+    (
+        "bufferKind",
+        "capacityBytes",
+        "frameId",
+        "heapU8Exported",
+        "observation",
+        "stage",
     )
 )
 
@@ -579,6 +613,110 @@ def _validate_stage(
     return value
 
 
+def _validate_wasm_heap_buffer_capacity(
+    value: object, stages: list[dict[str, object]]
+) -> None:
+    """Validates all fixed, re-acquired Wasm-capacity observations.
+
+    The eight samples are intentionally only a linear-memory-capacity trace:
+    runtime initialization, each already-established stage/frame copy witness,
+    and runtime exit. A larger valid capacity is evidence to record, never a
+    test failure by itself.
+    """
+
+    capacity = _require_exact_fields(
+        value,
+        _WASM_HEAP_BUFFER_CAPACITY_FIELDS,
+        "Wasm heap buffer capacity",
+    )
+    if capacity.get("definition") != WASM_HEAP_BUFFER_CAPACITY_DEFINITION:
+        raise M0Error("navigation-churn Wasm capacity definition is invalid")
+    if (
+        type(capacity.get("sampleCount")) is not int
+        or capacity["sampleCount"] != WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT
+    ):
+        raise M0Error("navigation-churn Wasm capacity sample count is invalid")
+    samples = capacity.get("samples")
+    if (
+        not isinstance(samples, list)
+        or len(samples) != WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT
+    ):
+        raise M0Error("navigation-churn Wasm capacity does not have eight samples")
+
+    capacities: list[int] = []
+    for index, raw_sample in enumerate(samples):
+        sample = _require_exact_fields(
+            raw_sample,
+            _WASM_HEAP_BUFFER_CAPACITY_SAMPLE_FIELDS,
+            f"Wasm capacity sample {index}",
+        )
+        if sample.get("bufferKind") != "SharedArrayBuffer":
+            raise M0Error(
+                f"navigation-churn Wasm capacity sample {index} is not shared"
+            )
+        if sample.get("heapU8Exported") is not True:
+            raise M0Error(
+                f"navigation-churn Wasm capacity sample {index} lacks Uint8Array evidence"
+            )
+        capacity_bytes = sample.get("capacityBytes")
+        if (
+            type(capacity_bytes) is not int
+            or capacity_bytes <= 0
+            or capacity_bytes > MAX_SAFE_INTEGER
+            or capacity_bytes % WASM_PAGE_SIZE_BYTES != 0
+        ):
+            raise M0Error(
+                f"navigation-churn Wasm capacity sample {index} is not a positive "
+                "safe Wasm-page multiple"
+            )
+        capacities.append(capacity_bytes)
+
+        expected_observation = "stage_backing_store_copy"
+        expected_stage: int | None = None
+        expected_frame_id: int | None = None
+        if index == 0:
+            expected_observation = "runtime_initialized"
+        elif index == WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT - 1:
+            expected_observation = "runtime_exit"
+        else:
+            expected_stage = index
+            expected_frame_id = stages[index - 1]["backingStoreCopyFrameId"]
+        if sample.get("observation") != expected_observation:
+            raise M0Error(
+                f"navigation-churn Wasm capacity sample {index} observation is invalid"
+            )
+        if expected_stage is None:
+            if sample.get("stage") is not None or sample.get("frameId") is not None:
+                raise M0Error(
+                    f"navigation-churn Wasm capacity sample {index} is not terminal"
+                )
+        elif (
+            type(sample.get("stage")) is not int
+            or sample["stage"] != expected_stage
+            or type(sample.get("frameId")) is not int
+            or sample["frameId"] != expected_frame_id
+        ):
+            raise M0Error(
+                f"navigation-churn Wasm capacity sample {index} is not bound to "
+                "its stage/frame copy observation"
+            )
+
+    if any(later < earlier for earlier, later in zip(capacities, capacities[1:])):
+        raise M0Error("navigation-churn Wasm capacity samples are not nondecreasing")
+    if capacity.get("nondecreasing") is not True:
+        raise M0Error("navigation-churn Wasm capacity nondecreasing flag is invalid")
+    high_water_bytes = max(capacities)
+    if (
+        type(capacity.get("highWaterBytes")) is not int
+        or capacity["highWaterBytes"] != high_water_bytes
+    ):
+        raise M0Error("navigation-churn Wasm capacity high water is invalid")
+    if type(capacity.get("grew")) is not bool or capacity["grew"] != (
+        high_water_bytes > capacities[0]
+    ):
+        raise M0Error("navigation-churn Wasm capacity growth flag is invalid")
+
+
 def _navigated_marker(stage: dict[str, object]) -> str:
     return (
         f"{NAVIGATED_MARKER} cycle={stage['cycle']} stage={stage['stage']} "
@@ -707,6 +845,7 @@ def validate_result(
             raise M0Error("navigation-churn stages have invalid copy chronology")
         stages.append(stage)
     _validate_markers(result.get("stderr"), stages)
+    _validate_wasm_heap_buffer_capacity(result.get("wasmHeapBufferCapacity"), stages)
 
 
 def wait_for_result(

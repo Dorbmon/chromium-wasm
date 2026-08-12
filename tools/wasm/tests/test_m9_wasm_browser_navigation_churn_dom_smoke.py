@@ -53,6 +53,58 @@ def validate(result: dict[str, object]) -> None:
     )
 
 
+def wasm_heap_buffer_capacity(
+    stages: list[dict[str, object]], capacities: list[int] | None = None
+) -> dict[str, object]:
+    if capacities is None:
+        capacities = [
+            smoke.WASM_PAGE_SIZE_BYTES
+        ] * smoke.WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT
+    if len(capacities) != smoke.WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT:
+        raise ValueError("Wasm capacity sample count is invalid")
+    samples: list[dict[str, object]] = [
+        {
+            "bufferKind": "SharedArrayBuffer",
+            "capacityBytes": capacities[0],
+            "frameId": None,
+            "heapU8Exported": True,
+            "observation": "runtime_initialized",
+            "stage": None,
+        }
+    ]
+    for index, stage in enumerate(stages, start=1):
+        samples.append(
+            {
+                "bufferKind": "SharedArrayBuffer",
+                "capacityBytes": capacities[index],
+                "frameId": stage["backingStoreCopyFrameId"],
+                "heapU8Exported": True,
+                "observation": "stage_backing_store_copy",
+                "stage": index,
+            }
+        )
+    samples.append(
+        {
+            "bufferKind": "SharedArrayBuffer",
+            "capacityBytes": capacities[-1],
+            "frameId": None,
+            "heapU8Exported": True,
+            "observation": "runtime_exit",
+            "stage": None,
+        }
+    )
+    return {
+        "definition": smoke.WASM_HEAP_BUFFER_CAPACITY_DEFINITION,
+        "grew": max(capacities) > capacities[0],
+        "highWaterBytes": max(capacities),
+        "nondecreasing": all(
+            later >= earlier for earlier, later in zip(capacities, capacities[1:])
+        ),
+        "sampleCount": smoke.WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT,
+        "samples": samples,
+    }
+
+
 def successful_result(
     *, stage_one_history_entries: int = 1, stage_one_history_index: int = 0
 ) -> dict[str, object]:
@@ -153,6 +205,7 @@ def successful_result(
             "lifecyclePassObserved": True,
             "stages": stages,
         },
+        "wasmHeapBufferCapacity": wasm_heap_buffer_capacity(stages),
         "stdout": [],
         "stderr": stderr,
         "failedChecks": [],
@@ -171,6 +224,147 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         validate(
             successful_result(stage_one_history_entries=2, stage_one_history_index=1)
         )
+
+    def test_accepts_wasm_capacity_growth_as_observation(self) -> None:
+        result = successful_result()
+        capacities = [
+            smoke.WASM_PAGE_SIZE_BYTES,
+            smoke.WASM_PAGE_SIZE_BYTES,
+            2 * smoke.WASM_PAGE_SIZE_BYTES,
+            2 * smoke.WASM_PAGE_SIZE_BYTES,
+            3 * smoke.WASM_PAGE_SIZE_BYTES,
+            3 * smoke.WASM_PAGE_SIZE_BYTES,
+            3 * smoke.WASM_PAGE_SIZE_BYTES,
+            4 * smoke.WASM_PAGE_SIZE_BYTES,
+        ]
+        result["wasmHeapBufferCapacity"] = wasm_heap_buffer_capacity(
+            result["navigationChurn"]["stages"], capacities
+        )
+        validate(result)
+
+    def test_rejects_invalid_wasm_capacity_evidence(self) -> None:
+        def with_capacities(capacities: list[int]) -> dict[str, object]:
+            result = successful_result()
+            result["wasmHeapBufferCapacity"] = wasm_heap_buffer_capacity(
+                result["navigationChurn"]["stages"], capacities
+            )
+            return result
+
+        mutations = (
+            (
+                lambda result: result["wasmHeapBufferCapacity"].__setitem__(
+                    "unexpected", True
+                ),
+                "schema is invalid",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"].__setitem__(
+                    "sampleCount", smoke.WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT - 1
+                ),
+                "sample count is invalid",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"].__setitem__(
+                    "sampleCount", float(smoke.WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT)
+                ),
+                "sample count is invalid",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"].pop(),
+                "does not have eight samples",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][0].__setitem__(
+                    "unexpected", True
+                ),
+                "sample 0 schema is invalid",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][0].__setitem__(
+                    "capacityBytes", float(smoke.WASM_PAGE_SIZE_BYTES)
+                ),
+                "positive safe Wasm-page multiple",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][0].__setitem__(
+                    "capacityBytes", True
+                ),
+                "positive safe Wasm-page multiple",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][0].__setitem__(
+                    "capacityBytes", smoke.WASM_PAGE_SIZE_BYTES - 1
+                ),
+                "positive safe Wasm-page multiple",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][1].__setitem__(
+                    "bufferKind", "ArrayBuffer"
+                ),
+                "is not shared",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][1].__setitem__(
+                    "heapU8Exported", 1
+                ),
+                "lacks Uint8Array evidence",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][3].__setitem__(
+                    "frameId", 99
+                ),
+                "stage/frame copy observation",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"]["samples"][0].__setitem__(
+                    "stage", 0
+                ),
+                "is not terminal",
+            ),
+            (
+                lambda result: result.__setitem__(
+                    "wasmHeapBufferCapacity",
+                    wasm_heap_buffer_capacity(
+                        result["navigationChurn"]["stages"],
+                        [
+                            smoke.WASM_PAGE_SIZE_BYTES,
+                            2 * smoke.WASM_PAGE_SIZE_BYTES,
+                            smoke.WASM_PAGE_SIZE_BYTES,
+                            2 * smoke.WASM_PAGE_SIZE_BYTES,
+                            2 * smoke.WASM_PAGE_SIZE_BYTES,
+                            2 * smoke.WASM_PAGE_SIZE_BYTES,
+                            2 * smoke.WASM_PAGE_SIZE_BYTES,
+                            2 * smoke.WASM_PAGE_SIZE_BYTES,
+                        ],
+                    ),
+                ),
+                "not nondecreasing",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"].__setitem__(
+                    "highWaterBytes", 2 * smoke.WASM_PAGE_SIZE_BYTES
+                ),
+                "high water is invalid",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"].__setitem__(
+                    "grew", True
+                ),
+                "growth flag is invalid",
+            ),
+            (
+                lambda result: result["wasmHeapBufferCapacity"].__setitem__(
+                    "nondecreasing", 1
+                ),
+                "nondecreasing flag is invalid",
+            ),
+        )
+        for mutate, expression in mutations:
+            with self.subTest(expression=expression):
+                result = copy.deepcopy(successful_result())
+                mutate(result)
+                with self.assertRaisesRegex(M0Error, expression):
+                    validate(result)
 
     def test_rejects_history_title_rfh_fvp_or_copy_evidence_failures(self) -> None:
         mutations = (
@@ -403,6 +597,11 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
             "rfhLive",
             "fvp",
             "backingStoreCopyFrameId",
+            "wasmHeapBufferCapacitySample",
+            "Module.HEAPU8.buffer.byteLength capacity is not allocations",
+            "WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT",
+            "stage_backing_store_copy",
+            "wasmHeapBufferCapacity",
             "const observedStage = churn.stages[stage - 1]",
             "artifact_source_provenance",
             "immutable-in-memory-server-snapshot",
@@ -410,6 +609,8 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         ):
             with self.subTest(host=marker):
                 self.assertIn(marker, host)
+        self.assertIn("const buffer = heap.buffer;", host)
+        self.assertIn("never\n  // retains a buffer or view", host)
         self.assertNotIn("Page.navigate", host)
         for marker in (
             'HOST_ROOT = "/__m9_browser_navigation_churn__"',
@@ -417,6 +618,10 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
             '"Cross-Origin-Embedder-Policy", "require-corp"',
             '"application/wasm"',
             "verify_required_exports",
+            "_validate_wasm_heap_buffer_capacity",
+            "WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT",
+            "MAX_SAFE_INTEGER",
+            "stage/frame copy observation",
             "immutable-in-memory-server-snapshot",
             "wait_for_normal_close_result",
         ):
