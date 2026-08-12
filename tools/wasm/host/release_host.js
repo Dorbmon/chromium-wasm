@@ -211,15 +211,28 @@ class ChromiumWasmPreReleaseHost {
 
   #renderVersions(version) {
     const versions = version?.versions;
-    if (!versions || typeof versions !== "object") {
+    const build = version?.build;
+    if (!versions || typeof versions !== "object" ||
+        !build || typeof build !== "object") {
       throw new Error("VERSION.json does not contain revisions");
     }
+    if (build.artifact_source_provenance !== "unverified") {
+      throw new Error(
+          "VERSION.json does not declare unverified artifact provenance");
+    }
     this.#versionsElement.replaceChildren();
-    for (const name of ["chromium", "v8", "emscripten", "port"]) {
+    const displayedValues = [
+      ["chromium", versions.chromium],
+      ["v8", versions.v8],
+      ["emscripten", versions.emscripten],
+      ["staging checkout", build.staging_checkout],
+      ["artifact source provenance", build.artifact_source_provenance],
+    ];
+    for (const [name, value] of displayedValues) {
       const term = document.createElement("dt");
       const definition = document.createElement("dd");
       term.textContent = name;
-      definition.textContent = asNonemptyString(versions[name], `version ${name}`);
+      definition.textContent = asNonemptyString(value, `version ${name}`);
       this.#versionsElement.append(term, definition);
     }
   }

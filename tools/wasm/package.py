@@ -44,7 +44,7 @@ else:
 
 
 SENTINEL = "CHROMIUM_WASM_M9_PACKAGE"
-PACKAGE_SCHEMA_VERSION = 1
+PACKAGE_SCHEMA_VERSION = 2
 HOST_PROTOCOL_VERSION = 1
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
 PRODUCT_NAME = "chromium-wasm"
@@ -101,6 +101,11 @@ Chromium release. Its VERSION.json has release_status
 \"pre_m7_m8_not_releasable\". Do not describe it as security-equivalent to
 desktop Chromium or as having a persistent browser profile.
 
+The build.staging_checkout value records only the Git checkout that ran this
+staging tool. The copied build artifacts have
+build.artifact_source_provenance = \"unverified\"; staging does not assert that
+they were built from that checkout.
+
 Serve this directory from one HTTPS or localhost origin. Every response,
 including JavaScript workers and the Wasm binary, must carry:
 
@@ -122,6 +127,8 @@ Known non-release limitations:
   * This package has not passed the M8 compatibility or M9 stress/reliability
     gate, and its license directory is not the final third-party attribution
     closure.
+  * The recorded staging checkout is not a verified source identity for the
+    copied build artifacts.
 
 The in-canvas browser UI is implemented by Chromium. The surrounding page is
 only a loader and narrow host bridge.
@@ -308,17 +315,12 @@ def _file_records(root: Path, paths: Iterable[str]) -> list[dict[str, object]]:
     return records
 
 
-def _manifest_versions(
-    manifest: dict[str, Any], port_revision: str
-) -> dict[str, str]:
-    if not GIT_REVISION_RE.fullmatch(port_revision):
-        raise PackageError("port revision must be a lowercase 40-character Git hash")
+def _manifest_versions(manifest: dict[str, Any]) -> dict[str, str]:
     try:
         versions = {
             "chromium": manifest["chromium"]["revision"],
             "v8": manifest["git_dependencies"]["v8"]["revision"],
             "emscripten": manifest["emscripten"]["source_revision"],
-            "port": port_revision,
         }
     except (KeyError, TypeError) as exc:
         raise PackageError("toolchain manifest lacks a package version field") from exc
@@ -340,13 +342,19 @@ def _version_manifest(
     gn_args: str,
     artifacts: list[dict[str, object]],
 ) -> dict[str, object]:
+    if not GIT_REVISION_RE.fullmatch(port_revision):
+        raise PackageError(
+            "staging checkout must be a lowercase 40-character Git hash"
+        )
     return {
         "artifacts": artifacts,
         "build": {
+            "artifact_source_provenance": "unverified",
             "gn_args": gn_args.split("\n"),
             "gn_args_sha256": gn_args_sha256,
             "input_module_name": module_name,
             "resource_delivery": "embedded-in-wasm-current-build",
+            "staging_checkout": port_revision,
         },
         "host": {
             "bridge_protocol": HOST_PROTOCOL_VERSION,
@@ -359,6 +367,10 @@ def _version_manifest(
             "M9 stress, reliability, and final release validation are incomplete.",
             "The single-process Wasm port is not security-equivalent to desktop Chromium.",
             "The LICENSES directory is not a complete third-party attribution closure.",
+            (
+                "The staging checkout is not verified as the source identity "
+                "of the copied build artifacts."
+            ),
         ],
         "product": PRODUCT_NAME,
         "release_status": RELEASE_STATUS,
@@ -367,7 +379,7 @@ def _version_manifest(
             "path": "tools/wasm/toolchain_manifest.json",
             "sha256": manifest_sha256,
         },
-        "versions": _manifest_versions(manifest, port_revision),
+        "versions": _manifest_versions(manifest),
     }
 
 
@@ -502,7 +514,7 @@ def package_release(
             "package manifest must be the checked-out toolchain manifest"
         )
     manifest_sha256 = sha256_file(manifest_path)
-    _manifest_versions(manifest, port_revision)
+    _manifest_versions(manifest)
 
     staging = Path(
         tempfile.mkdtemp(
@@ -585,7 +597,6 @@ def _validate_version(version: dict[str, Any], root: Path) -> None:
         "chromium",
         "v8",
         "emscripten",
-        "port",
     } or not all(
         isinstance(value, str) and GIT_REVISION_RE.fullmatch(value)
         for value in versions.values()
@@ -594,10 +605,12 @@ def _validate_version(version: dict[str, Any], root: Path) -> None:
 
     build = version["build"]
     if not isinstance(build, dict) or set(build) != {
+        "artifact_source_provenance",
         "gn_args",
         "gn_args_sha256",
         "input_module_name",
         "resource_delivery",
+        "staging_checkout",
     }:
         raise PackageError("VERSION.json build metadata is invalid")
     if not isinstance(build["gn_args"], list) or not build["gn_args"]:
@@ -614,6 +627,12 @@ def _validate_version(version: dict[str, Any], root: Path) -> None:
         raise PackageError("VERSION.json module name is invalid")
     if build["resource_delivery"] != "embedded-in-wasm-current-build":
         raise PackageError("VERSION.json resource delivery declaration is invalid")
+    if build["artifact_source_provenance"] != "unverified":
+        raise PackageError("VERSION.json artifact source provenance is invalid")
+    if not isinstance(build["staging_checkout"], str) or not GIT_REVISION_RE.fullmatch(
+        build["staging_checkout"]
+    ):
+        raise PackageError("VERSION.json staging checkout is invalid")
 
     host = version["host"]
     if not isinstance(host, dict) or host != {

@@ -161,7 +161,7 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
         return {
             "endpoints": observed,
             "release_status": verification["release_status"],
-            "scope": "static-package-headers-mime-and-provenance-only",
+            "scope": "static-package-headers-mime-and-artifact-integrity-only",
         }
     finally:
         server.shutdown()

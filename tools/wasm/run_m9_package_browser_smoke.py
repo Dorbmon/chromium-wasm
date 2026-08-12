@@ -55,8 +55,10 @@ _STATUS_EXPRESSION = r"""
   const root = document.querySelector("#chrome-root");
   const status = document.querySelector("#chrome-status");
   const shutdown = document.querySelector("#shutdown");
+  const versions = document.querySelector("#versions");
   if (!(root instanceof HTMLElement) || !(status instanceof HTMLElement) ||
-      !(shutdown instanceof HTMLButtonElement)) {
+      !(shutdown instanceof HTMLButtonElement) ||
+      !(versions instanceof HTMLElement)) {
     // CDP can list a target while its initial document is still being
     // replaced by the staged package index. Treat that transient state as
     // pending rather than attaching a false permanent page failure to the
@@ -89,6 +91,7 @@ _STATUS_EXPRESSION = r"""
     processExitCode: payload.processExitCode,
     shutdownDisabled: shutdown.disabled,
     shutdownRequested: payload.shutdownRequested,
+    displayedVersions: versions.textContent,
   };
 })()
 """
@@ -113,6 +116,7 @@ def _fatal_record(status: dict[str, Any]) -> str | None:
 
 def _is_ready(status: dict[str, Any]) -> bool:
     readiness = status.get("readiness")
+    displayed_versions = status.get("displayedVersions")
     return (
         status.get("crossOriginIsolated") is True
         and status.get("releaseStatus") == RELEASE_STATUS
@@ -122,6 +126,10 @@ def _is_ready(status: dict[str, Any]) -> bool:
         and isinstance(readiness, dict)
         and readiness.get("surfaceReady") is True
         and status.get("pageState") == "running"
+        and isinstance(displayed_versions, str)
+        and "staging checkout" in displayed_versions
+        and "artifact source provenance" in displayed_versions
+        and "unverified" in displayed_versions
     )
 
 

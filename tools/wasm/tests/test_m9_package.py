@@ -89,8 +89,13 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual("pre_m7_m8_not_releasable", result["release_status"])
 
         version = json.loads((dist_dir / "VERSION.json").read_text("utf-8"))
+        self.assertEqual(package.PACKAGE_SCHEMA_VERSION, version["schema_version"])
         self.assertEqual(package.RELEASE_STATUS, version["release_status"])
-        self.assertEqual(PORT_REVISION, version["versions"]["port"])
+        self.assertNotIn("port", version["versions"])
+        self.assertEqual(PORT_REVISION, version["build"]["staging_checkout"])
+        self.assertEqual(
+            "unverified", version["build"]["artifact_source_provenance"]
+        )
         self.assertEqual(
             "embedded-in-wasm-current-build", version["build"]["resource_delivery"]
         )
@@ -102,6 +107,10 @@ class M9PackageTest(unittest.TestCase):
         ])
         self.assertIn(
             "not a distributable", (dist_dir / "README.txt").read_text("utf-8")
+        )
+        self.assertIn(
+            "not a verified source identity",
+            (dist_dir / "README.txt").read_text("utf-8"),
         )
         self.assertIn(
             "does not contain a complete", (dist_dir / "LICENSES/PRE_RELEASE_NOTICE.txt").read_text(
@@ -200,6 +209,26 @@ class M9PackageTest(unittest.TestCase):
         with self.assertRaisesRegex(package.PackageError, "hash mismatch"):
             package.verify_release_tree(dist_dir)
 
+    def test_verification_requires_unverified_artifact_source_provenance(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        version["build"]["artifact_source_provenance"] = "verified"
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(package.PackageError, "source provenance"):
+            package.verify_release_tree(dist_dir)
+
+    def test_verification_requires_a_git_staging_checkout(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        version["build"]["staging_checkout"] = "unverified"
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(package.PackageError, "staging checkout"):
+            package.verify_release_tree(dist_dir)
+
     def test_static_package_response_contract(self) -> None:
         dist_dir = self._stage()
         for request_path, expected_mime in {
@@ -227,7 +256,7 @@ class M9PackageTest(unittest.TestCase):
         result = run_package_smoke(self._stage())
         self.assertEqual("pre_m7_m8_not_releasable", result["release_status"])
         self.assertEqual(
-            "static-package-headers-mime-and-provenance-only", result["scope"]
+            "static-package-headers-mime-and-artifact-integrity-only", result["scope"]
         )
         endpoints = result["endpoints"]
         self.assertEqual(
@@ -255,6 +284,10 @@ class M9PackageTest(unittest.TestCase):
                 self.assertIn(module, host)
         self.assertIn("pre_m7_m8_not_releasable", host)
         self.assertIn("not passed the M7/M8/M9", index)
+        self.assertIn("staging checkout", host)
+        self.assertIn("artifact source provenance", host)
+        self.assertIn('artifact_source_provenance !== "unverified"', host)
+        self.assertIn("not verified as the source identity", index)
 
     def test_browser_smoke_requires_the_blob_backed_renamed_loader_path(self) -> None:
         smoke = (REPO_ROOT / "tools/wasm/run_m9_package_browser_smoke.py").read_text(
@@ -272,6 +305,8 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn("clean fixed package-host shutdown", smoke)
         self.assertIn("package host elements are not installed yet", smoke)
         self.assertIn("pending: true", smoke)
+        self.assertIn("displayedVersions", smoke)
+        self.assertIn("artifact source provenance", smoke)
         self.assertIn("mainScriptUrlOrBlob", host)
         self.assertIn("inputModuleName", host)
         self.assertIn('"./chromium-wasm.wasm"', host)
