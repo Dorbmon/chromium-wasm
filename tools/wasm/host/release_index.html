@@ -1,0 +1,151 @@
+<!doctype html>
+<!--
+  Copyright 2026 The Chromium Authors
+  Use of this source code is governed by a BSD-style license that can be
+  found in the LICENSE file.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm pre-release</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      background: #10141b;
+      color: #dbe7f5;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(800px, 1fr) 320px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    #browser-canvas {
+      display: block;
+      width: 800px;
+      height: 600px;
+      border: 1px solid #53657d;
+      background: #000;
+      outline: none;
+    }
+
+    #browser-canvas:focus {
+      border-color: #72ddf7;
+    }
+
+    /* This proxy remains focusable rather than hidden. The narrow host text
+       bridge needs normal trusted DOM beforeinput and paste semantics. */
+    #browser-text-proxy {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+      padding: 0;
+      opacity: 0;
+      border: 0;
+      outline: 0;
+      overflow: clip;
+      white-space: nowrap;
+    }
+
+    aside {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid #53657d;
+      background: #171e28;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    .warning {
+      color: #ffd166;
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 4px 12px;
+      margin: 0 0 12px;
+    }
+
+    dt {
+      color: #8da9c4;
+    }
+
+    dd {
+      min-width: 0;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    button {
+      margin: 0 0 12px;
+    }
+
+    pre {
+      max-height: 420px;
+      margin: 0;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    main[data-state="failed"] h1 {
+      color: #ff758f;
+    }
+  </style>
+</head>
+<body>
+  <main id="chrome-root" data-state="starting">
+    <canvas
+      id="browser-canvas"
+      width="800"
+      height="600"
+      tabindex="0"
+      aria-label="Chromium browser output"></canvas>
+    <textarea
+      id="browser-text-proxy"
+      aria-label="Chromium browser trusted text input proxy"
+      autocomplete="off"
+      autocapitalize="off"
+      spellcheck="false"
+      inputmode="none"></textarea>
+    <aside aria-label="Chromium Wasm loader diagnostics">
+      <h1>Chromium Wasm pre-release</h1>
+      <p class="warning">
+        This package has not passed the M7/M8/M9 release gate.
+      </p>
+      <dl id="versions"></dl>
+      <button id="shutdown" type="button" disabled>Request shutdown</button>
+      <pre id="chrome-status">Loading package metadata…</pre>
+    </aside>
+  </main>
+  <script type="module">
+    import {runChromiumWasmPreRelease} from "./chromium-wasm-host.js";
+
+    runChromiumWasmPreRelease().catch((error) => {
+      document.querySelector("#chrome-root").dataset.state = "failed";
+      document.querySelector("#chrome-status").textContent =
+        `HOST FAILURE: ${String(error)}`;
+    });
+  </script>
+</body>
+</html>
