@@ -12,6 +12,7 @@
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_manager_service.h"
@@ -20,7 +21,9 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/wasm/wasm_browser.h"
+#include "chrome/browser/wasm/wasm_browser_accessibility_snapshot_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_continuous_flow.h"
+#include "chrome/browser/wasm/wasm_browser_devtools_protocol_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_clipboard.h"
 #include "chrome/browser/wasm/wasm_browser_host_clipboard_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_continuous_flow_smoke.h"
@@ -46,6 +49,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui.h"
@@ -278,6 +282,145 @@ class WasmBrowserHostStorageEstimateNavigationObserver final
   bool observed_ = false;
 };
 
+// Waits for the fixed, browser-initiated data URL used by the DevTools
+// protocol smoke. The direct protocol client must never attach to the initial
+// uncommitted blank WebContents: it needs the real, live primary renderer
+// frame that this observer verifies after commit.
+class WasmBrowserDevToolsProtocolNavigationObserver final
+    : public content::WebContentsObserver {
+ public:
+  WasmBrowserDevToolsProtocolNavigationObserver(
+      content::WebContents* web_contents,
+      GURL expected_url,
+      base::RepeatingClosure navigation_observed)
+      : content::WebContentsObserver(web_contents),
+        expected_url_(std::move(expected_url)),
+        navigation_observed_(std::move(navigation_observed)) {
+    CHECK(web_contents);
+    CHECK(expected_url_.is_valid());
+    CHECK(navigation_observed_);
+  }
+
+  WasmBrowserDevToolsProtocolNavigationObserver(
+      const WasmBrowserDevToolsProtocolNavigationObserver&) = delete;
+  WasmBrowserDevToolsProtocolNavigationObserver& operator=(
+      const WasmBrowserDevToolsProtocolNavigationObserver&) = delete;
+  ~WasmBrowserDevToolsProtocolNavigationObserver() override = default;
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (observed_ || !navigation_handle ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->IsSameDocument() ||
+        !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage() ||
+        navigation_handle->GetURL() != expected_url_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+
+    content::RenderFrameHost* const primary_main_frame =
+        web_contents()->GetPrimaryMainFrame();
+    if (!primary_main_frame || !primary_main_frame->IsRenderFrameLive()) {
+      return;
+    }
+
+    observed_ = true;
+    navigation_observed_.Run();
+  }
+
+ private:
+  const GURL expected_url_;
+  const base::RepeatingClosure navigation_observed_;
+  bool observed_ = false;
+};
+
+// Waits for the one fixed data URL used by the AX snapshot smoke to commit,
+// finish loading, and paint before the one-shot renderer snapshot begins.
+// The observer owns no semantic data and cannot select a URL or page.
+class WasmBrowserAccessibilitySnapshotNavigationObserver final
+    : public content::WebContentsObserver {
+ public:
+  WasmBrowserAccessibilitySnapshotNavigationObserver(
+      content::WebContents* web_contents,
+      GURL expected_url,
+      base::RepeatingClosure navigation_observed)
+      : content::WebContentsObserver(web_contents),
+        expected_url_(std::move(expected_url)),
+        navigation_observed_(std::move(navigation_observed)) {
+    CHECK(web_contents);
+    CHECK(expected_url_.is_valid());
+    CHECK(navigation_observed_);
+  }
+
+  WasmBrowserAccessibilitySnapshotNavigationObserver(
+      const WasmBrowserAccessibilitySnapshotNavigationObserver&) = delete;
+  WasmBrowserAccessibilitySnapshotNavigationObserver& operator=(
+      const WasmBrowserAccessibilitySnapshotNavigationObserver&) = delete;
+  ~WasmBrowserAccessibilitySnapshotNavigationObserver() override = default;
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (observed_ || committed_ || !navigation_handle ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->IsSameDocument() ||
+        !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage() ||
+        navigation_handle->GetURL() != expected_url_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+
+    content::RenderFrameHost* const primary_main_frame =
+        web_contents()->GetPrimaryMainFrame();
+    if (!primary_main_frame || !primary_main_frame->IsRenderFrameLive()) {
+      return;
+    }
+
+    committed_ = true;
+    if (web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
+      first_visually_nonempty_paint_after_commit_ = true;
+    }
+    if (!web_contents()->IsLoading()) {
+      stopped_loading_after_commit_ = true;
+    }
+    MaybeNotify();
+  }
+
+  void DidStopLoading() override {
+    if (!committed_ || observed_) {
+      return;
+    }
+    stopped_loading_after_commit_ = true;
+    MaybeNotify();
+  }
+
+  void DidFirstVisuallyNonEmptyPaint() override {
+    if (!committed_ || observed_ || !web_contents() ||
+        web_contents()->GetLastCommittedURL() != expected_url_) {
+      return;
+    }
+    CHECK(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+    first_visually_nonempty_paint_after_commit_ = true;
+    MaybeNotify();
+  }
+
+ private:
+  void MaybeNotify() {
+    if (observed_ || !committed_ || !stopped_loading_after_commit_ ||
+        !first_visually_nonempty_paint_after_commit_) {
+      return;
+    }
+    observed_ = true;
+    navigation_observed_.Run();
+  }
+
+  const GURL expected_url_;
+  const base::RepeatingClosure navigation_observed_;
+  bool committed_ = false;
+  bool stopped_loading_after_commit_ = false;
+  bool first_visually_nonempty_paint_after_commit_ = false;
+  bool observed_ = false;
+};
+
 // A compact observer for the trusted host WebUI flow. Navigation initiation is
 // never supplied by this observer: the lifecycle arms it before each host
 // phase, then it requires the real primary commit, user gesture, completion,
@@ -413,6 +556,14 @@ constexpr char kHostStorageEstimateSmokePassMarker[] =
     "CHROMIUM_WASM_M7_HOST_STORAGE_ESTIMATE:PASS";
 constexpr char kHostTextSmokeUrl[] = "chrome://version/";
 constexpr char kHostStorageEstimateSettingsUrl[] = "chrome://settings/";
+constexpr char kDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
+constexpr char kAccessibilitySnapshotSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:READY";
+constexpr char kAccessibilitySnapshotSmokeNavigatedMarker[] =
+    "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:NAVIGATED";
+constexpr char kAccessibilitySnapshotSmokePassMarker[] =
+    "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:PASS";
 constexpr char16_t kHostStorageEstimateSettingsTitle[] =
     u"Settings \u2014 Chromium Wasm";
 constexpr char kHostPointerTabsReadyMarker[] =
@@ -560,6 +711,12 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  devtools_protocol_smoke_navigation_observer_.reset();
+  devtools_protocol_smoke_contents_ = nullptr;
+  devtools_protocol_smoke_.reset();
+  accessibility_snapshot_smoke_.reset();
+  accessibility_snapshot_smoke_navigation_observer_.reset();
+  accessibility_snapshot_smoke_contents_ = nullptr;
   ClearWasmBrowserHostStorageEstimateSmokeVerificationForTesting();
   host_storage_estimate_navigation_observer_.reset();
   host_storage_estimate_contents_ = nullptr;
@@ -1013,6 +1170,238 @@ void WasmBrowserLifecycle::StartHostStorageEstimateSmoke() {
   std::fflush(stderr);
 }
 
+void WasmBrowserLifecycle::StartDevToolsProtocolSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+  CHECK(!devtools_protocol_smoke_started_);
+  CHECK(!devtools_protocol_smoke_succeeded_);
+  CHECK(!devtools_protocol_smoke_contents_);
+  CHECK(!devtools_protocol_smoke_navigation_observer_);
+  CHECK(!devtools_protocol_smoke_);
+
+  // The lifecycle owns exactly one active top-level tab. Pin the direct
+  // client to that primary WebContents rather than discovering targets or
+  // accepting an ID from the host page.
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  CHECK(tab_strip_model);
+  CHECK_EQ(tab_strip_model->count(), 1);
+  content::WebContents* const contents =
+      tab_strip_model->GetActiveWebContents();
+  CHECK(contents);
+  CHECK_EQ(contents, contents->GetOutermostWebContents());
+  CHECK(contents->GetPrimaryMainFrame());
+  CHECK_EQ(browser_->GetBrowserView().GetActiveWebContents(), contents);
+
+  const GURL smoke_url(kDevToolsProtocolSmokeUrl);
+  CHECK(smoke_url.is_valid());
+  devtools_protocol_smoke_started_ = true;
+  devtools_protocol_smoke_contents_ = contents;
+  devtools_protocol_smoke_navigation_observer_ =
+      std::make_unique<WasmBrowserDevToolsProtocolNavigationObserver>(
+          contents, smoke_url,
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnDevToolsProtocolSmokeNavigationObserved,
+              base::Unretained(this)));
+
+  content::NavigationController::LoadURLParams params(smoke_url);
+  params.transition_type = ui::PAGE_TRANSITION_GENERATED;
+  const base::WeakPtr<content::NavigationHandle> navigation_handle =
+      contents->GetController().LoadURLWithParams(params);
+  CHECK(navigation_handle);
+}
+
+void WasmBrowserLifecycle::OnDevToolsProtocolSmokeNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(devtools_protocol_smoke_started_);
+  CHECK(!devtools_protocol_smoke_succeeded_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(devtools_protocol_smoke_contents_);
+  CHECK(devtools_protocol_smoke_navigation_observer_);
+  CHECK(!devtools_protocol_smoke_);
+
+  content::WebContents* const contents = devtools_protocol_smoke_contents_;
+  CHECK_EQ(browser_->GetBrowserView().GetActiveWebContents(), contents);
+  CHECK_EQ(contents->GetOutermostWebContents(), contents);
+  content::RenderFrameHost* const primary_main_frame =
+      contents->GetPrimaryMainFrame();
+  CHECK(primary_main_frame);
+  CHECK(primary_main_frame->IsRenderFrameLive());
+  CHECK_EQ(contents->GetLastCommittedURL(), GURL(kDevToolsProtocolSmokeUrl));
+
+  devtools_protocol_smoke_navigation_observer_.reset();
+  devtools_protocol_smoke_ = std::make_unique<WasmBrowserDevToolsProtocolSmoke>(
+      base::BindOnce(&WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded,
+                     weak_ptr_factory_.GetWeakPtr()));
+  devtools_protocol_smoke_->Start(contents);
+}
+
+void WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(devtools_protocol_smoke_started_);
+  CHECK(!devtools_protocol_smoke_succeeded_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(devtools_protocol_smoke_);
+  // The direct client emits its success marker first and its detached marker
+  // only after DetachClient succeeds. Do not permit Browser close until that
+  // barrier is observable and the client has no agent-host reference.
+  CHECK(devtools_protocol_smoke_->IsDetached());
+
+  devtools_protocol_smoke_succeeded_ = true;
+  // Network.enable can complete synchronously during Start(). Defer Browser
+  // close to the next UI turn so its did-close observer cannot destroy the
+  // still-returning direct protocol client.
+  CHECK(base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&WasmBrowserLifecycle::BeginDevToolsProtocolSmokeShutdown,
+                     weak_ptr_factory_.GetWeakPtr())));
+}
+
+void WasmBrowserLifecycle::BeginDevToolsProtocolSmokeShutdown() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  // A direct Browser close can win the posted turn. The did-close path has
+  // already armed the normal physical-destruction barrier in that case, so
+  // this deferred test-only shutdown must be inert rather than re-entering
+  // BeginShutdown's one-shot state machine.
+  if (shutdown_started_ || shutdown_complete_ || !browser_) {
+    return;
+  }
+  BeginShutdown();
+}
+
+void WasmBrowserLifecycle::StartAccessibilitySnapshotSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+  CHECK(!accessibility_snapshot_smoke_started_);
+  CHECK(!accessibility_snapshot_smoke_completion_received_);
+  CHECK(!accessibility_snapshot_smoke_succeeded_);
+  CHECK(!accessibility_snapshot_smoke_contents_);
+  CHECK(!accessibility_snapshot_smoke_navigation_observer_);
+  CHECK(!accessibility_snapshot_smoke_);
+
+  // The lifecycle owns exactly one active top-level tab. The snapshot is
+  // pinned to it and to the fixed document below; no host input selects a
+  // renderer, frame, URL, semantic text, or AX action.
+  TabStripModel* const tab_strip_model = browser_->tab_strip_model();
+  CHECK(tab_strip_model);
+  CHECK_EQ(tab_strip_model->count(), 1);
+  content::WebContents* const contents =
+      tab_strip_model->GetActiveWebContents();
+  CHECK(contents);
+  CHECK_EQ(contents, contents->GetOutermostWebContents());
+  CHECK(contents->GetPrimaryMainFrame());
+  CHECK_EQ(browser_->GetBrowserView().GetActiveWebContents(), contents);
+
+  const GURL smoke_url(GetWasmBrowserAccessibilitySnapshotSmokeUrl());
+  CHECK(smoke_url.is_valid());
+  accessibility_snapshot_smoke_started_ = true;
+  accessibility_snapshot_smoke_contents_ = contents;
+  accessibility_snapshot_smoke_navigation_observer_ =
+      std::make_unique<WasmBrowserAccessibilitySnapshotNavigationObserver>(
+          contents, smoke_url,
+          base::BindRepeating(
+              &WasmBrowserLifecycle::OnAccessibilitySnapshotSmokeNavigationObserved,
+              weak_ptr_factory_.GetWeakPtr()));
+
+  std::fprintf(stderr, "%s\n", kAccessibilitySnapshotSmokeReadyMarker);
+  std::fflush(stderr);
+
+  content::NavigationController::LoadURLParams params(smoke_url);
+  params.transition_type = ui::PAGE_TRANSITION_GENERATED;
+  const base::WeakPtr<content::NavigationHandle> navigation_handle =
+      contents->GetController().LoadURLWithParams(params);
+  CHECK(navigation_handle);
+}
+
+void WasmBrowserLifecycle::OnAccessibilitySnapshotSmokeNavigationObserved() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(accessibility_snapshot_smoke_started_);
+  CHECK(!accessibility_snapshot_smoke_completion_received_);
+  CHECK(!accessibility_snapshot_smoke_succeeded_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(accessibility_snapshot_smoke_contents_);
+  CHECK(accessibility_snapshot_smoke_navigation_observer_);
+  CHECK(!accessibility_snapshot_smoke_);
+
+  content::WebContents* const contents = accessibility_snapshot_smoke_contents_;
+  CHECK_EQ(browser_->GetBrowserView().GetActiveWebContents(), contents);
+  CHECK_EQ(contents->GetOutermostWebContents(), contents);
+  content::RenderFrameHost* const primary_main_frame =
+      contents->GetPrimaryMainFrame();
+  CHECK(primary_main_frame);
+  CHECK(primary_main_frame->IsRenderFrameLive());
+  CHECK_EQ(contents->GetLastCommittedURL(),
+           GetWasmBrowserAccessibilitySnapshotSmokeUrl());
+  CHECK(contents->CompletedFirstVisuallyNonEmptyPaint());
+  CHECK(!contents->IsLoading());
+
+  std::fprintf(stderr, "%s\n", kAccessibilitySnapshotSmokeNavigatedMarker);
+  std::fflush(stderr);
+  accessibility_snapshot_smoke_navigation_observer_.reset();
+  accessibility_snapshot_smoke_ =
+      std::make_unique<WasmBrowserAccessibilitySnapshotSmoke>(
+          base::BindOnce(&WasmBrowserLifecycle::OnAccessibilitySnapshotSmokeCompleted,
+                         weak_ptr_factory_.GetWeakPtr()));
+  accessibility_snapshot_smoke_->Start(contents);
+}
+
+void WasmBrowserLifecycle::OnAccessibilitySnapshotSmokeCompleted(bool success) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (accessibility_snapshot_smoke_completion_received_) {
+    return;
+  }
+  accessibility_snapshot_smoke_completion_received_ = true;
+
+  if (success) {
+    if (shutdown_started_ || shutdown_complete_ || !browser_ ||
+        !accessibility_snapshot_smoke_ ||
+        !accessibility_snapshot_smoke_contents_ ||
+        browser_->GetBrowserView().GetActiveWebContents() !=
+            accessibility_snapshot_smoke_contents_) {
+      return;
+    }
+    accessibility_snapshot_smoke_succeeded_ = true;
+    std::fprintf(stderr, "%s\n", kAccessibilitySnapshotSmokePassMarker);
+    std::fflush(stderr);
+  }
+
+  // RequestAXTreeSnapshot can complete during callback dispatch. Defer close
+  // so the smoke's completion stack can return before teardown resets the
+  // owner that invalidates any late renderer reply.
+  CHECK(base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &WasmBrowserLifecycle::BeginAccessibilitySnapshotSmokeShutdown,
+          weak_ptr_factory_.GetWeakPtr())));
+}
+
+void WasmBrowserLifecycle::BeginAccessibilitySnapshotSmokeShutdown() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  // A direct Browser close can win the posted turn. Its did-close route has
+  // already reset the one-shot snapshot owner and armed the normal physical
+  // destruction barrier, so do not re-enter the lifecycle state machine.
+  if (shutdown_started_ || shutdown_complete_ || !browser_) {
+    return;
+  }
+  BeginShutdown();
+}
+
 bool WasmBrowserLifecycle::VerifyHostStorageEstimateSmokeCheck(int stage) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (stage != 1 || !host_storage_estimate_smoke_started_ ||
@@ -1167,6 +1556,12 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  devtools_protocol_smoke_navigation_observer_.reset();
+  devtools_protocol_smoke_contents_ = nullptr;
+  devtools_protocol_smoke_.reset();
+  accessibility_snapshot_smoke_.reset();
+  accessibility_snapshot_smoke_navigation_observer_.reset();
+  accessibility_snapshot_smoke_contents_ = nullptr;
   ClearWasmBrowserHostStorageEstimateSmokeVerificationForTesting();
   host_storage_estimate_navigation_observer_.reset();
   host_storage_estimate_contents_ = nullptr;
@@ -1233,6 +1628,12 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  devtools_protocol_smoke_navigation_observer_.reset();
+  devtools_protocol_smoke_contents_ = nullptr;
+  devtools_protocol_smoke_.reset();
+  accessibility_snapshot_smoke_.reset();
+  accessibility_snapshot_smoke_navigation_observer_.reset();
+  accessibility_snapshot_smoke_contents_ = nullptr;
   ClearWasmBrowserHostStorageEstimateSmokeVerificationForTesting();
   host_storage_estimate_navigation_observer_.reset();
   host_storage_estimate_contents_ = nullptr;

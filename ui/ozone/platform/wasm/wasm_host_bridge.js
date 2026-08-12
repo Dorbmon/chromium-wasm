@@ -359,6 +359,55 @@ mergeInto(LibraryManager.library, {
     }) === true ? 1 : 0;
   },
 
+  // This deliberately admits only the fixed M8 accessibility-snapshot smoke
+  // text after its C++ owner has validated a one-shot WebContents AX tree.
+  // Do not turn this into an arbitrary AX/text export: a production mirror
+  // needs its own privacy, focus, update, bounds, and action protocol.
+  chromium_wasm_report_accessibility_snapshot__deps: [
+    '$ChromiumWasmHostBridge',
+    '$UTF8ToString',
+  ],
+  chromium_wasm_report_accessibility_snapshot__proxy: 'sync',
+  chromium_wasm_report_accessibility_snapshot: (
+      heading, headingLength, text, textLength, roleMask) => {
+    const expectedHeading = 'Chromium Wasm AX snapshot';
+    const expectedText = 'Static semantic text.';
+    const expectedRoleMask = 0x7;
+    const maximumTextBytes = 64;
+    const exactText = (pointer, length, expected) => {
+      if (!Number.isSafeInteger(pointer) || pointer < 0 ||
+          !Number.isSafeInteger(length) || length < 0 ||
+          length > maximumTextBytes) {
+        return null;
+      }
+      const end = pointer + length;
+      if (!Number.isSafeInteger(end) || end < pointer || end > HEAPU8.length) {
+        return null;
+      }
+      const value = UTF8ToString(pointer, length);
+      return value === expected ? value : null;
+    };
+    if (!Number.isSafeInteger(roleMask) || roleMask !== expectedRoleMask) {
+      return 0;
+    }
+    const exactHeading = exactText(heading, headingLength, expectedHeading);
+    const exactStaticText = exactText(text, textLength, expectedText);
+    if (exactHeading === null || exactStaticText === null) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.reportAccessibilitySnapshot !== 'function') {
+      return 0;
+    }
+    return bridge.reportAccessibilitySnapshot({
+      protocol: ChromiumWasmHostBridge.version,
+      source: 'fixed-webcontents-ax-snapshot',
+      heading: exactHeading,
+      text: exactStaticText,
+      roleMask,
+    }) === true ? 1 : 0;
+  },
+
   chromium_wasm_report_navigation__deps: ['$ChromiumWasmHostBridge'],
   chromium_wasm_report_navigation__proxy: 'sync',
   chromium_wasm_report_navigation: () => {

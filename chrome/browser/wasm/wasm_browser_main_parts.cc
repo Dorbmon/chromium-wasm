@@ -82,6 +82,10 @@ constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
 constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
     "wasm-browser-lifecycle-smoke";
+constexpr char kWasmBrowserDevToolsProtocolSmokeSwitch[] =
+    "wasm-browser-devtools-protocol-smoke";
+constexpr char kWasmBrowserAccessibilitySnapshotSmokeSwitch[] =
+    "wasm-browser-accessibility-snapshot-smoke";
 constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
     "wasm-browser-host-accelerator-smoke";
 constexpr char kWasmBrowserHostTextSmokeSwitch[] =
@@ -362,6 +366,12 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_lifecycle_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserLifecycleSmokeSwitch);
+  const bool browser_devtools_protocol_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserDevToolsProtocolSmokeSwitch);
+  const bool browser_accessibility_snapshot_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserAccessibilitySnapshotSmokeSwitch);
   const bool browser_host_accelerator_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostAcceleratorSmokeSwitch);
@@ -400,7 +410,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                   "outside its dedicated controlled HTTPS test executable";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
-  if (browser_lifecycle_smoke || browser_host_accelerator_smoke ||
+  if (browser_lifecycle_smoke || browser_devtools_protocol_smoke ||
+      browser_accessibility_snapshot_smoke ||
+      browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_clipboard_smoke ||
       browser_host_storage_estimate_smoke ||
       browser_host_pointer_tab_smoke ||
@@ -409,6 +421,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       browser_host_continuous_flow_smoke ||
       browser_host_continuous_flow_restart_smoke) {
     CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
+                 static_cast<int>(browser_devtools_protocol_smoke) +
+                 static_cast<int>(browser_accessibility_snapshot_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
                  static_cast<int>(browser_host_clipboard_smoke) +
@@ -649,6 +663,16 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
 
   CHECK(browser_lifecycle_smoke_requested_);
   CHECK(browser_lifecycle_->IsVisible());
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserDevToolsProtocolSmokeSwitch)) {
+    browser_lifecycle_->StartDevToolsProtocolSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserAccessibilitySnapshotSmokeSwitch)) {
+    browser_lifecycle_->StartAccessibilitySnapshotSmoke();
+    return;
+  }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserHostAcceleratorSmokeSwitch)) {
     // Install the UI verifier before reporting READY: host stdout callbacks

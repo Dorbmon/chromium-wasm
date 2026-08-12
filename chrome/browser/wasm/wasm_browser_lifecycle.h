@@ -31,6 +31,10 @@ class WasmBrowserHostPointerMenuNavigationObserver;
 class WasmBrowserHostHistoryDownloadsNavigationObserver;
 class WasmBrowserHostStorageEstimateNavigationObserver;
 class WasmBrowserContinuousFlow;
+class WasmBrowserDevToolsProtocolSmoke;
+class WasmBrowserDevToolsProtocolNavigationObserver;
+class WasmBrowserAccessibilitySnapshotSmoke;
+class WasmBrowserAccessibilitySnapshotNavigationObserver;
 
 // Owns the process-lifetime side of one bounded slim Browser. The
 // BrowserManagerService retains the Browser itself; this coordinator attaches
@@ -108,6 +112,16 @@ class WasmBrowserLifecycle final {
   // immutable snapshot retained by its real WebUI controller.
   void StartHostStorageEstimateSmoke();
 
+  // Starts the test-only fixed in-process DevTools protocol proof on this
+  // lifecycle's active primary WebContents. It never exposes a frontend,
+  // transport, or caller-selected protocol command.
+  void StartDevToolsProtocolSmoke();
+
+  // Starts the test-only fixed WebContents AX snapshot proof. It takes one
+  // snapshot and permits only its fixed static semantic text into the passive
+  // host mirror; it is not an interactive accessibility bridge.
+  void StartAccessibilitySnapshotSmoke();
+
   bool IsVisible() const;
   bool IsShutdownStarted() const { return shutdown_started_; }
   bool IsShutdownComplete() const { return shutdown_complete_; }
@@ -139,6 +153,12 @@ class WasmBrowserLifecycle final {
   bool VerifyHostStorageEstimateSmokeCheck(int stage);
   bool OnHostStorageEstimateSmokePresented(int stage);
   void OnHostStorageEstimateSettingsNavigationObserved();
+  void OnDevToolsProtocolSmokeNavigationObserved();
+  void OnDevToolsProtocolSmokeSucceeded();
+  void BeginDevToolsProtocolSmokeShutdown();
+  void OnAccessibilitySnapshotSmokeNavigationObserved();
+  void OnAccessibilitySnapshotSmokeCompleted(bool success);
+  void BeginAccessibilitySnapshotSmokeShutdown();
 
   const raw_ptr<WasmProfile> profile_;
   const raw_ptr<BrowserManagerService> browser_manager_;
@@ -209,6 +229,21 @@ class WasmBrowserLifecycle final {
   std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
       host_history_downloads_downloads_navigation_observer_;
   std::unique_ptr<WasmBrowserContinuousFlow> host_continuous_flow_;
+  bool devtools_protocol_smoke_started_ = false;
+  bool devtools_protocol_smoke_succeeded_ = false;
+  raw_ptr<content::WebContents> devtools_protocol_smoke_contents_ = nullptr;
+  std::unique_ptr<WasmBrowserDevToolsProtocolNavigationObserver>
+      devtools_protocol_smoke_navigation_observer_;
+  std::unique_ptr<WasmBrowserDevToolsProtocolSmoke> devtools_protocol_smoke_;
+  bool accessibility_snapshot_smoke_started_ = false;
+  bool accessibility_snapshot_smoke_completion_received_ = false;
+  bool accessibility_snapshot_smoke_succeeded_ = false;
+  raw_ptr<content::WebContents> accessibility_snapshot_smoke_contents_ =
+      nullptr;
+  std::unique_ptr<WasmBrowserAccessibilitySnapshotNavigationObserver>
+      accessibility_snapshot_smoke_navigation_observer_;
+  std::unique_ptr<WasmBrowserAccessibilitySnapshotSmoke>
+      accessibility_snapshot_smoke_;
   bool host_storage_estimate_smoke_started_ = false;
   bool host_storage_estimate_check_verified_ = false;
   bool host_storage_estimate_navigation_verified_ = false;
@@ -221,6 +256,7 @@ class WasmBrowserLifecycle final {
   bool shutdown_started_ = false;
   bool browser_destruction_barrier_armed_ = false;
   bool shutdown_complete_ = false;
+  base::WeakPtrFactory<WasmBrowserLifecycle> weak_ptr_factory_{this};
 };
 
 }  // namespace chrome

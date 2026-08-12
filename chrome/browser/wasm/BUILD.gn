@@ -1386,6 +1386,46 @@ source_set("wasm_browser_continuous_flow") {
   ]
 }
 
+# A test-only direct DevToolsAgentHost client. It is intentionally limited to
+# one Network.enable request against the lifecycle-owned active tab; it is not
+# a frontend, remote debugger, pipe, or reusable protocol bridge.
+source_set("wasm_browser_devtools_protocol_smoke") {
+  public = [ "wasm_browser_devtools_protocol_smoke.h" ]
+
+  sources = [ "wasm_browser_devtools_protocol_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [
+    "//base",
+    "//content/public/browser",
+    "//url",
+  ]
+
+  deps = [ "//content/public/browser" ]
+}
+
+# A test-only one-shot AX snapshot proof. It validates one fixed static
+# WebContents document and reports only its fixed semantic text to the passive
+# outer host mirror; it is not a general accessibility bridge.
+source_set("wasm_browser_accessibility_snapshot_smoke") {
+  public = [ "wasm_browser_accessibility_snapshot_smoke.h" ]
+
+  sources = [ "wasm_browser_accessibility_snapshot_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [
+    "//base",
+    "//url",
+  ]
+
+  deps = [
+    "//content/public/browser",
+    "//ui/accessibility:ax_base",
+  ]
+}
+
 source_set("wasm_browser_lifecycle") {
   public = [ "wasm_browser_lifecycle.h" ]
 
@@ -1397,7 +1437,9 @@ source_set("wasm_browser_lifecycle") {
 
   deps = [
     ":wasm_browser",
+    ":wasm_browser_accessibility_snapshot_smoke",
     ":wasm_browser_continuous_flow",
+    ":wasm_browser_devtools_protocol_smoke",
     ":wasm_browser_menu",
     ":wasm_browser_host_clipboard",
     ":wasm_browser_host_clipboard_smoke",
