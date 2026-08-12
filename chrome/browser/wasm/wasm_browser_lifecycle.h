@@ -31,6 +31,7 @@ class WasmBrowserHostPointerMenuNavigationObserver;
 class WasmBrowserHostHistoryDownloadsNavigationObserver;
 class WasmBrowserHostStorageEstimateNavigationObserver;
 class WasmBrowserContinuousFlow;
+class WasmBrowserTabChurnSmoke;
 class WasmBrowserDevToolsProtocolSmoke;
 class WasmBrowserDevToolsProtocolNavigationObserver;
 class WasmBrowserAccessibilitySnapshotSmoke;
@@ -105,6 +106,11 @@ class WasmBrowserLifecycle final {
   // verifier exports; navigation, tabs, menu commands, and shutdown remain
   // owned by the existing Chrome/Ozone paths.
   void StartHostContinuousFlowSmoke();
+
+  // Arms the M9 preparation smoke that retains one Browser through exactly
+  // three trusted-DOM tab create/select/select/close cycles. It deliberately
+  // does not navigate, persist data, use WISP, or measure worker behavior.
+  void StartHostTabChurnSmoke();
 
   // Arms the switch-gated outer-origin storage estimate proof. JavaScript can
   // only acknowledge an already accepted estimate and a later canvas frame;
@@ -229,6 +235,7 @@ class WasmBrowserLifecycle final {
   std::unique_ptr<WasmBrowserHostHistoryDownloadsNavigationObserver>
       host_history_downloads_downloads_navigation_observer_;
   std::unique_ptr<WasmBrowserContinuousFlow> host_continuous_flow_;
+  std::unique_ptr<WasmBrowserTabChurnSmoke> host_tab_churn_smoke_;
   bool devtools_protocol_smoke_started_ = false;
   bool devtools_protocol_smoke_succeeded_ = false;
   raw_ptr<content::WebContents> devtools_protocol_smoke_contents_ = nullptr;

@@ -255,6 +255,7 @@ source_set("wasm_tab_strip") {
     ":wasm_browser_continuous_flow",
     ":wasm_browser_lifecycle",
     ":wasm_browser_smoke",
+    ":wasm_browser_tab_churn_smoke",
     ":wasm_browser_view",
   ]
 
@@ -1295,6 +1296,25 @@ source_set("wasm_browser_host_pointer_tab_smoke") {
   deps = [ "//content/public/browser" ]
 }
 
+# The M9 preparation smoke accepts only fixed ordinals for three existing
+# Browser tab create/select/select/close cycles and later Canvas2D
+# backing-store-copy reports. It exposes no Browser command, navigation,
+# persistence, or worker interface.
+source_set("wasm_browser_host_tab_churn_smoke") {
+  public = [ "wasm_browser_host_tab_churn_smoke.h" ]
+
+  sources = [ "wasm_browser_host_tab_churn_smoke.cc" ]
+
+  visibility = [
+    ":wasm_browser_lifecycle",
+    ":wasm_browser_tab_churn_smoke",
+  ]
+
+  public_deps = [ "//base" ]
+
+  deps = [ "//content/public/browser" ]
+}
+
 # The real-browser trusted-pointer Menu -> Settings smoke exposes only ordered
 # observations and presentation acknowledgements. The lifecycle retains the
 # Browser, Views, and WebUI state, so JavaScript cannot use this target as a
@@ -1386,6 +1406,29 @@ source_set("wasm_browser_continuous_flow") {
   ]
 }
 
+# A test-only UI-thread coordinator for fixed same-instance tab churn. It
+# intentionally excludes navigation, data persistence, WISP, page Wasm, and
+# worker-pressure behavior from its narrow contract.
+source_set("wasm_browser_tab_churn_smoke") {
+  public = [ "wasm_browser_tab_churn_smoke.h" ]
+
+  sources = [ "wasm_browser_tab_churn_smoke.cc" ]
+
+  visibility = [ ":wasm_browser_lifecycle" ]
+
+  public_deps = [ "//base" ]
+
+  deps = [
+    ":wasm_browser",
+    ":wasm_browser_host_tab_churn_smoke",
+    ":wasm_browser_view",
+    ":wasm_tab_strip",
+    "//content/public/browser",
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+}
+
 # A test-only direct DevToolsAgentHost client. It is intentionally limited to
 # one Network.enable request against the lifecycle-owned active tab; it is not
 # a frontend, remote debugger, pipe, or reusable protocol bridge.
@@ -1448,12 +1491,14 @@ source_set("wasm_browser_lifecycle") {
     ":wasm_browser_host_history_downloads_smoke",
     ":wasm_browser_host_pointer_menu_smoke",
     ":wasm_browser_host_pointer_tab_smoke",
+    ":wasm_browser_host_tab_churn_smoke",
     ":wasm_browser_host_security_warning_smoke",
     ":wasm_browser_host_storage_estimate",
     ":wasm_browser_host_storage_estimate_smoke",
     ":wasm_browser_host_text",
     ":wasm_browser_host_text_smoke",
     ":wasm_browser_manager",
+    ":wasm_browser_tab_churn_smoke",
     ":wasm_browser_view",
     ":wasm_profile",
     ":wasm_downloads_ui",

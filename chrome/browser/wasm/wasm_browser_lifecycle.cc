@@ -34,9 +34,11 @@
 #include "chrome/browser/wasm/wasm_browser_host_security_warning_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_storage_estimate.h"
 #include "chrome/browser/wasm/wasm_browser_host_storage_estimate_smoke.h"
+#include "chrome/browser/wasm/wasm_browser_host_tab_churn_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_host_text.h"
 #include "chrome/browser/wasm/wasm_browser_host_text_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_security_warning_dialog.h"
+#include "chrome/browser/wasm/wasm_browser_tab_churn_smoke.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #include "chrome/browser/wasm/wasm_downloads_ui.h"
 #include "chrome/browser/wasm/wasm_browser_menu.h"
@@ -711,6 +713,8 @@ WasmBrowserLifecycle::~WasmBrowserLifecycle() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostTabChurnSmokeVerificationForTesting();
+  host_tab_churn_smoke_.reset();
   devtools_protocol_smoke_navigation_observer_.reset();
   devtools_protocol_smoke_contents_ = nullptr;
   devtools_protocol_smoke_.reset();
@@ -1145,6 +1149,22 @@ void WasmBrowserLifecycle::StartHostContinuousFlowSmoke() {
   host_continuous_flow_->Start();
 }
 
+void WasmBrowserLifecycle::StartHostTabChurnSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(initialized_);
+  CHECK(!shutdown_started_);
+  CHECK(!shutdown_complete_);
+  CHECK(browser_);
+  CHECK(IsVisible());
+  CHECK(!host_tab_churn_smoke_);
+
+  host_tab_churn_smoke_ = std::make_unique<WasmBrowserTabChurnSmoke>(
+      browser_.get(),
+      base::BindRepeating(&WasmBrowserLifecycle::BeginShutdown,
+                          base::Unretained(this)));
+  host_tab_churn_smoke_->Start();
+}
+
 void WasmBrowserLifecycle::StartHostStorageEstimateSmoke() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(initialized_);
@@ -1556,6 +1576,8 @@ void WasmBrowserLifecycle::OnBrowserDidClose(
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostTabChurnSmokeVerificationForTesting();
+  host_tab_churn_smoke_.reset();
   devtools_protocol_smoke_navigation_observer_.reset();
   devtools_protocol_smoke_contents_ = nullptr;
   devtools_protocol_smoke_.reset();
@@ -1628,6 +1650,8 @@ void WasmBrowserLifecycle::OnBrowserDestructionsComplete() {
   ClearWasmBrowserHostHistoryDownloadsSmokeVerificationForTesting();
   ClearWasmBrowserHostContinuousFlowSmokeVerificationForTesting();
   host_continuous_flow_.reset();
+  ClearWasmBrowserHostTabChurnSmokeVerificationForTesting();
+  host_tab_churn_smoke_.reset();
   devtools_protocol_smoke_navigation_observer_.reset();
   devtools_protocol_smoke_contents_ = nullptr;
   devtools_protocol_smoke_.reset();
