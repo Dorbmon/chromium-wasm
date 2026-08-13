@@ -194,6 +194,57 @@ class M9BrowserCleanupTest(unittest.TestCase):
             str(cleanup._reader_failure(reader)),
         )
 
+    def test_reader_callbacks_preserve_line_and_eof_evidence(self) -> None:
+        lines: list[str] = []
+        eof: list[bool] = []
+        reader = cleanup.BrowserStderrReader(
+            io.StringIO("first\nsecond\n"),
+            deque(),
+            name="m9-browser-cleanup-callbacks",
+            on_line=lines.append,
+            on_eof=lambda: eof.append(True),
+        )
+        reader.start()
+        reader.join(timeout=1)
+
+        self.assertFalse(reader.is_alive())
+        self.assertTrue(reader.reached_eof)
+        self.assertIsNone(reader.error)
+        self.assertEqual(["first", "second"], lines)
+        self.assertEqual([True], eof)
+
+    def test_reader_line_callback_failure_is_not_clean_eof_evidence(self) -> None:
+        reader = cleanup.BrowserStderrReader(
+            io.StringIO("line\n"),
+            deque(),
+            name="m9-browser-cleanup-line-callback-failure",
+            on_line=lambda _line: (_ for _ in ()).throw(
+                RuntimeError("line callback failed")
+            ),
+        )
+        reader.start()
+        reader.join(timeout=1)
+
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(reader.reached_eof)
+        self.assertIsInstance(reader.error, RuntimeError)
+        self.assertIn("line callback failed", str(cleanup._reader_failure(reader)))
+
+    def test_reader_callback_failure_is_not_clean_eof_evidence(self) -> None:
+        reader = cleanup.BrowserStderrReader(
+            io.StringIO("line\n"),
+            deque(),
+            name="m9-browser-cleanup-callback-failure",
+            on_eof=lambda: (_ for _ in ()).throw(RuntimeError("eof callback failed")),
+        )
+        reader.start()
+        reader.join(timeout=1)
+
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(reader.reached_eof)
+        self.assertIsInstance(reader.error, RuntimeError)
+        self.assertIn("eof callback failed", str(cleanup._reader_failure(reader)))
+
 
 if __name__ == "__main__":
     unittest.main()

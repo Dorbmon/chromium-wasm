@@ -21,19 +21,21 @@ import binascii
 from collections import deque
 import hashlib
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 import math
+import os
 from pathlib import Path
 import queue
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, Sequence
 from urllib.parse import urlencode, urlsplit
 
 from check_m6_chrome_boundary import check_boundary
@@ -47,7 +49,13 @@ from m0_common import (
 )
 from m3_content_server import compare_screenshots, decode_png
 from m4_cdp import unused_loopback_port, wait_for_page_client
-from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    abort_browser_group,
+    stop_browser_group,
+)
+from m9_server_cleanup import M9TrackingThreadingHTTPServer, shutdown_server_bounded
+from run_browser_smoke import browser_command, find_browser
 from run_content_shell_smoke import manifest_versions
 from run_m5_wisp_smoke import (
     PRIVATE_KEY_PEM_MARKERS,
@@ -78,6 +86,8 @@ MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FRAME_DIMENSION = 16384
 MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 MAX_SCREENSHOT_BASE64_LENGTH = ((MAX_SCREENSHOT_BYTES + 2) // 3) * 4
+CLEANUP_TIMEOUT_SECONDS = 5.0
+CLEANUP_POLL_SECONDS = 0.05
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
@@ -118,7 +128,7 @@ RESTART_MARKERS = (
 )
 
 
-class ContinuousFlowServer(ThreadingHTTPServer):
+class ContinuousFlowServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -880,17 +890,6 @@ def validate_restart_result(
             raise M0Error(f"restart output is missing {marker}")
 
 
-def _drain_relay_stdout(
-    stream: Any, destination: deque[str], ready_lines: queue.Queue[str | None]
-) -> None:
-    for line in stream:
-        text = line.rstrip()
-        destination.append(text)
-        if text:
-            ready_lines.put(text)
-    ready_lines.put(None)
-
-
 def wait_for_state(
     client: Any,
     browser: subprocess.Popen[str],
@@ -1073,6 +1072,292 @@ def write_failure_diagnostics(
     return path
 
 
+def _relay_group_exists(relay: subprocess.Popen[str]) -> bool:
+    """Return whether the relay's dedicated session still contains a process."""
+
+    try:
+        os.killpg(relay.pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError as error:
+        raise M0Error(
+            "cannot verify continuous-flow relay process-group absence after "
+            "leader exit"
+        ) from error
+
+
+def _signal_relay_group(
+    relay: subprocess.Popen[str], signal_number: int
+) -> None:
+    """Signal the relay group even when its leader has already exited."""
+
+    try:
+        os.killpg(relay.pid, signal_number)
+    except ProcessLookupError:
+        return
+    except OSError as error:
+        raise M0Error(
+            "cannot signal continuous-flow relay process group during cleanup"
+        ) from error
+
+
+def _relay_reader_failure(
+    reader: BrowserStderrReader, stream_name: str
+) -> M0Error | None:
+    if reader.error is not None:
+        return M0Error(
+            f"continuous-flow relay {stream_name} reader failed: {reader.error}"
+        )
+    if not reader.is_alive() and not reader.reached_eof:
+        return M0Error(
+            f"continuous-flow relay {stream_name} reader stopped before EOF"
+        )
+    return None
+
+
+def _relay_readers_failure(
+    stdout_reader: BrowserStderrReader, stderr_reader: BrowserStderrReader
+) -> M0Error | None:
+    for reader, stream_name in (
+        (stdout_reader, "stdout"),
+        (stderr_reader, "stderr"),
+    ):
+        failure = _relay_reader_failure(reader, stream_name)
+        if failure is not None:
+            return failure
+    return None
+
+
+def _wait_for_relay_cleanup(
+    relay: subprocess.Popen[str],
+    readers: Sequence[BrowserStderrReader],
+    timeout: float,
+) -> tuple[bool, BaseException | None]:
+    """Wait for leader, both output EOFs, and process-group absence together."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            group_exists = _relay_group_exists(relay)
+        except BaseException as error:
+            # Still permit the caller's SIGKILL escalation after a failed
+            # signal-zero probe; this is never treated as cleanup success.
+            return False, error
+        if (
+            relay.poll() is not None
+            and not any(reader.is_alive() for reader in readers)
+            and not group_exists
+        ):
+            return True, None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, None
+        alive_readers = [reader for reader in readers if reader.is_alive()]
+        if alive_readers:
+            for reader in alive_readers:
+                reader.join(timeout=min(CLEANUP_POLL_SECONDS, remaining))
+        else:
+            time.sleep(min(CLEANUP_POLL_SECONDS, remaining))
+
+
+def _close_relay_reader_after_cleanup(
+    reader: BrowserStderrReader,
+) -> BaseException | None:
+    """Close only a reader that can no longer be blocked in a pipe read."""
+
+    if reader.is_alive():
+        return None
+    try:
+        if reader.started:
+            reader.close_after_reader_stops()
+        else:
+            reader.close_unstarted_pipe()
+    except BaseException as error:
+        return error
+    return None
+
+
+def _close_relay_readers_after_cleanup(
+    readers: Sequence[BrowserStderrReader],
+) -> BaseException | None:
+    close_error: BaseException | None = None
+    for reader in readers:
+        error = _close_relay_reader_after_cleanup(reader)
+        if close_error is None and error is not None:
+            close_error = error
+    return close_error
+
+
+def stop_relay_group(
+    relay: subprocess.Popen[str],
+    stdout_reader: BrowserStderrReader,
+    stderr_reader: BrowserStderrReader,
+) -> None:
+    """Stop the relay and prove both inherited output paths have completed.
+
+    The controlled-flow relay owns a different session from its Python runner.
+    A reaped leader is therefore insufficient: a descendant can retain either
+    pipe or remain in that session. SIGKILL is failure-only because it cannot
+    prove the relay's normal shutdown path ran.
+    """
+
+    readers = (stdout_reader, stderr_reader)
+    if not all(reader.started for reader in readers):
+        raise M0Error("continuous-flow relay output reader was never started")
+
+    first_problem: BaseException | None = None
+    try:
+        _signal_relay_group(relay, signal.SIGTERM)
+    except BaseException as error:
+        first_problem = error
+    cooperative_complete = False
+    if first_problem is None:
+        cooperative_complete, first_problem = _wait_for_relay_cleanup(
+            relay, readers, CLEANUP_TIMEOUT_SECONDS
+        )
+    if cooperative_complete:
+        close_problem = _close_relay_readers_after_cleanup(readers)
+        reader_problem = _relay_readers_failure(stdout_reader, stderr_reader)
+        if first_problem is not None:
+            raise M0Error("cannot verify continuous-flow relay cleanup") from first_problem
+        if close_problem is not None:
+            raise M0Error("could not close stopped continuous-flow relay pipe") from close_problem
+        if reader_problem is not None:
+            raise reader_problem
+        return
+
+    # A failed first probe cannot suppress the emergency group kill. The
+    # resulting forced path is always a failed observation, even if it does
+    # remove every remaining process and closes both pipes.
+    kill_problem: BaseException | None = None
+    try:
+        _signal_relay_group(relay, signal.SIGKILL)
+    except BaseException as error:
+        kill_problem = error
+    forced_complete, forced_wait_problem = _wait_for_relay_cleanup(
+        relay, readers, CLEANUP_TIMEOUT_SECONDS
+    )
+    close_problem = _close_relay_readers_after_cleanup(readers)
+    reader_problem = _relay_readers_failure(stdout_reader, stderr_reader)
+    root_problem = first_problem or kill_problem or forced_wait_problem or reader_problem
+    if not forced_complete:
+        raise M0Error(
+            "continuous-flow relay process group or output readers did not stop "
+            "after SIGTERM and SIGKILL"
+        ) from root_problem
+    if close_problem is not None:
+        raise M0Error("could not close stopped continuous-flow relay pipe") from close_problem
+    if root_problem is not None:
+        raise M0Error("cannot verify continuous-flow relay cleanup") from root_problem
+    raise M0Error(
+        "continuous-flow relay cleanup required SIGKILL; normal relay shutdown "
+        "cannot be proven"
+    )
+
+
+def abort_relay_group(
+    relay: subprocess.Popen[str], readers: Sequence[BrowserStderrReader]
+) -> None:
+    """Best-effort failure cleanup for a relay without clean evidence."""
+
+    started_readers = tuple(reader for reader in readers if reader.started)
+    first_problem: BaseException | None = None
+    try:
+        _signal_relay_group(relay, signal.SIGTERM)
+    except BaseException as error:
+        first_problem = error
+    cooperative_complete = False
+    if first_problem is None:
+        cooperative_complete, first_problem = _wait_for_relay_cleanup(
+            relay, started_readers, CLEANUP_TIMEOUT_SECONDS
+        )
+    if cooperative_complete:
+        kill_problem = None
+        forced_complete = True
+        forced_wait_problem = None
+    else:
+        try:
+            _signal_relay_group(relay, signal.SIGKILL)
+            kill_problem = None
+        except BaseException as error:
+            kill_problem = error
+        forced_complete, forced_wait_problem = _wait_for_relay_cleanup(
+            relay, started_readers, CLEANUP_TIMEOUT_SECONDS
+        )
+
+    close_problem = _close_relay_readers_after_cleanup(readers)
+    reader_problem: BaseException | None = None
+    for reader, stream_name in zip(readers, ("stdout", "stderr")):
+        if reader.started:
+            reader_problem = _relay_reader_failure(reader, stream_name)
+            if reader_problem is not None:
+                break
+    root_problem = first_problem or kill_problem or forced_wait_problem or reader_problem
+    if not forced_complete:
+        raise M0Error(
+            "continuous-flow relay abort cleanup could not stop the process group"
+        ) from root_problem
+    if close_problem is not None:
+        raise M0Error("could not close continuous-flow relay pipe during abort") from close_problem
+    if root_problem is not None:
+        raise M0Error("cannot verify continuous-flow relay abort cleanup") from root_problem
+
+
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Run every teardown action while retaining the first failure."""
+
+    try:
+        action()
+    except BaseException as error:
+        if cleanup_error is None:
+            return error
+    return cleanup_error
+
+
+def _join_continuous_flow_server(thread: threading.Thread) -> None:
+    thread.join(timeout=CLEANUP_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        raise M0Error("continuous-flow host server did not stop")
+
+
+def _cleanup_continuous_flow_server(
+    *,
+    server: ContinuousFlowServer | None,
+    server_thread: threading.Thread | None,
+    server_thread_started: bool,
+) -> BaseException | None:
+    """Boundedly drain the server before a continuous-flow pass is visible."""
+
+    cleanup_error: BaseException | None = None
+    if server is not None:
+        if server_thread_started:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: shutdown_server_bounded(
+                    server,
+                    timeout=CLEANUP_TIMEOUT_SECONDS,
+                    description="continuous-flow host server",
+                ),
+            )
+        cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
+    if server_thread_started and server_thread is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error, lambda: _join_continuous_flow_server(server_thread)
+        )
+    if server is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error,
+            lambda: server.join_request_handlers(
+                timeout=CLEANUP_TIMEOUT_SECONDS,
+                description="continuous-flow host server",
+            ),
+        )
+    return cleanup_error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the formal Target-6 trusted-DOM continuous Chrome flow."
@@ -1109,12 +1394,12 @@ def main() -> int:
     browser_path: Path | None = None
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
-    browser_stderr_thread: threading.Thread | None = None
+    browser_stderr_reader: BrowserStderrReader | None = None
     relay: subprocess.Popen[str] | None = None
     relay_stdout: deque[str] = deque(maxlen=300)
     relay_stderr: deque[str] = deque(maxlen=300)
-    relay_stdout_thread: threading.Thread | None = None
-    relay_stderr_thread: threading.Thread | None = None
+    relay_stdout_reader: BrowserStderrReader | None = None
+    relay_stderr_reader: BrowserStderrReader | None = None
     relay_ready: controlled_https.RelayReady | None = None
     relay_status: dict[str, Any] | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
@@ -1122,6 +1407,12 @@ def main() -> int:
     context: dict[str, object] | None = None
     artifact: dict[str, object] | None = None
     stage = "check_artifacts"
+    primary_error: BaseException | None = None
+    client_closed = False
+    browser_cleanup_complete = False
+    relay_cleanup_complete = False
+    server_cleanup_complete = False
+    profile_cleanup_complete = False
 
     try:
         stage = "check_boundary"
@@ -1196,20 +1487,23 @@ def main() -> int:
         )
         assert relay.stdout is not None and relay.stderr is not None
         ready_lines: queue.Queue[str | None] = queue.Queue()
-        relay_stdout_thread = threading.Thread(
-            target=_drain_relay_stdout,
-            args=(relay.stdout, relay_stdout, ready_lines),
+        relay_stdout_reader = BrowserStderrReader(
+            relay.stdout,
+            relay_stdout,
             name="chromium-wasm-m6-continuous-flow-relay-stdout",
-            daemon=True,
+            on_line=lambda text: ready_lines.put(text) if text else None,
+            on_eof=lambda: ready_lines.put(None),
         )
-        relay_stdout_thread.start()
-        relay_stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(relay.stderr, relay_stderr),
+        relay_stderr_reader = BrowserStderrReader(
+            relay.stderr,
+            relay_stderr,
             name="chromium-wasm-m6-continuous-flow-relay-stderr",
-            daemon=True,
         )
-        relay_stderr_thread.start()
+        # Construct both wrappers before either Thread.start() call. A
+        # partially failed start can then close the unstarted pipe only after
+        # the started reader has reached a terminal state.
+        relay_stdout_reader.start()
+        relay_stderr_reader.start()
         stage = "wait_for_relay"
         relay_ready = controlled_https.wait_for_relay_ready(
             relay,
@@ -1247,13 +1541,12 @@ def main() -> int:
             start_new_session=True,
         )
         assert browser.stderr is not None
-        browser_stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(browser.stderr, browser_stderr),
+        browser_stderr_reader = BrowserStderrReader(
+            browser.stderr,
+            browser_stderr,
             name="chromium-wasm-m6-continuous-flow-browser-stderr",
-            daemon=True,
         )
-        browser_stderr_thread.start()
+        browser_stderr_reader.start()
         deadline = time.monotonic() + args.timeout
         stage = "connect_devtools"
         client = wait_for_page_client(debug_port, url.split("?", 1)[0], deadline)
@@ -1360,6 +1653,36 @@ def main() -> int:
             timeout_seconds=min(10.0, max(1.0, deadline - time.monotonic())),
         )
         controlled_https.validate_relay_status(relay_status)
+
+        # Do not expose a passing continuous-flow record until every process
+        # session, diagnostic pipe, and HTTP handler owned by this child has
+        # reached a bounded terminal state. The M9 parent can prove only this
+        # Python child exited, so the child itself owns this stronger evidence.
+        stage = "cleanup_before_pass"
+        if client is not None:
+            client.close()
+            client_closed = True
+        if browser is not None:
+            if browser_stderr_reader is None:
+                raise M0Error("continuous-flow browser stderr reader is missing")
+            stop_browser_group(browser, browser_stderr_reader)
+            browser_cleanup_complete = True
+        if relay is not None:
+            if relay_stdout_reader is None or relay_stderr_reader is None:
+                raise M0Error("continuous-flow relay output readers are missing")
+            stop_relay_group(relay, relay_stdout_reader, relay_stderr_reader)
+            relay_cleanup_complete = True
+        server_cleanup_error = _cleanup_continuous_flow_server(
+            server=server,
+            server_thread=server_thread,
+            server_thread_started=server_thread_started,
+        )
+        if server_cleanup_error is not None:
+            raise server_cleanup_error
+        server_cleanup_complete = True
+        if profile is not None:
+            profile.cleanup()
+            profile_cleanup_complete = True
         print(
             f"{SENTINEL}:SCREENSHOT "
             + json.dumps(comparison.as_dict(), sort_keys=True, separators=(",", ":")),
@@ -1378,8 +1701,7 @@ def main() -> int:
         print(f"{SENTINEL}:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as error:
-        if browser is not None:
-            stop_browser(browser)
+        primary_error = error
         try:
             diagnostic = write_failure_diagnostics(
                 diagnostics_dir,
@@ -1400,33 +1722,40 @@ def main() -> int:
             print(f"{SENTINEL}:DIAGNOSTICS_FAIL reason={diagnostic_error}", file=sys.stderr)
         print(f"{SENTINEL}:FAIL reason={error}", file=sys.stderr, flush=True)
         return 1
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        if client is not None:
-            client.close()
-        if browser is not None:
-            stop_browser(browser)
-        if browser_stderr_thread is not None:
-            browser_stderr_thread.join(timeout=1)
-        if relay is not None:
-            stop_browser(relay)
-        if relay_stdout_thread is not None:
-            relay_stdout_thread.join(timeout=1)
-        if relay_stderr_thread is not None:
-            relay_stderr_thread.join(timeout=1)
-        if server is not None:
-            try:
-                if server_thread_started:
-                    server.shutdown()
-            finally:
-                # A snapshot/export failure can occur after creating the
-                # listening socket but before serve_forever starts. Calling
-                # BaseServer.shutdown() in that state waits forever, while
-                # server_close() is still required to release the socket.
-                server.server_close()
-        if server_thread_started and server_thread is not None:
-            server_thread.join(timeout=1)
-        if profile is not None:
-            profile.cleanup()
+        cleanup_error: BaseException | None = None
+        if client is not None and not client_closed:
+            cleanup_error = _run_cleanup_action(cleanup_error, client.close)
+        if browser is not None and not browser_cleanup_complete:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_browser_group(browser, browser_stderr_reader),
+            )
+        if relay is not None and not relay_cleanup_complete:
+            relay_readers = tuple(
+                reader
+                for reader in (relay_stdout_reader, relay_stderr_reader)
+                if reader is not None
+            )
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_relay_group(relay, relay_readers),
+            )
+        if not server_cleanup_complete:
+            server_error = _cleanup_continuous_flow_server(
+                server=server,
+                server_thread=server_thread,
+                server_thread_started=server_thread_started,
+            )
+            if cleanup_error is None and server_error is not None:
+                cleanup_error = server_error
+        if profile is not None and not profile_cleanup_complete:
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 if __name__ == "__main__":

@@ -42,9 +42,13 @@ class BrowserStderrReader:
         *,
         name: str,
         thread_factory: Callable[..., Any] = threading.Thread,
+        on_line: Callable[[str], None] | None = None,
+        on_eof: Callable[[], None] | None = None,
     ):
         self._stream = stream
         self._destination = destination
+        self._on_line = on_line
+        self._on_eof = on_eof
         self._error: BaseException | None = None
         self._reached_eof = False
         self._started = False
@@ -106,11 +110,20 @@ class BrowserStderrReader:
     def _drain(self) -> None:
         try:
             for line in self._stream:
-                self._destination.append(line.rstrip())
+                text = line.rstrip()
+                self._destination.append(text)
+                if self._on_line is not None:
+                    self._on_line(text)
         except BaseException as exc:
             self._error = exc
         else:
             self._reached_eof = True
+            if self._on_eof is not None:
+                try:
+                    self._on_eof()
+                except BaseException as exc:
+                    self._error = exc
+                    self._reached_eof = False
 
 
 def _browser_group_exists(browser: subprocess.Popen[str]) -> bool:

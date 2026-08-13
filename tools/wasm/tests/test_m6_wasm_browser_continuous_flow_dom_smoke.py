@@ -8,15 +8,21 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
+import contextlib
 import copy
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import queue
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -360,6 +366,189 @@ def restart_result() -> dict[str, object]:
 
 
 class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
+    def _start_relay(self, source_text: str) -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            [sys.executable, "-c", source_text],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+
+    def _relay_readers(
+        self, relay: subprocess.Popen[str]
+    ) -> tuple[smoke.BrowserStderrReader, smoke.BrowserStderrReader]:
+        self.assertIsNotNone(relay.stdout)
+        self.assertIsNotNone(relay.stderr)
+        stdout_reader = smoke.BrowserStderrReader(
+            relay.stdout,  # type: ignore[arg-type]
+            deque(),
+            name="continuous-flow-test-relay-stdout",
+        )
+        stderr_reader = smoke.BrowserStderrReader(
+            relay.stderr,  # type: ignore[arg-type]
+            deque(),
+            name="continuous-flow-test-relay-stderr",
+        )
+        return stdout_reader, stderr_reader
+
+    def _assert_group_absent(self, process: subprocess.Popen[str]) -> None:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
+        self.fail("continuous-flow relay process group remained alive")
+
+    def _run_main_with_cleanup_fakes(
+        self,
+        *,
+        browser_cleanup_error: BaseException | None = None,
+        relay_cleanup_error: BaseException | None = None,
+        server_cleanup_error: BaseException | None = None,
+        profile_cleanup_error: BaseException | None = None,
+        operational_error: BaseException | None = None,
+        abort_browser_error: BaseException | None = None,
+        abort_relay_error: BaseException | None = None,
+    ) -> tuple[int, str, str, dict[str, mock.Mock]]:
+        """Run the post-launch path without a real server, relay, or Chrome."""
+
+        server = mock.Mock()
+        server.artifacts = {f"{smoke.DEFAULT_MODULE_NAME}.js": b"loader"}
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = False
+        relay = mock.Mock()
+        relay.stdout = object()
+        relay.stderr = object()
+        browser = mock.Mock()
+        browser.stderr = object()
+        relay_stdout_reader = mock.Mock()
+        relay_stderr_reader = mock.Mock()
+        browser_stderr_reader = mock.Mock()
+        profile = mock.Mock()
+        profile.name = "/fake-profile"
+        profile.cleanup.side_effect = profile_cleanup_error
+        client = mock.Mock()
+        relay_ready = mock.Mock()
+        relay_ready.transcript_url = "http://relay.test/transcript"
+        comparison = mock.Mock()
+        comparison.matches = True
+        comparison.as_dict.return_value = {"matches": True}
+
+        stop_browser = mock.Mock(side_effect=browser_cleanup_error)
+        stop_relay = mock.Mock(side_effect=relay_cleanup_error)
+        cleanup_server = mock.Mock(return_value=server_cleanup_error)
+        abort_browser = mock.Mock(side_effect=abort_browser_error)
+        abort_relay = mock.Mock(side_effect=abort_relay_error)
+        wait_for_client = mock.Mock(return_value=client)
+        dispatch_address = mock.Mock(side_effect=operational_error)
+        dependencies = {
+            "server": server,
+            "server_thread": server_thread,
+            "relay": relay,
+            "browser": browser,
+            "relay_stdout_reader": relay_stdout_reader,
+            "relay_stderr_reader": relay_stderr_reader,
+            "browser_stderr_reader": browser_stderr_reader,
+            "profile": profile,
+            "client": client,
+            "stop_browser": stop_browser,
+            "stop_relay": stop_relay,
+            "cleanup_server": cleanup_server,
+            "abort_browser": abort_browser,
+            "abort_relay": abort_relay,
+            "wait_for_client": wait_for_client,
+            "dispatch_address": dispatch_address,
+        }
+
+        patches = (
+            mock.patch.object(smoke, "check_boundary"),
+            mock.patch.object(
+                smoke.controlled_https, "check_controlled_https_boundary"
+            ),
+            mock.patch.object(smoke, "create_server", return_value=server),
+            mock.patch.object(
+                smoke, "artifact_identity", return_value=ARTIFACT_IDENTITY
+            ),
+            mock.patch.object(smoke, "verify_required_exports"),
+            mock.patch.object(smoke, "verify_no_private_key_pem_snapshot_artifacts"),
+            mock.patch.object(
+                smoke.controlled_https,
+                "load_controlled_https_screenshot_contract",
+                return_value={
+                    "baseline": "m6_controlled_https_browser_baseline.png",
+                    "channel_tolerance": 2,
+                    "maximum_different_pixel_ratio": 0.0025,
+                },
+            ),
+            mock.patch.object(smoke, "load_manifest", return_value={}),
+            mock.patch.object(smoke, "checked_output", return_value="test-head"),
+            mock.patch.object(smoke, "manifest_versions", return_value=VERSIONS),
+            mock.patch.object(smoke, "print_context", return_value={}),
+            mock.patch.object(
+                smoke, "find_browser", return_value=(Path("/fake-browser"), "test-browser")
+            ),
+            mock.patch.object(smoke, "find_node", return_value=Path("/fake-node")),
+            mock.patch.object(smoke.threading, "Thread", return_value=server_thread),
+            mock.patch.object(smoke, "relay_command", return_value=["relay"]),
+            mock.patch.object(smoke, "browser_command", return_value=["browser"]),
+            mock.patch.object(smoke, "m5_host_origin", return_value="http://host.test"),
+            mock.patch.object(smoke.subprocess, "Popen", side_effect=[relay, browser]),
+            mock.patch.object(
+                smoke,
+                "BrowserStderrReader",
+                side_effect=(
+                    relay_stdout_reader,
+                    relay_stderr_reader,
+                    browser_stderr_reader,
+                ),
+            ),
+            mock.patch.object(
+                smoke.controlled_https, "wait_for_relay_ready", return_value=relay_ready
+            ),
+            mock.patch.object(smoke, "smoke_url", return_value="http://host.test/smoke"),
+            mock.patch.object(smoke.tempfile, "TemporaryDirectory", return_value=profile),
+            mock.patch.object(smoke, "unused_loopback_port", return_value=9222),
+            mock.patch.object(smoke, "wait_for_page_client", wait_for_client),
+            mock.patch.object(smoke, "dispatch_address_transaction", dispatch_address),
+            mock.patch.object(smoke, "wait_for_state", return_value={}),
+            mock.patch.object(smoke, "click_target"),
+            mock.patch.object(
+                smoke, "wait_for_phase_result", side_effect=({"flow": True}, {"restart": True})
+            ),
+            mock.patch.object(smoke, "validate_flow_result", return_value=b"png"),
+            mock.patch.object(smoke, "compare_screenshots", return_value=comparison),
+            mock.patch.object(smoke, "validate_restart_result"),
+            mock.patch.object(
+                smoke.controlled_https, "fetch_relay_status", return_value={}
+            ),
+            mock.patch.object(smoke.controlled_https, "validate_relay_status"),
+            mock.patch.object(smoke, "stop_browser_group", stop_browser),
+            mock.patch.object(smoke, "stop_relay_group", stop_relay),
+            mock.patch.object(
+                smoke, "_cleanup_continuous_flow_server", cleanup_server
+            ),
+            mock.patch.object(smoke, "abort_browser_group", abort_browser),
+            mock.patch.object(smoke, "abort_relay_group", abort_relay),
+            mock.patch.object(
+                smoke, "write_failure_diagnostics", return_value=Path("/diagnostic")
+            ),
+            mock.patch.object(sys, "argv", ["continuous-flow-runner"]),
+        )
+        with contextlib.ExitStack() as stack:
+            for patcher in patches:
+                stack.enter_context(patcher)
+            stdout = stack.enter_context(
+                mock.patch("sys.stdout", new_callable=io.StringIO)
+            )
+            stderr = stack.enter_context(
+                mock.patch("sys.stderr", new_callable=io.StringIO)
+            )
+            result = smoke.main()
+        return result, stdout.getvalue(), stderr.getvalue(), dependencies
+
     def test_host_is_deferred_ordinal_only_and_outer_restart_is_explicit(self) -> None:
         host = source("tools/wasm/host/chrome_wasm_browser_continuous_flow_smoke_host.js")
         for expected in (
@@ -403,6 +592,127 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
         self.assertNotIn("Runtime.evaluate", runner)
         self.assertNotIn("ccall(", runner)
         self.assertNotIn("capture-baseline", runner)
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
+    def test_reaped_relay_leader_with_pipe_holder_cannot_report_clean_cleanup(self) -> None:
+        relay = self._start_relay(
+            "import signal, subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', "
+            "'import signal, time; signal.signal(signal.SIGTERM, "
+            "signal.SIG_IGN); time.sleep(30)']); time.sleep(0.2); "
+            "sys.stdout.write('relay leader exiting\\n'); sys.stdout.flush()"
+        )
+        stdout_reader, stderr_reader = self._relay_readers(relay)
+        stdout_reader.start()
+        stderr_reader.start()
+        try:
+            relay.wait(timeout=2)
+            with (
+                mock.patch.object(smoke, "CLEANUP_TIMEOUT_SECONDS", 0.1),
+                self.assertRaisesRegex(M0Error, "required SIGKILL"),
+            ):
+                smoke.stop_relay_group(relay, stdout_reader, stderr_reader)
+            self.assertFalse(stdout_reader.is_alive())
+            self.assertFalse(stderr_reader.is_alive())
+            self._assert_group_absent(relay)
+        finally:
+            try:
+                smoke.abort_relay_group(relay, (stdout_reader, stderr_reader))
+            except M0Error:
+                pass
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
+    def test_reaped_relay_leader_with_devnull_descendant_cannot_report_success(self) -> None:
+        relay = self._start_relay(
+            "import os, signal, subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', "
+            "'import signal, time; signal.signal(signal.SIGTERM, "
+            "signal.SIG_IGN); time.sleep(30)'], stdin=subprocess.DEVNULL, "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(0.2); "
+            "sys.stdout.write('relay leader exiting\\n'); sys.stdout.flush()"
+        )
+        stdout_reader, stderr_reader = self._relay_readers(relay)
+        stdout_reader.start()
+        stderr_reader.start()
+        try:
+            relay.wait(timeout=2)
+            with (
+                mock.patch.object(smoke, "CLEANUP_TIMEOUT_SECONDS", 0.1),
+                self.assertRaisesRegex(M0Error, "required SIGKILL"),
+            ):
+                smoke.stop_relay_group(relay, stdout_reader, stderr_reader)
+            self.assertFalse(stdout_reader.is_alive())
+            self.assertFalse(stderr_reader.is_alive())
+            self._assert_group_absent(relay)
+        finally:
+            try:
+                smoke.abort_relay_group(relay, (stdout_reader, stderr_reader))
+            except M0Error:
+                pass
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
+    def test_partial_relay_reader_start_failure_still_aborts_its_session(self) -> None:
+        relay = self._start_relay("import time; time.sleep(30)")
+        stdout_reader, stderr_reader = self._relay_readers(relay)
+        stdout_reader.start()
+        # Model a second Thread.start() failure: its pipe has not been handed
+        # to a reader, while the first reader can already be blocked in read.
+        self.assertFalse(stderr_reader.started)
+        try:
+            smoke.abort_relay_group(relay, (stdout_reader, stderr_reader))
+            self.assertFalse(stdout_reader.is_alive())
+            self.assertFalse(stderr_reader.started)
+            self._assert_group_absent(relay)
+        finally:
+            try:
+                smoke.abort_relay_group(relay, (stdout_reader, stderr_reader))
+            except M0Error:
+                pass
+
+    def test_relay_cleanup_never_closes_live_readers(self) -> None:
+        relay = mock.Mock()
+        stdout_reader = mock.Mock()
+        stderr_reader = mock.Mock()
+        for reader in (stdout_reader, stderr_reader):
+            reader.started = True
+            reader.is_alive.return_value = True
+            reader.error = None
+            reader.reached_eof = False
+        with (
+            mock.patch.object(smoke, "_signal_relay_group"),
+            mock.patch.object(
+                smoke,
+                "_wait_for_relay_cleanup",
+                side_effect=[(False, None), (False, None)],
+            ),
+            self.assertRaisesRegex(M0Error, "output readers did not stop"),
+        ):
+            smoke.stop_relay_group(relay, stdout_reader, stderr_reader)
+        stdout_reader.close_after_reader_stops.assert_not_called()
+        stderr_reader.close_after_reader_stops.assert_not_called()
+
+    def test_server_cleanup_uses_bounded_shutdown_and_handler_drain(self) -> None:
+        server = mock.Mock()
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = False
+        with mock.patch.object(smoke, "shutdown_server_bounded") as shutdown:
+            error = smoke._cleanup_continuous_flow_server(
+                server=server,
+                server_thread=server_thread,
+                server_thread_started=True,
+            )
+        self.assertIsNone(error)
+        shutdown.assert_called_once_with(
+            server,
+            timeout=smoke.CLEANUP_TIMEOUT_SECONDS,
+            description="continuous-flow host server",
+        )
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=smoke.CLEANUP_TIMEOUT_SECONDS)
+        server.join_request_handlers.assert_called_once_with(
+            timeout=smoke.CLEANUP_TIMEOUT_SECONDS,
+            description="continuous-flow host server",
+        )
 
     def test_cxx_lifecycle_has_exact_webui_and_watchdog_proof(self) -> None:
         coordinator = source("chrome/browser/wasm/wasm_browser_continuous_flow.cc")
@@ -616,6 +926,86 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
         server.server_close.assert_called_once_with()
         thread.assert_not_called()
         find_browser.assert_not_called()
+
+    def test_main_cleanup_failures_suppress_every_success_record(self) -> None:
+        """A completed observation is not a pass until every owned cleanup succeeds."""
+
+        cases = (
+            ("browser", {"browser_cleanup_error": M0Error("browser cleanup failed")}),
+            ("relay", {"relay_cleanup_error": M0Error("relay cleanup failed")}),
+            ("server", {"server_cleanup_error": M0Error("server cleanup failed")}),
+            ("profile", {"profile_cleanup_error": M0Error("profile cleanup failed")}),
+        )
+        for name, kwargs in cases:
+            with self.subTest(cleanup=name):
+                result, stdout, stderr, dependencies = self._run_main_with_cleanup_fakes(
+                    **kwargs
+                )
+
+                self.assertEqual(1, result)
+                self.assertEqual("", stdout)
+                self.assertIn(f"FAIL reason={name} cleanup failed", stderr)
+                output = stdout + stderr
+                for marker in ("SCREENSHOT", "FLOW_RESULT", "RESTART_RESULT", "PASS"):
+                    with self.subTest(cleanup=name, marker=marker):
+                        self.assertNotIn(f"{smoke.SENTINEL}:{marker}", output)
+
+                # Every case reaches cleanup-before-pass after a fully mocked
+                # operational flow, rather than failing in setup or evidence
+                # validation. Later cleanup may be failure-path abort cleanup.
+                dependencies["wait_for_client"].assert_called_once()
+                dependencies["stop_browser"].assert_called_once()
+                if name != "browser":
+                    dependencies["stop_relay"].assert_called_once()
+                if name == "server":
+                    # The failed success-path cleanup is retried in finally.
+                    self.assertEqual(2, dependencies["cleanup_server"].call_count)
+                if name == "profile":
+                    dependencies["cleanup_server"].assert_called_once()
+                    # The failed success-path cleanup is retried in finally.
+                    self.assertEqual(2, dependencies["profile"].cleanup.call_count)
+
+    def test_main_preserves_operational_failure_while_attempting_all_cleanup(self) -> None:
+        """Failure cleanup cannot replace the original operational cause."""
+
+        result, stdout, stderr, dependencies = self._run_main_with_cleanup_fakes(
+            operational_error=M0Error("original operational failure"),
+            abort_browser_error=M0Error("abort browser cleanup failed"),
+            abort_relay_error=M0Error("abort relay cleanup failed"),
+            server_cleanup_error=M0Error("server cleanup failed"),
+            profile_cleanup_error=M0Error("profile cleanup failed"),
+        )
+
+        self.assertEqual(1, result)
+        self.assertEqual("", stdout)
+        self.assertIn("FAIL reason=original operational failure", stderr)
+        for cleanup_message in (
+            "abort browser cleanup failed",
+            "abort relay cleanup failed",
+            "server cleanup failed",
+            "profile cleanup failed",
+        ):
+            with self.subTest(cleanup_message=cleanup_message):
+                self.assertNotIn(cleanup_message, stderr)
+        for marker in ("SCREENSHOT", "FLOW_RESULT", "RESTART_RESULT", "PASS"):
+            with self.subTest(marker=marker):
+                self.assertNotIn(f"{smoke.SENTINEL}:{marker}", stdout + stderr)
+
+        dependencies["abort_browser"].assert_called_once_with(
+            dependencies["browser"], dependencies["browser_stderr_reader"]
+        )
+        dependencies["abort_relay"].assert_called_once_with(
+            dependencies["relay"],
+            (
+                dependencies["relay_stdout_reader"],
+                dependencies["relay_stderr_reader"],
+            ),
+        )
+        dependencies["cleanup_server"].assert_called_once()
+        dependencies["profile"].cleanup.assert_called_once_with()
+        dependencies["client"].close.assert_called_once_with()
+        dependencies["stop_browser"].assert_not_called()
+        dependencies["stop_relay"].assert_not_called()
 
     def _run_host_query(self, query: str) -> dict[str, object]:
         if not PINNED_NODE.is_file():
