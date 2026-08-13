@@ -53,6 +53,7 @@ else:
 SENTINEL = "CHROMIUM_WASM_M9_PACKAGE"
 PACKAGE_SCHEMA_VERSION = 3
 HOST_PROTOCOL_VERSION = 1
+PACKAGE_RUNTIME_STATUS_PROTOCOL = 1
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
 PRODUCT_NAME = "chromium-wasm"
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -1172,6 +1173,43 @@ def verify_release_snapshot(artifacts: Mapping[str, bytes]) -> dict[str, object]
         ],
         "release_status": version["release_status"],
         "version_sha256": _sha256_bytes(version_bytes),
+    }
+
+
+def package_runtime_status_metadata(version_bytes: bytes) -> dict[str, object]:
+    """Project validated raw VERSION.json into fixed host runtime status data.
+
+    This is a bounded status projection of the immutable served metadata bytes,
+    not a source-provenance or release-provenance claim for package artifacts.
+    It deliberately reuses the package's canonical JSON and exact schema
+    validators so browser-smoke metadata cannot drift from staging semantics.
+    """
+
+    version = _load_version_bytes(version_bytes)
+    _validate_version_metadata(version)
+    build = version["build"]
+    gate_state = version["gate_state"]
+    versions = version["versions"]
+    return {
+        "build": {
+            "artifactSourceProvenance": build["artifact_source_provenance"],
+            "inputModuleName": build["input_module_name"],
+            "resourceDelivery": build["resource_delivery"],
+            "stagingCheckout": build["staging_checkout"],
+        },
+        "gateState": {
+            name: gate_state[name] for name in EXPECTED_GATE_STATE
+        },
+        "product": version["product"],
+        "protocol": PACKAGE_RUNTIME_STATUS_PROTOCOL,
+        "releaseStatus": version["release_status"],
+        "schemaVersion": version["schema_version"],
+        "versionJsonSha256": _sha256_bytes(version_bytes),
+        "versions": {
+            "chromium": versions["chromium"],
+            "emscripten": versions["emscripten"],
+            "v8": versions["v8"],
+        },
     }
 
 

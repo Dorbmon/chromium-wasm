@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -217,6 +220,54 @@ class M9PackageTest(unittest.TestCase):
             "Emscripten toolchain/runtime",
             " ".join(version["known_limitations"]),
         )
+
+    def test_runtime_status_metadata_is_fixed_snapshot_projection(self) -> None:
+        dist_dir = self._stage()
+        version_bytes = (dist_dir / "VERSION.json").read_bytes()
+        metadata = package.package_runtime_status_metadata(version_bytes)
+
+        self.assertEqual(
+            {
+                "build",
+                "gateState",
+                "product",
+                "protocol",
+                "releaseStatus",
+                "schemaVersion",
+                "versionJsonSha256",
+                "versions",
+            },
+            set(metadata),
+        )
+        self.assertEqual(package.PACKAGE_RUNTIME_STATUS_PROTOCOL, metadata["protocol"])
+        self.assertEqual(package.PRODUCT_NAME, metadata["product"])
+        self.assertEqual(package.RELEASE_STATUS, metadata["releaseStatus"])
+        self.assertEqual(package.PACKAGE_SCHEMA_VERSION, metadata["schemaVersion"])
+        self.assertEqual(package.EXPECTED_GATE_STATE, metadata["gateState"])
+        self.assertEqual(
+            package.ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED,
+            metadata["build"]["artifactSourceProvenance"],
+        )
+        self.assertEqual(
+            hashlib.sha256(version_bytes).hexdigest(), metadata["versionJsonSha256"]
+        )
+        self.assertNotIn("release provenance", repr(metadata).lower())
+        self.assertNotIn("source identity", repr(metadata).lower())
+
+    def test_runtime_status_metadata_rejects_substituted_or_noncanonical_version(
+        self,
+    ) -> None:
+        version_path = self._stage() / "VERSION.json"
+        version_bytes = version_path.read_bytes()
+        version = json.loads(version_bytes.decode("utf-8"))
+        version["release_status"] = "releasable"
+        with self.assertRaisesRegex(package.PackageError, "pre-release status"):
+            package.package_runtime_status_metadata(package._canonical_json(version))
+
+        with self.assertRaisesRegex(package.PackageError, "duplicate JSON object key"):
+            package.package_runtime_status_metadata(
+                b'{"artifacts":[],"artifacts":[]}'
+            )
 
     def test_target_notice_generator_uses_chromium_target_aware_command(
         self,
@@ -1222,6 +1273,91 @@ class M9PackageTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_package_browser_metadata_uses_immutable_server_version_snapshot(
+        self,
+    ) -> None:
+        dist_dir = self._stage()
+        expected = package.package_runtime_status_metadata(
+            (dist_dir / "VERSION.json").read_bytes()
+        )
+        server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
+        try:
+            version_path = dist_dir / "VERSION.json"
+            mutated = json.loads(version_path.read_text("utf-8"))
+            mutated["build"]["staging_checkout"] = "b" * 40
+            version_path.write_bytes(package._canonical_json(mutated))
+
+            self.assertEqual(
+                expected,
+                package_browser_smoke._runtime_metadata_from_server_snapshot(server),
+            )
+            self.assertNotEqual(
+                expected,
+                package.package_runtime_status_metadata(version_path.read_bytes()),
+            )
+        finally:
+            server.server_close()
+
+    def test_package_browser_rejects_missing_extra_or_substituted_runtime_metadata(
+        self,
+    ) -> None:
+        expected = package.package_runtime_status_metadata(
+            (self._stage() / "VERSION.json").read_bytes()
+        )
+        url = package_browser_smoke._make_epoch_url(
+            "http://127.0.0.1:32123/", "metadata-epoch"
+        )
+
+        def status(metadata: object) -> dict[str, object]:
+            return {
+                "documentIdentity": {
+                    "href": url,
+                    "navigation": {
+                        "name": url,
+                        "startTime": 0,
+                        "type": "navigate",
+                    },
+                    "timeOrigin": 1000.0,
+                },
+                "packageMetadata": metadata,
+            }
+
+        self.assertEqual(
+            1000.0,
+            package_browser_smoke._require_ready_package_document(
+                status(deepcopy(expected)),
+                expected_url=url,
+                expected_epoch="metadata-epoch",
+                expected_package_metadata=expected,
+            ),
+        )
+        protocol_bool = deepcopy(expected)
+        protocol_bool["protocol"] = True
+        gate_int = deepcopy(expected)
+        gate_int["gateState"]["m8_complete"] = 0
+        for name, metadata in (
+            ("missing", None),
+            ("extra", {**expected, "unexpected": True}),
+            (
+                "substituted",
+                {
+                    **expected,
+                    "releaseStatus": "releasable",
+                },
+            ),
+            ("protocol bool alias", protocol_bool),
+            ("nested gate int alias", gate_int),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                M0Error, "does not match immutable VERSION.json snapshot"
+            ):
+                package_browser_smoke._require_ready_package_document(
+                    status(metadata),
+                    expected_url=url,
+                    expected_epoch="metadata-epoch",
+                    expected_package_metadata=expected,
+                )
+
     def test_static_package_socket_smoke_when_loopback_is_available(self) -> None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -1283,6 +1419,127 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn('"unverified"', host)
         self.assertIn('"local_clean_build_attested"', host)
         self.assertIn("local clean-build attestation", index)
+
+    def test_release_host_projects_canonical_version_bytes_and_fails_without_webcrypto(
+        self,
+    ) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+        version_path = self._stage() / "VERSION.json"
+        version_bytes = version_path.read_bytes()
+        expected = package.package_runtime_status_metadata(version_bytes)
+        invalid_version = json.loads(version_bytes.decode("utf-8"))
+        invalid_version["host"]["bridge_protocol"] = 99
+        invalid_version_path = self.root / "invalid-VERSION.json"
+        invalid_version_path.write_bytes(package._canonical_json(invalid_version))
+
+        # release_host.js intentionally imports the public staged names, while
+        # source files retain their implementation names. Exercise the source
+        # module through a temporary package-shaped fixture instead of adding
+        # an alias asset to the product tree solely for this Node test.
+        fixture = self.root / "release-host-module-fixture"
+        fixture.mkdir()
+        (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+        host_source = REPO_ROOT / "tools/wasm/host/release_host.js"
+        host = fixture / "chromium-wasm-host.js"
+        shutil.copyfile(host_source, host)
+        for source_name, staged_name in package.HOST_ASSETS:
+            if source_name == "release_host.js" or not source_name.endswith(".js"):
+                continue
+            shutil.copyfile(
+                REPO_ROOT / "tools/wasm/host" / source_name,
+                fixture / staged_name,
+            )
+        script = f"""
+import {{readFile}} from "node:fs/promises";
+const versionBytes = new Uint8Array(
+    await readFile({json.dumps(str(version_path))}));
+const invalidVersionBytes = new Uint8Array(
+    await readFile({json.dumps(str(invalid_version_path))}));
+const bomVersionBytes = new Uint8Array([0xef, 0xbb, 0xbf, ...versionBytes]);
+function responseFor(bytes) {{
+  return {{
+    ok: true,
+    headers: {{
+      get(name) {{
+        return String(name).toLowerCase() === "content-length" ?
+            String(bytes.byteLength) : null;
+      }},
+    }},
+    async arrayBuffer() {{
+      return bytes.buffer.slice(
+          bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    }},
+  }};
+}}
+let served = versionBytes;
+globalThis.fetch = async () => responseFor(served);
+const {{loadVersion}} = await import({json.dumps(host.as_uri())});
+const loaded = await loadVersion();
+const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+const hadOwnCrypto = Object.hasOwn(globalThis, "crypto");
+let noCrypto = "accepted";
+try {{
+  Object.defineProperty(globalThis, "crypto", {{
+    configurable: true,
+    value: undefined,
+    writable: true,
+  }});
+  await loadVersion();
+}} catch (error) {{
+  noCrypto = String(error);
+}} finally {{
+  if (hadOwnCrypto) {{
+    Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+  }} else {{
+    delete globalThis.crypto;
+  }}
+}}
+served = new Uint8Array([...versionBytes, 10]);
+let noncanonical = "accepted";
+try {{
+  await loadVersion();
+}} catch (error) {{
+  noncanonical = String(error);
+}}
+served = bomVersionBytes;
+let bom = "accepted";
+try {{
+  await loadVersion();
+}} catch (error) {{
+  bom = String(error);
+}}
+served = invalidVersionBytes;
+let invalidSchema = "accepted";
+try {{
+  await loadVersion();
+}} catch (error) {{
+  invalidSchema = String(error);
+}}
+process.stdout.write(JSON.stringify({{
+  metadata: loaded.packageMetadata,
+  invalidSchema,
+  bom,
+  noCrypto,
+  noncanonical,
+}}));
+"""
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        observed = json.loads(completed.stdout)
+        self.assertEqual(expected, observed["metadata"])
+        self.assertIn("WebCrypto SHA-256 is unavailable", observed["noCrypto"])
+        self.assertIn("not canonical deterministic JSON", observed["noncanonical"])
+        self.assertIn("not canonical deterministic JSON", observed["bom"])
+        self.assertIn("host requirements values are invalid", observed["invalidSchema"])
 
     def test_browser_smoke_requires_the_blob_backed_renamed_loader_path(self) -> None:
         smoke = (REPO_ROOT / "tools/wasm/run_m9_package_browser_smoke.py").read_text(
@@ -1457,6 +1714,7 @@ class M9PackageTest(unittest.TestCase):
     def test_package_browser_preserves_unstarted_stderr_reader_failure(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
+        server.snapshot = snapshot_package_tree(self._stage())
         server_thread = mock.Mock()
         server_thread.is_alive.return_value = True
         browser = mock.Mock()
@@ -1568,6 +1826,10 @@ class M9PackageTest(unittest.TestCase):
     def test_package_browser_default_result_remains_one_clean_epoch(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
+        server.snapshot = snapshot_package_tree(self._stage())
+        expected_metadata = package.package_runtime_status_metadata(
+            server.snapshot.artifacts["VERSION.json"]
+        )
         server_thread = mock.Mock()
         server_thread.is_alive.return_value = False
         stderr_thread = mock.Mock()
@@ -1660,6 +1922,9 @@ class M9PackageTest(unittest.TestCase):
                 "process_exit_code": 0,
                 "release_status": package.RELEASE_STATUS,
                 "scope": package_browser_smoke.SCOPE,
+                "served_version_json_sha256": expected_metadata[
+                    "versionJsonSha256"
+                ],
                 "shutdown_disabled": True,
                 "shutdown_requested": True,
             },
@@ -1669,6 +1934,10 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual(initial_url, wait_for_client.call_args.args[1])
         self.assertEqual(initial_url, wait_for_ready.call_args.kwargs["expected_url"])
         self.assertEqual("first-epoch", wait_for_ready.call_args.kwargs["expected_epoch"])
+        self.assertEqual(
+            expected_metadata,
+            wait_for_ready.call_args.kwargs["expected_package_metadata"],
+        )
         request_shutdown.assert_called_once()
         restart.assert_not_called()
         stop_browser_group.assert_called_once_with(browser, mock.ANY)
@@ -1676,6 +1945,7 @@ class M9PackageTest(unittest.TestCase):
     def test_package_browser_main_rejects_browser_cleanup_without_pass_marker(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
+        server.snapshot = snapshot_package_tree(self._stage())
         server_thread = mock.Mock()
         server_thread.is_alive.return_value = True
         stderr_thread = mock.Mock()
@@ -1773,6 +2043,10 @@ class M9PackageTest(unittest.TestCase):
     def test_package_browser_restart_result_has_two_clean_epoch_records(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
+        server.snapshot = snapshot_package_tree(self._stage())
+        expected_metadata = package.package_runtime_status_metadata(
+            server.snapshot.artifacts["VERSION.json"]
+        )
         server_thread = mock.Mock()
         server_thread.is_alive.return_value = False
         stderr_thread = mock.Mock()
@@ -1882,6 +2156,9 @@ class M9PackageTest(unittest.TestCase):
                 "outer_document_restart": True,
                 "release_status": package.RELEASE_STATUS,
                 "scope": package_browser_smoke.OUTER_DOCUMENT_RESTART_SCOPE,
+                "served_version_json_sha256": expected_metadata[
+                    "versionJsonSha256"
+                ],
             },
             result,
         )
@@ -1894,6 +2171,14 @@ class M9PackageTest(unittest.TestCase):
             restart.call_args.kwargs["restart_url"],
         )
         self.assertEqual(1000.0, wait_for_ready.call_args_list[1].kwargs["prior_time_origin"])
+        self.assertEqual(
+            expected_metadata,
+            wait_for_ready.call_args_list[0].kwargs["expected_package_metadata"],
+        )
+        self.assertEqual(
+            expected_metadata,
+            wait_for_ready.call_args_list[1].kwargs["expected_package_metadata"],
+        )
 
 
 if __name__ == "__main__":

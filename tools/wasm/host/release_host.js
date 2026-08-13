@@ -17,7 +17,11 @@ const MAX_FRAME_DIMENSION = 16384;
 const MAX_LOG_LINES = 32;
 const MAX_LOG_LINE_CHARS = 512;
 const MAX_STATUS_BYTES = 64 * 1024;
+const MAX_VERSION_JSON_BYTES = 64 * 1024;
 const PACKAGE_SCHEMA_VERSION = 3;
+const PACKAGE_METADATA_PROTOCOL = 1;
+const PRODUCT_NAME = "chromium-wasm";
+const PACKAGE_INPUT_MODULE_NAME = "chrome_wasm";
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
 const ALLOWED_ARTIFACT_SOURCE_PROVENANCE = new Set([
   "unverified",
@@ -29,6 +33,64 @@ const EXPECTED_GATE_STATE = Object.freeze({
   m8_complete: false,
   m9_release_complete: false,
 });
+const EXPECTED_VERSION_KEYS = Object.freeze([
+  "artifacts",
+  "build",
+  "gate_state",
+  "host",
+  "known_limitations",
+  "product",
+  "release_status",
+  "schema_version",
+  "toolchain_manifest",
+  "versions",
+]);
+const EXPECTED_BUILD_KEYS = Object.freeze([
+  "artifact_source_provenance",
+  "gn_args",
+  "gn_args_sha256",
+  "input_module_name",
+  "resource_delivery",
+  "staging_checkout",
+]);
+const EXPECTED_VERSION_REVISION_KEYS = Object.freeze([
+  "chromium",
+  "emscripten",
+  "v8",
+]);
+const EXPECTED_HOST_KEYS = Object.freeze([
+  "bridge_protocol",
+  "mime_types",
+  "required_headers",
+]);
+const EXPECTED_TOOLCHAIN_MANIFEST_KEYS = Object.freeze(["path", "sha256"]);
+const EXPECTED_ARTIFACT_KEYS = Object.freeze(["path", "sha256", "size_bytes"]);
+const EXPECTED_MIME_TYPES = Object.freeze({
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".wasm": "application/wasm",
+});
+const EXPECTED_REQUIRED_HEADERS = Object.freeze({
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "X-Content-Type-Options": "nosniff",
+});
+const EXPECTED_PACKAGE_ARTIFACT_PATHS = Object.freeze([
+  "LICENSES/Chromium-LICENSE.txt",
+  "LICENSES/PRE_RELEASE_NOTICE.txt",
+  "LICENSES/THIRD_PARTY_NOTICES.txt",
+  "README.txt",
+  "chromium-wasm-clipboard-input.js",
+  "chromium-wasm-host.js",
+  "chromium-wasm-pointer-input.js",
+  "chromium-wasm-storage-estimate.js",
+  "chromium-wasm-text-input.js",
+  "chromium-wasm.js",
+  "chromium-wasm.wasm",
+  "index.html",
+]);
 
 function appendBounded(records, record) {
   records.push(record);
@@ -49,6 +111,171 @@ function asNonemptyString(value, description) {
     throw new Error(`${description} must be a nonempty string`);
   }
   return value;
+}
+
+function requireExactKeys(value, expectedKeys, description) {
+  const report = asReport(value, description);
+  const observedKeys = Object.keys(report);
+  if (observedKeys.length !== expectedKeys.length ||
+      !expectedKeys.every((key) => Object.hasOwn(report, key))) {
+    throw new Error(`${description} keys are invalid`);
+  }
+  return report;
+}
+
+function asSha256(value, description) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${description} must be a lowercase SHA-256`);
+  }
+  return value;
+}
+
+function asRevision(value, description) {
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/.test(value)) {
+    throw new Error(`${description} must be a lowercase Git revision`);
+  }
+  return value;
+}
+
+function canonicalJsonString(value) {
+  let result = "\"";
+  for (let index = 0; index < value.length; ++index) {
+    const code = value.charCodeAt(index);
+    switch (code) {
+      case 8:
+        result += "\\b";
+        break;
+      case 9:
+        result += "\\t";
+        break;
+      case 10:
+        result += "\\n";
+        break;
+      case 12:
+        result += "\\f";
+        break;
+      case 13:
+        result += "\\r";
+        break;
+      case 34:
+        result += "\\\"";
+        break;
+      case 92:
+        result += "\\\\";
+        break;
+      default:
+        if (code < 0x20 || code > 0x7e) {
+          result += `\\u${code.toString(16).padStart(4, "0")}`;
+        } else {
+          result += String.fromCharCode(code);
+        }
+        break;
+    }
+  }
+  return `${result}\"`;
+}
+
+function canonicalJson(value, indentation = "") {
+  if (value === null) {
+    return "null";
+  }
+  switch (typeof value) {
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      if (!Number.isSafeInteger(value)) {
+        throw new Error("VERSION.json contains an unsafe number");
+      }
+      return String(value);
+    case "string":
+      return canonicalJsonString(value);
+    case "object":
+      break;
+    default:
+      throw new Error("VERSION.json contains an unsupported value");
+  }
+
+  const childIndentation = `${indentation}  `;
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "[]";
+    }
+    return `[\n${value.map((item) =>
+        `${childIndentation}${canonicalJson(item, childIndentation)}`).join(",\n")}
+${indentation}]`;
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new Error("VERSION.json contains an unsupported object");
+  }
+  const keys = Object.keys(value).sort();
+  if (keys.length === 0) {
+    return "{}";
+  }
+  return `{\n${keys.map((key) =>
+      `${childIndentation}${canonicalJsonString(key)}: ` +
+      canonicalJson(value[key], childIndentation)).join(",\n")}
+${indentation}}`;
+}
+
+function requireExactCanonicalObject(value, expected, description) {
+  const report = requireExactKeys(value, Object.keys(expected), description);
+  if (canonicalJson(report) !== canonicalJson(expected)) {
+    throw new Error(`${description} values are invalid`);
+  }
+  return report;
+}
+
+function parseCanonicalVersionJson(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 ||
+      bytes.byteLength > MAX_VERSION_JSON_BYTES) {
+    throw new Error("VERSION.json has an invalid bounded byte length");
+  }
+  if (typeof TextDecoder !== "function") {
+    throw new Error("UTF-8 decoding is unavailable for VERSION.json");
+  }
+  let text;
+  let version;
+  try {
+    // Preserve a leading BOM so canonical-byte comparison rejects it. The
+    // package verifier decodes raw bytes with Python UTF-8 and likewise does
+    // not accept a BOM-prefixed JSON document as canonical metadata.
+    text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(bytes);
+  } catch (error) {
+    throw new Error(`VERSION.json is invalid: ${String(error)}`);
+  }
+  if (text.charCodeAt(0) === 0xfeff) {
+    throw new Error("VERSION.json is not canonical deterministic JSON");
+  }
+  try {
+    version = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`VERSION.json is invalid: ${String(error)}`);
+  }
+  // Regenerating the full deterministic bytes rejects duplicate object keys:
+  // JSON.parse otherwise keeps only their last value. It also prevents this
+  // bounded status from being derived from a noncanonical metadata document.
+  if (`${canonicalJson(version)}\n` !== text) {
+    throw new Error("VERSION.json is not canonical deterministic JSON");
+  }
+  return requireExactKeys(version, EXPECTED_VERSION_KEYS, "VERSION.json");
+}
+
+async function sha256Hex(bytes) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof subtle.digest !== "function") {
+    throw new Error("WebCrypto SHA-256 is unavailable for VERSION.json");
+  }
+  let digest;
+  try {
+    digest = await subtle.digest("SHA-256", bytes);
+  } catch (error) {
+    throw new Error(`VERSION.json SHA-256 failed: ${String(error)}`);
+  }
+  if (!(digest instanceof ArrayBuffer)) {
+    throw new Error("WebCrypto SHA-256 returned an invalid digest");
+  }
+  return Array.from(new Uint8Array(digest), (value) =>
+    value.toString(16).padStart(2, "0")).join("");
 }
 
 function validateGateState(value) {
@@ -72,6 +299,76 @@ function validateGateState(value) {
   // Do not retain untrusted metadata objects after validation. The rendered
   // release-state section is always the canonical false-only declaration.
   return EXPECTED_GATE_STATE;
+}
+
+function validateVersionMetadata(version) {
+  const report = requireExactKeys(
+      version, EXPECTED_VERSION_KEYS, "VERSION.json");
+  if (report.schema_version !== PACKAGE_SCHEMA_VERSION ||
+      report.product !== PRODUCT_NAME || report.release_status !== RELEASE_STATUS) {
+    throw new Error("VERSION.json package declaration is invalid");
+  }
+
+  const gateState = validateGateState(report.gate_state);
+  const versions = requireExactKeys(
+      report.versions, EXPECTED_VERSION_REVISION_KEYS, "VERSION.json versions");
+  for (const name of EXPECTED_VERSION_REVISION_KEYS) {
+    asRevision(versions[name], `VERSION.json ${name}`);
+  }
+
+  const build = requireExactKeys(
+      report.build, EXPECTED_BUILD_KEYS, "VERSION.json build");
+  if (!Array.isArray(build.gn_args) || build.gn_args.length === 0 ||
+      !build.gn_args.every((value) => typeof value === "string")) {
+    throw new Error("VERSION.json GN arguments are invalid");
+  }
+  asSha256(build.gn_args_sha256, "VERSION.json GN arguments");
+  if (build.input_module_name !== PACKAGE_INPUT_MODULE_NAME ||
+      build.resource_delivery !== "embedded-in-wasm-current-build" ||
+      !ALLOWED_ARTIFACT_SOURCE_PROVENANCE.has(
+          build.artifact_source_provenance)) {
+    throw new Error("VERSION.json build metadata is invalid");
+  }
+  asRevision(build.staging_checkout, "VERSION.json staging checkout");
+
+  requireExactCanonicalObject(report.host, {
+    bridge_protocol: HOST_PROTOCOL,
+    mime_types: EXPECTED_MIME_TYPES,
+    required_headers: EXPECTED_REQUIRED_HEADERS,
+  }, "VERSION.json host requirements");
+
+  const manifest = requireExactKeys(
+      report.toolchain_manifest, EXPECTED_TOOLCHAIN_MANIFEST_KEYS,
+      "VERSION.json toolchain manifest");
+  if (manifest.path !== "tools/wasm/toolchain_manifest.json") {
+    throw new Error("VERSION.json toolchain manifest identity is invalid");
+  }
+  asSha256(manifest.sha256, "VERSION.json toolchain manifest");
+
+  if (!Array.isArray(report.known_limitations) ||
+      report.known_limitations.length < 4 ||
+      !report.known_limitations.every((value) =>
+        typeof value === "string" && value.length > 0)) {
+    throw new Error("VERSION.json known limitations are invalid");
+  }
+
+  if (!Array.isArray(report.artifacts) || report.artifacts.length === 0 ||
+      report.artifacts.length !== EXPECTED_PACKAGE_ARTIFACT_PATHS.length) {
+    throw new Error("VERSION.json artifact list is invalid");
+  }
+  for (let index = 0; index < report.artifacts.length; ++index) {
+    const artifact = requireExactKeys(
+        report.artifacts[index], EXPECTED_ARTIFACT_KEYS,
+        "VERSION.json artifact record");
+    if (artifact.path !== EXPECTED_PACKAGE_ARTIFACT_PATHS[index]) {
+      throw new Error("VERSION.json artifacts are not complete and ordered");
+    }
+    asSha256(artifact.sha256, "VERSION.json artifact hash");
+    if (!Number.isSafeInteger(artifact.size_bytes) || artifact.size_bytes <= 0) {
+      throw new Error("VERSION.json artifact size is invalid");
+    }
+  }
+  return {build, gateState, versions};
 }
 
 function isReadinessReport(value) {
@@ -204,6 +501,7 @@ class ChromiumWasmPreReleaseHost {
   #processExitCode = null;
   #shutdownRequested = false;
   #gateState = null;
+  #packageMetadata = null;
   #windowErrorHandler = null;
   #unhandledRejectionHandler = null;
 
@@ -238,6 +536,7 @@ class ChromiumWasmPreReleaseHost {
     const summary = {
       releaseStatus: RELEASE_STATUS,
       gateState: this.#gateState,
+      packageMetadata: this.#packageMetadata,
       runtimeInitialized: this.#module !== null,
       framesPresented: this.#frameCount,
       readiness: this.#readiness,
@@ -552,7 +851,7 @@ class ChromiumWasmPreReleaseHost {
     }
   }
 
-  async run(version) {
+  async run(version, packageMetadata) {
     if (version?.schema_version !== PACKAGE_SCHEMA_VERSION) {
       throw new Error("VERSION.json has an unsupported package schema version");
     }
@@ -569,7 +868,11 @@ class ChromiumWasmPreReleaseHost {
         typeof SharedArrayBuffer !== "function") {
       throw new Error("this package requires COOP/COEP cross-origin isolation");
     }
+    if (!packageMetadata || typeof packageMetadata !== "object") {
+      throw new Error("VERSION.json runtime metadata is invalid");
+    }
     this.#gateState = gateState;
+    this.#packageMetadata = packageMetadata;
     this.#renderVersions(version);
     this.#renderGateState(gateState);
     this.#capturePageErrors();
@@ -629,12 +932,59 @@ class ChromiumWasmPreReleaseHost {
   }
 }
 
-async function loadVersion() {
+function packageRuntimeMetadata(validatedVersion, versionBytes, versionJsonSha256) {
+  const {build, gateState, versions} = validatedVersion;
+  if (!(versionBytes instanceof Uint8Array)) {
+    throw new Error("VERSION.json runtime bytes are invalid");
+  }
+  asSha256(versionJsonSha256, "VERSION.json runtime metadata");
+  return Object.freeze({
+    build: Object.freeze({
+      artifactSourceProvenance: build.artifact_source_provenance,
+      inputModuleName: build.input_module_name,
+      resourceDelivery: build.resource_delivery,
+      stagingCheckout: build.staging_checkout,
+    }),
+    gateState: Object.freeze({...gateState}),
+    product: PRODUCT_NAME,
+    protocol: PACKAGE_METADATA_PROTOCOL,
+    releaseStatus: RELEASE_STATUS,
+    schemaVersion: PACKAGE_SCHEMA_VERSION,
+    versionJsonSha256,
+    versions: Object.freeze({
+      chromium: versions.chromium,
+      emscripten: versions.emscripten,
+      v8: versions.v8,
+    }),
+  });
+}
+
+export async function loadVersion() {
   const response = await fetch("./VERSION.json", {cache: "no-store"});
   if (!response.ok) {
     throw new Error(`VERSION.json request returned HTTP ${response.status}`);
   }
-  return response.json();
+  const contentLength = response.headers?.get("Content-Length");
+  if (typeof contentLength !== "string" || !/^\d+$/.test(contentLength)) {
+    throw new Error("VERSION.json response lacks a bounded Content-Length");
+  }
+  const byteLength = Number(contentLength);
+  if (!Number.isSafeInteger(byteLength) || byteLength <= 0 ||
+      byteLength > MAX_VERSION_JSON_BYTES) {
+    throw new Error("VERSION.json response Content-Length is invalid");
+  }
+  const versionBytes = new Uint8Array(await response.arrayBuffer());
+  if (versionBytes.byteLength !== byteLength) {
+    throw new Error("VERSION.json response length does not match Content-Length");
+  }
+  const version = parseCanonicalVersionJson(versionBytes);
+  const validatedVersion = validateVersionMetadata(version);
+  const versionJsonSha256 = await sha256Hex(versionBytes);
+  return {
+    version,
+    packageMetadata: packageRuntimeMetadata(
+        validatedVersion, versionBytes, versionJsonSha256),
+  };
 }
 
 export async function runChromiumWasmPreRelease() {
@@ -647,5 +997,6 @@ export async function runChromiumWasmPreRelease() {
   const shutdownButton = document.querySelector("#shutdown");
   const host = new ChromiumWasmPreReleaseHost(
       canvas, textProxy, root, status, versions, gateState, shutdownButton);
-  await host.run(await loadVersion());
+  const loadedVersion = await loadVersion();
+  await host.run(loadedVersion.version, loadedVersion.packageMetadata);
 }

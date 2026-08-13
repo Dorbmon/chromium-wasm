@@ -31,6 +31,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 if __package__:
+    from . import package as package_tool
     from .m0_common import M0Error, REPO_ROOT, parse_timeout
     from .m4_cdp import unused_loopback_port, wait_for_page_client
     from .run_browser_smoke import (
@@ -45,6 +46,8 @@ if __package__:
     from .m9_server_cleanup import shutdown_server_bounded
     from .run_m9_package_smoke import create_package_smoke_server
 else:
+    import package as package_tool
+
     from m0_common import M0Error, REPO_ROOT, parse_timeout
     from m4_cdp import unused_loopback_port, wait_for_page_client
     from run_browser_smoke import (
@@ -66,7 +69,7 @@ OUTER_DOCUMENT_RESTART_SCOPE = (
     "real-browser-package-two-outer-document-epochs-loader-pthread-bootstrap-"
     "and-host-shutdown-only"
 )
-RELEASE_STATUS = "pre_m7_m8_not_releasable"
+RELEASE_STATUS = package_tool.RELEASE_STATUS
 EPOCH_QUERY_KEY = "m9_package_epoch"
 
 _STATUS_EXPRESSION = r"""
@@ -116,6 +119,7 @@ _STATUS_EXPRESSION = r"""
     documentIdentity,
     framesPresented: payload.framesPresented,
     pageState: root.dataset.state,
+    packageMetadata: payload.packageMetadata,
     readiness: payload.readiness,
     records: payload.records,
     releaseStatus: payload.releaseStatus,
@@ -127,6 +131,50 @@ _STATUS_EXPRESSION = r"""
   };
 })()
 """
+
+
+def _runtime_metadata_from_server_snapshot(server: Any) -> dict[str, object]:
+    try:
+        artifacts = server.snapshot.artifacts
+        version_bytes = artifacts["VERSION.json"]
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise M0Error("package server is missing its immutable VERSION.json") from exc
+    try:
+        package_tool.verify_release_snapshot(artifacts)
+        return package_tool.package_runtime_status_metadata(version_bytes)
+    except package_tool.PackageError as exc:
+        raise M0Error(f"package server snapshot metadata is invalid: {exc}") from exc
+
+
+def _exact_json_value_equal(actual: object, expected: object) -> bool:
+    """Compare JSON-shaped values without Python bool/int coercion."""
+
+    if type(actual) is not type(expected):
+        return False
+    if type(actual) is dict:
+        if set(actual) != set(expected):
+            return False
+        return all(
+            _exact_json_value_equal(actual[key], expected[key])
+            for key in actual
+        )
+    if type(actual) is list:
+        return len(actual) == len(expected) and all(
+            _exact_json_value_equal(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected)
+        )
+    return actual == expected
+
+
+def _require_runtime_metadata(
+    value: object, expected: dict[str, object]
+) -> None:
+    """Require the ready host's bounded metadata to equal the server snapshot."""
+    if not _exact_json_value_equal(value, expected):
+        raise M0Error(
+            "package host runtime metadata does not match immutable "
+            "VERSION.json snapshot"
+        )
 
 
 def _status(client: Any) -> dict[str, Any]:
@@ -208,6 +256,25 @@ def _require_document_identity(
     if prior_time_origin is not None and result == prior_time_origin:
         raise M0Error("package host outer-document time origin did not change")
     return result
+
+
+def _require_ready_package_document(
+    status: dict[str, Any],
+    *,
+    expected_url: str,
+    expected_epoch: str,
+    expected_package_metadata: dict[str, object],
+    prior_time_origin: float | None = None,
+) -> float:
+    """Bind one ready document to both its URL epoch and served metadata."""
+
+    _require_runtime_metadata(status.get("packageMetadata"), expected_package_metadata)
+    return _require_document_identity(
+        status,
+        expected_url=expected_url,
+        expected_epoch=expected_epoch,
+        prior_time_origin=prior_time_origin,
+    )
 
 
 def _is_clean_shutdown(status: dict[str, Any]) -> bool:
@@ -319,6 +386,7 @@ def _wait_for_ready_package_document(
     deadline: float,
     expected_url: str,
     expected_epoch: str,
+    expected_package_metadata: dict[str, object],
     prior_time_origin: float | None,
     description: str,
 ) -> tuple[dict[str, Any], float]:
@@ -332,10 +400,11 @@ def _wait_for_ready_package_document(
     )
     return (
         ready,
-        _require_document_identity(
+        _require_ready_package_document(
             ready,
             expected_url=expected_url,
             expected_epoch=expected_epoch,
+            expected_package_metadata=expected_package_metadata,
             prior_time_origin=prior_time_origin,
         ),
     )
@@ -422,6 +491,7 @@ def run_package_browser_smoke(
         )
         server_thread.start()
         server_thread_started = True
+        expected_package_metadata = _runtime_metadata_from_server_snapshot(server)
         host, port = server.server_address[:2]
         package_url = f"http://{host}:{port}/"
         first_epoch = secrets.token_urlsafe(18)
@@ -462,6 +532,7 @@ def run_package_browser_smoke(
             deadline=deadline,
             expected_url=first_url,
             expected_epoch=first_epoch,
+            expected_package_metadata=expected_package_metadata,
             prior_time_origin=None,
             description="waiting for the first real package frame",
         )
@@ -480,6 +551,9 @@ def run_package_browser_smoke(
                 "process_exit_code": first_result["process_exit_code"],
                 "release_status": first_ready["releaseStatus"],
                 "scope": SCOPE,
+                "served_version_json_sha256": expected_package_metadata[
+                    "versionJsonSha256"
+                ],
                 "shutdown_disabled": first_result["shutdown_disabled"],
                 "shutdown_requested": first_result["shutdown_requested"],
             }
@@ -502,6 +576,7 @@ def run_package_browser_smoke(
             deadline=deadline,
             expected_url=second_url,
             expected_epoch=second_epoch,
+            expected_package_metadata=expected_package_metadata,
             prior_time_origin=first_time_origin,
             description="waiting for the fresh outer-document package frame",
         )
@@ -519,6 +594,9 @@ def run_package_browser_smoke(
             "outer_document_restart": True,
             "release_status": first_ready["releaseStatus"],
             "scope": OUTER_DOCUMENT_RESTART_SCOPE,
+            "served_version_json_sha256": expected_package_metadata[
+                "versionJsonSha256"
+            ],
         }
     except BaseException as exc:
         primary_error = exc
