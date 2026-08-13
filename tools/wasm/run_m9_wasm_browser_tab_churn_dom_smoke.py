@@ -930,6 +930,7 @@ def main() -> int:
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
     stderr_thread: threading.Thread | None = None
+    stderr_thread_started = False
     profile: tempfile.TemporaryDirectory[str] | None = None
     runtime_result: dict[str, Any] | None = None
     context: dict[str, object] | None = None
@@ -1022,6 +1023,7 @@ def main() -> int:
             daemon=True,
         )
         stderr_thread.start()
+        stderr_thread_started = True
         deadline = time.monotonic() + args.timeout
         stage = "connect_devtools"
         client = wait_for_page_client(debug_port, url.split("?", 1)[0], deadline)
@@ -1052,7 +1054,7 @@ def main() -> int:
     except (M0Error, OSError, KeyError, TypeError, ValueError) as error:
         if browser is not None:
             stop_browser(browser)
-        if stderr_thread is not None:
+        if stderr_thread_started and stderr_thread is not None:
             stderr_thread.join(timeout=1)
         try:
             diagnostic = write_failure_diagnostics(
@@ -1083,7 +1085,7 @@ def main() -> int:
             client.close()
         if browser is not None:
             stop_browser(browser)
-        if stderr_thread is not None:
+        if stderr_thread_started and stderr_thread is not None:
             stderr_thread.join(timeout=1)
         if server is not None:
             if server_thread_started:
