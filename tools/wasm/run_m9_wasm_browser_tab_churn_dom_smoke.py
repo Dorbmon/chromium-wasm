@@ -18,7 +18,7 @@ import argparse
 from collections import deque
 import hashlib
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 from pathlib import Path
 import queue
@@ -45,7 +45,10 @@ from m9_browser_cleanup import (
     abort_browser_group,
     stop_browser_group,
 )
-from m9_server_cleanup import shutdown_server_bounded
+from m9_server_cleanup import (
+    M9TrackingThreadingHTTPServer,
+    shutdown_server_bounded,
+)
 from run_browser_smoke import browser_command, find_browser
 import run_wasm_browser_view_smoke as browser_view_smoke
 
@@ -128,7 +131,7 @@ _CAPTURE_HARNESS_FIELDS = frozenset(
 )
 
 
-class TabChurnSmokeServer(ThreadingHTTPServer):
+class TabChurnSmokeServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -949,6 +952,13 @@ def _cleanup_tab_churn_server(
     if server_thread_started and server_thread is not None:
         cleanup_error = _run_cleanup_action(
             cleanup_error, lambda: _join_tab_churn_server(server_thread)
+        )
+    if server is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error,
+            lambda: server.join_request_handlers(
+                timeout=1, description="M9 tab-churn server"
+            ),
         )
     return cleanup_error
 

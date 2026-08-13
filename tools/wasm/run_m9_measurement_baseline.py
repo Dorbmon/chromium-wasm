@@ -20,7 +20,7 @@ import argparse
 from collections import deque
 import hashlib
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 import math
 from pathlib import Path
@@ -57,7 +57,10 @@ if __package__:
         abort_browser_group,
         stop_browser_group,
     )
-    from .m9_server_cleanup import shutdown_server_bounded
+    from .m9_server_cleanup import (
+        M9TrackingThreadingHTTPServer,
+        shutdown_server_bounded,
+    )
 else:
     from check_m6_chrome_boundary import check_boundary
     from m0_common import (
@@ -76,7 +79,10 @@ else:
         abort_browser_group,
         stop_browser_group,
     )
-    from m9_server_cleanup import shutdown_server_bounded
+    from m9_server_cleanup import (
+        M9TrackingThreadingHTTPServer,
+        shutdown_server_bounded,
+    )
 
 
 SENTINEL = "CHROMIUM_WASM_M9_BASELINE"
@@ -363,7 +369,7 @@ def _require_exact_fields(
     return value
 
 
-class M9MeasurementServer(ThreadingHTTPServer):
+class M9MeasurementServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -1097,6 +1103,13 @@ def _cleanup_measurement_server(
     if server_thread_started and server_thread is not None:
         cleanup_error = _run_cleanup_action(
             cleanup_error, lambda: _join_measurement_server(server_thread)
+        )
+    if server is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error,
+            lambda: server.join_request_handlers(
+                timeout=5, description="M9 measurement server"
+            ),
         )
     return cleanup_error
 

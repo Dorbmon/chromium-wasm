@@ -550,6 +550,13 @@ def run_package_browser_smoke(
             cleanup_error = _run_cleanup_action(
                 cleanup_error, lambda: _join_package_browser_server(server_thread)
             )
+        if server is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: server.join_request_handlers(
+                    timeout=5, description="M9 package browser server"
+                ),
+            )
         if profile is not None:
             cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
         if primary_error is None and cleanup_error is not None:

@@ -942,6 +942,73 @@ class M9PackageTest(unittest.TestCase):
         thread.join.assert_called_once_with(timeout=5)
         thread.is_alive.assert_called_once_with()
 
+    def test_package_smoke_main_rejects_live_handler_without_pass_marker(
+        self,
+    ) -> None:
+        """A stopped serving loop alone cannot make a package smoke pass."""
+
+        snapshot = snapshot_package_tree(self._stage())
+        server = mock.Mock()
+        server.snapshot = snapshot
+        server.server_address = ("127.0.0.1", 32123)
+        server.join_request_handlers.side_effect = M0Error(
+            "M9 package smoke server request handlers did not stop"
+        )
+        thread = mock.Mock()
+        thread.is_alive.return_value = False
+        responses = []
+        for content_type in (
+            "text/html",
+            "text/javascript",
+            "application/wasm",
+            "application/json",
+        ):
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.status = 200
+            response.read.return_value = b"package response"
+            response.headers.get_content_type.return_value = content_type
+            response.headers.get.side_effect = (
+                lambda name, content_type=content_type: (
+                    f"{content_type}; charset=utf-8"
+                    if name == "Content-Type"
+                    else package.REQUIRED_HEADERS.get(name)
+                )
+            )
+            responses.append(response)
+        stdout = io.StringIO()
+
+        with (
+            mock.patch.object(
+                package_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_smoke.threading,
+                "Thread",
+                return_value=thread,
+            ),
+            mock.patch.object(package_smoke, "urlopen", side_effect=responses),
+            mock.patch.object(
+                sys,
+                "argv",
+                ["package-smoke", "--dist-dir", str(self.root / "ignored")],
+            ),
+            mock.patch.object(sys, "stdout", stdout),
+        ):
+            self.assertEqual(1, package_smoke.main())
+
+        self.assertIn(f"{package_smoke.SENTINEL}:SMOKE_FAIL", stdout.getvalue())
+        self.assertNotIn(f"{package_smoke.SENTINEL}:SMOKE_PASS", stdout.getvalue())
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        thread.join.assert_called_once_with(timeout=5)
+        thread.is_alive.assert_called_once_with()
+        server.join_request_handlers.assert_called_once_with(
+            timeout=5, description="M9 package smoke server"
+        )
+
     def test_package_smoke_preserves_endpoint_failure_when_server_stays_alive(
         self,
     ) -> None:

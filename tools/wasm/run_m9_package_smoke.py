@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 import os
 from pathlib import Path
@@ -29,7 +29,10 @@ from urllib.request import urlopen
 
 if __package__:
     from .m0_common import M0Error
-    from .m9_server_cleanup import shutdown_server_bounded
+    from .m9_server_cleanup import (
+        M9TrackingThreadingHTTPServer,
+        shutdown_server_bounded,
+    )
     from .package import (
         MAX_ARTIFACT_BYTES,
         PACKAGE_PATHS,
@@ -40,7 +43,10 @@ if __package__:
     )
 else:
     from m0_common import M0Error
-    from m9_server_cleanup import shutdown_server_bounded
+    from m9_server_cleanup import (
+        M9TrackingThreadingHTTPServer,
+        shutdown_server_bounded,
+    )
     from package import (
         MAX_ARTIFACT_BYTES,
         PACKAGE_PATHS,
@@ -59,7 +65,7 @@ class PackageTreeSnapshot:
     verification: Mapping[str, object]
 
 
-class PackageSmokeServer(ThreadingHTTPServer):
+class PackageSmokeServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -494,6 +500,12 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
             cleanup_error = _run_cleanup_action(
                 cleanup_error, lambda: _join_package_smoke_server(thread)
             )
+        cleanup_error = _run_cleanup_action(
+            cleanup_error,
+            lambda: server.join_request_handlers(
+                timeout=5, description="M9 package smoke server"
+            ),
+        )
         if primary_error is None and cleanup_error is not None:
             raise cleanup_error
 
