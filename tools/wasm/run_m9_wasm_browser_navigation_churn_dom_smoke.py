@@ -932,6 +932,7 @@ def main() -> int:
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
     stderr_thread: threading.Thread | None = None
+    stderr_thread_started = False
     profile: tempfile.TemporaryDirectory[str] | None = None
     result: dict[str, Any] | None = None
     stage = "check_artifacts"
@@ -1013,6 +1014,7 @@ def main() -> int:
             daemon=True,
         )
         stderr_thread.start()
+        stderr_thread_started = True
         stage = "wait_for_normal_close_result"
         result = wait_for_result(
             browser, browser_stderr, result_queue, time.monotonic() + args.timeout
@@ -1034,7 +1036,7 @@ def main() -> int:
     except (M0Error, OSError, KeyError, TypeError, ValueError) as error:
         if browser is not None:
             stop_browser(browser)
-        if stderr_thread is not None:
+        if stderr_thread_started and stderr_thread is not None:
             stderr_thread.join(timeout=1)
         try:
             diagnostic = write_failure_diagnostics(
@@ -1062,7 +1064,7 @@ def main() -> int:
     finally:
         if browser is not None:
             stop_browser(browser)
-        if stderr_thread is not None:
+        if stderr_thread_started and stderr_thread is not None:
             stderr_thread.join(timeout=1)
         if server is not None:
             if server_thread_started:

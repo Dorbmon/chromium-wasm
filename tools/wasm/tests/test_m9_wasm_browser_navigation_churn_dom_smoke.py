@@ -583,6 +583,68 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         find_browser.assert_called_once_with(None)
         popen.assert_not_called()
 
+    def test_main_preserves_unstarted_stderr_reader_failure_and_cleans_up(self) -> None:
+        server = mock.Mock()
+        server.artifacts = {"chrome_wasm.js": b"loader"}
+        server_thread = mock.Mock()
+        browser = mock.Mock()
+        browser.stderr = object()
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-navigation-churn-profile"
+        stderr_thread = mock.Mock()
+        stderr_thread.start.side_effect = RuntimeError("stderr reader start failed")
+        stderr_thread.join.side_effect = RuntimeError(
+            "cannot join thread before it is started"
+        )
+
+        with (
+            mock.patch.object(smoke, "check_boundary"),
+            mock.patch.object(smoke, "create_server", return_value=server),
+            mock.patch.object(smoke, "artifact_identity", return_value={}),
+            mock.patch.object(smoke, "capture_harness_identity", return_value={}),
+            mock.patch.object(smoke, "verify_required_exports"),
+            mock.patch.object(smoke, "load_manifest", return_value={}),
+            mock.patch.object(smoke, "toolchain_manifest_versions", return_value={}),
+            mock.patch.object(
+                smoke.threading,
+                "Thread",
+                side_effect=[server_thread, stderr_thread],
+            ),
+            mock.patch.object(
+                smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                smoke,
+                "smoke_url",
+                return_value=(
+                    "http://127.0.0.1:12345/__m9_browser_navigation_churn__/"
+                ),
+            ),
+            mock.patch.object(
+                smoke.tempfile, "TemporaryDirectory", return_value=profile
+            ),
+            mock.patch.object(
+                smoke,
+                "browser_command",
+                return_value=["/fake/browser", "profile", "url"],
+            ),
+            mock.patch.object(smoke.subprocess, "Popen", return_value=browser),
+            mock.patch.object(smoke, "stop_browser") as stop_browser,
+            mock.patch.object(sys, "argv", ["navigation-churn-runner"]),
+            self.assertRaisesRegex(RuntimeError, "stderr reader start failed"),
+        ):
+            smoke.main()
+
+        server_thread.start.assert_called_once_with()
+        stop_browser.assert_called_once_with(browser)
+        stderr_thread.join.assert_not_called()
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=1)
+        profile.cleanup.assert_called_once_with()
+
     def test_native_host_and_runner_keep_the_bounded_scope_explicit(self) -> None:
         entrypoint = source("chrome/app/chrome_main_wasm.cc")
         native = source("chrome/browser/wasm/wasm_browser_navigation_churn_smoke.cc")
