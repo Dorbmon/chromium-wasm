@@ -1048,6 +1048,45 @@ class M9PackageTest(unittest.TestCase):
                 "fixed package-host shutdown",
             )
 
+    def test_package_browser_closes_unstarted_server_without_shutdown(self) -> None:
+        server = mock.Mock()
+        server.shutdown.side_effect = AssertionError(
+            "an unstarted server must not be shut down"
+        )
+        server_thread = mock.Mock()
+        server_thread.start.side_effect = RuntimeError("server thread start failed")
+
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_browser_smoke.threading,
+                "Thread",
+                return_value=server_thread,
+            ),
+            mock.patch.object(package_browser_smoke.subprocess, "Popen") as popen,
+            self.assertRaisesRegex(RuntimeError, "server thread start failed"),
+        ):
+            package_browser_smoke.run_package_browser_smoke(
+                dist_dir=Path("/fake/dist"),
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+            )
+
+        server.shutdown.assert_not_called()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_not_called()
+        popen.assert_not_called()
+
     def test_package_browser_restart_closes_stale_client_and_reattaches_exact_url(
         self,
     ) -> None:

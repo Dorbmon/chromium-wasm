@@ -376,6 +376,7 @@ def run_package_browser_smoke(
 ) -> dict[str, object]:
     server = None
     server_thread = None
+    server_thread_started = False
     browser: subprocess.Popen[str] | None = None
     stderr_thread = None
     browser_stderr: deque[str] = deque(maxlen=300)
@@ -390,6 +391,7 @@ def run_package_browser_smoke(
             daemon=True,
         )
         server_thread.start()
+        server_thread_started = True
         host, port = server.server_address[:2]
         package_url = f"http://{host}:{port}/"
         first_epoch = secrets.token_urlsafe(18)
@@ -496,9 +498,10 @@ def run_package_browser_smoke(
         if stderr_thread is not None:
             stderr_thread.join(timeout=1)
         if server is not None:
-            server.shutdown()
+            if server_thread_started:
+                server.shutdown()
             server.server_close()
-        if server_thread is not None:
+        if server_thread_started and server_thread is not None:
             server_thread.join(timeout=5)
         if profile is not None:
             profile.cleanup()
