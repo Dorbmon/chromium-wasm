@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,33 @@ import bootstrap
 from m0_common import M0Error, load_manifest
 
 
+EXPECTED_ENTRY_POINT_OUTPUTS = (
+    "emcc",
+    "em++",
+    "bootstrap",
+    "emar",
+    "embuilder",
+    "emcmake",
+    "em-config",
+    "emconfigure",
+    "emmake",
+    "emranlib",
+    "emrun",
+    "emscons",
+    "emsize",
+    "emprofile",
+    "emdwp",
+    "emnm",
+    "emstrip",
+    "emsymbolizer",
+    "emscan-deps",
+    "empath-split",
+    "tools/file_packager",
+    "tools/webidl_binder",
+    "test/runner",
+)
+
+
 def run_git(cwd: Path, *arguments: str) -> str:
     return subprocess.run(
         ["git", *arguments],
@@ -37,9 +66,11 @@ def run_git(cwd: Path, *arguments: str) -> str:
 
 def source_installer_contents() -> str:
     return """\
+import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -49,13 +80,29 @@ target.mkdir()
 for relative_path in (
     "emscripten-version.txt",
     "emcc",
+    "em++",
     "emcc.py",
+    "em++.py",
     "system/lib/wasmfs/syscalls.cpp",
 ):
     source = source_root / relative_path
     destination = target / relative_path
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
+(target / "source-launchers.json").write_text(
+    json.dumps(
+        {
+            name: {
+                "mode": stat.S_IMODE((source_root / name).stat().st_mode),
+                "readable": os.access(source_root / name, os.R_OK),
+                "executable": os.access(source_root / name, os.X_OK),
+            }
+            for name in ("emcc", "em++")
+        },
+        sort_keys=True,
+    ),
+    encoding="utf-8",
+)
 (target / "installer-path.txt").write_text(
     os.environ["PATH"], encoding="utf-8"
 )
@@ -78,6 +125,54 @@ revision = subprocess.check_output(
 """
 
 
+def entry_points_contents(
+    emcc_contents: bytes,
+    emcc_execute_bits: int,
+    emxx_contents: bytes,
+    emxx_execute_bits: int,
+    *,
+    generate_emxx: bool,
+    generator_umask: int | None,
+) -> str:
+    return f"""\\
+import os
+from pathlib import Path
+import stat
+
+expected_environment = {{
+    "HOME",
+    "TMPDIR",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONHASHSEED",
+    "LANG",
+    "LC_ALL",
+}}
+if set(os.environ) != expected_environment:
+    raise RuntimeError("entry-point generator received an inherited environment")
+if os.environ["PYTHONDONTWRITEBYTECODE"] != "1":
+    raise RuntimeError("entry-point generator may write bytecode")
+if os.environ["PYTHONHASHSEED"] != "0":
+    raise RuntimeError("entry-point generator hash seed is not deterministic")
+if os.environ["LANG"] != "C" or os.environ["LC_ALL"] != "C":
+    raise RuntimeError("entry-point generator locale is not deterministic")
+
+source_root = Path(__file__).resolve().parents[2]
+generator_umask = {generator_umask!r}
+if generator_umask is not None:
+    os.umask(generator_umask)
+launchers = {{
+    "emcc": ({emcc_contents!r}, {emcc_execute_bits:#o}),
+    "em++": ({emxx_contents!r}, {emxx_execute_bits:#o}),
+}}
+if not {generate_emxx!r}:
+    del launchers["em++"]
+for name, (contents, execute_bits) in launchers.items():
+    launcher = source_root / name
+    launcher.write_bytes(contents)
+    launcher.chmod(stat.S_IMODE(launcher.stat().st_mode) | execute_bits)
+"""
+
+
 def npm_cli_contents() -> str:
     return f"""\
 #!{sys.executable}
@@ -90,15 +185,37 @@ Path.cwd().joinpath("npm-ci.txt").write_text("ok\\n", encoding="utf-8")
 """
 
 
-def create_source_origin(root: Path) -> tuple[Path, str, dict[str, bytes]]:
+def create_source_origin(
+    root: Path,
+    *,
+    emcc_execute_bits: int = 0o111,
+    emxx_execute_bits: int = 0o111,
+    generate_emxx: bool = True,
+    generator_umask: int | None = None,
+    tracked_entry_point_symlink: str | None = None,
+    tracked_entry_point_symlink_target: Path | None = None,
+) -> tuple[Path, str, dict[str, bytes]]:
     origin = root / "source-origin"
     origin.mkdir()
     run_git(origin, "init", "--quiet")
+    emcc_contents = b"#!/bin/sh\nexit 0\n"
+    emxx_contents = b"#!/bin/sh\nexit 0\n"
     files = {
+        ".gitignore": b"emcc\nem++\n",
         "emscripten-version.txt": b"5.0.6-git\n",
-        "emcc": b"fork emcc\n",
+        "bootstrap": b"tracked bootstrap launcher\n",
         "emcc.py": b"fork emcc.py\n",
+        "em++.py": b"fork em++.py\n",
         "system/lib/wasmfs/syscalls.cpp": b"fork fcntl locks\n",
+        "test/fixture.txt": b"entry-point parent fixture\n",
+        "tools/maint/create_entry_points.py": entry_points_contents(
+            emcc_contents,
+            emcc_execute_bits,
+            emxx_contents,
+            emxx_execute_bits,
+            generate_emxx=generate_emxx,
+            generator_umask=generator_umask,
+        ).encode("utf-8"),
         "tools/install.py": source_installer_contents().encode("utf-8"),
     }
     for relative_path, contents in files.items():
@@ -108,12 +225,25 @@ def create_source_origin(root: Path) -> tuple[Path, str, dict[str, bytes]]:
     run_git(
         origin,
         "add",
+        ".gitignore",
         "emscripten-version.txt",
-        "emcc",
+        "bootstrap",
         "emcc.py",
+        "em++.py",
         "system/lib/wasmfs/syscalls.cpp",
+        "test/fixture.txt",
+        "tools/maint/create_entry_points.py",
         "tools/install.py",
     )
+    if tracked_entry_point_symlink is not None:
+        if tracked_entry_point_symlink_target is None:
+            raise ValueError("tracked entry-point symlink target is required")
+        output = origin.joinpath(
+            *PurePosixPath(tracked_entry_point_symlink).parts
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.symlink_to(tracked_entry_point_symlink_target)
+        run_git(origin, "add", "--force", tracked_entry_point_symlink)
     run_git(
         origin,
         "-c",
@@ -125,7 +255,11 @@ def create_source_origin(root: Path) -> tuple[Path, str, dict[str, bytes]]:
         "-m",
         "Add forked Emscripten source",
     )
-    return origin, run_git(origin, "rev-parse", "HEAD"), files
+    return (
+        origin,
+        run_git(origin, "rev-parse", "HEAD"),
+        {**files, "emcc": emcc_contents, "em++": emxx_contents},
+    )
 
 
 def artifact_contents() -> dict[str, bytes]:
@@ -160,7 +294,9 @@ def make_emscripten_pin(
         "node_version": "test-node",
         "artifact_sha256": {
             "emcc": hashlib.sha256(source_files["emcc"]).hexdigest(),
+            "em++": hashlib.sha256(source_files["em++"]).hexdigest(),
             "emcc.py": hashlib.sha256(source_files["emcc.py"]).hexdigest(),
+            "em++.py": hashlib.sha256(source_files["em++.py"]).hexdigest(),
             **{
                 name: hashlib.sha256(contents).hexdigest()
                 for name, contents in artifacts.items()
@@ -176,7 +312,9 @@ def prepare_emsdk(repo_root: Path) -> tuple[Path, Path]:
         "emscripten-version.txt": json.dumps("5.0.6").encode("utf-8"),
         "emscripten-revision.txt": b"old-source-revision\n",
         "emcc": b"old emcc\n",
+        "em++": b"old em++\n",
         "emcc.py": b"old emcc.py\n",
+        "em++.py": b"old em++.py\n",
         "system/lib/wasmfs/syscalls.cpp": b"old fcntl locks\n",
         "old-marker.txt": b"replace only this distribution\n",
     }
@@ -211,6 +349,24 @@ def prepare_emsdk(repo_root: Path) -> tuple[Path, Path]:
 
 
 class EmscriptenSourcePinManifestTest(unittest.TestCase):
+    def test_entry_point_outputs_match_pinned_linux_generator(self) -> None:
+        self.assertEqual(
+            bootstrap.EMSCRIPTEN_SOURCE_ENTRY_POINT_OUTPUTS,
+            EXPECTED_ENTRY_POINT_OUTPUTS,
+        )
+
+    def test_release_manifest_pins_default_cxx_launcher(self) -> None:
+        emscripten = load_manifest()["emscripten"]
+        self.assertIsInstance(emscripten, dict)
+        self.assertEqual(
+            bootstrap.emscripten_artifact_hash(emscripten, "em++"),
+            bootstrap.emscripten_artifact_hash(emscripten, "emcc"),
+        )
+        self.assertEqual(
+            bootstrap.emscripten_artifact_hash(emscripten, "em++.py"),
+            "e71423cc294141b49ef763e9d581232315dd5568ae75e595441072861574645b",
+        )
+
     def test_release_manifest_has_no_source_fork_pin(self) -> None:
         emscripten = load_manifest()["emscripten"]
         self.assertIsInstance(emscripten, dict)
@@ -317,6 +473,12 @@ class EmscriptenSourcePinBootstrapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo_root = Path(temporary_directory)
             origin, revision, source_files = create_source_origin(repo_root)
+            for launcher in ("emcc", "em++"):
+                with self.subTest(launcher=launcher):
+                    self.assertFalse((origin / launcher).exists())
+                    self.assertEqual(
+                        run_git(origin, "check-ignore", launcher), launcher
+                    )
             emsdk, distribution = prepare_emsdk(repo_root)
             emscripten = make_emscripten_pin(
                 origin, revision, source_files, emsdk
@@ -369,6 +531,20 @@ class EmscriptenSourcePinBootstrapTest(unittest.TestCase):
                 (distribution / "system/lib/wasmfs/syscalls.cpp").read_bytes(),
                 source_files["system/lib/wasmfs/syscalls.cpp"],
             )
+            for launcher in ("emcc", "em++"):
+                with self.subTest(launcher=launcher):
+                    path = distribution / launcher
+                    self.assertFalse(path.is_symlink())
+                    self.assertTrue(path.is_file())
+                    self.assertTrue(os.access(path, os.R_OK | os.X_OK))
+                    self.assertEqual(path.read_bytes(), source_files[launcher])
+                    self.assertEqual(
+                        stat.S_IMODE(path.stat().st_mode), 0o755
+                    )
+            self.assertEqual(
+                (distribution / "em++.py").read_bytes(),
+                source_files["em++.py"],
+            )
             self.assertFalse((distribution / "old-marker.txt").exists())
             self.assertFalse(cache.exists())
             self.assertEqual(
@@ -413,6 +589,251 @@ class EmscriptenSourcePinBootstrapTest(unittest.TestCase):
                 [],
             )
             self.assertFalse(hostile_env_marker.exists())
+
+    def test_nonexecutable_generated_emxx_is_normalized_before_install(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            origin, revision, source_files = create_source_origin(
+                repo_root, emxx_execute_bits=0
+            )
+            self.assertFalse((origin / "em++").exists())
+            self.assertEqual(run_git(origin, "check-ignore", "em++"), "em++")
+            emsdk, distribution = prepare_emsdk(repo_root)
+            emscripten = make_emscripten_pin(
+                origin, revision, source_files, emsdk
+            )
+            source_pin = bootstrap.emscripten_source_pin(emscripten)
+            assert source_pin is not None
+            with mock.patch.object(bootstrap, "REPO_ROOT", repo_root):
+                bootstrap.install_emscripten_source_pin(
+                    source_pin, emscripten, emsdk, Path(sys.executable)
+                )
+
+            self.assertEqual(
+                (distribution / "em++").read_bytes(), source_files["em++"]
+            )
+            self.assertEqual(
+                stat.S_IMODE((distribution / "em++").stat().st_mode), 0o755
+            )
+
+    def test_missing_generated_emxx_preserves_active_distribution_and_cache(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            origin, revision, source_files = create_source_origin(
+                repo_root, generate_emxx=False
+            )
+            self.assertFalse((origin / "em++").exists())
+            self.assertEqual(run_git(origin, "check-ignore", "em++"), "em++")
+            emsdk, distribution = prepare_emsdk(repo_root)
+            emscripten = make_emscripten_pin(
+                origin, revision, source_files, emsdk
+            )
+            source_pin = bootstrap.emscripten_source_pin(emscripten)
+            assert source_pin is not None
+            cache = repo_root / bootstrap.EMSCRIPTEN_SOURCE_CACHE
+
+            with (
+                mock.patch.object(bootstrap, "REPO_ROOT", repo_root),
+                self.assertRaisesRegex(M0Error, "missing em\\+\\+"),
+            ):
+                bootstrap.install_emscripten_source_pin(
+                    source_pin, emscripten, emsdk, Path(sys.executable)
+                )
+
+            self.assertEqual(
+                (distribution / "old-marker.txt").read_text(encoding="utf-8"),
+                "replace only this distribution\n",
+            )
+            self.assertTrue((cache / "stale.txt").is_file())
+            self.assertEqual(
+                list((emsdk / "upstream").glob(".emscripten-source-pin-*")),
+                [],
+            )
+
+    def test_hostile_umask_normalizes_generated_compiler_launchers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            origin, revision, source_files = create_source_origin(
+                repo_root, generator_umask=0o777
+            )
+            emsdk, distribution = prepare_emsdk(repo_root)
+            emscripten = make_emscripten_pin(
+                origin, revision, source_files, emsdk
+            )
+            source_pin = bootstrap.emscripten_source_pin(emscripten)
+            assert source_pin is not None
+
+            with mock.patch.object(bootstrap, "REPO_ROOT", repo_root):
+                bootstrap.install_emscripten_source_pin(
+                    source_pin, emscripten, emsdk, Path(sys.executable)
+                )
+
+            source_launchers = json.loads(
+                (distribution / "source-launchers.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for launcher in ("emcc", "em++"):
+                with self.subTest(launcher=launcher):
+                    self.assertEqual(
+                        source_launchers[launcher],
+                        {"mode": 0o755, "readable": True, "executable": True},
+                    )
+                    path = distribution / launcher
+                    self.assertTrue(os.access(path, os.R_OK | os.X_OK))
+                    self.assertEqual(path.read_bytes(), source_files[launcher])
+                    self.assertEqual(
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                        bootstrap.emscripten_artifact_hash(emscripten, launcher),
+                    )
+                    self.assertEqual(
+                        stat.S_IMODE(path.stat().st_mode), 0o755
+                    )
+
+    def test_tracked_entry_point_symlink_is_rejected_before_generation(
+        self,
+    ) -> None:
+        for output_name in ("emcc", "tools/file_packager"):
+            with (
+                self.subTest(output_name=output_name),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                repo_root = Path(temporary_directory)
+                external_marker = repo_root / "external-entry-point-marker"
+                external_marker.write_text("unchanged\n", encoding="utf-8")
+                origin, revision, source_files = create_source_origin(
+                    repo_root,
+                    tracked_entry_point_symlink=output_name,
+                    tracked_entry_point_symlink_target=external_marker,
+                )
+                source_output = origin.joinpath(*PurePosixPath(output_name).parts)
+                self.assertTrue(source_output.is_symlink())
+                self.assertTrue(
+                    run_git(origin, "ls-files", "--stage", "--", output_name)
+                    .startswith("120000 ")
+                )
+                emsdk, distribution = prepare_emsdk(repo_root)
+                emscripten = make_emscripten_pin(
+                    origin, revision, source_files, emsdk
+                )
+                source_pin = bootstrap.emscripten_source_pin(emscripten)
+                assert source_pin is not None
+                cache = repo_root / bootstrap.EMSCRIPTEN_SOURCE_CACHE
+
+                with (
+                    mock.patch.object(bootstrap, "REPO_ROOT", repo_root),
+                    self.assertRaisesRegex(
+                        M0Error,
+                        "entry-point output is not a regular file: "
+                        + output_name,
+                    ),
+                ):
+                    bootstrap.install_emscripten_source_pin(
+                        source_pin, emscripten, emsdk, Path(sys.executable)
+                    )
+
+                self.assertEqual(
+                    external_marker.read_text(encoding="utf-8"), "unchanged\n"
+                )
+                self.assertEqual(
+                    (distribution / "old-marker.txt").read_text(
+                        encoding="utf-8"
+                    ),
+                    "replace only this distribution\n",
+                )
+                self.assertTrue((cache / "stale.txt").is_file())
+                self.assertEqual(
+                    list(
+                        (emsdk / "upstream").glob(
+                            ".emscripten-source-pin-*"
+                        )
+                    ),
+                    [],
+                )
+
+    def test_verify_only_detects_tampered_default_cxx_launcher_without_installing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            origin, revision, source_files = create_source_origin(repo_root)
+            emsdk, distribution = prepare_emsdk(repo_root)
+            emscripten = make_emscripten_pin(
+                origin, revision, source_files, emsdk
+            )
+            source_pin = bootstrap.emscripten_source_pin(emscripten)
+            assert source_pin is not None
+            with mock.patch.object(bootstrap, "REPO_ROOT", repo_root):
+                bootstrap.install_emscripten_source_pin(
+                    source_pin, emscripten, emsdk, Path(sys.executable)
+                )
+            cache = repo_root / bootstrap.EMSCRIPTEN_SOURCE_CACHE
+            cache.mkdir(parents=True)
+            (cache / "fresh.txt").write_text("retain\n", encoding="utf-8")
+            (distribution / "em++").write_text(
+                "tampered\n", encoding="utf-8"
+            )
+
+            with (
+                mock.patch.object(bootstrap, "REPO_ROOT", repo_root),
+                mock.patch.object(
+                    bootstrap, "install_emscripten_source_pin"
+                ) as install,
+                self.assertRaisesRegex(M0Error, "source artifact em\\+\\+"),
+            ):
+                bootstrap.ensure_emscripten_source_pin(
+                    emscripten,
+                    emsdk,
+                    Path(sys.executable),
+                    install=False,
+                )
+
+            install.assert_not_called()
+            self.assertTrue((cache / "fresh.txt").is_file())
+
+    def test_verify_only_detects_tampered_default_cxx_compiler_module(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = Path(temporary_directory)
+            origin, revision, source_files = create_source_origin(repo_root)
+            emsdk, distribution = prepare_emsdk(repo_root)
+            emscripten = make_emscripten_pin(
+                origin, revision, source_files, emsdk
+            )
+            source_pin = bootstrap.emscripten_source_pin(emscripten)
+            assert source_pin is not None
+            with mock.patch.object(bootstrap, "REPO_ROOT", repo_root):
+                bootstrap.install_emscripten_source_pin(
+                    source_pin, emscripten, emsdk, Path(sys.executable)
+                )
+            cache = repo_root / bootstrap.EMSCRIPTEN_SOURCE_CACHE
+            cache.mkdir(parents=True)
+            (cache / "fresh.txt").write_text("retain\n", encoding="utf-8")
+            (distribution / "em++.py").write_text(
+                "tampered\n", encoding="utf-8"
+            )
+
+            with (
+                mock.patch.object(bootstrap, "REPO_ROOT", repo_root),
+                mock.patch.object(
+                    bootstrap, "install_emscripten_source_pin"
+                ) as install,
+                self.assertRaisesRegex(M0Error, "source artifact em\\+\\+\\.py"),
+            ):
+                bootstrap.ensure_emscripten_source_pin(
+                    emscripten,
+                    emsdk,
+                    Path(sys.executable),
+                    install=False,
+                )
+
+            install.assert_not_called()
+            self.assertTrue((cache / "fresh.txt").is_file())
 
     def test_failed_staged_validation_preserves_active_distribution_and_cache(
         self,

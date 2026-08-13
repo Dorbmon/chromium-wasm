@@ -127,6 +127,36 @@ EMSCRIPTEN_SOURCE_PIN_OPTIONAL_FIELDS = (
 EMSCRIPTEN_SOURCE_CACHE = Path("out/wasm-emscripten-cache")
 EMSCRIPTEN_SOURCE_LOCK = Path("out/wasm-emscripten-source.lock")
 
+# Exact Unix output paths from Emscripten 5.0.6's
+# tools/maint/create_entry_points.py when invoked without arguments on Linux.
+# Keep this static rather than executing or parsing untrusted source to decide
+# which paths the generator may overwrite.
+EMSCRIPTEN_SOURCE_ENTRY_POINT_OUTPUTS = (
+    "emcc",
+    "em++",
+    "bootstrap",
+    "emar",
+    "embuilder",
+    "emcmake",
+    "em-config",
+    "emconfigure",
+    "emmake",
+    "emranlib",
+    "emrun",
+    "emscons",
+    "emsize",
+    "emprofile",
+    "emdwp",
+    "emnm",
+    "emstrip",
+    "emsymbolizer",
+    "emscan-deps",
+    "empath-split",
+    "tools/file_packager",
+    "tools/webidl_binder",
+    "test/runner",
+)
+
 
 def require_equal(label: str, actual: str, expected: str) -> None:
     if actual != expected:
@@ -1923,6 +1953,78 @@ def emscripten_source_file(root: Path, relative_path: str) -> Path:
     return path
 
 
+def verify_emscripten_source_entry_point_outputs(root: Path) -> None:
+    """Preflight every 5.0.6 Unix launcher output before generation.
+
+    The upstream checkout contains a tracked regular ``bootstrap`` launcher,
+    so regular leaf files are allowed. Symlinks, directories, and special
+    files are rejected before the generator can overwrite them. Every parent
+    component must be a non-symlink directory confined to the checkout.
+    """
+    if root.is_symlink() or not root.is_dir():
+        raise M0Error("Emscripten source entry-point root is not a directory")
+    root_resolved = root.resolve()
+    for relative_path in EMSCRIPTEN_SOURCE_ENTRY_POINT_OUTPUTS:
+        path_parts = PurePosixPath(relative_path).parts
+        parent = root
+        for component in path_parts[:-1]:
+            parent /= component
+            if parent.is_symlink() or not parent.is_dir():
+                raise M0Error(
+                    "Emscripten source entry-point parent is not a "
+                    f"non-symlink directory: {relative_path}"
+                )
+            try:
+                parent.resolve().relative_to(root_resolved)
+            except ValueError as exc:
+                raise M0Error(
+                    "Emscripten source entry-point parent escapes its "
+                    f"checkout: {relative_path}"
+                ) from exc
+
+        output = parent / path_parts[-1]
+        if not os.path.lexists(output):
+            continue
+        if output.is_symlink() or not stat.S_ISREG(output.stat().st_mode):
+            raise M0Error(
+                "Emscripten source entry-point output is not a regular file: "
+                + relative_path
+            )
+
+
+def emscripten_source_executable(root: Path, relative_path: str) -> Path:
+    """Return a regular, readable, executable Emscripten source launcher."""
+    path = emscripten_source_file(root, relative_path)
+    if not stat.S_ISREG(path.stat().st_mode) or not os.access(
+        path, os.R_OK | os.X_OK
+    ):
+        raise M0Error(
+            "Emscripten source launcher is not a regular executable: "
+            + relative_path
+        )
+    return path
+
+
+def normalize_emscripten_source_launcher(
+    root: Path, relative_path: str
+) -> Path:
+    """Make a generated compiler launcher usable regardless of the umask."""
+    path = emscripten_source_file(root, relative_path)
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise M0Error(
+            "Emscripten source launcher is not a regular executable: "
+            + relative_path
+        )
+    try:
+        path.chmod(0o755)
+    except OSError as exc:
+        raise M0Error(
+            "cannot normalize generated Emscripten source launcher: "
+            + relative_path
+        ) from exc
+    return emscripten_source_executable(root, relative_path)
+
+
 def emscripten_source_version(root: Path) -> str:
     version_path = emscripten_source_file(root, "emscripten-version.txt")
     contents = version_path.read_text(encoding="utf-8")
@@ -2063,7 +2165,14 @@ def verify_emscripten_source_distribution(
         revision_path.read_text(encoding="utf-8").strip(),
         str(source_pin["revision"]),
     )
-    for name in ("emcc", "emcc.py"):
+    for name in ("emcc", "em++"):
+        path = emscripten_source_executable(distribution_root, name)
+        require_equal(
+            f"Emscripten source artifact {name}",
+            sha256(path),
+            emscripten_artifact_hash(emscripten, name),
+        )
+    for name in ("emcc.py", "em++.py"):
         path = emscripten_source_file(distribution_root, name)
         require_equal(
             f"Emscripten source artifact {name}",
@@ -2496,6 +2605,37 @@ def install_emscripten_source_pin(
         )
         verify_emscripten_source_checkout(source_pin, checkout_root)
 
+        entry_points_script = emscripten_source_file(
+            checkout_root, "tools/maint/create_entry_points.py"
+        )
+        verify_emscripten_source_entry_point_outputs(checkout_root)
+        entry_points_home = staging_root / "entry-points-home"
+        entry_points_tmp = staging_root / "entry-points-tmp"
+        entry_points_home.mkdir()
+        entry_points_tmp.mkdir()
+
+        # The source checkout's 5.0.6 entry-point generator may overwrite only
+        # the static preflighted paths above. Run it with the pinned bootstrap
+        # Python and no inherited environment before the source installer
+        # copies generated compiler launchers into the candidate distribution.
+        run(
+            [str(bootstrap_python), str(entry_points_script)],
+            cwd=checkout_root,
+            capture_output=False,
+            env={
+                "HOME": str(entry_points_home),
+                "TMPDIR": str(entry_points_tmp),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONHASHSEED": "0",
+                "LANG": "C",
+                "LC_ALL": "C",
+            },
+            clear_env=True,
+        )
+        for launcher in ("emcc", "em++"):
+            normalize_emscripten_source_launcher(checkout_root, launcher)
+        verify_emscripten_source_checkout(source_pin, checkout_root)
+
         install_script = emscripten_source_file(
             checkout_root, "tools/install.py"
         )
@@ -2630,7 +2770,9 @@ def ensure_emscripten(
         str(emscripten["release_bundle"]),
     )
 
-    emcc = emsdk / "upstream/emscripten/emcc"
+    emscripten_root = emsdk / "upstream/emscripten"
+    emcc = emscripten_root / "emcc"
+    emxx = emscripten_root / "em++"
     if install:
         update_lock = (
             acquire_emscripten_source_update_lock()
@@ -2664,8 +2806,10 @@ def ensure_emscripten(
     source_pin = ensure_emscripten_source_pin(
         emscripten, emsdk, bootstrap_python, install=install
     )
-    if not emcc.is_file():
-        raise M0Error("pinned Emscripten SDK is not installed")
+    for launcher in ("emcc", "em++"):
+        emscripten_source_executable(emscripten_root, launcher)
+    emcc_py = emscripten_source_file(emscripten_root, "emcc.py")
+    emxx_py = emscripten_source_file(emscripten_root, "em++.py")
     emscripten_config = emsdk / ".emscripten"
     if not emscripten_config.is_file():
         raise M0Error("activated Emscripten configuration is missing")
@@ -2721,19 +2865,19 @@ def ensure_emscripten(
     )
     artifact_paths = {
         "emcc": emcc,
-        "emcc.py": emsdk / "upstream/emscripten/emcc.py",
+        "em++": emxx,
+        "emcc.py": emcc_py,
+        "em++.py": emxx_py,
         "clang": emsdk / "upstream/bin/clang",
         "wasm-ld": emsdk / "upstream/bin/wasm-ld",
         "wasm-opt": emsdk / "upstream/bin/wasm-opt",
         "node": node,
     }
-    artifact_hashes = emscripten["artifact_sha256"]
-    assert isinstance(artifact_hashes, dict)
     for name, path in artifact_paths.items():
         require_equal(
             f"Emscripten artifact {name}",
             sha256(path),
-            str(artifact_hashes[name]),
+            emscripten_artifact_hash(emscripten, name),
         )
 
 
