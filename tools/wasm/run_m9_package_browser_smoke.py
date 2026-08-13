@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 if __package__:
@@ -366,6 +366,19 @@ def _epoch_result(
     }
 
 
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Runs one cleanup action without preventing the remaining cleanup."""
+
+    try:
+        action()
+    except BaseException as exc:
+        if cleanup_error is None:
+            return exc
+    return cleanup_error
+
+
 def run_package_browser_smoke(
     *,
     dist_dir: Path,
@@ -379,9 +392,11 @@ def run_package_browser_smoke(
     server_thread_started = False
     browser: subprocess.Popen[str] | None = None
     stderr_thread = None
+    stderr_thread_started = False
     browser_stderr: deque[str] = deque(maxlen=300)
     client: Any = None
     profile: tempfile.TemporaryDirectory[str] | None = None
+    primary_error: BaseException | None = None
     try:
         browser_path, browser_version = find_browser(browser_argument)
         server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
@@ -423,6 +438,7 @@ def run_package_browser_smoke(
             daemon=True,
         )
         stderr_thread.start()
+        stderr_thread_started = True
         deadline = time.monotonic() + timeout
         client = wait_for_page_client(debug_port, first_url, deadline)
         first_ready, first_time_origin = _wait_for_ready_package_document(
@@ -490,21 +506,33 @@ def run_package_browser_smoke(
             "release_status": first_ready["releaseStatus"],
             "scope": OUTER_DOCUMENT_RESTART_SCOPE,
         }
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
+        cleanup_error: BaseException | None = None
         if client is not None:
-            client.close()
+            cleanup_error = _run_cleanup_action(cleanup_error, client.close)
         if browser is not None:
-            stop_browser(browser)
-        if stderr_thread is not None:
-            stderr_thread.join(timeout=1)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stop_browser(browser)
+            )
+        if stderr_thread_started and stderr_thread is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stderr_thread.join(timeout=1)
+            )
         if server is not None:
             if server_thread_started:
-                server.shutdown()
-            server.server_close()
+                cleanup_error = _run_cleanup_action(cleanup_error, server.shutdown)
+            cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
         if server_thread_started and server_thread is not None:
-            server_thread.join(timeout=5)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: server_thread.join(timeout=5)
+            )
         if profile is not None:
-            profile.cleanup()
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def main() -> int:

@@ -1087,6 +1087,76 @@ class M9PackageTest(unittest.TestCase):
         server_thread.join.assert_not_called()
         popen.assert_not_called()
 
+    def test_package_browser_preserves_unstarted_stderr_reader_failure(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 32123)
+        server_thread = mock.Mock()
+        browser = mock.Mock()
+        browser.stderr = object()
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-package-profile"
+        stderr_thread = mock.Mock()
+        stderr_thread.start.side_effect = RuntimeError("stderr reader start failed")
+        stderr_thread.join.side_effect = RuntimeError(
+            "cannot join thread before it is started"
+        )
+
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_browser_smoke.threading,
+                "Thread",
+                side_effect=[server_thread, stderr_thread],
+            ),
+            mock.patch.object(
+                package_browser_smoke.tempfile,
+                "TemporaryDirectory",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                package_browser_smoke, "unused_loopback_port", return_value=32124
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "browser_command",
+                return_value=["/fake/browser", "profile", "url"],
+            ),
+            mock.patch.object(
+                package_browser_smoke.subprocess,
+                "Popen",
+                return_value=browser,
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "stop_browser",
+                side_effect=RuntimeError("browser cleanup failed"),
+            ) as stop_browser,
+            self.assertRaisesRegex(RuntimeError, "stderr reader start failed"),
+        ):
+            package_browser_smoke.run_package_browser_smoke(
+                dist_dir=Path("/fake/dist"),
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+            )
+
+        server_thread.start.assert_called_once_with()
+        stop_browser.assert_called_once_with(browser)
+        stderr_thread.join.assert_not_called()
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=5)
+        profile.cleanup.assert_called_once_with()
+
     def test_package_browser_restart_closes_stale_client_and_reattaches_exact_url(
         self,
     ) -> None:
