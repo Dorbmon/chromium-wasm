@@ -753,9 +753,8 @@ def validate_measurement_snapshot(snapshot: dict[str, Any]) -> None:
         lifecycle.get("runtime_exit_code"), "lifecycle runtime exit code"
     ) != 0:
         raise M0Error("M9 measurement runtime exit is nonzero")
-    process_exit = lifecycle.get("process_exit_code")
-    if process_exit is not None and _require_integer(
-        process_exit, "lifecycle bridge process exit code"
+    if _require_integer(
+        lifecycle.get("process_exit_code"), "lifecycle bridge process exit code"
     ) != 0:
         raise M0Error("M9 measurement bridge process exit is nonzero")
     shutdown_results = lifecycle.get("shutdown_results")

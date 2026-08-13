@@ -297,13 +297,18 @@ class ChromiumWasmM9MeasurementHost {
         if (report?.protocol !== HOST_PROTOCOL ||
             !Number.isSafeInteger(report.exitCode)) {
           host.#fail("invalid process-exit report");
-          return;
+          return false;
         }
         if (host.#processExitCode !== null) {
           host.#fail("duplicate process-exit report");
-          return;
+          return false;
         }
         host.#processExitCode = report.exitCode;
+        // ChromeMain reports this independently of Emscripten's onExit.
+        // Re-evaluate completion here because it may be the final terminal
+        // observation after the runtime, factory, and grace conditions hold.
+        host.#completeIfPossible();
+        return true;
       },
       reportFrame(report) {
         host.#reportFrame(report);
@@ -440,7 +445,8 @@ class ChromiumWasmM9MeasurementHost {
 
   #completeIfPossible() {
     if (this.#state !== "shutting_down" || this.#runtimeExitCode === null ||
-        !this.#terminalGraceObserved || !this.#factorySettled) {
+        this.#processExitCode === null || !this.#terminalGraceObserved ||
+        !this.#factorySettled) {
       return;
     }
     if (this.#shutdownResults?.[0] !== 1 || this.#shutdownResults?.[1] !== 0) {
@@ -448,8 +454,7 @@ class ChromiumWasmM9MeasurementHost {
       return;
     }
     const terminalWorkers = this.#workerObservation.snapshot();
-    if (this.#runtimeExitCode !== 0 ||
-        (this.#processExitCode !== null && this.#processExitCode !== 0) ||
+    if (this.#runtimeExitCode !== 0 || this.#processExitCode !== 0 ||
         this.#fatalErrorCount !== 0 || this.#windowErrorCount !== 0 ||
         this.#unhandledRejectionCount !== 0 || !this.#factorySettled ||
         terminalWorkers.error_events !== 0 ||

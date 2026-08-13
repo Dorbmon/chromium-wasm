@@ -411,6 +411,7 @@ class M9MeasurementValidationTest(unittest.TestCase):
         cases = (
             ("timing_ms", "runtime_exit"),
             ("lifecycle", "fatal_error_count"),
+            ("lifecycle", "process_exit_code"),
             ("wasm_heap_buffer_capacity", "at_runtime_exit"),
             ("worker_observation", "at_runtime_exit"),
         )
@@ -450,12 +451,14 @@ class M9MeasurementValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, error):
                     baseline.validate_measurement_snapshot(sample)
 
-    def test_rejects_boolean_or_float_lifecycle_exit_values(self) -> None:
+    def test_rejects_missing_or_invalid_lifecycle_exit_values(self) -> None:
         for field, value, error in (
             ("runtime_exit_code", True, "runtime exit code is invalid"),
             ("runtime_exit_code", 0.0, "runtime exit code is invalid"),
+            ("process_exit_code", None, "process exit code is invalid"),
             ("process_exit_code", False, "process exit code is invalid"),
             ("process_exit_code", 0.0, "process exit code is invalid"),
+            ("process_exit_code", 1, "bridge process exit is nonzero"),
             ("shutdown_results", [True, 0], "return exactly"),
             ("shutdown_results", [1, 0.0], "return exactly"),
         ):
