@@ -79,6 +79,57 @@ def pointer_record(
     }
 
 
+def native_memory_snapshot(
+    stages: list[dict[str, object]],
+    capacities: list[int] | None = None,
+    *,
+    maximum_bytes: int = 2_147_483_648,
+    mappings: list[int] | None = None,
+) -> dict[str, object]:
+    if capacities is None:
+        capacities = [smoke.WASM_PAGE_SIZE_BYTES] * smoke.NATIVE_MEMORY_SAMPLE_COUNT
+    if len(capacities) != smoke.NATIVE_MEMORY_SAMPLE_COUNT:
+        raise ValueError("native memory sample count is invalid")
+    if mappings is None:
+        mappings = [0] * smoke.NATIVE_MEMORY_SAMPLE_COUNT
+    if len(mappings) != smoke.NATIVE_MEMORY_SAMPLE_COUNT:
+        raise ValueError("native memory mapping sample count is invalid")
+
+    def sample(
+        observation: str, stage: int | None, frame_id: int | None, index: int
+    ) -> dict[str, object]:
+        return {
+            "frameId": frame_id,
+            "observation": observation,
+            "pageAllocatorTotalMappedBytes": mappings[index],
+            "stage": stage,
+            "wasmLinearMemoryCapacityBytes": capacities[index],
+            "wasmLinearMemoryHeadroomBytes": maximum_bytes - capacities[index],
+            "wasmLinearMemoryMaximumBytes": maximum_bytes,
+        }
+
+    samples: list[dict[str, object]] = [
+        sample("runtime_initialized", None, None, 0)
+    ]
+    for index, stage in enumerate(stages, start=1):
+        samples.append(
+            sample(
+                "stage_backing_store_copy",
+                index,
+                stage["backingStoreCopyFrameId"],
+                index,
+            )
+        )
+    return {
+        "definition": smoke.NATIVE_MEMORY_SNAPSHOT_DEFINITION,
+        "nondecreasingLinearCapacity": all(
+            later >= earlier for earlier, later in zip(capacities, capacities[1:])
+        ),
+        "sampleCount": smoke.NATIVE_MEMORY_SAMPLE_COUNT,
+        "samples": samples,
+    }
+
+
 def successful_result() -> dict[str, object]:
     stages: list[dict[str, object]] = []
     pointer_records: list[dict[str, object]] = []
@@ -171,6 +222,7 @@ def successful_result() -> dict[str, object]:
             "stages": stages,
             "pointerRecords": pointer_records,
         },
+        "nativeMemorySnapshot": native_memory_snapshot(stages),
         "stdout": [],
         "stderr": stderr,
         "failedChecks": [],
@@ -203,6 +255,16 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "backingStoreCopyFrameId",
             "backingStoreCopyQueued",
             "FRAME_TRANSITION_POLICY",
+            "backing-store-copy-and-native-memory-observation-only",
+            "NATIVE_MEMORY_SAMPLE_COUNT",
+            "NATIVE_MEMORY_SNAPSHOT_DEFINITION",
+            "nativeMemorySample",
+            "nativeMemorySnapshot",
+            "validateNativeMemorySnapshot",
+            "chromium_wasm_browser_host_memory_linear_capacity_bytes",
+            "chromium_wasm_browser_host_memory_linear_maximum_bytes",
+            "chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes",
+            "stage_backing_store_copy",
             "does_not_exercise_navigation_or_page_javascript",
             "does_not_exercise_page_webassembly",
             "does_not_exercise_wisp_or_network_reconnect",
@@ -218,7 +280,9 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "processExitPromise",
             "processExitCode === null",
             "bridge process exit did not report zero",
-            "not establish raster, compositor, display, or vsync presentation",
+            "do not establish raster, compositor, display, vsync, RSS, committed memory",
+            "not RSS, committed memory, allocation, residency, leak,",
+            "out-of-memory, or drain evidence",
         ):
             with self.subTest(host=expected):
                 self.assertIn(expected, host)
@@ -235,11 +299,55 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "capture_harness_identity",
             "toolchain_manifest_versions",
             "backingStoreCopyFrameId",
+            "verify_required_exports",
+            "_validate_native_memory_snapshot",
+            "NATIVE_MEMORY_SAMPLE_COUNT",
+            "NATIVE_MEMORY_SNAPSHOT_DEFINITION",
+            "nativeMemorySnapshot",
+            "_chromium_wasm_browser_host_memory_linear_capacity_bytes",
+            "_chromium_wasm_browser_host_memory_linear_maximum_bytes",
+            "_chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes",
+            "MAX_SAFE_INTEGER",
+            "stage/frame copy observation",
         ):
             with self.subTest(runner=expected):
                 self.assertIn(expected, runner)
+        self.assertIn("not RSS, committed memory, allocation, residency, leak,", runner)
+        self.assertIn("out-of-memory, or drain evidence", runner)
         self.assertNotIn("ccall(", runner)
         self.assertNotIn("Runtime.evaluate", runner)
+        report_runtime_exit = host[
+            host.index("  #reportRuntimeExit(code) {") : host.index(
+                "  #reportProcessExit(value) {"
+            )
+        ]
+        self.assertNotIn("#recordNativeMemory", report_runtime_exit)
+        set_module = host[
+            host.index("  #setModule(module) {") : host.index("  #result(status, error) {")
+        ]
+        self.assertIn(
+            "!this.#recordNativeMemory(\"runtime_initialized\", null, null)",
+            set_module,
+        )
+        self.assertLess(
+            set_module.index("!this.#recordNativeMemory"),
+            set_module.index("this.#runtimeInitialized = true"),
+        )
+        self.assertIn("cannot satisfy pass", set_module)
+        queue_verifier = host[
+            host.index("  #queueVerifier(") : host.index("  #maybeQueueCheck() {")
+        ]
+        self.assertLess(
+            queue_verifier.index("#recordNativeMemory"),
+            queue_verifier.index("this.#module.ccall(name"),
+        )
+        backing_store_copy = host[
+            host.index("  #maybeQueueBackingStoreCopy() {") : host.index(
+                "  #recordPointer(record) {"
+            )
+        ]
+        self.assertIn("stage_backing_store_copy", queue_verifier)
+        self.assertIn("true);", backing_store_copy)
         self.assertIn("chromium_wasm_report_process_exit(exit_code)", entrypoint)
         self.assertIn("host rejected process-exit report", entrypoint)
         self.assertIn("return exit_code == 0 ? 1 : exit_code;", entrypoint)
@@ -291,6 +399,283 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
     def test_accepts_complete_three_cycle_evidence(self) -> None:
         result = successful_result()
         validate(result)
+
+    def test_accepts_independent_native_capacity_and_nonmonotonic_mappings(
+        self,
+    ) -> None:
+        result = successful_result()
+        page = smoke.WASM_PAGE_SIZE_BYTES
+        # Native observations are independent from the retained HEAPU8 pointer
+        # bridge. PageAllocator's logical mappings can independently rise and
+        # fall, so this is intentionally not a leak or monotonicity assertion.
+        result["nativeMemorySnapshot"] = native_memory_snapshot(
+            result["tabChurn"]["stages"],  # type: ignore[index]
+            [
+                2 * page,
+                2 * page,
+                3 * page,
+                3 * page,
+                4 * page,
+                4 * page,
+                4 * page,
+                5 * page,
+                5 * page,
+                5 * page,
+                6 * page,
+                6 * page,
+                6 * page,
+            ],
+            mappings=[
+                4 * page,
+                page,
+                8 * page,
+                0,
+                3 * page,
+                page,
+                0,
+                7 * page,
+                2 * page,
+                0,
+                9 * page,
+                page,
+                0,
+            ],
+        )
+        validate(result)
+
+    def test_rejects_invalid_native_memory_evidence(self) -> None:
+        page = smoke.WASM_PAGE_SIZE_BYTES
+        unsafe_aligned = ((smoke.MAX_SAFE_INTEGER // page) + 1) * page
+
+        mutations = (
+            (
+                lambda result: result["nativeMemorySnapshot"].pop("definition"),
+                "native memory snapshot schema is invalid",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"].__setitem__(
+                    "unexpected", True
+                ),
+                "native memory snapshot schema is invalid",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"].__setitem__(
+                    "sampleCount", True
+                ),
+                "native memory sample count is invalid",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"].pop(),
+                "does not have thirteen samples",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "unexpected", True
+                ),
+                "native memory sample 0 schema is invalid",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].pop(
+                    "wasmLinearMemoryMaximumBytes"
+                ),
+                "native memory sample 0 schema is invalid",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "pageAllocatorTotalMappedBytes", True
+                ),
+                "safe nonnegative Wasm-page multiple",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "pageAllocatorTotalMappedBytes", 1.5
+                ),
+                "safe nonnegative Wasm-page multiple",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "pageAllocatorTotalMappedBytes", unsafe_aligned
+                ),
+                "safe nonnegative Wasm-page multiple",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "pageAllocatorTotalMappedBytes", 1
+                ),
+                "safe nonnegative Wasm-page multiple",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "pageAllocatorTotalMappedBytes", -page
+                ),
+                "safe nonnegative Wasm-page multiple",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "wasmLinearMemoryHeadroomBytes", -page
+                ),
+                "safe nonnegative Wasm-page multiple",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "wasmLinearMemoryCapacityBytes", 0
+                ),
+                "capacity is below one page",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].update(
+                    wasmLinearMemoryMaximumBytes=0,
+                    wasmLinearMemoryHeadroomBytes=0,
+                ),
+                "maximum is below capacity",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "wasmLinearMemoryHeadroomBytes",
+                    result["nativeMemorySnapshot"]["samples"][0][
+                        "wasmLinearMemoryHeadroomBytes"
+                    ]
+                    + page,
+                ),
+                "headroom is inconsistent",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][1].__setitem__(
+                    "frameId",
+                    result["tabChurn"]["stages"][1]["backingStoreCopyFrameId"],
+                ),
+                "stage/frame copy observation",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][1].__setitem__(
+                    "frameId", True
+                ),
+                "stage/frame copy observation",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][1].__setitem__(
+                    "observation", "runtime_initialized"
+                ),
+                "observation is invalid",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][1].__setitem__(
+                    "stage", True
+                ),
+                "stage/frame copy observation",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"]["samples"][0].__setitem__(
+                    "stage", 0
+                ),
+                "is not runtime initialization",
+            ),
+            (
+                lambda result: result["nativeMemorySnapshot"].__setitem__(
+                    "nondecreasingLinearCapacity", 1
+                ),
+                "linear-capacity monotonic flag is invalid",
+            ),
+            (
+                lambda result: result.__setitem__(
+                    "nativeMemorySnapshot",
+                    native_memory_snapshot(
+                        result["tabChurn"]["stages"],  # type: ignore[index]
+                        [
+                            page,
+                            2 * page,
+                            page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                            2 * page,
+                        ],
+                    ),
+                ),
+                "linear capacity regressed",
+            ),
+        )
+        for mutate, expression in mutations:
+            with self.subTest(expression=expression):
+                result = copy.deepcopy(successful_result())
+                mutate(result)
+                with self.assertRaisesRegex(M0Error, expression):
+                    validate(result)
+
+    def test_required_native_memory_exports_are_checked_before_browser_launch(
+        self,
+    ) -> None:
+        exports = (
+            'Module["_chromium_wasm_browser_host_pointer"]',
+            'Module["_chromium_wasm_browser_host_pointer_exit"]',
+            'Module["_chromium_wasm_browser_host_tab_churn_check"]',
+            'Module["_chromium_wasm_browser_host_tab_churn_presented"]',
+            'Module["_malloc"]',
+            'Module["_free"]',
+            'Module["ccall"]',
+            'Module["HEAPU8"]',
+            'Module["_chromium_wasm_browser_host_memory_linear_capacity_bytes"]',
+            'Module["_chromium_wasm_browser_host_memory_linear_maximum_bytes"]',
+            'Module["_chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes"]',
+        )
+        loader = "\n".join(exports).encode("utf-8")
+        smoke.verify_required_exports(loader)
+        for export in exports:
+            with self.subTest(export=export):
+                with self.assertRaisesRegex(M0Error, "lacks required export"):
+                    smoke.verify_required_exports(loader.replace(export.encode(), b""))
+
+    def test_main_rejects_missing_native_export_before_browser_launch(self) -> None:
+        server = mock.Mock()
+        server.artifacts = {
+            "chrome_wasm.js": b"\n".join(
+                (
+                    b'Module["_chromium_wasm_browser_host_pointer"]',
+                    b'Module["_chromium_wasm_browser_host_pointer_exit"]',
+                    b'Module["_chromium_wasm_browser_host_tab_churn_check"]',
+                    b'Module["_chromium_wasm_browser_host_tab_churn_presented"]',
+                    b'Module["_malloc"]',
+                    b'Module["_free"]',
+                    b'Module["ccall"]',
+                    b'Module["HEAPU8"]',
+                    b'Module["_chromium_wasm_browser_host_memory_linear_capacity_bytes"]',
+                    b'Module["_chromium_wasm_browser_host_memory_linear_maximum_bytes"]',
+                )
+            )
+        }
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(smoke, "check_boundary"),
+            mock.patch.object(smoke, "create_server", return_value=server),
+            mock.patch.object(smoke, "artifact_identity", return_value={}),
+            mock.patch.object(smoke, "capture_harness_identity", return_value={}),
+            mock.patch.object(smoke, "load_manifest") as load_manifest,
+            mock.patch.object(smoke, "find_browser") as find_browser,
+            mock.patch.object(smoke.subprocess, "Popen") as popen,
+            mock.patch.object(
+                smoke,
+                "write_failure_diagnostics",
+                return_value=Path("/tmp/m9-tab-churn-diagnostics.json"),
+            ),
+            mock.patch.object(sys, "argv", ["tab-churn-runner"]),
+            mock.patch.object(smoke.sys, "stderr", stderr),
+        ):
+            self.assertEqual(1, smoke.main())
+
+        self.assertIn("lacks required export", stderr.getvalue())
+        load_manifest.assert_not_called()
+        find_browser.assert_not_called()
+        popen.assert_not_called()
+        server.server_close.assert_called_once_with()
+        server.join_request_handlers.assert_called_once_with(
+            timeout=1, description="M9 tab-churn server"
+        )
 
     def test_rejects_missing_final_marker_bad_copy_evidence_and_trusted_click(self) -> None:
         mutations = (
@@ -680,6 +1065,94 @@ process.stdout.write(JSON.stringify({{error, fetchCalls}}));
             0, completed.returncode, completed.stdout + completed.stderr
         )
         return json.loads(completed.stdout)
+
+    def test_native_memory_ccalls_are_exact_and_fail_closed(self) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+        host = REPO_ROOT / "tools/wasm/host/chrome_wasm_browser_tab_churn_smoke_host.js"
+        script = f"""
+const {{nativeMemorySample}} = await import({json.dumps(host.as_uri())});
+const page = 64 * 1024;
+const names = {{
+  mapped: "chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes",
+  capacity: "chromium_wasm_browser_host_memory_linear_capacity_bytes",
+  maximum: "chromium_wasm_browser_host_memory_linear_maximum_bytes",
+}};
+const values = {{
+  [names.mapped]: 2 * page,
+  [names.capacity]: 4 * page,
+  [names.maximum]: 8 * page,
+}};
+const calls = [];
+const valid = nativeMemorySample({{ccall(name, returnType, argTypes, args) {{
+  calls.push([name, returnType, argTypes, args]);
+  if (!Object.hasOwn(values, name)) throw new Error("missing export");
+  return values[name];
+}}}}, "runtime_initialized", null, null);
+function failure(module) {{
+  try {{
+    nativeMemorySample(module, "stage_backing_store_copy", 1, 2);
+  }} catch (error) {{
+    return String(error);
+  }}
+  return "accepted";
+}}
+const missing = failure({{ccall(name) {{
+  if (name === names.maximum) throw new Error("missing export");
+  return values[name];
+}}}});
+const throwing = failure({{ccall(name) {{
+  if (name === names.mapped) throw new Error("export trapped");
+  return values[name];
+}}}});
+const noCcall = failure({{}});
+process.stdout.write(JSON.stringify({{calls, valid, missing, throwing, noCcall, names}}));
+"""
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        observed = json.loads(completed.stdout)
+        self.assertEqual(
+            [
+                [
+                    observed["names"]["mapped"],
+                    "number",
+                    [],
+                    [],
+                ],
+                [
+                    observed["names"]["capacity"],
+                    "number",
+                    [],
+                    [],
+                ],
+                [
+                    observed["names"]["maximum"],
+                    "number",
+                    [],
+                    [],
+                ],
+            ],
+            observed["calls"],
+        )
+        self.assertEqual(
+            4 * 64 * 1024, observed["valid"]["wasmLinearMemoryCapacityBytes"]
+        )
+        self.assertEqual(
+            4 * 64 * 1024, observed["valid"]["wasmLinearMemoryHeadroomBytes"]
+        )
+        self.assertIn(observed["names"]["maximum"], observed["missing"])
+        self.assertIn("failed", observed["missing"])
+        self.assertIn(observed["names"]["mapped"], observed["throwing"])
+        self.assertIn("failed", observed["throwing"])
+        self.assertIn("requires Module.ccall", observed["noCcall"])
 
     def test_alternate_module_query_is_rejected_before_loader_fetch(self) -> None:
         observed = self._run_host_query("?token=test-token&module=alternate_wasm")
