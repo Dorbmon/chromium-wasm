@@ -20,6 +20,7 @@ or claim persistent OPFS profile behavior or M8 compatibility.
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import dataclass
 import hashlib
 import json
@@ -310,8 +311,14 @@ def _require_positive_int(value: object, description: str) -> int:
     return value
 
 
-def validate_normal_lifecycle_execution(execution: ChildExecution) -> dict[str, object]:
+def validate_normal_lifecycle_execution(
+    execution: ChildExecution,
+    *,
+    expected_module_name: str,
+    expected_artifact_identity: dict[str, object] | None = None,
+) -> dict[str, object]:
     """Validate one independent no-switch lifecycle child result."""
+    _require_module_name(expected_module_name, "normal lifecycle module name")
     output = _validated_child_output(execution)
     _require_exact_marker(
         output,
@@ -336,12 +343,22 @@ def validate_normal_lifecycle_execution(execution: ChildExecution) -> dict[str, 
         "readinessReports",
         "startupMs",
     }
-    if (
-        set(result) != expected_fields
-        or not isinstance(result.get("artifact"), str)
-        or not result["artifact"]
-    ):
+    if set(result) != expected_fields:
         raise M0Error("normal lifecycle result has an invalid schema")
+    try:
+        artifact = normal_lifecycle.validate_artifact_identity(
+            result.get("artifact"),
+            expected_module_name=expected_module_name,
+            expected_artifact_identity=expected_artifact_identity,
+        )
+    except M0Error as error:
+        if expected_artifact_identity is not None:
+            raise M0Error(
+                "normal lifecycle artifact identity disagrees with a prior cycle"
+            ) from error
+        raise M0Error(
+            "normal lifecycle result has an invalid artifact identity"
+        ) from error
     return {
         "cycle": execution.cycle,
         "child": _child_evidence(
@@ -359,7 +376,7 @@ def validate_normal_lifecycle_execution(execution: ChildExecution) -> dict[str, 
                 ),
             },
         ),
-        "artifact": result["artifact"],
+        "artifact": artifact,
         "canvasCopies": _require_positive_int(
             result.get("canvasCopies"), "normal lifecycle canvas copies"
         ),
@@ -831,6 +848,7 @@ def run_reliability(
     _require_artifacts(out_dir, controlled_flow_module_name, "controlled flow")
 
     normal_cycles: list[dict[str, object]] = []
+    normal_artifact_identity: dict[str, object] | None = None
     for cycle in range(1, normal_lifecycle_iterations + 1):
         execution = run_child(
             "normal lifecycle",
@@ -842,7 +860,14 @@ def run_reliability(
             ),
             normal_timeout,
         )
-        normal_cycles.append(validate_normal_lifecycle_execution(execution))
+        normal_cycle = validate_normal_lifecycle_execution(
+            execution,
+            expected_module_name=normal_module_name,
+            expected_artifact_identity=normal_artifact_identity,
+        )
+        if normal_artifact_identity is None:
+            normal_artifact_identity = copy.deepcopy(normal_cycle["artifact"])
+        normal_cycles.append(normal_cycle)
 
     flow_cycles: list[dict[str, object]] = []
     for cycle in range(1, controlled_flow_iterations + 1):
@@ -867,9 +892,12 @@ def run_reliability(
             )
         )
 
+    if normal_artifact_identity is None:
+        raise M0Error("reliability runner has no normal lifecycle artifact identity")
     normal_summary = _aggregate_cycles(normal_cycles)
     normal_summary.update(
         {
+            "artifact": normal_artifact_identity,
             "kind": "fresh-node-module-process",
             "requestedCycles": normal_lifecycle_iterations,
             "ownedHostShutdown": True,

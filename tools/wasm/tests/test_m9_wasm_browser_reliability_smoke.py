@@ -44,11 +44,20 @@ ARTIFACT_IDENTITY = {
     "module_name": continuous_flow.DEFAULT_MODULE_NAME,
     "wasm": {"bytes": 20, "sha256": "b" * 64},
 }
+NORMAL_ARTIFACT_IDENTITY = {
+    "artifact_delivery": normal_lifecycle.ARTIFACT_DELIVERY,
+    "artifact_source_provenance": normal_lifecycle.ARTIFACT_SOURCE_PROVENANCE,
+    "loader": {"bytes": 10, "sha256": "d" * 64},
+    "module_name": runner.DEFAULT_NORMAL_MODULE_NAME,
+    "wasm": {"bytes": 20, "sha256": "e" * 64},
+}
 
 
-def normal_execution(cycle: int = 1) -> runner.ChildExecution:
+def normal_execution(
+    cycle: int = 1, *, artifact: object = NORMAL_ARTIFACT_IDENTITY
+) -> runner.ChildExecution:
     summary = {
-        "artifact": "out/wasm-chrome-m6/chrome_wasm.js",
+        "artifact": copy.deepcopy(artifact),
         "canvasCopies": 2,
         "focusReports": 1,
         "frameReports": 3,
@@ -123,7 +132,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         return temporary, out_dir
 
     def test_normal_child_requires_unique_markers_and_summary_schema(self) -> None:
-        result = runner.validate_normal_lifecycle_execution(normal_execution())
+        result = runner.validate_normal_lifecycle_execution(
+            normal_execution(), expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME
+        )
         self.assertEqual(1, result["cycle"])
         self.assertEqual(2, result["canvasCopies"])
         self.assertEqual(12.5, result["startupMs"])
@@ -147,7 +158,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             },
             result["child"],
         )
-        self.assertEqual("out/wasm-chrome-m6/chrome_wasm.js", result["artifact"])
+        self.assertEqual(NORMAL_ARTIFACT_IDENTITY, result["artifact"])
 
         duplicate = normal_execution()
         duplicate = runner.ChildExecution(
@@ -157,7 +168,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "exactly one"):
-            runner.validate_normal_lifecycle_execution(duplicate)
+            runner.validate_normal_lifecycle_execution(
+                duplicate, expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME
+            )
 
         malformed = normal_execution()
         malformed = runner.ChildExecution(
@@ -169,7 +182,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "canvas copies"):
-            runner.validate_normal_lifecycle_execution(malformed)
+            runner.validate_normal_lifecycle_execution(
+                malformed, expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME
+            )
 
         missing = normal_execution()
         missing = runner.ChildExecution(
@@ -179,7 +194,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "exactly one"):
-            runner.validate_normal_lifecycle_execution(missing)
+            runner.validate_normal_lifecycle_execution(
+                missing, expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME
+            )
 
         invalid_json = normal_execution()
         invalid_json = runner.ChildExecution(
@@ -191,7 +208,55 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "malformed JSON"):
-            runner.validate_normal_lifecycle_execution(invalid_json)
+            runner.validate_normal_lifecycle_execution(
+                invalid_json, expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME
+            )
+
+    def test_normal_child_requires_configured_exact_snapshot_identity(self) -> None:
+        cases = (
+            (
+                "wrong module",
+                lambda value: value.__setitem__("module_name", "other_module"),
+            ),
+            (
+                "wrong delivery",
+                lambda value: value.__setitem__("artifact_delivery", "live-output"),
+            ),
+            (
+                "wrong provenance",
+                lambda value: value.__setitem__(
+                    "artifact_source_provenance", "verified"
+                ),
+            ),
+            (
+                "bool byte count",
+                lambda value: value.__setitem__(
+                    "loader", {"bytes": True, "sha256": "d" * 64}
+                ),
+            ),
+            (
+                "extra field",
+                lambda value: value.__setitem__("extra", "field"),
+            ),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                artifact = copy.deepcopy(NORMAL_ARTIFACT_IDENTITY)
+                mutate(artifact)
+                with self.assertRaisesRegex(M0Error, "invalid artifact identity"):
+                    runner.validate_normal_lifecycle_execution(
+                        normal_execution(artifact=artifact),
+                        expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    )
+
+        substituted = copy.deepcopy(NORMAL_ARTIFACT_IDENTITY)
+        substituted["wasm"] = {"bytes": 21, "sha256": "f" * 64}
+        with self.assertRaisesRegex(M0Error, "prior cycle"):
+            runner.validate_normal_lifecycle_execution(
+                normal_execution(artifact=substituted),
+                expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                expected_artifact_identity=NORMAL_ARTIFACT_IDENTITY,
+            )
 
     def test_controlled_flow_delegates_to_existing_complete_validators(
         self,
@@ -293,6 +358,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         temporary, out_dir = self._make_out_dir()
         self.addCleanup(temporary.cleanup)
         executions: list[tuple[str, int, list[str], float]] = []
+        normal_validation_inputs: list[tuple[str, object]] = []
 
         def fake_run_child(
             name: str, cycle: int, command: list[str], timeout: float
@@ -304,8 +370,20 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 else flow_execution(cycle)
             )
 
-        def fake_normal(execution: runner.ChildExecution) -> dict[str, object]:
-            return {"cycle": execution.cycle, "elapsedMs": float(execution.cycle)}
+        def fake_normal(
+            execution: runner.ChildExecution,
+            *,
+            expected_module_name: str,
+            expected_artifact_identity: dict[str, object] | None,
+        ) -> dict[str, object]:
+            normal_validation_inputs.append(
+                (expected_module_name, copy.deepcopy(expected_artifact_identity))
+            )
+            return {
+                "cycle": execution.cycle,
+                "artifact": copy.deepcopy(NORMAL_ARTIFACT_IDENTITY),
+                "elapsedMs": float(execution.cycle),
+            }
 
         def fake_flow(
             execution: runner.ChildExecution, *, expected_module_name: str
@@ -341,6 +419,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
 
         self.assertEqual("pass", result["status"])
         self.assertEqual(3, result["normalLifecycle"]["completedCycles"])
+        self.assertEqual(
+            NORMAL_ARTIFACT_IDENTITY, result["normalLifecycle"]["artifact"]
+        )
         self.assertEqual(2, result["controlledFlow"]["completedCycles"])
         self.assertEqual(
             "fresh-node-module-process", result["normalLifecycle"]["kind"]
@@ -351,6 +432,14 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         )
         self.assertEqual(list(runner.LIMITATIONS), result["limitations"])
         self.assertEqual(5, len(executions))
+        self.assertEqual(
+            [
+                (runner.DEFAULT_NORMAL_MODULE_NAME, None),
+                (runner.DEFAULT_NORMAL_MODULE_NAME, NORMAL_ARTIFACT_IDENTITY),
+                (runner.DEFAULT_NORMAL_MODULE_NAME, NORMAL_ARTIFACT_IDENTITY),
+            ],
+            normal_validation_inputs,
+        )
         normal_commands = [record[2] for record in executions[:3]]
         self.assertTrue(
             all(
@@ -396,6 +485,48 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
 
         with self.assertRaisesRegex(M0Error, "must contain only"):
             runner._require_artifacts(out_dir, "../chrome_wasm", "normal lifecycle")
+
+    def test_normal_artifact_drift_stops_before_later_cycles_or_controlled_flow(
+        self,
+    ) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        substituted = copy.deepcopy(NORMAL_ARTIFACT_IDENTITY)
+        substituted["loader"] = {"bytes": 11, "sha256": "f" * 64}
+        child_names: list[str] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            child_names.append(name)
+            if name != "normal lifecycle":
+                self.fail("controlled flow must not start after normal artifact drift")
+            return normal_execution(
+                cycle,
+                artifact=(
+                    NORMAL_ARTIFACT_IDENTITY if cycle == 1 else substituted
+                ),
+            )
+
+        with mock.patch.object(runner, "run_child", side_effect=fake_run_child):
+            with self.assertRaisesRegex(M0Error, "prior cycle"):
+                runner.run_reliability(
+                    out_dir=out_dir,
+                    normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    controlled_flow_module_name=(
+                        runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    ),
+                    normal_lifecycle_iterations=3,
+                    controlled_flow_iterations=1,
+                    normal_timeout=7.0,
+                    controlled_flow_timeout=11.0,
+                    diagnostics_dir=out_dir / "diagnostics",
+                    browser=None,
+                    node=None,
+                    relay_script=None,
+                    no_sandbox=False,
+                )
+        self.assertEqual(["normal lifecycle", "normal lifecycle"], child_names)
 
     def test_child_failure_stops_before_later_cycles(self) -> None:
         temporary, out_dir = self._make_out_dir()

@@ -8,13 +8,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from check_m6_chrome_boundary import check_boundary
 from m0_common import (
@@ -23,7 +27,6 @@ from m0_common import (
     load_manifest,
     parse_timeout,
     print_context,
-    relative_to_repo,
 )
 from run_node_smoke import node_executable
 import run_m6_wasm_browser_smoke as browser_smoke
@@ -36,6 +39,188 @@ RESULT_PREFIX = f"{SENTINEL}:NODE_EXIT "
 NODE_PASS_MARKER = f"{SENTINEL}_NODE:PASS"
 DEFAULT_MODULE_NAME = "chrome_wasm"
 _MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
+_BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
+_ARTIFACT_IDENTITY_FIELDS = frozenset(
+    (
+        "artifact_delivery",
+        "artifact_source_provenance",
+        "loader",
+        "module_name",
+        "wasm",
+    )
+)
+# The ordinary Node runner imports its loader and starts pthread workers from
+# this directory. It is a private temporary copy of captured bytes, not a
+# source-provenance assertion about the selected output directory.
+ARTIFACT_DELIVERY = "private-temporary-file-snapshot"
+ARTIFACT_SOURCE_PROVENANCE = "unverified"
+
+
+@dataclass(frozen=True)
+class ArtifactSnapshot:
+    """One immutable-in-process capture of the ordinary Node artifacts."""
+
+    module_name: str
+    loader: bytes
+    wasm: bytes
+
+
+def _require_module_name(value: object, description: str) -> str:
+    if type(value) is not str or not _MODULE_NAME_RE.fullmatch(value):
+        raise M0Error(
+            f"ordinary Browser {description} module name must contain only ASCII "
+            "letters, digits, or _"
+        )
+    return value
+
+
+def _read_snapshot(path: Path, description: str) -> bytes:
+    try:
+        contents = path.read_bytes()
+    except OSError as error:
+        raise M0Error(
+            f"cannot snapshot ordinary Browser {description}: {error}"
+        ) from error
+    if not contents or len(contents) > MAX_SNAPSHOT_BYTES:
+        raise M0Error(f"ordinary Browser {description} snapshot is invalid")
+    return contents
+
+
+def _artifact_snapshot_path(out_dir: Path, artifact_name: str) -> Path:
+    candidate = (out_dir / artifact_name).resolve()
+    if candidate.parent != out_dir or not candidate.is_file():
+        raise M0Error(
+            f"ordinary Browser artifact is missing or unsafe: {artifact_name}"
+        )
+    return candidate
+
+
+def capture_artifact_snapshot(out_dir: Path, module_name: object) -> ArtifactSnapshot:
+    """Capture the Node loader and Wasm bytes exactly once from this output dir."""
+    module_name = _require_module_name(module_name, "artifact")
+    out_dir = out_dir.resolve()
+    if not out_dir.is_dir():
+        raise M0Error(f"ordinary Browser output directory is missing: {out_dir}")
+    return ArtifactSnapshot(
+        module_name=module_name,
+        loader=_read_snapshot(
+            _artifact_snapshot_path(out_dir, f"{module_name}.js"),
+            "module loader",
+        ),
+        wasm=_read_snapshot(
+            _artifact_snapshot_path(out_dir, f"{module_name}.wasm"),
+            "module Wasm",
+        ),
+    )
+
+
+def _byte_identity(contents: bytes) -> dict[str, object]:
+    return {"bytes": len(contents), "sha256": hashlib.sha256(contents).hexdigest()}
+
+
+def artifact_identity(snapshot: ArtifactSnapshot) -> dict[str, object]:
+    """Return the identity of the bytes that the temporary Node files use."""
+    module_name = _require_module_name(snapshot.module_name, "artifact")
+    if type(snapshot.loader) is not bytes or type(snapshot.wasm) is not bytes:
+        raise M0Error("ordinary Browser artifact snapshot is invalid")
+    if not snapshot.loader or not snapshot.wasm:
+        raise M0Error("ordinary Browser artifact snapshot is invalid")
+    return {
+        "artifact_delivery": ARTIFACT_DELIVERY,
+        "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
+        "loader": _byte_identity(snapshot.loader),
+        "module_name": module_name,
+        "wasm": _byte_identity(snapshot.wasm),
+    }
+
+
+def _require_exact_fields(
+    value: object, expected: frozenset[str], description: str
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != expected:
+        actual = sorted(value) if isinstance(value, dict) else type(value).__name__
+        raise M0Error(
+            f"ordinary Browser {description} schema is invalid: expected "
+            f"{sorted(expected)!r}, got {actual!r}"
+        )
+    return value
+
+
+def _validate_byte_identity(value: object, description: str) -> None:
+    identity = _require_exact_fields(value, _BYTE_IDENTITY_FIELDS, description)
+    if type(identity.get("bytes")) is not int or identity["bytes"] < 1:
+        raise M0Error(f"ordinary Browser {description} byte count is invalid")
+    sha256 = identity.get("sha256")
+    if type(sha256) is not str or not SHA256_RE.fullmatch(sha256):
+        raise M0Error(f"ordinary Browser {description} SHA-256 is invalid")
+
+
+def _exact_json_value_equal(value: object, expected: object) -> bool:
+    """Compare JSON data without Python bool/int aliases."""
+    if type(value) is not type(expected):
+        return False
+    if isinstance(value, dict):
+        return set(value) == set(expected) and all(
+            _exact_json_value_equal(value[key], expected[key]) for key in value
+        )
+    if isinstance(value, list):
+        return len(value) == len(expected) and all(
+            _exact_json_value_equal(actual, wanted)
+            for actual, wanted in zip(value, expected)
+        )
+    return value == expected
+
+
+def validate_artifact_identity(
+    value: object,
+    *,
+    expected_module_name: object,
+    expected_artifact_identity: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Validate the exact ordinary-Node snapshot identity reported to M9."""
+    module_name = _require_module_name(expected_module_name, "expected artifact")
+    artifact = _require_exact_fields(
+        value, _ARTIFACT_IDENTITY_FIELDS, "artifact identity"
+    )
+    if artifact.get("artifact_delivery") != ARTIFACT_DELIVERY:
+        raise M0Error("ordinary Browser artifact delivery is invalid")
+    if artifact.get("artifact_source_provenance") != ARTIFACT_SOURCE_PROVENANCE:
+        raise M0Error("ordinary Browser artifact source provenance is invalid")
+    if artifact.get("module_name") != module_name:
+        raise M0Error(
+            "ordinary Browser artifact module name disagrees with configured module"
+        )
+    for field in ("loader", "wasm"):
+        _validate_byte_identity(artifact.get(field), f"artifact {field}")
+    if expected_artifact_identity is not None and not _exact_json_value_equal(
+        artifact, expected_artifact_identity
+    ):
+        raise M0Error("ordinary Browser artifact identity disagrees with expectation")
+    return artifact
+
+
+@contextlib.contextmanager
+def materialized_artifact_snapshot(snapshot: ArtifactSnapshot) -> Iterator[Path]:
+    """Materialize captured bytes for Node's file import and pthread workers."""
+    module_name = _require_module_name(snapshot.module_name, "snapshot")
+    if type(snapshot.loader) is not bytes or type(snapshot.wasm) is not bytes:
+        raise M0Error("ordinary Browser artifact snapshot is invalid")
+    with tempfile.TemporaryDirectory(
+        prefix="chromium-wasm-m6-normal-artifact-"
+    ) as path:
+        snapshot_dir = Path(path)
+        module = snapshot_dir / f"{module_name}.js"
+        wasm = snapshot_dir / f"{module_name}.wasm"
+        try:
+            module.write_bytes(snapshot.loader)
+            wasm.write_bytes(snapshot.wasm)
+        except OSError as error:
+            raise M0Error(
+                f"cannot materialize ordinary Browser artifact snapshot: {error}"
+            ) from error
+        yield module
 
 
 def _replace_once(source: str, old: str, new: str, description: str) -> str:
@@ -278,11 +463,9 @@ def main() -> int:
         if not out_dir.is_absolute():
             out_dir = REPO_ROOT / out_dir
         out_dir = out_dir.resolve()
-        module = out_dir / f"{args.module_name}.js"
-        wasm = module.with_suffix(".wasm")
-        if not module.is_file() or not wasm.is_file():
-            raise M0Error("ordinary Browser smoke artifacts are missing")
         check_boundary(out_dir)
+        snapshot = capture_artifact_snapshot(out_dir, args.module_name)
+        artifact = artifact_identity(snapshot)
         manifest = load_manifest()
         node = node_executable(manifest)
         if not node.is_file():
@@ -293,11 +476,13 @@ def main() -> int:
             case="ordinary_slim_browser_lifecycle_m6",
             scope="normal-browser-main-host-shutdown-manager-drain",
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
-            module=relative_to_repo(module),
+            module_name=args.module_name,
+            artifact=artifact,
             node_version=manifest["emscripten"]["node_version"],  # type: ignore[index]
         )
         started = time.perf_counter()
-        completed = run_smoke(module, node, args.timeout)
+        with materialized_artifact_snapshot(snapshot) as module:
+            completed = run_smoke(module, node, args.timeout)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
         for line in completed.stdout.splitlines(keepends=True):
             if not line.startswith(RESULT_PREFIX):
@@ -314,7 +499,7 @@ def main() -> int:
             f"{SENTINEL}:NODE_RESULT "
             + json.dumps(
                 {
-                    "artifact": relative_to_repo(module),
+                    "artifact": artifact,
                     "canvasCopies": result["canvasCopies"],
                     "focusReports": len(result["focusReports"]),
                     "frameReports": len(result["frameReports"]),

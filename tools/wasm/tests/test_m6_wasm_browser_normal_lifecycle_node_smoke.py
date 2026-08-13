@@ -8,9 +8,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -76,6 +80,123 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
                 invalid[key] = value
                 with self.assertRaisesRegex(M0Error, fragment):
                     runner.validate_result(invalid, output)
+
+    def test_snapshot_materializes_captured_bytes_after_source_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            out_dir = Path(temporary) / "out"
+            out_dir.mkdir()
+            source_loader = out_dir / "chrome_wasm.js"
+            source_wasm = out_dir / "chrome_wasm.wasm"
+            original_loader = b"captured loader bytes"
+            original_wasm = b"captured wasm bytes"
+            source_loader.write_bytes(original_loader)
+            source_wasm.write_bytes(original_wasm)
+
+            snapshot = runner.capture_artifact_snapshot(out_dir, "chrome_wasm")
+            identity = runner.artifact_identity(snapshot)
+            source_loader.write_bytes(b"mutated source loader")
+            source_wasm.write_bytes(b"mutated source wasm")
+
+            with runner.materialized_artifact_snapshot(snapshot) as module:
+                self.assertNotEqual(out_dir, module.parent)
+                self.assertEqual(original_loader, module.read_bytes())
+                self.assertEqual(original_wasm, module.with_suffix(".wasm").read_bytes())
+                source = runner.runner_source(module.as_uri(), 30000)
+                self.assertIn(module.as_uri(), source)
+                self.assertNotIn(source_loader.as_uri(), source)
+                completed = subprocess.CompletedProcess([], 0, "", "")
+                with mock.patch.object(
+                    runner.subprocess, "run", return_value=completed
+                ) as run:
+                    self.assertIs(completed, runner.run_smoke(module, Path("/node"), 30.0))
+                self.assertIn(module.as_uri(), run.call_args.args[0][-1])
+
+        self.assertEqual(
+            {
+                "artifact_delivery": runner.ARTIFACT_DELIVERY,
+                "artifact_source_provenance": runner.ARTIFACT_SOURCE_PROVENANCE,
+                "loader": {
+                    "bytes": len(original_loader),
+                    "sha256": hashlib.sha256(original_loader).hexdigest(),
+                },
+                "module_name": "chrome_wasm",
+                "wasm": {
+                    "bytes": len(original_wasm),
+                    "sha256": hashlib.sha256(original_wasm).hexdigest(),
+                },
+            },
+            identity,
+        )
+
+    def test_artifact_identity_requires_exact_schema_and_configured_module(self) -> None:
+        snapshot = runner.ArtifactSnapshot(
+            module_name="chrome_wasm", loader=b"loader", wasm=b"wasm"
+        )
+        identity = runner.artifact_identity(snapshot)
+        self.assertEqual(
+            identity,
+            runner.validate_artifact_identity(
+                identity,
+                expected_module_name="chrome_wasm",
+                expected_artifact_identity=identity,
+            ),
+        )
+
+        cases = (
+            (
+                "wrong module",
+                lambda value: value.__setitem__("module_name", "other_module"),
+                "configured module",
+            ),
+            (
+                "wrong delivery",
+                lambda value: value.__setitem__("artifact_delivery", "live-output"),
+                "delivery",
+            ),
+            (
+                "wrong provenance",
+                lambda value: value.__setitem__(
+                    "artifact_source_provenance", "verified"
+                ),
+                "source provenance",
+            ),
+            (
+                "bool byte count",
+                lambda value: value.__setitem__(
+                    "loader", {"bytes": True, "sha256": "a" * 64}
+                ),
+                "byte count",
+            ),
+            (
+                "uppercase hash",
+                lambda value: value.__setitem__(
+                    "wasm", {"bytes": 1, "sha256": "A" * 64}
+                ),
+                "SHA-256",
+            ),
+            (
+                "unexpected field",
+                lambda value: value.__setitem__("extra", "field"),
+                "schema",
+            ),
+        )
+        for name, mutate, fragment in cases:
+            with self.subTest(name=name):
+                invalid = copy.deepcopy(identity)
+                mutate(invalid)
+                with self.assertRaisesRegex(M0Error, fragment):
+                    runner.validate_artifact_identity(
+                        invalid, expected_module_name="chrome_wasm"
+                    )
+
+        different = copy.deepcopy(identity)
+        different["wasm"] = {"bytes": 5, "sha256": "f" * 64}
+        with self.assertRaisesRegex(M0Error, "disagrees with expectation"):
+            runner.validate_artifact_identity(
+                different,
+                expected_module_name="chrome_wasm",
+                expected_artifact_identity=identity,
+            )
 
 
 if __name__ == "__main__":
