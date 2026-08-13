@@ -13,6 +13,7 @@ import {ChromiumWasmTrustedPointerInput} from "./chrome_wasm_pointer_input.js";
 
 const HOST_PROTOCOL = 1;
 const CASE = "browser_same_instance_tab_churn_m9";
+const PRODUCT_MODULE_NAME = "chrome_wasm";
 const SCOPE = "fixed-three-cycle-same-instance-tab-churn-with-later-" +
     "backing-store-copy-observation-only";
 const SWITCH = "--wasm-browser-host-tab-churn-smoke";
@@ -125,6 +126,10 @@ function parseArtifactIdentity(value) {
       typeof artifact.module_name !== "string" ||
       !/^[A-Za-z0-9_]+$/.test(artifact.module_name)) {
     throw new Error("tab-churn artifact identity has invalid provenance");
+  }
+  if (artifact.module_name !== PRODUCT_MODULE_NAME) {
+    throw new Error(
+        "tab-churn artifact identity must select the chrome_wasm product module");
   }
   return Object.freeze({
     artifact_delivery: artifact.artifact_delivery,
@@ -968,6 +973,8 @@ function validateResult(result) {
   "tab-churn artifact source provenance is not unverified");
   require(result.artifact?.artifact_delivery === ARTIFACT_DELIVERY,
       "tab-churn artifact delivery is not an immutable snapshot");
+  require(result.artifact?.module_name === PRODUCT_MODULE_NAME,
+      "tab-churn artifact module is not chrome_wasm");
   require(result.capture_harness?.source_snapshot_provenance ===
       SOURCE_SNAPSHOT_PROVENANCE,
   "tab-churn harness source provenance is invalid");
@@ -991,6 +998,10 @@ export async function runChromeWasmBrowserTabChurnSmokeFromQuery() {
   if (!/^[A-Za-z0-9_]+$/.test(moduleName)) {
     throw new Error("module name contains unsupported characters");
   }
+  if (moduleName !== PRODUCT_MODULE_NAME) {
+    throw new Error(
+        "tab-churn query must select the chrome_wasm product module");
+  }
   const timeoutMs = Number(query.get("timeoutMs") || "90000");
   const versions = parseVersions(query.get("versions"));
   const artifact = parseArtifactIdentity(query.get("artifact"));
@@ -1009,7 +1020,7 @@ export async function runChromeWasmBrowserTabChurnSmokeFromQuery() {
   const host = new ChromiumWasmBrowserTabChurnSmokeHost(
       canvas, versions, artifact, captureHarness);
   const result = validateResult(await host.run(
-      `${location.pathname.replace(/\/$/, "")}/artifacts/${moduleName}.js`,
+      `${location.pathname.replace(/\/$/, "")}/artifacts/${PRODUCT_MODULE_NAME}.js`,
       timeoutMs));
   root.dataset.state = result.status;
   status.textContent = JSON.stringify(result, null, 2);
@@ -1033,6 +1044,7 @@ export const chromeWasmBrowserTabChurnSmokeContract = Object.freeze({
   ARTIFACT_SOURCE_PROVENANCE,
   CASE,
   FRAME_TRANSITION_POLICY,
+  PRODUCT_MODULE_NAME,
   SOURCE_SNAPSHOT_PROVENANCE,
   CYCLE_COUNT,
   HOST_PROTOCOL,

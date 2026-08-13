@@ -14,6 +14,7 @@ import io
 import json
 from pathlib import Path
 import queue
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,7 +24,7 @@ from unittest import mock
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-from m0_common import M0Error
+from m0_common import M0Error, REPO_ROOT
 import run_m9_wasm_browser_tab_churn_dom_smoke as smoke
 from tools.wasm.tests.m3_source_contract_test_support import source
 
@@ -191,6 +192,7 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
         build = source("chrome/browser/wasm/BUILD.gn")
 
         for expected in (
+            'const PRODUCT_MODULE_NAME = "chrome_wasm";',
             'const CYCLE_COUNT = 3;',
             '"new-tab", "select-first", "select-second", "close-second"',
             "chromium_wasm_browser_host_tab_churn_check",
@@ -209,6 +211,9 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "does_not_prove_raster_compositor_display_or_vsync_presentation",
             "artifact_source_provenance",
             "immutable-in-memory-server-snapshot",
+            "artifact identity must select the chrome_wasm product module",
+            "query must select the chrome_wasm product module",
+            "artifacts/${PRODUCT_MODULE_NAME}.js",
             "report.protocol !== HOST_PROTOCOL",
             "processExitPromise",
             "processExitCode === null",
@@ -222,6 +227,9 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "__chromiumWasmM9TabChurnState",
             "--wasm-browser-host-tab-churn-smoke",
             "fixed-three-cycle-same-instance-tab-churn-with-later-",
+            'PRODUCT_MODULE_NAME = "chrome_wasm"',
+            "_require_product_module_name",
+            "--module-name must be chrome_wasm",
             "ARTIFACT_SOURCE_PROVENANCE = \"unverified\"",
             "artifact_identity",
             "capture_harness_identity",
@@ -465,6 +473,14 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, expression):
                     validate(result)
 
+    def test_result_rejects_substituted_product_module(self) -> None:
+        result = copy.deepcopy(successful_result())
+        result["artifact"]["module_name"] = "alternate_wasm"  # type: ignore[index]
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            validate(result)
+
     def test_marker_parser_rejects_duplicate_or_wrong_scope_results(self) -> None:
         result = successful_result()
         encoded = json.dumps(result, separators=(",", ":")).encode()
@@ -549,6 +565,128 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
                 )
             finally:
                 server.server_close()
+
+    def test_rejects_alternate_product_module_at_server_url_and_identity_boundaries(
+        self,
+    ) -> None:
+        alternate_module = "alternate_wasm"
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            smoke.create_server(
+                "127.0.0.1",
+                0,
+                Path("/missing-tab-churn-output"),
+                "test-token",
+                queue.Queue(maxsize=1),
+                module_name=alternate_module,
+            )
+
+        server = mock.Mock()
+        server.module_name = smoke.PRODUCT_MODULE_NAME
+        server.server_address = ("127.0.0.1", 12345)
+        server.artifacts = {
+            "chrome_wasm.js": b"loader",
+            "chrome_wasm.wasm": b"wasm",
+        }
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            smoke.smoke_url(
+                server,
+                "test-token",
+                VERSIONS,
+                artifact=ARTIFACT_IDENTITY,
+                capture_harness=CAPTURE_HARNESS_IDENTITY,
+                module_name=alternate_module,
+                timeout_seconds=15.0,
+            )
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            smoke.artifact_identity(server, module_name=alternate_module)
+
+        server.module_name = alternate_module
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            smoke.smoke_url(
+                server,
+                "test-token",
+                VERSIONS,
+                artifact=ARTIFACT_IDENTITY,
+                capture_harness=CAPTURE_HARNESS_IDENTITY,
+                module_name=smoke.PRODUCT_MODULE_NAME,
+                timeout_seconds=15.0,
+            )
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            smoke.artifact_identity(server, module_name=smoke.PRODUCT_MODULE_NAME)
+
+    def test_main_rejects_alternate_module_before_server_or_browser(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(smoke, "check_boundary") as check_boundary,
+            mock.patch.object(smoke, "create_server") as create_server,
+            mock.patch.object(smoke, "find_browser") as find_browser,
+            mock.patch.object(
+                smoke.sys,
+                "argv",
+                ["tab-churn-runner", "--module-name", "alternate_wasm"],
+            ),
+            mock.patch.object(smoke.sys, "stderr", stderr),
+            self.assertRaisesRegex(SystemExit, "^2$"),
+        ):
+            smoke.main()
+
+        self.assertIn("--module-name must be chrome_wasm", stderr.getvalue())
+        check_boundary.assert_not_called()
+        create_server.assert_not_called()
+        find_browser.assert_not_called()
+
+    def _run_host_query(self, query: str) -> dict[str, object]:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+        host = REPO_ROOT / "tools/wasm/host/chrome_wasm_browser_tab_churn_smoke_host.js"
+        script = f"""
+globalThis.location = {{
+  origin: "http://127.0.0.1",
+  pathname: "/__m9_browser_tab_churn__/",
+  search: {json.dumps(query)},
+}};
+let fetchCalls = 0;
+globalThis.fetch = () => {{
+  fetchCalls += 1;
+  throw new Error("unexpected tab-churn loader fetch");
+}};
+const host = await import({json.dumps(host.as_uri())});
+let error = null;
+try {{
+  await host.runChromeWasmBrowserTabChurnSmokeFromQuery();
+}} catch (value) {{
+  error = String(value);
+}}
+process.stdout.write(JSON.stringify({{error, fetchCalls}}));
+"""
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        return json.loads(completed.stdout)
+
+    def test_alternate_module_query_is_rejected_before_loader_fetch(self) -> None:
+        observed = self._run_host_query("?token=test-token&module=alternate_wasm")
+        self.assertIn(
+            "must select the chrome_wasm product module", observed["error"]
+        )
+        self.assertEqual(0, observed["fetchCalls"])
 
     def test_main_closes_an_unstarted_server_without_shutdown(self) -> None:
         server = mock.Mock()
