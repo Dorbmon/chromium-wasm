@@ -99,14 +99,19 @@ def normal_execution(
         returncode=0,
         stdout="\n".join(
             (
-                normal_lifecycle.PASS_MARKER,
                 runner.NORMAL_RESULT_PREFIX
                 + json.dumps(summary, sort_keys=True, separators=(",", ":")),
                 normal_lifecycle.NODE_PASS_MARKER,
             )
         )
         + "\n",
-        stderr="",
+        stderr="\n".join(
+            (
+                normal_lifecycle.READY_MARKER,
+                normal_lifecycle.PASS_MARKER,
+            )
+        )
+        + "\n",
     )
 
 
@@ -257,12 +262,15 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 "returncode": 0,
                 "elapsedMs": 17.25,
                 "stdoutBytes": len(normal_execution().stdout.encode("utf-8")),
-                "stderrBytes": 0,
+                "stderrBytes": len(normal_execution().stderr.encode("utf-8")),
                 "stdoutSha256": hashlib.sha256(
                     normal_execution().stdout.encode("utf-8")
                 ).hexdigest(),
-                "stderrSha256": hashlib.sha256(b"").hexdigest(),
+                "stderrSha256": hashlib.sha256(
+                    normal_execution().stderr.encode("utf-8")
+                ).hexdigest(),
                 "terminalMarkers": {
+                    "nativeReady": 1,
                     "lifecyclePass": 1,
                     "nodePass": 1,
                     "summary": 1,
@@ -276,7 +284,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         duplicate = runner.ChildExecution(
             **{
                 **duplicate.__dict__,
-                "stdout": duplicate.stdout + normal_lifecycle.PASS_MARKER + "\n",
+                "stderr": duplicate.stderr + normal_lifecycle.PASS_MARKER + "\n",
             }
         )
         with self.assertRaisesRegex(M0Error, "exactly one"):
@@ -346,6 +354,133 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, "malformed JSON"):
                     runner.validate_normal_lifecycle_execution(
                         malformed,
+                        expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    )
+
+    def test_normal_child_requires_real_split_stream_terminal_transcript(self) -> None:
+        def summary_line(execution: runner.ChildExecution) -> str:
+            return next(
+                line
+                for line in execution.stdout.splitlines()
+                if line.startswith(runner.NORMAL_RESULT_PREFIX)
+            )
+
+        cases = (
+            (
+                "native ready on stdout",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stdout=normal_lifecycle.READY_MARKER + "\n" + execution.stdout,
+                    stderr=execution.stderr.replace(
+                        normal_lifecycle.READY_MARKER + "\n", "", 1
+                    ),
+                ),
+                "native success terminal record on stdout",
+            ),
+            (
+                "native pass on stdout",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stdout=normal_lifecycle.PASS_MARKER + "\n" + execution.stdout,
+                    stderr=execution.stderr.replace(
+                        normal_lifecycle.PASS_MARKER + "\n", "", 1
+                    ),
+                ),
+                "native success terminal record on stdout",
+            ),
+            (
+                "summary on stderr",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stdout="\n".join(
+                        line
+                        for line in execution.stdout.splitlines()
+                        if not line.startswith(runner.NORMAL_RESULT_PREFIX)
+                    )
+                    + "\n",
+                    stderr=execution.stderr + summary_line(execution) + "\n",
+                ),
+                "wrapper success terminal record on stderr",
+            ),
+            (
+                "node pass on stderr",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stdout=execution.stdout.replace(
+                        normal_lifecycle.NODE_PASS_MARKER + "\n", "", 1
+                    ),
+                    stderr=execution.stderr + normal_lifecycle.NODE_PASS_MARKER + "\n",
+                ),
+                "wrapper success terminal record on stderr",
+            ),
+            (
+                "failure marker on stdout after valid transcript",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stdout=execution.stdout
+                    + f"{normal_lifecycle.SENTINEL}:NODE_FAIL reason=forged\n",
+                ),
+                "child failure marker",
+            ),
+            (
+                "failure marker on stderr after valid transcript",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stderr=execution.stderr
+                    + f"{normal_lifecycle.SENTINEL}:NODE_FAIL reason=forged\n",
+                ),
+                "child failure marker",
+            ),
+            (
+                "duplicate native pass on stderr",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stderr=execution.stderr + normal_lifecycle.PASS_MARKER + "\n",
+                ),
+                "exactly one stderr",
+            ),
+            (
+                "native stderr markers out of order",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stderr="\n".join(
+                        (
+                            normal_lifecycle.PASS_MARKER,
+                            normal_lifecycle.READY_MARKER,
+                        )
+                    )
+                    + "\n",
+                ),
+                "native terminal records are unordered",
+            ),
+            (
+                "duplicate node pass on stdout",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stdout=execution.stdout + normal_lifecycle.NODE_PASS_MARKER + "\n",
+                ),
+                "exactly one stdout",
+            ),
+            (
+                "summary after node pass on stdout",
+                lambda execution: self._replace_child_execution(
+                    execution,
+                    stdout="\n".join(
+                        (
+                            normal_lifecycle.NODE_PASS_MARKER,
+                            summary_line(execution),
+                        )
+                    )
+                    + "\n",
+                ),
+                "wrapper terminal records are unordered",
+            ),
+        )
+        for name, mutate, error in cases:
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(M0Error, error):
+                    runner.validate_normal_lifecycle_execution(
+                        mutate(normal_execution()),
                         expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
                     )
 

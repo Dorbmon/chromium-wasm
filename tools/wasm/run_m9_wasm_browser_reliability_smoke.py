@@ -75,6 +75,14 @@ PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT = "the M9 parent preflight snapshot"
 CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY = "private-m9-temporary-directory-snapshot"
 CONTROLLED_FLOW_HOST_FIXTURE_SOURCE_PROVENANCE = "unverified"
 NORMAL_RESULT_PREFIX = f"{normal_lifecycle.SENTINEL}:NODE_RESULT "
+_NORMAL_LIFECYCLE_FAILURE_MARKERS = (
+    f"{normal_lifecycle.SENTINEL}:NODE_FAIL",
+)
+_NORMAL_LIFECYCLE_NATIVE_SUCCESS_MARKERS = (
+    normal_lifecycle.READY_MARKER,
+    normal_lifecycle.PASS_MARKER,
+)
+_NORMAL_LIFECYCLE_WRAPPER_SUCCESS_MARKERS = (normal_lifecycle.NODE_PASS_MARKER,)
 CONTROLLED_FLOW_SCREENSHOT_PREFIX = f"{continuous_flow.SENTINEL}:SCREENSHOT "
 CONTROLLED_FLOW_RESULT_PREFIX = f"{continuous_flow.SENTINEL}:FLOW_RESULT "
 CONTROLLED_FLOW_RESTART_RESULT_PREFIX = f"{continuous_flow.SENTINEL}:RESTART_RESULT "
@@ -399,20 +407,6 @@ def _exact_line_count(output: str, marker: str) -> int:
     return sum(line == marker for line in output.splitlines())
 
 
-def _require_exact_marker(output: str, marker: str, description: str) -> None:
-    if _exact_line_count(output, marker) != 1:
-        raise M0Error(f"{description} did not emit exactly one {marker}")
-
-
-def _parse_unique_json_line(
-    output: str, prefix: str, description: str
-) -> dict[str, Any]:
-    lines = [line for line in output.splitlines() if line.startswith(prefix)]
-    if len(lines) != 1:
-        raise M0Error(f"{description} did not emit exactly one result record")
-    return _parse_strict_json_object_line(lines[0], prefix, description)
-
-
 def _json_object_without_duplicate_keys(
     pairs: list[tuple[str, object]],
 ) -> dict[str, object]:
@@ -453,6 +447,84 @@ def _parse_controlled_flow_terminal_json_line(
 
 def _is_terminal_failure_marker(line: str, marker: str) -> bool:
     return line == marker or line.startswith(marker + " ")
+
+
+def _validate_normal_lifecycle_terminal_records(
+    execution: ChildExecution,
+) -> dict[str, Any]:
+    """Require the ordinary child's split-stream terminal transcript.
+
+    Native Chrome writes READY and PASS to stderr, which the M6 wrapper
+    relays unchanged.  The wrapper then writes its NODE_RESULT summary and
+    NODE_PASS marker to stdout.  Those streams do not provide a trustworthy
+    joint ordering, so validate the native stderr order and wrapper stdout
+    order independently.  A NODE_FAIL marker on either stream is terminally
+    disqualifying, including when a forged success transcript follows it.
+    """
+
+    description = f"normal lifecycle cycle {execution.cycle}"
+    output = f"{execution.stdout}\n{execution.stderr}"
+    for line in output.splitlines():
+        for marker in _NORMAL_LIFECYCLE_FAILURE_MARKERS:
+            if _is_terminal_failure_marker(line, marker):
+                raise M0Error(f"{description} emitted child failure marker {marker}")
+
+    stdout_lines = execution.stdout.splitlines()
+    stderr_lines = execution.stderr.splitlines()
+    for line in stdout_lines:
+        if line in _NORMAL_LIFECYCLE_NATIVE_SUCCESS_MARKERS:
+            raise M0Error(
+                f"{description} emitted a native success terminal record on stdout"
+            )
+    for line in stderr_lines:
+        if line in _NORMAL_LIFECYCLE_WRAPPER_SUCCESS_MARKERS or line.startswith(
+            NORMAL_RESULT_PREFIX
+        ):
+            raise M0Error(
+                f"{description} emitted a wrapper success terminal record on stderr"
+            )
+
+    native_indices: list[int] = []
+    for marker in _NORMAL_LIFECYCLE_NATIVE_SUCCESS_MARKERS:
+        indices = [
+            index for index, line in enumerate(stderr_lines) if line == marker
+        ]
+        if len(indices) != 1:
+            raise M0Error(
+                f"{description} did not emit exactly one stderr {marker} record"
+            )
+        native_indices.append(indices[0])
+    if native_indices != sorted(native_indices):
+        raise M0Error(f"{description} native terminal records are unordered")
+
+    node_pass_indices = [
+        index
+        for index, line in enumerate(stdout_lines)
+        if line == normal_lifecycle.NODE_PASS_MARKER
+    ]
+    if len(node_pass_indices) != 1:
+        raise M0Error(
+            f"{description} did not emit exactly one stdout "
+            f"{normal_lifecycle.NODE_PASS_MARKER} record"
+        )
+
+    result_indices = [
+        index
+        for index, line in enumerate(stdout_lines)
+        if line.startswith(NORMAL_RESULT_PREFIX)
+    ]
+    if len(result_indices) != 1:
+        raise M0Error(
+            f"{description} did not emit exactly one stdout {NORMAL_RESULT_PREFIX} record"
+        )
+
+    ordered_indices = (result_indices[0], node_pass_indices[0])
+    if tuple(sorted(ordered_indices)) != ordered_indices:
+        raise M0Error(f"{description} wrapper terminal records are unordered")
+
+    return _parse_strict_json_object_line(
+        stdout_lines[result_indices[0]], NORMAL_RESULT_PREFIX, description
+    )
 
 
 def _validate_controlled_flow_terminal_records(
@@ -927,21 +999,7 @@ def validate_normal_lifecycle_execution(
     """Validate one independent no-switch lifecycle child result."""
     _require_module_name(expected_module_name, "normal lifecycle module name")
     output = _validated_child_output(execution)
-    _require_exact_marker(
-        output,
-        normal_lifecycle.PASS_MARKER,
-        f"normal lifecycle cycle {execution.cycle}",
-    )
-    _require_exact_marker(
-        output,
-        normal_lifecycle.NODE_PASS_MARKER,
-        f"normal lifecycle cycle {execution.cycle}",
-    )
-    result = _parse_unique_json_line(
-        execution.stdout,
-        NORMAL_RESULT_PREFIX,
-        f"normal lifecycle cycle {execution.cycle}",
-    )
+    result = _validate_normal_lifecycle_terminal_records(execution)
     expected_fields = {
         "artifact",
         "canvasCopies",
@@ -972,6 +1030,9 @@ def validate_normal_lifecycle_execution(
         "child": _child_evidence(
             execution,
             terminal_markers={
+                "nativeReady": _exact_line_count(
+                    output, normal_lifecycle.READY_MARKER
+                ),
                 "lifecyclePass": _exact_line_count(
                     output, normal_lifecycle.PASS_MARKER
                 ),
