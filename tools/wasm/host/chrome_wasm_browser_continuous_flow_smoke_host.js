@@ -26,7 +26,10 @@ const MAX_RECORD_HISTORY = 128;
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
 const MAX_SCREENSHOT_BASE64_LENGTH = Math.ceil(MAX_SCREENSHOT_BYTES / 3) * 4;
+const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const ARTIFACT_SOURCE_PROVENANCE = "unverified";
+const ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot";
 
 const MARKERS = Object.freeze({
   ready: "CHROMIUM_WASM_M6_CONTINUOUS:READY",
@@ -83,6 +86,99 @@ function parseVersions(value) {
     versions[field] = asNonemptyString(parsed?.[field], "version " + field);
   }
   return Object.freeze(versions);
+}
+
+function parseQueryJson(value, description) {
+  try {
+    return JSON.parse(asNonemptyString(value, description));
+  } catch (error) {
+    throw new Error(`invalid ${description}: ${String(error)}`);
+  }
+}
+
+function requireExactFields(value, fields, description) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).length !== fields.length ||
+      !fields.every((field) => Object.hasOwn(value, field))) {
+    throw new Error(`${description} has an invalid schema`);
+  }
+  return value;
+}
+
+function parseByteIdentity(value, description) {
+  const identity = requireExactFields(value, ["bytes", "sha256"], description);
+  if (!Number.isSafeInteger(identity.bytes) || identity.bytes < 1 ||
+      identity.bytes > MAX_ARTIFACT_BYTES ||
+      typeof identity.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(identity.sha256)) {
+    throw new Error(`${description} is invalid`);
+  }
+  return Object.freeze({bytes: identity.bytes, sha256: identity.sha256});
+}
+
+function parseArtifactIdentity(value) {
+  const artifact = requireExactFields(
+      parseQueryJson(value, "continuous-flow artifact identity"),
+      ["artifact_delivery", "artifact_source_provenance", "loader",
+        "module_name", "wasm"], "continuous-flow artifact identity");
+  if (artifact.artifact_delivery !== ARTIFACT_DELIVERY ||
+      artifact.artifact_source_provenance !== ARTIFACT_SOURCE_PROVENANCE ||
+      typeof artifact.module_name !== "string" ||
+      !/^[A-Za-z0-9_]+$/.test(artifact.module_name)) {
+    throw new Error("continuous-flow artifact identity has invalid provenance");
+  }
+  return Object.freeze({
+    artifact_delivery: artifact.artifact_delivery,
+    artifact_source_provenance: artifact.artifact_source_provenance,
+    loader: parseByteIdentity(artifact.loader, "continuous-flow loader identity"),
+    module_name: artifact.module_name,
+    wasm: parseByteIdentity(artifact.wasm, "continuous-flow Wasm identity"),
+  });
+}
+
+async function sha256Hex(bytes, description) {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new Error(`${description} bytes are invalid`);
+  }
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle || typeof subtle.digest !== "function") {
+    throw new Error(`${description} requires WebCrypto SHA-256`);
+  }
+  let digest;
+  try {
+    digest = await subtle.digest("SHA-256", bytes);
+  } catch (error) {
+    throw new Error(`${description} SHA-256 failed: ${String(error)}`);
+  }
+  if (!(digest instanceof ArrayBuffer)) {
+    throw new Error(`${description} SHA-256 returned an invalid digest`);
+  }
+  return Array.from(new Uint8Array(digest), (value) =>
+    value.toString(16).padStart(2, "0")).join("");
+}
+
+export async function fetchVerifiedArtifact(url, identity, description) {
+  const response = await fetch(url, {cache: "no-store"});
+  if (!response.ok) {
+    throw new Error(`${description} request returned HTTP ${response.status}`);
+  }
+  let buffer;
+  try {
+    buffer = await response.arrayBuffer();
+  } catch (error) {
+    throw new Error(`${description} response bytes failed: ${String(error)}`);
+  }
+  if (!(buffer instanceof ArrayBuffer)) {
+    throw new Error(`${description} response bytes are invalid`);
+  }
+  const bytes = new Uint8Array(buffer);
+  if (bytes.byteLength !== identity.bytes) {
+    throw new Error(`${description} byte length disagrees with artifact identity`);
+  }
+  if (await sha256Hex(bytes, description) !== identity.sha256) {
+    throw new Error(`${description} SHA-256 disagrees with artifact identity`);
+  }
+  return bytes;
 }
 
 function renderVersions(element, versions) {
@@ -219,6 +315,7 @@ class ChromiumWasmBrowserContinuousFlowHost {
   #proxy;
   #versions;
   #phase;
+  #artifact;
   #module = null;
   #pointerInput = null;
   #textInput = null;
@@ -339,7 +436,7 @@ class ChromiumWasmBrowserContinuousFlowHost {
     screenshot: null,
   };
 
-  constructor(canvas, proxy, versions, phase) {
+  constructor(canvas, proxy, versions, phase, artifact) {
     if (!(canvas instanceof HTMLCanvasElement) ||
         !(proxy instanceof HTMLTextAreaElement)) {
       throw new Error("continuous-flow host requires a canvas and textarea");
@@ -348,6 +445,7 @@ class ChromiumWasmBrowserContinuousFlowHost {
     this.#proxy = proxy;
     this.#versions = versions;
     this.#phase = phase;
+    this.#artifact = artifact;
     this.#runtimeExitPromise = new Promise((resolve) => {
       this.#runtimeExitResolver = resolve;
     });
@@ -1518,6 +1616,7 @@ class ChromiumWasmBrowserContinuousFlowHost {
       windowErrors: this.#windowErrors,
       unhandledRejections: this.#unhandledRejections,
       versions: this.#versions,
+      artifact: this.#artifact,
       frameReports: this.#frameReports,
       readiness: this.#readiness,
       readinessReports: this.#readinessReports,
@@ -1548,6 +1647,7 @@ class ChromiumWasmBrowserContinuousFlowHost {
 
   async run(modulePath, timeoutMs, wispEndpoint, fixtureUrl) {
     const startedAt = performance.now();
+    let loaderImportUrl = null;
     try {
       if (!crossOriginIsolated || typeof SharedArrayBuffer !== "function") {
         throw new Error("continuous-flow host requires cross-origin isolation");
@@ -1561,21 +1661,31 @@ class ChromiumWasmBrowserContinuousFlowHost {
       if (moduleUrl.origin !== location.origin) {
         throw new Error("continuous-flow module must use the host origin");
       }
+      const wasmUrl = new URL(`${this.#artifact.module_name}.wasm`, moduleUrl);
+      if (wasmUrl.origin !== location.origin) {
+        throw new Error("continuous-flow Wasm must use the host origin");
+      }
       this.#canvas.focus({preventScroll: true});
       if (document.activeElement !== this.#canvas) {
         throw new Error("continuous-flow canvas did not accept focus");
       }
       this.#installBridge();
       this.#captureWindowErrors();
-      const response = await fetch(moduleUrl.href, {cache: "no-store"});
-      if (!response.ok) {
-        throw new Error("module request returned HTTP " + response.status);
+      const [loaderBytes, wasmBytes] = await Promise.all([
+        fetchVerifiedArtifact(
+            moduleUrl.href, this.#artifact.loader, "continuous-flow module loader"),
+        fetchVerifiedArtifact(
+            wasmUrl.href, this.#artifact.wasm, "continuous-flow Wasm"),
+      ]);
+      if (typeof Blob !== "function" || typeof URL.createObjectURL !== "function") {
+        throw new Error("continuous-flow host cannot import a verified module loader");
       }
-      const mainScriptUrlOrBlob = await response.blob();
-      if (mainScriptUrlOrBlob.size === 0) {
-        throw new Error("module loader is empty");
-      }
-      const namespace = await import(moduleUrl.href);
+      // Import and pass the exact verified loader bytes. The verified Wasm
+      // bytes are supplied through Emscripten's wasmBinary option below, so
+      // this flow never treats an unverified second network fetch as evidence.
+      const mainScriptUrlOrBlob = new Blob([loaderBytes], {type: "text/javascript"});
+      loaderImportUrl = URL.createObjectURL(mainScriptUrlOrBlob);
+      const namespace = await import(loaderImportUrl);
       if (typeof namespace.default !== "function") {
         throw new Error("module loader has no default factory");
       }
@@ -1587,7 +1697,9 @@ class ChromiumWasmBrowserContinuousFlowHost {
         canvas: this.#canvas,
         noExitRuntime: false,
         mainScriptUrlOrBlob,
-        locateFile: (path) => new URL(path, moduleUrl).href,
+        wasmBinary: wasmBytes,
+        locateFile: (path) => path === `${this.#artifact.module_name}.wasm` ?
+            wasmUrl.href : new URL(path, moduleUrl).href,
         print(line) {
           const text = String(line);
           appendBounded(host.#stdout, text);
@@ -1636,6 +1748,9 @@ class ChromiumWasmBrowserContinuousFlowHost {
     } catch (error) {
       return this.#result("fail", String(error));
     } finally {
+      if (loaderImportUrl !== null) {
+        URL.revokeObjectURL(loaderImportUrl);
+      }
       ++this.#verifierGeneration;
       this.#releaseReloadHeldKeys("teardown");
       this.#detachReloadInput();
@@ -1671,6 +1786,11 @@ function validateResult(result) {
   requireResult(Array.isArray(result.unhandledRejections) &&
       result.unhandledRejections.length === 0, failures,
       "host recorded unhandled rejections");
+  requireResult(result.artifact?.artifact_delivery === ARTIFACT_DELIVERY &&
+      result.artifact?.artifact_source_provenance === ARTIFACT_SOURCE_PROVENANCE,
+  failures, "artifact identity has invalid delivery provenance");
+  requireResult(/^[A-Za-z0-9_]+$/.test(result.artifact?.module_name || ""), failures,
+  "artifact identity has an invalid module name");
   // Generic Ozone readiness FVP is a shell-level diagnostic and can remain
   // false for the running Chrome Browser. The acceptance proof uses the two
   // dedicated C++ target-FVP imports plus strictly later canvas frames.
@@ -1741,6 +1861,11 @@ export async function runChromeWasmBrowserContinuousFlowSmokeFromQuery() {
     throw new Error("continuous-flow query is invalid");
   }
   const timeoutMs = Number(query.get("timeoutMs") || "60000");
+  const versions = parseVersions(query.get("versions"));
+  const artifact = parseArtifactIdentity(query.get("artifact"));
+  if (artifact.module_name !== moduleName) {
+    throw new Error("continuous-flow artifact module name disagrees with query");
+  }
   const root = document.querySelector("#browser-continuous-flow-root");
   const canvas = document.querySelector("#browser-canvas");
   const proxy = document.querySelector("#browser-text-proxy");
@@ -1749,9 +1874,9 @@ export async function runChromeWasmBrowserContinuousFlowSmokeFromQuery() {
       !(proxy instanceof HTMLTextAreaElement) || !(status instanceof HTMLElement)) {
     throw new Error("continuous-flow page is missing required elements");
   }
-  const versions = parseVersions(query.get("versions"));
   renderVersions(document.querySelector("#versions"), versions);
-  const host = new ChromiumWasmBrowserContinuousFlowHost(canvas, proxy, versions, phase);
+  const host = new ChromiumWasmBrowserContinuousFlowHost(
+      canvas, proxy, versions, phase, artifact);
   const result = validateResult(await host.run(
       location.pathname.replace(/\/$/, "") + "/artifacts/" + moduleName + ".js",
       timeoutMs, query.get("wispEndpoint"), query.get("fixtureUrl")));
@@ -1784,6 +1909,8 @@ export async function runChromeWasmBrowserContinuousFlowSmokeFromQuery() {
 }
 
 export const chromeWasmBrowserContinuousFlowSmokeContract = Object.freeze({
+  ARTIFACT_DELIVERY,
+  ARTIFACT_SOURCE_PROVENANCE,
   protocol: HOST_PROTOCOL,
   case: CASE,
   scope: SCOPE,

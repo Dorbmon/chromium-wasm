@@ -390,8 +390,28 @@ def _versions_from_flow_result(result: dict[str, Any]) -> dict[str, str]:
     return dict(versions)
 
 
-def validate_controlled_flow_execution(execution: ChildExecution) -> dict[str, object]:
+def _artifact_identity_from_flow_result(result: dict[str, Any]) -> dict[str, object]:
+    artifact = result.get("artifact")
+    if not isinstance(artifact, dict):
+        raise M0Error("controlled flow result has invalid artifact identity")
+    try:
+        # This validates the exact schema and concrete JSON types before the
+        # child record is retained. Its own identity is only used here to
+        # validate structure; the M6 child separately compares it with its
+        # immutable server snapshot before emitting the result.
+        continuous_flow.validate_artifact_identity(
+            artifact, expected_artifact_identity=artifact
+        )
+    except M0Error as error:
+        raise M0Error("controlled flow result has invalid artifact identity") from error
+    return artifact
+
+
+def validate_controlled_flow_execution(
+    execution: ChildExecution, *, expected_module_name: str
+) -> dict[str, object]:
     """Validate one fresh real-browser controlled-flow child result."""
+    _require_module_name(expected_module_name, "controlled flow module name")
     output = _validated_child_output(execution)
     _require_exact_marker(
         output,
@@ -411,15 +431,32 @@ def validate_controlled_flow_execution(execution: ChildExecution) -> dict[str, o
     versions = _versions_from_flow_result(flow_result)
     if restart_result.get("versions") != versions:
         raise M0Error("controlled flow and restart version identifiers disagree")
+    artifact = _artifact_identity_from_flow_result(flow_result)
+    if artifact.get("module_name") != expected_module_name:
+        raise M0Error(
+            "controlled flow artifact module name disagrees with configured "
+            "controlled-flow module"
+        )
+    try:
+        continuous_flow.validate_artifact_identity(
+            restart_result.get("artifact"), expected_artifact_identity=artifact
+        )
+    except M0Error as error:
+        raise M0Error("controlled flow and restart artifact identities disagree") from error
     screenshot_contract = (
         continuous_flow.controlled_https.load_controlled_https_screenshot_contract()
     )
     continuous_flow.validate_flow_result(
         flow_result,
         expected_versions=versions,
+        expected_artifact_identity=artifact,
         screenshot_contract=screenshot_contract,
     )
-    continuous_flow.validate_restart_result(restart_result, expected_versions=versions)
+    continuous_flow.validate_restart_result(
+        restart_result,
+        expected_versions=versions,
+        expected_artifact_identity=artifact,
+    )
     frames = flow_result.get("frameReports")
     restart_frames = restart_result.get("frameReports")
     if not isinstance(frames, list) or not isinstance(restart_frames, list):
@@ -442,6 +479,7 @@ def validate_controlled_flow_execution(execution: ChildExecution) -> dict[str, o
                 ),
             },
         ),
+        "artifact": artifact,
         "versions": versions,
         "flowFrames": len(frames),
         "restartFrames": len(restart_frames),
@@ -823,7 +861,11 @@ def run_reliability(
             ),
             controlled_flow_timeout,
         )
-        flow_cycles.append(validate_controlled_flow_execution(execution))
+        flow_cycles.append(
+            validate_controlled_flow_execution(
+                execution, expected_module_name=controlled_flow_module_name
+            )
+        )
 
     normal_summary = _aggregate_cycles(normal_cycles)
     normal_summary.update(

@@ -19,6 +19,7 @@ import argparse
 import base64
 import binascii
 from collections import deque
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -49,10 +50,10 @@ from m4_cdp import unused_loopback_port, wait_for_page_client
 from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
 from run_content_shell_smoke import manifest_versions
 from run_m5_wisp_smoke import (
+    PRIVATE_KEY_PEM_MARKERS,
     find_node,
     m5_host_origin,
     relay_command,
-    verify_no_private_key_pem_artifacts,
 )
 import run_m6_wasm_browser_controlled_https_smoke as controlled_https
 import run_wasm_browser_view_smoke as browser_view_smoke
@@ -73,10 +74,24 @@ DEFAULT_MODULE_NAME = "chrome_wasm_m6_https_test"
 CONTROLLED_HTTPS_GN_TARGET = "//chrome:chrome_wasm_m6_https_test"
 HOST_ROOT = "/__m6_browser_continuous_flow__"
 MAX_RESULT_BYTES = 8 * 1024 * 1024
+MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FRAME_DIMENSION = 16384
 MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 MAX_SCREENSHOT_BASE64_LENGTH = ((MAX_SCREENSHOT_BYTES + 2) // 3) * 4
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
+_ARTIFACT_IDENTITY_FIELDS = frozenset(
+    (
+        "artifact_delivery",
+        "artifact_source_provenance",
+        "loader",
+        "module_name",
+        "wasm",
+    )
+)
+ARTIFACT_SOURCE_PROVENANCE = "unverified"
+ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
 CONTROLLED_HTTPS_SCREENSHOT_CONTRACT = (
     Path(__file__).with_name("testdata")
     / "m6_controlled_https_screenshot_contract.json"
@@ -107,8 +122,8 @@ class ContinuousFlowServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    out_dir: Path
     module_name: str
+    artifacts: dict[str, bytes]
     result_token: str
     result_queue: queue.Queue[tuple[str, dict[str, Any]]]
     result_lock: threading.Lock
@@ -143,19 +158,6 @@ class ContinuousFlowRequestHandler(BaseHTTPRequestHandler):
     def _not_found(self) -> None:
         self._send_bytes(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n")
 
-    def _artifact_path(self, requested: str) -> Path | None:
-        if requested not in {
-            f"{self.server.module_name}.js",
-            f"{self.server.module_name}.wasm",
-        }:
-            return None
-        candidate = (self.server.out_dir / requested).resolve()
-        try:
-            candidate.relative_to(self.server.out_dir)
-        except ValueError:
-            return None
-        return candidate if candidate.is_file() else None
-
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
         if path in (HOST_ROOT, f"{HOST_ROOT}/"):
@@ -180,12 +182,15 @@ class ContinuousFlowRequestHandler(BaseHTTPRequestHandler):
             return
         prefix = f"{HOST_ROOT}/artifacts/"
         if path.startswith(prefix):
-            artifact = self._artifact_path(path[len(prefix) :])
+            artifact_name = path[len(prefix) :]
+            artifact = self.server.artifacts.get(artifact_name)
             if artifact is not None:
                 self._send_bytes(
                     HTTPStatus.OK,
-                    "application/wasm" if artifact.suffix == ".wasm" else "text/javascript; charset=utf-8",
-                    artifact.read_bytes(),
+                    "application/wasm"
+                    if artifact_name.endswith(".wasm")
+                    else "text/javascript; charset=utf-8",
+                    artifact,
                 )
                 return
         self._not_found()
@@ -270,6 +275,32 @@ def parse_result_payload(payload: bytes, phase: str) -> dict[str, Any] | None:
     return result
 
 
+def _require_module_name(value: object, description: str) -> str:
+    if type(value) is not str or not MODULE_NAME_RE.fullmatch(value):
+        raise M0Error(
+            f"continuous-flow {description} module name must contain only ASCII "
+            "letters, digits, or _"
+        )
+    return value
+
+
+def _read_snapshot(path: Path, description: str) -> bytes:
+    try:
+        contents = path.read_bytes()
+    except OSError as error:
+        raise M0Error(f"cannot snapshot continuous-flow {description}: {error}") from error
+    if not contents or len(contents) > MAX_SNAPSHOT_BYTES:
+        raise M0Error(f"continuous-flow {description} snapshot is invalid")
+    return contents
+
+
+def _artifact_snapshot_path(out_dir: Path, artifact_name: str) -> Path:
+    candidate = (out_dir / artifact_name).resolve()
+    if candidate.parent != out_dir or not candidate.is_file():
+        raise M0Error(f"continuous-flow artifact is missing or unsafe: {artifact_name}")
+    return candidate
+
+
 def create_server(
     host: str,
     port: int,
@@ -278,30 +309,86 @@ def create_server(
     result_queue: queue.Queue[tuple[str, dict[str, Any]]],
     *,
     module_name: str,
+    host_dir: Path | None = None,
 ) -> ContinuousFlowServer:
-    if not MODULE_NAME_RE.fullmatch(module_name):
-        raise M0Error("module name must contain only ASCII letters, digits, or _")
+    module_name = _require_module_name(module_name, "server")
+    out_dir = out_dir.resolve()
     if not out_dir.is_dir():
         raise M0Error(f"continuous-flow output directory is missing: {out_dir}")
-    host_dir = Path(__file__).with_name("host")
+    artifacts = {
+        artifact_name: _read_snapshot(
+            _artifact_snapshot_path(out_dir, artifact_name),
+            f"artifact {artifact_name}",
+        )
+        for artifact_name in (f"{module_name}.js", f"{module_name}.wasm")
+    }
+    selected_host_dir = host_dir or Path(__file__).with_name("host")
     server = ContinuousFlowServer((host, port), ContinuousFlowRequestHandler)
-    server.out_dir = out_dir.resolve()
     server.module_name = module_name
+    server.artifacts = artifacts
     server.result_token = token
     server.result_queue = result_queue
     server.result_lock = threading.Lock()
     server.received_phases = set()
     server.html_bytes = (
-        host_dir / "chrome_wasm_browser_continuous_flow_smoke.html"
+        selected_host_dir / "chrome_wasm_browser_continuous_flow_smoke.html"
     ).read_bytes()
     server.host_js_bytes = (
-        host_dir / "chrome_wasm_browser_continuous_flow_smoke_host.js"
+        selected_host_dir / "chrome_wasm_browser_continuous_flow_smoke_host.js"
     ).read_bytes()
-    server.text_input_js_bytes = (host_dir / "chrome_wasm_text_input.js").read_bytes()
+    server.text_input_js_bytes = (
+        selected_host_dir / "chrome_wasm_text_input.js"
+    ).read_bytes()
     server.pointer_input_js_bytes = (
-        host_dir / "chrome_wasm_pointer_input.js"
+        selected_host_dir / "chrome_wasm_pointer_input.js"
     ).read_bytes()
     return server
+
+
+def _byte_identity(contents: bytes) -> dict[str, object]:
+    return {"bytes": len(contents), "sha256": hashlib.sha256(contents).hexdigest()}
+
+
+def artifact_identity(
+    server: ContinuousFlowServer, *, module_name: str
+) -> dict[str, object]:
+    module_name = _require_module_name(module_name, "artifact")
+    if server.module_name != module_name:
+        raise M0Error("continuous-flow artifact module name disagrees with server")
+    try:
+        loader = server.artifacts[f"{module_name}.js"]
+        wasm = server.artifacts[f"{module_name}.wasm"]
+    except KeyError as error:
+        raise M0Error("continuous-flow server artifact snapshot is incomplete") from error
+    return {
+        "artifact_delivery": ARTIFACT_DELIVERY,
+        "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
+        "loader": _byte_identity(loader),
+        "module_name": module_name,
+        "wasm": _byte_identity(wasm),
+    }
+
+
+def verify_no_private_key_pem_snapshot_artifacts(
+    server: ContinuousFlowServer, *, module_name: str
+) -> None:
+    """Reject PEM private-key markers from the immutable served snapshots."""
+    module_name = _require_module_name(module_name, "snapshot")
+    for suffix in (".js", ".wasm"):
+        artifact_name = f"{module_name}{suffix}"
+        try:
+            contents = server.artifacts[artifact_name]
+        except KeyError as error:
+            raise M0Error(
+                "continuous-flow server artifact snapshot is incomplete"
+            ) from error
+        if type(contents) is not bytes:
+            raise M0Error("continuous-flow server artifact snapshot is invalid")
+        if any(marker in contents for marker in PRIVATE_KEY_PEM_MARKERS):
+            raise M0Error(
+                "continuous-flow artifact snapshot embeds a PEM private-key "
+                f"header: {artifact_name}"
+            )
 
 
 def smoke_url(
@@ -310,9 +397,15 @@ def smoke_url(
     versions: dict[str, str],
     *,
     relay_ready: controlled_https.RelayReady,
+    artifact: dict[str, object],
     module_name: str,
     timeout_seconds: float,
 ) -> str:
+    module_name = _require_module_name(module_name, "URL")
+    validate_artifact_identity(
+        artifact,
+        expected_artifact_identity=artifact_identity(server, module_name=module_name),
+    )
     wisp_endpoint = controlled_https.validate_controlled_wisp_endpoint(
         relay_ready.wisp_endpoint
     )
@@ -325,6 +418,7 @@ def smoke_url(
             "phase": FLOW_PHASE,
             "timeoutMs": str(max(1000, min(180000, int(timeout_seconds * 1000)))),
             "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
+            "artifact": json.dumps(artifact, sort_keys=True, separators=(",", ":")),
             "wispEndpoint": wisp_endpoint,
             "fixtureUrl": HTTPS_TEXT,
         }
@@ -332,11 +426,11 @@ def smoke_url(
     return f"http://{host}:{port}{HOST_ROOT}/?{query}"
 
 
-def verify_required_exports(module_loader: Path) -> None:
+def verify_required_exports(module_loader: bytes) -> None:
     try:
-        loader = module_loader.read_text(encoding="utf-8")
-    except OSError as error:
-        raise M0Error(f"cannot read continuous-flow module loader: {error}") from error
+        loader = module_loader.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise M0Error(f"cannot decode continuous-flow module loader: {error}") from error
     for export in (
         'Module["_chromium_wasm_browser_host_key"]',
         'Module["_chromium_wasm_browser_host_text"]',
@@ -356,6 +450,46 @@ def verify_required_exports(module_loader: Path) -> None:
 def _require_equal(value: object, expected: object, description: str) -> None:
     if not browser_view_smoke._exact_json_value_equal(value, expected):
         raise M0Error(f"{description}: expected {expected!r}, got {value!r}")
+
+
+def _require_exact_fields(
+    value: object, expected: frozenset[str], description: str
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != expected:
+        actual = sorted(value) if isinstance(value, dict) else type(value).__name__
+        raise M0Error(
+            f"continuous-flow {description} schema is invalid: expected "
+            f"{sorted(expected)!r}, got {actual!r}"
+        )
+    return value
+
+
+def _validate_byte_identity(value: object, description: str) -> None:
+    identity = _require_exact_fields(value, _BYTE_IDENTITY_FIELDS, description)
+    if type(identity.get("bytes")) is not int or identity["bytes"] < 1:
+        raise M0Error(f"continuous-flow {description} byte count is invalid")
+    sha256 = identity.get("sha256")
+    if type(sha256) is not str or not SHA256_RE.fullmatch(sha256):
+        raise M0Error(f"continuous-flow {description} SHA-256 is invalid")
+
+
+def validate_artifact_identity(
+    value: object, *, expected_artifact_identity: dict[str, object]
+) -> None:
+    artifact = _require_exact_fields(
+        value, _ARTIFACT_IDENTITY_FIELDS, "artifact identity"
+    )
+    if artifact.get("artifact_delivery") != ARTIFACT_DELIVERY:
+        raise M0Error("continuous-flow artifact delivery is invalid")
+    if artifact.get("artifact_source_provenance") != ARTIFACT_SOURCE_PROVENANCE:
+        raise M0Error("continuous-flow artifact source provenance is invalid")
+    _require_module_name(artifact.get("module_name"), "artifact")
+    for field in ("loader", "wasm"):
+        _validate_byte_identity(artifact.get(field), f"artifact {field}")
+    if not browser_view_smoke._exact_json_value_equal(
+        artifact, expected_artifact_identity
+    ):
+        raise M0Error("continuous-flow artifact identity disagrees with served snapshot")
 
 
 def _validate_target(value: object, name: str) -> dict[str, object]:
@@ -547,8 +681,11 @@ def _validate_screenshot(
 
 
 def validate_flow_result(
-    result: dict[str, Any], *, expected_versions: dict[str, str],
-    screenshot_contract: dict[str, Any]
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+    expected_artifact_identity: dict[str, object],
+    screenshot_contract: dict[str, Any],
 ) -> bytes:
     for field, expected in {
         "protocol": 1,
@@ -570,6 +707,10 @@ def validate_flow_result(
     if result.get("processExitCode") not in (None, 0):
         raise M0Error("continuous-flow process exit disagrees with runtime")
     _require_equal(result.get("versions"), expected_versions, "continuous-flow versions")
+    validate_artifact_identity(
+        result.get("artifact"),
+        expected_artifact_identity=expected_artifact_identity,
+    )
     for field in ("fatalErrors", "windowErrors", "unhandledRejections"):
         if not isinstance(result.get(field), list) or result[field]:
             raise M0Error(f"continuous-flow {field} is not empty")
@@ -691,7 +832,10 @@ def validate_flow_result(
 
 
 def validate_restart_result(
-    result: dict[str, Any], *, expected_versions: dict[str, str]
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+    expected_artifact_identity: dict[str, object],
 ) -> None:
     for field, expected in {
         "protocol": 1,
@@ -712,6 +856,10 @@ def validate_restart_result(
     }.items():
         _require_equal(result.get(field), expected, f"restart result {field}")
     _require_equal(result.get("versions"), expected_versions, "restart versions")
+    validate_artifact_identity(
+        result.get("artifact"),
+        expected_artifact_identity=expected_artifact_identity,
+    )
     for field in ("fatalErrors", "windowErrors", "unhandledRejections"):
         if not isinstance(result.get(field), list) or result[field]:
             raise M0Error(f"restart {field} is not empty")
@@ -955,6 +1103,7 @@ def main() -> int:
 
     server: ContinuousFlowServer | None = None
     server_thread: threading.Thread | None = None
+    server_thread_started = False
     browser: subprocess.Popen[str] | None = None
     client: Any = None
     browser_path: Path | None = None
@@ -971,18 +1120,29 @@ def main() -> int:
     profile: tempfile.TemporaryDirectory[str] | None = None
     results: dict[str, dict[str, Any]] = {}
     context: dict[str, object] | None = None
+    artifact: dict[str, object] | None = None
     stage = "check_artifacts"
 
     try:
         stage = "check_boundary"
         check_boundary(out_dir)
         controlled_https.check_controlled_https_boundary(out_dir)
-        for suffix in (".js", ".wasm"):
-            artifact = out_dir / f"{args.module_name}{suffix}"
-            if not artifact.is_file():
-                raise M0Error(f"continuous-flow artifact is missing: {artifact}")
-        verify_required_exports(out_dir / f"{args.module_name}.js")
-        verify_no_private_key_pem_artifacts(out_dir, args.module_name)
+        token = secrets.token_urlsafe(24)
+        result_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=2)
+        stage = "snapshot_server_inputs"
+        server = create_server(
+            "127.0.0.1",
+            0,
+            out_dir,
+            token,
+            result_queue,
+            module_name=args.module_name,
+        )
+        artifact = artifact_identity(server, module_name=args.module_name)
+        verify_required_exports(server.artifacts[f"{args.module_name}.js"])
+        verify_no_private_key_pem_snapshot_artifacts(
+            server, module_name=args.module_name
+        )
         screenshot_contract = controlled_https.load_controlled_https_screenshot_contract()
         baseline_path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT.with_name(
             str(screenshot_contract["baseline"])
@@ -999,6 +1159,7 @@ def main() -> int:
             case=CASE,
             scope=SCOPE,
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
+            artifact=artifact,
             module_name=args.module_name,
             host_browser_sandbox=not args.no_sandbox,
             runtime_arguments=[FLOW_SWITCH, URL_SWITCH + "=" + HTTPS_TEXT],
@@ -1014,16 +1175,15 @@ def main() -> int:
         if not relay_script.is_file():
             raise M0Error(f"continuous-flow relay script is missing: {relay_script}")
 
-        token = secrets.token_urlsafe(24)
-        result_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=2)
-        stage = "create_host_server"
-        server = create_server("127.0.0.1", 0, out_dir, token, result_queue, module_name=args.module_name)
+        assert artifact is not None
+        stage = "serve_host_server"
         server_thread = threading.Thread(
             target=server.serve_forever,
             name="chromium-wasm-m6-continuous-flow-server",
             daemon=True,
         )
         server_thread.start()
+        server_thread_started = True
 
         stage = "launch_relay"
         relay = subprocess.Popen(
@@ -1063,6 +1223,7 @@ def main() -> int:
             token,
             versions,
             relay_ready=relay_ready,
+            artifact=artifact,
             module_name=args.module_name,
             timeout_seconds=max(1.0, args.timeout - 1.0),
         )
@@ -1162,7 +1323,10 @@ def main() -> int:
         )
         stage = "validate_flow_result"
         actual_png = validate_flow_result(
-            flow_result, expected_versions=versions, screenshot_contract=screenshot_contract
+            flow_result,
+            expected_versions=versions,
+            expected_artifact_identity=artifact,
+            screenshot_contract=screenshot_contract,
         )
         stage = "compare_reviewed_baseline"
         comparison = compare_screenshots(
@@ -1184,7 +1348,11 @@ def main() -> int:
             browser, browser_stderr, results, result_queue, RESTART_PHASE, deadline
         )
         stage = "validate_outer_restart_result"
-        validate_restart_result(restart_result, expected_versions=versions)
+        validate_restart_result(
+            restart_result,
+            expected_versions=versions,
+            expected_artifact_identity=artifact,
+        )
         stage = "validate_relay"
         assert relay_ready is not None
         relay_status = controlled_https.fetch_relay_status(
@@ -1246,9 +1414,16 @@ def main() -> int:
         if relay_stderr_thread is not None:
             relay_stderr_thread.join(timeout=1)
         if server is not None:
-            server.shutdown()
-            server.server_close()
-        if server_thread is not None:
+            try:
+                if server_thread_started:
+                    server.shutdown()
+            finally:
+                # A snapshot/export failure can occur after creating the
+                # listening socket but before serve_forever starts. Calling
+                # BaseServer.shutdown() in that state waits forever, while
+                # server_close() is still required to release the socket.
+                server.server_close()
+        if server_thread_started and server_thread is not None:
             server_thread.join(timeout=1)
         if profile is not None:
             profile.cleanup()

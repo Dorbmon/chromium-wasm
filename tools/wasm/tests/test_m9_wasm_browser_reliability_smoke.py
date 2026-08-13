@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import io
 import json
@@ -35,6 +36,13 @@ VERSIONS = {
     "v8": "v8-revision",
     "emscripten": "emscripten-revision",
     "port": "port-revision",
+}
+ARTIFACT_IDENTITY = {
+    "artifact_delivery": continuous_flow.ARTIFACT_DELIVERY,
+    "artifact_source_provenance": continuous_flow.ARTIFACT_SOURCE_PROVENANCE,
+    "loader": {"bytes": 10, "sha256": "a" * 64},
+    "module_name": continuous_flow.DEFAULT_MODULE_NAME,
+    "wasm": {"bytes": 20, "sha256": "b" * 64},
 }
 
 
@@ -66,10 +74,22 @@ def normal_execution(cycle: int = 1) -> runner.ChildExecution:
 
 
 def flow_execution(
-    cycle: int = 1, *, restart_versions: object = VERSIONS
+    cycle: int = 1,
+    *,
+    restart_versions: object = VERSIONS,
+    flow_artifact: object = ARTIFACT_IDENTITY,
+    restart_artifact: object = ARTIFACT_IDENTITY,
 ) -> runner.ChildExecution:
-    flow = {"versions": VERSIONS, "frameReports": [{"id": 1}]}
-    restart = {"versions": restart_versions, "frameReports": [{"id": 1}]}
+    flow = {
+        "versions": VERSIONS,
+        "artifact": copy.deepcopy(flow_artifact),
+        "frameReports": [{"id": 1}],
+    }
+    restart = {
+        "versions": restart_versions,
+        "artifact": copy.deepcopy(restart_artifact),
+        "frameReports": [{"id": 1}],
+    }
     return runner.ChildExecution(
         name="controlled flow",
         cycle=cycle,
@@ -191,7 +211,10 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 runner.continuous_flow, "validate_restart_result"
             ) as validate_restart,
         ):
-            result = runner.validate_controlled_flow_execution(execution)
+            result = runner.validate_controlled_flow_execution(
+                execution,
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+            )
 
         self.assertEqual(1, result["cycle"])
         self.assertTrue(result["outerPageFreshRestart"])
@@ -201,15 +224,26 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             result["child"]["terminalMarkers"],
         )
         self.assertEqual(VERSIONS, result["versions"])
+        self.assertEqual(ARTIFACT_IDENTITY, result["artifact"])
         load_contract.assert_called_once_with()
         validate_flow.assert_called_once_with(
-            {"versions": VERSIONS, "frameReports": [{"id": 1}]},
+            {
+                "versions": VERSIONS,
+                "artifact": ARTIFACT_IDENTITY,
+                "frameReports": [{"id": 1}],
+            },
             expected_versions=VERSIONS,
+            expected_artifact_identity=ARTIFACT_IDENTITY,
             screenshot_contract=screenshot_contract,
         )
         validate_restart.assert_called_once_with(
-            {"versions": VERSIONS, "frameReports": [{"id": 1}]},
+            {
+                "versions": VERSIONS,
+                "artifact": ARTIFACT_IDENTITY,
+                "frameReports": [{"id": 1}],
+            },
             expected_versions=VERSIONS,
+            expected_artifact_identity=ARTIFACT_IDENTITY,
         )
 
     def test_controlled_flow_rejects_disagreeing_restart_provenance(self) -> None:
@@ -217,7 +251,42 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         mismatched["port"] = "other-port"
         with self.assertRaisesRegex(M0Error, "version identifiers disagree"):
             runner.validate_controlled_flow_execution(
-                flow_execution(restart_versions=mismatched)
+                flow_execution(restart_versions=mismatched),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+            )
+
+    def test_controlled_flow_rejects_restart_artifact_substitution_and_aliases(
+        self,
+    ) -> None:
+        substituted = copy.deepcopy(ARTIFACT_IDENTITY)
+        substituted["wasm"] = {"bytes": 21, "sha256": "c" * 64}
+        with self.assertRaisesRegex(M0Error, "artifact identities disagree"):
+            runner.validate_controlled_flow_execution(
+                flow_execution(restart_artifact=substituted),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+            )
+        bool_alias = copy.deepcopy(ARTIFACT_IDENTITY)
+        bool_alias["loader"] = {"bytes": True, "sha256": "a" * 64}
+        with self.assertRaisesRegex(M0Error, "invalid artifact identity"):
+            runner.validate_controlled_flow_execution(
+                flow_execution(flow_artifact=bool_alias),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+            )
+
+    def test_controlled_flow_rejects_artifact_module_disagreeing_with_configuration(
+        self,
+    ) -> None:
+        wrong_module = copy.deepcopy(ARTIFACT_IDENTITY)
+        wrong_module["module_name"] = "different_controlled_flow_module"
+        with self.assertRaisesRegex(
+            M0Error, "disagrees with configured controlled-flow module"
+        ):
+            runner.validate_controlled_flow_execution(
+                flow_execution(
+                    flow_artifact=wrong_module,
+                    restart_artifact=wrong_module,
+                ),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
             )
 
     def test_run_aggregates_only_fresh_cycles_and_forwards_isolated_paths(self) -> None:
@@ -238,7 +307,12 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         def fake_normal(execution: runner.ChildExecution) -> dict[str, object]:
             return {"cycle": execution.cycle, "elapsedMs": float(execution.cycle)}
 
-        def fake_flow(execution: runner.ChildExecution) -> dict[str, object]:
+        def fake_flow(
+            execution: runner.ChildExecution, *, expected_module_name: str
+        ) -> dict[str, object]:
+            self.assertEqual(
+                runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME, expected_module_name
+            )
             return {"cycle": execution.cycle, "elapsedMs": 10.0 * execution.cycle}
 
         with (
