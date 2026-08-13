@@ -15,6 +15,7 @@ import queue
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -515,6 +516,41 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
                 )
             finally:
                 server.server_close()
+
+    def test_main_closes_an_unstarted_server_without_shutdown(self) -> None:
+        server = mock.Mock()
+        server.artifacts = {"chrome_wasm.js": b"loader"}
+        server.shutdown.side_effect = AssertionError(
+            "an unstarted server must not be shut down"
+        )
+        server_thread = mock.Mock()
+        server_thread.start.side_effect = RuntimeError("server thread start failed")
+
+        with (
+            mock.patch.object(smoke, "check_boundary"),
+            mock.patch.object(smoke, "create_server", return_value=server),
+            mock.patch.object(smoke, "artifact_identity", return_value={}),
+            mock.patch.object(smoke, "capture_harness_identity", return_value={}),
+            mock.patch.object(smoke, "verify_required_exports"),
+            mock.patch.object(smoke, "load_manifest", return_value={}),
+            mock.patch.object(smoke, "toolchain_manifest_versions", return_value={}),
+            mock.patch.object(smoke.threading, "Thread", return_value=server_thread),
+            mock.patch.object(
+                smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ) as find_browser,
+            mock.patch.object(smoke.subprocess, "Popen") as popen,
+            mock.patch.object(sys, "argv", ["tab-churn-runner"]),
+            self.assertRaisesRegex(RuntimeError, "server thread start failed"),
+        ):
+            smoke.main()
+
+        server.shutdown.assert_not_called()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_not_called()
+        find_browser.assert_called_once_with(None)
+        popen.assert_not_called()
 
     def test_stage_info_is_exactly_three_cycles_of_four_actions(self) -> None:
         self.assertEqual(smoke.STAGE_COUNT, 12)

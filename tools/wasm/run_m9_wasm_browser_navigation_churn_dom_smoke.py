@@ -930,6 +930,7 @@ def main() -> int:
         diagnostics_dir = REPO_ROOT / diagnostics_dir
     server: NavigationChurnSmokeServer | None = None
     server_thread: threading.Thread | None = None
+    server_thread_started = False
     browser: subprocess.Popen[str] | None = None
     browser_path: Path | None = None
     browser_version: str | None = None
@@ -982,6 +983,7 @@ def main() -> int:
             daemon=True,
         )
         server_thread.start()
+        server_thread_started = True
         url = smoke_url(
             server,
             token,
@@ -1067,9 +1069,10 @@ def main() -> int:
         if stderr_thread is not None:
             stderr_thread.join(timeout=1)
         if server is not None:
-            server.shutdown()
+            if server_thread_started:
+                server.shutdown()
             server.server_close()
-        if server_thread is not None:
+        if server_thread_started and server_thread is not None:
             server_thread.join(timeout=1)
         if profile is not None:
             profile.cleanup()
