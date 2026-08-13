@@ -410,13 +410,7 @@ def _parse_unique_json_line(
     lines = [line for line in output.splitlines() if line.startswith(prefix)]
     if len(lines) != 1:
         raise M0Error(f"{description} did not emit exactly one result record")
-    try:
-        result = json.loads(lines[0][len(prefix) :])
-    except json.JSONDecodeError as exc:
-        raise M0Error(f"{description} emitted malformed JSON") from exc
-    if not isinstance(result, dict):
-        raise M0Error(f"{description} result is not an object")
-    return result
+    return _parse_strict_json_object_line(lines[0], prefix, description)
 
 
 def _json_object_without_duplicate_keys(
@@ -434,11 +428,9 @@ def _reject_nonstandard_json_constant(value: str) -> None:
     raise ValueError(f"nonstandard JSON constant {value!r}")
 
 
-def _parse_controlled_flow_terminal_json_line(
+def _parse_strict_json_object_line(
     line: str, prefix: str, description: str
 ) -> dict[str, Any]:
-    """Parse one authoritative child terminal JSON record strictly."""
-
     try:
         result = json.loads(
             line[len(prefix) :],
@@ -450,6 +442,13 @@ def _parse_controlled_flow_terminal_json_line(
     if not isinstance(result, dict):
         raise M0Error(f"{description} result is not an object")
     return result
+
+
+def _parse_controlled_flow_terminal_json_line(
+    line: str, prefix: str, description: str
+) -> dict[str, Any]:
+    """Parse one authoritative child terminal JSON record strictly."""
+    return _parse_strict_json_object_line(line, prefix, description)
 
 
 def _is_terminal_failure_marker(line: str, marker: str) -> bool:

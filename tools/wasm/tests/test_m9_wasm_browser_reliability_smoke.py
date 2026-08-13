@@ -324,6 +324,31 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 invalid_json, expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME
             )
 
+        strict_json_cases = (
+            (
+                "duplicate summary key",
+                '"canvasCopies":2',
+                '"canvasCopies":0,"canvasCopies":2',
+            ),
+            (
+                "nonstandard summary number",
+                '"startupMs":12.5',
+                '"startupMs":NaN',
+            ),
+        )
+        for name, original, replacement in strict_json_cases:
+            with self.subTest(case=name):
+                malformed = normal_execution()
+                malformed = self._replace_child_execution(
+                    malformed,
+                    stdout=malformed.stdout.replace(original, replacement, 1),
+                )
+                with self.assertRaisesRegex(M0Error, "malformed JSON"):
+                    runner.validate_normal_lifecycle_execution(
+                        malformed,
+                        expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    )
+
     def test_normal_child_requires_configured_exact_snapshot_identity(self) -> None:
         cases = (
             (
