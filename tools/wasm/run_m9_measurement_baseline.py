@@ -30,7 +30,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlencode, urlsplit
 
 if __package__:
@@ -1056,6 +1056,39 @@ def _wait_for_status(
     )
 
 
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Runs one cleanup action without preventing the remaining cleanup."""
+
+    try:
+        action()
+    except BaseException as exc:
+        if cleanup_error is None:
+            return exc
+    return cleanup_error
+
+
+def _cleanup_measurement_server(
+    *,
+    server: M9MeasurementServer | None,
+    server_thread: threading.Thread | None,
+    server_thread_started: bool,
+) -> BaseException | None:
+    """Stops a started server while always closing its socket and joining it."""
+
+    cleanup_error: BaseException | None = None
+    if server is not None:
+        if server_thread_started:
+            cleanup_error = _run_cleanup_action(cleanup_error, server.shutdown)
+        cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
+    if server_thread_started and server_thread is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error, lambda: server_thread.join(timeout=5)
+        )
+    return cleanup_error
+
+
 def run_measurement(
     *,
     server: M9MeasurementServer,
@@ -1066,9 +1099,11 @@ def run_measurement(
 ) -> tuple[dict[str, Any], str]:
     browser: subprocess.Popen[str] | None = None
     stderr_thread: threading.Thread | None = None
+    stderr_thread_started = False
     client: Any = None
     profile: tempfile.TemporaryDirectory[str] | None = None
     browser_stderr: deque[str] = deque(maxlen=80)
+    primary_error: BaseException | None = None
     try:
         browser_path, browser_version = find_browser(browser_argument)
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m9-baseline-")
@@ -1098,6 +1133,7 @@ def run_measurement(
             daemon=True,
         )
         stderr_thread.start()
+        stderr_thread_started = True
         deadline = time.monotonic() + timeout
         client = wait_for_page_client(debug_port, url, deadline)
         _wait_for_status(
@@ -1117,15 +1153,25 @@ def run_measurement(
             expected_status="complete",
         )
         return complete, browser_version
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
+        cleanup_error: BaseException | None = None
         if client is not None:
-            client.close()
+            cleanup_error = _run_cleanup_action(cleanup_error, client.close)
         if browser is not None:
-            stop_browser(browser)
-        if stderr_thread is not None:
-            stderr_thread.join(timeout=1)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stop_browser(browser)
+            )
+        if stderr_thread_started and stderr_thread is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stderr_thread.join(timeout=1)
+            )
         if profile is not None:
-            profile.cleanup()
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def main() -> int:
@@ -1154,7 +1200,9 @@ def main() -> int:
         out_dir = REPO_ROOT / out_dir
     server: M9MeasurementServer | None = None
     server_thread: threading.Thread | None = None
-    server_started = False
+    server_thread_started = False
+    primary_error: BaseException | None = None
+    result: dict[str, object] | None = None
     try:
         check_boundary(out_dir)
         manifest = load_manifest()
@@ -1169,7 +1217,7 @@ def main() -> int:
             daemon=True,
         )
         server_thread.start()
-        server_started = True
+        server_thread_started = True
         url = measurement_url(
             server, module_name=args.module_name, timeout_seconds=args.timeout
         )
@@ -1187,26 +1235,35 @@ def main() -> int:
             snapshot=snapshot,
             versions=versions,
         )
-        print(
-            f"{SENTINEL}:CAPTURED "
-            + json.dumps(result, sort_keys=True, separators=(",", ":")),
-            flush=True,
-        )
-        return 0
     except (M0Error, OSError, TypeError, ValueError) as exc:
+        primary_error = exc
         print(
             f"{SENTINEL}:CAPTURE_FAILED reason={_bounded_error_text(exc)}",
             file=sys.stderr,
             flush=True,
         )
         return 1
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if server is not None and server_started:
-            server.shutdown()
-        if server is not None:
-            server.server_close()
-        if server_thread is not None:
-            server_thread.join(timeout=5)
+        cleanup_error = _cleanup_measurement_server(
+            server=server,
+            server_thread=server_thread,
+            server_thread_started=server_thread_started,
+        )
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
+    if result is None:
+        raise RuntimeError("M9 measurement capture completed without a result")
+    # Do not make a successful observation visible until its server teardown
+    # has completed, because a teardown failure invalidates the capture.
+    print(
+        f"{SENTINEL}:CAPTURED "
+        + json.dumps(result, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
+    return 0
 
 
 if __name__ == "__main__":

@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import io
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from tools.wasm.m0_common import M0Error, REPO_ROOT
@@ -658,6 +660,179 @@ class M9MeasurementValidationTest(unittest.TestCase):
                 result["capture_harness"]["host_protocol"] = value  # type: ignore[index]
                 with self.assertRaisesRegex(M0Error, r"host.?protocol is invalid"):
                     baseline.validate_baseline_result(result)
+
+
+class M9MeasurementCleanupTest(unittest.TestCase):
+    def test_main_preserves_unstarted_server_thread_start_failure(self) -> None:
+        server = mock.Mock()
+        server_thread = mock.Mock()
+        server_thread.start.side_effect = RuntimeError("server thread start failed")
+        server_thread.join.side_effect = RuntimeError(
+            "cannot join thread before it is started"
+        )
+
+        with (
+            mock.patch.object(baseline, "check_boundary"),
+            mock.patch.object(baseline, "load_manifest", return_value={}),
+            mock.patch.object(
+                baseline, "toolchain_manifest_versions", return_value={}
+            ),
+            mock.patch.object(
+                baseline, "create_measurement_server", return_value=server
+            ),
+            mock.patch.object(baseline, "artifact_identity", return_value={}),
+            mock.patch.object(
+                baseline.threading, "Thread", return_value=server_thread
+            ),
+            mock.patch.object(baseline.sys, "argv", ["measurement-baseline"]),
+            self.assertRaisesRegex(RuntimeError, "server thread start failed"),
+        ):
+            baseline.main()
+
+        server.shutdown.assert_not_called()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_not_called()
+
+    def test_run_measurement_preserves_unstarted_stderr_reader_failure(self) -> None:
+        browser = mock.Mock()
+        browser.stderr = object()
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-measurement-profile"
+        stderr_thread = mock.Mock()
+        stderr_thread.start.side_effect = RuntimeError("stderr reader start failed")
+        stderr_thread.join.side_effect = RuntimeError(
+            "cannot join thread before it is started"
+        )
+
+        with (
+            mock.patch.object(
+                baseline,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                baseline.tempfile, "TemporaryDirectory", return_value=profile
+            ),
+            mock.patch.object(baseline, "unused_loopback_port", return_value=12345),
+            mock.patch.object(
+                baseline, "browser_command", return_value=["/fake/browser", "url"]
+            ),
+            mock.patch.object(baseline.subprocess, "Popen", return_value=browser),
+            mock.patch.object(
+                baseline.threading, "Thread", return_value=stderr_thread
+            ),
+            mock.patch.object(
+                baseline,
+                "stop_browser",
+                side_effect=RuntimeError("browser cleanup failed"),
+            ) as stop_browser,
+            self.assertRaisesRegex(RuntimeError, "stderr reader start failed"),
+        ):
+            baseline.run_measurement(
+                server=mock.Mock(),
+                url="http://127.0.0.1:12345/__m9__/",
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+            )
+
+        stop_browser.assert_called_once_with(browser)
+        stderr_thread.join.assert_not_called()
+        profile.cleanup.assert_called_once_with()
+
+    def test_main_closes_and_joins_after_shutdown_error_without_masking_failure(
+        self,
+    ) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 12345)
+        server.shutdown.side_effect = RuntimeError("server shutdown failed")
+        server_thread = mock.Mock()
+        stderr = io.StringIO()
+
+        with (
+            mock.patch.object(baseline, "check_boundary"),
+            mock.patch.object(baseline, "load_manifest", return_value={}),
+            mock.patch.object(
+                baseline, "toolchain_manifest_versions", return_value={}
+            ),
+            mock.patch.object(
+                baseline, "create_measurement_server", return_value=server
+            ),
+            mock.patch.object(baseline, "artifact_identity", return_value={}),
+            mock.patch.object(
+                baseline,
+                "run_measurement",
+                side_effect=M0Error("measurement startup failed"),
+            ),
+            mock.patch.object(
+                baseline.threading, "Thread", return_value=server_thread
+            ),
+            mock.patch.object(baseline.sys, "argv", ["measurement-baseline"]),
+            mock.patch.object(baseline.sys, "stderr", stderr),
+        ):
+            self.assertEqual(1, baseline.main())
+
+        self.assertIn("measurement startup failed", stderr.getvalue())
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=5)
+
+    def test_main_never_emits_captured_before_server_cleanup_succeeds(self) -> None:
+        for method, failure in (
+            ("shutdown", "server shutdown failed"),
+            ("server_close", "server close failed"),
+            ("join", "server thread join failed"),
+        ):
+            with self.subTest(method=method):
+                server = mock.Mock()
+                server.server_address = ("127.0.0.1", 12345)
+                server_thread = mock.Mock()
+                if method == "join":
+                    server_thread.join.side_effect = RuntimeError(failure)
+                else:
+                    getattr(server, method).side_effect = RuntimeError(failure)
+                stdout = io.StringIO()
+
+                with (
+                    mock.patch.object(baseline, "check_boundary"),
+                    mock.patch.object(baseline, "load_manifest", return_value={}),
+                    mock.patch.object(
+                        baseline, "toolchain_manifest_versions", return_value={}
+                    ),
+                    mock.patch.object(
+                        baseline, "create_measurement_server", return_value=server
+                    ),
+                    mock.patch.object(
+                        baseline, "artifact_identity", return_value={}
+                    ),
+                    mock.patch.object(
+                        baseline, "capture_harness_identity", return_value={}
+                    ),
+                    mock.patch.object(
+                        baseline,
+                        "run_measurement",
+                        return_value=(passing_snapshot(), "test-browser"),
+                    ),
+                    mock.patch.object(
+                        baseline,
+                        "make_baseline_result",
+                        return_value={"captured": "result"},
+                    ),
+                    mock.patch.object(
+                        baseline.threading, "Thread", return_value=server_thread
+                    ),
+                    mock.patch.object(
+                        baseline.sys, "argv", ["measurement-baseline"]
+                    ),
+                    mock.patch.object(baseline.sys, "stdout", stdout),
+                    self.assertRaisesRegex(RuntimeError, failure),
+                ):
+                    baseline.main()
+
+                self.assertNotIn(f"{baseline.SENTINEL}:CAPTURED", stdout.getvalue())
+                server.shutdown.assert_called_once_with()
+                server.server_close.assert_called_once_with()
+                server_thread.join.assert_called_once_with(timeout=5)
 
 
 
