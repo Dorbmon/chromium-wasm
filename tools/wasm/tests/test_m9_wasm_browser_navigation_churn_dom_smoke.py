@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 import queue
@@ -587,6 +589,7 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         server = mock.Mock()
         server.artifacts = {"chrome_wasm.js": b"loader"}
         server_thread = mock.Mock()
+        server_thread.is_alive.return_value = True
         browser = mock.Mock()
         browser.stderr = object()
         profile = mock.Mock()
@@ -643,7 +646,95 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         server.shutdown.assert_called_once_with()
         server.server_close.assert_called_once_with()
         server_thread.join.assert_called_once_with(timeout=1)
+        server_thread.is_alive.assert_called_once_with()
         profile.cleanup.assert_called_once_with()
+
+    def test_main_rejects_live_server_without_success_markers(self) -> None:
+        server = mock.Mock()
+        server.artifacts = {"chrome_wasm.js": b"loader"}
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = True
+        stderr_thread = mock.Mock()
+        browser = mock.Mock()
+        browser.stderr = object()
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-navigation-churn-profile"
+        stdout = io.StringIO()
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(smoke, "check_boundary"))
+            stack.enter_context(
+                mock.patch.object(smoke, "create_server", return_value=server)
+            )
+            stack.enter_context(
+                mock.patch.object(smoke, "artifact_identity", return_value={})
+            )
+            stack.enter_context(
+                mock.patch.object(smoke, "capture_harness_identity", return_value={})
+            )
+            stack.enter_context(mock.patch.object(smoke, "verify_required_exports"))
+            stack.enter_context(mock.patch.object(smoke, "load_manifest", return_value={}))
+            stack.enter_context(
+                mock.patch.object(smoke, "toolchain_manifest_versions", return_value={})
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    smoke.threading,
+                    "Thread",
+                    side_effect=[server_thread, stderr_thread],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    smoke,
+                    "find_browser",
+                    return_value=(Path("/fake/browser"), "test-browser"),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    smoke,
+                    "smoke_url",
+                    return_value=(
+                        "http://127.0.0.1:12345/__m9_browser_navigation_churn__/"
+                    ),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    smoke.tempfile, "TemporaryDirectory", return_value=profile
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    smoke,
+                    "browser_command",
+                    return_value=["/fake/browser", "profile", "url"],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(smoke.subprocess, "Popen", return_value=browser)
+            )
+            stack.enter_context(mock.patch.object(smoke, "wait_for_result", return_value={}))
+            stack.enter_context(mock.patch.object(smoke, "validate_result"))
+            stack.enter_context(mock.patch.object(smoke, "stop_browser"))
+            stack.enter_context(
+                mock.patch.object(sys, "argv", ["navigation-churn-runner"])
+            )
+            stack.enter_context(mock.patch.object(smoke.sys, "stdout", stdout))
+
+            with self.assertRaisesRegex(
+                M0Error, "M9 navigation-churn server did not stop"
+            ):
+                smoke.main()
+
+        self.assertNotIn(f"{smoke.SENTINEL}:BROWSER_RESULT", stdout.getvalue())
+        self.assertNotIn(f"{smoke.SENTINEL}:PASS", stdout.getvalue())
+        server_thread.start.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=1)
+        server_thread.is_alive.assert_called_once_with()
 
     def test_native_host_and_runner_keep_the_bounded_scope_explicit(self) -> None:
         entrypoint = source("chrome/app/chrome_main_wasm.cc")

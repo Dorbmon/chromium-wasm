@@ -29,7 +29,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlencode, urlsplit
 
 from check_m6_chrome_boundary import check_boundary
@@ -901,6 +901,47 @@ def write_failure_diagnostics(
     return path
 
 
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Runs one cleanup action without preventing the remaining cleanup."""
+
+    try:
+        action()
+    except BaseException as exc:
+        if cleanup_error is None:
+            return exc
+    return cleanup_error
+
+
+def _join_tab_churn_server(thread: threading.Thread) -> None:
+    """Joins a started tab-churn server and rejects an incomplete teardown."""
+
+    thread.join(timeout=1)
+    if thread.is_alive():
+        raise M0Error("M9 tab-churn server did not stop")
+
+
+def _cleanup_tab_churn_server(
+    *,
+    server: TabChurnSmokeServer | None,
+    server_thread: threading.Thread | None,
+    server_thread_started: bool,
+) -> BaseException | None:
+    """Stops the server while always closing its socket and joining it."""
+
+    cleanup_error: BaseException | None = None
+    if server is not None:
+        if server_thread_started:
+            cleanup_error = _run_cleanup_action(cleanup_error, server.shutdown)
+        cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
+    if server_thread_started and server_thread is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error, lambda: _join_tab_churn_server(server_thread)
+        )
+    return cleanup_error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run fixed same-instance Chrome Wasm tab churn through trusted DOM input."
@@ -937,6 +978,8 @@ def main() -> int:
     artifact: dict[str, object] | None = None
     capture_harness: dict[str, object] | None = None
     stage = "check_artifacts"
+    primary_error: BaseException | None = None
+    reported_error: Exception | None = None
 
     try:
         stage = "check_boundary"
@@ -1044,23 +1087,42 @@ def main() -> int:
             expected_artifact_identity=artifact,
             expected_capture_harness_identity=capture_harness,
         )
-        print(
-            f"{SENTINEL}:BROWSER_RESULT "
-            + json.dumps(runtime_result, sort_keys=True, separators=(",", ":")),
-            flush=True,
-        )
-        print(f"{SENTINEL}:PASS", flush=True)
-        return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as error:
+        primary_error = error
+        reported_error = error
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        cleanup_error: BaseException | None = None
+        if client is not None:
+            cleanup_error = _run_cleanup_action(cleanup_error, client.close)
         if browser is not None:
-            stop_browser(browser)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stop_browser(browser)
+            )
         if stderr_thread_started and stderr_thread is not None:
-            stderr_thread.join(timeout=1)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stderr_thread.join(timeout=1)
+            )
+        server_cleanup_error = _cleanup_tab_churn_server(
+            server=server,
+            server_thread=server_thread,
+            server_thread_started=server_thread_started,
+        )
+        if cleanup_error is None:
+            cleanup_error = server_cleanup_error
+        if profile is not None:
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
+
+    if reported_error is not None:
         try:
             diagnostic = write_failure_diagnostics(
                 diagnostics_dir,
                 stage=stage,
-                error=error,
+                error=reported_error,
                 context=context,
                 browser_path=browser_path,
                 browser_version=browser_version,
@@ -1078,23 +1140,18 @@ def main() -> int:
                 f"{SENTINEL}:DIAGNOSTICS_FAIL reason={diagnostic_error}",
                 file=sys.stderr,
             )
-        print(f"{SENTINEL}:FAIL reason={error}", file=sys.stderr, flush=True)
+        print(f"{SENTINEL}:FAIL reason={reported_error}", file=sys.stderr, flush=True)
         return 1
-    finally:
-        if client is not None:
-            client.close()
-        if browser is not None:
-            stop_browser(browser)
-        if stderr_thread_started and stderr_thread is not None:
-            stderr_thread.join(timeout=1)
-        if server is not None:
-            if server_thread_started:
-                server.shutdown()
-            server.server_close()
-        if server_thread_started and server_thread is not None:
-            server_thread.join(timeout=1)
-        if profile is not None:
-            profile.cleanup()
+    if runtime_result is None:
+        raise RuntimeError("tab-churn smoke completed without a result")
+    # Do not report a passing churn result until server teardown succeeds.
+    print(
+        f"{SENTINEL}:BROWSER_RESULT "
+        + json.dumps(runtime_result, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
+    print(f"{SENTINEL}:PASS", flush=True)
+    return 0
 
 
 if __name__ == "__main__":

@@ -379,6 +379,14 @@ def _run_cleanup_action(
     return cleanup_error
 
 
+def _join_package_browser_server(thread: threading.Thread) -> None:
+    """Joins a started package server and rejects an incomplete teardown."""
+
+    thread.join(timeout=5)
+    if thread.is_alive():
+        raise M0Error("M9 package browser server did not stop")
+
+
 def run_package_browser_smoke(
     *,
     dist_dir: Path,
@@ -527,7 +535,7 @@ def run_package_browser_smoke(
             cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
         if server_thread_started and server_thread is not None:
             cleanup_error = _run_cleanup_action(
-                cleanup_error, lambda: server_thread.join(timeout=5)
+                cleanup_error, lambda: _join_package_browser_server(server_thread)
             )
         if profile is not None:
             cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)

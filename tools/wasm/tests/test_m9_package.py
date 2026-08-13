@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
 import socket
+import sys
 import tempfile
 import threading
 import unittest
@@ -1171,6 +1173,7 @@ class M9PackageTest(unittest.TestCase):
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
         server_thread = mock.Mock()
+        server_thread.is_alive.return_value = True
         browser = mock.Mock()
         browser.stderr = object()
         profile = mock.Mock()
@@ -1235,6 +1238,7 @@ class M9PackageTest(unittest.TestCase):
         server.shutdown.assert_called_once_with()
         server.server_close.assert_called_once_with()
         server_thread.join.assert_called_once_with(timeout=5)
+        server_thread.is_alive.assert_called_once_with()
         profile.cleanup.assert_called_once_with()
 
     def test_package_browser_restart_closes_stale_client_and_reattaches_exact_url(
@@ -1279,6 +1283,9 @@ class M9PackageTest(unittest.TestCase):
     def test_package_browser_default_result_remains_one_clean_epoch(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = False
+        stderr_thread = mock.Mock()
         browser = mock.Mock()
         browser.stderr = object()
         browser.poll.return_value = None
@@ -1306,7 +1313,7 @@ class M9PackageTest(unittest.TestCase):
             mock.patch.object(
                 package_browser_smoke.threading,
                 "Thread",
-                side_effect=lambda *_args, **_kwargs: mock.Mock(),
+                side_effect=[server_thread, stderr_thread],
             ),
             mock.patch.object(
                 package_browser_smoke,
@@ -1378,9 +1385,104 @@ class M9PackageTest(unittest.TestCase):
         request_shutdown.assert_called_once()
         restart.assert_not_called()
 
+    def test_package_browser_main_rejects_live_server_without_pass_marker(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 32123)
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = True
+        stderr_thread = mock.Mock()
+        browser = mock.Mock()
+        browser.stderr = object()
+        browser.poll.return_value = None
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-package-profile"
+        client = mock.Mock()
+        ready = {"framesPresented": 7, "releaseStatus": package.RELEASE_STATUS}
+        shutdown = {
+            "shutdownRequested": True,
+            "shutdownDisabled": True,
+            "processExitCode": 0,
+        }
+        stdout = io.StringIO()
+
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_browser_smoke.threading,
+                "Thread",
+                side_effect=[server_thread, stderr_thread],
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "browser_command",
+                return_value=["/fake/browser", "profile", "url"],
+            ),
+            mock.patch.object(
+                package_browser_smoke.subprocess,
+                "Popen",
+                return_value=browser,
+            ),
+            mock.patch.object(
+                package_browser_smoke.tempfile,
+                "TemporaryDirectory",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                package_browser_smoke, "unused_loopback_port", return_value=32124
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "wait_for_page_client",
+                return_value=client,
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "_wait_for_ready_package_document",
+                return_value=(ready, 1000.0),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "_request_clean_shutdown",
+                return_value=shutdown,
+            ),
+            mock.patch.object(
+                package_browser_smoke.secrets,
+                "token_urlsafe",
+                return_value="first-epoch",
+            ),
+            mock.patch.object(package_browser_smoke, "stop_browser"),
+            mock.patch.object(
+                sys,
+                "argv",
+                ["package-browser", "--dist-dir", "/fake/dist"],
+            ),
+            mock.patch.object(sys, "stdout", stdout),
+        ):
+            self.assertEqual(1, package_browser_smoke.main())
+
+        self.assertIn(f"{package_browser_smoke.SENTINEL}:BROWSER_SMOKE_FAIL", stdout.getvalue())
+        self.assertNotIn(f"{package_browser_smoke.SENTINEL}:BROWSER_SMOKE_PASS", stdout.getvalue())
+        server_thread.start.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=5)
+        server_thread.is_alive.assert_called_once_with()
+
     def test_package_browser_restart_result_has_two_clean_epoch_records(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = False
+        stderr_thread = mock.Mock()
         browser = mock.Mock()
         browser.stderr = object()
         browser.poll.return_value = None
@@ -1410,7 +1512,7 @@ class M9PackageTest(unittest.TestCase):
             mock.patch.object(
                 package_browser_smoke.threading,
                 "Thread",
-                side_effect=lambda *_args, **_kwargs: mock.Mock(),
+                side_effect=[server_thread, stderr_thread],
             ),
             mock.patch.object(
                 package_browser_smoke,
