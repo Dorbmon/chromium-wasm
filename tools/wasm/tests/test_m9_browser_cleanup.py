@@ -33,6 +33,40 @@ class _BrokenTextStream:
         return
 
 
+class _BoundedReadTextStream(io.StringIO):
+    """Text stream that proves the reader never asks for an unbounded read."""
+
+    def __init__(self, value: str, maximum_read_chars: int):
+        super().__init__(value)
+        self.maximum_read_chars = maximum_read_chars
+        self.read_sizes: list[int] = []
+
+    def __iter__(self) -> _BoundedReadTextStream:
+        raise AssertionError("BrowserStderrReader must use fixed-size read framing")
+
+    def read(self, size: int = -1) -> str:
+        self.read_sizes.append(size)
+        if size < 0 or size > self.maximum_read_chars:
+            raise AssertionError(f"unexpected unbounded read size: {size}")
+        return super().read(size)
+
+
+class _DrainFailureTextStream:
+    """Overflow once, then make the cleanup-only drain itself fail."""
+
+    def __init__(self):
+        self._reads = 0
+
+    def read(self, size: int = -1) -> str:
+        self._reads += 1
+        if self._reads == 1:
+            return "xxxx"
+        raise RuntimeError("drain read failed")
+
+    def close(self) -> None:
+        return
+
+
 @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
 class M9BrowserCleanupTest(unittest.TestCase):
     def _start(self, source: str) -> subprocess.Popen[str]:
@@ -319,6 +353,95 @@ class M9BrowserCleanupTest(unittest.TestCase):
         self.assertIsNone(reader.error)
         self.assertEqual(["first", "second"], lines)
         self.assertEqual([True], eof)
+
+    def test_reader_fixed_size_framing_preserves_lines_and_eof(self) -> None:
+        lines: list[str] = []
+        eof: list[bool] = []
+        destination: deque[str] = deque()
+        stream = _BoundedReadTextStream("first\nsecond\nlast", 3)
+        reader = cleanup.BrowserStderrReader(
+            stream,
+            destination,
+            name="m9-browser-cleanup-fixed-size-framing",
+            on_line=lines.append,
+            on_eof=lambda: eof.append(True),
+        )
+
+        with mock.patch.object(cleanup, "STDERR_READ_CHUNK_CHARS", 3):
+            reader.start()
+            reader.join(timeout=1)
+
+        self.assertFalse(reader.is_alive())
+        self.assertTrue(reader.reached_eof)
+        self.assertIsNone(reader.error)
+        self.assertEqual(["first", "second", "last"], list(destination))
+        self.assertEqual(["first", "second", "last"], lines)
+        self.assertEqual([True], eof)
+        self.assertGreater(len(stream.read_sizes), 1)
+        self.assertEqual([3] * len(stream.read_sizes), stream.read_sizes)
+
+    def test_reader_rejects_one_mebibyte_unterminated_record_and_drains(self) -> None:
+        lines: list[str] = []
+        eof: list[bool] = []
+        destination: deque[str] = deque()
+        reader = cleanup.BrowserStderrReader(
+            io.StringIO("x" * (1024 * 1024)),
+            destination,
+            name="m9-browser-cleanup-unterminated-mebibyte",
+            on_line=lines.append,
+            on_eof=lambda: eof.append(True),
+        )
+
+        reader.start()
+        reader.join(timeout=3)
+
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(reader.reached_eof)
+        self.assertIsInstance(reader.error, M0Error)
+        self.assertIn("record exceeds", str(reader.error))
+        self.assertEqual([], list(destination))
+        self.assertEqual([], lines)
+        self.assertEqual([], eof)
+
+    def test_reader_preserves_record_limit_error_when_drain_fails(self) -> None:
+        reader = cleanup.BrowserStderrReader(
+            _DrainFailureTextStream(),  # type: ignore[arg-type]
+            deque(),
+            name="m9-browser-cleanup-record-limit-sticky-error",
+        )
+
+        with (
+            mock.patch.object(cleanup, "STDERR_READ_CHUNK_CHARS", 4),
+            mock.patch.object(cleanup, "MAX_STDERR_RECORD_CHARS", 3),
+        ):
+            reader.start()
+            reader.join(timeout=1)
+
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(reader.reached_eof)
+        self.assertIsInstance(reader.error, M0Error)
+        self.assertIn("record exceeds", str(reader.error))
+
+    def test_stop_reaps_subprocess_but_rejects_oversized_stderr_record(self) -> None:
+        process = self._start(
+            "import sys; sys.stderr.write('x' * (1024 * 1024)); sys.stderr.flush()"
+        )
+        reader = self._reader(process)
+        reader.start()
+        try:
+            process.wait(timeout=5)
+            reader.join(timeout=5)
+            with self.assertRaisesRegex(M0Error, "stderr reader failed.*record exceeds"):
+                cleanup.stop_browser_group(process, reader)
+            self.assertFalse(reader.is_alive())
+            self.assertIsNotNone(process.returncode)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(process.pid, 0)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def test_reader_line_callback_failure_is_not_clean_eof_evidence(self) -> None:
         reader = cleanup.BrowserStderrReader(

@@ -30,6 +30,11 @@ else:
 COOPERATIVE_STOP_SECONDS = 3.0
 FORCED_STOP_SECONDS = 3.0
 POLL_SECONDS = 0.05
+# Browser output is decoded through ``text=True``, so this cap is expressed in
+# decoded characters rather than source bytes.  It bounds one retained record
+# even if a browser or child writes without a newline.
+STDERR_READ_CHUNK_CHARS = 4 * 1024
+MAX_STDERR_RECORD_CHARS = 64 * 1024
 
 
 class BrowserStderrReader:
@@ -108,22 +113,74 @@ class BrowserStderrReader:
             pass
 
     def _drain(self) -> None:
+        pending = ""
         try:
-            for line in self._stream:
-                text = line.rstrip()
-                self._destination.append(text)
-                if self._on_line is not None:
-                    self._on_line(text)
+            while True:
+                chunk = self._stream.read(STDERR_READ_CHUNK_CHARS)
+                if not chunk:
+                    break
+
+                while chunk:
+                    newline = chunk.find("\n")
+                    if newline < 0:
+                        if len(pending) + len(chunk) > MAX_STDERR_RECORD_CHARS:
+                            self._record_limit_error()
+                            self._drain_after_record_limit()
+                            return
+                        pending += chunk
+                        break
+
+                    record = chunk[:newline]
+                    if len(pending) + len(record) > MAX_STDERR_RECORD_CHARS:
+                        self._record_limit_error()
+                        self._drain_after_record_limit()
+                        return
+                    self._emit_record(pending + record)
+                    pending = ""
+                    chunk = chunk[newline + 1 :]
         except BaseException as exc:
-            self._error = exc
-        else:
-            self._reached_eof = True
-            if self._on_eof is not None:
-                try:
-                    self._on_eof()
-                except BaseException as exc:
-                    self._error = exc
-                    self._reached_eof = False
+            if self._error is None:
+                self._error = exc
+            return
+
+        if pending:
+            try:
+                self._emit_record(pending)
+            except BaseException as exc:
+                self._error = exc
+                return
+        self._reached_eof = True
+        if self._on_eof is not None:
+            try:
+                self._on_eof()
+            except BaseException as exc:
+                self._error = exc
+                self._reached_eof = False
+
+    def _emit_record(self, record: str) -> None:
+        text = record.rstrip()
+        self._destination.append(text)
+        if self._on_line is not None:
+            self._on_line(text)
+
+    def _record_limit_error(self) -> None:
+        # Keep this first error even if a later pipe read fails while draining.
+        self._error = M0Error(
+            "M9 browser stderr record exceeds "
+            f"{MAX_STDERR_RECORD_CHARS} decoded characters"
+        )
+
+    def _drain_after_record_limit(self) -> None:
+        """Discard bounded chunks until EOF after an oversized record.
+
+        A reader error must not leave a writer blocked on its inherited pipe.
+        Do not emit further records or EOF evidence after the limit violation:
+        callers must be unable to mistake this cleanup-only drain for a clean
+        browser completion.
+        """
+
+        while self._stream.read(STDERR_READ_CHUNK_CHARS):
+            pass
 
 
 def _browser_group_exists(browser: subprocess.Popen[str]) -> bool:
