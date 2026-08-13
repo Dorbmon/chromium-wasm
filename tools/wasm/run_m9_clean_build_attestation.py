@@ -53,7 +53,6 @@ from check_m6_chrome_boundary import check_boundary
 from m0_common import M0Error, REPO_ROOT, gn_args_text, validate_test262_manifest
 from m9_descriptor_snapshot import (
     hash_regular_file,
-    hash_regular_files,
     snapshot_regular_file_with_identity,
 )
 
@@ -119,11 +118,27 @@ class _FileIdentity:
 
 
 @dataclass(frozen=True)
+class _DirectoryIdentity:
+    """The stable identity of the output directory that owns the artifacts.
+
+    Directory timestamps intentionally do not participate.  Creating the
+    attestation itself changes them, whereas device, inode, and mode let the
+    runner reject a replacement output directory before creation and again
+    during final verification.
+    """
+
+    device: int
+    inode: int
+    mode: int
+
+
+@dataclass(frozen=True)
 class WrittenAttestation:
-    """The exact regular file this invocation successfully created."""
+    """The exact leaf and output directory this invocation created in."""
 
     path: Path
     contents: bytes
+    output_directory_identity: _DirectoryIdentity
     identity: _FileIdentity
 
 
@@ -154,10 +169,11 @@ class _GnArgsCapture:
 
 @dataclass(frozen=True)
 class _ModuleArtifactsCapture:
-    """Grouped module records and their private descriptor identities."""
+    """Grouped module records plus their private output-root binding."""
 
     records: dict[str, dict[str, object]]
     identities: dict[str, _FileIdentity]
+    output_directory_identity: _DirectoryIdentity
 
 
 def _is_lower_hex(value: object, length: int) -> bool:
@@ -281,6 +297,308 @@ def _file_identity_from_pinned_identity(
         modification_time_ns=pinned_identity[4],
         change_time_ns=pinned_identity[5],
     )
+
+
+def _required_open_flag(name: str, description: str) -> int:
+    """Return a required host open flag without silently weakening safety."""
+
+    try:
+        value = getattr(os, name)
+    except AttributeError as exc:
+        raise M0Error(f"{description} requires host {name} support") from exc
+    if type(value) is not int or value == 0:
+        raise M0Error(f"{description} requires host {name} support")
+    return value
+
+
+def _require_dir_fd_support(description: str) -> None:
+    if os.open not in os.supports_dir_fd:
+        raise M0Error(f"{description} requires host dir_fd support")
+
+
+def _directory_open_flags(description: str) -> int:
+    return (
+        os.O_RDONLY
+        | _required_open_flag("O_NOFOLLOW", description)
+        | _required_open_flag("O_DIRECTORY", description)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _regular_read_open_flags(description: str) -> int:
+    # O_NONBLOCK lets fstat reject a substituted FIFO without waiting for a
+    # writer.  The descriptors captured here are only accepted as regular
+    # files after that inspection.
+    return (
+        os.O_RDONLY
+        | _required_open_flag("O_NOFOLLOW", description)
+        | _required_open_flag("O_NONBLOCK", description)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _regular_create_open_flags(description: str) -> int:
+    return (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | _required_open_flag("O_NOFOLLOW", description)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _close_descriptor_quietly(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _lexical_absolute_path(path: Path, description: str) -> Path:
+    """Make a path absolute without resolving any link component."""
+
+    try:
+        candidate = Path(path)
+    except (TypeError, ValueError) as exc:
+        raise M0Error(f"{description} has an unsafe path component") from exc
+    if "\0" in str(candidate) or any(
+        component == ".." for component in candidate.parts
+    ):
+        raise M0Error(f"{description} has an unsafe path component")
+    if not candidate.is_absolute():
+        try:
+            candidate = Path(os.getcwd()) / candidate
+        except OSError as exc:
+            raise M0Error(f"{description} cannot be made absolute") from exc
+    if not candidate.is_absolute() or not candidate.anchor:
+        raise M0Error(f"{description} is not an absolute path")
+    return candidate
+
+
+def _directory_identity_from_descriptor(
+    descriptor: int, description: str
+) -> _DirectoryIdentity:
+    try:
+        metadata = os.fstat(descriptor)
+    except OSError as exc:
+        raise M0Error(f"{description} cannot be inspected") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise M0Error(f"{description} is not a directory")
+    return _DirectoryIdentity(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+    )
+
+
+def _file_identity_from_descriptor(
+    descriptor: int,
+    description: str,
+    *,
+    maximum_bytes: int,
+) -> _FileIdentity:
+    try:
+        metadata = os.fstat(descriptor)
+    except OSError as exc:
+        raise M0Error(f"{description} cannot be inspected") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise M0Error(f"{description} must be a regular file")
+    if metadata.st_size <= 0 or metadata.st_size > maximum_bytes:
+        raise M0Error(f"{description} has an invalid size")
+    return _FileIdentity(
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        mode=metadata.st_mode,
+        size=metadata.st_size,
+        modification_time_ns=metadata.st_mtime_ns,
+        change_time_ns=metadata.st_ctime_ns,
+    )
+
+
+def _open_directory_no_follow(path: Path, description: str) -> int:
+    """Open every lexical directory component through no-follow descriptors."""
+
+    _require_dir_fd_support(description)
+    absolute_path = _lexical_absolute_path(path, description)
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            str(Path(absolute_path.anchor)), _directory_open_flags(description)
+        )
+        _directory_identity_from_descriptor(descriptor, description)
+        for component in absolute_path.parts[1:]:
+            if component in ("", ".", ".."):
+                raise M0Error(f"{description} has an unsafe path component")
+            next_descriptor = os.open(
+                component,
+                _directory_open_flags(description),
+                dir_fd=descriptor,
+            )
+            try:
+                _directory_identity_from_descriptor(next_descriptor, description)
+            except BaseException:
+                _close_descriptor_quietly(next_descriptor)
+                raise
+            _close_descriptor_quietly(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except (OSError, TypeError, ValueError) as exc:
+        _close_descriptor_quietly(descriptor)
+        raise M0Error(f"{description} cannot be opened safely") from exc
+    except BaseException:
+        _close_descriptor_quietly(descriptor)
+        raise
+
+
+def _open_regular_file_at(
+    root_descriptor: int,
+    name: str,
+    description: str,
+    *,
+    maximum_bytes: int,
+) -> int:
+    try:
+        descriptor = os.open(
+            name,
+            _regular_read_open_flags(description),
+            dir_fd=root_descriptor,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise M0Error(f"{description} cannot be opened safely") from exc
+    try:
+        _file_identity_from_descriptor(
+            descriptor, description, maximum_bytes=maximum_bytes
+        )
+    except BaseException:
+        _close_descriptor_quietly(descriptor)
+        raise
+    return descriptor
+
+
+def _read_exact_descriptor_bytes(
+    descriptor: int, description: str, *, expected_size: int
+) -> bytes:
+    """Read exactly one regular-file generation from an already-open fd."""
+
+    remaining = expected_size
+    chunks: list[bytes] = []
+    while remaining:
+        try:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+        except OSError as exc:
+            raise M0Error(f"{description} cannot be read") from exc
+        if not chunk:
+            raise M0Error(f"{description} changed while it was read")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    try:
+        trailing = os.read(descriptor, 1)
+    except OSError as exc:
+        raise M0Error(f"{description} cannot be read") from exc
+    if trailing:
+        raise M0Error(f"{description} changed while it was read")
+    return b"".join(chunks)
+
+
+def _capture_regular_file_from_root(
+    root_descriptor: int,
+    name: str,
+    description: str,
+    *,
+    maximum_bytes: int,
+) -> _StableFileCapture:
+    """Capture one direct leaf without reopening it by pathname."""
+
+    descriptor = _open_regular_file_at(
+        root_descriptor,
+        name,
+        description,
+        maximum_bytes=maximum_bytes,
+    )
+    try:
+        before = _file_identity_from_descriptor(
+            descriptor, description, maximum_bytes=maximum_bytes
+        )
+        contents = _read_exact_descriptor_bytes(
+            descriptor, description, expected_size=before.size
+        )
+        after = _file_identity_from_descriptor(
+            descriptor, description, maximum_bytes=maximum_bytes
+        )
+    finally:
+        _close_descriptor_quietly(descriptor)
+    if before != after or len(contents) != before.size:
+        raise M0Error(f"{description} changed while it was read")
+    return _StableFileCapture(contents=contents, identity=before)
+
+
+def _hash_regular_file_from_root(
+    root_descriptor: int,
+    name: str,
+    description: str,
+    *,
+    maximum_bytes: int,
+) -> tuple[dict[str, object], _FileIdentity]:
+    """Hash one output leaf through the descriptor that pins its root."""
+
+    descriptor = _open_regular_file_at(
+        root_descriptor,
+        name,
+        description,
+        maximum_bytes=maximum_bytes,
+    )
+    try:
+        before = _file_identity_from_descriptor(
+            descriptor, description, maximum_bytes=maximum_bytes
+        )
+        remaining = before.size
+        digest = hashlib.sha256()
+        byte_count = 0
+        while remaining:
+            try:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            except OSError as exc:
+                raise M0Error(f"{description} cannot be read") from exc
+            if not chunk:
+                raise M0Error(f"{description} changed while it was read")
+            digest.update(chunk)
+            byte_count += len(chunk)
+            remaining -= len(chunk)
+        try:
+            trailing = os.read(descriptor, 1)
+        except OSError as exc:
+            raise M0Error(f"{description} cannot be read") from exc
+        if trailing:
+            raise M0Error(f"{description} changed while it was read")
+        after = _file_identity_from_descriptor(
+            descriptor, description, maximum_bytes=maximum_bytes
+        )
+    finally:
+        _close_descriptor_quietly(descriptor)
+    if before != after or byte_count != before.size:
+        raise M0Error(f"{description} changed while it was read")
+    return {"bytes": byte_count, "sha256": digest.hexdigest()}, before
+
+
+def _current_regular_file_identity_from_root(
+    root_descriptor: int,
+    name: str,
+    description: str,
+    *,
+    maximum_bytes: int,
+) -> _FileIdentity:
+    descriptor = _open_regular_file_at(
+        root_descriptor,
+        name,
+        description,
+        maximum_bytes=maximum_bytes,
+    )
+    try:
+        return _file_identity_from_descriptor(
+            descriptor, description, maximum_bytes=maximum_bytes
+        )
+    finally:
+        _close_descriptor_quietly(descriptor)
 
 
 def _require_executable(path: Path, description: str) -> Path:
@@ -883,21 +1201,59 @@ def require_exact_generated_gn_args(
 
 
 def _capture_module_artifacts(out_dir: Path) -> _ModuleArtifactsCapture:
-    """Hash both module artifacts through one descriptor-pinned directory."""
+    """Hash both module leaves and retain the descriptor-pinned root identity.
+
+    The resulting root identity is later required by the attestation writer.
+    That prevents a freshly-created record from being placed into a different
+    output directory than the one whose artifacts supplied its hashes.
+    """
 
     names = (f"{MODULE_NAME}.js", f"{MODULE_NAME}.wasm")
-    captures = hash_regular_files(
-        out_dir,
-        names,
-        maximum_bytes=MAX_ARTIFACT_BYTES,
-        description="Chrome Wasm module artifacts",
-    )
-    return _ModuleArtifactsCapture(
-        records={name: captures[name].byte_identity() for name in names},
-        identities={
-            name: _file_identity_from_pinned_identity(captures[name].pinned_identity)
+    description = "Chrome Wasm module artifacts"
+    root_descriptor = _open_directory_no_follow(out_dir, description)
+    try:
+        output_directory_identity = _directory_identity_from_descriptor(
+            root_descriptor, description
+        )
+        captures = {
+            name: _hash_regular_file_from_root(
+                root_descriptor,
+                name,
+                f"{description} {name}",
+                maximum_bytes=MAX_ARTIFACT_BYTES,
+            )
             for name in names
-        },
+        }
+        identities = {name: capture[1] for name, capture in captures.items()}
+        current = {
+            name: _current_regular_file_identity_from_root(
+                root_descriptor,
+                name,
+                f"{description} {name}",
+                maximum_bytes=MAX_ARTIFACT_BYTES,
+            )
+            for name in names
+        }
+        # Reopen the lexical output path before releasing the descriptor that
+        # supplied the hashes.  This catches a cooperative workspace swap
+        # during capture without making a hostile-filesystem atomicity claim.
+        current_root_descriptor = _open_directory_no_follow(out_dir, description)
+        try:
+            current_output_directory_identity = _directory_identity_from_descriptor(
+                current_root_descriptor, description
+            )
+        finally:
+            _close_descriptor_quietly(current_root_descriptor)
+    finally:
+        _close_descriptor_quietly(root_descriptor)
+    if identities != current:
+        raise M0Error(f"{description} changed while snapshotting")
+    if current_output_directory_identity != output_directory_identity:
+        raise M0Error(f"{description} output directory changed while snapshotting")
+    return _ModuleArtifactsCapture(
+        records={name: captures[name][0] for name in names},
+        identities=identities,
+        output_directory_identity=output_directory_identity,
     )
 
 
@@ -941,10 +1297,6 @@ def _require_bootstrap_marker(result: subprocess.CompletedProcess[str]) -> None:
     output = result.stdout if isinstance(result.stdout, str) else ""
     if sum(line == BOOTSTRAP_MARKER for line in output.splitlines()) != 1:
         raise M0Error("pinned M3 bootstrap did not emit its exact pass marker")
-
-
-def _require_generated_out_dir(out_dir: Path) -> None:
-    _require_real_directory(out_dir, "fresh clean-build output directory")
 
 
 def make_attestation(
@@ -1028,57 +1380,178 @@ def make_attestation(
     }
 
 
-def _capture_written_attestation(
-    path: Path, expected_contents: bytes
-) -> WrittenAttestation:
-    """Require the just-written path to still be the exact expected file."""
+def _capture_written_attestation_from_root(
+    root_descriptor: int, expected_contents: bytes
+) -> _StableFileCapture:
+    """Read the record through its already-pinned output directory fd."""
 
-    capture = _capture_stable_file(
-        path,
+    capture = _capture_regular_file_from_root(
+        root_descriptor,
+        ATTESTATION_FILENAME,
         "clean-build attestation",
         maximum_bytes=MAX_GN_ARGS_BYTES,
     )
     if capture.contents != expected_contents:
         raise M0Error("clean-build attestation changed while it was written")
-    return WrittenAttestation(
-        path=path,
-        contents=capture.contents,
-        identity=capture.identity,
+    return capture
+
+
+def _capture_created_attestation_from_descriptor(
+    descriptor: int, expected_contents: bytes
+) -> _StableFileCapture:
+    """Read back the freshly-created leaf without reopening its pathname."""
+
+    description = "clean-build attestation"
+    try:
+        before = _file_identity_from_descriptor(
+            descriptor, description, maximum_bytes=MAX_GN_ARGS_BYTES
+        )
+        if before.size != len(expected_contents):
+            raise M0Error("clean-build attestation changed while it was written")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+    except OSError as exc:
+        raise M0Error(f"{description} cannot be read") from exc
+    contents = _read_exact_descriptor_bytes(
+        descriptor, description, expected_size=before.size
     )
+    after = _file_identity_from_descriptor(
+        descriptor, description, maximum_bytes=MAX_GN_ARGS_BYTES
+    )
+    if (
+        before != after
+        or contents != expected_contents
+        or len(contents) != before.size
+    ):
+        raise M0Error("clean-build attestation changed while it was written")
+    return _StableFileCapture(contents=contents, identity=before)
+
+
+def _validated_expected_output_directory_identity(
+    value: _DirectoryIdentity | None,
+) -> _DirectoryIdentity | None:
+    if value is not None and type(value) is not _DirectoryIdentity:
+        raise M0Error("clean-build attestation output directory identity is invalid")
+    return value
 
 
 def verify_written_attestation(written: WrittenAttestation) -> None:
-    """Verify the final record still has its original identity and bytes."""
+    """Verify the original root and leaf through no-follow descriptors."""
 
     try:
-        observed = _capture_written_attestation(written.path, written.contents)
+        if type(written) is not WrittenAttestation:
+            raise M0Error("clean-build attestation written record is invalid")
+        if written.path.name != ATTESTATION_FILENAME:
+            raise M0Error("clean-build attestation written record is invalid")
+        expected_root = _validated_expected_output_directory_identity(
+            written.output_directory_identity
+        )
+        assert expected_root is not None
+        root_descriptor = _open_directory_no_follow(
+            written.path.parent, "clean-build attestation output directory"
+        )
+        try:
+            observed_root = _directory_identity_from_descriptor(
+                root_descriptor, "clean-build attestation output directory"
+            )
+            if observed_root != expected_root:
+                raise M0Error("clean-build attestation output directory changed")
+            observed = _capture_written_attestation_from_root(
+                root_descriptor, written.contents
+            )
+        finally:
+            _close_descriptor_quietly(root_descriptor)
     except M0Error as exc:
         raise M0Error("clean-build attestation changed after it was written") from exc
-    if (
-        observed.identity != written.identity
-        or observed.contents != written.contents
-    ):
+    if observed.identity != written.identity or observed.contents != written.contents:
         raise M0Error("clean-build attestation changed after it was written")
 
 
-def write_attestation(
-    out_dir: Path, attestation: dict[str, object]
-) -> WrittenAttestation:
-    """Create one canonical result without replacing a pre-existing record."""
+def _write_all_descriptor_bytes(
+    descriptor: int, contents: bytes, description: str
+) -> None:
+    view = memoryview(contents)
+    while view:
+        try:
+            written = os.write(descriptor, view)
+        except OSError as exc:
+            raise M0Error(f"could not write {description}") from exc
+        if written <= 0:
+            raise M0Error(f"could not write {description}")
+        view = view[written:]
 
-    _require_generated_out_dir(out_dir)
-    destination = out_dir / ATTESTATION_FILENAME
-    if os.path.lexists(destination):
-        raise M0Error(f"clean-build attestation already exists: {destination}")
+
+def write_attestation(
+    out_dir: Path,
+    attestation: dict[str, object],
+    *,
+    expected_output_directory_identity: _DirectoryIdentity | None = None,
+) -> WrittenAttestation:
+    """Create one canonical record through the artifact-captured root fd.
+
+    ``expected_output_directory_identity`` is supplied by the module-artifact
+    capture during the full workflow.  A direct caller still gets safe
+    descriptor creation, but cannot claim that it bound an earlier artifact
+    capture unless it supplies that private identity.
+    """
+
     encoded = _canonical_json_bytes(attestation)
+    if not encoded or len(encoded) > MAX_GN_ARGS_BYTES:
+        raise M0Error("clean-build attestation has an invalid size")
+    expected_root = _validated_expected_output_directory_identity(
+        expected_output_directory_identity
+    )
+    destination = out_dir / ATTESTATION_FILENAME
+    root_descriptor = _open_directory_no_follow(
+        out_dir, "clean-build attestation output directory"
+    )
     try:
-        with destination.open("xb") as output_file:
-            output_file.write(encoded)
-            output_file.flush()
-            os.fsync(output_file.fileno())
-    except OSError as exc:
-        raise M0Error(f"could not write clean-build attestation: {destination}") from exc
-    return _capture_written_attestation(destination, encoded)
+        output_directory_identity = _directory_identity_from_descriptor(
+            root_descriptor, "clean-build attestation output directory"
+        )
+        if (
+            expected_root is not None
+            and output_directory_identity != expected_root
+        ):
+            raise M0Error(
+                "clean-build attestation output directory changed before record "
+                "creation"
+            )
+        try:
+            descriptor = os.open(
+                ATTESTATION_FILENAME,
+                _regular_create_open_flags("clean-build attestation"),
+                0o600,
+                dir_fd=root_descriptor,
+            )
+        except FileExistsError as exc:
+            raise M0Error(
+                f"clean-build attestation already exists: {destination}"
+            ) from exc
+        except (OSError, TypeError, ValueError) as exc:
+            raise M0Error(
+                f"could not create clean-build attestation: {destination}"
+            ) from exc
+        try:
+            _write_all_descriptor_bytes(
+                descriptor, encoded, "clean-build attestation"
+            )
+            try:
+                os.fsync(descriptor)
+            except OSError as exc:
+                raise M0Error(
+                    f"could not write clean-build attestation: {destination}"
+                ) from exc
+            capture = _capture_created_attestation_from_descriptor(descriptor, encoded)
+        finally:
+            _close_descriptor_quietly(descriptor)
+    finally:
+        _close_descriptor_quietly(root_descriptor)
+    return WrittenAttestation(
+        path=destination,
+        contents=capture.contents,
+        output_directory_identity=output_directory_identity,
+        identity=capture.identity,
+    )
 
 
 def run_clean_build_attestation(out_dir: Path) -> tuple[dict[str, object], Path]:
@@ -1144,7 +1617,13 @@ def run_clean_build_attestation(out_dir: Path) -> tuple[dict[str, object], Path]
         artifacts=final_artifacts_capture.records,
         out_dir=resolved_out_dir,
     )
-    written = write_attestation(resolved_out_dir, attestation)
+    written = write_attestation(
+        resolved_out_dir,
+        attestation,
+        expected_output_directory_identity=(
+            final_artifacts_capture.output_directory_identity
+        ),
+    )
     # The output tree is ignored by the top-level checkout.  Recheck after
     # writing to refuse a source mutation racing the final record creation.
     # On failure the record is intentionally retained; pathname cleanup could

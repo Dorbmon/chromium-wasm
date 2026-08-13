@@ -24,7 +24,7 @@ from tools.wasm import m0_common
 from tools.wasm import run_m9_clean_build_attestation as attestation
 
 
-descriptor_snapshot = sys.modules[attestation.hash_regular_files.__module__]
+descriptor_snapshot = sys.modules[attestation.hash_regular_file.__module__]
 
 
 CHECKOUT = {"commit": "a" * 40, "tree": "b" * 40}
@@ -92,6 +92,14 @@ def file_identity(marker: int = 1) -> attestation._FileIdentity:
     )
 
 
+def directory_identity(marker: int = 1) -> attestation._DirectoryIdentity:
+    return attestation._DirectoryIdentity(
+        device=marker,
+        inode=marker + 1,
+        mode=0o40755,
+    )
+
+
 def manifest_capture(marker: int = 1) -> attestation._ManifestCapture:
     return attestation._ManifestCapture(
         manifest=manifest_data(),
@@ -109,6 +117,7 @@ def module_artifacts_capture(
             "chrome_wasm.js": file_identity(marker),
             "chrome_wasm.wasm": file_identity(marker + 10),
         },
+        output_directory_identity=directory_identity(marker + 20),
     )
 
 
@@ -424,33 +433,31 @@ class CleanBuildArtifactTest(unittest.TestCase):
                 attestation.stable_file_record(artifact, "test artifact")
         self.assertTrue(changed)
 
-    def test_module_artifact_records_use_one_grouped_descriptor_hash(self) -> None:
+    def test_module_artifact_capture_retains_the_descriptor_pinned_root(self) -> None:
         out_dir = self.directory / "out"
         out_dir.mkdir()
         loader = out_dir / "chrome_wasm.js"
         module = out_dir / "chrome_wasm.wasm"
         loader.write_bytes(b"loader")
         module.write_bytes(b"module")
-        original_hashes = attestation.hash_regular_files
+        capture = attestation._capture_module_artifacts(out_dir)
 
-        with mock.patch.object(
-            attestation, "hash_regular_files", wraps=original_hashes
-        ) as grouped_hashes:
-            records = attestation.module_artifact_records(out_dir)
-
-        grouped_hashes.assert_called_once_with(
-            out_dir,
-            ("chrome_wasm.js", "chrome_wasm.wasm"),
-            maximum_bytes=attestation.MAX_ARTIFACT_BYTES,
-            description="Chrome Wasm module artifacts",
+        metadata = out_dir.stat()
+        self.assertEqual(
+            attestation._DirectoryIdentity(
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+                mode=metadata.st_mode,
+            ),
+            capture.output_directory_identity,
         )
         self.assertEqual(
             hashlib.sha256(b"loader").hexdigest(),
-            records["chrome_wasm.js"]["sha256"],
+            capture.records["chrome_wasm.js"]["sha256"],
         )
         self.assertEqual(
             hashlib.sha256(b"module").hexdigest(),
-            records["chrome_wasm.wasm"]["sha256"],
+            capture.records["chrome_wasm.wasm"]["sha256"],
         )
 
     def test_module_artifact_records_reject_leaf_swap_before_group_revalidation(
@@ -468,7 +475,7 @@ class CleanBuildArtifactTest(unittest.TestCase):
                     (out_dir / "chrome_wasm.wasm").write_bytes(b"module")
                 else:
                     (out_dir / "chrome_wasm.js").write_bytes(b"loader")
-                original_hash = descriptor_snapshot._hash_file_from_root
+                original_hash = attestation._hash_regular_file_from_root
                 replaced = False
 
                 def hash_then_replace(*args: object, **kwargs: object) -> object:
@@ -481,8 +488,8 @@ class CleanBuildArtifactTest(unittest.TestCase):
                     return capture
 
                 with mock.patch.object(
-                    descriptor_snapshot,
-                    "_hash_file_from_root",
+                    attestation,
+                    "_hash_regular_file_from_root",
                     side_effect=hash_then_replace,
                 ):
                     with self.assertRaisesRegex(
@@ -490,6 +497,37 @@ class CleanBuildArtifactTest(unittest.TestCase):
                     ):
                         attestation.module_artifact_records(out_dir)
                 self.assertTrue(replaced)
+
+    def test_module_artifact_capture_rejects_output_directory_swap(self) -> None:
+        out_dir = self.directory / "out"
+        out_dir.mkdir()
+        out_dir.joinpath("chrome_wasm.js").write_bytes(b"loader")
+        out_dir.joinpath("chrome_wasm.wasm").write_bytes(b"module")
+        retained = self.directory / "retained-output"
+        original_hash = attestation._hash_regular_file_from_root
+        swapped = False
+
+        def hash_then_swap(*args: object, **kwargs: object) -> object:
+            nonlocal swapped
+            capture = original_hash(*args, **kwargs)
+            if not swapped:
+                swapped = True
+                out_dir.rename(retained)
+                out_dir.mkdir()
+                out_dir.joinpath("chrome_wasm.js").write_bytes(b"replacement loader")
+                out_dir.joinpath("chrome_wasm.wasm").write_bytes(b"replacement module")
+            return capture
+
+        with mock.patch.object(
+            attestation,
+            "_hash_regular_file_from_root",
+            side_effect=hash_then_swap,
+        ):
+            with self.assertRaisesRegex(
+                attestation.M0Error, "output directory changed while snapshotting"
+            ):
+                attestation._capture_module_artifacts(out_dir)
+        self.assertTrue(swapped)
 
     def test_exact_gn_args_are_required_before_and_after_build(self) -> None:
         expected = b"is_debug = false\n"
@@ -567,6 +605,19 @@ class CleanBuildAttestationSchemaTest(unittest.TestCase):
         self.root_patch.stop()
         self.temporary_directory.cleanup()
 
+    def _record(self) -> dict[str, object]:
+        return attestation.make_attestation(
+            checkout=CHECKOUT,
+            manifest=MANIFEST_IDENTITY,
+            gn_args=gn_args_record(),
+            artifacts=artifact_records(),
+            out_dir=self.out_dir,
+        )
+
+    def _write_module_artifacts(self, out_dir: Path) -> None:
+        out_dir.joinpath("chrome_wasm.js").write_bytes(b"loader")
+        out_dir.joinpath("chrome_wasm.wasm").write_bytes(b"module")
+
     def test_canonical_record_binds_tree_manifest_args_and_module_hashes(self) -> None:
         record = attestation.make_attestation(
             checkout=CHECKOUT,
@@ -612,29 +663,136 @@ class CleanBuildAttestationSchemaTest(unittest.TestCase):
             )
 
     def test_write_is_canonical_and_never_replaces_an_existing_record(self) -> None:
-        record = attestation.make_attestation(
-            checkout=CHECKOUT,
-            manifest=MANIFEST_IDENTITY,
-            gn_args=gn_args_record(),
-            artifacts=artifact_records(),
-            out_dir=self.out_dir,
-        )
+        record = self._record()
         written = attestation.write_attestation(self.out_dir, record)
         self.assertEqual(
             attestation._canonical_json_bytes(record), written.path.read_bytes()
+        )
+        output_metadata = self.out_dir.stat()
+        self.assertEqual(
+            attestation._DirectoryIdentity(
+                device=output_metadata.st_dev,
+                inode=output_metadata.st_ino,
+                mode=output_metadata.st_mode,
+            ),
+            written.output_directory_identity,
         )
         attestation.verify_written_attestation(written)
         with self.assertRaisesRegex(attestation.M0Error, "already exists"):
             attestation.write_attestation(self.out_dir, record)
 
-    def test_post_write_identity_rejects_and_preserves_a_replacement(self) -> None:
-        record = attestation.make_attestation(
-            checkout=CHECKOUT,
-            manifest=MANIFEST_IDENTITY,
-            gn_args=gn_args_record(),
-            artifacts=artifact_records(),
-            out_dir=self.out_dir,
+    def test_writer_uses_descriptor_create_and_readback_without_pathname_open(
+        self,
+    ) -> None:
+        record = self._record()
+        original_open = os.open
+        opens: list[tuple[object, int, int | None]] = []
+
+        def traced_open(
+            path: object,
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            opens.append((path, flags, dir_fd))
+            if dir_fd is None:
+                return original_open(path, flags, mode)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with (
+            mock.patch.object(
+                Path,
+                "open",
+                side_effect=AssertionError("attestation must not use pathname open"),
+            ),
+            mock.patch.object(attestation, "_require_dir_fd_support"),
+            mock.patch.object(attestation.os, "open", side_effect=traced_open),
+        ):
+            written = attestation.write_attestation(self.out_dir, record)
+            attestation.verify_written_attestation(written)
+        creation = [
+            call
+            for call in opens
+            if call[0] == attestation.ATTESTATION_FILENAME and call[1] & os.O_CREAT
+        ]
+        self.assertEqual(1, len(creation))
+        _, flags, directory_descriptor = creation[0]
+        self.assertIsNotNone(directory_descriptor)
+        self.assertTrue(flags & os.O_CREAT)
+        self.assertTrue(flags & os.O_EXCL)
+        self.assertTrue(flags & os.O_NOFOLLOW)
+        self.assertEqual(
+            attestation._canonical_json_bytes(record), written.contents
         )
+
+    def test_writer_rejects_output_directory_swap_from_artifact_capture(self) -> None:
+        self._write_module_artifacts(self.out_dir)
+        capture = attestation._capture_module_artifacts(self.out_dir)
+        retained = self.root / "retained-output"
+        self.out_dir.rename(retained)
+        self.out_dir.mkdir()
+        self._write_module_artifacts(self.out_dir)
+
+        with self.assertRaisesRegex(
+            attestation.M0Error, "output directory changed before record creation"
+        ):
+            attestation.write_attestation(
+                self.out_dir,
+                self._record(),
+                expected_output_directory_identity=(
+                    capture.output_directory_identity
+                ),
+            )
+        self.assertFalse((self.out_dir / attestation.ATTESTATION_FILENAME).exists())
+        self.assertFalse((retained / attestation.ATTESTATION_FILENAME).exists())
+
+    def test_writer_rejects_parent_directory_swap_from_artifact_capture(self) -> None:
+        self._write_module_artifacts(self.out_dir)
+        capture = attestation._capture_module_artifacts(self.out_dir)
+        output_parent = self.root / "out"
+        retained_parent = self.root / "retained-out"
+        output_parent.rename(retained_parent)
+        self.out_dir.parent.mkdir()
+        self.out_dir.mkdir()
+        self._write_module_artifacts(self.out_dir)
+
+        with self.assertRaisesRegex(
+            attestation.M0Error, "output directory changed before record creation"
+        ):
+            attestation.write_attestation(
+                self.out_dir,
+                self._record(),
+                expected_output_directory_identity=(
+                    capture.output_directory_identity
+                ),
+            )
+        self.assertFalse((self.out_dir / attestation.ATTESTATION_FILENAME).exists())
+        self.assertFalse(
+            (retained_parent / "fresh" / attestation.ATTESTATION_FILENAME).exists()
+        )
+
+    def test_writer_rejects_existing_symlink_or_fifo_leaf(self) -> None:
+        target = self.root / "outside-record"
+        target.write_bytes(b"outside")
+        for kind in ("symlink", "fifo"):
+            with self.subTest(kind=kind):
+                destination = self.out_dir / attestation.ATTESTATION_FILENAME
+                if kind == "symlink":
+                    destination.symlink_to(target)
+                else:
+                    if not hasattr(os, "mkfifo"):
+                        self.skipTest("host lacks FIFO support")
+                    os.mkfifo(destination)
+                with self.assertRaisesRegex(attestation.M0Error, "already exists"):
+                    attestation.write_attestation(self.out_dir, self._record())
+                self.assertTrue(os.path.lexists(destination))
+                if kind == "symlink":
+                    self.assertEqual(b"outside", target.read_bytes())
+                destination.unlink()
+
+    def test_post_write_identity_rejects_and_preserves_a_replacement(self) -> None:
+        record = self._record()
         written = attestation.write_attestation(self.out_dir, record)
         written.path.unlink()
         written.path.write_bytes(b"replacement record")
@@ -646,13 +804,7 @@ class CleanBuildAttestationSchemaTest(unittest.TestCase):
         )
 
     def test_post_write_identity_rejects_same_inode_mutate_restore(self) -> None:
-        record = attestation.make_attestation(
-            checkout=CHECKOUT,
-            manifest=MANIFEST_IDENTITY,
-            gn_args=gn_args_record(),
-            artifacts=artifact_records(),
-            out_dir=self.out_dir,
-        )
+        record = self._record()
         written = attestation.write_attestation(self.out_dir, record)
         before = written.path.stat()
         time.sleep(0.01)
@@ -671,6 +823,54 @@ class CleanBuildAttestationSchemaTest(unittest.TestCase):
         self.assertEqual(before.st_ctime_ns, written.identity.change_time_ns)
         with self.assertRaisesRegex(attestation.M0Error, "changed after"):
             attestation.verify_written_attestation(written)
+
+    def test_verify_rejects_output_or_parent_directory_replacement(self) -> None:
+        for kind in ("output", "parent"):
+            with self.subTest(kind=kind):
+                temporary_directory = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary_directory.cleanup)
+                root = Path(temporary_directory.name) / "checkout"
+                out_dir = root / "out" / "fresh"
+                out_dir.mkdir(parents=True)
+                with mock.patch.object(attestation, "REPO_ROOT", root):
+                    record = attestation.make_attestation(
+                        checkout=CHECKOUT,
+                        manifest=MANIFEST_IDENTITY,
+                        gn_args=gn_args_record(),
+                        artifacts=artifact_records(),
+                        out_dir=out_dir,
+                    )
+                    written = attestation.write_attestation(out_dir, record)
+                    if kind == "output":
+                        out_dir.rename(root / "retained-output")
+                        out_dir.mkdir()
+                    else:
+                        out_dir.parent.rename(root / "retained-parent")
+                        out_dir.parent.mkdir()
+                        out_dir.mkdir()
+                    (out_dir / attestation.ATTESTATION_FILENAME).write_bytes(
+                        written.contents
+                    )
+                    with self.assertRaisesRegex(attestation.M0Error, "changed after"):
+                        attestation.verify_written_attestation(written)
+
+    def test_verify_rejects_symlink_or_fifo_leaf_replacement(self) -> None:
+        target = self.root / "outside-record"
+        target.write_bytes(b"outside")
+        for kind in ("symlink", "fifo"):
+            with self.subTest(kind=kind):
+                written = attestation.write_attestation(self.out_dir, self._record())
+                written.path.unlink()
+                if kind == "symlink":
+                    written.path.symlink_to(target)
+                else:
+                    if not hasattr(os, "mkfifo"):
+                        self.skipTest("host lacks FIFO support")
+                    os.mkfifo(written.path)
+                with self.assertRaisesRegex(attestation.M0Error, "changed after"):
+                    attestation.verify_written_attestation(written)
+                self.assertTrue(os.path.lexists(written.path))
+                written.path.unlink()
 
 
 class CleanBuildWorkflowTest(unittest.TestCase):
@@ -1023,10 +1223,21 @@ class CleanBuildWorkflowTest(unittest.TestCase):
                 changed = False
 
                 def write_then_mutate(
-                    destination_dir: Path, record: dict[str, object]
+                    destination_dir: Path,
+                    record: dict[str, object],
+                    *,
+                    expected_output_directory_identity: (
+                        attestation._DirectoryIdentity | None
+                    ) = None,
                 ) -> attestation.WrittenAttestation:
                     nonlocal changed
-                    written = real_write_attestation(destination_dir, record)
+                    written = real_write_attestation(
+                        destination_dir,
+                        record,
+                        expected_output_directory_identity=(
+                            expected_output_directory_identity
+                        ),
+                    )
                     path = (
                         manifest_path
                         if name == "manifest"
