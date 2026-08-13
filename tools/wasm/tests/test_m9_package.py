@@ -10,15 +10,23 @@ import os
 from pathlib import Path
 import socket
 import tempfile
+import threading
 import unittest
 from copy import deepcopy
 from typing import Callable
 from unittest import mock
+from urllib.request import urlopen
 
 from tools.wasm import package
 from tools.wasm import run_m9_package_browser_smoke as package_browser_smoke
+from tools.wasm import run_m9_package_smoke as package_smoke
 from tools.wasm.m0_common import M0Error, REPO_ROOT, load_manifest
-from tools.wasm.run_m9_package_smoke import package_response, run_package_smoke
+from tools.wasm.run_m9_package_smoke import (
+    create_package_smoke_server,
+    package_response,
+    run_package_smoke,
+    snapshot_package_tree,
+)
 
 
 PORT_REVISION = "a" * 40
@@ -534,6 +542,8 @@ class M9PackageTest(unittest.TestCase):
 
     def test_static_package_response_contract(self) -> None:
         dist_dir = self._stage()
+        snapshot = snapshot_package_tree(dist_dir)
+        self.assertEqual(package.PACKAGE_PATHS, set(snapshot.artifacts))
         for request_path, expected_mime in {
             "/": "text/html; charset=utf-8",
             "/chromium-wasm.js": "text/javascript; charset=utf-8",
@@ -541,13 +551,309 @@ class M9PackageTest(unittest.TestCase):
             "/VERSION.json": "application/json; charset=utf-8",
         }.items():
             with self.subTest(request_path=request_path):
-                status, content_type, body = package_response(dist_dir, request_path)
+                status, content_type, body = package_response(
+                    snapshot.artifacts, request_path
+                )
                 self.assertEqual(200, status)
                 self.assertEqual(expected_mime, content_type)
                 self.assertTrue(body)
         self.assertEqual(
-            404, package_response(dist_dir, "/../VERSION.json")[0]
+            404, package_response(snapshot.artifacts, "/../VERSION.json")[0]
         )
+
+    def test_package_snapshot_rejects_artifact_replacement_during_capture(self) -> None:
+        dist_dir = self._stage()
+        original_read = package_smoke._read_snapshot_file
+        replaced = False
+
+        def replace_after_copy(
+            root_fd: int, relative: str, description: str
+        ) -> tuple[bytes, package_smoke.ArtifactIdentity]:
+            nonlocal replaced
+            capture = original_read(root_fd, relative, description)
+            if relative == "chromium-wasm.js" and not replaced:
+                replacement = dist_dir / ".chromium-wasm.js.replacement"
+                replacement.write_bytes(capture[0])
+                replacement.replace(dist_dir / relative)
+                replaced = True
+            return capture
+
+        with mock.patch.object(
+            package_smoke,
+            "_read_snapshot_file",
+            side_effect=replace_after_copy,
+        ), self.assertRaisesRegex(M0Error, "changed while it was snapshotted"):
+            snapshot_package_tree(dist_dir)
+        self.assertTrue(replaced)
+        self.assertTrue(package.verify_release_tree(dist_dir))
+
+    def test_package_snapshot_rejects_symlink_swap_before_fd_open(self) -> None:
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("host does not expose O_NOFOLLOW")
+
+        dist_dir = self._stage()
+        loader = dist_dir / "chromium-wasm.js"
+        outside = self.root / "outside-loader.js"
+        outside.write_bytes(b"outside-package-loader")
+        original_open = os.open
+        replaced = False
+
+        def replace_before_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal replaced
+            if path == "chromium-wasm.js" and dir_fd is not None and not replaced:
+                loader.unlink()
+                loader.symlink_to(outside)
+                replaced = True
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(
+            package_smoke.os,
+            "open",
+            side_effect=replace_before_open,
+        ), self.assertRaisesRegex(M0Error, "cannot be opened safely"):
+            snapshot_package_tree(dist_dir)
+        self.assertTrue(replaced)
+
+    def test_package_snapshot_rejects_fifo_swap_without_blocking(self) -> None:
+        if not hasattr(os, "O_NONBLOCK") or not hasattr(os, "mkfifo"):
+            self.skipTest("host does not expose O_NONBLOCK FIFO support")
+
+        dist_dir = self._stage()
+        loader = dist_dir / "chromium-wasm.js"
+        original_open = os.open
+        replaced = False
+        observed_flags: int | None = None
+
+        def replace_with_fifo_before_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal observed_flags, replaced
+            if path == "chromium-wasm.js" and dir_fd is not None and not replaced:
+                observed_flags = flags
+                if not flags & os.O_NONBLOCK:
+                    raise AssertionError("artifact open must be nonblocking")
+                loader.unlink()
+                os.mkfifo(loader)
+                replaced = True
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(
+            package_smoke.os,
+            "open",
+            side_effect=replace_with_fifo_before_open,
+        ), self.assertRaisesRegex(M0Error, "is not a regular file"):
+            snapshot_package_tree(dist_dir)
+
+        self.assertTrue(replaced)
+        if observed_flags is None:
+            self.fail("FIFO replacement did not observe final artifact flags")
+        self.assertNotEqual(0, observed_flags & os.O_NONBLOCK)
+        self.assertEqual(
+            0,
+            package_smoke._no_follow_open_flags(directory=True) & os.O_NONBLOCK,
+        )
+
+    def test_package_snapshot_requires_nonblocking_artifact_open_support(self) -> None:
+        with mock.patch.object(package_smoke.os, "O_NONBLOCK", 0):
+            with self.assertRaisesRegex(M0Error, "O_NONBLOCK"):
+                package_smoke._no_follow_open_flags(directory=False)
+
+    def test_package_snapshot_rejects_symlinked_root_during_fd_walk(self) -> None:
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("host does not expose O_NOFOLLOW")
+
+        dist_dir = self._stage()
+        saved_root = self.root / "saved-package-root"
+        outside_root = self.root / "outside-package-root"
+        outside_root.mkdir()
+        original_open = os.open
+        replaced = False
+
+        def replace_root_before_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal replaced
+            if path == dist_dir.name and dir_fd is not None and not replaced:
+                dist_dir.rename(saved_root)
+                dist_dir.symlink_to(outside_root, target_is_directory=True)
+                replaced = True
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(
+            package_smoke.os,
+            "open",
+            side_effect=replace_root_before_open,
+        ), self.assertRaisesRegex(M0Error, "root directory cannot be opened safely"):
+            snapshot_package_tree(dist_dir)
+        self.assertTrue(replaced)
+
+    def test_package_snapshot_rejects_symlinked_intermediate_during_fd_walk(
+        self,
+    ) -> None:
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("host does not expose O_NOFOLLOW")
+
+        dist_dir = self._stage()
+        licenses = dist_dir / "LICENSES"
+        saved_licenses = dist_dir / "saved-LICENSES"
+        outside_licenses = self.root / "outside-LICENSES"
+        outside_licenses.mkdir()
+        original_open = os.open
+        replaced = False
+
+        def replace_intermediate_before_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal replaced
+            if path == "LICENSES" and dir_fd is not None and not replaced:
+                licenses.rename(saved_licenses)
+                licenses.symlink_to(outside_licenses, target_is_directory=True)
+                replaced = True
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with mock.patch.object(
+            package_smoke.os,
+            "open",
+            side_effect=replace_intermediate_before_open,
+        ), self.assertRaisesRegex(M0Error, "cannot be opened safely"):
+            snapshot_package_tree(dist_dir)
+        self.assertTrue(replaced)
+
+    def test_package_snapshot_uses_captured_bytes_verifier(self) -> None:
+        dist_dir = self._stage()
+        with mock.patch.object(
+            package_smoke,
+            "verify_release_snapshot",
+            wraps=package_smoke.verify_release_snapshot,
+        ) as verify:
+            snapshot = snapshot_package_tree(dist_dir)
+
+        self.assertEqual(1, verify.call_count)
+        self.assertEqual(
+            "pre_m7_m8_not_releasable", snapshot.verification["release_status"]
+        )
+        self.assertNotIn("dist_dir", snapshot.verification)
+        runner_source = (
+            REPO_ROOT / "tools/wasm/run_m9_package_smoke.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("verify_release_tree", runner_source)
+
+    def test_captured_bytes_verifier_rejects_true_m8_gate(self) -> None:
+        snapshot = snapshot_package_tree(self._stage())
+        artifacts = dict(snapshot.artifacts)
+        version = json.loads(artifacts["VERSION.json"].decode("utf-8"))
+        version["gate_state"]["m8_complete"] = True
+        artifacts["VERSION.json"] = package._canonical_json(version)
+
+        with self.assertRaisesRegex(package.PackageError, "gate state"):
+            package.verify_release_snapshot(artifacts)
+
+    def test_package_snapshot_rejects_captured_true_m8_gate(self) -> None:
+        dist_dir = self._stage()
+        original_read = package_smoke._read_snapshot_file
+        replaced = False
+
+        def capture_true_m8_gate(
+            root_fd: int, relative: str, description: str
+        ) -> tuple[bytes, package_smoke.ArtifactIdentity]:
+            nonlocal replaced
+            capture = original_read(root_fd, relative, description)
+            if relative != "VERSION.json" or replaced:
+                return capture
+            version = json.loads(capture[0].decode("utf-8"))
+            version["gate_state"]["m8_complete"] = True
+            version["known_limitations"][0] += "x"
+            replacement = package._canonical_json(version)
+            self.assertEqual(len(capture[0]), len(replacement))
+            replaced = True
+            return replacement, capture[1]
+
+        with mock.patch.object(
+            package_smoke,
+            "_read_snapshot_file",
+            side_effect=capture_true_m8_gate,
+        ), self.assertRaisesRegex(M0Error, "gate state"):
+            snapshot_package_tree(dist_dir)
+        self.assertTrue(replaced)
+
+    def test_package_snapshot_rejects_duplicate_captured_version_json_keys(self) -> None:
+        snapshot = snapshot_package_tree(self._stage())
+        duplicate_version = b'{"artifacts":[],"artifacts":[]}'
+        artifacts = dict(snapshot.artifacts)
+        artifacts["VERSION.json"] = duplicate_version
+
+        with self.assertRaisesRegex(package.PackageError, "duplicate JSON object key"):
+            package.verify_release_snapshot(artifacts)
+
+    def test_package_smoke_closes_server_when_thread_start_fails(self) -> None:
+        snapshot = snapshot_package_tree(self._stage())
+        server = mock.Mock()
+        server.snapshot = snapshot
+        thread = mock.Mock()
+        thread.start.side_effect = RuntimeError("thread start failed")
+
+        with mock.patch.object(
+            package_smoke,
+            "create_package_smoke_server",
+            return_value=server,
+        ), mock.patch.object(
+            package_smoke.threading,
+            "Thread",
+            return_value=thread,
+        ), self.assertRaisesRegex(RuntimeError, "thread start failed"):
+            run_package_smoke(self.root / "ignored")
+
+        server.shutdown.assert_not_called()
+        server.server_close.assert_called_once_with()
+        thread.join.assert_not_called()
+
+    def test_static_package_server_serves_immutable_snapshot_after_mutation(self) -> None:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind(("127.0.0.1", 0))
+        except PermissionError:
+            self.skipTest("test sandbox does not permit loopback socket binding")
+
+        dist_dir = self._stage()
+        expected_loader = (dist_dir / "chromium-wasm.js").read_bytes()
+        server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            (dist_dir / "chromium-wasm.js").write_bytes(b"mutated-package-loader")
+            host, port = server.server_address[:2]
+            with urlopen(
+                f"http://{host}:{port}/chromium-wasm.js", timeout=10
+            ) as response:
+                self.assertEqual(200, response.status)
+                self.assertEqual("text/javascript", response.headers.get_content_type())
+                self.assertEqual(expected_loader, response.read())
+                for name, value in package.REQUIRED_HEADERS.items():
+                    self.assertEqual(value, response.headers.get(name))
+            with self.assertRaises(TypeError):
+                server.snapshot.artifacts["chromium-wasm.js"] = b"replacement"  # type: ignore[index]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_static_package_socket_smoke_when_loopback_is_available(self) -> None:
         try:

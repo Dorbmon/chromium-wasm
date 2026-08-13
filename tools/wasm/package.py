@@ -15,6 +15,7 @@ labels the output as not releasable.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -212,7 +213,13 @@ def sha256_file(path: Path) -> str:
 
 def _canonical_json(value: object) -> bytes:
     return (
-        json.dumps(value, indent=2, sort_keys=True, separators=(",", ": "))
+        json.dumps(
+            value,
+            indent=2,
+            sort_keys=True,
+            separators=(",", ": "),
+            allow_nan=False,
+        )
         + "\n"
     ).encode("utf-8")
 
@@ -852,19 +859,33 @@ def package_release(
             shutil.rmtree(staging)
 
 
-def _load_version(path: Path) -> dict[str, Any]:
-    _require_regular_file(path, "VERSION.json")
+def _load_version_bytes(contents: bytes) -> dict[str, Any]:
+    """Parse the exact canonical VERSION.json bytes from one package snapshot."""
+
+    if type(contents) is not bytes or not contents:
+        raise PackageError("VERSION.json must contain non-empty bytes")
+    if len(contents) > MAX_ARTIFACT_BYTES:
+        raise PackageError("VERSION.json has an invalid size")
     try:
         value = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_keys
+            contents.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {constant}")
+            ),
         )
     except (UnicodeDecodeError, ValueError) as exc:
         raise PackageError(f"VERSION.json is invalid: {exc}") from exc
     if not isinstance(value, dict):
         raise PackageError("VERSION.json must contain an object")
-    if _canonical_json(value) != path.read_bytes():
+    if _canonical_json(value) != contents:
         raise PackageError("VERSION.json is not canonical deterministic JSON")
     return value
+
+
+def _load_version(path: Path) -> dict[str, Any]:
+    _require_regular_file(path, "VERSION.json")
+    return _load_version_bytes(path.read_bytes())
 
 
 def _validate_gate_state(gate_state: object) -> None:
@@ -882,7 +903,9 @@ def _validate_gate_state(gate_state: object) -> None:
             raise PackageError("VERSION.json gate state must retain false values")
 
 
-def _validate_version(version: dict[str, Any], root: Path) -> None:
+def _validate_version_metadata(version: dict[str, Any]) -> list[dict[str, object]]:
+    """Validate exact VERSION.json schema independent of live artifact paths."""
+
     expected_keys = {
         "artifacts",
         "build",
@@ -998,14 +1021,84 @@ def _validate_version(version: dict[str, Any], root: Path) -> None:
         if type(artifact["size_bytes"]) is not int or artifact["size_bytes"] <= 0:
             raise PackageError("VERSION.json artifact size is invalid")
         observed_paths.append(relative)
+    if observed_paths != expected_artifact_paths:
+        raise PackageError("VERSION.json artifacts are not complete and ordered")
+    return artifacts
+
+
+def _validate_version(version: dict[str, Any], root: Path) -> None:
+    """Validate VERSION.json metadata and its records against a live tree."""
+
+    for artifact in _validate_version_metadata(version):
+        relative = artifact["path"]
         candidate = root / relative
         _require_regular_file(candidate, f"staged package artifact {relative}")
         if candidate.stat().st_size != artifact["size_bytes"] or sha256_file(
             candidate
         ) != artifact["sha256"]:
             raise PackageError(f"staged package artifact hash mismatch: {relative}")
-    if observed_paths != expected_artifact_paths:
-        raise PackageError("VERSION.json artifacts are not complete and ordered")
+
+
+def verify_release_snapshot(artifacts: Mapping[str, bytes]) -> dict[str, object]:
+    """Verify the exact in-memory bytes that a package server will expose.
+
+    Unlike ``verify_release_tree()``, this function never opens a package path.
+    It is for a descriptor-pinned snapshot whose contents must be validated
+    without giving a later filesystem mutation another observation point.
+    """
+
+    if not isinstance(artifacts, Mapping):
+        raise PackageError("package snapshot artifacts must be a mapping")
+    try:
+        paths = set(artifacts)
+    except TypeError as exc:
+        raise PackageError("package snapshot artifact paths are invalid") from exc
+    if not all(type(path) is str for path in paths):
+        raise PackageError("package snapshot artifact paths are invalid")
+    if paths != PACKAGE_PATHS:
+        unexpected = sorted(paths - PACKAGE_PATHS)
+        missing = sorted(PACKAGE_PATHS - paths)
+        raise PackageError(
+            "package snapshot file layout mismatch: "
+            f"missing={missing} unexpected={unexpected}"
+        )
+
+    captured: dict[str, bytes] = {}
+    for relative in sorted(PACKAGE_PATHS):
+        try:
+            contents = artifacts[relative]
+        except (KeyError, TypeError) as exc:
+            raise PackageError(
+                f"package snapshot artifact is missing: {relative}"
+            ) from exc
+        if type(contents) is not bytes:
+            raise PackageError(
+                f"package snapshot artifact must be bytes: {relative}"
+            )
+        if len(contents) <= 0 or len(contents) > MAX_ARTIFACT_BYTES:
+            raise PackageError(
+                f"package snapshot artifact has an invalid size: {relative}"
+            )
+        captured[relative] = contents
+
+    version_bytes = captured["VERSION.json"]
+    version = _load_version_bytes(version_bytes)
+    for artifact in _validate_version_metadata(version):
+        relative = artifact["path"]
+        contents = captured[relative]
+        if (
+            len(contents) != artifact["size_bytes"]
+            or _sha256_bytes(contents) != artifact["sha256"]
+        ):
+            raise PackageError(f"staged package artifact hash mismatch: {relative}")
+    return {
+        "artifact_count": len(version["artifacts"]),
+        "artifact_source_provenance": version["build"][
+            "artifact_source_provenance"
+        ],
+        "release_status": version["release_status"],
+        "version_sha256": _sha256_bytes(version_bytes),
+    }
 
 
 def verify_release_tree(dist_dir: Path) -> dict[str, object]:

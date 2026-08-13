@@ -14,41 +14,55 @@ release server is selected.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
+import stat
 import threading
-from typing import Any
+from types import MappingProxyType
+from typing import Mapping
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 if __package__:
     from .m0_common import M0Error
     from .package import (
+        MAX_ARTIFACT_BYTES,
         PACKAGE_PATHS,
         REQUIRED_HEADERS,
         REQUIRED_MIME_TYPES,
         SENTINEL,
-        verify_release_tree,
+        verify_release_snapshot,
     )
 else:
     from m0_common import M0Error
     from package import (
+        MAX_ARTIFACT_BYTES,
         PACKAGE_PATHS,
         REQUIRED_HEADERS,
         REQUIRED_MIME_TYPES,
         SENTINEL,
-        verify_release_tree,
+        verify_release_snapshot,
     )
+
+
+@dataclass(frozen=True)
+class PackageTreeSnapshot:
+    """The fixed package bytes and verification record served by one server."""
+
+    artifacts: Mapping[str, bytes]
+    verification: Mapping[str, object]
 
 
 class PackageSmokeServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], dist_dir: Path):
-        self.dist_dir = dist_dir
+    def __init__(self, address: tuple[str, int], snapshot: PackageTreeSnapshot):
+        self.snapshot = snapshot
         super().__init__(address, PackageSmokeRequestHandler)
 
 
@@ -80,7 +94,7 @@ class PackageSmokeRequestHandler(BaseHTTPRequestHandler):
 
     def _serve(self) -> None:
         status, content_type, contents = package_response(
-            self.server.dist_dir, urlsplit(self.path).path
+            self.server.snapshot.artifacts, urlsplit(self.path).path
         )
         if status != HTTPStatus.OK:
             self._send_bytes(
@@ -90,45 +104,318 @@ class PackageSmokeRequestHandler(BaseHTTPRequestHandler):
         self._send_bytes(HTTPStatus.OK, content_type, contents)
 
 
+ArtifactIdentity = tuple[int, int, int, int, int, int]
+_SNAPSHOT_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def _identity(metadata: os.stat_result) -> ArtifactIdentity:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _required_open_flag(name: str) -> int:
+    """Get one nonzero host flag required for safe descriptor capture."""
+
+    try:
+        value = getattr(os, name)
+    except AttributeError as exc:
+        raise M0Error(f"package snapshot requires host {name} support") from exc
+    if type(value) is not int or value == 0:
+        raise M0Error(f"package snapshot requires host {name} support")
+    return value
+
+
+def _no_follow_open_flags(*, directory: bool) -> int:
+    """Return host flags that fail closed when a path component is a link."""
+
+    flags = os.O_RDONLY | _required_open_flag("O_NOFOLLOW")
+    if directory:
+        return flags | _required_open_flag("O_DIRECTORY") | getattr(
+            os, "O_CLOEXEC", 0
+        )
+    # An attacker can replace a regular artifact with a FIFO or device
+    # between verification and open. O_NONBLOCK lets fstat reject that
+    # descriptor rather than waiting for an untrusted producer.
+    return flags | _required_open_flag("O_NONBLOCK") | getattr(os, "O_CLOEXEC", 0)
+
+
+def _close_quietly(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _directory_identity(fd: int, description: str) -> ArtifactIdentity:
+    try:
+        metadata = os.fstat(fd)
+    except OSError as exc:
+        raise M0Error(f"package snapshot {description} cannot be inspected") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise M0Error(f"package snapshot {description} is not a directory")
+    return _identity(metadata)
+
+
+def _artifact_identity_from_fd(fd: int, description: str) -> ArtifactIdentity:
+    try:
+        metadata = os.fstat(fd)
+    except OSError as exc:
+        raise M0Error(f"package snapshot {description} cannot be inspected") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise M0Error(f"package snapshot {description} is not a regular file")
+    if metadata.st_size <= 0 or metadata.st_size > MAX_ARTIFACT_BYTES:
+        raise M0Error(f"package snapshot {description} size is invalid")
+    return _identity(metadata)
+
+
+def _open_directory_at(parent_fd: int, component: str, description: str) -> int:
+    try:
+        fd = os.open(
+            component,
+            _no_follow_open_flags(directory=True),
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        raise M0Error(
+            f"package snapshot {description} cannot be opened safely"
+        ) from exc
+    try:
+        _directory_identity(fd, description)
+    except BaseException:
+        _close_quietly(fd)
+        raise
+    return fd
+
+
+def _open_artifact_at(parent_fd: int, component: str, description: str) -> int:
+    try:
+        fd = os.open(
+            component,
+            _no_follow_open_flags(directory=False),
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        raise M0Error(
+            f"package snapshot {description} cannot be opened safely"
+        ) from exc
+    try:
+        _artifact_identity_from_fd(fd, description)
+    except BaseException:
+        _close_quietly(fd)
+        raise
+    return fd
+
+
+def _absolute_snapshot_root(dist_dir: Path) -> Path:
+    """Make a lexical absolute root without resolving any supplied links."""
+
+    root = Path(dist_dir)
+    if any(component == ".." for component in root.parts):
+        raise M0Error("package snapshot root has an unsafe path component")
+    if not root.is_absolute():
+        try:
+            root = Path(os.getcwd()) / root
+        except OSError as exc:
+            raise M0Error("package snapshot root cannot be made absolute") from exc
+    if not root.is_absolute() or not root.anchor:
+        raise M0Error("package snapshot root is not an absolute directory")
+    return root
+
+
+def _open_snapshot_root(root: Path) -> int:
+    """Open every absolute package-root component without following a link."""
+
+    if not root.is_absolute() or not root.anchor:
+        raise M0Error("package snapshot root is not an absolute directory")
+    try:
+        fd = os.open(str(Path(root.anchor)), _no_follow_open_flags(directory=True))
+    except OSError as exc:
+        raise M0Error("package snapshot root cannot be opened safely") from exc
+    try:
+        _directory_identity(fd, "root anchor")
+        for component in root.parts[1:]:
+            if component in ("", ".", ".."):
+                raise M0Error("package snapshot root has an unsafe path component")
+            next_fd = _open_directory_at(fd, component, "root directory")
+            _close_quietly(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        _close_quietly(fd)
+        raise
+
+
+def _package_path_parts(relative: str) -> tuple[str, ...]:
+    if relative not in PACKAGE_PATHS:
+        raise M0Error(f"package snapshot artifact path is invalid: {relative}")
+    parts = tuple(relative.split("/"))
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise M0Error(f"package snapshot artifact path is invalid: {relative}")
+    return parts
+
+
+def _open_snapshot_artifact(root_fd: int, relative: str, description: str) -> int:
+    """Open one known package artifact beneath a trusted root descriptor."""
+
+    try:
+        parent_fd = os.dup(root_fd)
+    except OSError as exc:
+        raise M0Error(
+            f"package snapshot {description} cannot be opened safely"
+        ) from exc
+    try:
+        parts = _package_path_parts(relative)
+        for component in parts[:-1]:
+            next_fd = _open_directory_at(parent_fd, component, description)
+            _close_quietly(parent_fd)
+            parent_fd = next_fd
+        return _open_artifact_at(parent_fd, parts[-1], description)
+    finally:
+        _close_quietly(parent_fd)
+
+
+def _read_exact_artifact_bytes(
+    fd: int, expected_size: int, description: str
+) -> bytes:
+    """Read exactly the fstat size plus at most one trailing-byte probe."""
+
+    remaining = expected_size
+    chunks: list[bytes] = []
+    while remaining:
+        try:
+            chunk = os.read(fd, min(_SNAPSHOT_READ_CHUNK_BYTES, remaining))
+        except OSError as exc:
+            raise M0Error(f"package snapshot {description} cannot be read") from exc
+        if not chunk:
+            raise M0Error(f"package snapshot {description} changed while it was read")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    try:
+        trailing = os.read(fd, 1)
+    except OSError as exc:
+        raise M0Error(f"package snapshot {description} cannot be read") from exc
+    if trailing:
+        raise M0Error(f"package snapshot {description} changed while it was read")
+    return b"".join(chunks)
+
+
+def _read_snapshot_file(
+    root_fd: int, relative: str, description: str
+) -> tuple[bytes, ArtifactIdentity]:
+    """Copy one descriptor-pinned file while rejecting in-place changes."""
+
+    fd = _open_snapshot_artifact(root_fd, relative, description)
+    try:
+        before = _artifact_identity_from_fd(fd, description)
+        contents = _read_exact_artifact_bytes(fd, before[3], description)
+        after = _artifact_identity_from_fd(fd, description)
+        if before != after or len(contents) != before[3]:
+            raise M0Error(f"package snapshot {description} changed while it was read")
+        return contents, before
+    finally:
+        _close_quietly(fd)
+
+
+def _current_artifact_identity(
+    root_fd: int, relative: str, description: str
+) -> ArtifactIdentity:
+    fd = _open_snapshot_artifact(root_fd, relative, description)
+    try:
+        return _artifact_identity_from_fd(fd, description)
+    finally:
+        _close_quietly(fd)
+
+
+def snapshot_package_tree(dist_dir: Path) -> PackageTreeSnapshot:
+    """Verify then capture one immutable, coherent package tree.
+
+    The smoke server must not re-read build output after it begins serving.
+    Capture every allowed file through a descriptor-pinned no-follow path and
+    require every captured identity to remain unchanged across the capture
+    window. Validate only the resulting in-memory bytes, including the full
+    canonical VERSION.json schema and every manifest artifact hash. This never
+    observes an untrusted package path before or after descriptor capture.
+    """
+
+    root = _absolute_snapshot_root(dist_dir)
+    names = tuple(sorted(PACKAGE_PATHS))
+    root_fd = _open_snapshot_root(root)
+    try:
+        before = _directory_identity(root_fd, "root directory")
+        captures = {
+            name: _read_snapshot_file(root_fd, name, f"artifact {name}")
+            for name in names
+        }
+        artifacts = {name: capture[0] for name, capture in captures.items()}
+        identities = {name: capture[1] for name, capture in captures.items()}
+        after = _directory_identity(root_fd, "root directory")
+        current = {
+            name: _current_artifact_identity(root_fd, name, f"artifact {name}")
+            for name in names
+        }
+    finally:
+        _close_quietly(root_fd)
+    if before != after or identities != current:
+        raise M0Error("package changed while it was snapshotted")
+    try:
+        verification = verify_release_snapshot(artifacts)
+    except M0Error:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise M0Error(f"package snapshot validation failed: {exc}") from exc
+    return PackageTreeSnapshot(
+        artifacts=MappingProxyType(artifacts),
+        verification=MappingProxyType(dict(verification)),
+    )
+
+
 def create_package_smoke_server(
     bind: str, port: int, dist_dir: Path
 ) -> PackageSmokeServer:
-    verify_release_tree(dist_dir)
-    return PackageSmokeServer((bind, port), dist_dir.resolve())
+    return PackageSmokeServer((bind, port), snapshot_package_tree(dist_dir))
 
 
 def package_response(
-    dist_dir: Path, request_path: str
+    artifacts: Mapping[str, bytes], request_path: str
 ) -> tuple[HTTPStatus, str, bytes]:
-    """Return one safe static-package response without opening a socket."""
+    """Return one response from a fixed, verified in-memory package snapshot."""
     if request_path in ("", "/"):
         artifact = "index.html"
     else:
         artifact = request_path.removeprefix("/")
     if artifact not in PACKAGE_PATHS:
         return HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n"
-    path = dist_dir.resolve() / artifact
-    try:
-        contents = path.read_bytes()
-    except OSError:
+    contents = artifacts.get(artifact)
+    if contents is None:
         return HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n"
+    if type(contents) is not bytes or not contents:
+        raise M0Error(f"package snapshot artifact is invalid: {artifact}")
     return (
         HTTPStatus.OK,
-        REQUIRED_MIME_TYPES.get(path.suffix, "text/plain; charset=utf-8"),
+        REQUIRED_MIME_TYPES.get(Path(artifact).suffix, "text/plain; charset=utf-8"),
         contents,
     )
 
 
 def run_package_smoke(dist_dir: Path) -> dict[str, object]:
-    verification = verify_release_tree(dist_dir)
     server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
-    thread = threading.Thread(
-        target=server.serve_forever,
-        name="chromium-wasm-m9-package-server",
-        daemon=True,
-    )
-    thread.start()
+    verification = server.snapshot.verification
+    thread: threading.Thread | None = None
+    thread_started = False
     try:
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name="chromium-wasm-m9-package-server",
+            daemon=True,
+        )
+        thread.start()
+        thread_started = True
         host, port = server.server_address[:2]
         observed: dict[str, dict[str, object]] = {}
         requested = {
@@ -141,8 +428,13 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
             with urlopen(f"http://{host}:{port}{path}", timeout=10) as response:
                 body = response.read()
                 if response.status != HTTPStatus.OK:
-                    raise M0Error(f"package endpoint returned {response.status}: {path}")
-                if response.headers.get_content_type() != expected_mime.split(";", 1)[0]:
+                    raise M0Error(
+                        f"package endpoint returned {response.status}: {path}"
+                    )
+                if (
+                    response.headers.get_content_type()
+                    != expected_mime.split(";", 1)[0]
+                ):
                     raise M0Error(f"package endpoint MIME mismatch: {path}")
                 if not body:
                     raise M0Error(f"package endpoint is empty: {path}")
@@ -155,18 +447,24 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
                     "bytes": len(body),
                     "content_type": response.headers.get("Content-Type"),
                 }
-        version = json.loads((dist_dir.resolve() / "VERSION.json").read_text("utf-8"))
-        if version.get("release_status") != "pre_m7_m8_not_releasable":
+        release_status = verification.get("release_status")
+        if release_status != "pre_m7_m8_not_releasable":
             raise M0Error("package smoke accepted a non-pre-release status")
         return {
             "endpoints": observed,
-            "release_status": verification["release_status"],
+            "release_status": release_status,
             "scope": "static-package-headers-mime-and-artifact-integrity-only",
         }
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        try:
+            if thread_started:
+                server.shutdown()
+        finally:
+            try:
+                server.server_close()
+            finally:
+                if thread_started and thread is not None:
+                    thread.join(timeout=5)
 
 
 def main() -> int:
