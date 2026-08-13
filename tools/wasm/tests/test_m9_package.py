@@ -1541,6 +1541,143 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("not canonical deterministic JSON", observed["bom"])
         self.assertIn("host requirements values are invalid", observed["invalidSchema"])
 
+    def test_release_host_keeps_fatal_state_after_bounded_record_eviction(self) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+
+        fixture = self.root / "sticky-fatal-release-host-fixture"
+        shutil.copytree(self._stage(), fixture)
+        (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+        (fixture / "chromium-wasm.js").write_text(
+            """export default function(options) {
+  queueMicrotask(() => {
+    options.onAbort("earlier fatal");
+    for (let index = 0; index < 32; ++index) {
+      options.print(`ordinary record ${index}`);
+    }
+    globalThis.__chromiumWasmHostBridgeV1.reportReadiness({
+      protocol: 1,
+      shellReady: true,
+      surfaceReady: true,
+      firstVisuallyNonEmptyPaint: true,
+    });
+  });
+  return new Promise(() => {});
+}
+""",
+            encoding="utf-8",
+        )
+        script = """
+import {readFile} from "node:fs/promises";
+
+class HTMLElement {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.disabled = false;
+    this.style = {};
+    this.textContent = "";
+  }
+  addEventListener() {}
+  append(...nodes) {
+    this.children.push(...nodes);
+    this.textContent += nodes.map((node) => node.textContent).join("");
+  }
+  replaceChildren(...nodes) {
+    this.children = nodes;
+    this.textContent = nodes.map((node) => node.textContent).join("");
+  }
+}
+class HTMLCanvasElement extends HTMLElement {
+  focus() { document.activeElement = this; }
+}
+class HTMLTextAreaElement extends HTMLElement {}
+class HTMLButtonElement extends HTMLElement {}
+Object.assign(globalThis, {
+  HTMLElement,
+  HTMLButtonElement,
+  HTMLCanvasElement,
+  HTMLTextAreaElement,
+  crossOriginIsolated: true,
+});
+const root = new HTMLElement();
+const canvas = new HTMLCanvasElement();
+const textProxy = new HTMLTextAreaElement();
+const status = new HTMLElement();
+const versions = new HTMLElement();
+const gateState = new HTMLElement();
+const shutdown = new HTMLButtonElement();
+const elements = new Map([
+  ["#chrome-root", root], ["#browser-canvas", canvas],
+  ["#browser-text-proxy", textProxy], ["#chrome-status", status],
+  ["#versions", versions], ["#gate-state", gateState], ["#shutdown", shutdown],
+]);
+globalThis.document = {
+  activeElement: null,
+  createElement() { return new HTMLElement(); },
+  querySelector(selector) { return elements.get(selector) || null; },
+};
+globalThis.addEventListener = () => {};
+const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
+const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
+function responseFor(bytes) {
+  return {
+    ok: true,
+    headers: {get(name) {
+      return String(name).toLowerCase() === "content-length" ?
+          String(bytes.byteLength) : null;
+    }},
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+    async blob() { return new Blob([bytes]); },
+  };
+}
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith("VERSION.json")) return responseFor(versionBytes);
+  if (url.endsWith("chromium-wasm.js")) return responseFor(loaderBytes);
+  throw new Error(`unexpected fetch ${url}`);
+};
+const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
+await runChromiumWasmPreRelease();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const payload = JSON.parse(status.textContent);
+process.stdout.write(JSON.stringify({
+  fatalCount: payload.fatalCount,
+  fatalRecordRetained: payload.records.some((record) => record.kind === "fatal"),
+  pageState: root.dataset.state,
+  recordCount: payload.records.length,
+}));
+"""
+        script = script.replace(
+            "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
+        ).replace(
+            "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__HOST_URI__",
+            json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
+        )
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        self.assertEqual(
+            {
+                "fatalCount": 1,
+                "fatalRecordRetained": False,
+                "pageState": "failed",
+                "recordCount": 32,
+            },
+            json.loads(completed.stdout),
+        )
+
     def test_browser_smoke_requires_the_blob_backed_renamed_loader_path(self) -> None:
         smoke = (REPO_ROOT / "tools/wasm/run_m9_package_browser_smoke.py").read_text(
             encoding="utf-8"
@@ -1552,6 +1689,7 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("create_package_smoke_server", smoke)
         self.assertIn("*only* the staged names", smoke)
         self.assertIn("framesPresented", smoke)
+        self.assertIn("fatalCount", smoke)
         self.assertIn("processExitCode", smoke)
         self.assertIn("shutdownDisabled", smoke)
         self.assertIn("clean fixed package-host shutdown", smoke)
@@ -1563,6 +1701,9 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("mainScriptUrlOrBlob", host)
         self.assertIn("inputModuleName", host)
         self.assertIn('"./chromium-wasm.wasm"', host)
+        self.assertIn("#fatalCount = 0", host)
+        self.assertIn("fatalCount: this.#fatalCount", host)
+        self.assertIn("if (this.#fatalCount === 0)", host)
 
     def test_package_browser_restart_epoch_binds_exact_url_and_fresh_document(self) -> None:
         initial_url = package_browser_smoke._make_epoch_url(
@@ -1640,6 +1781,7 @@ process.stdout.write(JSON.stringify({{
             package_browser_smoke._restart_after_clean_shutdown(
                 client=client,
                 clean_shutdown={
+                    "fatalCount": 0,
                     "shutdownRequested": True,
                     "shutdownDisabled": True,
                     "processExitCode": 1,
@@ -1656,6 +1798,7 @@ process.stdout.write(JSON.stringify({{
         self.assertFalse(
             package_browser_smoke._is_clean_shutdown(
                 {
+                    "fatalCount": 0,
                     "shutdownRequested": True,
                     "shutdownDisabled": True,
                     "processExitCode": False,
@@ -1665,12 +1808,64 @@ process.stdout.write(JSON.stringify({{
         with self.assertRaisesRegex(M0Error, "process exit code 0"):
             package_browser_smoke._require_clean_shutdown(
                 {
+                    "fatalCount": 0,
                     "shutdownRequested": True,
                     "shutdownDisabled": True,
                     "processExitCode": False,
                 },
                 "fixed package-host shutdown",
             )
+
+    def test_package_browser_sticky_fatal_health_rejects_evicted_record(self) -> None:
+        # The host record history is bounded to 32 entries. Model a fatal that
+        # was followed by enough ordinary records to evict its own record, then
+        # a valid-looking readiness report that used to overwrite page state.
+        status = {
+            "crossOriginIsolated": True,
+            "displayedVersions": (
+                "staging checkout test artifact source provenance unverified"
+            ),
+            "fatalCount": 1,
+            "framesPresented": 1,
+            "pageState": "running",
+            "processExitCode": 0,
+            "readiness": {"surfaceReady": True},
+            "records": [
+                {"kind": "stdout", "value": f"ordinary record {index}"}
+                for index in range(32)
+            ],
+            "releaseStatus": package.RELEASE_STATUS,
+            "runtimeInitialized": True,
+            "shutdownDisabled": True,
+            "shutdownRequested": True,
+        }
+
+        self.assertEqual(32, len(status["records"]))
+        self.assertTrue(
+            all(record["kind"] != "fatal" for record in status["records"])
+        )
+        self.assertFalse(package_browser_smoke._is_ready(status))
+        self.assertFalse(package_browser_smoke._is_clean_shutdown(status))
+        with self.assertRaisesRegex(M0Error, "reported 1 fatal errors"):
+            package_browser_smoke._validate_fatal_health(status)
+
+        healthy = deepcopy(status)
+        healthy["fatalCount"] = 0
+        self.assertTrue(package_browser_smoke._is_ready(healthy))
+        self.assertTrue(package_browser_smoke._is_clean_shutdown(healthy))
+        for invalid_count in (
+            True,
+            0.0,
+            -1,
+            package_browser_smoke.MAX_SAFE_INTEGER + 1,
+        ):
+            with self.subTest(invalid_count=invalid_count):
+                invalid = deepcopy(healthy)
+                invalid["fatalCount"] = invalid_count
+                self.assertFalse(package_browser_smoke._is_ready(invalid))
+                self.assertFalse(package_browser_smoke._is_clean_shutdown(invalid))
+                with self.assertRaisesRegex(M0Error, "fatal count is invalid"):
+                    package_browser_smoke._validate_fatal_health(invalid)
 
     def test_package_browser_closes_unstarted_server_without_shutdown(self) -> None:
         server = mock.Mock()
@@ -1810,6 +2005,7 @@ process.stdout.write(JSON.stringify({{
             result = package_browser_smoke._restart_after_clean_shutdown(
                 client=client,
                 clean_shutdown={
+                    "fatalCount": 0,
                     "shutdownRequested": True,
                     "shutdownDisabled": True,
                     "processExitCode": 0,
@@ -1839,8 +2035,13 @@ process.stdout.write(JSON.stringify({{
         profile = mock.Mock()
         profile.name = "/tmp/m9-package-profile"
         client = mock.Mock()
-        ready = {"framesPresented": 7, "releaseStatus": package.RELEASE_STATUS}
+        ready = {
+            "fatalCount": 0,
+            "framesPresented": 7,
+            "releaseStatus": package.RELEASE_STATUS,
+        }
         shutdown = {
+            "fatalCount": 0,
             "shutdownRequested": True,
             "shutdownDisabled": True,
             "processExitCode": 0,
@@ -1955,8 +2156,13 @@ process.stdout.write(JSON.stringify({{
         profile = mock.Mock()
         profile.name = "/tmp/m9-package-profile"
         client = mock.Mock()
-        ready = {"framesPresented": 7, "releaseStatus": package.RELEASE_STATUS}
+        ready = {
+            "fatalCount": 0,
+            "framesPresented": 7,
+            "releaseStatus": package.RELEASE_STATUS,
+        }
         shutdown = {
+            "fatalCount": 0,
             "shutdownRequested": True,
             "shutdownDisabled": True,
             "processExitCode": 0,
@@ -2057,9 +2263,18 @@ process.stdout.write(JSON.stringify({{
         profile.name = "/tmp/m9-package-profile"
         first_client = mock.Mock()
         second_client = mock.Mock()
-        first_ready = {"framesPresented": 7, "releaseStatus": package.RELEASE_STATUS}
-        second_ready = {"framesPresented": 11, "releaseStatus": package.RELEASE_STATUS}
+        first_ready = {
+            "fatalCount": 0,
+            "framesPresented": 7,
+            "releaseStatus": package.RELEASE_STATUS,
+        }
+        second_ready = {
+            "fatalCount": 0,
+            "framesPresented": 11,
+            "releaseStatus": package.RELEASE_STATUS,
+        }
         clean_shutdown = {
+            "fatalCount": 0,
             "shutdownRequested": True,
             "shutdownDisabled": True,
             "processExitCode": 0,

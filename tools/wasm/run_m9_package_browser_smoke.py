@@ -71,6 +71,7 @@ OUTER_DOCUMENT_RESTART_SCOPE = (
 )
 RELEASE_STATUS = package_tool.RELEASE_STATUS
 EPOCH_QUERY_KEY = "m9_package_epoch"
+MAX_SAFE_INTEGER = (1 << 53) - 1
 
 _STATUS_EXPRESSION = r"""
 (() => {
@@ -117,6 +118,7 @@ _STATUS_EXPRESSION = r"""
   return {
     crossOriginIsolated: globalThis.crossOriginIsolated === true,
     documentIdentity,
+    fatalCount: payload.fatalCount,
     framesPresented: payload.framesPresented,
     pageState: root.dataset.state,
     packageMetadata: payload.packageMetadata,
@@ -280,7 +282,8 @@ def _require_ready_package_document(
 def _is_clean_shutdown(status: dict[str, Any]) -> bool:
     exit_code = status.get("processExitCode")
     return (
-        status.get("shutdownRequested") is True
+        _has_zero_fatal_count(status)
+        and status.get("shutdownRequested") is True
         and status.get("shutdownDisabled") is True
         and type(exit_code) is int
         and exit_code == 0
@@ -289,7 +292,9 @@ def _is_clean_shutdown(status: dict[str, Any]) -> bool:
 
 def _require_clean_shutdown(status: dict[str, Any], description: str) -> None:
     if not _is_clean_shutdown(status):
-        raise M0Error(f"{description} did not complete with process exit code 0")
+        raise M0Error(
+            f"{description} did not complete with zero fatal count and process exit code 0"
+        )
 
 
 def _restart_after_clean_shutdown(
@@ -324,11 +329,31 @@ def _fatal_record(status: dict[str, Any]) -> str | None:
     return None
 
 
+def _has_zero_fatal_count(status: dict[str, Any]) -> bool:
+    """Require the host's fixed health signal, not bounded record retention."""
+
+    return type(status.get("fatalCount")) is int and status["fatalCount"] == 0
+
+
+def _validate_fatal_health(status: dict[str, Any]) -> None:
+    """Reject missing, malformed, or nonzero sticky fatal-health evidence."""
+
+    count = status.get("fatalCount")
+    if type(count) is not int or not 0 <= count <= MAX_SAFE_INTEGER:
+        raise M0Error("package host fatal count is invalid")
+    if count != 0:
+        fatal = _fatal_record(status)
+        if fatal is not None:
+            raise M0Error(f"package host reported fatal: {fatal}")
+        raise M0Error(f"package host reported {count} fatal errors")
+
+
 def _is_ready(status: dict[str, Any]) -> bool:
     readiness = status.get("readiness")
     displayed_versions = status.get("displayedVersions")
     return (
-        status.get("crossOriginIsolated") is True
+        _has_zero_fatal_count(status)
+        and status.get("crossOriginIsolated") is True
         and status.get("releaseStatus") == RELEASE_STATUS
         and status.get("runtimeInitialized") is True
         and type(status.get("framesPresented")) is int
@@ -366,6 +391,11 @@ def _wait_for_status(
         last_status = status
         if status.get("pageError"):
             raise M0Error(f"package host page error: {status['pageError']}")
+        # The CDP attachment can observe a staged document before its host
+        # elements/status JSON exist. That explicit transient has no health
+        # payload yet; once a status payload is available, health is strict.
+        if status.get("pending") is not True:
+            _validate_fatal_health(status)
         fatal = _fatal_record(status)
         if fatal is not None:
             raise M0Error(f"package host reported fatal: {fatal}")

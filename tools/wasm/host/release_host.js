@@ -496,6 +496,10 @@ class ChromiumWasmPreReleaseHost {
   #storageEstimate = null;
   #latestTextInputState = null;
   #records = [];
+  // Records are intentionally bounded and may evict an earlier fatal entry.
+  // Keep this independent, monotonic health signal so a later readiness report
+  // cannot turn a failed host back into a healthy package-smoke observation.
+  #fatalCount = 0;
   #readiness = null;
   #frameCount = 0;
   #processExitCode = null;
@@ -542,6 +546,7 @@ class ChromiumWasmPreReleaseHost {
       readiness: this.#readiness,
       processExitCode: this.#processExitCode,
       shutdownRequested: this.#shutdownRequested,
+      fatalCount: this.#fatalCount,
       records: this.#records,
     };
     const text = JSON.stringify(summary, null, 2);
@@ -589,6 +594,7 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #reportFatal(value) {
+    this.#fatalCount = Math.min(Number.MAX_SAFE_INTEGER, this.#fatalCount + 1);
     this.#root.dataset.state = "failed";
     this.#record("fatal", value);
   }
@@ -636,7 +642,11 @@ class ChromiumWasmPreReleaseHost {
       surfaceReady: value.surfaceReady,
       firstVisuallyNonEmptyPaint: value.firstVisuallyNonEmptyPaint,
     };
-    this.#root.dataset.state = value.surfaceReady ? "running" : "starting";
+    // A later readiness report may be valid, but it cannot erase a fatal
+    // outcome that might already have aged out of the bounded record history.
+    if (this.#fatalCount === 0) {
+      this.#root.dataset.state = value.surfaceReady ? "running" : "starting";
+    }
     this.#renderStatus();
   }
 
