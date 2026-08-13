@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import copy
+import hashlib
 import http.client
 import io
 import json
@@ -617,6 +618,97 @@ class ControlledHttpsHostServerTest(unittest.TestCase):
                 self._assert_security_headers(headers)
                 self.assertEqual(body, b"not found\n")
 
+    def test_server_serves_snapshot_after_artifact_files_change(self) -> None:
+        (self.out_dir / "chrome_wasm_m6_https_test.js").write_bytes(
+            b"mutated Chrome loader"
+        )
+        (self.out_dir / "chrome_wasm_m6_https_test.wasm").write_bytes(
+            b"mutated Chrome Wasm"
+        )
+
+        for suffix, expected in ((".js", self.js_bytes), (".wasm", self.wasm_bytes)):
+            with self.subTest(suffix=suffix):
+                status, _headers, body = self._request(
+                    "GET",
+                    smoke.HOST_ROOT
+                    + f"/artifacts/chrome_wasm_m6_https_test{suffix}",
+                )
+                self.assertEqual(http.client.OK, status)
+                self.assertEqual(expected, body)
+
+    def test_host_snapshot_rejects_private_key_markers_before_server_creation(self) -> None:
+        with self.assertRaisesRegex(M0Error, "private-key header"):
+            smoke.validate_controlled_https_host_snapshots(
+                {
+                    "host_html": b"<html>host</html>",
+                    "host_js": b"// host bridge",
+                    "text_input_js": b"// -----BEGIN EC PRIVATE KEY-----",
+                }
+            )
+
+    def test_server_serves_captured_host_resources_after_source_mutation(self) -> None:
+        original = {
+            "host_html": b"<html>captured M6 host</html>",
+            "host_js": b"export const capturedHost = true;",
+            "text_input_js": b"export const capturedText = true;",
+        }
+        host_dir = self.out_dir.parent / "host"
+        host_dir.mkdir()
+        file_names = {
+            "host_html": "chrome_wasm_browser_controlled_https_smoke.html",
+            "host_js": "chrome_wasm_browser_controlled_https_smoke_host.js",
+            "text_input_js": "chrome_wasm_text_input.js",
+        }
+        for key, name in file_names.items():
+            (host_dir / name).write_bytes(original[key])
+        snapshots = smoke.snapshot_controlled_https_host_resources(host_dir)
+        identity = smoke.controlled_https_host_delivery_identity(snapshots)
+        server = smoke.create_server(
+            "127.0.0.1",
+            0,
+            self.out_dir,
+            "captured-host-token",
+            queue.Queue(maxsize=1),
+            module_name="chrome_wasm_m6_https_test",
+            host_snapshots=snapshots,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for name in file_names.values():
+                (host_dir / name).write_bytes(b"mutated after server creation")
+            host, port = server.server_address[:2]
+            expected_paths = {
+                smoke.HOST_ROOT + "/": original["host_html"],
+                smoke.HOST_ROOT
+                + "/chrome_wasm_browser_controlled_https_smoke_host.js": original[
+                    "host_js"
+                ],
+                smoke.HOST_ROOT + "/chrome_wasm_text_input.js": original[
+                    "text_input_js"
+                ],
+            }
+            for path, expected in expected_paths.items():
+                with self.subTest(path=path):
+                    connection = http.client.HTTPConnection(host, port, timeout=5)
+                    try:
+                        connection.request("GET", path)
+                        response = connection.getresponse()
+                        self.assertEqual(http.client.OK, response.status)
+                        self.assertEqual(expected, response.read())
+                    finally:
+                        connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        for key, contents in original.items():
+            with self.subTest(key=key):
+                self.assertEqual(
+                    hashlib.sha256(contents).hexdigest(), identity[key]["sha256"]
+                )
+
     def test_accepts_one_schema_valid_result_and_rejects_duplicates(self) -> None:
         result_path = smoke.HOST_ROOT + "/result/" + self.result_token
         body = json.dumps(passing_result(), separators=(",", ":")).encode()
@@ -851,6 +943,56 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
 
 
 class ControlledHttpsScreenshotPolicyTest(unittest.TestCase):
+    def test_visual_policy_snapshots_survive_mutate_restore(self) -> None:
+        contract = {
+            "schema_version": 1,
+            "fixture": "chromium-wasm-m6-controlled-https-v1",
+            "gateway_url": smoke.GATEWAY_FIXTURE_URL,
+            "baseline": "baseline.png",
+            "baseline_policy": "reviewed",
+            "visual_strategy": "full-canvas",
+            "width": 640,
+            "height": 480,
+            "channel_tolerance": 2,
+            "maximum_different_pixel_ratio": 0.0025,
+            "comparison": "rgba",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            contract_path = root / "contract.json"
+            baseline_path = root / "baseline.png"
+            original_contract = json.dumps(contract, sort_keys=True).encode("utf-8")
+            contract_path.write_bytes(original_contract)
+            baseline_path.write_bytes(SCREENSHOT_PNG)
+            (
+                contract_bytes,
+                captured_contract,
+                canonical_contract_bytes,
+            ) = smoke.snapshot_controlled_https_screenshot_contract(contract_path)
+            baseline_bytes = smoke.snapshot_controlled_https_baseline(baseline_path)
+            contract_path.write_bytes(b'{"mutated":true}')
+            baseline_path.write_bytes(b"not a PNG")
+            contract_path.write_bytes(original_contract)
+            baseline_path.write_bytes(SCREENSHOT_PNG)
+
+        self.assertEqual(original_contract, contract_bytes)
+        self.assertEqual(contract, captured_contract)
+        self.assertEqual(
+            captured_contract,
+            smoke.load_controlled_https_screenshot_contract(
+                contents=canonical_contract_bytes
+            ),
+        )
+        comparison = smoke.compare_screenshots(
+            SCREENSHOT_PNG,
+            baseline_bytes,
+            channel_tolerance=captured_contract["channel_tolerance"],
+            maximum_different_pixel_ratio=captured_contract[
+                "maximum_different_pixel_ratio"
+            ],
+        )
+        self.assertTrue(comparison.matches)
+
     def test_contract_requires_a_full_unmasked_canonical_gateway_comparison(
         self,
     ) -> None:
@@ -872,6 +1014,17 @@ class ControlledHttpsScreenshotPolicyTest(unittest.TestCase):
             path.write_text(json.dumps(contract), encoding="utf-8")
             with self.assertRaisesRegex(M0Error, "gateway URL"):
                 smoke.load_controlled_https_screenshot_contract(path)
+
+    def test_contract_snapshot_rejects_boolean_schema_version(self) -> None:
+        contract = smoke.load_controlled_https_screenshot_contract()
+        contract["schema_version"] = True
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contract.json"
+            path.write_text(json.dumps(contract), encoding="utf-8")
+            with self.assertRaisesRegex(M0Error, "schema"):
+                smoke.load_controlled_https_screenshot_contract(path)
+            with self.assertRaisesRegex(M0Error, "schema"):
+                smoke.snapshot_controlled_https_screenshot_contract(path)
 
     def test_parser_rejects_duplicate_or_wrong_scope_results(self) -> None:
         encoded = json.dumps(passing_result(), separators=(",", ":")).encode()
@@ -1081,6 +1234,7 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
         abort_relay_error: BaseException | None = None,
         server_cleanup_error: BaseException | None = None,
         profile_cleanup_error: BaseException | None = None,
+        mutate_visual_inputs_after_snapshot: bool = False,
     ) -> tuple[int, str, str, dict[str, mock.Mock]]:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 8123)
@@ -1097,6 +1251,10 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
         profile = mock.Mock()
         profile.name = "/fake-profile"
         profile.cleanup.side_effect = profile_cleanup_error
+        artifact_snapshots = {
+            "chrome_wasm_m6_https_test.js": b"fake M6 loader",
+            "chrome_wasm_m6_https_test.wasm": b"\x00asm fake M6",
+        }
         client = mock.Mock()
         relay_ready = smoke.RelayReady(
             wisp_endpoint=WISP_ENDPOINT,
@@ -1106,6 +1264,7 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
         comparison = mock.Mock()
         comparison.matches = True
         comparison.as_dict.return_value = {"matches": True}
+        compare_screenshots = mock.Mock(return_value=comparison)
         stop_browser = mock.Mock(side_effect=browser_cleanup_error)
         stop_relay = mock.Mock()
         cleanup_server = mock.Mock(return_value=server_cleanup_error)
@@ -1129,19 +1288,57 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
             "cleanup_server": cleanup_server,
             "abort_browser": abort_browser,
             "abort_relay": abort_relay,
+            "artifact_snapshots": artifact_snapshots,
+            "comparison": comparison,
+            "compare_screenshots": compare_screenshots,
         }
         screenshot_contract = {
+            "schema_version": 1,
+            "fixture": "chromium-wasm-m6-controlled-https-v1",
+            "gateway_url": smoke.GATEWAY_FIXTURE_URL,
             "baseline": "baseline.png",
+            "baseline_policy": "reviewed",
+            "visual_strategy": "full-canvas",
+            "width": 640,
+            "height": 480,
             "channel_tolerance": 2,
             "maximum_different_pixel_ratio": 0.0025,
+            "comparison": "rgba",
         }
         baseline = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         baseline.write(SCREENSHOT_PNG)
         baseline.close()
+        contract = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        captured_contract_bytes = json.dumps(screenshot_contract).encode("utf-8")
+        contract.write(captured_contract_bytes)
+        contract.close()
+        visual_mutation = {"performed": False}
+        dependencies.update(
+            {
+                "captured_baseline_bytes": SCREENSHOT_PNG,
+                "captured_contract_bytes": captured_contract_bytes,
+                "visual_mutation": visual_mutation,
+            }
+        )
+        original_snapshot_baseline = smoke.snapshot_controlled_https_baseline
+
+        def snapshot_baseline_then_optionally_mutate(path: Path) -> bytes:
+            captured = original_snapshot_baseline(path)
+            if mutate_visual_inputs_after_snapshot:
+                path.write_bytes(b"mutated baseline after snapshot")
+                Path(contract.name).write_bytes(b'{"mutated":true}')
+                visual_mutation["performed"] = True
+            return captured
+
         patches = (
             mock.patch.object(smoke, "check_controlled_https_boundary"),
             mock.patch.object(smoke, "verify_explicit_text_heap_exports"),
             mock.patch.object(smoke, "verify_no_private_key_pem_artifacts"),
+            mock.patch.object(
+                smoke,
+                "snapshot_wisp_artifacts",
+                return_value=artifact_snapshots,
+            ),
             mock.patch.object(smoke, "load_manifest", return_value={}),
             mock.patch.object(smoke, "checked_output", return_value="head"),
             mock.patch.object(smoke, "manifest_versions", return_value=VERSIONS),
@@ -1153,9 +1350,12 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
             ),
             mock.patch.object(smoke, "find_node", return_value=Path("/fake-node")),
             mock.patch.object(
+                smoke, "CONTROLLED_HTTPS_SCREENSHOT_CONTRACT", Path(contract.name)
+            ),
+            mock.patch.object(
                 smoke,
-                "load_controlled_https_screenshot_contract",
-                return_value=screenshot_contract,
+                "snapshot_controlled_https_baseline",
+                side_effect=snapshot_baseline_then_optionally_mutate,
             ),
             mock.patch.object(smoke, "create_server", return_value=server),
             mock.patch.object(smoke.threading, "Thread", return_value=server_thread),
@@ -1187,7 +1387,7 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
             mock.patch.object(smoke, "validate_result", return_value=SCREENSHOT_PNG),
             mock.patch.object(smoke, "fetch_relay_status", return_value={}),
             mock.patch.object(smoke, "validate_relay_status"),
-            mock.patch.object(smoke, "compare_screenshots", return_value=comparison),
+            mock.patch.object(smoke, "compare_screenshots", compare_screenshots),
             mock.patch.object(smoke, "stop_browser_group", stop_browser),
             mock.patch.object(smoke, "stop_process_group", stop_relay),
             mock.patch.object(
@@ -1217,6 +1417,7 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
                 result = smoke.main()
         finally:
             Path(baseline.name).unlink(missing_ok=True)
+            Path(contract.name).unlink(missing_ok=True)
         return result, stdout.getvalue(), stderr.getvalue(), dependencies
 
     def test_main_suppresses_terminal_markers_when_cleanup_before_pass_fails(
@@ -1228,7 +1429,13 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
 
         self.assertEqual(1, result)
         self.assertIn("FAIL reason=browser cleanup failed", stderr)
-        for marker in ("SCREENSHOT", "BROWSER_RESULT", "RELAY_STATUS", "PASS"):
+        for marker in (
+            "ARTIFACT_DELIVERY",
+            "SCREENSHOT",
+            "BROWSER_RESULT",
+            "RELAY_STATUS",
+            "PASS",
+        ):
             with self.subTest(marker=marker):
                 self.assertNotIn(f"{smoke.SENTINEL}:{marker}", stdout + stderr)
         dependencies["client"].close.assert_called_once_with()
@@ -1274,7 +1481,13 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 self.assertNotIn(message, stderr)
-        for marker in ("SCREENSHOT", "BROWSER_RESULT", "RELAY_STATUS", "PASS"):
+        for marker in (
+            "ARTIFACT_DELIVERY",
+            "SCREENSHOT",
+            "BROWSER_RESULT",
+            "RELAY_STATUS",
+            "PASS",
+        ):
             with self.subTest(marker=marker):
                 self.assertNotIn(f"{smoke.SENTINEL}:{marker}", stdout + stderr)
         dependencies["client"].close.assert_called_once_with()
@@ -1284,6 +1497,103 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
         dependencies["abort_relay"].assert_called_once()
         dependencies["cleanup_server"].assert_called_once()
         dependencies["profile"].cleanup.assert_called_once_with()
+
+    def test_main_emits_snapshot_delivery_only_after_successful_cleanup(self) -> None:
+        result, stdout, stderr, dependencies = self._run_main_with_cleanup_fakes()
+
+        self.assertEqual(0, result)
+        self.assertEqual("", stderr)
+        delivery_prefix = f"{smoke.SENTINEL}:ARTIFACT_DELIVERY "
+        screenshot_prefix = f"{smoke.SENTINEL}:SCREENSHOT "
+        browser_prefix = f"{smoke.SENTINEL}:BROWSER_RESULT "
+        relay_prefix = f"{smoke.SENTINEL}:RELAY_STATUS "
+        terminal_prefixes = (
+            delivery_prefix,
+            screenshot_prefix,
+            browser_prefix,
+            relay_prefix,
+        )
+        terminal_indices = []
+        for prefix in terminal_prefixes:
+            matching = [
+                index
+                for index, line in enumerate(stdout.splitlines())
+                if line.startswith(prefix)
+            ]
+            self.assertEqual(1, len(matching), prefix)
+            terminal_indices.append(matching[0])
+        self.assertEqual(sorted(terminal_indices), terminal_indices)
+        pass_lines = [
+            index
+            for index, line in enumerate(stdout.splitlines())
+            if line == smoke.PASS_MARKER
+        ]
+        self.assertEqual(1, len(pass_lines))
+        self.assertGreater(pass_lines[0], terminal_indices[-1])
+        delivery = json.loads(
+            next(
+                line[len(delivery_prefix) :]
+                for line in stdout.splitlines()
+                if line.startswith(delivery_prefix)
+            )
+        )
+        self.assertEqual(
+            "unverified",
+            delivery["artifact_source_provenance"],
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                dependencies["artifact_snapshots"]["chrome_wasm_m6_https_test.js"]
+            ).hexdigest(),
+            delivery["loader"]["sha256"],
+        )
+
+    def test_main_uses_visual_bytes_captured_before_browser_launch(self) -> None:
+        result, stdout, stderr, dependencies = self._run_main_with_cleanup_fakes(
+            mutate_visual_inputs_after_snapshot=True
+        )
+
+        self.assertEqual(0, result)
+        self.assertEqual("", stderr)
+        self.assertTrue(dependencies["visual_mutation"]["performed"])
+        dependencies["compare_screenshots"].assert_called_once_with(
+            SCREENSHOT_PNG,
+            dependencies["captured_baseline_bytes"],
+            channel_tolerance=2,
+            maximum_different_pixel_ratio=0.0025,
+        )
+        delivery_prefix = f"{smoke.SENTINEL}:ARTIFACT_DELIVERY "
+        delivery = json.loads(
+            next(
+                line[len(delivery_prefix) :]
+                for line in stdout.splitlines()
+                if line.startswith(delivery_prefix)
+            )
+        )
+        self.assertEqual(
+            hashlib.sha256(dependencies["captured_baseline_bytes"]).hexdigest(),
+            delivery["screenshot_baseline"]["sha256"],
+        )
+        self.assertEqual(
+            hashlib.sha256(dependencies["captured_contract_bytes"]).hexdigest(),
+            delivery["screenshot_contract"]["sha256"],
+        )
+        expected_contract = json.loads(
+            dependencies["captured_contract_bytes"].decode("utf-8")
+        )
+        expected_canonical_contract = (
+            smoke.canonical_controlled_https_screenshot_contract_bytes(
+                expected_contract
+            )
+        )
+        self.assertEqual(
+            hashlib.sha256(expected_canonical_contract).hexdigest(),
+            delivery["screenshot_contract_canonical"]["sha256"],
+        )
+        self.assertEqual(
+            smoke.controlled_https_screenshot_policy(expected_contract),
+            delivery["screenshot_policy"],
+        )
 
     def test_server_cleanup_uses_bounded_shutdown_and_handler_drain(self) -> None:
         server = mock.Mock()

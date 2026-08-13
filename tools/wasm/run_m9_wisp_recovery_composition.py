@@ -59,7 +59,8 @@ DIAGNOSTICS_PREFIX = f"{SENTINEL}:DIAGNOSTICS "
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
 ARTIFACT_DELIVERY = (
-    "child-runner-output-paths-preflight-and-postflight-byte-identity"
+    "immutable-child-server-snapshot-bound-to-parent-preflight-and-postflight-"
+    "byte-identity"
 )
 SOURCE_SNAPSHOT_PROVENANCE = (
     "selected-on-disk-byte-identities-before-child-launch-and-after-relevant-"
@@ -103,6 +104,36 @@ M5_HOST_JS_PATH = REPO_ROOT / "tools/wasm/host/content_shell_host.js"
 DEFAULT_RELAY_SCRIPT = REPO_ROOT / "tools/wasm/m5_wisp_test_server.js"
 
 _BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
+_M6_ARTIFACT_DELIVERY_RECORD_FIELDS = frozenset(
+    (
+        "artifact_source_provenance",
+        "delivery",
+        "host_html",
+        "host_js",
+        "loader",
+        "module_name",
+        "screenshot_baseline",
+        "screenshot_contract",
+        "screenshot_contract_canonical",
+        "screenshot_policy",
+        "text_input_js",
+        "wasm",
+    )
+)
+_M5_ARTIFACT_DELIVERY_RECORD_FIELDS = frozenset(
+    (
+        "artifact_source_provenance",
+        "delivery",
+        "host_html",
+        "host_js",
+        "loader",
+        "module_name",
+        "wasm",
+    )
+)
+_SCREENSHOT_POLICY_FIELDS = frozenset(
+    ("channel_tolerance", "height", "maximum_different_pixel_ratio", "width")
+)
 _VERSIONS_FIELDS = frozenset(("chromium", "v8", "emscripten", "port"))
 _INPUT_SNAPSHOT_FIELDS = frozenset(
     (
@@ -127,6 +158,8 @@ _CHROME_SNAPSHOT_FIELDS = frozenset(
         "runner_source",
         "screenshot_baseline",
         "screenshot_contract",
+        "screenshot_contract_canonical",
+        "screenshot_policy",
         "text_input_js",
         "wasm",
     )
@@ -179,6 +212,7 @@ _COMPOSITION_FIELDS = frozenset(
 )
 _CHROME_CHILD_FIELDS = frozenset(
     (
+        "artifact_delivery",
         "browser_result_sha256",
         "controlled_reload",
         "elapsed_ms",
@@ -186,6 +220,7 @@ _CHROME_CHILD_FIELDS = frozenset(
         "fresh_host_browser_profile_owned_by_child",
         "relay_status_sha256",
         "returncode",
+        "screenshot_sha256",
         "stderr_bytes",
         "stderr_sha256",
         "stdout_bytes",
@@ -196,6 +231,7 @@ _CHROME_CHILD_FIELDS = frozenset(
 )
 _CONTENT_CHILD_FIELDS = frozenset(
     (
+        "artifact_delivery",
         "browser_result_sha256",
         "carrier_close_reconnect_phase",
         "elapsed_ms",
@@ -232,6 +268,8 @@ class FileSnapshot:
 
     path: Path
     identity: dict[str, object]
+    canonical_identity: dict[str, object] | None = None
+    screenshot_policy: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -418,6 +456,31 @@ def _snapshot_file(path: Path, description: str) -> FileSnapshot:
     return FileSnapshot(path=resolved, identity=_file_identity(resolved, description))
 
 
+def _snapshot_m6_screenshot_contract() -> tuple[FileSnapshot, dict[str, Any]]:
+    """Capture the raw and canonical M6 visual policy from one byte snapshot."""
+
+    path = _resolve_file(M6_SCREENSHOT_CONTRACT_PATH, "Chrome screenshot contract")
+    raw_bytes, contract, canonical_bytes = (
+        m6_controlled_https.snapshot_controlled_https_screenshot_contract(path)
+    )
+    raw_identity = m5_wisp.byte_snapshot_identity(
+        raw_bytes, "M9 Chrome screenshot contract"
+    )
+    canonical_identity = m5_wisp.byte_snapshot_identity(
+        canonical_bytes, "M9 Chrome canonical screenshot contract"
+    )
+    policy = m6_controlled_https.controlled_https_screenshot_policy(contract)
+    return (
+        FileSnapshot(
+            path=path,
+            identity=raw_identity,
+            canonical_identity=canonical_identity,
+            screenshot_policy=policy,
+        ),
+        contract,
+    )
+
+
 def _snapshot_output_artifact(
     out_dir: Path, name: str, description: str
 ) -> FileSnapshot:
@@ -425,10 +488,9 @@ def _snapshot_output_artifact(
     return FileSnapshot(path=path, identity=_file_identity(path, description))
 
 
-def _m6_screenshot_baseline_path() -> Path:
-    """Resolve the reviewed baseline through M6's own validated contract."""
+def _m6_screenshot_baseline_path(contract: dict[str, Any]) -> Path:
+    """Resolve the reviewed baseline through a captured M6 contract."""
 
-    contract = m6_controlled_https.load_controlled_https_screenshot_contract()
     baseline_name = contract.get("baseline")
     if type(baseline_name) is not str or not baseline_name:
         raise M0Error("M6 controlled-HTTPS screenshot baseline is invalid")
@@ -454,6 +516,7 @@ def snapshot_composition_inputs(
     _require_module_name(chrome_module_name, "Chrome module name")
     _require_module_name(content_module_name, "Content Shell module name")
     relay_script = _resolve_file(relay_script, "WISP relay script")
+    screenshot_contract, parsed_screenshot_contract = _snapshot_m6_screenshot_contract()
     return {
         "shared": {
             "composition_runner_source": _snapshot_file(
@@ -488,11 +551,10 @@ def snapshot_composition_inputs(
             "text_input_js": _snapshot_file(
                 M6_TEXT_INPUT_JS_PATH, "Chrome text-input bridge"
             ),
-            "screenshot_contract": _snapshot_file(
-                M6_SCREENSHOT_CONTRACT_PATH, "Chrome screenshot contract"
-            ),
+            "screenshot_contract": screenshot_contract,
             "screenshot_baseline": _snapshot_file(
-                _m6_screenshot_baseline_path(), "Chrome screenshot baseline"
+                _m6_screenshot_baseline_path(parsed_screenshot_contract),
+                "Chrome screenshot baseline",
             ),
         },
         "content_shell_wisp_recovery": {
@@ -570,6 +632,13 @@ def input_snapshot_identity(
     chrome = snapshots["chrome_controlled_https"]
     content = snapshots["content_shell_wisp_recovery"]
     try:
+        screenshot_contract = chrome["screenshot_contract"]
+        if (
+            not isinstance(screenshot_contract, FileSnapshot)
+            or screenshot_contract.canonical_identity is None
+            or screenshot_contract.screenshot_policy is None
+        ):
+            raise M0Error("M9 WISP composition screenshot contract snapshot is incomplete")
         return {
             "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
             "source_snapshot_provenance": SOURCE_SNAPSHOT_PROVENANCE,
@@ -589,8 +658,12 @@ def input_snapshot_identity(
                     chrome["screenshot_baseline"]
                 ),
                 "screenshot_contract": _byte_identity(
-                    chrome["screenshot_contract"]
+                    screenshot_contract
                 ),
+                "screenshot_contract_canonical": dict(
+                    screenshot_contract.canonical_identity
+                ),
+                "screenshot_policy": dict(screenshot_contract.screenshot_policy),
                 "text_input_js": _byte_identity(chrome["text_input_js"]),
                 "wasm": _byte_identity(chrome["wasm"]),
             },
@@ -936,6 +1009,14 @@ def _combined_child_output(execution: ChildExecution) -> str:
     output = f"{execution.stdout}\n{execution.stderr}"
     if len(output.encode("utf-8")) > MAX_CHILD_OUTPUT_BYTES:
         raise M0Error(f"{execution.name} child output exceeds the bound")
+    for sentinel in (m6_controlled_https.SENTINEL, m5_wisp.SENTINEL):
+        for line in output.splitlines():
+            if line == f"{sentinel}:FAIL" or line.startswith(f"{sentinel}:FAIL "):
+                raise M0Error(f"{execution.name} child emitted {sentinel}:FAIL")
+            if line.startswith(f"{sentinel}:DIAGNOSTICS_FAIL"):
+                raise M0Error(
+                    f"{execution.name} child emitted {sentinel}:DIAGNOSTICS_FAIL"
+                )
     if execution.returncode != 0:
         raise M0Error(
             f"{execution.name} child exited with status {execution.returncode}"
@@ -1038,7 +1119,9 @@ def _require_nonnegative_number(value: object, description: str) -> float:
     return result
 
 
-def _validate_redacted_m6_result(result: dict[str, Any]) -> dict[str, str]:
+def _validate_redacted_m6_result(
+    result: dict[str, Any], *, screenshot_policy: object
+) -> dict[str, str]:
     """Check the terminal public M6 record after its own full validator ran."""
 
     expected = {
@@ -1089,6 +1172,15 @@ def _validate_redacted_m6_result(result: dict[str, Any]) -> dict[str, str]:
     )
     for field in ("width", "height", "frameId"):
         _require_positive_integer(screenshot.get(field), f"M6 screenshot {field}")
+    policy = _validate_screenshot_policy(
+        screenshot_policy, "M6 browser-result screenshot policy"
+    )
+    _require_exact_value(
+        screenshot.get("width"), policy["width"], "M6 browser-result screenshot width"
+    )
+    _require_exact_value(
+        screenshot.get("height"), policy["height"], "M6 browser-result screenshot height"
+    )
     _require_nonnegative_number(screenshot.get("timestampMs"), "M6 screenshot timestamp")
     for field in ("stdout", "stderr"):
         value = result.get(field)
@@ -1105,6 +1197,76 @@ def _validate_redacted_m6_result(result: dict[str, Any]) -> dict[str, str]:
         if marker not in embedded_output:
             raise M0Error(f"M6 browser result is missing {marker}")
     return _versions_from_result(result, "M6 browser result")
+
+
+def _validate_m6_screenshot_record(
+    value: object, *, screenshot_policy: object
+) -> dict[str, Any]:
+    """Require the child comparison to use the preflight-bound visual policy."""
+
+    record = _require_exact_fields(
+        value,
+        frozenset(
+            (
+                "channelTolerance",
+                "differentPixelRatio",
+                "differentPixels",
+                "height",
+                "matches",
+                "maximumChannelDelta",
+                "maximumDifferentPixelRatio",
+                "meanChannelDelta",
+                "width",
+            )
+        ),
+        "M6 screenshot comparison",
+    )
+    policy = _validate_screenshot_policy(
+        screenshot_policy, "M6 expected screenshot policy"
+    )
+    _require_exact_value(record.get("matches"), True, "M6 screenshot matches")
+    _require_exact_value(record.get("width"), policy["width"], "M6 screenshot width")
+    _require_exact_value(
+        record.get("height"), policy["height"], "M6 screenshot height"
+    )
+    _require_exact_value(
+        record.get("channelTolerance"),
+        policy["channel_tolerance"],
+        "M6 screenshot channel tolerance",
+    )
+    maximum_ratio = record.get("maximumDifferentPixelRatio")
+    if (
+        type(maximum_ratio) is not float
+        or not math.isfinite(maximum_ratio)
+        or maximum_ratio != policy["maximum_different_pixel_ratio"]
+    ):
+        raise M0Error("M6 screenshot maximum different-pixel ratio is invalid")
+    pixels = policy["width"] * policy["height"]
+    different_pixels = record.get("differentPixels")
+    if type(different_pixels) is not int or not 0 <= different_pixels <= pixels:
+        raise M0Error("M6 screenshot different-pixel count is invalid")
+    different_ratio = record.get("differentPixelRatio")
+    if type(different_ratio) is not float or not math.isfinite(different_ratio):
+        raise M0Error("M6 screenshot different-pixel ratio is invalid")
+    if (
+        different_ratio > 1
+        or different_ratio != different_pixels / pixels
+        or different_ratio > maximum_ratio
+    ):
+        raise M0Error("M6 screenshot different-pixel ratio is invalid")
+    if record["matches"] != (different_ratio <= maximum_ratio):
+        raise M0Error("M6 screenshot match status is invalid")
+    maximum_delta = record.get("maximumChannelDelta")
+    if type(maximum_delta) is not int or not 0 <= maximum_delta <= 255:
+        raise M0Error("M6 screenshot maximum channel delta is invalid")
+    mean_delta = record.get("meanChannelDelta")
+    if (
+        type(mean_delta) is not float
+        or not math.isfinite(mean_delta)
+        or not 0 <= mean_delta <= maximum_delta
+    ):
+        raise M0Error("M6 screenshot mean channel delta is invalid")
+    return record
 
 
 def _canonical_json_sha256(value: dict[str, Any]) -> str:
@@ -1127,14 +1289,20 @@ def _child_output_evidence(execution: ChildExecution) -> dict[str, object]:
     }
 
 
-def validate_chrome_execution(execution: ChildExecution) -> tuple[dict[str, object], dict[str, str]]:
+def validate_chrome_execution(
+    execution: ChildExecution, *, expected_artifact_input: object
+) -> tuple[dict[str, object], dict[str, str]]:
     """Validate the public M6 terminal records and retain bounded evidence."""
 
     _combined_child_output(execution)
+    delivery_prefix = f"{m6_controlled_https.SENTINEL}:ARTIFACT_DELIVERY "
+    screenshot_prefix = f"{m6_controlled_https.SENTINEL}:SCREENSHOT "
     browser_prefix = f"{m6_controlled_https.SENTINEL}:BROWSER_RESULT "
     relay_prefix = f"{m6_controlled_https.SENTINEL}:RELAY_STATUS "
     record_indices = _require_stdout_record_order(
-        execution.stdout, (browser_prefix, relay_prefix), "M6 child"
+        execution.stdout,
+        (delivery_prefix, screenshot_prefix, browser_prefix, relay_prefix),
+        "M6 child",
     )
     _require_stdout_pass_after_records(
         execution.stdout,
@@ -1142,22 +1310,44 @@ def validate_chrome_execution(execution: ChildExecution) -> tuple[dict[str, obje
         record_indices,
         "M6 child",
     )
+    artifact_delivery = _unique_json_record(
+        execution.stdout, delivery_prefix, "M6 child"
+    )
+    _validate_child_artifact_delivery(
+        artifact_delivery,
+        expected_artifact_input=expected_artifact_input,
+        input_fields=_CHROME_SNAPSHOT_FIELDS,
+        delivery_fields=_M6_ARTIFACT_DELIVERY_RECORD_FIELDS,
+        description="M6 child artifact delivery",
+    )
+    screenshot = _unique_json_record(execution.stdout, screenshot_prefix, "M6 child")
+    _validate_m6_screenshot_record(
+        screenshot,
+        screenshot_policy=artifact_delivery.get("screenshot_policy"),
+    )
     browser_result = _unique_json_record(execution.stdout, browser_prefix, "M6 child")
     relay_status = _unique_json_record(execution.stdout, relay_prefix, "M6 child")
-    versions = _validate_redacted_m6_result(browser_result)
+    versions = _validate_redacted_m6_result(
+        browser_result,
+        screenshot_policy=artifact_delivery.get("screenshot_policy"),
+    )
     # The M6 child invokes this validator before emitting terminal output. Run
     # it again here so a fabricated terminal record cannot skip its relay proof.
     m6_controlled_https.validate_relay_status(relay_status)
     evidence = _child_output_evidence(execution)
     evidence.update(
         {
+            "artifact_delivery": artifact_delivery,
             "browser_result_sha256": _canonical_json_sha256(browser_result),
             "controlled_reload": True,
             "relay_status_sha256": _canonical_json_sha256(relay_status),
+            "screenshot_sha256": _canonical_json_sha256(screenshot),
             "terminal_records": {
+                "artifact_delivery": 1,
                 "browser_result": 1,
                 "pass": 1,
                 "relay_status": 1,
+                "screenshot": 1,
             },
             "wisp_configured": True,
         }
@@ -1165,23 +1355,36 @@ def validate_chrome_execution(execution: ChildExecution) -> tuple[dict[str, obje
     return evidence, versions
 
 
-def validate_content_execution(execution: ChildExecution) -> tuple[dict[str, object], dict[str, str]]:
+def validate_content_execution(
+    execution: ChildExecution, *, expected_artifact_input: object
+) -> tuple[dict[str, object], dict[str, str]]:
     """Validate the public M5 carrier-close terminal records."""
 
     _combined_child_output(execution)
     pass_marker = f"{m5_wisp.SENTINEL}:PASS"
     ready_prefix = f"{m5_wisp.SENTINEL}:RELAY_READY "
+    delivery_prefix = f"{m5_wisp.SENTINEL}:ARTIFACT_DELIVERY "
     browser_prefix = f"{m5_wisp.SENTINEL}:BROWSER_RESULT "
     relay_prefix = f"{m5_wisp.SENTINEL}:RELAY_TRANSCRIPT "
     record_indices = _require_stdout_record_order(
         execution.stdout,
-        (ready_prefix, browser_prefix, relay_prefix),
+        (ready_prefix, delivery_prefix, browser_prefix, relay_prefix),
         "M5 child",
     )
     _require_stdout_pass_after_records(
         execution.stdout, pass_marker, record_indices, "M5 child"
     )
     ready_record = _unique_json_record(execution.stdout, ready_prefix, "M5 child")
+    artifact_delivery = _unique_json_record(
+        execution.stdout, delivery_prefix, "M5 child"
+    )
+    _validate_child_artifact_delivery(
+        artifact_delivery,
+        expected_artifact_input=expected_artifact_input,
+        input_fields=_CONTENT_SNAPSHOT_FIELDS,
+        delivery_fields=_M5_ARTIFACT_DELIVERY_RECORD_FIELDS,
+        description="M5 child artifact delivery",
+    )
     browser_result = _unique_json_record(execution.stdout, browser_prefix, "M5 child")
     relay_transcript = _unique_json_record(execution.stdout, relay_prefix, "M5 child")
     versions = _versions_from_result(browser_result, "M5 browser result")
@@ -1202,11 +1405,13 @@ def validate_content_execution(execution: ChildExecution) -> tuple[dict[str, obj
     evidence = _child_output_evidence(execution)
     evidence.update(
         {
+            "artifact_delivery": artifact_delivery,
             "browser_result_sha256": _canonical_json_sha256(browser_result),
             "carrier_close_reconnect_phase": "recovered",
             "reconnect_recovery_requests": 1,
             "relay_transcript_sha256": _canonical_json_sha256(relay_transcript),
             "terminal_records": {
+                "artifact_delivery": 1,
                 "browser_result": 1,
                 "pass": 1,
                 "relay_ready": 1,
@@ -1225,6 +1430,137 @@ def _validate_byte_identity(value: object, description: str) -> None:
     sha256 = identity.get("sha256")
     if type(sha256) is not str or not SHA256_RE.fullmatch(sha256):
         raise M0Error(f"M9 WISP composition {description} SHA-256 is invalid")
+
+
+def _validate_screenshot_policy(value: object, description: str) -> dict[str, object]:
+    policy = _require_exact_fields(value, _SCREENSHOT_POLICY_FIELDS, description)
+    width = policy.get("width")
+    height = policy.get("height")
+    tolerance = policy.get("channel_tolerance")
+    ratio = policy.get("maximum_different_pixel_ratio")
+    if (
+        type(width) is not int
+        or type(height) is not int
+        or type(tolerance) is not int
+        or type(ratio) not in (int, float)
+        or isinstance(ratio, bool)
+        or not math.isfinite(float(ratio))
+    ):
+        raise M0Error(f"M9 WISP composition {description} is invalid")
+    if (
+        width != 640
+        or height != 480
+        or not 0 <= tolerance <= 255
+        or not 0 <= float(ratio) <= 1
+    ):
+        raise M0Error(f"M9 WISP composition {description} is unsupported")
+    return {
+        "width": width,
+        "height": height,
+        "channel_tolerance": tolerance,
+        "maximum_different_pixel_ratio": float(ratio),
+    }
+
+
+def _expected_child_artifact_delivery(
+    expected_artifact_input: object,
+    *,
+    input_fields: frozenset[str],
+    delivery_fields: frozenset[str],
+    description: str,
+) -> dict[str, object]:
+    """Derive the only permissible child-server payload identity.
+
+    The parent hashes output files before a child starts and after it exits.
+    The child record below additionally rejects a file replacement that is
+    restored before postflight hashing: it must name the same immutable
+    in-memory JS/Wasm payload that the parent captured.
+    """
+
+    artifact_input = _require_exact_fields(
+        expected_artifact_input, input_fields, f"{description} input"
+    )
+    module_name = artifact_input.get("module_name")
+    if type(module_name) is not str or not MODULE_NAME_RE.fullmatch(module_name):
+        raise M0Error(f"M9 WISP composition {description} module name is invalid")
+    for field in delivery_fields - {
+        "artifact_source_provenance",
+        "delivery",
+        "module_name",
+        "screenshot_policy",
+    }:
+        _validate_byte_identity(
+            artifact_input.get(field), f"{description} expected {field}"
+        )
+    expected_delivery: dict[str, object] = {
+        "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
+        "delivery": m5_wisp.ARTIFACT_DELIVERY_MODE,
+        "module_name": module_name,
+    }
+    for field in delivery_fields - {
+        "artifact_source_provenance",
+        "delivery",
+        "module_name",
+        "screenshot_policy",
+    }:
+        expected_delivery[field] = dict(artifact_input[field])
+    if "screenshot_policy" in delivery_fields:
+        expected_delivery["screenshot_policy"] = _validate_screenshot_policy(
+            artifact_input.get("screenshot_policy"),
+            f"{description} expected screenshot policy",
+        )
+    return expected_delivery
+
+
+def _validate_child_artifact_delivery(
+    value: object,
+    *,
+    expected_artifact_input: object,
+    input_fields: frozenset[str],
+    delivery_fields: frozenset[str],
+    description: str,
+) -> dict[str, object]:
+    delivery = _require_exact_fields(
+        value, delivery_fields, description
+    )
+    expected_delivery = _expected_child_artifact_delivery(
+        expected_artifact_input,
+        input_fields=input_fields,
+        delivery_fields=delivery_fields,
+        description=description,
+    )
+    _require_exact_value(
+        delivery.get("artifact_source_provenance"),
+        ARTIFACT_SOURCE_PROVENANCE,
+        f"{description} artifact source provenance",
+    )
+    _require_exact_value(
+        delivery.get("delivery"),
+        m5_wisp.ARTIFACT_DELIVERY_MODE,
+        f"{description} mode",
+    )
+    _require_exact_value(
+        delivery.get("module_name"),
+        expected_delivery["module_name"],
+        f"{description} module name",
+    )
+    for field in delivery_fields - {
+        "artifact_source_provenance",
+        "delivery",
+        "module_name",
+        "screenshot_policy",
+    }:
+        _validate_byte_identity(delivery.get(field), f"{description} {field}")
+    if "screenshot_policy" in delivery_fields:
+        _validate_screenshot_policy(
+            delivery.get("screenshot_policy"), f"{description} screenshot policy"
+        )
+    if delivery != expected_delivery:
+        raise M0Error(
+            "M9 WISP composition "
+            f"{description} does not match the parent preflight identity"
+        )
+    return delivery
 
 
 def _validate_input_snapshot_identity(
@@ -1268,8 +1604,16 @@ def _validate_input_snapshot_identity(
         module_name = lane_identity.get("module_name")
         if type(module_name) is not str or not MODULE_NAME_RE.fullmatch(module_name):
             raise M0Error(f"M9 WISP composition {lane} module name is invalid")
-        for field in fields - {"artifact_delivery", "module_name"}:
+        for field in fields - {
+            "artifact_delivery",
+            "module_name",
+            "screenshot_policy",
+        }:
             _validate_byte_identity(lane_identity.get(field), f"{lane} input {field}")
+        if lane == "Chrome":
+            _validate_screenshot_policy(
+                lane_identity.get("screenshot_policy"), "Chrome screenshot policy"
+            )
     if identity != expected_identity:
         raise M0Error(
             "M9 WISP composition input identities disagree with preflight snapshots"
@@ -1357,20 +1701,48 @@ def validate_composition_result(
     chrome = _validate_child_common(
         children.get("chrome_controlled_https"), _CHROME_CHILD_FIELDS, "M6 child"
     )
+    _validate_child_artifact_delivery(
+        chrome.get("artifact_delivery"),
+        expected_artifact_input=expected_input_identity[
+            "chrome_controlled_https"
+        ],
+        input_fields=_CHROME_SNAPSHOT_FIELDS,
+        delivery_fields=_M6_ARTIFACT_DELIVERY_RECORD_FIELDS,
+        description="M6 child artifact delivery",
+    )
     _require_exact_value(chrome.get("controlled_reload"), True, "M6 child reload")
     _require_exact_value(chrome.get("wisp_configured"), True, "M6 child WISP")
     _require_exact_value(
         chrome.get("terminal_records"),
-        {"browser_result": 1, "pass": 1, "relay_status": 1},
+        {
+            "artifact_delivery": 1,
+            "browser_result": 1,
+            "pass": 1,
+            "relay_status": 1,
+            "screenshot": 1,
+        },
         "M6 child terminal records",
     )
-    for field in ("browser_result_sha256", "relay_status_sha256"):
+    for field in (
+        "browser_result_sha256",
+        "relay_status_sha256",
+        "screenshot_sha256",
+    ):
         _validate_child_digest(chrome.get(field), f"M6 child {field}")
 
     content = _validate_child_common(
         children.get("content_shell_wisp_carrier_close_recovery"),
         _CONTENT_CHILD_FIELDS,
         "M5 child",
+    )
+    _validate_child_artifact_delivery(
+        content.get("artifact_delivery"),
+        expected_artifact_input=expected_input_identity[
+            "content_shell_wisp_recovery"
+        ],
+        input_fields=_CONTENT_SNAPSHOT_FIELDS,
+        delivery_fields=_M5_ARTIFACT_DELIVERY_RECORD_FIELDS,
+        description="M5 child artifact delivery",
     )
     _require_exact_value(
         content.get("carrier_close_reconnect_phase"),
@@ -1388,6 +1760,7 @@ def validate_composition_result(
     _require_exact_value(
         content.get("terminal_records"),
         {
+            "artifact_delivery": 1,
             "browser_result": 1,
             "pass": 1,
             "relay_ready": 1,
@@ -1489,7 +1862,10 @@ def run_composition(
         ),
         chrome_timeout,
     )
-    chrome_evidence, chrome_versions = validate_chrome_execution(chrome_execution)
+    chrome_evidence, chrome_versions = validate_chrome_execution(
+        chrome_execution,
+        expected_artifact_input=input_identity["chrome_controlled_https"],
+    )
     verify_input_snapshots_unchanged(
         snapshots, ("shared", "chrome_controlled_https")
     )
@@ -1508,7 +1884,10 @@ def run_composition(
         ),
         content_timeout,
     )
-    content_evidence, content_versions = validate_content_execution(content_execution)
+    content_evidence, content_versions = validate_content_execution(
+        content_execution,
+        expected_artifact_input=input_identity["content_shell_wisp_recovery"],
+    )
     verify_input_snapshots_unchanged(
         snapshots, ("shared", "content_shell_wisp_recovery")
     )

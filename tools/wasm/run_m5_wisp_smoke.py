@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from dataclasses import dataclass
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -40,7 +41,12 @@ from m0_common import (
     parse_timeout,
     print_context,
 )
-from m3_content_server import M3RequestHandler, M3ServerState, create_m3_server
+from m3_content_server import (
+    M3_HOST_SNAPSHOT_PATHS,
+    M3RequestHandler,
+    M3ServerState,
+    create_m3_server,
+)
 from m9_browser_cleanup import (
     BrowserStderrReader,
     abort_browser_group,
@@ -98,6 +104,12 @@ PRIVATE_KEY_PEM_MARKERS = (
     b"-----BEGIN EC PRIVATE KEY-----",
 )
 ARTIFACT_SCAN_CHUNK_BYTES = 1024 * 1024
+# This record starts with the immutable server payloads, and M6 extends it
+# with its captured visual-comparison inputs.  The value deliberately names
+# the broader execution-input closure rather than falsely describing a visual
+# policy file as server-delivered.
+ARTIFACT_DELIVERY_MODE = "immutable-in-memory-execution-input-snapshot-v1"
+ARTIFACT_SOURCE_PROVENANCE = "unverified"
 CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
@@ -491,6 +503,187 @@ def verify_no_private_key_pem_artifacts(
                         f"{artifact.name}"
                     )
                 previous = payload[-(longest_marker - 1) :]
+
+
+def _wisp_artifact_names(module_name: str) -> tuple[str, str]:
+    """Return the only executable artifacts a controlled WISP server serves."""
+
+    if (
+        type(module_name) is not str
+        or not module_name
+        or Path(module_name).name != module_name
+    ):
+        raise M0Error("M5 module name is invalid for an artifact snapshot")
+    return (f"{module_name}.js", f"{module_name}.wasm")
+
+
+def scan_wisp_snapshot_for_private_key(contents: bytes, snapshot_name: str) -> None:
+    """Reject private-key headers from any executable-host server snapshot."""
+
+    if any(marker in contents for marker in PRIVATE_KEY_PEM_MARKERS):
+        raise M0Error(
+            "M5 test served snapshot embeds a PEM private-key header: "
+            f"{snapshot_name}"
+        )
+
+
+def validate_wisp_artifact_snapshots(
+    artifact_snapshots: object, module_name: str
+) -> dict[str, bytes]:
+    """Validate and defensively copy the exact executable server payloads."""
+
+    expected_names = _wisp_artifact_names(module_name)
+    if (
+        not isinstance(artifact_snapshots, dict)
+        or set(artifact_snapshots) != set(expected_names)
+        or any(type(contents) is not bytes for contents in artifact_snapshots.values())
+    ):
+        raise M0Error("M5 executable artifact snapshots are invalid")
+    snapshots: dict[str, bytes] = {}
+    for artifact_name in expected_names:
+        contents = artifact_snapshots[artifact_name]
+        if not contents:
+            raise M0Error(f"M5 executable artifact snapshot is empty: {artifact_name}")
+        scan_wisp_snapshot_for_private_key(contents, artifact_name)
+        snapshots[artifact_name] = bytes(contents)
+    return snapshots
+
+
+def snapshot_wisp_artifacts(out_dir: Path, module_name: str) -> dict[str, bytes]:
+    """Capture the JS/Wasm pair before server startup and scan those bytes.
+
+    The returned mapping is the only executable payload a controlled M5 or M6
+    HTTP server may deliver.  Checking the in-memory copy (rather than only a
+    prior disk scan) keeps a replacement between validation and server launch
+    from bypassing the private-key boundary.
+    """
+
+    resolved_out_dir = out_dir.resolve()
+    if not resolved_out_dir.is_dir():
+        raise M0Error(f"M5 output directory is missing: {out_dir}")
+    snapshots: dict[str, bytes] = {}
+    for artifact_name in _wisp_artifact_names(module_name):
+        artifact = resolved_out_dir / artifact_name
+        if not artifact.is_file():
+            raise M0Error(f"M5 executable artifact is missing: {artifact}")
+        resolved_artifact = artifact.resolve()
+        if resolved_artifact.parent != resolved_out_dir:
+            raise M0Error(
+                "M5 executable artifact resolves outside the output directory: "
+                f"{artifact_name}"
+            )
+        try:
+            snapshots[artifact_name] = resolved_artifact.read_bytes()
+        except OSError as exc:
+            raise M0Error(
+                f"cannot snapshot M5 executable artifact {artifact_name}: {exc}"
+            ) from exc
+    return validate_wisp_artifact_snapshots(snapshots, module_name)
+
+
+def validate_wisp_static_host_snapshots(static_snapshots: object) -> dict[str, bytes]:
+    """Validate M5's complete, immutable executable host-page mapping."""
+
+    if (
+        not isinstance(static_snapshots, dict)
+        or set(static_snapshots) != M3_HOST_SNAPSHOT_PATHS
+        or any(type(contents) is not bytes for contents in static_snapshots.values())
+    ):
+        raise M0Error("M5 static host snapshots are invalid")
+    snapshots = {
+        request_path: bytes(static_snapshots[request_path])
+        for request_path in M3_HOST_SNAPSHOT_PATHS
+    }
+    if any(not contents for contents in snapshots.values()):
+        raise M0Error("M5 static host snapshot is empty")
+    if snapshots["/"] != snapshots["/__m3__/"]:
+        raise M0Error("M5 static host HTML aliases disagree")
+    for request_path, contents in snapshots.items():
+        scan_wisp_snapshot_for_private_key(contents, request_path)
+    return snapshots
+
+
+def snapshot_wisp_static_host_resources(
+    host_dir: Path | None = None,
+) -> dict[str, bytes]:
+    """Capture every M3 host resource executed by the M5 WISP page.
+
+    M3's static-snapshot mode has an intentionally exact request-path mapping:
+    both public HTML aliases and the host bridge must be captured together.
+    The server receives only this mapping, so later edits to the source tree
+    cannot affect a running M5 lane.
+    """
+
+    selected_host_dir = (host_dir or Path(__file__).with_name("host")).resolve()
+    if not selected_host_dir.is_dir():
+        raise M0Error(f"M5 host resource directory is missing: {selected_host_dir}")
+
+    def snapshot_file(name: str) -> bytes:
+        candidate = selected_host_dir / name
+        if not candidate.is_file() or candidate.is_symlink():
+            raise M0Error(f"M5 host resource is missing or unsafe: {candidate}")
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate.parent != selected_host_dir:
+            raise M0Error(f"M5 host resource resolves outside host directory: {name}")
+        try:
+            contents = resolved_candidate.read_bytes()
+        except OSError as exc:
+            raise M0Error(f"cannot snapshot M5 host resource {name}: {exc}") from exc
+        if not contents:
+            raise M0Error(f"M5 host resource is empty: {name}")
+        return contents
+
+    html = snapshot_file("content_shell.html")
+    host_js = snapshot_file("content_shell_host.js")
+    return validate_wisp_static_host_snapshots(
+        {
+            "/": html,
+            "/__m3__/": html,
+            "/__m3__/content_shell_host.js": host_js,
+        }
+    )
+
+
+def byte_snapshot_identity(contents: object, description: str) -> dict[str, object]:
+    """Return an exact byte identity for a bounded immutable input."""
+
+    if type(contents) is not bytes or not contents:
+        raise M0Error(f"{description} snapshot is invalid")
+    return {
+        "bytes": len(contents),
+        "sha256": hashlib.sha256(contents).hexdigest(),
+    }
+
+
+def wisp_static_host_delivery_identity(static_snapshots: object) -> dict[str, object]:
+    """Identify exactly the M5 host HTML and host bridge bytes served."""
+
+    snapshots = validate_wisp_static_host_snapshots(static_snapshots)
+    return {
+        "host_html": byte_snapshot_identity(snapshots["/"], "M5 host HTML"),
+        "host_js": byte_snapshot_identity(
+            snapshots["/__m3__/content_shell_host.js"], "M5 host JavaScript"
+        ),
+    }
+
+
+def artifact_delivery_identity(
+    artifact_snapshots: object, module_name: str
+) -> dict[str, object]:
+    """Return a path-free identity for the immutable server payload pair."""
+
+    snapshots = validate_wisp_artifact_snapshots(artifact_snapshots, module_name)
+
+    javascript_name, wasm_name = _wisp_artifact_names(module_name)
+    return {
+        "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
+        "delivery": ARTIFACT_DELIVERY_MODE,
+        "loader": byte_snapshot_identity(
+            snapshots[javascript_name], "M5 executable loader"
+        ),
+        "module_name": module_name,
+        "wasm": byte_snapshot_identity(snapshots[wasm_name], "M5 executable Wasm"),
+    }
 
 
 def find_node(explicit: Path | None) -> Path:
@@ -2025,6 +2218,9 @@ def main() -> int:
     browser_stderr_stream: TextIO | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
     result: dict[str, Any] | None = None
+    artifact_snapshots: dict[str, bytes] | None = None
+    static_host_snapshots: dict[str, bytes] | None = None
+    artifact_delivery: dict[str, object] | None = None
     context: dict[str, object] | None = None
     stage = "load_manifest"
     primary_error: BaseException | None = None
@@ -2068,6 +2264,16 @@ def main() -> int:
         result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         stage = "verify_test_artifacts"
         verify_no_private_key_pem_artifacts(out_dir, args.module_name)
+        stage = "snapshot_executable_artifacts"
+        artifact_snapshots = snapshot_wisp_artifacts(out_dir, args.module_name)
+        artifact_delivery = artifact_delivery_identity(
+            artifact_snapshots, args.module_name
+        )
+        stage = "snapshot_static_host_resources"
+        static_host_snapshots = snapshot_wisp_static_host_resources()
+        artifact_delivery.update(
+            wisp_static_host_delivery_identity(static_host_snapshots)
+        )
         stage = "create_host_server"
         server = create_m3_server(
             "127.0.0.1",
@@ -2077,6 +2283,12 @@ def main() -> int:
             result_queue,
             module_name=args.module_name,
             verbose=args.verbose_server,
+            artifact_snapshots=artifact_snapshots,
+            static_snapshots=static_host_snapshots,
+            # The M5 lane snapshots every host resource it executes. Its
+            # static-snapshot mode intentionally 404s unrelated M3 fixtures,
+            # so it has no live Ahem-font dependency to preflight.
+            require_ahem_font=False,
             server_factory=M5WispServer,
         )
         server_thread = threading.Thread(
@@ -2229,6 +2441,15 @@ def main() -> int:
         if profile is not None:
             profile.cleanup()
             profile_cleanup_complete = True
+        if artifact_delivery is None:
+            raise M0Error("M5 executable artifact delivery identity is missing")
+        print(
+            f"{SENTINEL}:ARTIFACT_DELIVERY "
+            + json.dumps(
+                artifact_delivery, sort_keys=True, separators=(",", ":")
+            ),
+            flush=True,
+        )
         print(
             f"{SENTINEL}:BROWSER_RESULT "
             + json.dumps(result, sort_keys=True, separators=(",", ":")),

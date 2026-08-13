@@ -10,11 +10,15 @@ from __future__ import annotations
 import contextlib
 import copy
 from dataclasses import replace
+import hashlib
+import http.client
 import io
 import json
 from pathlib import Path
+import queue
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -2535,6 +2539,170 @@ class M5ArtifactTrustBoundaryTest(unittest.TestCase):
                     out_dir, module_name
                 )
 
+    def test_snapshot_rechecks_captured_bytes_for_private_key_headers(self) -> None:
+        module_name = "content_shell_wasm_m5_test"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            out_dir = Path(temporary_directory)
+            (out_dir / f"{module_name}.js").write_bytes(b"loader")
+            (out_dir / f"{module_name}.wasm").write_bytes(
+                b"\x00asm\n-----BEGIN EC PRIVATE KEY-----\n"
+            )
+
+            with self.assertRaisesRegex(M0Error, "private-key header"):
+                run_m5_wisp_smoke.snapshot_wisp_artifacts(out_dir, module_name)
+
+    def test_static_host_snapshot_rechecks_served_host_bytes_for_private_key_headers(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(M0Error, "private-key header"):
+            run_m5_wisp_smoke.validate_wisp_static_host_snapshots(
+                {
+                    "/": b"<html>host</html>",
+                    "/__m3__/": b"<html>host</html>",
+                    "/__m3__/content_shell_host.js": (
+                        b"// -----BEGIN PRIVATE KEY-----"
+                    ),
+                }
+            )
+
+    def test_server_serves_captured_artifacts_after_disk_mutation(self) -> None:
+        module_name = "content_shell_wasm_m5_test"
+        original_loader = b"original M5 loader"
+        original_wasm = b"\x00asm-original-M5"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            out_dir = root / "out"
+            out_dir.mkdir()
+            (out_dir / f"{module_name}.js").write_bytes(original_loader)
+            (out_dir / f"{module_name}.wasm").write_bytes(original_wasm)
+            snapshots = run_m5_wisp_smoke.snapshot_wisp_artifacts(
+                out_dir, module_name
+            )
+            delivery = run_m5_wisp_smoke.artifact_delivery_identity(
+                snapshots, module_name
+            )
+            font = root / "Ahem.woff2"
+            font.write_bytes(b"test font")
+            with mock.patch.object(m3_content_server, "M3_AHEM_FONT", font):
+                server = m3_content_server.create_m3_server(
+                    "127.0.0.1",
+                    0,
+                    out_dir,
+                    "m5-token",
+                    queue.Queue(maxsize=1),
+                    module_name=module_name,
+                    artifact_snapshots=snapshots,
+                    server_factory=run_m5_wisp_smoke.M5WispServer,
+                )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                (out_dir / f"{module_name}.js").write_bytes(b"mutated loader")
+                (out_dir / f"{module_name}.wasm").write_bytes(b"mutated wasm")
+                host, port = server.server_address[:2]
+                for suffix, expected in (
+                    (".js", original_loader),
+                    (".wasm", original_wasm),
+                ):
+                    with self.subTest(suffix=suffix):
+                        connection = http.client.HTTPConnection(host, port, timeout=5)
+                        try:
+                            connection.request(
+                                "GET", f"/__m3__/artifacts/{module_name}{suffix}"
+                            )
+                            response = connection.getresponse()
+                            self.assertEqual(http.client.OK, response.status)
+                            self.assertEqual(expected, response.read())
+                        finally:
+                            connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            self.assertEqual(
+                hashlib.sha256(original_loader).hexdigest(),
+                delivery["loader"]["sha256"],
+            )
+            self.assertEqual(
+                run_m5_wisp_smoke.ARTIFACT_SOURCE_PROVENANCE,
+                delivery["artifact_source_provenance"],
+            )
+
+    def test_server_serves_captured_static_host_after_disk_mutation(self) -> None:
+        module_name = "content_shell_wasm_m5_test"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            out_dir = root / "out"
+            host_dir = root / "host"
+            out_dir.mkdir()
+            host_dir.mkdir()
+            (out_dir / f"{module_name}.js").write_bytes(b"loader")
+            (out_dir / f"{module_name}.wasm").write_bytes(b"\x00asm")
+            original_html = b"<script type=module>original M5 host</script>"
+            original_js = b"export const m5Host = 'original';"
+            (host_dir / "content_shell.html").write_bytes(original_html)
+            (host_dir / "content_shell_host.js").write_bytes(original_js)
+            artifact_snapshots = run_m5_wisp_smoke.snapshot_wisp_artifacts(
+                out_dir, module_name
+            )
+            static_snapshots = run_m5_wisp_smoke.snapshot_wisp_static_host_resources(
+                host_dir
+            )
+            delivery = run_m5_wisp_smoke.artifact_delivery_identity(
+                artifact_snapshots, module_name
+            )
+            delivery.update(
+                run_m5_wisp_smoke.wisp_static_host_delivery_identity(
+                    static_snapshots
+                )
+            )
+            server = m3_content_server.create_m3_server(
+                "127.0.0.1",
+                0,
+                out_dir,
+                "m5-token",
+                queue.Queue(maxsize=1),
+                module_name=module_name,
+                artifact_snapshots=artifact_snapshots,
+                static_snapshots=static_snapshots,
+                require_ahem_font=False,
+                server_factory=run_m5_wisp_smoke.M5WispServer,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                (host_dir / "content_shell.html").write_bytes(b"mutated HTML")
+                (host_dir / "content_shell_host.js").write_bytes(b"mutated JS")
+                host, port = server.server_address[:2]
+                for path, expected in (
+                    ("/", original_html),
+                    ("/__m3__/", original_html),
+                    ("/__m3__/content_shell_host.js", original_js),
+                ):
+                    with self.subTest(path=path):
+                        connection = http.client.HTTPConnection(host, port, timeout=5)
+                        try:
+                            connection.request("GET", path)
+                            response = connection.getresponse()
+                            self.assertEqual(http.client.OK, response.status)
+                            self.assertEqual(expected, response.read())
+                        finally:
+                            connection.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            self.assertEqual(
+                hashlib.sha256(original_html).hexdigest(),
+                delivery["host_html"]["sha256"],
+            )
+            self.assertEqual(
+                hashlib.sha256(original_js).hexdigest(),
+                delivery["host_js"]["sha256"],
+            )
+
 
 class M5RunnerCleanupTest(unittest.TestCase):
     """Exercise terminal-evidence ordering without launching Chrome or Node."""
@@ -2564,6 +2732,10 @@ class M5RunnerCleanupTest(unittest.TestCase):
         profile = mock.Mock()
         profile.name = "/fake-profile"
         profile.cleanup.side_effect = profile_cleanup_error
+        artifact_snapshots = {
+            "content_shell_wasm_m5_test.js": b"fake M5 loader",
+            "content_shell_wasm_m5_test.wasm": b"\x00asm fake M5",
+        }
         relay_ready = run_m5_wisp_smoke.RelayReady(
             wisp_endpoint="ws://127.0.0.1:40123/wisp/",
             https_url="https://a.test:4443/m5/",
@@ -2602,6 +2774,7 @@ class M5RunnerCleanupTest(unittest.TestCase):
             "cleanup_server": cleanup_server,
             "abort_browser": abort_browser,
             "abort_relay": abort_relay,
+            "artifact_snapshots": artifact_snapshots,
             "wait_for_result": wait_for_result,
         }
         patches = (
@@ -2620,6 +2793,11 @@ class M5RunnerCleanupTest(unittest.TestCase):
                 run_m5_wisp_smoke, "find_node", return_value=Path("/fake-node")
             ),
             mock.patch.object(run_m5_wisp_smoke, "verify_no_private_key_pem_artifacts"),
+            mock.patch.object(
+                run_m5_wisp_smoke,
+                "snapshot_wisp_artifacts",
+                return_value=artifact_snapshots,
+            ),
             mock.patch.object(
                 run_m5_wisp_smoke, "create_m3_server", return_value=server
             ),
@@ -2701,7 +2879,12 @@ class M5RunnerCleanupTest(unittest.TestCase):
 
         self.assertEqual(1, result)
         self.assertIn("FAIL reason=browser cleanup failed", stderr)
-        for marker in ("BROWSER_RESULT", "RELAY_TRANSCRIPT", "PASS"):
+        for marker in (
+            "ARTIFACT_DELIVERY",
+            "BROWSER_RESULT",
+            "RELAY_TRANSCRIPT",
+            "PASS",
+        ):
             with self.subTest(marker=marker):
                 self.assertNotIn(
                     f"{run_m5_wisp_smoke.SENTINEL}:{marker}", stdout + stderr
@@ -2748,7 +2931,12 @@ class M5RunnerCleanupTest(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 self.assertNotIn(message, stderr)
-        for marker in ("BROWSER_RESULT", "RELAY_TRANSCRIPT", "PASS"):
+        for marker in (
+            "ARTIFACT_DELIVERY",
+            "BROWSER_RESULT",
+            "RELAY_TRANSCRIPT",
+            "PASS",
+        ):
             with self.subTest(marker=marker):
                 self.assertNotIn(
                     f"{run_m5_wisp_smoke.SENTINEL}:{marker}", stdout + stderr
@@ -2759,6 +2947,36 @@ class M5RunnerCleanupTest(unittest.TestCase):
         dependencies["abort_relay"].assert_called_once()
         dependencies["cleanup_server"].assert_called_once()
         dependencies["profile"].cleanup.assert_called_once_with()
+
+    def test_main_emits_snapshot_delivery_only_after_successful_cleanup(self) -> None:
+        result, stdout, stderr, dependencies = self._run_main_with_cleanup_fakes()
+
+        self.assertEqual(0, result)
+        self.assertEqual("", stderr)
+        delivery_prefix = f"{run_m5_wisp_smoke.SENTINEL}:ARTIFACT_DELIVERY "
+        browser_prefix = f"{run_m5_wisp_smoke.SENTINEL}:BROWSER_RESULT "
+        relay_prefix = f"{run_m5_wisp_smoke.SENTINEL}:RELAY_TRANSCRIPT "
+        self.assertLess(stdout.index(delivery_prefix), stdout.index(browser_prefix))
+        self.assertLess(stdout.index(browser_prefix), stdout.index(relay_prefix))
+        delivery = json.loads(
+            next(
+                line[len(delivery_prefix) :]
+                for line in stdout.splitlines()
+                if line.startswith(delivery_prefix)
+            )
+        )
+        self.assertEqual(
+            run_m5_wisp_smoke.ARTIFACT_SOURCE_PROVENANCE,
+            delivery["artifact_source_provenance"],
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                dependencies["artifact_snapshots"][
+                    "content_shell_wasm_m5_test.wasm"
+                ]
+            ).hexdigest(),
+            delivery["wasm"]["sha256"],
+        )
 
     def test_server_cleanup_uses_bounded_shutdown_and_handler_drain(self) -> None:
         server = mock.Mock()

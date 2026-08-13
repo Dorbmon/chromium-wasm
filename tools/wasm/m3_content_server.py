@@ -265,13 +265,15 @@ def _artifact_for_request(
 def _artifact_contents_for_request(
     state: M3ServerState, request_path: str
 ) -> tuple[bytes, str] | None:
-    """Resolve one allowed module request to its pinned or live bytes."""
+    """Resolve one allowed module request to pinned bytes or a live dev file."""
 
     artifact_name = _artifact_name_for_request(state, request_path)
     if artifact_name is None:
         return None
-    snapshot = state.artifact_snapshots.get(artifact_name)
-    if snapshot is not None:
+    if state.artifact_snapshots:
+        snapshot = state.artifact_snapshots.get(artifact_name)
+        if snapshot is None:
+            return None
         return (
             snapshot,
             CONTENT_TYPES.get(
@@ -292,8 +294,10 @@ def _static_contents_for_request(
 ) -> tuple[bytes, str] | None:
     """Resolve one local host resource to its pinned or live bytes."""
 
-    snapshot = state.static_snapshots.get(request_path)
-    if snapshot is not None:
+    if state.static_snapshots:
+        snapshot = state.static_snapshots.get(request_path)
+        if snapshot is None:
+            return None
         return (
             snapshot,
             CONTENT_TYPES.get(static_path.suffix, "text/html; charset=utf-8"),

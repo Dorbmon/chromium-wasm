@@ -337,6 +337,15 @@ class M3ServerTest(unittest.TestCase):
             contents,
             (b"original JavaScript", "text/javascript; charset=utf-8"),
         )
+        (self.out_dir / "content_shell_wasm.data").write_bytes(
+            b"live artifact that must not bypass the snapshot"
+        )
+        self.assertIsNone(
+            m3_content_server._artifact_contents_for_request(
+                state,
+                "/__m3__/artifacts/content_shell_wasm.data",
+            )
+        )
 
     def test_server_uses_an_immutable_opt_in_host_snapshot(self) -> None:
         static_snapshots = {
@@ -366,6 +375,13 @@ class M3ServerTest(unittest.TestCase):
                 b"original host JavaScript",
                 "text/javascript; charset=utf-8",
             ),
+        )
+        fixture = self.out_dir / "live-fixture.html"
+        fixture.write_bytes(b"live fixture must not bypass the snapshot")
+        self.assertIsNone(
+            m3_content_server._static_contents_for_request(
+                state, "/__m3__/fixture.html", fixture
+            )
         )
 
     def test_server_rejects_invalid_artifact_snapshots(self) -> None:

@@ -25,10 +25,12 @@ import http.client
 import ipaddress
 import json
 import math
+import os
 from pathlib import Path
 import queue
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -60,9 +62,14 @@ from run_browser_smoke import browser_command, find_browser
 from run_content_shell_smoke import manifest_versions
 from m3_content_server import compare_screenshots, decode_png
 from run_m5_wisp_smoke import (
+    artifact_delivery_identity,
+    byte_snapshot_identity,
     find_node,
     m5_host_origin,
     relay_command,
+    scan_wisp_snapshot_for_private_key,
+    snapshot_wisp_artifacts,
+    validate_wisp_artifact_snapshots,
     validate_m5_https_url,
     validate_relay_transcript_url,
     validate_wisp_endpoint,
@@ -94,6 +101,8 @@ HOST_ROOT = "/__m6_browser_controlled_https__"
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_SCREENSHOT_PNG_BYTES = 4 * 1024 * 1024
 MAX_SCREENSHOT_BASE64_LENGTH = ((MAX_SCREENSHOT_PNG_BYTES + 2) // 3) * 4
+MAX_SCREENSHOT_CONTRACT_BYTES = 64 * 1024
+MAX_HOST_RESOURCE_BYTES = 4 * 1024 * 1024
 CONTROLLED_HTTPS_SCREENSHOT_CONTRACT = (
     Path(__file__).with_name("testdata")
     / "m6_controlled_https_screenshot_contract.json"
@@ -126,14 +135,118 @@ def _require_screenshot_contract_string(
     return value
 
 
+def _snapshot_regular_file(
+    path: Path, *, maximum_bytes: int, description: str
+) -> bytes:
+    """Read one stable regular-file snapshot without following a final symlink."""
+
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise M0Error(f"controlled-HTTPS {description} snapshot bound is invalid")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise M0Error(
+                f"controlled-HTTPS {description} must be a regular file"
+            )
+        if before.st_size <= 0 or before.st_size > maximum_bytes:
+            raise M0Error(f"controlled-HTTPS {description} snapshot is invalid")
+        contents = bytearray()
+        while len(contents) <= maximum_bytes:
+            chunk = os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - len(contents)))
+            if not chunk:
+                break
+            contents.extend(chunk)
+        after = os.fstat(descriptor)
+    except FileNotFoundError as exc:
+        raise M0Error(f"controlled-HTTPS {description} is missing: {path}") from exc
+    except OSError as exc:
+        raise M0Error(
+            f"cannot snapshot controlled-HTTPS {description}: {exc}"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        not contents
+        or len(contents) > maximum_bytes
+        or len(contents) != before.st_size
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    ):
+        raise M0Error(f"controlled-HTTPS {description} changed while snapshotting")
+    return bytes(contents)
+
+
+def canonical_controlled_https_screenshot_contract_bytes(
+    contract: dict[str, Any],
+) -> bytes:
+    """Return the one canonical encoding of an already validated policy."""
+
+    try:
+        return json.dumps(
+            contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise M0Error(
+            "controlled-HTTPS screenshot contract cannot be canonicalized"
+        ) from exc
+
+
+def controlled_https_screenshot_policy(contract: dict[str, Any]) -> dict[str, object]:
+    """Extract the comparison values that terminal evidence must reproduce."""
+
+    # Callers receive this only from the strict loader, but validate the
+    # values again so a fabricated terminal record cannot use a loose policy.
+    if not isinstance(contract, dict):
+        raise M0Error("controlled-HTTPS screenshot policy contract is invalid")
+    width = contract.get("width")
+    height = contract.get("height")
+    tolerance = contract.get("channel_tolerance")
+    ratio = contract.get("maximum_different_pixel_ratio")
+    if (
+        type(width) is not int
+        or type(height) is not int
+        or type(tolerance) is not int
+        or type(ratio) not in (int, float)
+        or isinstance(ratio, bool)
+        or not math.isfinite(float(ratio))
+    ):
+        raise M0Error("controlled-HTTPS screenshot policy is invalid")
+    return {
+        "width": width,
+        "height": height,
+        "channel_tolerance": tolerance,
+        "maximum_different_pixel_ratio": float(ratio),
+    }
+
+
 def load_controlled_https_screenshot_contract(
-    path: Path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT,
+    path: Path | None = None,
+    *,
+    contents: bytes | None = None,
 ) -> dict[str, Any]:
     """Load the narrow, unmasked visual comparison policy for this lane."""
 
     try:
-        contract = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        if path is None:
+            path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT
+        if contents is None:
+            contents = _snapshot_regular_file(
+                path,
+                maximum_bytes=MAX_SCREENSHOT_CONTRACT_BYTES,
+                description="screenshot contract",
+            )
+        if type(contents) is not bytes:
+            raise TypeError("contract bytes are invalid")
+        contract = json.loads(contents.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
         raise M0Error(
             f"cannot read controlled-HTTPS screenshot contract: {exc}"
         ) from exc
@@ -152,7 +265,10 @@ def load_controlled_https_screenshot_contract(
     }
     if not isinstance(contract, dict) or set(contract) != expected_fields:
         raise M0Error("controlled-HTTPS screenshot contract shape is unsupported")
-    if contract.get("schema_version") != 1:
+    if (
+        type(contract.get("schema_version")) is not int
+        or contract["schema_version"] != 1
+    ):
         raise M0Error("controlled-HTTPS screenshot contract schema is unsupported")
     if contract.get("fixture") != "chromium-wasm-m6-controlled-https-v1":
         raise M0Error("controlled-HTTPS screenshot fixture is unsupported")
@@ -186,6 +302,106 @@ def load_controlled_https_screenshot_contract(
     return contract
 
 
+def snapshot_controlled_https_screenshot_contract(
+    path: Path | None = None,
+) -> tuple[bytes, dict[str, Any], bytes]:
+    """Capture and parse the visual policy before browser launch.
+
+    The raw bytes bind the policy to parent preflight identity.  The canonical
+    encoding makes the exact validated JSON policy independently observable in
+    child delivery evidence.
+    """
+
+    if path is None:
+        path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT
+    contents = _snapshot_regular_file(
+        path,
+        maximum_bytes=MAX_SCREENSHOT_CONTRACT_BYTES,
+        description="screenshot contract",
+    )
+    contract = load_controlled_https_screenshot_contract(path, contents=contents)
+    return contents, contract, canonical_controlled_https_screenshot_contract_bytes(
+        contract
+    )
+
+
+def snapshot_controlled_https_baseline(path: Path) -> bytes:
+    """Capture the exact reviewed PNG that this child will compare."""
+
+    return _snapshot_regular_file(
+        path,
+        maximum_bytes=MAX_SCREENSHOT_PNG_BYTES,
+        description="screenshot baseline",
+    )
+
+
+_CONTROLLED_HTTPS_HOST_SNAPSHOT_FIELDS = frozenset(
+    ("host_html", "host_js", "text_input_js")
+)
+
+
+def validate_controlled_https_host_snapshots(
+    host_snapshots: object,
+) -> dict[str, bytes]:
+    """Validate the complete immutable host resource set served by M6."""
+
+    if (
+        not isinstance(host_snapshots, dict)
+        or set(host_snapshots) != _CONTROLLED_HTTPS_HOST_SNAPSHOT_FIELDS
+        or any(type(contents) is not bytes for contents in host_snapshots.values())
+    ):
+        raise M0Error("controlled-HTTPS host snapshots are invalid")
+    snapshots = {
+        name: bytes(host_snapshots[name])
+        for name in _CONTROLLED_HTTPS_HOST_SNAPSHOT_FIELDS
+    }
+    if any(not contents for contents in snapshots.values()):
+        raise M0Error("controlled-HTTPS host snapshot is empty")
+    for name, contents in snapshots.items():
+        scan_wisp_snapshot_for_private_key(contents, f"M6 {name}")
+    return snapshots
+
+
+def snapshot_controlled_https_host_resources(
+    host_dir: Path | None = None,
+) -> dict[str, bytes]:
+    """Capture all executable M6 host resources before creating its server."""
+
+    selected_host_dir = (host_dir or Path(__file__).with_name("host")).resolve()
+    if not selected_host_dir.is_dir():
+        raise M0Error(
+            f"controlled-HTTPS host resource directory is missing: {selected_host_dir}"
+        )
+    names = {
+        "host_html": "chrome_wasm_browser_controlled_https_smoke.html",
+        "host_js": "chrome_wasm_browser_controlled_https_smoke_host.js",
+        "text_input_js": "chrome_wasm_text_input.js",
+    }
+    snapshots = {
+        key: _snapshot_regular_file(
+            selected_host_dir / name,
+            maximum_bytes=MAX_HOST_RESOURCE_BYTES,
+            description=f"host resource {name}",
+        )
+        for key, name in names.items()
+    }
+    return validate_controlled_https_host_snapshots(snapshots)
+
+
+def controlled_https_host_delivery_identity(
+    host_snapshots: object,
+) -> dict[str, object]:
+    """Return path-free identities for every M6 host resource served."""
+
+    snapshots = validate_controlled_https_host_snapshots(host_snapshots)
+    return {
+        name: byte_snapshot_identity(
+            snapshots[name], f"controlled-HTTPS {name}"
+        )
+        for name in sorted(_CONTROLLED_HTTPS_HOST_SNAPSHOT_FIELDS)
+    }
+
+
 class ControlledHttpsSmokeServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -194,6 +410,8 @@ class ControlledHttpsSmokeServer(M9TrackingThreadingHTTPServer):
     result_token: str
     result_received: bool
     result_lock: threading.Lock
+    artifact_snapshots: dict[str, bytes]
+    host_snapshots: dict[str, bytes]
 
 
 class ControlledHttpsSmokeRequestHandler(BaseHTTPRequestHandler):
@@ -224,19 +442,14 @@ class ControlledHttpsSmokeRequestHandler(BaseHTTPRequestHandler):
             HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n"
         )
 
-    def _artifact_path(self, requested_name: str) -> Path | None:
+    def _artifact_bytes(self, requested_name: str) -> bytes | None:
         expected_names = {
             f"{self.server.module_name}.js",
             f"{self.server.module_name}.wasm",
         }
         if requested_name not in expected_names:
             return None
-        candidate = (self.server.out_dir / requested_name).resolve()
-        try:
-            candidate.relative_to(self.server.out_dir)
-        except ValueError:
-            return None
-        return candidate if candidate.is_file() else None
+        return self.server.artifact_snapshots.get(requested_name)
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
@@ -263,18 +476,19 @@ class ControlledHttpsSmokeRequestHandler(BaseHTTPRequestHandler):
             return
         prefix = f"{HOST_ROOT}/artifacts/"
         if path.startswith(prefix):
-            artifact = self._artifact_path(path[len(prefix) :])
-            if artifact is None:
+            requested_name = path[len(prefix) :]
+            artifact_bytes = self._artifact_bytes(requested_name)
+            if artifact_bytes is None:
                 self._not_found()
                 return
             self._send_bytes(
                 HTTPStatus.OK,
                 (
                     "application/wasm"
-                    if artifact.suffix == ".wasm"
+                    if requested_name.endswith(".wasm")
                     else "text/javascript; charset=utf-8"
                 ),
-                artifact.read_bytes(),
+                artifact_bytes,
             )
             return
         self._not_found()
@@ -479,13 +693,26 @@ def create_server(
     result_queue: queue.Queue[dict[str, Any]],
     *,
     module_name: str,
+    artifact_snapshots: dict[str, bytes] | None = None,
+    host_snapshots: dict[str, bytes] | None = None,
 ) -> ControlledHttpsSmokeServer:
     if not MODULE_NAME_RE.fullmatch(module_name):
         raise M0Error("module name must contain only ASCII letters, digits, or _")
     resolved_out_dir = out_dir.resolve()
     if not resolved_out_dir.is_dir():
         raise M0Error(f"controlled-HTTPS output directory is missing: {out_dir}")
-    host_dir = Path(__file__).with_name("host")
+    if artifact_snapshots is None:
+        artifact_snapshots = snapshot_wisp_artifacts(
+            resolved_out_dir, module_name
+        )
+    else:
+        artifact_snapshots = validate_wisp_artifact_snapshots(
+            artifact_snapshots, module_name
+        )
+    if host_snapshots is None:
+        host_snapshots = snapshot_controlled_https_host_resources()
+    else:
+        host_snapshots = validate_controlled_https_host_snapshots(host_snapshots)
     server = ControlledHttpsSmokeServer(
         (host, port), ControlledHttpsSmokeRequestHandler
     )
@@ -495,13 +722,11 @@ def create_server(
     server.result_queue = result_queue
     server.result_received = False
     server.result_lock = threading.Lock()
-    server.html_bytes = (
-        host_dir / "chrome_wasm_browser_controlled_https_smoke.html"
-    ).read_bytes()
-    server.host_js_bytes = (
-        host_dir / "chrome_wasm_browser_controlled_https_smoke_host.js"
-    ).read_bytes()
-    server.text_input_js_bytes = (host_dir / "chrome_wasm_text_input.js").read_bytes()
+    server.artifact_snapshots = artifact_snapshots
+    server.host_snapshots = host_snapshots
+    server.html_bytes = host_snapshots["host_html"]
+    server.host_js_bytes = host_snapshots["host_js"]
+    server.text_input_js_bytes = host_snapshots["text_input_js"]
     return server
 
 
@@ -1461,10 +1686,27 @@ def main() -> int:
     relay_script = relay_script.resolve()
 
     screenshot_contract: dict[str, Any] | None = None
+    screenshot_contract_bytes: bytes | None = None
+    screenshot_contract_canonical_bytes: bytes | None = None
     baseline_path: Path | None = None
+    baseline_png: bytes | None = None
     capture_path: Path | None = None
     try:
-        screenshot_contract = load_controlled_https_screenshot_contract()
+        (
+            screenshot_contract_bytes,
+            parsed_screenshot_contract,
+            screenshot_contract_canonical_bytes,
+        ) = snapshot_controlled_https_screenshot_contract(
+            CONTROLLED_HTTPS_SCREENSHOT_CONTRACT
+        )
+        # Use the canonical bytes derived from the captured source bytes for
+        # every later policy decision, while retaining the raw identity for
+        # parent preflight binding.
+        screenshot_contract = load_controlled_https_screenshot_contract(
+            contents=screenshot_contract_canonical_bytes
+        )
+        if screenshot_contract != parsed_screenshot_contract:
+            raise M0Error("controlled-HTTPS canonical screenshot contract disagrees")
         if args.baseline is not None:
             baseline_path = args.baseline
             if not baseline_path.is_absolute():
@@ -1484,12 +1726,18 @@ def main() -> int:
                 raise M0Error(
                     f"refusing to overwrite existing baseline: {capture_path}"
                 )
-        if capture_path is None and not baseline_path.is_file():
-            raise M0Error(
-                "controlled-HTTPS screenshot baseline is missing; use "
-                "--capture-baseline, review the image, then rerun with "
-                "--baseline"
-            )
+        if capture_path is None:
+            assert baseline_path is not None
+            baseline_png = snapshot_controlled_https_baseline(baseline_path)
+            baseline_image = decode_png(baseline_png)
+            if (
+                baseline_image.width != screenshot_contract["width"]
+                or baseline_image.height != screenshot_contract["height"]
+            ):
+                raise M0Error(
+                    "controlled-HTTPS screenshot baseline dimensions disagree "
+                    "with its captured contract"
+                )
     except (M0Error, OSError, TypeError, ValueError) as exc:
         parser.error(str(exc))
 
@@ -1516,6 +1764,9 @@ def main() -> int:
     profile: tempfile.TemporaryDirectory[str] | None = None
     result: dict[str, Any] | None = None
     actual_png: bytes | None = None
+    artifact_snapshots: dict[str, bytes] | None = None
+    host_snapshots: dict[str, bytes] | None = None
+    artifact_delivery: dict[str, object] | None = None
     context: dict[str, object] | None = None
     stage = "check_artifacts"
     primary_error: BaseException | None = None
@@ -1535,6 +1786,41 @@ def main() -> int:
         verify_explicit_text_heap_exports(out_dir / f"{args.module_name}.js")
         stage = "verify_test_artifacts"
         verify_no_private_key_pem_artifacts(out_dir, args.module_name)
+        stage = "snapshot_executable_artifacts"
+        artifact_snapshots = snapshot_wisp_artifacts(out_dir, args.module_name)
+        artifact_delivery = artifact_delivery_identity(
+            artifact_snapshots, args.module_name
+        )
+        stage = "snapshot_host_resources"
+        host_snapshots = snapshot_controlled_https_host_resources()
+        artifact_delivery.update(
+            controlled_https_host_delivery_identity(host_snapshots)
+        )
+        if capture_path is None:
+            if (
+                screenshot_contract_bytes is None
+                or screenshot_contract_canonical_bytes is None
+                or baseline_png is None
+            ):
+                raise M0Error("controlled-HTTPS visual input snapshots are missing")
+            artifact_delivery.update(
+                {
+                    "screenshot_baseline": byte_snapshot_identity(
+                        baseline_png, "controlled-HTTPS screenshot baseline"
+                    ),
+                    "screenshot_contract": byte_snapshot_identity(
+                        screenshot_contract_bytes,
+                        "controlled-HTTPS screenshot contract",
+                    ),
+                    "screenshot_contract_canonical": byte_snapshot_identity(
+                        screenshot_contract_canonical_bytes,
+                        "controlled-HTTPS canonical screenshot contract",
+                    ),
+                    "screenshot_policy": controlled_https_screenshot_policy(
+                        screenshot_contract
+                    ),
+                }
+            )
         stage = "load_manifest"
         manifest = load_manifest()
         versions = manifest_versions(manifest, checked_output(["git", "rev-parse", "HEAD"]))
@@ -1578,6 +1864,8 @@ def main() -> int:
             token,
             result_queue,
             module_name=args.module_name,
+            artifact_snapshots=artifact_snapshots,
+            host_snapshots=host_snapshots,
         )
         server_thread = threading.Thread(
             target=server.serve_forever,
@@ -1765,10 +2053,11 @@ def main() -> int:
             )
             return 2
         assert baseline_path is not None
+        assert baseline_png is not None
         stage = "compare_screenshot"
         comparison = compare_screenshots(
             actual_png,
-            baseline_path.read_bytes(),
+            baseline_png,
             channel_tolerance=int(screenshot_contract["channel_tolerance"]),
             maximum_different_pixel_ratio=float(
                 screenshot_contract["maximum_different_pixel_ratio"]
@@ -1818,6 +2107,17 @@ def main() -> int:
         if profile is not None:
             profile.cleanup()
             profile_cleanup_complete = True
+        if artifact_delivery is None:
+            raise M0Error(
+                "controlled-HTTPS executable artifact delivery identity is missing"
+            )
+        print(
+            f"{SENTINEL}:ARTIFACT_DELIVERY "
+            + json.dumps(
+                artifact_delivery, sort_keys=True, separators=(",", ":")
+            ),
+            flush=True,
+        )
         print(
             f"{SENTINEL}:SCREENSHOT "
             + json.dumps(

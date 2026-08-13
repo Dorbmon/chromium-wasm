@@ -61,8 +61,15 @@ def input_identity() -> dict[str, object]:
             "runner_source": byte_identity(6),
             "screenshot_baseline": byte_identity(7),
             "screenshot_contract": byte_identity(8),
-            "text_input_js": byte_identity(9),
-            "wasm": byte_identity(10),
+            "screenshot_contract_canonical": byte_identity(9),
+            "screenshot_policy": {
+                "width": 640,
+                "height": 480,
+                "channel_tolerance": 2,
+                "maximum_different_pixel_ratio": 0.0025,
+            },
+            "text_input_js": byte_identity(10),
+            "wasm": byte_identity(11),
         },
         "content_shell_wisp_recovery": {
             "artifact_delivery": composition.ARTIFACT_DELIVERY,
@@ -78,8 +85,31 @@ def input_identity() -> dict[str, object]:
     }
 
 
+def child_artifact_delivery(lane: str) -> dict[str, object]:
+    artifacts = input_identity()[lane]
+    assert isinstance(artifacts, dict)
+    delivery_fields = (
+        composition._M6_ARTIFACT_DELIVERY_RECORD_FIELDS
+        if lane == "chrome_controlled_https"
+        else composition._M5_ARTIFACT_DELIVERY_RECORD_FIELDS
+    )
+    delivery: dict[str, object] = {
+        "artifact_source_provenance": composition.ARTIFACT_SOURCE_PROVENANCE,
+        "delivery": composition.m5_wisp.ARTIFACT_DELIVERY_MODE,
+        "module_name": artifacts["module_name"],
+    }
+    for field in delivery_fields - {
+        "artifact_source_provenance",
+        "delivery",
+        "module_name",
+    }:
+        delivery[field] = copy.deepcopy(artifacts[field])
+    return delivery
+
+
 def chrome_evidence() -> dict[str, object]:
     return {
+        "artifact_delivery": child_artifact_delivery("chrome_controlled_https"),
         "browser_result_sha256": SHA256,
         "controlled_reload": True,
         "elapsed_ms": 12.5,
@@ -87,14 +117,17 @@ def chrome_evidence() -> dict[str, object]:
         "fresh_host_browser_profile_owned_by_child": True,
         "relay_status_sha256": SHA256,
         "returncode": 0,
+        "screenshot_sha256": SHA256,
         "stderr_bytes": 0,
         "stderr_sha256": SHA256,
         "stdout_bytes": 17,
         "stdout_sha256": SHA256,
         "terminal_records": {
+            "artifact_delivery": 1,
             "browser_result": 1,
             "pass": 1,
             "relay_status": 1,
+            "screenshot": 1,
         },
         "wisp_configured": True,
     }
@@ -102,6 +135,9 @@ def chrome_evidence() -> dict[str, object]:
 
 def content_evidence() -> dict[str, object]:
     return {
+        "artifact_delivery": child_artifact_delivery(
+            "content_shell_wisp_recovery"
+        ),
         "browser_result_sha256": SHA256,
         "carrier_close_reconnect_phase": "recovered",
         "elapsed_ms": 25.0,
@@ -115,6 +151,7 @@ def content_evidence() -> dict[str, object]:
         "stdout_bytes": 19,
         "stdout_sha256": SHA256,
         "terminal_records": {
+            "artifact_delivery": 1,
             "browser_result": 1,
             "pass": 1,
             "relay_ready": 1,
@@ -172,10 +209,38 @@ def m6_browser_result() -> dict[str, object]:
     }
 
 
-def chrome_execution() -> composition.ChildExecution:
+def m6_screenshot_record() -> dict[str, object]:
+    return {
+        "matches": True,
+        "width": 640,
+        "height": 480,
+        "differentPixels": 0,
+        "differentPixelRatio": 0.0,
+        "maximumChannelDelta": 0,
+        "meanChannelDelta": 0.0,
+        "channelTolerance": 2,
+        "maximumDifferentPixelRatio": 0.0025,
+    }
+
+
+def chrome_execution(
+    *, screenshot_record: dict[str, object] | None = None
+) -> composition.ChildExecution:
     smoke = composition.m6_controlled_https
+    if screenshot_record is None:
+        screenshot_record = m6_screenshot_record()
     stdout = "\n".join(
         (
+            f"{smoke.SENTINEL}:ARTIFACT_DELIVERY "
+            + json.dumps(
+                child_artifact_delivery("chrome_controlled_https"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            f"{smoke.SENTINEL}:SCREENSHOT "
+            + json.dumps(
+                screenshot_record, sort_keys=True, separators=(",", ":")
+            ),
             f"{smoke.SENTINEL}:BROWSER_RESULT "
             + json.dumps(m6_browser_result(), sort_keys=True, separators=(",", ":")),
             f"{smoke.SENTINEL}:RELAY_STATUS {{}}",
@@ -223,6 +288,12 @@ def content_execution() -> composition.ChildExecution:
         (
             f"{smoke.SENTINEL}:RELAY_READY "
             + json.dumps(m5_ready_record(), sort_keys=True, separators=(",", ":")),
+            f"{smoke.SENTINEL}:ARTIFACT_DELIVERY "
+            + json.dumps(
+                child_artifact_delivery("content_shell_wisp_recovery"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             f"{smoke.SENTINEL}:BROWSER_RESULT "
             + json.dumps(m5_browser_result(), sort_keys=True, separators=(",", ":")),
             f"{smoke.SENTINEL}:RELAY_TRANSCRIPT "
@@ -242,17 +313,61 @@ def content_execution() -> composition.ChildExecution:
 
 
 class M9WispRecoveryCompositionTest(unittest.TestCase):
+    def test_child_delivery_schemas_pin_all_captured_execution_inputs(self) -> None:
+        self.assertEqual(
+            frozenset(
+                (
+                    "artifact_source_provenance",
+                    "delivery",
+                    "host_html",
+                    "host_js",
+                    "loader",
+                    "module_name",
+                    "screenshot_baseline",
+                    "screenshot_contract",
+                    "screenshot_contract_canonical",
+                    "screenshot_policy",
+                    "text_input_js",
+                    "wasm",
+                )
+            ),
+            composition._M6_ARTIFACT_DELIVERY_RECORD_FIELDS,
+        )
+        self.assertEqual(
+            frozenset(
+                (
+                    "artifact_source_provenance",
+                    "delivery",
+                    "host_html",
+                    "host_js",
+                    "loader",
+                    "module_name",
+                    "wasm",
+                )
+            ),
+            composition._M5_ARTIFACT_DELIVERY_RECORD_FIELDS,
+        )
+
     def test_chrome_child_requires_exact_terminal_records_and_redacted_result(self) -> None:
         execution = chrome_execution()
+        expected_artifact_input = input_identity()["chrome_controlled_https"]
         with mock.patch.object(
             composition.m6_controlled_https, "validate_relay_status"
         ) as validate_relay:
-            evidence, versions = composition.validate_chrome_execution(execution)
+            evidence, versions = composition.validate_chrome_execution(
+                execution, expected_artifact_input=expected_artifact_input
+            )
 
         self.assertEqual(VERSIONS, versions)
         self.assertTrue(evidence["fresh_child_process"])
         self.assertEqual(
-            {"browser_result": 1, "pass": 1, "relay_status": 1},
+            {
+                "artifact_delivery": 1,
+                "browser_result": 1,
+                "pass": 1,
+                "relay_status": 1,
+                "screenshot": 1,
+            },
             evidence["terminal_records"],
         )
         validate_relay.assert_called_once_with({})
@@ -273,7 +388,9 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "exactly one"):
-            composition.validate_chrome_execution(duplicate)
+            composition.validate_chrome_execution(
+                duplicate, expected_artifact_input=expected_artifact_input
+            )
 
         early_pass = composition.ChildExecution(
             **{
@@ -288,7 +405,9 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "PASS marker did not follow"):
-            composition.validate_chrome_execution(early_pass)
+            composition.validate_chrome_execution(
+                early_pass, expected_artifact_input=expected_artifact_input
+            )
 
         stderr_only_pass = composition.ChildExecution(
             **{
@@ -300,7 +419,9 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "exactly one stdout"):
-            composition.validate_chrome_execution(stderr_only_pass)
+            composition.validate_chrome_execution(
+                stderr_only_pass, expected_artifact_input=expected_artifact_input
+            )
 
         unredacted = m6_browser_result()
         assert isinstance(unredacted["screenshot"], dict)
@@ -317,10 +438,143 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "redacted screenshot"):
-            composition.validate_chrome_execution(malformed)
+            composition.validate_chrome_execution(
+                malformed, expected_artifact_input=expected_artifact_input
+            )
+
+    def test_chrome_child_requires_one_ordered_contract_linked_screenshot(self) -> None:
+        execution = chrome_execution()
+        expected_artifact_input = input_identity()["chrome_controlled_https"]
+        screenshot_prefix = f"{composition.m6_controlled_https.SENTINEL}:SCREENSHOT "
+        screenshot_line = next(
+            line for line in execution.stdout.splitlines() if line.startswith(screenshot_prefix)
+        )
+
+        cases = (
+            (
+                "missing",
+                "\n".join(
+                    line
+                    for line in execution.stdout.splitlines()
+                    if not line.startswith(screenshot_prefix)
+                )
+                + "\n",
+                "terminal records",
+            ),
+            (
+                "duplicate",
+                execution.stdout.replace(screenshot_line, screenshot_line + "\n" + screenshot_line),
+                "terminal records",
+            ),
+            (
+                "reordered",
+                execution.stdout.replace(
+                    screenshot_line + "\n"
+                    + next(
+                        line
+                        for line in execution.stdout.splitlines()
+                        if line.startswith(
+                            f"{composition.m6_controlled_https.SENTINEL}:BROWSER_RESULT "
+                        )
+                    ),
+                    next(
+                        line
+                        for line in execution.stdout.splitlines()
+                        if line.startswith(
+                            f"{composition.m6_controlled_https.SENTINEL}:BROWSER_RESULT "
+                        )
+                    )
+                    + "\n"
+                    + screenshot_line,
+                ),
+                "terminal records",
+            ),
+        )
+        for name, stdout, expression in cases:
+            with self.subTest(name=name), self.assertRaisesRegex(M0Error, expression):
+                composition.validate_chrome_execution(
+                    composition.ChildExecution(
+                        **{**execution.__dict__, "stdout": stdout}
+                    ),
+                    expected_artifact_input=expected_artifact_input,
+                )
+
+        for mutate, expression in (
+            (
+                lambda record: record.__setitem__("differentPixelRatio", 0),
+                "different-pixel ratio",
+            ),
+            (
+                lambda record: record.__setitem__("meanChannelDelta", 0),
+                "mean channel delta",
+            ),
+            (
+                lambda record: record.__setitem__("width", 1),
+                "screenshot width",
+            ),
+            (
+                lambda record: record.__setitem__("channelTolerance", 3),
+                "channel tolerance",
+            ),
+            (
+                lambda record: record.__setitem__("matches", False),
+                "screenshot matches",
+            ),
+        ):
+            record = m6_screenshot_record()
+            mutate(record)
+            with self.subTest(expression=expression), self.assertRaisesRegex(
+                M0Error, expression
+            ):
+                composition.validate_chrome_execution(
+                    chrome_execution(screenshot_record=record),
+                    expected_artifact_input=expected_artifact_input,
+                )
+
+    def test_child_failure_markers_reject_zero_exit_output_from_either_stream(self) -> None:
+        cases = (
+            (
+                chrome_execution(),
+                input_identity()["chrome_controlled_https"],
+                composition.validate_chrome_execution,
+                f"{composition.m6_controlled_https.SENTINEL}:FAIL reason=forged",
+            ),
+            (
+                chrome_execution(),
+                input_identity()["chrome_controlled_https"],
+                composition.validate_chrome_execution,
+                f"{composition.m6_controlled_https.SENTINEL}:DIAGNOSTICS_FAIL reason=forged",
+            ),
+            (
+                content_execution(),
+                input_identity()["content_shell_wisp_recovery"],
+                composition.validate_content_execution,
+                f"{composition.m5_wisp.SENTINEL}:FAIL reason=forged",
+            ),
+            (
+                content_execution(),
+                input_identity()["content_shell_wisp_recovery"],
+                composition.validate_content_execution,
+                f"{composition.m5_wisp.SENTINEL}:DIAGNOSTICS_FAIL reason=forged",
+            ),
+        )
+        for execution, expected, validator, failure_marker in cases:
+            with self.subTest(failure_marker=failure_marker), self.assertRaisesRegex(
+                M0Error, "child emitted"
+            ):
+                validator(
+                    composition.ChildExecution(
+                        **{
+                            **execution.__dict__,
+                            "stderr": execution.stderr + failure_marker + "\n",
+                        }
+                    ),
+                    expected_artifact_input=expected,
+                )
 
     def test_content_child_delegates_carrier_close_validation(self) -> None:
         execution = content_execution()
+        expected_artifact_input = input_identity()["content_shell_wisp_recovery"]
         relay_ready = object()
         with (
             mock.patch.object(
@@ -333,7 +587,9 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
                 composition.m5_wisp, "validate_relay_transcript"
             ) as validate_transcript,
         ):
-            evidence, versions = composition.validate_content_execution(execution)
+            evidence, versions = composition.validate_content_execution(
+                execution, expected_artifact_input=expected_artifact_input
+            )
 
         self.assertEqual(VERSIONS, versions)
         self.assertEqual("recovered", evidence["carrier_close_reconnect_phase"])
@@ -367,10 +623,14 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             mock.patch.object(composition.m5_wisp, "validate_relay_transcript"),
             self.assertRaisesRegex(M0Error, "carrier-close recovery"),
         ):
-            composition.validate_content_execution(missing_recovery)
+            composition.validate_content_execution(
+                missing_recovery,
+                expected_artifact_input=expected_artifact_input,
+            )
 
     def test_content_child_rejects_missing_or_out_of_order_terminal_records(self) -> None:
         execution = content_execution()
+        expected_artifact_input = input_identity()["content_shell_wisp_recovery"]
         reordered = composition.ChildExecution(
             **{
                 **execution.__dict__,
@@ -381,7 +641,9 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "terminal records"):
-            composition.validate_content_execution(reordered)
+            composition.validate_content_execution(
+                reordered, expected_artifact_input=expected_artifact_input
+            )
 
         early_pass = composition.ChildExecution(
             **{
@@ -396,13 +658,116 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(M0Error, "PASS marker did not follow"):
-            composition.validate_content_execution(early_pass)
+            composition.validate_content_execution(
+                early_pass, expected_artifact_input=expected_artifact_input
+            )
 
         failed = composition.ChildExecution(
             **{**execution.__dict__, "returncode": 1}
         )
         with self.assertRaisesRegex(M0Error, "exited with status 1"):
-            composition.validate_content_execution(failed)
+            composition.validate_content_execution(
+                failed, expected_artifact_input=expected_artifact_input
+            )
+
+    def test_child_delivery_rejects_mutate_restore_identity_mismatch(self) -> None:
+        """A child cannot hide a temporary artifact replacement by restoring it."""
+
+        cases = (
+            (
+                "chrome loader",
+                "chrome_controlled_https",
+                chrome_execution,
+                composition.validate_chrome_execution,
+                "loader",
+                byte_identity(999, "f" * 64),
+            ),
+            (
+                "chrome host",
+                "chrome_controlled_https",
+                chrome_execution,
+                composition.validate_chrome_execution,
+                "host_html",
+                byte_identity(998, "a" * 64),
+            ),
+            (
+                "chrome visual baseline",
+                "chrome_controlled_https",
+                chrome_execution,
+                composition.validate_chrome_execution,
+                "screenshot_baseline",
+                byte_identity(997, "b" * 64),
+            ),
+            (
+                "chrome visual contract",
+                "chrome_controlled_https",
+                chrome_execution,
+                composition.validate_chrome_execution,
+                "screenshot_contract",
+                byte_identity(994, "e" * 64),
+            ),
+            (
+                "chrome canonical visual contract",
+                "chrome_controlled_https",
+                chrome_execution,
+                composition.validate_chrome_execution,
+                "screenshot_contract_canonical",
+                byte_identity(993, "f" * 64),
+            ),
+            (
+                "chrome visual policy",
+                "chrome_controlled_https",
+                chrome_execution,
+                composition.validate_chrome_execution,
+                "screenshot_policy",
+                {
+                    "width": 640,
+                    "height": 480,
+                    "channel_tolerance": 2,
+                    "maximum_different_pixel_ratio": 0.5,
+                },
+            ),
+            (
+                "content host",
+                "content_shell_wisp_recovery",
+                content_execution,
+                composition.validate_content_execution,
+                "host_js",
+                byte_identity(996, "c" * 64),
+            ),
+            (
+                "content Wasm",
+                "content_shell_wisp_recovery",
+                content_execution,
+                composition.validate_content_execution,
+                "wasm",
+                byte_identity(995, "d" * 64),
+            ),
+        )
+        for name, lane, execution_factory, validator, field, replacement in cases:
+            with self.subTest(name=name):
+                original_record = child_artifact_delivery(lane)
+                replacement_record = copy.deepcopy(original_record)
+                replacement_record[field] = replacement
+                original = json.dumps(
+                    original_record, sort_keys=True, separators=(",", ":")
+                )
+                replaced = json.dumps(
+                    replacement_record, sort_keys=True, separators=(",", ":")
+                )
+                execution = execution_factory()
+                with self.assertRaisesRegex(
+                    M0Error, "does not match the parent preflight"
+                ):
+                    validator(
+                        composition.ChildExecution(
+                            **{
+                                **execution.__dict__,
+                                "stdout": execution.stdout.replace(original, replaced),
+                            }
+                        ),
+                        expected_artifact_input=input_identity()[lane],
+                    )
 
     def test_result_is_canonical_nonrelease_and_rejects_release_claims(self) -> None:
         expected_inputs = input_identity()
