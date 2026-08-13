@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -351,14 +354,291 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 )
         run_child.assert_called_once()
 
-    def test_timeout_and_iteration_inputs_are_bounded(self) -> None:
-        with mock.patch.object(
-            runner.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(["child"], 1),
+    def test_run_child_preserves_normal_bounded_output(self) -> None:
+        execution = runner.run_child(
+            "normal lifecycle",
+            1,
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.stdout.buffer.write(b'normal output\\n'); "
+                    "sys.stderr.buffer.write(b'diagnostic output\\n')"
+                ),
+            ],
+            5.0,
+        )
+        self.assertEqual(0, execution.returncode)
+        self.assertEqual("normal output\n", execution.stdout)
+        self.assertEqual("diagnostic output\n", execution.stderr)
+
+    def test_child_output_cap_uses_raw_shared_bytes_before_utf8_decoding(self) -> None:
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'\\xc3\\xa9' * 2); "
+                "sys.stdout.flush()"
+            ),
+        ]
+        with (
+            mock.patch.object(runner, "MAX_CHILD_OUTPUT_BYTES", 3),
+            mock.patch.object(runner, "OUTPUT_READ_CHUNK_BYTES", 1),
+            self.assertRaisesRegex(M0Error, "output exceeds the configured byte bound"),
         ):
-            with self.assertRaisesRegex(M0Error, "process timeout"):
-                runner.run_child("normal lifecycle", 1, ["child"], 1.0)
+            runner.run_child("capped output", 1, command, 5.0)
+
+        shared_stream_command = [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(b'ab'); "
+                "sys.stderr.buffer.write(b'cd'); "
+                "sys.stdout.flush(); sys.stderr.flush()"
+            ),
+        ]
+        with (
+            mock.patch.object(runner, "MAX_CHILD_OUTPUT_BYTES", 3),
+            self.assertRaisesRegex(M0Error, "output exceeds the configured byte bound"),
+        ):
+            runner.run_child("shared capped output", 1, shared_stream_command, 5.0)
+
+        # The newline used only to combine streams for marker parsing must
+        # not consume the child-output byte budget.
+        with mock.patch.object(runner, "MAX_CHILD_OUTPUT_BYTES", 3):
+            self.assertEqual(
+                "abc\n",
+                runner._validated_child_output(
+                    runner.ChildExecution(
+                        name="exact cap",
+                        cycle=1,
+                        elapsed_ms=0.0,
+                        returncode=0,
+                        stdout="abc",
+                        stderr="",
+                    )
+                ),
+            )
+
+    def test_cooperative_timeout_cleanup_signals_only_the_child_group(self) -> None:
+        process = mock.Mock()
+        process.pid = 1234
+        # A reaped leader must not suppress a signal to remaining descendants
+        # in its dedicated process group.
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(runner.os, "killpg") as killpg,
+            mock.patch.object(
+                runner, "_wait_for_process_and_output", side_effect=[False, True]
+            ),
+        ):
+            forced_kill = runner._stop_child_cooperatively(process, ())
+
+        self.assertTrue(forced_kill)
+        self.assertEqual(
+            [
+                mock.call(1234, signal.SIGINT),
+                mock.call(1234, signal.SIGKILL),
+            ],
+            killpg.call_args_list,
+        )
+
+        graceful_process = mock.Mock()
+        graceful_process.pid = 1235
+        graceful_process.poll.return_value = 0
+        with (
+            mock.patch.object(runner.os, "killpg") as graceful_killpg,
+            mock.patch.object(runner, "_wait_for_process_and_output", return_value=True),
+        ):
+            self.assertFalse(runner._stop_child_cooperatively(graceful_process, ()))
+        graceful_killpg.assert_called_once_with(1235, signal.SIGINT)
+
+    def test_reader_fault_requires_group_absence_before_any_success_result(self) -> None:
+        process = mock.Mock()
+        process.pid = 1237
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(runner.os, "killpg") as killpg,
+            mock.patch.object(
+                runner, "_wait_for_process_and_output", side_effect=[False, True]
+            ),
+        ):
+            self.assertTrue(runner._stop_child_cooperatively(process, ()))
+        self.assertEqual(
+            [
+                mock.call(1237, signal.SIGINT),
+                mock.call(1237, signal.SIGKILL),
+            ],
+            killpg.call_args_list,
+        )
+
+    def test_group_absence_probe_fails_closed_on_permission_error(self) -> None:
+        process = mock.Mock()
+        process.pid = 1238
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(runner.os, "killpg", side_effect=PermissionError("denied")),
+            self.assertRaisesRegex(M0Error, "cannot verify child runner process-group"),
+        ):
+            runner._child_process_group_exists(process)
+
+    def test_forced_child_group_kill_is_never_success_evidence(self) -> None:
+        process = mock.Mock()
+        process.pid = 1236
+        process.stdout = io.BytesIO()
+        process.stderr = io.BytesIO()
+        # The loop observes a running process; the exception cleanup observes
+        # the already stopped runner after the mocked forced cleanup.
+        process.poll.side_effect = [None, 0]
+        process.returncode = 0
+        with (
+            mock.patch.object(runner.subprocess, "Popen", return_value=process) as popen,
+            mock.patch.object(
+                runner, "_stop_child_cooperatively", return_value=True
+            ) as stop_child,
+            mock.patch.object(runner.time, "monotonic", side_effect=[0.0, 999.0]),
+            self.assertRaisesRegex(M0Error, "force-killed only the child runner"),
+        ):
+            runner.run_child("normal lifecycle", 1, ["child"], 1.0)
+
+        stop_child.assert_called_once_with(process, mock.ANY)
+        popen.assert_called_once_with(
+            ["child"],
+            cwd=runner.REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+    def test_partial_reader_start_is_retained_for_common_cleanup(self) -> None:
+        capture = runner._CappedPipeCapture(32)
+        process = mock.Mock()
+        process.stdout = io.BytesIO()
+        process.stderr = io.BytesIO()
+        starts = 0
+        original_start = runner.threading.Thread.start
+
+        def start_then_fail_second(thread: object) -> None:
+            nonlocal starts
+            starts += 1
+            if starts == 2:
+                raise RuntimeError("second reader did not start")
+            original_start(thread)
+
+        with (
+            mock.patch.object(
+                runner.threading.Thread,
+                "start",
+                autospec=True,
+                side_effect=start_then_fail_second,
+            ),
+            self.assertRaisesRegex(RuntimeError, "second reader"),
+        ):
+            capture.start(process)
+
+        self.assertEqual(1, len(capture.started_threads))
+        runner._join_output_threads(capture.started_threads)
+
+    def test_primary_failure_survives_cleanup_failure(self) -> None:
+        process = mock.Mock()
+        process.stdout = io.BytesIO()
+        process.stderr = io.BytesIO()
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(runner.subprocess, "Popen", return_value=process),
+            mock.patch.object(
+                runner._CappedPipeCapture,
+                "start",
+                side_effect=RuntimeError("primary reader-start failure"),
+            ),
+            mock.patch.object(
+                runner,
+                "_stop_child_cooperatively",
+                side_effect=M0Error("cleanup failure"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "primary reader-start failure"),
+        ):
+            runner.run_child("normal lifecycle", 1, ["child"], 1.0)
+
+    def test_reaped_leader_pipe_holder_is_force_killed_before_return(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            child_pid_path = Path(temporary_directory) / "child.pid"
+            # The shell exits immediately. Its background child ignores SIGINT
+            # and keeps inherited stdout/stderr open until the runner sends
+            # SIGKILL to the original process group.
+            command = [
+                "/bin/sh",
+                "-c",
+                (
+                    "trap '' INT; (trap '' INT; sleep 60) & "
+                    f"printf '%s' \"$!\" > {child_pid_path}"
+                ),
+            ]
+            try:
+                with (
+                    mock.patch.object(runner, "FORCED_KILL_GRACE_SECONDS", 0.25),
+                    mock.patch.object(runner, "COOPERATIVE_STOP_GRACE_SECONDS", 0.1),
+                    mock.patch.object(runner, "OUTPUT_POLL_SECONDS", 0.01),
+                    self.assertRaisesRegex(M0Error, "force-killed only the child runner"),
+                ):
+                    runner.run_child("pipe holder", 1, command, 1.0)
+                child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                for _ in range(50):
+                    try:
+                        os.kill(child_pid, 0)
+                    except ProcessLookupError:
+                        break
+                    runner.time.sleep(0.01)
+                else:
+                    self.fail("force-killed pipe-holder descendant is still alive")
+            finally:
+                if child_pid_path.exists():
+                    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_nonzero_reaped_leader_cannot_orphan_a_devnull_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            child_pid_path = Path(temporary_directory) / "child.pid"
+            command = [
+                "/bin/sh",
+                "-c",
+                (
+                    "trap '' INT; (trap '' INT; sleep 60 </dev/null >/dev/null 2>&1) & "
+                    f"printf '%s' \"$!\" > {child_pid_path}; exit 1"
+                ),
+            ]
+            try:
+                with (
+                    mock.patch.object(runner, "FORCED_KILL_GRACE_SECONDS", 0.25),
+                    mock.patch.object(runner, "COOPERATIVE_STOP_GRACE_SECONDS", 0.1),
+                    mock.patch.object(runner, "OUTPUT_POLL_SECONDS", 0.01),
+                    self.assertRaisesRegex(M0Error, "force-killed only the child runner"),
+                ):
+                    runner.run_child("nonzero descendant", 1, command, 1.0)
+                child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                for _ in range(50):
+                    try:
+                        os.kill(child_pid, 0)
+                    except ProcessLookupError:
+                        break
+                    runner.time.sleep(0.01)
+                else:
+                    self.fail("force-killed devnull descendant is still alive")
+            finally:
+                if child_pid_path.exists():
+                    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_timeout_and_iteration_inputs_are_bounded(self) -> None:
         for value in ("0", str(runner.MAX_ITERATIONS + 1), "not-a-number"):
             with self.subTest(value=value):
                 with self.assertRaises(argparse.ArgumentTypeError):
