@@ -837,6 +837,98 @@ class M9MeasurementCleanupTest(unittest.TestCase):
                 server.server_close.assert_called_once_with()
                 server_thread.join.assert_called_once_with(timeout=5)
 
+    def test_main_rejects_live_measurement_server_after_successful_capture(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 12345)
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = True
+        stdout = io.StringIO()
+
+        with (
+            mock.patch.object(baseline, "check_boundary"),
+            mock.patch.object(baseline, "load_manifest", return_value={}),
+            mock.patch.object(
+                baseline, "toolchain_manifest_versions", return_value={}
+            ),
+            mock.patch.object(
+                baseline, "create_measurement_server", return_value=server
+            ),
+            mock.patch.object(baseline, "artifact_identity", return_value={}),
+            mock.patch.object(
+                baseline, "measurement_url", return_value="http://measurement.test/"
+            ),
+            mock.patch.object(
+                baseline, "capture_harness_identity", return_value={}
+            ),
+            mock.patch.object(
+                baseline,
+                "run_measurement",
+                return_value=(passing_snapshot(), "test-browser"),
+            ),
+            mock.patch.object(
+                baseline,
+                "make_baseline_result",
+                return_value={"captured": "result"},
+            ),
+            mock.patch.object(
+                baseline.threading, "Thread", return_value=server_thread
+            ),
+            mock.patch.object(baseline.sys, "argv", ["measurement-baseline"]),
+            mock.patch.object(baseline.sys, "stdout", stdout),
+            self.assertRaisesRegex(M0Error, "M9 measurement server did not stop"),
+        ):
+            baseline.main()
+
+        self.assertNotIn(f"{baseline.SENTINEL}:CAPTURED", stdout.getvalue())
+        server_thread.start.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=5)
+        server_thread.is_alive.assert_called_once_with()
+
+    def test_main_preserves_capture_failure_when_server_stays_alive(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 12345)
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = True
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        with (
+            mock.patch.object(baseline, "check_boundary"),
+            mock.patch.object(baseline, "load_manifest", return_value={}),
+            mock.patch.object(
+                baseline, "toolchain_manifest_versions", return_value={}
+            ),
+            mock.patch.object(
+                baseline, "create_measurement_server", return_value=server
+            ),
+            mock.patch.object(baseline, "artifact_identity", return_value={}),
+            mock.patch.object(
+                baseline, "measurement_url", return_value="http://measurement.test/"
+            ),
+            mock.patch.object(
+                baseline,
+                "run_measurement",
+                side_effect=M0Error("measurement capture failed"),
+            ),
+            mock.patch.object(
+                baseline.threading, "Thread", return_value=server_thread
+            ),
+            mock.patch.object(baseline.sys, "argv", ["measurement-baseline"]),
+            mock.patch.object(baseline.sys, "stderr", stderr),
+            mock.patch.object(baseline.sys, "stdout", stdout),
+        ):
+            self.assertEqual(1, baseline.main())
+
+        self.assertIn("measurement capture failed", stderr.getvalue())
+        self.assertNotIn(f"{baseline.SENTINEL}:CAPTURED", stdout.getvalue())
+        server_thread.start.assert_called_once_with()
+        server.shutdown.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+        server_thread.join.assert_called_once_with(timeout=5)
+        server_thread.is_alive.assert_called_once_with()
+
 
 
 class M9MeasurementSourceContractTest(unittest.TestCase):

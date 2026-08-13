@@ -1083,9 +1083,17 @@ def _cleanup_measurement_server(
         cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
     if server_thread_started and server_thread is not None:
         cleanup_error = _run_cleanup_action(
-            cleanup_error, lambda: server_thread.join(timeout=5)
+            cleanup_error, lambda: _join_measurement_server(server_thread)
         )
     return cleanup_error
+
+
+def _join_measurement_server(thread: threading.Thread) -> None:
+    """Joins a started server thread and rejects an incomplete teardown."""
+
+    thread.join(timeout=5)
+    if thread.is_alive():
+        raise M0Error("M9 measurement server did not stop")
 
 
 def run_measurement(
