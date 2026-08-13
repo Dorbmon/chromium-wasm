@@ -55,6 +55,7 @@ def complete_output() -> str:
     return "\n".join(
         (
             smoke.NETWORK_ENABLE_MARKER,
+            smoke.RUNTIME_EVALUATE_MARKER,
             smoke.DETACHED_MARKER,
             smoke.LIFECYCLE_PASS_MARKER,
         )
@@ -104,13 +105,26 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
 
         for expected in (
             'R"({"id":1,"method":"Network.enable"})"',
+            '"method":"Runtime.evaluate"',
+            '"String(6 * 7)","returnByValue":true,"silent":true',
+            '"allowUnsafeEvalBlockedByCSP":false',
+            "kFixedDevToolsProtocolSmokeUrl",
+            "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke",
+            "CHECK_EQ(web_contents->GetLastCommittedURL(), expected_url);",
+            "CHECK_EQ(primary_main_frame_->GetLastCommittedURL(), expected_url);",
+            "permitted_url_ = expected_url;",
             "content::DevToolsAgentHost::GetOrCreateFor(web_contents)",
             "agent_host_->AttachClient(this)",
             "agent_host->DetachClient(this)",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK",
+            "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED",
             "base::JSON_PARSE_RFC",
             "response.FindDict(\"result\")",
+            "result->FindDict(\"result\")",
+            "result->Find(\"exceptionDetails\")",
+            "kRuntimeEvaluateExpectedValue",
+            "not a page WebAssembly probe or enablement path",
             "return !is_webui && permitted_url_.is_valid() && url == permitted_url_;",
             "return render_frame_host == primary_main_frame_;",
         ):
@@ -154,6 +168,10 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         ]
         self.assertLess(
             complete.index("kNetworkEnableSuccessMarker"),
+            complete.index("kRuntimeEvaluateSuccessMarker"),
+        )
+        self.assertLess(
+            complete.index("kRuntimeEvaluateSuccessMarker"),
             complete.index("Detach();"),
         )
         self.assertLess(
@@ -189,17 +207,47 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, runner)
 
-    def test_accepts_network_enable_detach_then_normal_close(self) -> None:
+    def test_accepts_network_enable_runtime_evaluate_detach_then_normal_close(self) -> None:
         smoke.validate_result(successful_result(), complete_output())
 
     def test_rejects_missing_repeated_or_misordered_native_markers(self) -> None:
-        missing_detach = "\n".join(
-            (smoke.NETWORK_ENABLE_MARKER, smoke.LIFECYCLE_PASS_MARKER)
+        repeated_network_enable = "\n".join(
+            (
+                smoke.NETWORK_ENABLE_MARKER,
+                smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.DETACHED_MARKER,
+                smoke.LIFECYCLE_PASS_MARKER,
+            )
+        )
+        missing_runtime_evaluate = "\n".join(
+            (
+                smoke.NETWORK_ENABLE_MARKER,
+                smoke.DETACHED_MARKER,
+                smoke.LIFECYCLE_PASS_MARKER,
+            )
         )
         repeated_success = "\n".join(
             (
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.DETACHED_MARKER,
+                smoke.LIFECYCLE_PASS_MARKER,
+            )
+        )
+        missing_detach = "\n".join(
+            (
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.LIFECYCLE_PASS_MARKER,
+            )
+        )
+        repeated_detach = "\n".join(
+            (
+                smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.DETACHED_MARKER,
                 smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
@@ -208,19 +256,23 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (
                 smoke.DETACHED_MARKER,
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
         )
         for output, expression in (
-            (missing_detach, "detach"),
-            (repeated_success, "2 Network.enable success"),
+            (repeated_network_enable, "2 Network.enable success"),
+            (missing_runtime_evaluate, "Runtime.evaluate success"),
+            (repeated_success, "2 Runtime.evaluate success"),
+            (missing_detach, "0 DevTools detach"),
+            (repeated_detach, "2 DevTools detach"),
             (wrong_order, "not ordered"),
         ):
             with self.subTest(expression=expression):
                 with self.assertRaisesRegex(M0Error, expression):
                     smoke.validate_result(successful_result(), output)
 
-    def test_rejects_lifecycle_abort_or_missing_network_success(self) -> None:
+    def test_rejects_lifecycle_abort_or_missing_native_protocol_success(self) -> None:
         aborted = successful_result()
         aborted["abort"] = "abort"
         with self.assertRaisesRegex(M0Error, "aborted or rejected"):
@@ -231,6 +283,27 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(M0Error, "ready marker"):
             smoke.validate_result(successful_result(), missing_network)
+
+        missing_runtime_evaluate = complete_output().replace(
+            smoke.RUNTIME_EVALUATE_MARKER, "not-a-runtime-evaluate-marker"
+        )
+        with self.assertRaisesRegex(M0Error, "Runtime.evaluate success"):
+            smoke.validate_result(successful_result(), missing_runtime_evaluate)
+
+    def test_runner_explicitly_limits_the_native_witness(self) -> None:
+        runner_program = source(
+            "tools/wasm/run_m8_wasm_browser_devtools_protocol_smoke.py"
+        )
+        self.assertEqual(
+            (
+                "does_not_enable_or_exercise_page_webassembly",
+                "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+                "does_not_claim_m8_compatibility_completion",
+            ),
+            smoke.LIMITATIONS,
+        )
+        self.assertIn('"pageWebAssemblyExercised": False', runner_program)
+        self.assertNotIn("pageWebAssemblyEnabled", runner_program)
 
     def test_parser_rejects_missing_or_repeated_result_records(self) -> None:
         result = json.dumps(successful_result(), separators=(",", ":"))

@@ -3,13 +3,15 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run the fixed in-process DevTools Network.enable smoke under pinned Node.
+"""Run the fixed in-process DevTools protocol smoke under pinned Node.
 
 This is intentionally not a DevTools frontend or remote-debugging harness. It
 starts one lifecycle-owned Browser tab, navigates it to one fixed data URL,
-waits for native code to issue the one literal Network.enable request through
-DevToolsAgentHost, then requires the native success marker, detach marker,
-and normal lifecycle teardown in order.
+waits for native code to issue the literal Network.enable then one fixed
+ordinary-JavaScript Runtime.evaluate request through DevToolsAgentHost, then
+requires both native success markers, the detach marker, and normal lifecycle
+teardown in order. It does not enable or exercise page WebAssembly, and does
+not claim M8 completion.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ import run_m6_wasm_browser_lifecycle_smoke as lifecycle_smoke
 
 SENTINEL = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL"
 NETWORK_ENABLE_MARKER = f"{SENTINEL}:NETWORK_ENABLE_OK"
+RUNTIME_EVALUATE_MARKER = f"{SENTINEL}:RUNTIME_EVALUATE_OK"
 DETACHED_MARKER = f"{SENTINEL}:DETACHED"
 LIFECYCLE_PASS_MARKER = lifecycle_smoke.PASS_MARKER
 RESULT_PREFIX = f"{SENTINEL}:NODE_EXIT "
@@ -45,13 +48,19 @@ NODE_PASS_MARKER = f"{SENTINEL}_NODE:PASS"
 SMOKE_SWITCH = "--wasm-browser-devtools-protocol-smoke"
 DEFAULT_MODULE_NAME = "chrome_wasm"
 _MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+LIMITATIONS = (
+    "does_not_enable_or_exercise_page_webassembly",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_claim_m8_compatibility_completion",
+)
 
 
 def runner_source(module_url: str, timeout_ms: int) -> str:
     """Returns the existing strict canvas host with M8 protocol identities."""
     # The Node bridge is only presentation/lifecycle plumbing. No DevTools
     # command, protocol result, frontend asset, socket, or pipe passes through
-    # it: those remain entirely inside the switch-gated native client.
+    # it: the two fixed commands and responses remain entirely inside the
+    # switch-gated native client.
     return (
         lifecycle_smoke.runner_source(module_url, timeout_ms)
         .replace(lifecycle_smoke.READY_MARKER, NETWORK_ENABLE_MARKER)
@@ -76,6 +85,7 @@ def _parse_result(stdout: str) -> dict[str, Any]:
 def _require_unique_ordered_markers(output: str) -> None:
     markers = (
         (NETWORK_ENABLE_MARKER, "Network.enable success"),
+        (RUNTIME_EVALUATE_MARKER, "Runtime.evaluate success"),
         (DETACHED_MARKER, "DevTools detach"),
         (LIFECYCLE_PASS_MARKER, "Browser lifecycle teardown"),
     )
@@ -98,6 +108,8 @@ def validate_result(result: dict[str, Any], output: str) -> None:
     # The shared lifecycle harness already proves a real visible Browser, a
     # compositor frame, normal process exit, and no host fatal error. Substitute
     # only its ready marker with the native Network.enable completion marker.
+    # The ordered marker check below separately requires the native
+    # Runtime.evaluate witness before detach and close.
     lifecycle_smoke.validate_result(
         result,
         output.replace(NETWORK_ENABLE_MARKER, lifecycle_smoke.READY_MARKER),
@@ -128,7 +140,7 @@ def run_smoke(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the fixed in-process DevTools Network.enable smoke."
+        description="Run the fixed in-process DevTools protocol smoke."
     )
     parser.add_argument(
         "--out-dir", type=Path, default=Path("out/wasm-chrome-m6")
@@ -158,9 +170,13 @@ def main() -> int:
         print_context(
             "run_m8_wasm_browser_devtools_protocol_smoke.py",
             manifest,
-            case="fixed_in_process_devtools_network_enable_m8",
-            scope="fixed-data-url-primary-webcontents-network-enable-detach-close",
+            case="fixed_in_process_devtools_network_enable_runtime_evaluate_m8",
+            scope=(
+                "fixed-data-url-primary-webcontents-native-devtools-client-"
+                "network-enable-runtime-evaluate-detach-close"
+            ),
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
+            limitations=list(LIMITATIONS),
             module=relative_to_repo(module),
             node_version=manifest["emscripten"]["node_version"],  # type: ignore[index]
         )
@@ -186,6 +202,8 @@ def main() -> int:
                     "canvasCopies": result["canvasCopies"],
                     "frameReports": len(result["frameReports"]),
                     "networkEnable": True,
+                    "pageWebAssemblyExercised": False,
+                    "runtimeEvaluate": True,
                     "startupMs": elapsed_ms,
                 },
                 sort_keys=True,

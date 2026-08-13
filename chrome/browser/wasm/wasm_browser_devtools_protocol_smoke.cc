@@ -28,13 +28,24 @@ namespace {
 
 constexpr char kNetworkEnableCommand[] =
     R"({"id":1,"method":"Network.enable"})";
+constexpr char kRuntimeEvaluateCommand[] =
+    R"json({"id":2,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("String(6 * 7)","returnByValue":true,"silent":true,)json"
+    R"json("allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kFixedDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
 constexpr char kNetworkEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
+constexpr char kRuntimeEvaluateSuccessMarker[] =
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
 constexpr char kDetachedMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
 constexpr char kFailureMarker[] = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:FAIL";
 constexpr int kNetworkEnableCommandId = 1;
+constexpr int kRuntimeEvaluateCommandId = 2;
 constexpr size_t kMaximumProtocolResponseBytes = 1024;
+constexpr char kRuntimeEvaluateExpectedType[] = "string";
+constexpr char kRuntimeEvaluateExpectedValue[] = "42";
 
 }  // namespace
 
@@ -57,10 +68,14 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   CHECK(!primary_main_frame_);
   CHECK(!permitted_url_.is_valid());
 
+  const GURL expected_url(kFixedDevToolsProtocolSmokeUrl);
+  CHECK(expected_url.is_valid());
+  CHECK_EQ(web_contents->GetLastCommittedURL(), expected_url);
+
   primary_main_frame_ = web_contents->GetPrimaryMainFrame();
   CHECK(primary_main_frame_);
-  permitted_url_ = web_contents->GetLastCommittedURL();
-  CHECK(permitted_url_.is_valid());
+  CHECK_EQ(primary_main_frame_->GetLastCommittedURL(), expected_url);
+  permitted_url_ = expected_url;
 
   agent_host_ = content::DevToolsAgentHost::GetOrCreateFor(web_contents);
   if (!agent_host_) {
@@ -68,12 +83,14 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   }
   if (!agent_host_->AttachClient(this)) {
     agent_host_ = nullptr;
-    Fail("could not attach the fixed Network.enable client");
+    Fail("could not attach the fixed protocol client");
   }
 
-  state_ = State::kEnabling;
-  // This is the only protocol command this client can emit. There is no
-  // frontend, pipe, socket, host ABI, or caller-provided command surface.
+  state_ = State::kEnablingNetwork;
+  // These two literal commands are the only protocol messages this client can
+  // emit. There is no frontend, pipe, socket, host ABI, or caller-provided
+  // command surface. Runtime.evaluate runs one ordinary JavaScript expression
+  // only; it is not a page WebAssembly probe or enablement path.
   agent_host_->DispatchProtocolMessage(
       this, base::byte_span_from_cstring(kNetworkEnableCommand));
 }
@@ -86,11 +103,13 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
     content::DevToolsAgentHost* agent_host,
     base::span<const uint8_t> message) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (state_ != State::kEnabling || agent_host != agent_host_.get()) {
+  if ((state_ != State::kEnablingNetwork &&
+       state_ != State::kEvaluatingRuntime) ||
+      agent_host != agent_host_.get()) {
     return;
   }
   if (message.size() > kMaximumProtocolResponseBytes) {
-    Fail("Network.enable response exceeded its fixed bound");
+    Fail("fixed DevTools protocol response exceeded its bound");
   }
 
   const std::string_view message_text(
@@ -106,15 +125,40 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
 
   const base::DictValue& response = value->GetDict();
   const std::optional<int> id = response.FindInt("id");
-  if (!id || *id != kNetworkEnableCommandId) {
+  if (!id) {
     return;
   }
 
-  const base::DictValue* result = response.FindDict("result");
-  if (response.Find("error") || !result || !result->empty()) {
-    Fail("Network.enable did not return its fixed empty result");
+  if (state_ == State::kEnablingNetwork) {
+    if (*id != kNetworkEnableCommandId) {
+      return;
+    }
+    const base::DictValue* result = response.FindDict("result");
+    if (response.Find("error") || !result || !result->empty()) {
+      Fail("Network.enable did not return its fixed empty result");
+    }
+    CompleteNetworkEnable();
+    return;
   }
-  CompleteNetworkEnable();
+
+  CHECK_EQ(state_, State::kEvaluatingRuntime);
+  if (*id != kRuntimeEvaluateCommandId) {
+    return;
+  }
+  const base::DictValue* result = response.FindDict("result");
+  if (response.Find("error") || !result || result->Find("exceptionDetails")) {
+    Fail("Runtime.evaluate did not return a fixed ordinary-JavaScript result");
+  }
+  const base::DictValue* remote_result = result->FindDict("result");
+  const std::string* result_type =
+      remote_result ? remote_result->FindString("type") : nullptr;
+  const std::string* result_value =
+      remote_result ? remote_result->FindString("value") : nullptr;
+  if (!result_type || *result_type != kRuntimeEvaluateExpectedType ||
+      !result_value || *result_value != kRuntimeEvaluateExpectedValue) {
+    Fail("Runtime.evaluate did not return the fixed string result");
+  }
+  CompleteRuntimeEvaluate();
 }
 
 void WasmBrowserDevToolsProtocolSmoke::AgentHostClosed(
@@ -164,13 +208,26 @@ bool WasmBrowserDevToolsProtocolSmoke::AllowUnsafeOperations() {
 }
 
 void WasmBrowserDevToolsProtocolSmoke::CompleteNetworkEnable() {
-  CHECK_EQ(state_, State::kEnabling);
+  CHECK_EQ(state_, State::kEnablingNetwork);
+  CHECK(agent_host_);
+
+  // Advance before dispatch because a DevTools agent may synchronously deliver
+  // the fixed Runtime.evaluate response while handling this call.
+  state_ = State::kEvaluatingRuntime;
+  std::fprintf(stderr, "%s\n", kNetworkEnableSuccessMarker);
+  std::fflush(stderr);
+  agent_host_->DispatchProtocolMessage(
+      this, base::byte_span_from_cstring(kRuntimeEvaluateCommand));
+}
+
+void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEvaluate() {
+  CHECK_EQ(state_, State::kEvaluatingRuntime);
   CHECK(success_callback_);
 
-  // Keep the success evidence before detachment, then make detachment an
-  // independently observable barrier before the lifecycle is allowed to close
-  // its Browser and destroy the sole WebContents.
-  std::fprintf(stderr, "%s\n", kNetworkEnableSuccessMarker);
+  // Keep both fixed response witnesses before detachment, then make
+  // detachment an independently observable barrier before the lifecycle is
+  // allowed to close its Browser and destroy the sole WebContents.
+  std::fprintf(stderr, "%s\n", kRuntimeEvaluateSuccessMarker);
   std::fflush(stderr);
   Detach();
   state_ = State::kDetached;

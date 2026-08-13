@@ -23,10 +23,12 @@ class WebContents;
 namespace chrome {
 
 // A switch-gated, direct DevToolsAgentHost client used only to prove that the
-// active Wasm Browser tab can accept one fixed Network.enable request. It is
-// deliberately not a DevTools frontend or a protocol transport: it emits one
-// literal request, accepts only its fixed successful response, and forwards no
-// protocol traffic to JavaScript or another process.
+// active Wasm Browser tab can accept two fixed protocol requests: Network.enable
+// followed by one literal Runtime.evaluate expression. It is deliberately not a
+// DevTools frontend or a protocol transport: it accepts only the two fixed
+// successful responses and forwards no protocol traffic to JavaScript or
+// another process. The expression exercises ordinary page JavaScript only; it
+// does not enable or exercise page WebAssembly.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:
@@ -37,8 +39,9 @@ class WasmBrowserDevToolsProtocolSmoke final
       const WasmBrowserDevToolsProtocolSmoke&) = delete;
   ~WasmBrowserDevToolsProtocolSmoke() override;
 
-  // Attaches only to |web_contents|' current primary main frame, sends the
-  // literal Network.enable command, and runs |success_callback| only after
+  // Attaches only when |web_contents|' current primary main frame has committed
+  // the fixed DevTools smoke data URL, sends the literal Network.enable then
+  // Runtime.evaluate commands, and runs |success_callback| only after
   // detaching from the agent host.
   void Start(content::WebContents* web_contents);
 
@@ -47,7 +50,8 @@ class WasmBrowserDevToolsProtocolSmoke final
  private:
   enum class State {
     kCreated,
-    kEnabling,
+    kEnablingNetwork,
+    kEvaluatingRuntime,
     kDetached,
     kFailed,
   };
@@ -66,6 +70,7 @@ class WasmBrowserDevToolsProtocolSmoke final
   bool AllowUnsafeOperations() override;
 
   void CompleteNetworkEnable();
+  void CompleteRuntimeEvaluate();
   [[noreturn]] void Fail(std::string_view reason);
   void Detach();
 
