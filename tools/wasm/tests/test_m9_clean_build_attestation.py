@@ -20,7 +20,11 @@ import time
 import unittest
 from unittest import mock
 
+from tools.wasm import m0_common
 from tools.wasm import run_m9_clean_build_attestation as attestation
+
+
+descriptor_snapshot = sys.modules[attestation.hash_regular_files.__module__]
 
 
 CHECKOUT = {"commit": "a" * 40, "tree": "b" * 40}
@@ -50,6 +54,15 @@ def manifest_data() -> dict[str, object]:
             "enable_chromium_wasm_chrome = true",
         ],
         "rust": {"source_revision": VERSIONS["rust"]},
+        "test262": {
+            "path": m0_common.TEST262_CHECKOUT_PATH.as_posix(),
+            "deps_path": m0_common.TEST262_DEPS_PATH,
+            "remote": m0_common.TEST262_REMOTE,
+            "revision": "0" * 40,
+            "license_path": m0_common.TEST262_LICENSE_PATH.as_posix(),
+            "license_size_bytes": 1,
+            "license_sha256": "1" * 64,
+        },
     }
 
 
@@ -66,6 +79,37 @@ def gn_args_record() -> dict[str, object]:
         "manifest_key": attestation.GN_ARGS_MANIFEST_KEY,
         "sha256": "4" * 64,
     }
+
+
+def file_identity(marker: int = 1) -> attestation._FileIdentity:
+    return attestation._FileIdentity(
+        device=marker,
+        inode=marker + 1,
+        mode=0o100644,
+        size=marker + 2,
+        modification_time_ns=marker + 3,
+        change_time_ns=marker + 4,
+    )
+
+
+def manifest_capture(marker: int = 1) -> attestation._ManifestCapture:
+    return attestation._ManifestCapture(
+        manifest=manifest_data(),
+        record=MANIFEST_IDENTITY,
+        identity=file_identity(marker),
+    )
+
+
+def module_artifacts_capture(
+    records: dict[str, dict[str, object]], marker: int = 1
+) -> attestation._ModuleArtifactsCapture:
+    return attestation._ModuleArtifactsCapture(
+        records=records,
+        identities={
+            "chrome_wasm.js": file_identity(marker),
+            "chrome_wasm.wasm": file_identity(marker + 10),
+        },
+    )
 
 
 class CleanBuildOutputDirectoryTest(unittest.TestCase):
@@ -316,13 +360,136 @@ class CleanBuildArtifactTest(unittest.TestCase):
 
         empty = self.directory / "empty.wasm"
         empty.touch()
-        with self.assertRaisesRegex(attestation.M0Error, "must not be empty"):
+        with self.assertRaisesRegex(attestation.M0Error, "snapshot is invalid"):
             attestation.stable_file_record(empty, "empty artifact")
 
         linked = self.directory / "linked.wasm"
         linked.symlink_to(artifact)
-        with self.assertRaisesRegex(attestation.M0Error, "non-symlink"):
+        with self.assertRaisesRegex(attestation.M0Error, "opened safely"):
             attestation.stable_file_record(linked, "linked artifact")
+
+    def test_descriptor_stable_reads_reject_fifo_and_symlink(self) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "symlink"):
+            self.skipTest("host lacks FIFO or symbolic-link support")
+        fifo = self.directory / "artifact.fifo"
+        os.mkfifo(fifo)
+        target = self.directory / "target.wasm"
+        target.write_bytes(b"trusted artifact")
+        linked = self.directory / "linked.wasm"
+        linked.symlink_to(target)
+
+        for unsafe_path in (fifo, linked):
+            with self.subTest(path=unsafe_path):
+                with self.assertRaises(attestation.M0Error):
+                    attestation.stable_file_record(unsafe_path, "unsafe artifact")
+                with self.assertRaises(attestation.M0Error):
+                    attestation._read_stable_file(
+                        unsafe_path,
+                        "unsafe generated GN args",
+                        maximum_bytes=1024,
+                    )
+
+    def test_stable_hash_rejects_same_inode_mutate_restore_while_reading(
+        self,
+    ) -> None:
+        artifact = self.directory / "artifact.wasm"
+        contents = b"a" * (descriptor_snapshot._READ_CHUNK_BYTES + 1)
+        artifact.write_bytes(contents)
+        original_read = descriptor_snapshot.os.read
+        changed = False
+
+        def read_then_mutate(descriptor: int, size: int) -> bytes:
+            nonlocal changed
+            chunk = original_read(descriptor, size)
+            if chunk and not changed:
+                changed = True
+                before = artifact.stat()
+                time.sleep(0.01)
+                artifact.write_bytes(b"b" * len(contents))
+                artifact.write_bytes(contents)
+                os.utime(
+                    artifact,
+                    ns=(before.st_atime_ns, before.st_mtime_ns),
+                )
+                after = artifact.stat()
+                self.assertEqual(before.st_ino, after.st_ino)
+                self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
+                self.assertNotEqual(before.st_ctime_ns, after.st_ctime_ns)
+            return chunk
+
+        with mock.patch.object(
+            descriptor_snapshot.os, "read", side_effect=read_then_mutate
+        ):
+            with self.assertRaisesRegex(attestation.M0Error, "changed while it was read"):
+                attestation.stable_file_record(artifact, "test artifact")
+        self.assertTrue(changed)
+
+    def test_module_artifact_records_use_one_grouped_descriptor_hash(self) -> None:
+        out_dir = self.directory / "out"
+        out_dir.mkdir()
+        loader = out_dir / "chrome_wasm.js"
+        module = out_dir / "chrome_wasm.wasm"
+        loader.write_bytes(b"loader")
+        module.write_bytes(b"module")
+        original_hashes = attestation.hash_regular_files
+
+        with mock.patch.object(
+            attestation, "hash_regular_files", wraps=original_hashes
+        ) as grouped_hashes:
+            records = attestation.module_artifact_records(out_dir)
+
+        grouped_hashes.assert_called_once_with(
+            out_dir,
+            ("chrome_wasm.js", "chrome_wasm.wasm"),
+            maximum_bytes=attestation.MAX_ARTIFACT_BYTES,
+            description="Chrome Wasm module artifacts",
+        )
+        self.assertEqual(
+            hashlib.sha256(b"loader").hexdigest(),
+            records["chrome_wasm.js"]["sha256"],
+        )
+        self.assertEqual(
+            hashlib.sha256(b"module").hexdigest(),
+            records["chrome_wasm.wasm"]["sha256"],
+        )
+
+    def test_module_artifact_records_reject_leaf_swap_before_group_revalidation(
+        self,
+    ) -> None:
+        for name in ("chrome_wasm.js", "chrome_wasm.wasm"):
+            with self.subTest(name=name):
+                out_dir = self.directory / name
+                out_dir.mkdir()
+                selected = out_dir / name
+                selected.write_bytes(b"selected")
+                (out_dir / "chrome_wasm.js").touch(exist_ok=True)
+                (out_dir / "chrome_wasm.wasm").touch(exist_ok=True)
+                if name == "chrome_wasm.js":
+                    (out_dir / "chrome_wasm.wasm").write_bytes(b"module")
+                else:
+                    (out_dir / "chrome_wasm.js").write_bytes(b"loader")
+                original_hash = descriptor_snapshot._hash_file_from_root
+                replaced = False
+
+                def hash_then_replace(*args: object, **kwargs: object) -> object:
+                    nonlocal replaced
+                    capture = original_hash(*args, **kwargs)
+                    if not replaced and args[1] == name:
+                        replaced = True
+                        selected.unlink()
+                        selected.write_bytes(b"replacement")
+                    return capture
+
+                with mock.patch.object(
+                    descriptor_snapshot,
+                    "_hash_file_from_root",
+                    side_effect=hash_then_replace,
+                ):
+                    with self.assertRaisesRegex(
+                        attestation.M0Error, "changed while snapshotting"
+                    ):
+                        attestation.module_artifact_records(out_dir)
+                self.assertTrue(replaced)
 
     def test_exact_gn_args_are_required_before_and_after_build(self) -> None:
         expected = b"is_debug = false\n"
@@ -353,6 +520,38 @@ class CleanBuildArtifactTest(unittest.TestCase):
         del broken["m6_chrome_gn_args"]
         with self.assertRaisesRegex(attestation.M0Error, "arguments are invalid"):
             attestation.expected_m6_chrome_gn_args(broken)
+
+
+class CleanBuildManifestSnapshotTest(unittest.TestCase):
+    def test_parses_captured_bytes_without_pathname_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest_path = Path(temporary_directory) / "toolchain_manifest.json"
+            expected_manifest = manifest_data()
+            contents = attestation._canonical_json_bytes(expected_manifest)
+            manifest_path.write_bytes(contents)
+
+            with (
+                mock.patch.object(
+                    attestation, "_manifest_path", return_value=manifest_path
+                ),
+                mock.patch.object(
+                    Path,
+                    "open",
+                    side_effect=AssertionError("manifest must not be pathname-reopened"),
+                ),
+            ):
+                manifest, identity = attestation.load_manifest_snapshot()
+
+        self.assertEqual(expected_manifest, manifest)
+        self.assertEqual(
+            {
+                "path": attestation.MANIFEST_RELATIVE_PATH,
+                "schema_version": 1,
+                "sha256": hashlib.sha256(contents).hexdigest(),
+                "versions": VERSIONS,
+            },
+            identity,
+        )
 
 
 class CleanBuildAttestationSchemaTest(unittest.TestCase):
@@ -446,6 +645,33 @@ class CleanBuildAttestationSchemaTest(unittest.TestCase):
             hasattr(attestation, "remove_written_attestation_if_unchanged")
         )
 
+    def test_post_write_identity_rejects_same_inode_mutate_restore(self) -> None:
+        record = attestation.make_attestation(
+            checkout=CHECKOUT,
+            manifest=MANIFEST_IDENTITY,
+            gn_args=gn_args_record(),
+            artifacts=artifact_records(),
+            out_dir=self.out_dir,
+        )
+        written = attestation.write_attestation(self.out_dir, record)
+        before = written.path.stat()
+        time.sleep(0.01)
+        written.path.write_bytes(b"x" * len(written.contents))
+        written.path.write_bytes(written.contents)
+        os.utime(
+            written.path,
+            ns=(before.st_atime_ns, before.st_mtime_ns),
+        )
+        after = written.path.stat()
+
+        self.assertEqual(before.st_ino, after.st_ino)
+        self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
+        self.assertNotEqual(before.st_ctime_ns, after.st_ctime_ns)
+        self.assertEqual(written.contents, written.path.read_bytes())
+        self.assertEqual(before.st_ctime_ns, written.identity.change_time_ns)
+        with self.assertRaisesRegex(attestation.M0Error, "changed after"):
+            attestation.verify_written_attestation(written)
+
 
 class CleanBuildWorkflowTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -501,16 +727,36 @@ class CleanBuildWorkflowTest(unittest.TestCase):
             "checkout_identity": mock.patch.object(
                 attestation, "checkout_identity", return_value=CHECKOUT
             ),
-            "load_manifest_snapshot": mock.patch.object(
+            "_load_manifest_capture": mock.patch.object(
                 attestation,
-                "load_manifest_snapshot",
+                "_load_manifest_capture",
                 side_effect=[
-                    (manifest_data(), MANIFEST_IDENTITY),
-                    (manifest_data(), MANIFEST_IDENTITY),
+                    manifest_capture(),
+                    manifest_capture(),
+                    manifest_capture(),
                 ],
             ),
             "check_boundary": mock.patch.object(attestation, "check_boundary"),
         }
+
+    def _write_live_manifest(self) -> Path:
+        manifest_path = self.root / attestation.MANIFEST_RELATIVE_PATH
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_bytes(attestation._canonical_json_bytes(manifest_data()))
+        return manifest_path
+
+    def _mutate_same_inode_restore(self, path: Path) -> None:
+        original = path.read_bytes()
+        before = path.stat()
+        time.sleep(0.01)
+        path.write_bytes(b"x" * len(original))
+        path.write_bytes(original)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = path.stat()
+        self.assertEqual(before.st_ino, after.st_ino)
+        self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
+        self.assertNotEqual(before.st_ctime_ns, after.st_ctime_ns)
+        self.assertEqual(original, path.read_bytes())
 
     def test_workflow_runs_exact_bounded_commands_and_writes_binding(self) -> None:
         commands: list[tuple[list[str], str]] = []
@@ -542,7 +788,7 @@ class CleanBuildWorkflowTest(unittest.TestCase):
         active["check_boundary"].assert_called_once_with(self.out_dir)
         self.assertEqual(3, active["require_clean_top_level_checkout"].call_count)
         self.assertEqual(3, active["checkout_identity"].call_count)
-        self.assertEqual(2, active["load_manifest_snapshot"].call_count)
+        self.assertEqual(3, active["_load_manifest_capture"].call_count)
         self.assertEqual(
             attestation._canonical_json_bytes(record), destination.read_bytes()
         )
@@ -724,10 +970,13 @@ class CleanBuildWorkflowTest(unittest.TestCase):
         }
         command_runner = self._command_runner(commands)
         stack, patches = self._workflow_patches(command_runner)
-        patches["module_artifact_records"] = mock.patch.object(
+        patches["_capture_module_artifacts"] = mock.patch.object(
             attestation,
-            "module_artifact_records",
-            side_effect=[artifact_records(), changed_artifacts],
+            "_capture_module_artifacts",
+            side_effect=[
+                module_artifacts_capture(artifact_records()),
+                module_artifacts_capture(changed_artifacts),
+            ],
         )
         with stack:
             for patch in patches.values():
@@ -757,6 +1006,132 @@ class CleanBuildWorkflowTest(unittest.TestCase):
         retained = self.out_dir / attestation.ATTESTATION_FILENAME
         self.assertTrue(retained.is_file())
         self.assertTrue(retained.read_bytes())
+
+    def test_post_write_rejects_same_inode_mutate_restore_for_every_input(self) -> None:
+        manifest_path = self._write_live_manifest()
+        for name, error in (
+            ("manifest", "toolchain manifest changed while writing"),
+            ("args.gn", "generated GN args changed while writing"),
+            ("chrome_wasm.js", "Chrome Wasm artifacts changed while writing"),
+            ("chrome_wasm.wasm", "Chrome Wasm artifacts changed while writing"),
+        ):
+            with self.subTest(name=name):
+                out_dir = self.root / "out" / f"metadata-{name}"
+                commands: list[tuple[list[str], str]] = []
+                command_runner = self._command_runner(commands)
+                real_write_attestation = attestation.write_attestation
+                changed = False
+
+                def write_then_mutate(
+                    destination_dir: Path, record: dict[str, object]
+                ) -> attestation.WrittenAttestation:
+                    nonlocal changed
+                    written = real_write_attestation(destination_dir, record)
+                    path = (
+                        manifest_path
+                        if name == "manifest"
+                        else destination_dir / name
+                    )
+                    self._mutate_same_inode_restore(path)
+                    changed = True
+                    return written
+
+                with (
+                    mock.patch.object(
+                        attestation,
+                        "run_required_command",
+                        side_effect=command_runner,
+                    ),
+                    mock.patch.object(attestation, "require_clean_top_level_checkout"),
+                    mock.patch.object(
+                        attestation, "checkout_identity", return_value=CHECKOUT
+                    ),
+                    mock.patch.object(attestation, "check_boundary"),
+                    mock.patch.object(
+                        attestation,
+                        "write_attestation",
+                        side_effect=write_then_mutate,
+                    ),
+                ):
+                    with self.assertRaisesRegex(attestation.M0Error, error):
+                        attestation.run_clean_build_attestation(out_dir)
+                self.assertTrue(changed)
+                self.assertEqual(3, len(commands))
+
+    def test_build_rejects_same_inode_mutate_restore_for_every_cross_phase_input(
+        self,
+    ) -> None:
+        for name, error in (
+            ("manifest", "toolchain manifest identity changed during"),
+            ("args.gn", "generated GN args changed during"),
+            ("chrome_wasm.js", "Chrome Wasm artifacts changed during"),
+            ("chrome_wasm.wasm", "Chrome Wasm artifacts changed during"),
+        ):
+            with self.subTest(name=name):
+                manifest_path = self._write_live_manifest()
+                out_dir = self.root / "out" / f"build-metadata-{name}"
+                commands: list[tuple[list[str], str]] = []
+                base_runner = self._command_runner(commands)
+                changed = False
+
+                def run_then_mutate(
+                    command: list[str], description: str
+                ) -> subprocess.CompletedProcess[str]:
+                    nonlocal changed
+                    result = base_runner(command, description)
+                    if (
+                        not changed
+                        and name in ("manifest", "args.gn")
+                        and command[:1] == [str(self.autoninja)]
+                    ):
+                        self._mutate_same_inode_restore(
+                            manifest_path if name == "manifest" else out_dir / name
+                        )
+                        changed = True
+                    return result
+
+                original_capture_artifacts = attestation._capture_module_artifacts
+                artifact_capture_count = 0
+
+                def capture_then_mutate(
+                    captured_out_dir: Path,
+                ) -> attestation._ModuleArtifactsCapture:
+                    nonlocal artifact_capture_count, changed
+                    capture = original_capture_artifacts(captured_out_dir)
+                    artifact_capture_count += 1
+                    if (
+                        not changed
+                        and name in ("chrome_wasm.js", "chrome_wasm.wasm")
+                        and artifact_capture_count == 1
+                    ):
+                        self._mutate_same_inode_restore(captured_out_dir / name)
+                        changed = True
+                    return capture
+
+                with (
+                    mock.patch.object(
+                        attestation,
+                        "run_required_command",
+                        side_effect=run_then_mutate,
+                    ),
+                    mock.patch.object(attestation, "require_clean_top_level_checkout"),
+                    mock.patch.object(
+                        attestation, "checkout_identity", return_value=CHECKOUT
+                    ),
+                    mock.patch.object(attestation, "check_boundary"),
+                    mock.patch.object(
+                        attestation,
+                        "_capture_module_artifacts",
+                        side_effect=capture_then_mutate,
+                    ),
+                ):
+                    with self.assertRaisesRegex(attestation.M0Error, error):
+                        attestation.run_clean_build_attestation(out_dir)
+                self.assertTrue(changed)
+                self.assertEqual(3, len(commands))
+                self.assertFalse(
+                    (out_dir / attestation.ATTESTATION_FILENAME).exists()
+                )
 
     def test_main_emits_one_canonical_result_followed_by_one_pass_marker(self) -> None:
         record = attestation.make_attestation(

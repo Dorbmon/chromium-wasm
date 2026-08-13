@@ -50,7 +50,12 @@ _TOOLS_DIRECTORY = str(Path(__file__).resolve().parent)
 if _TOOLS_DIRECTORY not in sys.path:
     sys.path.insert(0, _TOOLS_DIRECTORY)
 from check_m6_chrome_boundary import check_boundary
-from m0_common import M0Error, REPO_ROOT, gn_args_text, load_manifest
+from m0_common import M0Error, REPO_ROOT, gn_args_text, validate_test262_manifest
+from m9_descriptor_snapshot import (
+    hash_regular_file,
+    hash_regular_files,
+    snapshot_regular_file_with_identity,
+)
 
 
 SENTINEL = "CHROMIUM_WASM_M9_CLEAN_BUILD_ATTESTATION"
@@ -72,6 +77,7 @@ GN_TARGET = "//chrome:chrome_wasm"
 NINJA_TARGET = "chrome_wasm"
 MODULE_NAME = "chrome_wasm"
 ATTESTATION_FILENAME = "m9_clean_build_attestation.json"
+MANIFEST_RELATIVE_PATH = "tools/wasm/toolchain_manifest.json"
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_GN_ARGS_BYTES = 1024 * 1024
 MAX_COMMAND_DIAGNOSTIC_CHARS = 4096
@@ -121,6 +127,39 @@ class WrittenAttestation:
     identity: _FileIdentity
 
 
+@dataclass(frozen=True)
+class _StableFileCapture:
+    """Descriptor-captured bytes plus non-public metadata identity."""
+
+    contents: bytes
+    identity: _FileIdentity
+
+
+@dataclass(frozen=True)
+class _ManifestCapture:
+    """One parsed manifest whose identity remains private to this runner."""
+
+    manifest: dict[str, Any]
+    record: dict[str, object]
+    identity: _FileIdentity
+
+
+@dataclass(frozen=True)
+class _GnArgsCapture:
+    """One exact generated-args record with its private file identity."""
+
+    record: dict[str, object]
+    identity: _FileIdentity
+
+
+@dataclass(frozen=True)
+class _ModuleArtifactsCapture:
+    """Grouped module records and their private descriptor identities."""
+
+    records: dict[str, dict[str, object]]
+    identities: dict[str, _FileIdentity]
+
+
 def _is_lower_hex(value: object, length: int) -> bool:
     return (
         type(value) is str
@@ -141,7 +180,7 @@ def _canonical_json_text(value: object) -> str:
 
 
 def _manifest_path() -> Path:
-    return REPO_ROOT / "tools/wasm/toolchain_manifest.json"
+    return REPO_ROOT / MANIFEST_RELATIVE_PATH
 
 
 def _require_regular_file(
@@ -173,74 +212,44 @@ def _read_stable_file(
     maximum_bytes: int,
     allow_empty: bool = False,
 ) -> bytes:
-    before = _require_regular_file(
+    return _capture_stable_file(
         path,
         description,
         maximum_bytes=maximum_bytes,
         allow_empty=allow_empty,
-    )
-    try:
-        contents = path.read_bytes()
-    except OSError as exc:
-        raise M0Error(f"could not read {description}: {path}") from exc
-    after = _require_regular_file(
+    ).contents
+
+
+def _capture_stable_file(
+    path: Path,
+    description: str,
+    *,
+    maximum_bytes: int,
+    allow_empty: bool = False,
+) -> _StableFileCapture:
+    """Capture one descriptor-pinned nonempty file and retain all metadata."""
+
+    if allow_empty:
+        raise M0Error(f"{description} stable read cannot allow an empty file")
+    capture = snapshot_regular_file_with_identity(
         path,
-        description,
         maximum_bytes=maximum_bytes,
-        allow_empty=allow_empty,
+        description=description,
     )
-    if (
-        before.st_dev,
-        before.st_ino,
-        before.st_size,
-        before.st_mtime_ns,
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ) or len(contents) != before.st_size:
-        raise M0Error(f"{description} changed while it was read: {path}")
-    return contents
+    return _StableFileCapture(
+        contents=capture.contents,
+        identity=_file_identity_from_pinned_identity(capture.pinned_identity),
+    )
 
 
 def stable_file_record(path: Path, description: str) -> dict[str, object]:
     """Return a size and digest only if a regular artifact stayed unchanged."""
 
-    before = _require_regular_file(
+    return hash_regular_file(
         path,
-        description,
         maximum_bytes=MAX_ARTIFACT_BYTES,
-    )
-    digest = hashlib.sha256()
-    byte_count = 0
-    try:
-        with path.open("rb") as input_file:
-            while block := input_file.read(1024 * 1024):
-                digest.update(block)
-                byte_count += len(block)
-                if byte_count > MAX_ARTIFACT_BYTES:
-                    raise M0Error(f"{description} has an invalid size: {path}")
-    except OSError as exc:
-        raise M0Error(f"could not read {description}: {path}") from exc
-    after = _require_regular_file(
-        path,
-        description,
-        maximum_bytes=MAX_ARTIFACT_BYTES,
-    )
-    if (
-        before.st_dev,
-        before.st_ino,
-        before.st_size,
-        before.st_mtime_ns,
-    ) != (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-    ) or byte_count != before.st_size:
-        raise M0Error(f"{description} changed while it was hashed: {path}")
-    return {"bytes": byte_count, "sha256": digest.hexdigest()}
+        description=description,
+    ).byte_identity()
 
 
 def _require_real_directory(path: Path, description: str) -> Path:
@@ -253,14 +262,24 @@ def _require_real_directory(path: Path, description: str) -> Path:
     return path
 
 
-def _file_identity(file_status: os.stat_result) -> _FileIdentity:
+def _file_identity_from_pinned_identity(
+    pinned_identity: tuple[int, int, int, int, int, int],
+) -> _FileIdentity:
+    """Preserve all descriptor-captured metadata for post-write comparison."""
+
+    if (
+        type(pinned_identity) is not tuple
+        or len(pinned_identity) != 6
+        or any(type(value) is not int for value in pinned_identity)
+    ):
+        raise M0Error("clean-build attestation snapshot identity is invalid")
     return _FileIdentity(
-        device=file_status.st_dev,
-        inode=file_status.st_ino,
-        mode=file_status.st_mode,
-        size=file_status.st_size,
-        modification_time_ns=file_status.st_mtime_ns,
-        change_time_ns=file_status.st_ctime_ns,
+        device=pinned_identity[0],
+        inode=pinned_identity[1],
+        mode=pinned_identity[2],
+        size=pinned_identity[3],
+        modification_time_ns=pinned_identity[4],
+        change_time_ns=pinned_identity[5],
     )
 
 
@@ -779,39 +798,43 @@ def _manifest_versions(manifest: dict[str, Any]) -> dict[str, str]:
     return {name: str(versions[name]) for name in sorted(versions)}
 
 
-def load_manifest_snapshot() -> tuple[dict[str, Any], dict[str, object]]:
-    """Read a stable manifest and its small identity record together."""
+def _load_manifest_capture() -> _ManifestCapture:
+    """Capture, parse, and retain one descriptor-pinned toolchain manifest."""
 
-    manifest_path = _manifest_path()
-    before = _read_stable_file(
-        manifest_path,
+    capture = _capture_stable_file(
+        _manifest_path(),
         "toolchain manifest",
         maximum_bytes=MAX_GN_ARGS_BYTES,
     )
     try:
-        manifest = load_manifest()
-    except (M0Error, KeyError, TypeError, ValueError, OSError) as exc:
+        manifest = json.loads(capture.contents.decode("utf-8"))
+        if type(manifest) is not dict:
+            raise M0Error("toolchain manifest must be an object")
+        if manifest.get("schema_version") != 1:
+            raise M0Error("unsupported toolchain manifest schema")
+        validate_test262_manifest(manifest)
+    except (M0Error, KeyError, TypeError, UnicodeError, ValueError) as exc:
         raise M0Error(f"could not load toolchain manifest: {exc}") from exc
-    after = _read_stable_file(
-        manifest_path,
-        "toolchain manifest",
-        maximum_bytes=MAX_GN_ARGS_BYTES,
-    )
-    if before != after:
-        raise M0Error("toolchain manifest changed while it was loaded")
     schema_version = manifest.get("schema_version")
     if type(schema_version) is not int or schema_version != 1:
         raise M0Error("toolchain manifest schema is invalid")
-    try:
-        relative_path = manifest_path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
-    except ValueError as exc:
-        raise M0Error("toolchain manifest must remain in the checkout") from exc
-    return manifest, {
-        "path": relative_path,
-        "schema_version": schema_version,
-        "sha256": hashlib.sha256(before).hexdigest(),
-        "versions": _manifest_versions(manifest),
-    }
+    return _ManifestCapture(
+        manifest=manifest,
+        record={
+            "path": MANIFEST_RELATIVE_PATH,
+            "schema_version": schema_version,
+            "sha256": hashlib.sha256(capture.contents).hexdigest(),
+            "versions": _manifest_versions(manifest),
+        },
+        identity=capture.identity,
+    )
+
+
+def load_manifest_snapshot() -> tuple[dict[str, Any], dict[str, object]]:
+    """Return the stable public manifest record without private metadata."""
+
+    capture = _load_manifest_capture()
+    return capture.manifest, capture.record
 
 
 def expected_m6_chrome_gn_args(manifest: dict[str, Any]) -> bytes:
@@ -829,36 +852,59 @@ def expected_m6_chrome_gn_args(manifest: dict[str, Any]) -> bytes:
     return encoded
 
 
-def require_exact_generated_gn_args(
+def _capture_exact_generated_gn_args(
     out_dir: Path, expected_args: bytes
-) -> dict[str, object]:
-    actual_args = _read_stable_file(
+) -> _GnArgsCapture:
+    capture = _capture_stable_file(
         out_dir / "args.gn",
         "generated GN args",
         maximum_bytes=MAX_GN_ARGS_BYTES,
     )
-    if actual_args != expected_args:
+    if capture.contents != expected_args:
         raise M0Error(
             "generated GN args do not exactly match the pinned M6 Chrome profile"
         )
-    return {
-        "bytes": len(actual_args),
-        "manifest_key": GN_ARGS_MANIFEST_KEY,
-        "sha256": hashlib.sha256(actual_args).hexdigest(),
-    }
+    return _GnArgsCapture(
+        record={
+            "bytes": len(capture.contents),
+            "manifest_key": GN_ARGS_MANIFEST_KEY,
+            "sha256": hashlib.sha256(capture.contents).hexdigest(),
+        },
+        identity=capture.identity,
+    )
+
+
+def require_exact_generated_gn_args(
+    out_dir: Path, expected_args: bytes
+) -> dict[str, object]:
+    """Return public generated-args evidence without private metadata."""
+
+    return _capture_exact_generated_gn_args(out_dir, expected_args).record
+
+
+def _capture_module_artifacts(out_dir: Path) -> _ModuleArtifactsCapture:
+    """Hash both module artifacts through one descriptor-pinned directory."""
+
+    names = (f"{MODULE_NAME}.js", f"{MODULE_NAME}.wasm")
+    captures = hash_regular_files(
+        out_dir,
+        names,
+        maximum_bytes=MAX_ARTIFACT_BYTES,
+        description="Chrome Wasm module artifacts",
+    )
+    return _ModuleArtifactsCapture(
+        records={name: captures[name].byte_identity() for name in names},
+        identities={
+            name: _file_identity_from_pinned_identity(captures[name].pinned_identity)
+            for name in names
+        },
+    )
 
 
 def module_artifact_records(out_dir: Path) -> dict[str, dict[str, object]]:
-    """Hash the exact Emscripten loader and module emitted by this target."""
+    """Return public module records without private descriptor metadata."""
 
-    return {
-        f"{MODULE_NAME}.js": stable_file_record(
-            out_dir / f"{MODULE_NAME}.js", "Chrome Wasm JavaScript loader"
-        ),
-        f"{MODULE_NAME}.wasm": stable_file_record(
-            out_dir / f"{MODULE_NAME}.wasm", "Chrome Wasm module"
-        ),
-    }
+    return _capture_module_artifacts(out_dir).records
 
 
 def _bootstrap_command() -> list[str]:
@@ -987,28 +1033,17 @@ def _capture_written_attestation(
 ) -> WrittenAttestation:
     """Require the just-written path to still be the exact expected file."""
 
-    before = _require_regular_file(
+    capture = _capture_stable_file(
         path,
         "clean-build attestation",
         maximum_bytes=MAX_GN_ARGS_BYTES,
     )
-    try:
-        contents = path.read_bytes()
-    except OSError as exc:
-        raise M0Error(f"could not read clean-build attestation: {path}") from exc
-    after = _require_regular_file(
-        path,
-        "clean-build attestation",
-        maximum_bytes=MAX_GN_ARGS_BYTES,
-    )
-    before_identity = _file_identity(before)
-    after_identity = _file_identity(after)
-    if before_identity != after_identity or contents != expected_contents:
+    if capture.contents != expected_contents:
         raise M0Error("clean-build attestation changed while it was written")
     return WrittenAttestation(
         path=path,
-        contents=contents,
-        identity=after_identity,
+        contents=capture.contents,
+        identity=capture.identity,
     )
 
 
@@ -1052,8 +1087,8 @@ def run_clean_build_attestation(out_dir: Path) -> tuple[dict[str, object], Path]
     resolved_out_dir = resolve_new_output_dir(out_dir)
     require_clean_top_level_checkout()
     initial_checkout = checkout_identity()
-    manifest, initial_manifest = load_manifest_snapshot()
-    expected_args = expected_m6_chrome_gn_args(manifest)
+    initial_manifest_capture = _load_manifest_capture()
+    expected_args = expected_m6_chrome_gn_args(initial_manifest_capture.manifest)
 
     bootstrap_result = run_required_command(
         _bootstrap_command(), "pinned M3 bootstrap verify-only check"
@@ -1064,36 +1099,49 @@ def run_clean_build_attestation(out_dir: Path) -> tuple[dict[str, object], Path]
         _gn_gen_command(resolved_out_dir, expected_args), "fresh Chrome Wasm GN generation"
     )
     resolved_out_dir = revalidate_output_dir(resolved_out_dir)
-    initial_gn_args = require_exact_generated_gn_args(resolved_out_dir, expected_args)
+    initial_gn_args_capture = _capture_exact_generated_gn_args(
+        resolved_out_dir, expected_args
+    )
     check_boundary(resolved_out_dir)
     run_required_command(
         _autoninja_command(resolved_out_dir), "fresh chrome_wasm autoninja build"
     )
     resolved_out_dir = revalidate_output_dir(resolved_out_dir)
-    final_gn_args = require_exact_generated_gn_args(resolved_out_dir, expected_args)
-    if initial_gn_args != final_gn_args:
+    final_gn_args_capture = _capture_exact_generated_gn_args(
+        resolved_out_dir, expected_args
+    )
+    if (
+        initial_gn_args_capture.record != final_gn_args_capture.record
+        or initial_gn_args_capture.identity != final_gn_args_capture.identity
+    ):
         raise M0Error("generated GN args changed during the Chrome Wasm build")
-    artifacts = module_artifact_records(resolved_out_dir)
+    artifacts_capture = _capture_module_artifacts(resolved_out_dir)
 
-    final_manifest_data, final_manifest = load_manifest_snapshot()
+    final_manifest_capture = _load_manifest_capture()
     final_checkout = checkout_identity()
     require_clean_top_level_checkout()
     if initial_checkout != final_checkout:
         raise M0Error("Git checkout identity changed during the clean rebuild")
-    if initial_manifest != final_manifest:
+    if (
+        initial_manifest_capture.record != final_manifest_capture.record
+        or initial_manifest_capture.identity != final_manifest_capture.identity
+    ):
         raise M0Error("toolchain manifest identity changed during the clean rebuild")
-    if expected_m6_chrome_gn_args(final_manifest_data) != expected_args:
+    if expected_m6_chrome_gn_args(final_manifest_capture.manifest) != expected_args:
         raise M0Error("M6 Chrome GN arguments changed during the clean rebuild")
     resolved_out_dir = revalidate_output_dir(resolved_out_dir)
-    final_artifacts = module_artifact_records(resolved_out_dir)
-    if artifacts != final_artifacts:
+    final_artifacts_capture = _capture_module_artifacts(resolved_out_dir)
+    if (
+        artifacts_capture.records != final_artifacts_capture.records
+        or artifacts_capture.identities != final_artifacts_capture.identities
+    ):
         raise M0Error("Chrome Wasm artifacts changed during the clean rebuild")
 
     attestation = make_attestation(
         checkout=initial_checkout,
-        manifest=initial_manifest,
-        gn_args=final_gn_args,
-        artifacts=final_artifacts,
+        manifest=initial_manifest_capture.record,
+        gn_args=final_gn_args_capture.record,
+        artifacts=final_artifacts_capture.records,
         out_dir=resolved_out_dir,
     )
     written = write_attestation(resolved_out_dir, attestation)
@@ -1105,7 +1153,26 @@ def run_clean_build_attestation(out_dir: Path) -> tuple[dict[str, object], Path]
     require_clean_top_level_checkout()
     if checkout_identity() != initial_checkout:
         raise M0Error("Git checkout identity changed while writing attestation")
-    if module_artifact_records(resolved_out_dir) != final_artifacts:
+    post_write_manifest_capture = _load_manifest_capture()
+    if (
+        post_write_manifest_capture.record != final_manifest_capture.record
+        or post_write_manifest_capture.identity != final_manifest_capture.identity
+    ):
+        raise M0Error("toolchain manifest changed while writing attestation")
+    post_write_gn_args_capture = _capture_exact_generated_gn_args(
+        resolved_out_dir, expected_args
+    )
+    if (
+        post_write_gn_args_capture.record != final_gn_args_capture.record
+        or post_write_gn_args_capture.identity != final_gn_args_capture.identity
+    ):
+        raise M0Error("generated GN args changed while writing attestation")
+    post_write_artifacts_capture = _capture_module_artifacts(resolved_out_dir)
+    if (
+        post_write_artifacts_capture.records != final_artifacts_capture.records
+        or post_write_artifacts_capture.identities
+        != final_artifacts_capture.identities
+    ):
         raise M0Error("Chrome Wasm artifacts changed while writing attestation")
     verify_written_attestation(written)
     return attestation, written.path
