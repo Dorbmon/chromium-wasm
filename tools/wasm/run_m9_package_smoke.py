@@ -23,7 +23,7 @@ from pathlib import Path
 import stat
 import threading
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
@@ -403,11 +403,31 @@ def package_response(
     )
 
 
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Run one cleanup action without preventing remaining cleanup."""
+
+    try:
+        action()
+    except BaseException as exc:
+        if cleanup_error is None:
+            return exc
+    return cleanup_error
+
+
+def _join_package_smoke_server(thread: threading.Thread) -> None:
+    thread.join(timeout=5)
+    if thread.is_alive():
+        raise M0Error("package smoke server did not stop")
+
+
 def run_package_smoke(dist_dir: Path) -> dict[str, object]:
     server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
     verification = server.snapshot.verification
     thread: threading.Thread | None = None
     thread_started = False
+    primary_error: BaseException | None = None
     try:
         thread = threading.Thread(
             target=server.serve_forever,
@@ -455,16 +475,20 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
             "release_status": release_status,
             "scope": "static-package-headers-mime-and-artifact-integrity-only",
         }
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        try:
-            if thread_started:
-                server.shutdown()
-        finally:
-            try:
-                server.server_close()
-            finally:
-                if thread_started and thread is not None:
-                    thread.join(timeout=5)
+        cleanup_error: BaseException | None = None
+        if thread_started:
+            cleanup_error = _run_cleanup_action(cleanup_error, server.shutdown)
+        cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
+        if thread_started and thread is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: _join_package_smoke_server(thread)
+            )
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def main() -> int:
