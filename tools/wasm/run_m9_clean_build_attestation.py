@@ -31,12 +31,16 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shlex
+import signal
 import stat
 import subprocess
 import sys
+import threading
+import time
 from typing import Any, Sequence
 
 # ``check_m6_chrome_boundary`` is also an executable sibling and imports
@@ -71,6 +75,19 @@ ATTESTATION_FILENAME = "m9_clean_build_attestation.json"
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_GN_ARGS_BYTES = 1024 * 1024
 MAX_COMMAND_DIAGNOSTIC_CHARS = 4096
+# Capture command output in bytes before decoding it.  The final diagnostic is
+# intentionally much smaller, but enforcing this cap while pipes are drained
+# is what prevents a failing build tool from consuming unbounded runner memory.
+MAX_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024
+COMMAND_OUTPUT_READ_BYTES = 64 * 1024
+COMMAND_POLL_SECONDS = 0.05
+COMMAND_COOPERATIVE_STOP_SECONDS = 3.0
+COMMAND_FORCED_STOP_SECONDS = 3.0
+GIT_COMMAND_TIMEOUT_SECONDS = 60.0
+BOOTSTRAP_COMMAND_TIMEOUT_SECONDS = 300.0
+GN_COMMAND_TIMEOUT_SECONDS = 300.0
+NINJA_COMMAND_TIMEOUT_SECONDS = 1800.0
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 GIT_REVISION_LENGTH = 40
 SHA256_LENGTH = 64
 
@@ -364,19 +381,327 @@ def _bounded_command_diagnostic(result: subprocess.CompletedProcess[str]) -> str
     return detail[:retained] + marker + detail[-retained:]
 
 
+class _CappedCommandCapture:
+    """Drain both command pipes while retaining one shared byte budget.
+
+    The readers deliberately continue after the retained prefix reaches the
+    limit.  That lets the runner interrupt a noisy command group without
+    deadlocking on an inherited full pipe.
+    """
+
+    def __init__(self, byte_limit: int) -> None:
+        if type(byte_limit) is not int or byte_limit <= 0:
+            raise ValueError("command output byte limit must be positive")
+        self._byte_limit = byte_limit
+        self._lock = threading.Lock()
+        self._overflowed = threading.Event()
+        self._reader_failed = threading.Event()
+        self._reader_errors: list[BaseException] = []
+        self._stdout_chunks: list[bytes] = []
+        self._stderr_chunks: list[bytes] = []
+        self._started_threads: list[threading.Thread] = []
+        self._retained_bytes = 0
+
+    @property
+    def overflowed(self) -> bool:
+        return self._overflowed.is_set()
+
+    @property
+    def reader_failed(self) -> bool:
+        return self._reader_failed.is_set()
+
+    @property
+    def started_threads(self) -> tuple[threading.Thread, ...]:
+        """Return only readers whose ``Thread.start`` completed."""
+
+        return tuple(self._started_threads)
+
+    def _append(self, chunks: list[bytes], chunk: bytes) -> None:
+        with self._lock:
+            remaining = self._byte_limit - self._retained_bytes
+            if remaining <= 0:
+                self._overflowed.set()
+                return
+            if len(chunk) > remaining:
+                chunks.append(chunk[:remaining])
+                self._retained_bytes += remaining
+                self._overflowed.set()
+                return
+            chunks.append(chunk)
+            self._retained_bytes += len(chunk)
+
+    def _drain(self, stream: Any, chunks: list[bytes]) -> None:
+        try:
+            read_chunk = getattr(stream, "read1", stream.read)
+            while chunk := read_chunk(COMMAND_OUTPUT_READ_BYTES):
+                if not isinstance(chunk, bytes):
+                    raise TypeError("command pipe did not produce bytes")
+                self._append(chunks, chunk)
+        except BaseException as exc:
+            with self._lock:
+                self._reader_errors.append(exc)
+            self._reader_failed.set()
+
+    def start(self, process: subprocess.Popen[bytes]) -> tuple[threading.Thread, ...]:
+        if process.stdout is None or process.stderr is None:
+            raise M0Error("command output pipes are unavailable")
+        stdout_thread = threading.Thread(
+            target=self._drain,
+            args=(process.stdout, self._stdout_chunks),
+            name="chromium-wasm-m9-attestation-stdout",
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=self._drain,
+            args=(process.stderr, self._stderr_chunks),
+            name="chromium-wasm-m9-attestation-stderr",
+            daemon=True,
+        )
+        stdout_thread.start()
+        self._started_threads.append(stdout_thread)
+        stderr_thread.start()
+        self._started_threads.append(stderr_thread)
+        return tuple(self._started_threads)
+
+    def text(self) -> tuple[str, str]:
+        with self._lock:
+            errors = tuple(self._reader_errors)
+            stdout = b"".join(self._stdout_chunks)
+            stderr = b"".join(self._stderr_chunks)
+        if errors:
+            raise M0Error(f"command output reader failed: {errors[0]}")
+        # Check the raw cap before decoding: a retained prefix can end inside
+        # a UTF-8 sequence when the cap lands in the middle of a code point.
+        if self.overflowed:
+            raise M0Error("command output exceeds the configured byte bound")
+        try:
+            return stdout.decode("utf-8"), stderr.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise M0Error("command output is not valid UTF-8") from exc
+
+
+def _command_timeout_seconds(command: Sequence[str], description: str) -> float:
+    """Return the finite timeout appropriate to one known local command."""
+
+    if command and Path(command[0]).name == "git":
+        return GIT_COMMAND_TIMEOUT_SECONDS
+    if description == "pinned M3 bootstrap verify-only check":
+        return BOOTSTRAP_COMMAND_TIMEOUT_SECONDS
+    if description == "fresh Chrome Wasm GN generation":
+        return GN_COMMAND_TIMEOUT_SECONDS
+    if description == "fresh chrome_wasm autoninja build":
+        return NINJA_COMMAND_TIMEOUT_SECONDS
+    return DEFAULT_COMMAND_TIMEOUT_SECONDS
+
+
+def _signal_command_group(
+    process: subprocess.Popen[bytes], signal_number: int
+) -> None:
+    """Signal only the session-created command process group."""
+
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        raise M0Error("could not signal the clean-build command process group") from exc
+
+
+def _command_group_exists(process: subprocess.Popen[bytes]) -> bool:
+    """Fail closed unless the command's dedicated process group is absent."""
+
+    try:
+        os.killpg(process.pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError as exc:
+        raise M0Error(
+            "cannot verify clean-build command process-group absence"
+        ) from exc
+
+
+def _output_threads_stopped(threads: Sequence[threading.Thread]) -> bool:
+    return not any(thread.is_alive() for thread in threads)
+
+
+def _wait_for_command_completion(
+    process: subprocess.Popen[bytes],
+    threads: Sequence[threading.Thread],
+    timeout: float,
+) -> bool:
+    """Wait for leader exit, reader EOF, and process-group disappearance."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if (
+            process.poll() is not None
+            and _output_threads_stopped(threads)
+            and not _command_group_exists(process)
+        ):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        alive_threads = [thread for thread in threads if thread.is_alive()]
+        if alive_threads:
+            for thread in alive_threads:
+                thread.join(timeout=min(COMMAND_POLL_SECONDS, remaining))
+        else:
+            time.sleep(min(COMMAND_POLL_SECONDS, remaining))
+
+
+def _stop_command_group(
+    process: subprocess.Popen[bytes], threads: Sequence[threading.Thread]
+) -> bool:
+    """Boundedly stop the command group; return whether SIGKILL was needed."""
+
+    _signal_command_group(process, signal.SIGINT)
+    if _wait_for_command_completion(
+        process, threads, COMMAND_COOPERATIVE_STOP_SECONDS
+    ):
+        return False
+    _signal_command_group(process, signal.SIGKILL)
+    if not _wait_for_command_completion(process, threads, COMMAND_FORCED_STOP_SECONDS):
+        raise M0Error(
+            "clean-build command process group or output pipes did not exit "
+            "after SIGINT and SIGKILL"
+        )
+    return True
+
+
+def _close_command_pipes(process: subprocess.Popen[bytes]) -> None:
+    """Close local pipes only after reader threads have stopped."""
+
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                # Preserve the primary command/capture failure.
+                pass
+
+
+def _cleanup_command_failure(
+    process: subprocess.Popen[bytes] | None,
+    threads: Sequence[threading.Thread],
+) -> None:
+    """Best-effort bounded cleanup that never masks a primary exception."""
+
+    if process is None:
+        return
+    try:
+        _stop_command_group(process, threads)
+    except BaseException:
+        pass
+    if _output_threads_stopped(threads):
+        _close_command_pipes(process)
+
+
+def _stop_command_for_primary_failure(
+    process: subprocess.Popen[bytes],
+    threads: Sequence[threading.Thread],
+    description: str,
+    reason: str,
+) -> bool:
+    """Stop a command without allowing cleanup trouble to hide ``reason``."""
+
+    try:
+        return _stop_command_group(process, threads)
+    except BaseException as cleanup_error:
+        raise M0Error(
+            f"{description} {reason}; command cleanup could not be fully verified"
+        ) from cleanup_error
+
+
+def _run_bounded_command(
+    command: Sequence[str], description: str, timeout_seconds: float
+) -> subprocess.CompletedProcess[str]:
+    """Run one local build prerequisite with bounded output and lifetime."""
+
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("command timeout must be positive and finite")
+    process: subprocess.Popen[bytes] | None = None
+    capture: _CappedCommandCapture | None = None
+    reader_threads: tuple[threading.Thread, ...] = ()
+    group_cleanup_done = False
+    try:
+        process = subprocess.Popen(
+            list(command),
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        capture = _CappedCommandCapture(MAX_COMMAND_OUTPUT_BYTES)
+        try:
+            reader_threads = capture.start(process)
+        except BaseException:
+            reader_threads = capture.started_threads
+            raise
+        deadline = time.monotonic() + timeout_seconds
+        interruption_reason: str | None = None
+        while True:
+            if capture.overflowed:
+                interruption_reason = "output exceeds the configured byte bound"
+                break
+            if capture.reader_failed:
+                interruption_reason = "output reader failed"
+                break
+            if process.poll() is not None:
+                break
+            if time.monotonic() >= deadline:
+                interruption_reason = "exceeded its command timeout"
+                break
+            time.sleep(COMMAND_POLL_SECONDS)
+
+        forced_kill = False
+        if interruption_reason is not None:
+            forced_kill = _stop_command_for_primary_failure(
+                process, reader_threads, description, interruption_reason
+            )
+            group_cleanup_done = True
+        elif not _wait_for_command_completion(
+            process, reader_threads, COMMAND_FORCED_STOP_SECONDS
+        ):
+            interruption_reason = "process group did not exit after leader completion"
+            forced_kill = _stop_command_for_primary_failure(
+                process, reader_threads, description, interruption_reason
+            )
+            group_cleanup_done = True
+
+        if interruption_reason is not None:
+            if forced_kill:
+                raise M0Error(
+                    f"{description} {interruption_reason}; force-killed its "
+                    "dedicated process group after SIGINT"
+                )
+            raise M0Error(f"{description} {interruption_reason}")
+        assert capture is not None
+        stdout, stderr = capture.text()
+        assert process.returncode is not None
+        return subprocess.CompletedProcess(list(command), process.returncode, stdout, stderr)
+    except BaseException:
+        if not group_cleanup_done:
+            _cleanup_command_failure(process, reader_threads)
+        raise
+    finally:
+        if process is not None and _output_threads_stopped(reader_threads):
+            _close_command_pipes(process)
+
+
 def run_required_command(
-    command: Sequence[str], description: str
+    command: Sequence[str], description: str, *, timeout_seconds: float | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run one named local prerequisite without inheriting shell parsing."""
 
     try:
-        result = subprocess.run(
-            list(command),
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            shell=False,
+        result = _run_bounded_command(
+            command,
+            description,
+            _command_timeout_seconds(command, description)
+            if timeout_seconds is None
+            else timeout_seconds,
         )
     except (OSError, ValueError, UnicodeError) as exc:
         raise M0Error(f"could not start {description}: {exc}") from exc

@@ -10,10 +10,13 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -124,7 +127,9 @@ class CleanBuildIdentityTest(unittest.TestCase):
 
     def test_clean_status_requires_successful_git_command(self) -> None:
         failed = subprocess.CompletedProcess(["git", "status"], 1, "", "git failed")
-        with mock.patch.object(attestation.subprocess, "run", return_value=failed):
+        with mock.patch.object(
+            attestation, "_run_bounded_command", return_value=failed
+        ):
             with self.assertRaisesRegex(attestation.M0Error, "top-level Git status failed"):
                 attestation.require_clean_top_level_checkout()
 
@@ -156,6 +161,138 @@ class CleanBuildIdentityTest(unittest.TestCase):
         emscripten["source_revision"] = "bad"
         with self.assertRaisesRegex(attestation.M0Error, "invalid"):
             attestation._manifest_versions(malformed)
+
+
+class CleanBuildCommandTest(unittest.TestCase):
+    def _command(self, program: str) -> list[str]:
+        return [sys.executable, "-c", program]
+
+    def _bounded(
+        self, program: str, *, timeout: float = 2.0
+    ) -> subprocess.CompletedProcess[str]:
+        return attestation._run_bounded_command(
+            self._command(program), "test command", timeout
+        )
+
+    def test_bounded_command_returns_text_completed_process(self) -> None:
+        result = self._bounded(
+            "import sys; print('stdout'); print('stderr', file=sys.stderr)"
+        )
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("stdout\n", result.stdout)
+        self.assertEqual("stderr\n", result.stderr)
+
+    def test_required_command_keeps_nonzero_diagnostic_contract(self) -> None:
+        command = self._command(
+            "import sys; print('stdout'); print('stderr', file=sys.stderr); raise SystemExit(7)"
+        )
+        with self.assertRaisesRegex(
+            attestation.M0Error, "test command failed \\(7\\).*stdout.*stderr"
+        ):
+            attestation.run_required_command(command, "test command", timeout_seconds=2)
+
+    def test_command_output_cap_is_raw_shared_bytes_and_drains_after_overflow(
+        self,
+    ) -> None:
+        program = "import sys; sys.stdout.buffer.write(b'a' * 8192); sys.stdout.flush()"
+        with mock.patch.object(attestation, "MAX_COMMAND_OUTPUT_BYTES", 32):
+            started = time.monotonic()
+            with self.assertRaisesRegex(
+                attestation.M0Error, "output exceeds the configured byte bound"
+            ):
+                self._bounded(program)
+        self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_command_output_cap_is_shared_across_stdout_and_stderr(self) -> None:
+        program = (
+            "import sys; "
+            "sys.stdout.buffer.write(b'a' * 20); sys.stdout.flush(); "
+            "sys.stderr.buffer.write(b'b' * 20); sys.stderr.flush()"
+        )
+        with mock.patch.object(attestation, "MAX_COMMAND_OUTPUT_BYTES", 32):
+            with self.assertRaisesRegex(
+                attestation.M0Error, "output exceeds the configured byte bound"
+            ):
+                self._bounded(program)
+
+    def test_overflow_reason_survives_command_cleanup_failure(self) -> None:
+        program = "import sys; sys.stdout.buffer.write(b'a' * 8192); sys.stdout.flush()"
+        real_stop = attestation._stop_command_group
+        stop_attempts = 0
+
+        def fail_once_then_stop(
+            process: subprocess.Popen[bytes], threads: object
+        ) -> bool:
+            nonlocal stop_attempts
+            stop_attempts += 1
+            if stop_attempts == 1:
+                raise attestation.M0Error("cleanup failed")
+            return real_stop(process, threads)
+
+        with mock.patch.object(attestation, "MAX_COMMAND_OUTPUT_BYTES", 32), mock.patch.object(
+            attestation,
+            "_stop_command_group",
+            side_effect=fail_once_then_stop,
+        ):
+            with self.assertRaisesRegex(
+                attestation.M0Error,
+                "output exceeds the configured byte bound; command cleanup could not be fully verified",
+            ) as raised:
+                self._bounded(program)
+        self.assertIsInstance(raised.exception.__cause__, attestation.M0Error)
+        self.assertEqual("cleanup failed", str(raised.exception.__cause__))
+        self.assertEqual(2, stop_attempts)
+
+    def test_quiet_command_timeout_stops_its_session(self) -> None:
+        program = "import time; time.sleep(30)"
+        with mock.patch.object(attestation, "COMMAND_COOPERATIVE_STOP_SECONDS", 0.1), mock.patch.object(
+            attestation, "COMMAND_FORCED_STOP_SECONDS", 0.1
+        ):
+            started = time.monotonic()
+            with self.assertRaisesRegex(attestation.M0Error, "command timeout"):
+                self._bounded(program, timeout=0.1)
+        self.assertLess(time.monotonic() - started, 2.0)
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
+    def test_reaped_leader_descendant_cannot_return_success(self) -> None:
+        # The leader exits immediately after spawning a same-session child.
+        # The child owns no inherited pipe, so success requires killpg(0), not
+        # merely leader wait()/reader EOF.
+        program = "import subprocess; subprocess.Popen(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+        with mock.patch.object(attestation, "COMMAND_COOPERATIVE_STOP_SECONDS", 0.1), mock.patch.object(
+            attestation, "COMMAND_FORCED_STOP_SECONDS", 0.1
+        ):
+            with self.assertRaisesRegex(
+                attestation.M0Error, "process group did not exit after leader completion"
+            ):
+                self._bounded(program, timeout=1.0)
+
+    def test_partial_reader_start_keeps_started_reader_for_cleanup(self) -> None:
+        started_threads: list[threading.Thread] = []
+        real_thread = threading.Thread
+        created_threads = 0
+
+        def thread_factory(*args: object, **kwargs: object) -> threading.Thread:
+            nonlocal created_threads
+            thread = real_thread(*args, **kwargs)
+            original_start = thread.start
+            created_threads += 1
+            if created_threads == 1:
+                def record_start() -> None:
+                    original_start()
+                    started_threads.append(thread)
+                thread.start = record_start  # type: ignore[method-assign]
+            else:
+                def fail_start() -> None:
+                    raise RuntimeError("stderr reader start failed")
+                thread.start = fail_start  # type: ignore[method-assign]
+            return thread
+
+        with mock.patch.object(attestation.threading, "Thread", side_effect=thread_factory):
+            with self.assertRaisesRegex(RuntimeError, "stderr reader start failed"):
+                self._bounded("import time; time.sleep(30)")
+        self.assertEqual(1, len(started_threads))
+        self.assertFalse(started_threads[0].is_alive())
 
 
 class CleanBuildArtifactTest(unittest.TestCase):
