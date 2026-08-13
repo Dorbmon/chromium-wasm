@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import queue
 import shutil
@@ -827,6 +828,50 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
                 )
             finally:
                 server.server_close()
+
+    def test_rejects_each_unsafe_input_before_server_construction(self) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "symlink"):
+            self.skipTest("host lacks FIFO or symbolic-link support")
+        protected_paths = (
+            Path("out/chrome_wasm.js"),
+            Path("out/chrome_wasm.wasm"),
+            Path("host/chrome_wasm_browser_navigation_churn_smoke.html"),
+            Path("host/chrome_wasm_browser_navigation_churn_smoke_host.js"),
+            Path("runner.py"),
+        )
+        for unsafe_kind in ("fifo", "symlink"):
+            for protected_path in protected_paths:
+                with self.subTest(
+                    unsafe_kind=unsafe_kind, protected_path=protected_path
+                ), tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    for path in protected_paths:
+                        input_path = root / path
+                        input_path.parent.mkdir(parents=True, exist_ok=True)
+                        input_path.write_bytes(b"trusted input")
+                    unsafe_path = root / protected_path
+                    unsafe_path.unlink()
+                    if unsafe_kind == "fifo":
+                        os.mkfifo(unsafe_path)
+                    else:
+                        replacement = root / "untrusted-replacement"
+                        replacement.write_bytes(b"untrusted replacement")
+                        unsafe_path.symlink_to(replacement)
+                    with mock.patch.object(
+                        smoke, "NavigationChurnSmokeServer"
+                    ) as server_constructor:
+                        with self.assertRaises(M0Error):
+                            smoke.create_server(
+                                "127.0.0.1",
+                                0,
+                                root / "out",
+                                "test-token",
+                                queue.Queue(maxsize=1),
+                                module_name="chrome_wasm",
+                                host_dir=root / "host",
+                                runner_source_path=root / "runner.py",
+                            )
+                    server_constructor.assert_not_called()
 
     def test_rejects_alternate_product_module_at_server_url_and_identity_boundaries(
         self,

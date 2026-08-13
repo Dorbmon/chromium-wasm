@@ -9,6 +9,7 @@ import hashlib
 import http.client
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from tools.wasm.m0_common import M0Error, REPO_ROOT
+from tools.wasm import m9_descriptor_snapshot as descriptor_snapshot
 from tools.wasm import run_m9_measurement_baseline as baseline
 
 
@@ -186,6 +188,237 @@ def passing_result() -> dict[str, object]:
             "v8": "0" * 40,
         },
     )
+
+
+class M9DescriptorSnapshotTest(unittest.TestCase):
+    def _snapshot(self, root: Path, names: tuple[str, ...]) -> dict[str, bytes]:
+        return descriptor_snapshot.snapshot_regular_files(
+            root,
+            names,
+            maximum_bytes=8 * descriptor_snapshot._READ_CHUNK_BYTES,
+            description="descriptor snapshot test",
+        )
+
+    def test_captures_named_regular_files_without_rejecting_unrelated_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "first").write_bytes(b"first")
+            (root / "second").write_bytes(b"second")
+            unrelated = root / "unrelated"
+            original_snapshot = descriptor_snapshot._snapshot_file_from_root
+            changed_unrelated = False
+
+            def snapshot_with_unrelated_change(
+                *args: object, **kwargs: object
+            ) -> tuple[bytes, object]:
+                nonlocal changed_unrelated
+                captured = original_snapshot(*args, **kwargs)
+                if not changed_unrelated:
+                    changed_unrelated = True
+                    unrelated.write_bytes(b"unrelated diagnostic output")
+                return captured
+
+            with mock.patch.object(
+                descriptor_snapshot,
+                "_snapshot_file_from_root",
+                side_effect=snapshot_with_unrelated_change,
+            ):
+                self.assertEqual(
+                    {"first": b"first", "second": b"second"},
+                    self._snapshot(root, ("first", "second")),
+                )
+
+    def test_requires_nofollow_directory_nonblocking_and_dirfd_support(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "input"
+            path.write_bytes(b"input")
+            for flag in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK"):
+                with self.subTest(flag=flag), mock.patch.object(
+                    descriptor_snapshot.os, flag, 0
+                ):
+                    with self.assertRaisesRegex(M0Error, flag):
+                        descriptor_snapshot.snapshot_regular_file(
+                            path,
+                            maximum_bytes=1024,
+                            description="descriptor snapshot test",
+                        )
+            with mock.patch.object(
+                descriptor_snapshot.os, "supports_dir_fd", set()
+            ):
+                with self.assertRaisesRegex(M0Error, "dir_fd"):
+                    descriptor_snapshot.snapshot_regular_file(
+                        path,
+                        maximum_bytes=1024,
+                        description="descriptor snapshot test",
+                    )
+
+    def test_rejects_malformed_names_and_paths_as_m0_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "input").write_bytes(b"input")
+            for names in (
+                [["input"]],
+                ("input\0",),
+                "input",
+                None,
+            ):
+                with self.subTest(names=repr(names)):
+                    with self.assertRaises(M0Error):
+                        descriptor_snapshot.snapshot_regular_files(
+                            root,
+                            names,  # type: ignore[arg-type]
+                            maximum_bytes=1024,
+                            description="descriptor snapshot test",
+                        )
+            for path in ("\0", None, object()):
+                with self.subTest(path=repr(path)):
+                    with self.assertRaises(M0Error):
+                        descriptor_snapshot.snapshot_regular_file(
+                            path,  # type: ignore[arg-type]
+                            maximum_bytes=1024,
+                            description="descriptor snapshot test",
+                        )
+
+    def test_converts_open_argument_errors_to_m0_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "input"
+            path.write_bytes(b"input")
+            original_open = descriptor_snapshot.os.open
+            for error in (TypeError("invalid open argument"), ValueError("bad path")):
+                with self.subTest(error=type(error).__name__):
+                    def open_with_leaf_argument_error(
+                        name: object, *args: object, **kwargs: object
+                    ) -> int:
+                        if name == "input" and kwargs.get("dir_fd") is not None:
+                            raise error
+                        return original_open(name, *args, **kwargs)  # type: ignore[arg-type]
+
+                    with (
+                        mock.patch.object(
+                            descriptor_snapshot,
+                            "_require_dir_fd_support",
+                        ),
+                        mock.patch.object(
+                            descriptor_snapshot.os,
+                            "open",
+                            side_effect=open_with_leaf_argument_error,
+                        ),
+                    ):
+                        with self.assertRaisesRegex(M0Error, "opened safely"):
+                            descriptor_snapshot.snapshot_regular_file(
+                                path,
+                                maximum_bytes=1024,
+                                description="descriptor snapshot test",
+                            )
+
+    def test_rejects_fifo_and_symlink_roots_and_leaves(self) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "symlink"):
+            self.skipTest("host lacks FIFO or symbolic-link support")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(M0Error, "regular file"):
+                descriptor_snapshot.snapshot_regular_file(
+                    fifo,
+                    maximum_bytes=1024,
+                    description="descriptor snapshot test",
+                )
+
+            target = root / "target"
+            target.write_bytes(b"target")
+            leaf_link = root / "leaf-link"
+            leaf_link.symlink_to(target)
+            with self.assertRaisesRegex(M0Error, "opened safely"):
+                descriptor_snapshot.snapshot_regular_file(
+                    leaf_link,
+                    maximum_bytes=1024,
+                    description="descriptor snapshot test",
+                )
+
+            real_directory = root / "real-directory"
+            nested_directory = real_directory / "nested"
+            nested_directory.mkdir(parents=True)
+            (nested_directory / "input").write_bytes(b"input")
+            linked_ancestor = root / "linked-ancestor"
+            linked_ancestor.symlink_to(real_directory, target_is_directory=True)
+            with self.assertRaisesRegex(M0Error, "opened safely"):
+                descriptor_snapshot.snapshot_regular_file(
+                    linked_ancestor / "nested" / "input",
+                    maximum_bytes=1024,
+                    description="descriptor snapshot test",
+                )
+
+    def test_rejects_replacement_fifo_and_symlink_between_capture_and_revalidation(
+        self,
+    ) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "symlink"):
+            self.skipTest("host lacks FIFO or symbolic-link support")
+        for replacement_kind in ("regular", "fifo", "symlink"):
+            with self.subTest(replacement_kind=replacement_kind), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                selected = root / "selected"
+                selected.write_bytes(b"selected")
+                (root / "other").write_bytes(b"other")
+                replacement_target = root / "replacement-target"
+                replacement_target.write_bytes(b"replacement target")
+                original_snapshot = descriptor_snapshot._snapshot_file_from_root
+                replaced = False
+
+                def snapshot_then_replace(
+                    *args: object, **kwargs: object
+                ) -> tuple[bytes, object]:
+                    nonlocal replaced
+                    captured = original_snapshot(*args, **kwargs)
+                    if not replaced and args[1] == "selected":
+                        replaced = True
+                        selected.unlink()
+                        if replacement_kind == "regular":
+                            selected.write_bytes(b"replacement")
+                        elif replacement_kind == "fifo":
+                            os.mkfifo(selected)
+                        else:
+                            selected.symlink_to(replacement_target)
+                    return captured
+
+                with mock.patch.object(
+                    descriptor_snapshot,
+                    "_snapshot_file_from_root",
+                    side_effect=snapshot_then_replace,
+                ):
+                    with self.assertRaises(M0Error):
+                        self._snapshot(root, ("selected", "other"))
+
+    def test_rejects_in_place_content_change_while_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "input"
+            original_contents = b"a" * (descriptor_snapshot._READ_CHUNK_BYTES + 1)
+            path.write_bytes(original_contents)
+            original_read = descriptor_snapshot.os.read
+            changed = False
+
+            def read_then_change(descriptor: int, size: int) -> bytes:
+                nonlocal changed
+                contents = original_read(descriptor, size)
+                if contents and not changed:
+                    changed = True
+                    path.write_bytes(b"b" * len(original_contents))
+                return contents
+
+            with mock.patch.object(
+                descriptor_snapshot.os, "read", side_effect=read_then_change
+            ):
+                with self.assertRaisesRegex(M0Error, "changed while it was read"):
+                    descriptor_snapshot.snapshot_regular_file(
+                        path,
+                        maximum_bytes=2 * descriptor_snapshot._READ_CHUNK_BYTES,
+                        description="descriptor snapshot test",
+                    )
 
 
 class M9MeasurementServerTest(unittest.TestCase):
@@ -404,6 +637,49 @@ class M9MeasurementServerTest(unittest.TestCase):
             source_server.shutdown()
             source_server.server_close()
             source_thread.join(timeout=5)
+
+    def test_rejects_each_unsafe_input_before_server_construction(self) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "symlink"):
+            self.skipTest("host lacks FIFO or symbolic-link support")
+        protected_paths = (
+            Path("out/chrome_wasm.js"),
+            Path("out/chrome_wasm.wasm"),
+            Path("out/args.gn"),
+            Path("host/chrome_wasm_m9_measurement.html"),
+            Path("host/chrome_wasm_m9_measurement_host.js"),
+            Path("runner.py"),
+        )
+        for unsafe_kind in ("fifo", "symlink"):
+            for protected_path in protected_paths:
+                with self.subTest(
+                    unsafe_kind=unsafe_kind, protected_path=protected_path
+                ), tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    for path in protected_paths:
+                        input_path = root / path
+                        input_path.parent.mkdir(parents=True, exist_ok=True)
+                        input_path.write_bytes(b"trusted input")
+                    unsafe_path = root / protected_path
+                    unsafe_path.unlink()
+                    if unsafe_kind == "fifo":
+                        os.mkfifo(unsafe_path)
+                    else:
+                        replacement = root / "untrusted-replacement"
+                        replacement.write_bytes(b"untrusted replacement")
+                        unsafe_path.symlink_to(replacement)
+                    with mock.patch.object(
+                        baseline, "M9MeasurementServer"
+                    ) as server_constructor:
+                        with self.assertRaises(M0Error):
+                            baseline.create_measurement_server(
+                                "127.0.0.1",
+                                0,
+                                root / "out",
+                                module_name="chrome_wasm",
+                                host_dir=root / "host",
+                                runner_source_path=root / "runner.py",
+                            )
+                    server_constructor.assert_not_called()
 
 
 class M9MeasurementValidationTest(unittest.TestCase):

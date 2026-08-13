@@ -61,6 +61,10 @@ if __package__:
         M9TrackingThreadingHTTPServer,
         shutdown_server_bounded,
     )
+    from .m9_descriptor_snapshot import (
+        snapshot_regular_file,
+        snapshot_regular_files,
+    )
 else:
     from check_m6_chrome_boundary import check_boundary
     from m0_common import (
@@ -83,6 +87,7 @@ else:
         M9TrackingThreadingHTTPServer,
         shutdown_server_bounded,
     )
+    from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 
 
 SENTINEL = "CHROMIUM_WASM_M9_BASELINE"
@@ -494,28 +499,6 @@ class M9MeasurementRequestHandler(BaseHTTPRequestHandler):
         self._not_found()
 
 
-def _safe_artifact_path(out_dir: Path, artifact_name: str) -> Path:
-    candidate = (out_dir / artifact_name).resolve()
-    if candidate.parent != out_dir or not candidate.is_file():
-        raise M0Error(f"M9 measurement artifact is missing or unsafe: {artifact_name}")
-    size = candidate.stat().st_size
-    if size <= 0 or size > MAX_ARTIFACT_BYTES:
-        raise M0Error(f"M9 measurement artifact size is invalid: {artifact_name}")
-    return candidate
-
-
-def _read_source_snapshot(path: Path, description: str) -> bytes:
-    """Reads one bounded on-disk source input before the capture server starts."""
-
-    try:
-        contents = path.read_bytes()
-    except OSError as exc:
-        raise M0Error(f"M9 measurement {description} cannot be snapshotted") from exc
-    if not contents or len(contents) > MAX_ARTIFACT_BYTES:
-        raise M0Error(f"M9 measurement {description} snapshot is invalid")
-    return contents
-
-
 def create_measurement_server(
     bind: str,
     port: int,
@@ -532,36 +515,40 @@ def create_measurement_server(
     """
 
     module_name = _require_product_module_name(module_name, "server")
-    resolved_out_dir = out_dir.resolve()
-    if not resolved_out_dir.is_dir():
-        raise M0Error(f"M9 measurement output directory is missing: {resolved_out_dir}")
     loader_name = f"{module_name}.js"
     wasm_name = f"{module_name}.wasm"
     # args.gn is never served to the page. It is captured with the executable
     # bytes so the recorded identity cannot hash a file that changed after the
     # real host began receiving its immutable artifacts.
     artifact_names = (loader_name, wasm_name, "args.gn")
-    artifacts = {
-        name: _read_source_snapshot(
-            _safe_artifact_path(resolved_out_dir, name), f"artifact {name}"
-        )
-        for name in artifact_names
-    }
+    artifacts = snapshot_regular_files(
+        out_dir,
+        artifact_names,
+        maximum_bytes=MAX_ARTIFACT_BYTES,
+        description="M9 measurement artifacts",
+    )
     selected_host_dir = host_dir or Path(__file__).with_name("host")
     selected_runner_source = runner_source_path or Path(__file__)
-    host_html = _read_source_snapshot(
-        selected_host_dir / "chrome_wasm_m9_measurement.html", "host HTML"
+    host_snapshots = snapshot_regular_files(
+        selected_host_dir,
+        (
+            "chrome_wasm_m9_measurement.html",
+            "chrome_wasm_m9_measurement_host.js",
+        ),
+        maximum_bytes=MAX_ARTIFACT_BYTES,
+        description="M9 measurement host resources",
     )
-    host_js = _read_source_snapshot(
-        selected_host_dir / "chrome_wasm_m9_measurement_host.js", "host JavaScript"
+    runner_source = snapshot_regular_file(
+        selected_runner_source,
+        maximum_bytes=MAX_ARTIFACT_BYTES,
+        description="M9 measurement runner source",
     )
-    runner_source = _read_source_snapshot(selected_runner_source, "runner source")
     return M9MeasurementServer(
         (bind, port),
         artifacts=artifacts,
         served_artifact_names=frozenset((loader_name, wasm_name)),
-        host_html=host_html,
-        host_js=host_js,
+        host_html=host_snapshots["chrome_wasm_m9_measurement.html"],
+        host_js=host_snapshots["chrome_wasm_m9_measurement_host.js"],
         module_name=module_name,
         runner_source=runner_source,
     )

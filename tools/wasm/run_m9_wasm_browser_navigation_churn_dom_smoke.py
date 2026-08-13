@@ -47,6 +47,7 @@ from m9_server_cleanup import (
     M9TrackingThreadingHTTPServer,
     shutdown_server_bounded,
 )
+from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 from run_browser_smoke import browser_command, find_browser
 import run_wasm_browser_view_smoke as browser_view_smoke
 
@@ -359,25 +360,6 @@ def parse_result_payload(payload: bytes) -> dict[str, Any] | None:
     return result
 
 
-def _read_snapshot(path: Path, description: str) -> bytes:
-    try:
-        contents = path.read_bytes()
-    except OSError as error:
-        raise M0Error(
-            f"cannot snapshot navigation-churn {description}: {error}"
-        ) from error
-    if not contents or len(contents) > MAX_SNAPSHOT_BYTES:
-        raise M0Error(f"navigation-churn {description} snapshot is invalid")
-    return contents
-
-
-def _artifact_snapshot_path(out_dir: Path, artifact_name: str) -> Path:
-    candidate = (out_dir / artifact_name).resolve()
-    if candidate.parent != out_dir or not candidate.is_file():
-        raise M0Error(f"navigation-churn artifact is missing or unsafe: {artifact_name}")
-    return candidate
-
-
 def create_server(
     host: str,
     port: int,
@@ -390,18 +372,28 @@ def create_server(
     runner_source_path: Path | None = None,
 ) -> NavigationChurnSmokeServer:
     module_name = _require_product_module_name(module_name, "server")
-    out_dir = out_dir.resolve()
-    if not out_dir.is_dir():
-        raise M0Error(f"navigation-churn output directory is missing: {out_dir}")
-    artifacts = {
-        artifact_name: _read_snapshot(
-            _artifact_snapshot_path(out_dir, artifact_name),
-            f"artifact {artifact_name}",
-        )
-        for artifact_name in (f"{module_name}.js", f"{module_name}.wasm")
-    }
+    artifacts = snapshot_regular_files(
+        out_dir,
+        (f"{module_name}.js", f"{module_name}.wasm"),
+        maximum_bytes=MAX_SNAPSHOT_BYTES,
+        description="navigation-churn artifacts",
+    )
     selected_host_dir = host_dir or Path(__file__).with_name("host")
     selected_runner_source = runner_source_path or Path(__file__)
+    host_snapshots = snapshot_regular_files(
+        selected_host_dir,
+        (
+            "chrome_wasm_browser_navigation_churn_smoke.html",
+            "chrome_wasm_browser_navigation_churn_smoke_host.js",
+        ),
+        maximum_bytes=MAX_SNAPSHOT_BYTES,
+        description="navigation-churn host resources",
+    )
+    runner_source = snapshot_regular_file(
+        selected_runner_source,
+        maximum_bytes=MAX_SNAPSHOT_BYTES,
+        description="navigation-churn runner source",
+    )
     server = NavigationChurnSmokeServer(
         (host, port), NavigationChurnSmokeRequestHandler
     )
@@ -411,15 +403,13 @@ def create_server(
     server.result_queue = result_queue
     server.result_lock = threading.Lock()
     server.result_received = False
-    server.host_html = _read_snapshot(
-        selected_host_dir / "chrome_wasm_browser_navigation_churn_smoke.html",
-        "host HTML",
-    )
-    server.host_js = _read_snapshot(
-        selected_host_dir / "chrome_wasm_browser_navigation_churn_smoke_host.js",
-        "host JavaScript",
-    )
-    server.runner_source = _read_snapshot(selected_runner_source, "runner source")
+    server.host_html = host_snapshots[
+        "chrome_wasm_browser_navigation_churn_smoke.html"
+    ]
+    server.host_js = host_snapshots[
+        "chrome_wasm_browser_navigation_churn_smoke_host.js"
+    ]
+    server.runner_source = runner_source
     return server
 
 
