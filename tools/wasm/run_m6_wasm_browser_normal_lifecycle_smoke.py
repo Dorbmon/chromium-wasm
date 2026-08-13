@@ -28,6 +28,7 @@ from m0_common import (
     parse_timeout,
     print_context,
 )
+from m9_descriptor_snapshot import snapshot_regular_files
 from run_node_smoke import node_executable
 import run_m6_wasm_browser_smoke as browser_smoke
 
@@ -76,43 +77,20 @@ def _require_module_name(value: object, description: str) -> str:
     return value
 
 
-def _read_snapshot(path: Path, description: str) -> bytes:
-    try:
-        contents = path.read_bytes()
-    except OSError as error:
-        raise M0Error(
-            f"cannot snapshot ordinary Browser {description}: {error}"
-        ) from error
-    if not contents or len(contents) > MAX_SNAPSHOT_BYTES:
-        raise M0Error(f"ordinary Browser {description} snapshot is invalid")
-    return contents
-
-
-def _artifact_snapshot_path(out_dir: Path, artifact_name: str) -> Path:
-    candidate = (out_dir / artifact_name).resolve()
-    if candidate.parent != out_dir or not candidate.is_file():
-        raise M0Error(
-            f"ordinary Browser artifact is missing or unsafe: {artifact_name}"
-        )
-    return candidate
-
-
 def capture_artifact_snapshot(out_dir: Path, module_name: object) -> ArtifactSnapshot:
     """Capture the Node loader and Wasm bytes exactly once from this output dir."""
     module_name = _require_module_name(module_name, "artifact")
-    out_dir = out_dir.resolve()
-    if not out_dir.is_dir():
-        raise M0Error(f"ordinary Browser output directory is missing: {out_dir}")
+    artifact_names = (f"{module_name}.js", f"{module_name}.wasm")
+    captured = snapshot_regular_files(
+        out_dir,
+        artifact_names,
+        maximum_bytes=MAX_SNAPSHOT_BYTES,
+        description="ordinary Browser executable artifact",
+    )
     return ArtifactSnapshot(
         module_name=module_name,
-        loader=_read_snapshot(
-            _artifact_snapshot_path(out_dir, f"{module_name}.js"),
-            "module loader",
-        ),
-        wasm=_read_snapshot(
-            _artifact_snapshot_path(out_dir, f"{module_name}.wasm"),
-            "module Wasm",
-        ),
+        loader=captured[f"{module_name}.js"],
+        wasm=captured[f"{module_name}.wasm"],
     )
 
 
@@ -462,7 +440,6 @@ def main() -> int:
         out_dir = args.out_dir
         if not out_dir.is_absolute():
             out_dir = REPO_ROOT / out_dir
-        out_dir = out_dir.resolve()
         check_boundary(out_dir)
         snapshot = capture_artifact_snapshot(out_dir, args.module_name)
         artifact = artifact_identity(snapshot)

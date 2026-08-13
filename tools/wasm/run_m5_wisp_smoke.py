@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import http.client
 import ipaddress
 import json
+import os
 from pathlib import Path
 import queue
 import secrets
@@ -30,7 +32,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, Iterator, TextIO
 from urllib.parse import urlencode, urlsplit
 
 from m0_common import (
@@ -46,6 +48,14 @@ from m3_content_server import (
     M3RequestHandler,
     M3ServerState,
     create_m3_server,
+)
+from m9_descriptor_snapshot import (
+    RegularFileSnapshot,
+    hash_optional_regular_file,
+    snapshot_regular_file,
+    snapshot_regular_file_with_identity,
+    snapshot_regular_files,
+    snapshot_regular_files_with_identity,
 )
 from m9_browser_cleanup import (
     BrowserStderrReader,
@@ -103,7 +113,13 @@ PRIVATE_KEY_PEM_MARKERS = (
     b"-----BEGIN RSA PRIVATE KEY-----",
     b"-----BEGIN EC PRIVATE KEY-----",
 )
-ARTIFACT_SCAN_CHUNK_BYTES = 1024 * 1024
+MAX_WISP_ARTIFACT_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
+MAX_WISP_HOST_RESOURCE_SNAPSHOT_BYTES = 4 * 1024 * 1024
+MAX_WISP_RELAY_SNAPSHOT_BYTES = 4 * 1024 * 1024
+M5_RELAY_CERTIFICATE_NAMES = (
+    "test_names.pem",
+    "localhost_cert.pem",
+)
 # This record starts with the immutable server payloads, and M6 extends it
 # with its captured visual-comparison inputs.  The value deliberately names
 # the broader execution-input closure rather than falsely describing a visual
@@ -478,33 +494,6 @@ def m5_browser_command(
     return command
 
 
-def verify_no_private_key_pem_artifacts(
-    out_dir: Path, module_name: str
-) -> None:
-    """Reject test artifacts that embed a PEM private key.
-
-    The controlled trust root is a generated DER include. Chromium carries
-    generic certificate-parser strings, so search only complete PEM key
-    headers rather than broad terms such as ``PRIVATE KEY``.
-    """
-
-    longest_marker = max(len(marker) for marker in PRIVATE_KEY_PEM_MARKERS)
-    for suffix in (".js", ".wasm", ".data"):
-        artifact = out_dir / f"{module_name}{suffix}"
-        if not artifact.is_file():
-            continue
-        previous = b""
-        with artifact.open("rb") as stream:
-            while chunk := stream.read(ARTIFACT_SCAN_CHUNK_BYTES):
-                payload = previous + chunk
-                if any(marker in payload for marker in PRIVATE_KEY_PEM_MARKERS):
-                    raise M0Error(
-                        "M5 test artifact embeds a PEM private-key header: "
-                        f"{artifact.name}"
-                    )
-                previous = payload[-(longest_marker - 1) :]
-
-
 def _wisp_artifact_names(module_name: str) -> tuple[str, str]:
     """Return the only executable artifacts a controlled WISP server serves."""
 
@@ -515,6 +504,67 @@ def _wisp_artifact_names(module_name: str) -> tuple[str, str]:
     ):
         raise M0Error("M5 module name is invalid for an artifact snapshot")
     return (f"{module_name}.js", f"{module_name}.wasm")
+
+
+def _verify_optional_private_key_pem_artifact(
+    out_dir: Path, artifact_name: str
+) -> None:
+    """Stream one present sidecar through the retained PEM policy boundary."""
+
+    longest_marker = max(len(marker) for marker in PRIVATE_KEY_PEM_MARKERS)
+    previous = b""
+
+    def scan_chunk(chunk: bytes) -> None:
+        nonlocal previous
+        payload = previous + chunk
+        if any(marker in payload for marker in PRIVATE_KEY_PEM_MARKERS):
+            raise M0Error(
+                "M5 test artifact embeds a PEM private-key header: "
+                f"{artifact_name}"
+            )
+        previous = payload[-(longest_marker - 1) :]
+
+    hash_optional_regular_file(
+        out_dir / artifact_name,
+        maximum_bytes=MAX_WISP_ARTIFACT_SNAPSHOT_BYTES,
+        description=f"M5 test artifact {artifact_name}",
+        on_chunk=scan_chunk,
+    )
+
+
+def verify_optional_wisp_data_private_key_pem_artifact(
+    out_dir: Path, module_name: str
+) -> None:
+    """Scan the optional non-served ``.data`` sidecar if it is present.
+
+    M5 never serves this sidecar, so it is deliberately not an execution input
+    snapshot.  Its policy boundary remains explicit: absence is double-probed
+    through a no-follow parent descriptor, while every present leaf is streamed
+    and rejected for a private-key PEM header or an unsafe file type.
+    """
+
+    _verify_optional_private_key_pem_artifact(
+        out_dir, f"{module_name}.data"
+    )
+
+
+def verify_no_private_key_pem_artifacts(
+    out_dir: Path, module_name: str
+) -> None:
+    """Compatibility preflight for every present M5 output sidecar.
+
+    Direct callers retained from M6 can still apply the historic policy to
+    every present JS, Wasm, and optional ``.data`` artifact.  M5's own runner
+    instead validates the immutable JS/Wasm snapshot it will serve, then calls
+    :func:`verify_optional_wisp_data_private_key_pem_artifact` for the
+    non-served sidecar so no disk re-capture can override a server snapshot.
+    """
+
+    for artifact_name in (
+        *_wisp_artifact_names(module_name),
+        f"{module_name}.data",
+    ):
+        _verify_optional_private_key_pem_artifact(out_dir, artifact_name)
 
 
 def scan_wisp_snapshot_for_private_key(contents: bytes, snapshot_name: str) -> None:
@@ -558,26 +608,12 @@ def snapshot_wisp_artifacts(out_dir: Path, module_name: str) -> dict[str, bytes]
     from bypassing the private-key boundary.
     """
 
-    resolved_out_dir = out_dir.resolve()
-    if not resolved_out_dir.is_dir():
-        raise M0Error(f"M5 output directory is missing: {out_dir}")
-    snapshots: dict[str, bytes] = {}
-    for artifact_name in _wisp_artifact_names(module_name):
-        artifact = resolved_out_dir / artifact_name
-        if not artifact.is_file():
-            raise M0Error(f"M5 executable artifact is missing: {artifact}")
-        resolved_artifact = artifact.resolve()
-        if resolved_artifact.parent != resolved_out_dir:
-            raise M0Error(
-                "M5 executable artifact resolves outside the output directory: "
-                f"{artifact_name}"
-            )
-        try:
-            snapshots[artifact_name] = resolved_artifact.read_bytes()
-        except OSError as exc:
-            raise M0Error(
-                f"cannot snapshot M5 executable artifact {artifact_name}: {exc}"
-            ) from exc
+    snapshots = snapshot_regular_files(
+        out_dir,
+        _wisp_artifact_names(module_name),
+        maximum_bytes=MAX_WISP_ARTIFACT_SNAPSHOT_BYTES,
+        description="M5 executable artifact",
+    )
     return validate_wisp_artifact_snapshots(snapshots, module_name)
 
 
@@ -614,27 +650,14 @@ def snapshot_wisp_static_host_resources(
     cannot affect a running M5 lane.
     """
 
-    selected_host_dir = (host_dir or Path(__file__).with_name("host")).resolve()
-    if not selected_host_dir.is_dir():
-        raise M0Error(f"M5 host resource directory is missing: {selected_host_dir}")
-
-    def snapshot_file(name: str) -> bytes:
-        candidate = selected_host_dir / name
-        if not candidate.is_file() or candidate.is_symlink():
-            raise M0Error(f"M5 host resource is missing or unsafe: {candidate}")
-        resolved_candidate = candidate.resolve()
-        if resolved_candidate.parent != selected_host_dir:
-            raise M0Error(f"M5 host resource resolves outside host directory: {name}")
-        try:
-            contents = resolved_candidate.read_bytes()
-        except OSError as exc:
-            raise M0Error(f"cannot snapshot M5 host resource {name}: {exc}") from exc
-        if not contents:
-            raise M0Error(f"M5 host resource is empty: {name}")
-        return contents
-
-    html = snapshot_file("content_shell.html")
-    host_js = snapshot_file("content_shell_host.js")
+    captured = snapshot_regular_files(
+        host_dir or Path(__file__).with_name("host"),
+        ("content_shell.html", "content_shell_host.js"),
+        maximum_bytes=MAX_WISP_HOST_RESOURCE_SNAPSHOT_BYTES,
+        description="M5 host resource",
+    )
+    html = captured["content_shell.html"]
+    host_js = captured["content_shell_host.js"]
     return validate_wisp_static_host_snapshots(
         {
             "/": html,
@@ -642,6 +665,169 @@ def snapshot_wisp_static_host_resources(
             "/__m3__/content_shell_host.js": host_js,
         }
     )
+
+
+def snapshot_wisp_relay_closure_with_identity(
+    relay_script: Path,
+) -> dict[str, RegularFileSnapshot]:
+    """Capture the relay closure with descriptor-pinned leaf metadata.
+
+    The relay computes its repository root by walking two parents from its own
+    ``import.meta.url`` directory.  Derive the certificate root from the same
+    supplied relay path instead of a process-global repository path, so a
+    parent can pass an already materialized private relay closure without this
+    runner reaching back to live certificate fixtures.
+    """
+
+    source_relay = Path(relay_script)
+    if not source_relay.is_absolute():
+        try:
+            source_relay = Path(os.getcwd()) / source_relay
+        except OSError as exc:
+            raise M0Error("M5 WISP relay path cannot be made absolute") from exc
+    certificate_root = (
+        source_relay.parent.parent.parent
+        / "net"
+        / "data"
+        / "ssl"
+        / "certificates"
+    )
+
+    relay = snapshot_regular_file_with_identity(
+        source_relay,
+        maximum_bytes=MAX_WISP_RELAY_SNAPSHOT_BYTES,
+        description="M5 WISP relay script",
+    )
+    certificates = snapshot_regular_files_with_identity(
+        certificate_root,
+        M5_RELAY_CERTIFICATE_NAMES,
+        maximum_bytes=MAX_WISP_RELAY_SNAPSHOT_BYTES,
+        description="M5 WISP relay certificate",
+    )
+    return {"relay": relay, **certificates}
+
+
+def validate_wisp_relay_closure_snapshots(
+    snapshots: object,
+) -> dict[str, RegularFileSnapshot]:
+    """Validate a complete relay closure without discarding its metadata."""
+
+    expected = {"relay", *M5_RELAY_CERTIFICATE_NAMES}
+    if not isinstance(snapshots, dict) or set(snapshots) != expected:
+        raise M0Error("M5 WISP relay closure snapshots are invalid")
+    validated: dict[str, RegularFileSnapshot] = {}
+    for name in expected:
+        snapshot = snapshots[name]
+        if (
+            not isinstance(snapshot, RegularFileSnapshot)
+            or type(snapshot.contents) is not bytes
+            or not snapshot.contents
+            or type(snapshot.pinned_identity) is not tuple
+            or len(snapshot.pinned_identity) != 6
+            or any(type(value) is not int or value < 0 for value in snapshot.pinned_identity)
+        ):
+            raise M0Error("M5 WISP relay closure snapshots are invalid")
+        validated[name] = RegularFileSnapshot(
+            contents=bytes(snapshot.contents),
+            pinned_identity=tuple(snapshot.pinned_identity),
+        )
+    return validated
+
+
+def wisp_relay_closure_from_snapshots(snapshots: object) -> dict[str, bytes]:
+    """Return the bytes from one already validated relay closure capture."""
+
+    return {
+        name: snapshot.contents
+        for name, snapshot in validate_wisp_relay_closure_snapshots(snapshots).items()
+    }
+
+
+def snapshot_wisp_relay_closure(relay_script: Path) -> dict[str, bytes]:
+    """Capture the relay and its two ``import.meta``-derived PEM inputs.
+
+    This bytes-only compatibility API intentionally delegates to the public
+    metadata-preserving capture. Composition callers that must postflight the
+    original source leaves use :func:`snapshot_wisp_relay_closure_with_identity`.
+    """
+
+    return wisp_relay_closure_from_snapshots(
+        snapshot_wisp_relay_closure_with_identity(relay_script)
+    )
+
+
+def _validate_wisp_relay_closure(closure: object) -> dict[str, bytes]:
+    """Validate and defensively copy the complete materialized relay closure."""
+
+    expected = {"relay", *M5_RELAY_CERTIFICATE_NAMES}
+    if (
+        not isinstance(closure, dict)
+        or set(closure) != expected
+        or any(type(contents) is not bytes or not contents for contents in closure.values())
+    ):
+        raise M0Error("M5 WISP relay closure is invalid")
+    return {name: bytes(closure[name]) for name in expected}
+
+
+def wisp_relay_closure_identity(closure: object) -> dict[str, dict[str, object]]:
+    """Return only path-free identities for the captured relay closure."""
+
+    validated = _validate_wisp_relay_closure(closure)
+    return {
+        name: byte_snapshot_identity(validated[name], f"M5 WISP relay {name}")
+        for name in sorted(validated)
+    }
+
+
+@contextlib.contextmanager
+def materialized_wisp_relay_closure_from_snapshot(
+    closure: object,
+) -> Iterator[Path]:
+    """Materialize one already captured relay closure under a private root.
+
+    Node executes a ``.mjs`` copy so ESM behavior does not depend on a live
+    repository ``package.json``.  The fixture retains the relay's expected
+    ``tools/wasm`` and ``net/data/ssl/certificates`` layout until the caller
+    has stopped every child that can read it.
+    """
+
+    captured = _validate_wisp_relay_closure(closure)
+    with tempfile.TemporaryDirectory(prefix="chromium-wasm-m5-wisp-relay-") as root:
+        fixture_root = Path(root)
+        tools_wasm = fixture_root / "tools" / "wasm"
+        certificates = fixture_root / "net" / "data" / "ssl" / "certificates"
+        private_directories = (
+            fixture_root / "tools",
+            tools_wasm,
+            fixture_root / "net",
+            fixture_root / "net" / "data",
+            fixture_root / "net" / "data" / "ssl",
+            certificates,
+        )
+        try:
+            os.chmod(fixture_root, 0o700)
+            for directory in private_directories:
+                directory.mkdir(mode=0o700)
+                os.chmod(directory, 0o700)
+            relay_path = tools_wasm / "m5_wisp_relay_snapshot.mjs"
+            relay_path.write_bytes(captured["relay"])
+            os.chmod(relay_path, 0o600)
+            for name in M5_RELAY_CERTIFICATE_NAMES:
+                certificate_path = certificates / name
+                certificate_path.write_bytes(captured[name])
+                os.chmod(certificate_path, 0o600)
+        except OSError as exc:
+            raise M0Error("M5 WISP relay closure cannot be materialized safely") from exc
+        yield relay_path
+
+
+@contextlib.contextmanager
+def materialized_wisp_relay_closure(relay_script: Path) -> Iterator[Path]:
+    """Capture then materialize the relay closure for one direct runner."""
+
+    closure = snapshot_wisp_relay_closure(relay_script)
+    with materialized_wisp_relay_closure_from_snapshot(closure) as relay_path:
+        yield relay_path
 
 
 def byte_snapshot_identity(contents: object, description: str) -> dict[str, object]:
@@ -2195,7 +2381,6 @@ def main() -> int:
     relay_script = args.relay_script
     if not relay_script.is_absolute():
         relay_script = REPO_ROOT / relay_script
-    relay_script = relay_script.resolve()
 
     server: M5WispServer | None = None
     server_thread: threading.Thread | None = None
@@ -2208,6 +2393,8 @@ def main() -> int:
     relay_stdout_stream: TextIO | None = None
     relay_stderr_stream: TextIO | None = None
     relay_command_line: list[str] | None = None
+    relay_diagnostic_command_line: list[str] | None = None
+    relay_fixture_stack: contextlib.ExitStack | None = None
     relay_ready: RelayReady | None = None
     relay_status: dict[str, Any] | None = None
     browser: subprocess.Popen[str] | None = None
@@ -2257,15 +2444,18 @@ def main() -> int:
         )
         stage = "find_node"
         node = find_node(args.node)
-        if not relay_script.is_file():
-            raise M0Error(f"M5 relay script is missing: {relay_script}")
 
         token = secrets.token_urlsafe(24)
         result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
-        stage = "verify_test_artifacts"
-        verify_no_private_key_pem_artifacts(out_dir, args.module_name)
         stage = "snapshot_executable_artifacts"
         artifact_snapshots = snapshot_wisp_artifacts(out_dir, args.module_name)
+        # ``snapshot_wisp_artifacts`` scans these exact immutable bytes before
+        # the server can own them.  Do not re-open JS/Wasm here: a later disk
+        # capture must never make a different artifact appear approved.
+        stage = "verify_optional_data_artifact"
+        verify_optional_wisp_data_private_key_pem_artifact(
+            out_dir, args.module_name
+        )
         artifact_delivery = artifact_delivery_identity(
             artifact_snapshots, args.module_name
         )
@@ -2299,8 +2489,20 @@ def main() -> int:
         server_thread.start()
         server_started = True
 
+        stage = "snapshot_relay_closure"
+        relay_fixture_stack = contextlib.ExitStack()
+        materialized_relay_script = relay_fixture_stack.enter_context(
+            materialized_wisp_relay_closure(relay_script)
+        )
         stage = "launch_relay"
-        relay_command_line = relay_command(node, relay_script, m5_host_origin(server))
+        relay_command_line = relay_command(
+            node, materialized_relay_script, m5_host_origin(server)
+        )
+        relay_diagnostic_command_line = [
+            relay_command_line[0],
+            "<private-m5-wisp-relay-closure>",
+            *relay_command_line[2:],
+        ]
         relay = subprocess.Popen(
             relay_command_line,
             cwd=REPO_ROOT,
@@ -2475,7 +2677,7 @@ def main() -> int:
                 browser=browser,
                 browser_stderr=browser_stderr,
                 relay=relay,
-                relay_command_line=relay_command_line,
+                relay_command_line=relay_diagnostic_command_line,
                 relay_ready=relay_ready,
                 relay_stdout=relay_stdout,
                 relay_stderr=relay_stderr,
@@ -2536,6 +2738,10 @@ def main() -> int:
                         if stream is not None
                     ),
                 ),
+            )
+        if relay_fixture_stack is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, relay_fixture_stack.close
             )
         if not server_cleanup_complete:
             server_cleanup_error = _cleanup_m5_server(

@@ -19,6 +19,7 @@ import argparse
 import base64
 import binascii
 from collections import deque
+import contextlib
 import copy
 import hashlib
 from http import HTTPStatus
@@ -31,7 +32,6 @@ import queue
 import re
 import secrets
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -57,13 +57,16 @@ from m9_browser_cleanup import (
     stop_browser_group,
 )
 from m9_server_cleanup import M9TrackingThreadingHTTPServer, shutdown_server_bounded
+from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 from run_browser_smoke import browser_command, find_browser
 from run_content_shell_smoke import manifest_versions
 from run_m5_wisp_smoke import (
     PRIVATE_KEY_PEM_MARKERS,
     find_node,
+    materialized_wisp_relay_closure,
     m5_host_origin,
     relay_command,
+    verify_optional_wisp_data_private_key_pem_artifact,
 )
 import run_m6_wasm_browser_controlled_https_smoke as controlled_https
 import run_wasm_browser_view_smoke as browser_view_smoke
@@ -313,87 +316,16 @@ def _require_module_name(value: object, description: str) -> str:
     return value
 
 
-def _read_snapshot(path: Path, description: str) -> bytes:
-    try:
-        contents = path.read_bytes()
-    except OSError as error:
-        raise M0Error(f"cannot snapshot continuous-flow {description}: {error}") from error
-    if not contents or len(contents) > MAX_SNAPSHOT_BYTES:
-        raise M0Error(f"continuous-flow {description} snapshot is invalid")
-    return contents
-
-
 def _snapshot_regular_file(
     path: Path, *, maximum_bytes: int, description: str
 ) -> bytes:
-    """Capture a bounded regular-file snapshot without following its leaf.
+    """Capture one file through the shared no-follow ancestor walk."""
 
-    The descriptor remains pinned through both metadata observations and the
-    read.  ``O_NONBLOCK`` makes a substituted FIFO fail safely at ``fstat``
-    rather than blocking the reliability runner.
-    """
-
-    if type(maximum_bytes) is not int or maximum_bytes < 1:
-        raise M0Error(f"continuous-flow {description} snapshot bound is invalid")
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY
-            | getattr(os, "O_NONBLOCK", 0)
-            # Reject final-component symlink substitution on hosts that can
-            # enforce it at open time.
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        opened_metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(opened_metadata.st_mode):
-            raise M0Error(f"continuous-flow {description} must be a regular file")
-        if (
-            opened_metadata.st_size <= 0
-            or opened_metadata.st_size > maximum_bytes
-        ):
-            raise M0Error(f"continuous-flow {description} is invalid")
-        contents = bytearray()
-        while len(contents) <= maximum_bytes:
-            chunk = os.read(
-                descriptor, min(64 * 1024, maximum_bytes + 1 - len(contents))
-            )
-            if not chunk:
-                break
-            contents.extend(chunk)
-        closed_metadata = os.fstat(descriptor)
-    except FileNotFoundError as error:
-        raise M0Error(
-            f"continuous-flow {description} is missing: {path}"
-        ) from error
-    except OSError as error:
-        raise M0Error(
-            f"cannot snapshot continuous-flow {description}: {error}"
-        ) from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if (
-        not contents
-        or len(contents) > maximum_bytes
-        or len(contents) != opened_metadata.st_size
-        or (
-            opened_metadata.st_dev,
-            opened_metadata.st_ino,
-            opened_metadata.st_size,
-            opened_metadata.st_mtime_ns,
-            opened_metadata.st_ctime_ns,
-        )
-        != (
-            closed_metadata.st_dev,
-            closed_metadata.st_ino,
-            closed_metadata.st_size,
-            closed_metadata.st_mtime_ns,
-            closed_metadata.st_ctime_ns,
-        )
-    ):
-        raise M0Error(f"continuous-flow {description} changed while snapshotting")
-    return bytes(contents)
+    return snapshot_regular_file(
+        path,
+        maximum_bytes=maximum_bytes,
+        description=f"continuous-flow {description}",
+    )
 
 
 def _snapshot_reviewed_screenshot_baseline(path: Path) -> bytes:
@@ -404,13 +336,6 @@ def _snapshot_reviewed_screenshot_baseline(path: Path) -> bytes:
         maximum_bytes=MAX_SCREENSHOT_BYTES,
         description="reviewed controlled-HTTPS screenshot baseline",
     )
-
-
-def _artifact_snapshot_path(out_dir: Path, artifact_name: str) -> Path:
-    candidate = (out_dir / artifact_name).resolve()
-    if candidate.parent != out_dir or not candidate.is_file():
-        raise M0Error(f"continuous-flow artifact is missing or unsafe: {artifact_name}")
-    return candidate
 
 
 def validate_host_resource_snapshots(host_snapshots: object) -> dict[str, bytes]:
@@ -436,17 +361,15 @@ def validate_host_resource_snapshots(host_snapshots: object) -> dict[str, bytes]
 def snapshot_host_resources(host_dir: Path | None = None) -> dict[str, bytes]:
     """Capture all host inputs before constructing one continuous-flow server."""
 
-    selected_host_dir = (host_dir or Path(__file__).with_name("host")).resolve()
-    if not selected_host_dir.is_dir():
-        raise M0Error(
-            f"continuous-flow host resource directory is missing: {selected_host_dir}"
-        )
+    selected_host_dir = host_dir or Path(__file__).with_name("host")
+    captured = snapshot_regular_files(
+        selected_host_dir,
+        tuple(HOST_RESOURCE_FILES.values()),
+        maximum_bytes=MAX_HOST_RESOURCE_BYTES,
+        description="continuous-flow host resource",
+    )
     snapshots = {
-        name: _snapshot_regular_file(
-            selected_host_dir / filename,
-            maximum_bytes=MAX_HOST_RESOURCE_BYTES,
-            description=f"host resource {filename}",
-        )
+        name: captured[filename]
         for name, filename in HOST_RESOURCE_FILES.items()
     }
     return validate_host_resource_snapshots(snapshots)
@@ -473,16 +396,13 @@ def create_server(
     host_dir: Path | None = None,
 ) -> ContinuousFlowServer:
     module_name = _require_module_name(module_name, "server")
-    out_dir = out_dir.resolve()
-    if not out_dir.is_dir():
-        raise M0Error(f"continuous-flow output directory is missing: {out_dir}")
-    artifacts = {
-        artifact_name: _read_snapshot(
-            _artifact_snapshot_path(out_dir, artifact_name),
-            f"artifact {artifact_name}",
-        )
-        for artifact_name in (f"{module_name}.js", f"{module_name}.wasm")
-    }
+    artifact_names = (f"{module_name}.js", f"{module_name}.wasm")
+    artifacts = snapshot_regular_files(
+        out_dir,
+        artifact_names,
+        maximum_bytes=MAX_SNAPSHOT_BYTES,
+        description="continuous-flow executable artifact",
+    )
     host_snapshots = snapshot_host_resources(host_dir)
     server = ContinuousFlowServer((host, port), ContinuousFlowRequestHandler)
     server.module_name = module_name
@@ -1589,6 +1509,7 @@ def main() -> int:
     relay_stderr: deque[str] = deque(maxlen=300)
     relay_stdout_reader: BrowserStderrReader | None = None
     relay_stderr_reader: BrowserStderrReader | None = None
+    relay_fixture_stack: contextlib.ExitStack | None = None
     relay_ready: controlled_https.RelayReady | None = None
     relay_status: dict[str, Any] | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
@@ -1624,6 +1545,10 @@ def main() -> int:
         verify_no_private_key_pem_snapshot_artifacts(
             server, module_name=args.module_name
         )
+        stage = "verify_optional_data_artifact"
+        verify_optional_wisp_data_private_key_pem_artifact(
+            out_dir, args.module_name
+        )
         screenshot_contract = controlled_https.load_controlled_https_screenshot_contract()
         baseline_path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT.with_name(
             str(screenshot_contract["baseline"])
@@ -1653,8 +1578,6 @@ def main() -> int:
         browser_path, browser_version = find_browser(args.browser)
         stage = "find_node"
         node = find_node(args.node)
-        if not relay_script.is_file():
-            raise M0Error(f"continuous-flow relay script is missing: {relay_script}")
 
         assert artifact is not None
         stage = "serve_host_server"
@@ -1666,9 +1589,14 @@ def main() -> int:
         server_thread.start()
         server_thread_started = True
 
+        stage = "snapshot_relay_closure"
+        relay_fixture_stack = contextlib.ExitStack()
+        materialized_relay_script = relay_fixture_stack.enter_context(
+            materialized_wisp_relay_closure(relay_script)
+        )
         stage = "launch_relay"
         relay = subprocess.Popen(
-            relay_command(node, relay_script, m5_host_origin(server)),
+            relay_command(node, materialized_relay_script, m5_host_origin(server)),
             cwd=REPO_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1935,6 +1863,10 @@ def main() -> int:
             cleanup_error = _run_cleanup_action(
                 cleanup_error,
                 lambda: abort_relay_group(relay, relay_readers),
+            )
+        if relay_fixture_stack is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, relay_fixture_stack.close
             )
         if not server_cleanup_complete:
             server_error = _cleanup_continuous_flow_server(

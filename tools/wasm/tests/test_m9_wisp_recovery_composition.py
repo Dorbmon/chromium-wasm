@@ -848,7 +848,145 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             self.assertIn("runner_source", identity["chrome_controlled_https"])
             self.assertIn("host_server_source", identity["content_shell_wisp_recovery"])
             self.assertIn("wisp_relay_server_source", identity["shared"])
+            self.assertIn(
+                "wisp_relay_test_names_certificate", identity["shared"]
+            )
+            self.assertIn(
+                "wisp_relay_localhost_certificate", identity["shared"]
+            )
             composition.verify_input_snapshots_unchanged(snapshots)
+
+    def test_parent_relay_closure_binds_both_child_commands_after_source_mutation(
+        self,
+    ) -> None:
+        """Both child captures use the parent bytes, never later source leaves."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source_root = root / "live-source"
+            relay_script = source_root / "tools" / "wasm" / "relay.js"
+            certificate_dir = (
+                source_root / "net" / "data" / "ssl" / "certificates"
+            )
+            relay_script.parent.mkdir(parents=True)
+            certificate_dir.mkdir(parents=True)
+            relay_script.write_bytes(b"parent relay bytes")
+            (certificate_dir / "test_names.pem").write_bytes(
+                b"parent test certificate"
+            )
+            (certificate_dir / "localhost_cert.pem").write_bytes(
+                b"parent localhost certificate"
+            )
+            parent_closure_snapshots = (
+                composition.m5_wisp.snapshot_wisp_relay_closure_with_identity(
+                    relay_script
+                )
+            )
+            parent_closure = composition.m5_wisp.wisp_relay_closure_from_snapshots(
+                parent_closure_snapshots
+            )
+            parent_identity = composition.m5_wisp.wisp_relay_closure_identity(
+                parent_closure
+            )
+
+            # This occurs after the parent has captured the complete closure,
+            # before it creates either child command or child-side snapshot.
+            relay_script.write_bytes(b"mutated live relay")
+            (certificate_dir / "test_names.pem").write_bytes(
+                b"mutated live test certificate"
+            )
+            (certificate_dir / "localhost_cert.pem").write_bytes(
+                b"mutated live localhost certificate"
+            )
+
+            chrome_out = root / "chrome-out"
+            content_out = root / "content-out"
+            chrome_out.mkdir()
+            content_out.mkdir()
+            for out_dir, module_name in (
+                (chrome_out, composition.DEFAULT_CHROME_MODULE_NAME),
+                (content_out, composition.DEFAULT_CONTENT_MODULE_NAME),
+            ):
+                (out_dir / "args.gn").write_text("is_debug = true\n", encoding="utf-8")
+                (out_dir / f"{module_name}.js").write_bytes(b"loader")
+                (out_dir / f"{module_name}.wasm").write_bytes(b"wasm")
+
+            snapshots = composition.snapshot_composition_inputs(
+                chrome_out_dir=chrome_out,
+                chrome_module_name=composition.DEFAULT_CHROME_MODULE_NAME,
+                content_out_dir=content_out,
+                content_module_name=composition.DEFAULT_CONTENT_MODULE_NAME,
+                relay_script=relay_script,
+                relay_closure=parent_closure,
+                relay_closure_snapshots=parent_closure_snapshots,
+            )
+            preflight_identity = composition.input_snapshot_identity(
+                snapshots,
+                chrome_module_name=composition.DEFAULT_CHROME_MODULE_NAME,
+                content_module_name=composition.DEFAULT_CONTENT_MODULE_NAME,
+            )
+            self.assertEqual(
+                parent_identity["relay"],
+                preflight_identity["shared"]["wisp_relay_server_source"],
+            )
+            self.assertEqual(
+                parent_identity["test_names.pem"],
+                preflight_identity["shared"]["wisp_relay_test_names_certificate"],
+            )
+            self.assertEqual(
+                parent_identity["localhost_cert.pem"],
+                preflight_identity["shared"]["wisp_relay_localhost_certificate"],
+            )
+
+            with composition.m5_wisp.materialized_wisp_relay_closure_from_snapshot(
+                parent_closure
+            ) as materialized_relay:
+                commands = (
+                    composition.chrome_child_command(
+                        out_dir=chrome_out,
+                        module_name=composition.DEFAULT_CHROME_MODULE_NAME,
+                        timeout=30.0,
+                        diagnostics_dir=root / "chrome-diagnostics",
+                        browser=None,
+                        node=None,
+                        relay_script=materialized_relay,
+                        no_sandbox=False,
+                    ),
+                    composition.content_child_command(
+                        out_dir=content_out,
+                        module_name=composition.DEFAULT_CONTENT_MODULE_NAME,
+                        timeout=30.0,
+                        diagnostics_dir=root / "content-diagnostics",
+                        browser=None,
+                        node=None,
+                        relay_script=materialized_relay,
+                        no_sandbox=False,
+                    ),
+                )
+                child_relay_paths = [
+                    Path(command[command.index("--relay-script") + 1])
+                    for command in commands
+                ]
+                self.assertEqual([materialized_relay, materialized_relay], child_relay_paths)
+                for child_relay_path in child_relay_paths:
+                    child_closure = composition.m5_wisp.snapshot_wisp_relay_closure(
+                        child_relay_path
+                    )
+                    self.assertEqual(parent_closure, child_closure)
+                    self.assertEqual(
+                        parent_identity,
+                        composition.m5_wisp.wisp_relay_closure_identity(child_closure),
+                    )
+
+            self.assertNotEqual(parent_closure["relay"], relay_script.read_bytes())
+            self.assertNotEqual(
+                parent_closure["test_names.pem"],
+                (certificate_dir / "test_names.pem").read_bytes(),
+            )
+            self.assertNotEqual(
+                parent_closure["localhost_cert.pem"],
+                (certificate_dir / "localhost_cert.pem").read_bytes(),
+            )
 
     def test_snapshot_change_after_preflight_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -859,6 +997,37 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             path.write_text("after", encoding="utf-8")
             with self.assertRaisesRegex(M0Error, "changed after preflight"):
                 composition.verify_input_snapshots_unchanged(snapshots)
+
+    def test_snapshot_rejects_same_inode_mutate_restore_after_preflight(self) -> None:
+        """Postflight retains metadata that byte-only identity would lose."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "input.txt"
+            original = b"original bytes"
+            path.write_bytes(original)
+            snapshot = composition._snapshot_file(path, "test input")
+            before = path.stat()
+
+            # Keep the same inode and final bytes, but force metadata that
+            # proves a transient replacement occurred after preflight.
+            path.write_bytes(b"mutated bytes")
+            path.write_bytes(original)
+            os.utime(
+                path,
+                ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000),
+            )
+            after = path.stat()
+            self.assertEqual(before.st_ino, after.st_ino)
+            self.assertEqual(original, path.read_bytes())
+            self.assertNotEqual(
+                snapshot.pinned_identity,
+                composition._file_hash(path, "test input").pinned_identity,
+            )
+
+            with self.assertRaisesRegex(M0Error, "changed after preflight"):
+                composition.verify_input_snapshots_unchanged(
+                    {"shared": {"input": snapshot}}
+                )
 
     def test_child_commands_forward_isolated_output_and_diagnostics_paths(self) -> None:
         chrome_command = composition.chrome_child_command(
@@ -903,15 +1072,66 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
             content_out = root / "content-out"
             chrome_out.mkdir()
             content_out.mkdir()
+            source_root = root / "live-relay-source"
+            relay_script = source_root / "tools" / "wasm" / "relay.js"
+            certificate_dir = (
+                source_root / "net" / "data" / "ssl" / "certificates"
+            )
+            relay_script.parent.mkdir(parents=True)
+            certificate_dir.mkdir(parents=True)
+            relay_script.write_bytes(b"parent relay")
+            (certificate_dir / "test_names.pem").write_bytes(
+                b"parent test names"
+            )
+            (certificate_dir / "localhost_cert.pem").write_bytes(
+                b"parent localhost"
+            )
+            expected_parent_closure = {
+                "relay": b"parent relay",
+                "test_names.pem": b"parent test names",
+                "localhost_cert.pem": b"parent localhost",
+            }
             snapshots: dict[str, dict[str, composition.FileSnapshot]] = {}
             expected_inputs = input_identity()
             commands: list[tuple[str, list[str], float]] = []
+            child_closures: list[dict[str, bytes]] = []
             verified_groups: list[tuple[str, ...]] = []
+            parent_closures: list[dict[str, bytes]] = []
+
+            def snapshot_inputs_after_parent_capture(
+                **kwargs: object,
+            ) -> dict[str, dict[str, composition.FileSnapshot]]:
+                parent_closure = kwargs["relay_closure"]
+                self.assertEqual(expected_parent_closure, parent_closure)
+                assert isinstance(parent_closure, dict)
+                parent_closures.append(parent_closure)
+                # Capture has completed.  If either child later reopened the
+                # source tree, it would observe these replacement bytes.
+                relay_script.write_bytes(b"mutated live relay")
+                (certificate_dir / "test_names.pem").write_bytes(
+                    b"mutated live test names"
+                )
+                (certificate_dir / "localhost_cert.pem").write_bytes(
+                    b"mutated live localhost"
+                )
+                return snapshots
 
             def fake_run_child(
                 name: str, command: list[str], timeout: float
             ) -> composition.ChildExecution:
                 commands.append((name, command, timeout))
+                child_relay = Path(command[command.index("--relay-script") + 1])
+                child_closure = composition.m5_wisp.snapshot_wisp_relay_closure(
+                    child_relay
+                )
+                child_closures.append(child_closure)
+                self.assertEqual(expected_parent_closure, child_closure)
+                self.assertEqual(
+                    composition.m5_wisp.wisp_relay_closure_identity(
+                        parent_closures[0]
+                    ),
+                    composition.m5_wisp.wisp_relay_closure_identity(child_closure),
+                )
                 return (
                     chrome_execution()
                     if name == "Chrome controlled-HTTPS"
@@ -922,7 +1142,7 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
                 mock.patch.object(
                     composition,
                     "snapshot_composition_inputs",
-                    return_value=snapshots,
+                    side_effect=snapshot_inputs_after_parent_capture,
                 ),
                 mock.patch.object(
                     composition,
@@ -958,14 +1178,26 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
                     diagnostics_dir=root / "diagnostics",
                     browser=Path("/browser"),
                     node=Path("/node"),
-                    relay_script=composition.DEFAULT_RELAY_SCRIPT,
+                    relay_script=relay_script,
                     no_sandbox=True,
                 )
+            self.assertNotEqual(
+                expected_parent_closure["relay"], relay_script.read_bytes()
+            )
 
         self.assertEqual(
             ["Chrome controlled-HTTPS", "Content Shell WISP carrier-close recovery"],
             [name for name, _command, _timeout in commands],
         )
+        self.assertEqual([expected_parent_closure], parent_closures)
+        self.assertEqual([expected_parent_closure, expected_parent_closure], child_closures)
+        child_relay_paths = [
+            command[command.index("--relay-script") + 1]
+            for _name, command, _timeout in commands
+        ]
+        self.assertEqual(2, len(child_relay_paths))
+        self.assertEqual(child_relay_paths[0], child_relay_paths[1])
+        self.assertTrue(child_relay_paths[0].endswith(".mjs"))
         self.assertEqual(
             [("shared", "chrome_controlled_https"), ("shared", "content_shell_wisp_recovery")],
             verified_groups,

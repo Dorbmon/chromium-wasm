@@ -230,6 +230,139 @@ class M9DescriptorSnapshotTest(unittest.TestCase):
                     self._snapshot(root, ("first", "second")),
                 )
 
+    def test_public_byte_and_streaming_identity_captures_share_one_file_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "input"
+            contents = b"descriptor-pinned public capture"
+            path.write_bytes(contents)
+
+            byte_capture = (
+                descriptor_snapshot.snapshot_regular_file_with_identity(
+                    path,
+                    maximum_bytes=1024,
+                    description="descriptor snapshot test",
+                )
+            )
+            streamed_chunks: list[bytes] = []
+            streamed_capture = descriptor_snapshot.hash_regular_file(
+                path,
+                maximum_bytes=1024,
+                description="descriptor snapshot test",
+                on_chunk=streamed_chunks.append,
+            )
+
+            self.assertIsInstance(
+                byte_capture, descriptor_snapshot.RegularFileSnapshot
+            )
+            self.assertEqual(contents, byte_capture.contents)
+            self.assertEqual(6, len(byte_capture.pinned_identity))
+            self.assertIsInstance(
+                streamed_capture, descriptor_snapshot.RegularFileHash
+            )
+            self.assertEqual(len(contents), streamed_capture.byte_count)
+            self.assertEqual(
+                hashlib.sha256(contents).hexdigest(), streamed_capture.sha256
+            )
+            self.assertEqual(contents, b"".join(streamed_chunks))
+            self.assertEqual(
+                {"bytes": len(contents), "sha256": streamed_capture.sha256},
+                streamed_capture.byte_identity(),
+            )
+            self.assertEqual(
+                byte_capture.pinned_identity, streamed_capture.pinned_identity
+            )
+
+    def test_streaming_identity_rejects_unsafe_or_replaced_leaves(self) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "symlink"):
+            self.skipTest("host lacks FIFO or symbolic-link support")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(M0Error, "regular file"):
+                descriptor_snapshot.hash_regular_file(
+                    fifo,
+                    maximum_bytes=1024,
+                    description="descriptor snapshot test",
+                )
+
+            target = root / "target"
+            target.write_bytes(b"target")
+            link = root / "link"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(M0Error, "opened safely"):
+                descriptor_snapshot.hash_regular_file(
+                    link,
+                    maximum_bytes=1024,
+                    description="descriptor snapshot test",
+                )
+
+            selected = root / "selected"
+            selected.write_bytes(b"selected")
+            original_hash = descriptor_snapshot._hash_file_from_root
+            replaced = False
+
+            def hash_then_replace(*args: object, **kwargs: object) -> object:
+                nonlocal replaced
+                captured = original_hash(*args, **kwargs)
+                if not replaced:
+                    replaced = True
+                    selected.unlink()
+                    selected.write_bytes(b"replacement")
+                return captured
+
+            with mock.patch.object(
+                descriptor_snapshot,
+                "_hash_file_from_root",
+                side_effect=hash_then_replace,
+            ):
+                with self.assertRaisesRegex(M0Error, "changed while snapshotting"):
+                    descriptor_snapshot.hash_regular_file(
+                        selected,
+                        maximum_bytes=1024,
+                        description="descriptor snapshot test",
+                    )
+
+    def test_single_file_streaming_identity_normalizes_invalid_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "input"
+            path.write_bytes(b"input")
+            with self.assertRaisesRegex(M0Error, "chunk observer is invalid"):
+                descriptor_snapshot.hash_regular_file(
+                    path,
+                    maximum_bytes=1024,
+                    description="descriptor snapshot test",
+                    on_chunk=object(),  # type: ignore[arg-type]
+                )
+
+    def test_optional_leaf_rejects_present_fifo_and_symlink(self) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "symlink"):
+            self.skipTest("host lacks FIFO or symbolic-link support")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fifo = root / "optional-fifo"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(M0Error, "regular file"):
+                descriptor_snapshot.hash_optional_regular_file(
+                    fifo,
+                    maximum_bytes=1024,
+                    description="optional descriptor snapshot test",
+                )
+
+            target = root / "target"
+            target.write_bytes(b"target")
+            link = root / "optional-link"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(M0Error, "opened safely"):
+                descriptor_snapshot.snapshot_optional_regular_file(
+                    link,
+                    maximum_bytes=1024,
+                    description="optional descriptor snapshot test",
+                )
+
     def test_requires_nofollow_directory_nonblocking_and_dirfd_support(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

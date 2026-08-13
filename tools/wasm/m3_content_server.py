@@ -448,11 +448,6 @@ def create_m3_server(
         f"{module_name}.js",
         f"{module_name}.wasm",
     )
-    for artifact_name in required_artifact_names:
-        if not (resolved_out_dir / artifact_name).is_file():
-            raise M0Error(
-                f"{artifact_name} is missing from the output directory"
-            )
     snapshots = artifact_snapshots or {}
     if (
         not isinstance(snapshots, dict)
@@ -477,16 +472,28 @@ def create_m3_server(
         raise M0Error("M3 Ahem font requirement is invalid")
     if server_factory is not None and not callable(server_factory):
         raise M0Error("M3 server factory is invalid")
-    if not require_ahem_font and (
-        set(snapshots) != set(required_artifact_names)
-        or set(static_snapshot_values) != M3_HOST_SNAPSHOT_PATHS
-    ):
+    complete_immutable_snapshots = (
+        set(snapshots) == set(required_artifact_names)
+        and set(static_snapshot_values) == M3_HOST_SNAPSHOT_PATHS
+    )
+    if not require_ahem_font and not complete_immutable_snapshots:
         raise M0Error(
             "M3 Ahem font may be omitted only for complete immutable "
             "artifact and host snapshots"
         )
-    if require_ahem_font and not M3_AHEM_FONT.is_file():
-        raise M0Error(f"M3 Ahem font is missing: {M3_AHEM_FONT}")
+    if not complete_immutable_snapshots:
+        # A partial or absent snapshot remains the ordinary M3 development
+        # mode, so retain its live artifact and Ahem preflights.  Complete M5
+        # snapshots are the only mode where these files are never served or
+        # executed, and therefore must not be reopened after their descriptor-
+        # pinned capture.
+        for artifact_name in required_artifact_names:
+            if not (resolved_out_dir / artifact_name).is_file():
+                raise M0Error(
+                    f"{artifact_name} is missing from the output directory"
+                )
+        if require_ahem_font and not M3_AHEM_FONT.is_file():
+            raise M0Error(f"M3 Ahem font is missing: {M3_AHEM_FONT}")
     state = M3ServerState(
         token=token,
         out_dir=resolved_out_dir,

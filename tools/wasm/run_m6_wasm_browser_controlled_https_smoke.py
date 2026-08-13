@@ -18,6 +18,7 @@ import argparse
 import base64
 import binascii
 from collections import deque
+import contextlib
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -25,12 +26,10 @@ import http.client
 import ipaddress
 import json
 import math
-import os
 from pathlib import Path
 import queue
 import re
 import secrets
-import stat
 import subprocess
 import sys
 import tempfile
@@ -58,6 +57,7 @@ from m9_browser_cleanup import (
     stop_process_group,
 )
 from m9_server_cleanup import M9TrackingThreadingHTTPServer, shutdown_server_bounded
+from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 from run_browser_smoke import browser_command, find_browser
 from run_content_shell_smoke import manifest_versions
 from m3_content_server import compare_screenshots, decode_png
@@ -65,6 +65,7 @@ from run_m5_wisp_smoke import (
     artifact_delivery_identity,
     byte_snapshot_identity,
     find_node,
+    materialized_wisp_relay_closure,
     m5_host_origin,
     relay_command,
     scan_wisp_snapshot_for_private_key,
@@ -73,7 +74,7 @@ from run_m5_wisp_smoke import (
     validate_m5_https_url,
     validate_relay_transcript_url,
     validate_wisp_endpoint,
-    verify_no_private_key_pem_artifacts,
+    verify_optional_wisp_data_private_key_pem_artifact,
 )
 import run_wasm_browser_view_smoke as browser_view_smoke
 
@@ -138,50 +139,13 @@ def _require_screenshot_contract_string(
 def _snapshot_regular_file(
     path: Path, *, maximum_bytes: int, description: str
 ) -> bytes:
-    """Read one stable regular-file snapshot without following a final symlink."""
+    """Capture one file through the shared no-follow ancestor walk."""
 
-    if type(maximum_bytes) is not int or maximum_bytes < 1:
-        raise M0Error(f"controlled-HTTPS {description} snapshot bound is invalid")
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY
-            | getattr(os, "O_NONBLOCK", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise M0Error(
-                f"controlled-HTTPS {description} must be a regular file"
-            )
-        if before.st_size <= 0 or before.st_size > maximum_bytes:
-            raise M0Error(f"controlled-HTTPS {description} snapshot is invalid")
-        contents = bytearray()
-        while len(contents) <= maximum_bytes:
-            chunk = os.read(descriptor, min(64 * 1024, maximum_bytes + 1 - len(contents)))
-            if not chunk:
-                break
-            contents.extend(chunk)
-        after = os.fstat(descriptor)
-    except FileNotFoundError as exc:
-        raise M0Error(f"controlled-HTTPS {description} is missing: {path}") from exc
-    except OSError as exc:
-        raise M0Error(
-            f"cannot snapshot controlled-HTTPS {description}: {exc}"
-        ) from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if (
-        not contents
-        or len(contents) > maximum_bytes
-        or len(contents) != before.st_size
-        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-    ):
-        raise M0Error(f"controlled-HTTPS {description} changed while snapshotting")
-    return bytes(contents)
+    return snapshot_regular_file(
+        path,
+        maximum_bytes=maximum_bytes,
+        description=f"controlled-HTTPS {description}",
+    )
 
 
 def canonical_controlled_https_screenshot_contract_bytes(
@@ -367,24 +331,19 @@ def snapshot_controlled_https_host_resources(
 ) -> dict[str, bytes]:
     """Capture all executable M6 host resources before creating its server."""
 
-    selected_host_dir = (host_dir or Path(__file__).with_name("host")).resolve()
-    if not selected_host_dir.is_dir():
-        raise M0Error(
-            f"controlled-HTTPS host resource directory is missing: {selected_host_dir}"
-        )
+    selected_host_dir = host_dir or Path(__file__).with_name("host")
     names = {
         "host_html": "chrome_wasm_browser_controlled_https_smoke.html",
         "host_js": "chrome_wasm_browser_controlled_https_smoke_host.js",
         "text_input_js": "chrome_wasm_text_input.js",
     }
-    snapshots = {
-        key: _snapshot_regular_file(
-            selected_host_dir / name,
-            maximum_bytes=MAX_HOST_RESOURCE_BYTES,
-            description=f"host resource {name}",
-        )
-        for key, name in names.items()
-    }
+    captured = snapshot_regular_files(
+        selected_host_dir,
+        tuple(names.values()),
+        maximum_bytes=MAX_HOST_RESOURCE_BYTES,
+        description="controlled-HTTPS host resource",
+    )
+    snapshots = {key: captured[name] for key, name in names.items()}
     return validate_controlled_https_host_snapshots(snapshots)
 
 
@@ -698,12 +657,9 @@ def create_server(
 ) -> ControlledHttpsSmokeServer:
     if not MODULE_NAME_RE.fullmatch(module_name):
         raise M0Error("module name must contain only ASCII letters, digits, or _")
-    resolved_out_dir = out_dir.resolve()
-    if not resolved_out_dir.is_dir():
-        raise M0Error(f"controlled-HTTPS output directory is missing: {out_dir}")
     if artifact_snapshots is None:
         artifact_snapshots = snapshot_wisp_artifacts(
-            resolved_out_dir, module_name
+            out_dir, module_name
         )
     else:
         artifact_snapshots = validate_wisp_artifact_snapshots(
@@ -716,7 +672,7 @@ def create_server(
     server = ControlledHttpsSmokeServer(
         (host, port), ControlledHttpsSmokeRequestHandler
     )
-    server.out_dir = resolved_out_dir
+    server.out_dir = out_dir
     server.module_name = module_name
     server.result_token = result_token
     server.result_queue = result_queue
@@ -1385,14 +1341,16 @@ def validate_relay_status(status: dict[str, Any]) -> None:
         )
 
 
-def verify_explicit_text_heap_exports(module_loader: Path) -> None:
-    """Trusted text and reload input use only these explicit Wasm exports."""
+def verify_explicit_text_heap_exports(module_loader: bytes) -> None:
+    """Check exports in the same immutable loader bytes served to the host."""
 
+    if type(module_loader) is not bytes:
+        raise M0Error("controlled-HTTPS module loader snapshot is invalid")
     try:
-        loader = module_loader.read_text(encoding="utf-8")
-    except OSError as error:
+        loader = module_loader.decode("utf-8")
+    except UnicodeDecodeError as error:
         raise M0Error(
-            f"cannot read controlled-HTTPS module loader: {error}"
+            "controlled-HTTPS module loader is not valid UTF-8"
         ) from error
     for export in (
         'Module["_chromium_wasm_browser_host_text"]',
@@ -1683,7 +1641,6 @@ def main() -> int:
     relay_script = args.relay_script
     if not relay_script.is_absolute():
         relay_script = REPO_ROOT / relay_script
-    relay_script = relay_script.resolve()
 
     screenshot_contract: dict[str, Any] | None = None
     screenshot_contract_bytes: bytes | None = None
@@ -1759,6 +1716,8 @@ def main() -> int:
     relay_stdout_stream: TextIO | None = None
     relay_stderr_stream: TextIO | None = None
     relay_command_line: list[str] | None = None
+    relay_diagnostic_command_line: list[str] | None = None
+    relay_fixture_stack: contextlib.ExitStack | None = None
     relay_ready: RelayReady | None = None
     relay_status: dict[str, Any] | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
@@ -1779,15 +1738,18 @@ def main() -> int:
     try:
         stage = "check_boundary"
         check_controlled_https_boundary(out_dir)
-        for suffix in (".js", ".wasm"):
-            artifact = out_dir / f"{args.module_name}{suffix}"
-            if not artifact.is_file():
-                raise M0Error(f"controlled-HTTPS artifact is missing: {artifact}")
-        verify_explicit_text_heap_exports(out_dir / f"{args.module_name}.js")
-        stage = "verify_test_artifacts"
-        verify_no_private_key_pem_artifacts(out_dir, args.module_name)
         stage = "snapshot_executable_artifacts"
         artifact_snapshots = snapshot_wisp_artifacts(out_dir, args.module_name)
+        verify_explicit_text_heap_exports(
+            artifact_snapshots[f"{args.module_name}.js"]
+        )
+        # JS/Wasm are already scanned in their exact immutable snapshots.
+        # Retain the optional non-served sidecar policy without re-opening
+        # either executable artifact after capture.
+        stage = "verify_optional_data_artifact"
+        verify_optional_wisp_data_private_key_pem_artifact(
+            out_dir, args.module_name
+        )
         artifact_delivery = artifact_delivery_identity(
             artifact_snapshots, args.module_name
         )
@@ -1851,8 +1813,6 @@ def main() -> int:
         )
         stage = "find_node"
         node = find_node(args.node)
-        if not relay_script.is_file():
-            raise M0Error(f"controlled-HTTPS relay script is missing: {relay_script}")
 
         token = secrets.token_urlsafe(24)
         result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
@@ -1875,8 +1835,20 @@ def main() -> int:
         server_thread.start()
         server_thread_started = True
 
+        stage = "snapshot_relay_closure"
+        relay_fixture_stack = contextlib.ExitStack()
+        materialized_relay_script = relay_fixture_stack.enter_context(
+            materialized_wisp_relay_closure(relay_script)
+        )
         stage = "launch_relay"
-        relay_command_line = relay_command(node, relay_script, m5_host_origin(server))
+        relay_command_line = relay_command(
+            node, materialized_relay_script, m5_host_origin(server)
+        )
+        relay_diagnostic_command_line = [
+            relay_command_line[0],
+            "<private-m5-wisp-relay-closure>",
+            *relay_command_line[2:],
+        ]
         relay = subprocess.Popen(
             relay_command_line,
             cwd=REPO_ROOT,
@@ -2156,7 +2128,7 @@ def main() -> int:
                 browser=browser,
                 browser_stderr=browser_stderr,
                 relay=relay,
-                relay_command_line=relay_command_line,
+                relay_command_line=relay_diagnostic_command_line,
                 relay_ready=relay_ready,
                 relay_stdout=relay_stdout,
                 relay_stderr=relay_stderr,
@@ -2216,6 +2188,10 @@ def main() -> int:
                         if stream is not None
                     ),
                 ),
+            )
+        if relay_fixture_stack is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, relay_fixture_stack.close
             )
         if not server_cleanup_complete:
             server_cleanup_error = _cleanup_controlled_https_server(

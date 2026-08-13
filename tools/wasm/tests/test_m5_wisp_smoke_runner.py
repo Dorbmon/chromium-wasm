@@ -14,6 +14,7 @@ import hashlib
 import http.client
 import io
 import json
+import os
 from pathlib import Path
 import queue
 import sys
@@ -2519,6 +2520,95 @@ class M5ResultEndpointTest(unittest.TestCase):
 
 
 class M5ArtifactTrustBoundaryTest(unittest.TestCase):
+    def test_relay_closure_uses_the_same_relative_root_as_import_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_root = Path(temporary_directory)
+            source_relay = source_root / "tools" / "wasm" / "relay.js"
+            certificate_directory = (
+                source_root / "net" / "data" / "ssl" / "certificates"
+            )
+            source_relay.parent.mkdir(parents=True)
+            certificate_directory.mkdir(parents=True)
+            source_relay.write_bytes(b"export const relay = 'fixture';\n")
+            (certificate_directory / "test_names.pem").write_bytes(
+                b"test-names-certificate"
+            )
+            (certificate_directory / "localhost_cert.pem").write_bytes(
+                b"localhost-certificate"
+            )
+
+            closure_snapshots = (
+                run_m5_wisp_smoke.snapshot_wisp_relay_closure_with_identity(
+                    source_relay
+                )
+            )
+            closure = run_m5_wisp_smoke.wisp_relay_closure_from_snapshots(
+                closure_snapshots
+            )
+            self.assertEqual(
+                b"export const relay = 'fixture';\n", closure["relay"]
+            )
+            self.assertEqual(
+                {"relay", "test_names.pem", "localhost_cert.pem"},
+                set(closure_snapshots),
+            )
+            for snapshot in closure_snapshots.values():
+                self.assertEqual(6, len(snapshot.pinned_identity))
+            with run_m5_wisp_smoke.materialized_wisp_relay_closure_from_snapshot(
+                closure
+            ) as materialized_relay:
+                self.assertEqual(".mjs", materialized_relay.suffix)
+                self.assertEqual(closure["relay"], materialized_relay.read_bytes())
+                fixture_root = materialized_relay.parents[2]
+                for directory in (
+                    fixture_root,
+                    fixture_root / "tools",
+                    fixture_root / "tools" / "wasm",
+                    fixture_root / "net",
+                    fixture_root / "net" / "data",
+                    fixture_root / "net" / "data" / "ssl",
+                    fixture_root / "net" / "data" / "ssl" / "certificates",
+                ):
+                    self.assertEqual(0o700, os.stat(directory).st_mode & 0o777)
+                for fixture_file in (
+                    materialized_relay,
+                    fixture_root
+                    / "net/data/ssl/certificates/test_names.pem",
+                    fixture_root
+                    / "net/data/ssl/certificates/localhost_cert.pem",
+                ):
+                    self.assertEqual(0o600, os.stat(fixture_file).st_mode & 0o777)
+                self.assertEqual(
+                    closure,
+                    run_m5_wisp_smoke.snapshot_wisp_relay_closure(
+                        materialized_relay
+                    ),
+                )
+                self.assertEqual(
+                    closure["test_names.pem"],
+                    (
+                        materialized_relay.parents[2]
+                        / "net/data/ssl/certificates/test_names.pem"
+                    ).read_bytes(),
+                )
+            self.assertFalse(materialized_relay.exists())
+
+    def test_optional_data_sidecar_keeps_the_pem_boundary(self) -> None:
+        module_name = "content_shell_wasm_m5_test"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            out_dir = Path(temporary_directory)
+            data = out_dir / f"{module_name}.data"
+            data.write_bytes(b"sidecar data")
+            run_m5_wisp_smoke.verify_no_private_key_pem_artifacts(
+                out_dir, module_name
+            )
+
+            data.write_bytes(b"-----BEGIN PRIVATE KEY-----")
+            with self.assertRaisesRegex(M0Error, "private-key header"):
+                run_m5_wisp_smoke.verify_no_private_key_pem_artifacts(
+                    out_dir, module_name
+                )
+
     def test_rejects_only_actual_private_key_pem_headers(self) -> None:
         module_name = "content_shell_wasm_m5_test"
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2566,6 +2656,8 @@ class M5ArtifactTrustBoundaryTest(unittest.TestCase):
             )
 
     def test_server_serves_captured_artifacts_after_disk_mutation(self) -> None:
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("host lacks FIFO support")
         module_name = "content_shell_wasm_m5_test"
         original_loader = b"original M5 loader"
         original_wasm = b"\x00asm-original-M5"
@@ -2581,24 +2673,35 @@ class M5ArtifactTrustBoundaryTest(unittest.TestCase):
             delivery = run_m5_wisp_smoke.artifact_delivery_identity(
                 snapshots, module_name
             )
-            font = root / "Ahem.woff2"
-            font.write_bytes(b"test font")
-            with mock.patch.object(m3_content_server, "M3_AHEM_FONT", font):
-                server = m3_content_server.create_m3_server(
-                    "127.0.0.1",
-                    0,
-                    out_dir,
-                    "m5-token",
-                    queue.Queue(maxsize=1),
-                    module_name=module_name,
-                    artifact_snapshots=snapshots,
-                    server_factory=run_m5_wisp_smoke.M5WispServer,
-                )
+            static_snapshots = run_m5_wisp_smoke.validate_wisp_static_host_snapshots(
+                {
+                    "/": b"immutable M5 host",
+                    "/__m3__/": b"immutable M5 host",
+                    "/__m3__/content_shell_host.js": b"immutable M5 host JS",
+                }
+            )
+            # The M5 snapshot is already immutable.  Replacing both on-disk
+            # artifacts before M3 starts must neither block on a FIFO nor
+            # discard the snapshot in favor of a live preflight.
+            for artifact_name in snapshots:
+                artifact = out_dir / artifact_name
+                artifact.unlink()
+                os.mkfifo(artifact)
+            server = m3_content_server.create_m3_server(
+                "127.0.0.1",
+                0,
+                out_dir,
+                "m5-token",
+                queue.Queue(maxsize=1),
+                module_name=module_name,
+                artifact_snapshots=snapshots,
+                static_snapshots=static_snapshots,
+                require_ahem_font=False,
+                server_factory=run_m5_wisp_smoke.M5WispServer,
+            )
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                (out_dir / f"{module_name}.js").write_bytes(b"mutated loader")
-                (out_dir / f"{module_name}.wasm").write_bytes(b"mutated wasm")
                 host, port = server.server_address[:2]
                 for suffix, expected in (
                     (".js", original_loader),
@@ -2755,6 +2858,8 @@ class M5RunnerCleanupTest(unittest.TestCase):
         cleanup_server = mock.Mock(return_value=server_cleanup_error)
         abort_browser = mock.Mock(side_effect=abort_browser_error)
         abort_relay = mock.Mock(side_effect=abort_relay_error)
+        verify_compatibility_artifacts = mock.Mock()
+        verify_optional_data_artifact = mock.Mock()
         wait_for_result = mock.Mock()
         if operational_error is None:
             wait_for_result.return_value = {}
@@ -2776,6 +2881,8 @@ class M5RunnerCleanupTest(unittest.TestCase):
             "abort_relay": abort_relay,
             "artifact_snapshots": artifact_snapshots,
             "wait_for_result": wait_for_result,
+            "verify_compatibility_artifacts": verify_compatibility_artifacts,
+            "verify_optional_data_artifact": verify_optional_data_artifact,
         }
         patches = (
             mock.patch.object(run_m5_wisp_smoke, "load_manifest", return_value={}),
@@ -2792,7 +2899,16 @@ class M5RunnerCleanupTest(unittest.TestCase):
             mock.patch.object(
                 run_m5_wisp_smoke, "find_node", return_value=Path("/fake-node")
             ),
-            mock.patch.object(run_m5_wisp_smoke, "verify_no_private_key_pem_artifacts"),
+            mock.patch.object(
+                run_m5_wisp_smoke,
+                "verify_no_private_key_pem_artifacts",
+                verify_compatibility_artifacts,
+            ),
+            mock.patch.object(
+                run_m5_wisp_smoke,
+                "verify_optional_wisp_data_private_key_pem_artifact",
+                verify_optional_data_artifact,
+            ),
             mock.patch.object(
                 run_m5_wisp_smoke,
                 "snapshot_wisp_artifacts",
@@ -2806,7 +2922,14 @@ class M5RunnerCleanupTest(unittest.TestCase):
                 "Thread",
                 return_value=server_thread,
             ),
-            mock.patch.object(run_m5_wisp_smoke, "relay_command", return_value=["relay"]),
+            mock.patch.object(
+                run_m5_wisp_smoke, "relay_command", return_value=["relay"]
+            ),
+            mock.patch.object(
+                run_m5_wisp_smoke,
+                "materialized_wisp_relay_closure",
+                return_value=contextlib.nullcontext(Path("/private-relay.mjs")),
+            ),
             mock.patch.object(
                 run_m5_wisp_smoke, "m5_host_origin", return_value="http://host.test"
             ),
@@ -2953,6 +3076,11 @@ class M5RunnerCleanupTest(unittest.TestCase):
 
         self.assertEqual(0, result)
         self.assertEqual("", stderr)
+        dependencies["verify_compatibility_artifacts"].assert_not_called()
+        dependencies["verify_optional_data_artifact"].assert_called_once_with(
+            run_m5_wisp_smoke.REPO_ROOT / "out/wasm-content-m3",
+            "content_shell_wasm_m5_test",
+        )
         delivery_prefix = f"{run_m5_wisp_smoke.SENTINEL}:ARTIFACT_DELIVERY "
         browser_prefix = f"{run_m5_wisp_smoke.SENTINEL}:BROWSER_RESULT "
         relay_prefix = f"{run_m5_wisp_smoke.SENTINEL}:RELAY_TRANSCRIPT "

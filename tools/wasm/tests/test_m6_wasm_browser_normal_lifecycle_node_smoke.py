@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -127,6 +128,32 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
             },
             identity,
         )
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX named pipes")
+    def test_snapshot_rejects_a_fifo_execution_input_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            out_dir = Path(temporary) / "out"
+            out_dir.mkdir()
+            (out_dir / "chrome_wasm.js").write_bytes(b"loader")
+            os.mkfifo(out_dir / "chrome_wasm.wasm")
+
+            with self.assertRaisesRegex(M0Error, "regular file"):
+                runner.capture_artifact_snapshot(out_dir, "chrome_wasm")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symbolic links")
+    def test_snapshot_rejects_a_symlink_execution_input(self) -> None:
+        if os.name != "posix":
+            self.skipTest("host cannot reject final-component symlinks")
+        with tempfile.TemporaryDirectory() as temporary:
+            out_dir = Path(temporary) / "out"
+            out_dir.mkdir()
+            target = Path(temporary) / "replacement-loader.js"
+            target.write_bytes(b"replacement loader")
+            (out_dir / "chrome_wasm.js").symlink_to(target)
+            (out_dir / "chrome_wasm.wasm").write_bytes(b"wasm")
+
+            with self.assertRaisesRegex(M0Error, "opened safely"):
+                runner.capture_artifact_snapshot(out_dir, "chrome_wasm")
 
     def test_artifact_identity_requires_exact_schema_and_configured_module(self) -> None:
         snapshot = runner.ArtifactSnapshot(

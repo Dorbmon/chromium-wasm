@@ -14,6 +14,7 @@ import hashlib
 import http.client
 import io
 import json
+import os
 from pathlib import Path
 import queue
 import struct
@@ -635,6 +636,17 @@ class ControlledHttpsHostServerTest(unittest.TestCase):
                 )
                 self.assertEqual(http.client.OK, status)
                 self.assertEqual(expected, body)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX named pipes")
+    def test_artifact_capture_rejects_fifo_without_blocking(self) -> None:
+        artifact = self.out_dir / "chrome_wasm_m6_https_test.wasm"
+        artifact.unlink()
+        os.mkfifo(artifact)
+
+        with self.assertRaisesRegex(M0Error, "regular file"):
+            smoke.snapshot_wisp_artifacts(
+                self.out_dir, "chrome_wasm_m6_https_test"
+            )
 
     def test_host_snapshot_rejects_private_key_markers_before_server_creation(self) -> None:
         with self.assertRaisesRegex(M0Error, "private-key header"):
@@ -1333,7 +1345,9 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
         patches = (
             mock.patch.object(smoke, "check_controlled_https_boundary"),
             mock.patch.object(smoke, "verify_explicit_text_heap_exports"),
-            mock.patch.object(smoke, "verify_no_private_key_pem_artifacts"),
+            mock.patch.object(
+                smoke, "verify_optional_wisp_data_private_key_pem_artifact"
+            ),
             mock.patch.object(
                 smoke,
                 "snapshot_wisp_artifacts",
@@ -1360,6 +1374,11 @@ class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
             mock.patch.object(smoke, "create_server", return_value=server),
             mock.patch.object(smoke.threading, "Thread", return_value=server_thread),
             mock.patch.object(smoke, "relay_command", return_value=["relay"]),
+            mock.patch.object(
+                smoke,
+                "materialized_wisp_relay_closure",
+                return_value=contextlib.nullcontext(Path("/private-relay.mjs")),
+            ),
             mock.patch.object(smoke, "m5_host_origin", return_value="http://host.test"),
             mock.patch.object(smoke, "browser_command", return_value=["browser"]),
             mock.patch.object(

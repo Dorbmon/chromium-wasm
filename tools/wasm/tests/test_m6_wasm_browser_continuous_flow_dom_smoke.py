@@ -510,6 +510,11 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
             mock.patch.object(smoke, "find_node", return_value=Path("/fake-node")),
             mock.patch.object(smoke.threading, "Thread", return_value=server_thread),
             mock.patch.object(smoke, "relay_command", return_value=["relay"]),
+            mock.patch.object(
+                smoke,
+                "materialized_wisp_relay_closure",
+                return_value=contextlib.nullcontext(Path("/private-relay.mjs")),
+            ),
             mock.patch.object(smoke, "browser_command", return_value=["browser"]),
             mock.patch.object(smoke, "m5_host_origin", return_value="http://host.test"),
             mock.patch.object(smoke.subprocess, "Popen", side_effect=[relay, browser]),
@@ -1189,7 +1194,7 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
             ):
                 with self.subTest(name=name):
                     baseline_path.write_bytes(contents)
-                    with self.assertRaisesRegex(M0Error, "baseline is invalid"):
+                    with self.assertRaisesRegex(M0Error, "snapshot is invalid"):
                         smoke._snapshot_reviewed_screenshot_baseline(baseline_path)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "requires symbolic links")

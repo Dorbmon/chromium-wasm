@@ -13,10 +13,12 @@ the returned bytes as their immutable in-memory server inputs.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import stat
-from typing import Iterable
+from typing import Callable, Iterable
 
 if __package__:
     from .m0_common import M0Error
@@ -26,6 +28,27 @@ else:
 
 _SnapshotIdentity = tuple[int, int, int, int, int, int]
 _READ_CHUNK_BYTES = 1024 * 1024
+_ChunkObserver = Callable[[str, bytes], None]
+
+
+@dataclass(frozen=True)
+class RegularFileHash:
+    """A public byte identity plus an internal descriptor-pinned identity."""
+
+    byte_count: int
+    sha256: str
+    pinned_identity: _SnapshotIdentity
+
+    def byte_identity(self) -> dict[str, object]:
+        return {"bytes": self.byte_count, "sha256": self.sha256}
+
+
+@dataclass(frozen=True)
+class RegularFileSnapshot:
+    """One immutable byte copy plus its descriptor-pinned metadata identity."""
+
+    contents: bytes
+    pinned_identity: _SnapshotIdentity
 
 
 def _required_open_flag(name: str, description: str) -> int:
@@ -189,13 +212,18 @@ def _open_regular_file_at(
     *,
     maximum_bytes: int,
     description: str,
-) -> int:
+    allow_missing: bool = False,
+) -> int | None:
     try:
         descriptor = os.open(
             name,
             _file_open_flags(description),
             dir_fd=root_descriptor,
         )
+    except FileNotFoundError as exc:
+        if allow_missing:
+            return None
+        raise M0Error(f"{description} cannot be opened safely") from exc
     except (OSError, TypeError, ValueError) as exc:
         raise M0Error(f"{description} cannot be opened safely") from exc
     try:
@@ -244,6 +272,7 @@ def _snapshot_file_from_root(
         maximum_bytes=maximum_bytes,
         description=description,
     )
+    assert descriptor is not None
     try:
         before = _regular_file_identity(
             descriptor, maximum_bytes=maximum_bytes, description=description
@@ -274,12 +303,69 @@ def _current_file_identity_from_root(
         maximum_bytes=maximum_bytes,
         description=description,
     )
+    assert descriptor is not None
     try:
         return _regular_file_identity(
             descriptor, maximum_bytes=maximum_bytes, description=description
         )
     finally:
         _close_quietly(descriptor)
+
+
+def _hash_file_from_root(
+    root_descriptor: int,
+    name: str,
+    *,
+    maximum_bytes: int,
+    description: str,
+    on_chunk: Callable[[bytes], None] | None,
+) -> RegularFileHash:
+    """Hash one descriptor-pinned regular file without retaining its bytes."""
+
+    descriptor = _open_regular_file_at(
+        root_descriptor,
+        name,
+        maximum_bytes=maximum_bytes,
+        description=description,
+    )
+    assert descriptor is not None
+    try:
+        before = _regular_file_identity(
+            descriptor, maximum_bytes=maximum_bytes, description=description
+        )
+        remaining = before[3]
+        digest = hashlib.sha256()
+        total = 0
+        while remaining:
+            try:
+                chunk = os.read(descriptor, min(_READ_CHUNK_BYTES, remaining))
+            except OSError as exc:
+                raise M0Error(f"{description} cannot be read") from exc
+            if not chunk:
+                raise M0Error(f"{description} changed while it was read")
+            total += len(chunk)
+            remaining -= len(chunk)
+            digest.update(chunk)
+            if on_chunk is not None:
+                on_chunk(chunk)
+        try:
+            trailing = os.read(descriptor, 1)
+        except OSError as exc:
+            raise M0Error(f"{description} cannot be read") from exc
+        if trailing:
+            raise M0Error(f"{description} changed while it was read")
+        after = _regular_file_identity(
+            descriptor, maximum_bytes=maximum_bytes, description=description
+        )
+    finally:
+        _close_quietly(descriptor)
+    if before != after or total != before[3]:
+        raise M0Error(f"{description} changed while it was read")
+    return RegularFileHash(
+        byte_count=total,
+        sha256=digest.hexdigest(),
+        pinned_identity=before,
+    )
 
 
 def snapshot_regular_files(
@@ -296,6 +382,29 @@ def snapshot_regular_files(
     unrelated build-output or diagnostics changes must not invalidate the
     precise in-memory inputs that the server will own.
     """
+
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise M0Error(f"{description} snapshot bound is invalid")
+    selected_names = _validate_names(names, description)
+    return {
+        name: capture.contents
+        for name, capture in snapshot_regular_files_with_identity(
+            root,
+            selected_names,
+            maximum_bytes=maximum_bytes,
+            description=description,
+        ).items()
+    }
+
+
+def snapshot_regular_files_with_identity(
+    root: Path,
+    names: Iterable[str],
+    *,
+    maximum_bytes: int,
+    description: str,
+) -> dict[str, RegularFileSnapshot]:
+    """Copy direct children and retain each captured descriptor identity."""
 
     if type(maximum_bytes) is not int or maximum_bytes < 1:
         raise M0Error(f"{description} snapshot bound is invalid")
@@ -325,7 +434,66 @@ def snapshot_regular_files(
         _close_quietly(root_descriptor)
     if identities != current:
         raise M0Error(f"{description} changed while snapshotting")
-    return {name: capture[0] for name, capture in captures.items()}
+    return {
+        name: RegularFileSnapshot(contents=capture[0], pinned_identity=capture[1])
+        for name, capture in captures.items()
+    }
+
+
+def hash_regular_files(
+    root: Path,
+    names: Iterable[str],
+    *,
+    maximum_bytes: int,
+    description: str,
+    on_chunk: _ChunkObserver | None = None,
+) -> dict[str, RegularFileHash]:
+    """Return streaming SHA-256 identities through one no-follow root fd.
+
+    Each selected leaf is checked before and after its bounded stream read,
+    then re-opened through the same pinned root descriptor before this function
+    returns.  A caller can scan chunks without retaining a large Wasm module.
+    A symlink, FIFO, missing file, or other non-regular replacement is
+    rejected before any caller can treat it as an execution input.
+    """
+
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise M0Error(f"{description} snapshot bound is invalid")
+    if on_chunk is not None and not callable(on_chunk):
+        raise M0Error(f"{description} chunk observer is invalid")
+    selected_names = _validate_names(names, description)
+    root_descriptor = _open_root_directory(root, description)
+    try:
+        captures: dict[str, RegularFileHash] = {}
+        for name in selected_names:
+            captures[name] = _hash_file_from_root(
+                root_descriptor,
+                name,
+                maximum_bytes=maximum_bytes,
+                description=f"{description} {name}",
+                on_chunk=(
+                    None
+                    if on_chunk is None
+                    else lambda chunk, name=name: on_chunk(name, chunk)
+                ),
+            )
+        current = {
+            name: _current_file_identity_from_root(
+                root_descriptor,
+                name,
+                maximum_bytes=maximum_bytes,
+                description=f"{description} {name}",
+            )
+            for name in captures
+        }
+    finally:
+        _close_quietly(root_descriptor)
+    identities = {
+        name: capture.pinned_identity for name, capture in captures.items()
+    }
+    if identities != current:
+        raise M0Error(f"{description} changed while snapshotting")
+    return dict(captures)
 
 
 def snapshot_regular_file(
@@ -337,9 +505,186 @@ def snapshot_regular_file(
     name = absolute_path.name
     if not name:
         raise M0Error(f"{description} file name is invalid")
-    return snapshot_regular_files(
+    return snapshot_regular_file_with_identity(
+        path,
+        maximum_bytes=maximum_bytes,
+        description=description,
+    ).contents
+
+
+def snapshot_regular_file_with_identity(
+    path: Path, *, maximum_bytes: int, description: str
+) -> RegularFileSnapshot:
+    """Copy one independent regular file and retain its descriptor identity."""
+
+    absolute_path = _lexical_absolute_path(path, description)
+    name = absolute_path.name
+    if not name:
+        raise M0Error(f"{description} file name is invalid")
+    return snapshot_regular_files_with_identity(
         absolute_path.parent,
         (name,),
         maximum_bytes=maximum_bytes,
         description=description,
+    )[name]
+
+
+def snapshot_optional_regular_file_with_identity(
+    path: Path, *, maximum_bytes: int, description: str
+) -> RegularFileSnapshot | None:
+    """Capture one optional, non-execution leaf through a pinned parent fd.
+
+    This exists for narrow preflight boundaries such as scanning an optional
+    sidecar for prohibited bytes.  It must not be used for an execution input:
+    callers capture every required execution input first, then this helper
+    probes the absent leaf twice before treating absence as explicit.  A
+    symlink, FIFO, or any other present non-regular object remains an error.
+    """
+
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise M0Error(f"{description} snapshot bound is invalid")
+    absolute_path = _lexical_absolute_path(path, description)
+    name = absolute_path.name
+    if not name:
+        raise M0Error(f"{description} file name is invalid")
+    root_descriptor = _open_root_directory(absolute_path.parent, description)
+    try:
+        probe = _open_regular_file_at(
+            root_descriptor,
+            name,
+            maximum_bytes=maximum_bytes,
+            description=description,
+            allow_missing=True,
+        )
+        if probe is None:
+            # Do not let a leaf that appears during the preflight silently
+            # become an optional absence.  There are no later captures in this
+            # helper, and callers use it only after required inputs are bound.
+            probe = _open_regular_file_at(
+                root_descriptor,
+                name,
+                maximum_bytes=maximum_bytes,
+                description=description,
+                allow_missing=True,
+            )
+            if probe is None:
+                return None
+        _close_quietly(probe)
+        contents, identity = _snapshot_file_from_root(
+            root_descriptor,
+            name,
+            maximum_bytes=maximum_bytes,
+            description=description,
+        )
+        current = _current_file_identity_from_root(
+            root_descriptor,
+            name,
+            maximum_bytes=maximum_bytes,
+            description=description,
+        )
+    finally:
+        _close_quietly(root_descriptor)
+    if identity != current:
+        raise M0Error(f"{description} changed while snapshotting")
+    return RegularFileSnapshot(contents=contents, pinned_identity=identity)
+
+
+def snapshot_optional_regular_file(
+    path: Path, *, maximum_bytes: int, description: str
+) -> bytes | None:
+    """Return bytes for an explicitly rechecked optional non-execution leaf."""
+
+    capture = snapshot_optional_regular_file_with_identity(
+        path,
+        maximum_bytes=maximum_bytes,
+        description=description,
+    )
+    return None if capture is None else capture.contents
+
+
+def hash_optional_regular_file(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    description: str,
+    on_chunk: Callable[[bytes], None] | None = None,
+) -> RegularFileHash | None:
+    """Stream one explicitly rechecked optional non-execution leaf.
+
+    As with :func:`snapshot_optional_regular_file_with_identity`, callers use
+    this only after every required execution input is bound.  It permits a
+    bounded policy scan without retaining a potentially large sidecar.
+    """
+
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise M0Error(f"{description} snapshot bound is invalid")
+    if on_chunk is not None and not callable(on_chunk):
+        raise M0Error(f"{description} chunk observer is invalid")
+    absolute_path = _lexical_absolute_path(path, description)
+    name = absolute_path.name
+    if not name:
+        raise M0Error(f"{description} file name is invalid")
+    root_descriptor = _open_root_directory(absolute_path.parent, description)
+    try:
+        probe = _open_regular_file_at(
+            root_descriptor,
+            name,
+            maximum_bytes=maximum_bytes,
+            description=description,
+            allow_missing=True,
+        )
+        if probe is None:
+            probe = _open_regular_file_at(
+                root_descriptor,
+                name,
+                maximum_bytes=maximum_bytes,
+                description=description,
+                allow_missing=True,
+            )
+            if probe is None:
+                return None
+        _close_quietly(probe)
+        capture = _hash_file_from_root(
+            root_descriptor,
+            name,
+            maximum_bytes=maximum_bytes,
+            description=description,
+            on_chunk=on_chunk,
+        )
+        current = _current_file_identity_from_root(
+            root_descriptor,
+            name,
+            maximum_bytes=maximum_bytes,
+            description=description,
+        )
+    finally:
+        _close_quietly(root_descriptor)
+    if capture.pinned_identity != current:
+        raise M0Error(f"{description} changed while snapshotting")
+    return capture
+
+
+def hash_regular_file(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    description: str,
+    on_chunk: Callable[[bytes], None] | None = None,
+) -> RegularFileHash:
+    """Return one descriptor-pinned streaming SHA-256 identity."""
+
+    if on_chunk is not None and not callable(on_chunk):
+        raise M0Error(f"{description} chunk observer is invalid")
+    absolute_path = _lexical_absolute_path(path, description)
+    name = absolute_path.name
+    if not name:
+        raise M0Error(f"{description} file name is invalid")
+    return hash_regular_files(
+        absolute_path.parent,
+        (name,),
+        maximum_bytes=maximum_bytes,
+        description=description,
+        on_chunk=(
+            None if on_chunk is None else lambda _name, chunk: on_chunk(chunk)
+        ),
     )[name]

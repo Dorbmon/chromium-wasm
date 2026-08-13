@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 import queue
 import shutil
@@ -469,6 +470,51 @@ class M3ServerTest(unittest.TestCase):
         state = server_class.call_args.args[1]
         self.assertEqual(state.artifact_snapshots, artifact_snapshots)
         self.assertEqual(state.static_snapshots, static_snapshots)
+
+    def test_complete_immutable_snapshots_never_reopen_replaced_artifacts(
+        self,
+    ) -> None:
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("host lacks FIFO support")
+        artifact_snapshots = {
+            "content_shell_wasm.js": (
+                self.out_dir / "content_shell_wasm.js"
+            ).read_bytes(),
+            "content_shell_wasm.wasm": (
+                self.out_dir / "content_shell_wasm.wasm"
+            ).read_bytes(),
+        }
+        static_snapshots = {
+            "/": b"immutable host HTML",
+            "/__m3__/": b"immutable host HTML",
+            "/__m3__/content_shell_host.js": b"immutable host JavaScript",
+        }
+        for artifact_name in artifact_snapshots:
+            artifact = self.out_dir / artifact_name
+            artifact.unlink()
+            os.mkfifo(artifact)
+
+        missing_font = self.out_dir / "missing-Ahem.woff2"
+        with (
+            mock.patch.object(m3_content_server, "M3_AHEM_FONT", missing_font),
+            mock.patch.object(
+                m3_content_server, "M3HTTPServer", autospec=True
+            ) as server_class,
+        ):
+            server = m3_content_server.create_m3_server(
+                "127.0.0.1",
+                0,
+                self.out_dir,
+                "test-token",
+                self.results,
+                artifact_snapshots=artifact_snapshots,
+                static_snapshots=static_snapshots,
+            )
+
+        self.assertIs(server, server_class.return_value)
+        state = server_class.call_args.args[1]
+        self.assertEqual(artifact_snapshots, state.artifact_snapshots)
+        self.assertEqual(static_snapshots, state.static_snapshots)
 
     def test_result_endpoint_is_tokened_and_one_shot(self) -> None:
         payload = {

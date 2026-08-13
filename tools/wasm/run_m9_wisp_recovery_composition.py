@@ -33,7 +33,6 @@ import os
 from pathlib import Path
 import re
 import signal
-import stat
 import subprocess
 import sys
 import threading
@@ -41,6 +40,12 @@ import time
 from typing import Any, Iterable, Sequence
 
 from m0_common import MANIFEST_PATH, M0Error, REPO_ROOT, parse_timeout
+from m9_descriptor_snapshot import (
+    RegularFileHash,
+    RegularFileSnapshot,
+    hash_regular_file,
+    snapshot_regular_file_with_identity,
+)
 import run_m5_wisp_smoke as m5_wisp
 import run_m6_wasm_browser_controlled_https_smoke as m6_controlled_https
 
@@ -80,7 +85,6 @@ OUTPUT_READ_CHUNK_BYTES = 64 * 1024
 MAX_CHILD_OUTPUT_BYTES = 12 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FAILURE_MESSAGE_CHARS = 1024
-FILE_HASH_CHUNK_BYTES = 1024 * 1024
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -145,7 +149,13 @@ _INPUT_SNAPSHOT_FIELDS = frozenset(
     )
 )
 _SHARED_SNAPSHOT_FIELDS = frozenset(
-    ("composition_runner_source", "toolchain_manifest", "wisp_relay_server_source")
+    (
+        "composition_runner_source",
+        "toolchain_manifest",
+        "wisp_relay_localhost_certificate",
+        "wisp_relay_server_source",
+        "wisp_relay_test_names_certificate",
+    )
 )
 _CHROME_SNAPSHOT_FIELDS = frozenset(
     (
@@ -268,6 +278,7 @@ class FileSnapshot:
 
     path: Path
     identity: dict[str, object]
+    pinned_identity: tuple[int, int, int, int, int, int]
     canonical_identity: dict[str, object] | None = None
     screenshot_policy: dict[str, object] | None = None
 
@@ -392,76 +403,55 @@ def _require_module_name(value: str, description: str) -> None:
         raise M0Error(f"{description} must contain only ASCII letters, digits, or _")
 
 
-def _resolve_out_dir(value: Path, description: str) -> Path:
-    candidate = value if value.is_absolute() else REPO_ROOT / value
-    resolved = candidate.resolve()
-    if not resolved.is_dir():
-        raise M0Error(f"{description} output directory is missing: {resolved}")
-    return resolved
+def _configured_path(value: Path, description: str) -> Path:
+    """Return a lexical path; capture helpers validate it without following links."""
 
-
-def _resolve_file(value: Path, description: str) -> Path:
-    resolved = value.resolve()
     try:
-        mode = resolved.stat().st_mode
-    except OSError as exc:
-        raise M0Error(f"cannot read {description}: {exc}") from exc
-    if not stat.S_ISREG(mode):
-        raise M0Error(f"{description} is not a regular file")
-    return resolved
-
-
-def _output_file(out_dir: Path, name: str, description: str) -> Path:
-    candidate = (out_dir / name).resolve()
-    if candidate.parent != out_dir or not candidate.is_file():
-        raise M0Error(f"{description} is missing or unsafe: {name}")
+        candidate = Path(value)
+    except (TypeError, ValueError) as exc:
+        raise M0Error(f"{description} path is invalid") from exc
+    if not candidate.is_absolute():
+        candidate = REPO_ROOT / candidate
     return candidate
 
 
-def _file_identity(path: Path, description: str) -> dict[str, object]:
-    """Hash one nonempty file without retaining a large Wasm module in memory."""
+def _file_hash(path: Path, description: str) -> RegularFileHash:
+    """Stream one no-follow descriptor-pinned identity without retaining Wasm."""
 
-    path = _resolve_file(path, description)
-    try:
-        before = path.stat()
-    except OSError as exc:
-        raise M0Error(f"cannot stat {description}: {exc}") from exc
-    if before.st_size < 1 or before.st_size > MAX_SNAPSHOT_BYTES:
-        raise M0Error(f"{description} byte size is outside the snapshot bound")
-
-    digest = hashlib.sha256()
-    total = 0
-    try:
-        with path.open("rb") as stream:
-            while chunk := stream.read(FILE_HASH_CHUNK_BYTES):
-                total += len(chunk)
-                if total > MAX_SNAPSHOT_BYTES:
-                    raise M0Error(f"{description} exceeds the snapshot bound")
-                digest.update(chunk)
-        after = path.stat()
-    except OSError as exc:
-        raise M0Error(f"cannot hash {description}: {exc}") from exc
-    if (
-        total != before.st_size
-        or before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or before.st_ino != after.st_ino
-    ):
-        raise M0Error(f"{description} changed while its identity was captured")
-    return {"bytes": total, "sha256": digest.hexdigest()}
+    return hash_regular_file(
+        path,
+        maximum_bytes=MAX_SNAPSHOT_BYTES,
+        description=description,
+    )
 
 
 def _snapshot_file(path: Path, description: str) -> FileSnapshot:
-    resolved = _resolve_file(path, description)
-    return FileSnapshot(path=resolved, identity=_file_identity(resolved, description))
+    selected_path = _configured_path(path, description)
+    capture = _file_hash(selected_path, description)
+    return FileSnapshot(
+        path=selected_path,
+        identity=capture.byte_identity(),
+        pinned_identity=capture.pinned_identity,
+    )
 
 
 def _snapshot_m6_screenshot_contract() -> tuple[FileSnapshot, dict[str, Any]]:
     """Capture the raw and canonical M6 visual policy from one byte snapshot."""
 
-    path = _resolve_file(M6_SCREENSHOT_CONTRACT_PATH, "Chrome screenshot contract")
-    raw_bytes, contract, canonical_bytes = (
-        m6_controlled_https.snapshot_controlled_https_screenshot_contract(path)
+    path = _configured_path(
+        M6_SCREENSHOT_CONTRACT_PATH, "Chrome screenshot contract"
+    )
+    capture = snapshot_regular_file_with_identity(
+        path,
+        maximum_bytes=m6_controlled_https.MAX_SCREENSHOT_CONTRACT_BYTES,
+        description="Chrome screenshot contract",
+    )
+    raw_bytes = capture.contents
+    contract = m6_controlled_https.load_controlled_https_screenshot_contract(
+        contents=raw_bytes
+    )
+    canonical_bytes = m6_controlled_https.canonical_controlled_https_screenshot_contract_bytes(
+        contract
     )
     raw_identity = m5_wisp.byte_snapshot_identity(
         raw_bytes, "M9 Chrome screenshot contract"
@@ -474,6 +464,7 @@ def _snapshot_m6_screenshot_contract() -> tuple[FileSnapshot, dict[str, Any]]:
         FileSnapshot(
             path=path,
             identity=raw_identity,
+            pinned_identity=capture.pinned_identity,
             canonical_identity=canonical_identity,
             screenshot_policy=policy,
         ),
@@ -484,8 +475,10 @@ def _snapshot_m6_screenshot_contract() -> tuple[FileSnapshot, dict[str, Any]]:
 def _snapshot_output_artifact(
     out_dir: Path, name: str, description: str
 ) -> FileSnapshot:
-    path = _output_file(out_dir, name, description)
-    return FileSnapshot(path=path, identity=_file_identity(path, description))
+    if Path(name).name != name or not name:
+        raise M0Error(f"{description} name is invalid")
+    path = _configured_path(out_dir, description) / name
+    return _snapshot_file(path, description)
 
 
 def _m6_screenshot_baseline_path(contract: dict[str, Any]) -> Path:
@@ -497,6 +490,55 @@ def _m6_screenshot_baseline_path(contract: dict[str, Any]) -> Path:
     return m6_controlled_https.CONTROLLED_HTTPS_SCREENSHOT_CONTRACT.parent / baseline_name
 
 
+def _relay_closure_source_paths(relay_script: Path) -> dict[str, Path]:
+    """Return the three lexical source leaves Node resolves from ``import.meta``."""
+
+    relay_path = _configured_path(relay_script, "WISP relay script")
+    certificate_directory = (
+        relay_path.parent.parent.parent
+        / "net"
+        / "data"
+        / "ssl"
+        / "certificates"
+    )
+    return {
+        "wisp_relay_server_source": relay_path,
+        "wisp_relay_test_names_certificate": (
+            certificate_directory / "test_names.pem"
+        ),
+        "wisp_relay_localhost_certificate": (
+            certificate_directory / "localhost_cert.pem"
+        ),
+    }
+
+
+def _relay_closure_snapshots(
+    relay_script: Path, relay_closure_snapshots: object
+) -> dict[str, FileSnapshot]:
+    """Bind composition identity to the exact relay/certificate byte closure."""
+
+    captures = m5_wisp.validate_wisp_relay_closure_snapshots(
+        relay_closure_snapshots
+    )
+    paths = _relay_closure_source_paths(relay_script)
+    closure_names = {
+        "wisp_relay_server_source": "relay",
+        "wisp_relay_test_names_certificate": "test_names.pem",
+        "wisp_relay_localhost_certificate": "localhost_cert.pem",
+    }
+    return {
+        field: FileSnapshot(
+            path=paths[field],
+            identity=m5_wisp.byte_snapshot_identity(
+                captures[closure_name].contents,
+                f"M9 WISP relay {closure_name}",
+            ),
+            pinned_identity=captures[closure_name].pinned_identity,
+        )
+        for field, closure_name in closure_names.items()
+    }
+
+
 def snapshot_composition_inputs(
     *,
     chrome_out_dir: Path,
@@ -504,6 +546,8 @@ def snapshot_composition_inputs(
     content_out_dir: Path,
     content_module_name: str,
     relay_script: Path,
+    relay_closure: object | None = None,
+    relay_closure_snapshots: object | None = None,
 ) -> dict[str, dict[str, FileSnapshot]]:
     """Capture selected entrypoint, host, relay, and artifact identities.
 
@@ -515,7 +559,29 @@ def snapshot_composition_inputs(
 
     _require_module_name(chrome_module_name, "Chrome module name")
     _require_module_name(content_module_name, "Content Shell module name")
-    relay_script = _resolve_file(relay_script, "WISP relay script")
+    relay_script = _configured_path(relay_script, "WISP relay script")
+    if relay_closure_snapshots is None:
+        if relay_closure is not None:
+            raise M0Error(
+                "M9 WISP composition relay closure metadata is required"
+            )
+        relay_closure_snapshots = (
+            m5_wisp.snapshot_wisp_relay_closure_with_identity(relay_script)
+        )
+    captured_relay_closure = m5_wisp.wisp_relay_closure_from_snapshots(
+        relay_closure_snapshots
+    )
+    if relay_closure is not None:
+        if (
+            m5_wisp.wisp_relay_closure_identity(relay_closure)
+            != m5_wisp.wisp_relay_closure_identity(captured_relay_closure)
+        ):
+            raise M0Error(
+                "M9 WISP composition relay closure disagrees with its metadata"
+            )
+    relay_snapshots = _relay_closure_snapshots(
+        relay_script, relay_closure_snapshots
+    )
     screenshot_contract, parsed_screenshot_contract = _snapshot_m6_screenshot_contract()
     return {
         "shared": {
@@ -525,9 +591,7 @@ def snapshot_composition_inputs(
             "toolchain_manifest": _snapshot_file(
                 MANIFEST_PATH, "toolchain manifest"
             ),
-            "wisp_relay_server_source": _snapshot_file(
-                relay_script, "WISP relay server source"
-            ),
+            **relay_snapshots,
         },
         "chrome_controlled_https": {
             "args_gn": _snapshot_output_artifact(
@@ -601,8 +665,11 @@ def verify_input_snapshots_unchanged(
                 raise M0Error(
                     f"M9 WISP composition snapshot entry is invalid: {group}.{name}"
                 )
-            current = _file_identity(snapshot.path, f"{group}.{name}")
-            if current != snapshot.identity:
+            current = _file_hash(snapshot.path, f"{group}.{name}")
+            if (
+                current.byte_identity() != snapshot.identity
+                or current.pinned_identity != snapshot.pinned_identity
+            ):
                 raise M0Error(
                     "M9 WISP composition input changed after preflight snapshot: "
                     f"{group}.{name}"
@@ -1832,15 +1899,28 @@ def run_composition(
 
     _require_m6_timeout(chrome_timeout)
     _require_timeout(content_timeout, "Content Shell timeout")
-    chrome_out_dir = _resolve_out_dir(chrome_out_dir, "Chrome")
-    content_out_dir = _resolve_out_dir(content_out_dir, "Content Shell")
-    relay_script = _resolve_file(relay_script, "WISP relay script")
+    chrome_out_dir = _configured_path(chrome_out_dir, "Chrome")
+    content_out_dir = _configured_path(content_out_dir, "Content Shell")
+    relay_script = _configured_path(relay_script, "WISP relay script")
+    # Capture exactly the three leaves Node will execute/read, then keep one
+    # private materialized closure alive through both child lifecycles.  The
+    # children receive this same closure path and independently descriptor-
+    # capture it before launching Node; neither child can fall back to live
+    # repository certificate files.
+    relay_closure_snapshots = m5_wisp.snapshot_wisp_relay_closure_with_identity(
+        relay_script
+    )
+    relay_closure = m5_wisp.wisp_relay_closure_from_snapshots(
+        relay_closure_snapshots
+    )
     snapshots = snapshot_composition_inputs(
         chrome_out_dir=chrome_out_dir,
         chrome_module_name=chrome_module_name,
         content_out_dir=content_out_dir,
         content_module_name=content_module_name,
         relay_script=relay_script,
+        relay_closure=relay_closure,
+        relay_closure_snapshots=relay_closure_snapshots,
     )
     input_identity = input_snapshot_identity(
         snapshots,
@@ -1848,49 +1928,54 @@ def run_composition(
         content_module_name=content_module_name,
     )
 
-    chrome_execution = run_child(
-        "Chrome controlled-HTTPS",
-        chrome_child_command(
-            out_dir=chrome_out_dir,
-            module_name=chrome_module_name,
-            timeout=chrome_timeout,
-            diagnostics_dir=diagnostics_dir / "chrome-controlled-https",
-            browser=browser,
-            node=node,
-            relay_script=relay_script,
-            no_sandbox=no_sandbox,
-        ),
-        chrome_timeout,
-    )
-    chrome_evidence, chrome_versions = validate_chrome_execution(
-        chrome_execution,
-        expected_artifact_input=input_identity["chrome_controlled_https"],
-    )
-    verify_input_snapshots_unchanged(
-        snapshots, ("shared", "chrome_controlled_https")
-    )
+    with m5_wisp.materialized_wisp_relay_closure_from_snapshot(
+        relay_closure
+    ) as materialized_relay_script:
+        chrome_execution = run_child(
+            "Chrome controlled-HTTPS",
+            chrome_child_command(
+                out_dir=chrome_out_dir,
+                module_name=chrome_module_name,
+                timeout=chrome_timeout,
+                diagnostics_dir=diagnostics_dir / "chrome-controlled-https",
+                browser=browser,
+                node=node,
+                relay_script=materialized_relay_script,
+                no_sandbox=no_sandbox,
+            ),
+            chrome_timeout,
+        )
+        chrome_evidence, chrome_versions = validate_chrome_execution(
+            chrome_execution,
+            expected_artifact_input=input_identity["chrome_controlled_https"],
+        )
+        verify_input_snapshots_unchanged(
+            snapshots, ("shared", "chrome_controlled_https")
+        )
 
-    content_execution = run_child(
-        "Content Shell WISP carrier-close recovery",
-        content_child_command(
-            out_dir=content_out_dir,
-            module_name=content_module_name,
-            timeout=content_timeout,
-            diagnostics_dir=diagnostics_dir / "content-shell-wisp-recovery",
-            browser=browser,
-            node=node,
-            relay_script=relay_script,
-            no_sandbox=no_sandbox,
-        ),
-        content_timeout,
-    )
-    content_evidence, content_versions = validate_content_execution(
-        content_execution,
-        expected_artifact_input=input_identity["content_shell_wisp_recovery"],
-    )
-    verify_input_snapshots_unchanged(
-        snapshots, ("shared", "content_shell_wisp_recovery")
-    )
+        content_execution = run_child(
+            "Content Shell WISP carrier-close recovery",
+            content_child_command(
+                out_dir=content_out_dir,
+                module_name=content_module_name,
+                timeout=content_timeout,
+                diagnostics_dir=diagnostics_dir / "content-shell-wisp-recovery",
+                browser=browser,
+                node=node,
+                relay_script=materialized_relay_script,
+                no_sandbox=no_sandbox,
+            ),
+            content_timeout,
+        )
+        content_evidence, content_versions = validate_content_execution(
+            content_execution,
+            expected_artifact_input=input_identity[
+                "content_shell_wisp_recovery"
+            ],
+        )
+        verify_input_snapshots_unchanged(
+            snapshots, ("shared", "content_shell_wisp_recovery")
+        )
     if chrome_versions != content_versions:
         raise M0Error(
             "M6 Chrome and M5 Content Shell child version identifiers disagree"
@@ -1961,9 +2046,9 @@ def main() -> int:
     stage = "resolve_paths"
     diagnostics_dir: Path | None = None
     try:
-        chrome_out_dir = _resolve_out_dir(args.chrome_out_dir, "Chrome")
-        content_out_dir = _resolve_out_dir(args.content_out_dir, "Content Shell")
-        relay_script = _resolve_file(args.relay_script, "WISP relay script")
+        chrome_out_dir = _configured_path(args.chrome_out_dir, "Chrome")
+        content_out_dir = _configured_path(args.content_out_dir, "Content Shell")
+        relay_script = _configured_path(args.relay_script, "WISP relay script")
         diagnostics_dir = args.diagnostics_dir or (
             chrome_out_dir / "diagnostics-m9-wisp-recovery-composition"
         )
