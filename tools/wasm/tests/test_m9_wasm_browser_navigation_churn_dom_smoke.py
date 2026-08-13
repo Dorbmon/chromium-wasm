@@ -476,6 +476,13 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
                 ),
                 "invalid order",
             ),
+            (
+                lambda result: result["stderr"].append(
+                    "Some "
+                    + " ".join(smoke.DISCARDABLE_MEMORY_MANAGER_LEAK_MARKERS)
+                ),
+                "live discardable-memory Mojo receiver",
+            ),
         )
         for mutate, expression in mutations:
             with self.subTest(expression=expression):

@@ -62,6 +62,16 @@ NAVIGATED_MARKER = "CHROMIUM_WASM_M9_NAVIGATION_CHURN:NAVIGATED"
 PRESENTED_MARKER = "CHROMIUM_WASM_M9_NAVIGATION_CHURN:PRESENTED"
 PASS_MARKER = "CHROMIUM_WASM_M9_NAVIGATION_CHURN:PASS"
 LIFECYCLE_PASS_MARKER = "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS"
+# A live self-owned receiver on the IO sequence is an explicit Chrome-side
+# teardown leak, not an expected single-process/Wasm diagnostic. In
+# particular, suppressing this warning by invalidating its weak pointers would
+# skip the receiver destructor which releases the client's discardable-memory
+# allocations. Keep the bounded churn witness fail-closed until the renderer
+# lifecycle has a real close path.
+DISCARDABLE_MEMORY_MANAGER_LEAK_MARKERS = (
+    "MojoDiscardableSharedMemoryManagerImpls are still alive",
+    "will be leaked",
+)
 DEFAULT_OUT_DIR = Path("out/wasm-chrome-m6")
 DEFAULT_MODULE_NAME = "chrome_wasm"
 HOST_ROOT = "/__m9_browser_navigation_churn__"
@@ -763,6 +773,14 @@ def _validate_markers(stderr: object, stages: list[dict[str, object]]) -> None:
         if marker_index <= previous_index:
             raise M0Error(f"navigation-churn markers have invalid order: {marker}")
         previous_index = marker_index
+    stderr_text = "\n".join(stderr)
+    if all(
+        marker in stderr_text for marker in DISCARDABLE_MEMORY_MANAGER_LEAK_MARKERS
+    ):
+        raise M0Error(
+            "navigation-churn observed a live discardable-memory Mojo receiver "
+            "during shutdown"
+        )
 
 
 def validate_result(
