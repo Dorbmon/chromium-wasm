@@ -677,6 +677,14 @@ RenderThreadImpl::~RenderThreadImpl() {
 }
 
 void RenderThreadImpl::Shutdown() {
+#if BUILDFLAG(IS_WASM)
+  // In single-process Wasm mode this client manager is not the process-global
+  // allocator. Release it while the browser IO sequence is still available so
+  // its remote closes normally instead of leaving a self-owned service
+  // receiver alive when that sequence is destroyed.
+  discardable_memory_allocator_.reset();
+#endif
+
   ChildThreadImpl::Shutdown();
   // In a multi-process mode, we immediately exit the renderer.
   // Historically we had a graceful shutdown sequence here but it was

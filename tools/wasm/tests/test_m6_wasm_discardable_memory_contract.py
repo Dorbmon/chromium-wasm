@@ -72,6 +72,28 @@ class M6WasmDiscardableMemoryContractTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, renderer)
 
+    def test_wasm_renderer_closes_its_client_before_child_io_shutdown(self) -> None:
+        renderer = source("content/renderer/render_thread_impl.cc")
+
+        shutdown = renderer.index("void RenderThreadImpl::Shutdown()")
+        shutdown_end = renderer.index(
+            "bool RenderThreadImpl::ShouldBeDestroyed()", shutdown
+        )
+        shutdown_body = renderer[shutdown:shutdown_end]
+        wasm_branch = shutdown_body.index("#if BUILDFLAG(IS_WASM)")
+        client_release = shutdown_body.index(
+            "discardable_memory_allocator_.reset();", wasm_branch
+        )
+        child_shutdown = shutdown_body.index("ChildThreadImpl::Shutdown();")
+
+        # The client manager destroys its Mojo remote on the browser IO
+        # sequence. Its release must enqueue that close before the child
+        # shutdown posts the IO-state release, or the self-owned service
+        # receiver is left alive when the sequence is destroyed.
+        self.assertLess(wasm_branch, client_release)
+        self.assertLess(client_release, child_shutdown)
+        self.assertIn("#endif", shutdown_body[client_release:child_shutdown])
+
 
 if __name__ == "__main__":
     unittest.main()
