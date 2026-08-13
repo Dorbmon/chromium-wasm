@@ -16,7 +16,8 @@ from typing import Callable
 from unittest import mock
 
 from tools.wasm import package
-from tools.wasm.m0_common import REPO_ROOT, load_manifest
+from tools.wasm import run_m9_package_browser_smoke as package_browser_smoke
+from tools.wasm.m0_common import M0Error, REPO_ROOT, load_manifest
 from tools.wasm.run_m9_package_smoke import package_response, run_package_smoke
 
 
@@ -632,6 +633,376 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn("mainScriptUrlOrBlob", host)
         self.assertIn("inputModuleName", host)
         self.assertIn('"./chromium-wasm.wasm"', host)
+
+    def test_package_browser_restart_epoch_binds_exact_url_and_fresh_document(self) -> None:
+        initial_url = package_browser_smoke._make_epoch_url(
+            "http://127.0.0.1:32123/", "first-epoch"
+        )
+        restart_url = package_browser_smoke._make_epoch_url(
+            "http://127.0.0.1:32123/", "restart-epoch"
+        )
+
+        def status_for(url: str, time_origin: float) -> dict[str, object]:
+            return {
+                "documentIdentity": {
+                    "href": url,
+                    "navigation": {
+                        "name": url,
+                        "startTime": 0,
+                        "type": "navigate",
+                    },
+                    "timeOrigin": time_origin,
+                }
+            }
+
+        first_origin = package_browser_smoke._require_document_identity(
+            status_for(initial_url, 1000.5),
+            expected_url=initial_url,
+            expected_epoch="first-epoch",
+        )
+        self.assertEqual(1000.5, first_origin)
+        self.assertEqual(
+            1001.5,
+            package_browser_smoke._require_document_identity(
+                status_for(restart_url, 1001.5),
+                expected_url=restart_url,
+                expected_epoch="restart-epoch",
+                prior_time_origin=first_origin,
+            ),
+        )
+
+        with self.assertRaisesRegex(M0Error, "URL does not match"):
+            package_browser_smoke._require_document_identity(
+                status_for(initial_url, 1001.5),
+                expected_url=restart_url,
+                expected_epoch="restart-epoch",
+                prior_time_origin=first_origin,
+            )
+        with self.assertRaisesRegex(M0Error, "time origin did not change"):
+            package_browser_smoke._require_document_identity(
+                status_for(restart_url, first_origin),
+                expected_url=restart_url,
+                expected_epoch="restart-epoch",
+                prior_time_origin=first_origin,
+            )
+
+    def test_package_browser_restart_refuses_unclean_first_exit_before_navigation(
+        self,
+    ) -> None:
+        class StaleClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, object]]] = []
+                self.closed = False
+
+            def call(self, method: str, params: dict[str, object]) -> dict[str, object]:
+                self.calls.append((method, params))
+                return {"frameId": "unused"}
+
+            def close(self) -> None:
+                self.closed = True
+
+        client = StaleClient()
+        with mock.patch.object(
+            package_browser_smoke, "wait_for_page_client"
+        ) as wait_for_client, self.assertRaisesRegex(
+            M0Error, "first fixed package-host shutdown"
+        ):
+            package_browser_smoke._restart_after_clean_shutdown(
+                client=client,
+                clean_shutdown={
+                    "shutdownRequested": True,
+                    "shutdownDisabled": True,
+                    "processExitCode": 1,
+                },
+                restart_url="http://127.0.0.1:32123/?m9_package_epoch=restart",
+                debug_port=32124,
+                deadline=123.0,
+            )
+        self.assertEqual([], client.calls)
+        self.assertFalse(client.closed)
+        wait_for_client.assert_not_called()
+
+    def test_package_browser_clean_shutdown_rejects_boolean_exit_code(self) -> None:
+        self.assertFalse(
+            package_browser_smoke._is_clean_shutdown(
+                {
+                    "shutdownRequested": True,
+                    "shutdownDisabled": True,
+                    "processExitCode": False,
+                }
+            )
+        )
+        with self.assertRaisesRegex(M0Error, "process exit code 0"):
+            package_browser_smoke._require_clean_shutdown(
+                {
+                    "shutdownRequested": True,
+                    "shutdownDisabled": True,
+                    "processExitCode": False,
+                },
+                "fixed package-host shutdown",
+            )
+
+    def test_package_browser_restart_closes_stale_client_and_reattaches_exact_url(
+        self,
+    ) -> None:
+        class StaleClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, object]]] = []
+                self.closed = False
+
+            def call(self, method: str, params: dict[str, object]) -> dict[str, object]:
+                self.calls.append((method, params))
+                return {"frameId": "fresh-frame"}
+
+            def close(self) -> None:
+                self.closed = True
+
+        client = StaleClient()
+        fresh_client = object()
+        restart_url = "http://127.0.0.1:32123/?m9_package_epoch=restart"
+        with mock.patch.object(
+            package_browser_smoke,
+            "wait_for_page_client",
+            return_value=fresh_client,
+        ) as wait_for_client:
+            result = package_browser_smoke._restart_after_clean_shutdown(
+                client=client,
+                clean_shutdown={
+                    "shutdownRequested": True,
+                    "shutdownDisabled": True,
+                    "processExitCode": 0,
+                },
+                restart_url=restart_url,
+                debug_port=32124,
+                deadline=123.0,
+            )
+        self.assertIs(fresh_client, result)
+        self.assertEqual([("Page.navigate", {"url": restart_url})], client.calls)
+        self.assertTrue(client.closed)
+        wait_for_client.assert_called_once_with(32124, restart_url, 123.0)
+
+    def test_package_browser_default_result_remains_one_clean_epoch(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 32123)
+        browser = mock.Mock()
+        browser.stderr = object()
+        browser.poll.return_value = None
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-package-profile"
+        client = mock.Mock()
+        ready = {"framesPresented": 7, "releaseStatus": package.RELEASE_STATUS}
+        shutdown = {
+            "shutdownRequested": True,
+            "shutdownDisabled": True,
+            "processExitCode": 0,
+        }
+
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_browser_smoke.threading,
+                "Thread",
+                side_effect=lambda *_args, **_kwargs: mock.Mock(),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "browser_command",
+                return_value=["/fake/browser", "profile", "url"],
+            ),
+            mock.patch.object(
+                package_browser_smoke.subprocess,
+                "Popen",
+                return_value=browser,
+            ),
+            mock.patch.object(
+                package_browser_smoke.tempfile,
+                "TemporaryDirectory",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                package_browser_smoke, "unused_loopback_port", return_value=32124
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "wait_for_page_client",
+                return_value=client,
+            ) as wait_for_client,
+            mock.patch.object(
+                package_browser_smoke,
+                "_wait_for_ready_package_document",
+                return_value=(ready, 1000.0),
+            ) as wait_for_ready,
+            mock.patch.object(
+                package_browser_smoke,
+                "_request_clean_shutdown",
+                return_value=shutdown,
+            ) as request_shutdown,
+            mock.patch.object(
+                package_browser_smoke.secrets,
+                "token_urlsafe",
+                return_value="first-epoch",
+            ),
+            mock.patch.object(package_browser_smoke, "stop_browser"),
+            mock.patch.object(
+                package_browser_smoke, "_restart_after_clean_shutdown"
+            ) as restart,
+        ):
+            result = package_browser_smoke.run_package_browser_smoke(
+                dist_dir=Path("/fake/dist"),
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+            )
+
+        initial_url = "http://127.0.0.1:32123/?m9_package_epoch=first-epoch"
+        self.assertEqual(
+            {
+                "browser_version": "test-browser",
+                "frames_presented": 7,
+                "process_exit_code": 0,
+                "release_status": package.RELEASE_STATUS,
+                "scope": package_browser_smoke.SCOPE,
+                "shutdown_disabled": True,
+                "shutdown_requested": True,
+            },
+            result,
+        )
+        wait_for_client.assert_called_once()
+        self.assertEqual(initial_url, wait_for_client.call_args.args[1])
+        self.assertEqual(initial_url, wait_for_ready.call_args.kwargs["expected_url"])
+        self.assertEqual("first-epoch", wait_for_ready.call_args.kwargs["expected_epoch"])
+        request_shutdown.assert_called_once()
+        restart.assert_not_called()
+
+    def test_package_browser_restart_result_has_two_clean_epoch_records(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 32123)
+        browser = mock.Mock()
+        browser.stderr = object()
+        browser.poll.return_value = None
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-package-profile"
+        first_client = mock.Mock()
+        second_client = mock.Mock()
+        first_ready = {"framesPresented": 7, "releaseStatus": package.RELEASE_STATUS}
+        second_ready = {"framesPresented": 11, "releaseStatus": package.RELEASE_STATUS}
+        clean_shutdown = {
+            "shutdownRequested": True,
+            "shutdownDisabled": True,
+            "processExitCode": 0,
+        }
+
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_browser_smoke.threading,
+                "Thread",
+                side_effect=lambda *_args, **_kwargs: mock.Mock(),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "browser_command",
+                return_value=["/fake/browser", "profile", "url"],
+            ),
+            mock.patch.object(
+                package_browser_smoke.subprocess,
+                "Popen",
+                return_value=browser,
+            ),
+            mock.patch.object(
+                package_browser_smoke.tempfile,
+                "TemporaryDirectory",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                package_browser_smoke, "unused_loopback_port", return_value=32124
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "wait_for_page_client",
+                return_value=first_client,
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "_wait_for_ready_package_document",
+                side_effect=[(first_ready, 1000.0), (second_ready, 1001.0)],
+            ) as wait_for_ready,
+            mock.patch.object(
+                package_browser_smoke,
+                "_request_clean_shutdown",
+                side_effect=[clean_shutdown, clean_shutdown],
+            ) as request_shutdown,
+            mock.patch.object(
+                package_browser_smoke.secrets,
+                "token_urlsafe",
+                side_effect=["first-epoch", "restart-epoch"],
+            ),
+            mock.patch.object(
+                package_browser_smoke, "stop_browser"
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "_restart_after_clean_shutdown",
+                return_value=second_client,
+            ) as restart,
+        ):
+            result = package_browser_smoke.run_package_browser_smoke(
+                dist_dir=Path("/fake/dist"),
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+                outer_document_restart=True,
+            )
+
+        self.assertEqual(
+            {
+                "browser_version": "test-browser",
+                "epochs": [
+                    {
+                        "frames_presented": 7,
+                        "process_exit_code": 0,
+                        "shutdown_disabled": True,
+                        "shutdown_requested": True,
+                    },
+                    {
+                        "frames_presented": 11,
+                        "process_exit_code": 0,
+                        "shutdown_disabled": True,
+                        "shutdown_requested": True,
+                    },
+                ],
+                "outer_document_restart": True,
+                "release_status": package.RELEASE_STATUS,
+                "scope": package_browser_smoke.OUTER_DOCUMENT_RESTART_SCOPE,
+            },
+            result,
+        )
+        self.assertEqual(2, wait_for_ready.call_count)
+        self.assertEqual(2, request_shutdown.call_count)
+        restart.assert_called_once()
+        self.assertEqual(
+            "http://127.0.0.1:32123/?m9_package_epoch=restart-epoch",
+            restart.call_args.kwargs["restart_url"],
+        )
+        self.assertEqual(1000.0, wait_for_ready.call_args_list[1].kwargs["prior_time_origin"])
 
 
 if __name__ == "__main__":
