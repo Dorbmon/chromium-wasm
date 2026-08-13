@@ -1280,6 +1280,18 @@ source_set("wasm_browser_host_lifecycle") {
   deps = [ "//content/public/browser" ]
 }
 
+# This read-only diagnostics ABI samples only counters supplied by the Wasm
+# runtime and PageAllocator. It deliberately has no browser, profile, input,
+# or shutdown authority; the M9 host captures it before asking the existing
+# lifecycle bridge to close Chrome.
+source_set("wasm_browser_host_memory_metrics") {
+  sources = [ "wasm_browser_host_memory_metrics.cc" ]
+
+  visibility = [ ":wasm_browser_main_parts" ]
+
+  deps = [ "//base/allocator/partition_allocator/src/partition_alloc" ]
+}
+
 # The real-browser trusted-pointer smoke asks this verifier only to inspect
 # the lifecycle-owned tab model after the fixed Ozone input path ran, then to
 # acknowledge a host-presented frame. It deliberately exports no Browser or
@@ -1879,6 +1891,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_browser_host_clipboard",
     ":wasm_browser_host_input",
     ":wasm_browser_host_lifecycle",
+    ":wasm_browser_host_memory_metrics",
     ":wasm_browser_host_pointer",
     ":wasm_browser_host_storage_estimate",
     ":wasm_browser_host_text",

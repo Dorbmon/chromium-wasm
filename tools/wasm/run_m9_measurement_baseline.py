@@ -86,11 +86,11 @@ else:
 
 
 SENTINEL = "CHROMIUM_WASM_M9_BASELINE"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CASE = "chrome_wasm_m9_measurement_baseline"
 SCOPE = (
     "one-fresh-host-run-cold-loader-runtime-frame-wasm-buffer-capacity-"
-    "worker-observation"
+    "native-memory-snapshot-worker-observation"
 )
 BASELINE_KIND = "pre-release-m9-measurement-baseline"
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
@@ -119,6 +119,13 @@ COLD_START_DEFINITION = (
 WASM_HEAP_BUFFER_CAPACITY_DEFINITION = (
     "HEAPU8.buffer.byteLength capacity; not allocated or resident memory usage"
 )
+WASM_MEMORY_PAGE_BYTES = 64 * 1024
+NATIVE_MEMORY_SNAPSHOT_DEFINITION = (
+    "exact native counters: current and configured-maximum Emscripten Wasm "
+    "linear-memory capacity plus derived headroom; PageAllocator total logical "
+    "mappings across clients may be uncommitted; none is RSS, committed-memory, "
+    "allocation, or leak evidence"
+)
 WORKER_OBSERVATION_DEFINITION = (
     "host Worker construction and loader loaded-control messages only; "
     "not worker utilization or saturation"
@@ -133,6 +140,11 @@ SAMPLE_MEASUREMENT_LIMITS = (
     (
         "HEAPU8.buffer.byteLength is Wasm buffer capacity, not allocated or "
         "resident memory usage"
+    ),
+    (
+        "native memory counters distinguish Wasm capacity/maximum/headroom from "
+        "PageAllocator logical mappings; none measures RSS, committed memory, "
+        "allocations, or leaks"
     ),
     (
         "terminal 25 ms grace observes queued host errors only; it does not "
@@ -202,6 +214,7 @@ _SNAPSHOT_FIELDS = frozenset(
         "lifecycle",
         "m9_gate_complete",
         "measurement_limits",
+        "native_memory_snapshot",
         "performance_gate",
         "release_status",
         "schema_version",
@@ -250,6 +263,22 @@ _WASM_HEAP_BUFFER_CAPACITY_SNAPSHOT_FIELDS = frozenset(
         "heap_u8_exported",
         "shared",
         "wasm_heap_buffer_capacity_bytes",
+    )
+)
+_NATIVE_MEMORY_SNAPSHOT_FIELDS = frozenset(
+    (
+        "at_first_frame",
+        "at_pre_shutdown",
+        "at_runtime_initialized",
+        "definition",
+    )
+)
+_NATIVE_MEMORY_SNAPSHOT_POINT_FIELDS = frozenset(
+    (
+        "page_allocator_total_mapped_bytes",
+        "wasm_linear_memory_capacity_bytes",
+        "wasm_linear_memory_headroom_bytes",
+        "wasm_linear_memory_maximum_bytes",
     )
 )
 _FRAME_FIELDS = frozenset(
@@ -626,6 +655,54 @@ def _validate_wasm_heap_buffer_capacity_snapshot(
     )
 
 
+def _validate_native_memory_snapshot_point(
+    value: object, description: str
+) -> dict[str, int]:
+    value = _require_exact_fields(
+        value, _NATIVE_MEMORY_SNAPSHOT_POINT_FIELDS, description
+    )
+    capacity = _require_integer(
+        value.get("wasm_linear_memory_capacity_bytes"),
+        f"{description} Wasm linear-memory capacity",
+        minimum=WASM_MEMORY_PAGE_BYTES,
+    )
+    maximum = _require_integer(
+        value.get("wasm_linear_memory_maximum_bytes"),
+        f"{description} Wasm linear-memory maximum",
+        minimum=WASM_MEMORY_PAGE_BYTES,
+    )
+    headroom = _require_integer(
+        value.get("wasm_linear_memory_headroom_bytes"),
+        f"{description} Wasm linear-memory headroom",
+    )
+    mapped = _require_integer(
+        value.get("page_allocator_total_mapped_bytes"),
+        f"{description} PageAllocator total mapped bytes",
+    )
+    metrics = {
+        "page_allocator_total_mapped_bytes": mapped,
+        "wasm_linear_memory_capacity_bytes": capacity,
+        "wasm_linear_memory_headroom_bytes": headroom,
+        "wasm_linear_memory_maximum_bytes": maximum,
+    }
+    for field, bytes_value in metrics.items():
+        if bytes_value % WASM_MEMORY_PAGE_BYTES != 0:
+            raise M0Error(
+                f"M9 measurement {description} {field} is not Wasm-page aligned"
+            )
+    if maximum < capacity:
+        raise M0Error(
+            f"M9 measurement {description} Wasm linear-memory maximum is below "
+            "current capacity"
+        )
+    if headroom != maximum - capacity:
+        raise M0Error(
+            f"M9 measurement {description} Wasm linear-memory headroom disagrees "
+            "with capacity and maximum"
+        )
+    return metrics
+
+
 def _validate_worker_snapshot(value: object, description: str) -> dict[str, int]:
     value = _require_exact_fields(value, _WORKER_SNAPSHOT_FIELDS, description)
     snapshot = {
@@ -844,6 +921,36 @@ def validate_measurement_snapshot(snapshot: dict[str, Any]) -> None:
             "M9 measurement Wasm heap capacity runtime-exit growth flag disagrees "
             "with captured capacities"
         )
+
+    native_memory = _require_exact_fields(
+        snapshot["native_memory_snapshot"],
+        _NATIVE_MEMORY_SNAPSHOT_FIELDS,
+        "native memory snapshot",
+    )
+    if native_memory.get("definition") != NATIVE_MEMORY_SNAPSHOT_DEFINITION:
+        raise M0Error("M9 measurement native memory definition is invalid")
+    runtime_native_memory = _validate_native_memory_snapshot_point(
+        native_memory.get("at_runtime_initialized"), "runtime native memory"
+    )
+    frame_native_memory = _validate_native_memory_snapshot_point(
+        native_memory.get("at_first_frame"), "first-frame native memory"
+    )
+    pre_shutdown_native_memory = _validate_native_memory_snapshot_point(
+        native_memory.get("at_pre_shutdown"), "pre-shutdown native memory"
+    )
+    if (frame_native_memory["wasm_linear_memory_capacity_bytes"] <
+            runtime_native_memory["wasm_linear_memory_capacity_bytes"] or
+            pre_shutdown_native_memory["wasm_linear_memory_capacity_bytes"] <
+            frame_native_memory["wasm_linear_memory_capacity_bytes"]):
+        raise M0Error(
+            "M9 measurement native Wasm linear-memory capacity regressed"
+        )
+    # These counters are collected through a native ccall while HEAPU8 is a
+    # separately refreshed JavaScript view. A concurrent memory.grow may land
+    # between the two observations, so comparing their exact values would turn
+    # a valid asynchronous Wasm runtime into a false failure.
+    # PageAllocator's aggregate mapping counter is deliberately not compared
+    # across points: logical mappings can legitimately be added or released.
 
     workers = _require_exact_fields(
         snapshot["worker_observation"], _WORKER_OBSERVATION_FIELDS,

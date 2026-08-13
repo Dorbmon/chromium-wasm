@@ -10,21 +10,27 @@
 // or infer worker utilization, saturation, or long-run behavior.
 
 const HOST_PROTOCOL = 1;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const CASE = "chrome_wasm_m9_measurement_baseline";
 const SCOPE = "one-fresh-host-run-cold-loader-runtime-frame-wasm-buffer-capacity-" +
-    "worker-observation";
+    "native-memory-snapshot-worker-observation";
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
 const MAX_TIMEOUT_MS = 120000;
 const MIN_TIMEOUT_MS = 10000;
 const MAX_FRAME_DIMENSION = 16384;
 const MAX_FAILURE_TEXT = 512;
 const TERMINAL_GRACE_OBSERVATION_MS = 25;
+const WASM_MEMORY_PAGE_BYTES = 64 * 1024;
 const COLD_START_DEFINITION =
     "one outer-page navigation in a fresh host-browser profile; " +
     "no OS cache eviction or cross-run comparison";
 const WASM_HEAP_BUFFER_CAPACITY_DEFINITION =
     "HEAPU8.buffer.byteLength capacity; not allocated or resident memory usage";
+const NATIVE_MEMORY_SNAPSHOT_DEFINITION =
+    "exact native counters: current and configured-maximum Emscripten Wasm " +
+    "linear-memory capacity plus derived headroom; PageAllocator total logical " +
+    "mappings across clients may be uncommitted; none is RSS, committed-memory, " +
+    "allocation, or leak evidence";
 const WORKER_OBSERVATION_DEFINITION =
     "host Worker construction and loader loaded-control messages only; " +
     "not worker utilization or saturation";
@@ -35,6 +41,9 @@ const MEASUREMENT_LIMITS = Object.freeze([
       "ImageData copy; not raster, compositor, or vsync presentation timing",
   "HEAPU8.buffer.byteLength is Wasm buffer capacity, not allocated or " +
       "resident memory usage",
+  "native memory counters distinguish Wasm capacity/maximum/headroom from " +
+      "PageAllocator logical mappings; none measures RSS, committed memory, " +
+      "allocations, or leaks",
   "terminal 25 ms grace observes queued host errors only; it does not " +
       "prove worker drain, utilization, or saturation",
   "worker evidence counts host Worker construction and loader " +
@@ -92,6 +101,72 @@ function wasmHeapBufferCapacitySnapshot(module) {
         buffer.byteLength : null,
     heap_u8_exported: heap instanceof Uint8Array,
     shared: shared,
+  });
+}
+
+const NATIVE_MEMORY_METRICS = Object.freeze({
+  page_allocator_total_mapped_bytes:
+      "chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes",
+  wasm_linear_memory_capacity_bytes:
+      "chromium_wasm_browser_host_memory_linear_capacity_bytes",
+  wasm_linear_memory_maximum_bytes:
+      "chromium_wasm_browser_host_memory_linear_maximum_bytes",
+});
+
+// Captures exact byte counters from the Wasm module without deriving process
+// memory use. The output remains intentionally narrower than RSS, committed
+// memory, individual allocations, or leak diagnosis.
+export function nativeMemorySnapshot(module) {
+  if (!module || typeof module.ccall !== "function") {
+    throw new Error("native memory metrics require Module.ccall");
+  }
+
+  const metrics = {};
+  for (const [field, exportName] of Object.entries(NATIVE_MEMORY_METRICS)) {
+    let value;
+    try {
+      value = module.ccall(exportName, "number", [], []);
+    } catch (error) {
+      throw new Error(`native memory metric export ${exportName} is unavailable: ` +
+          boundedFailure(error));
+    }
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`native memory metric ${field} is not an exact nonnegative ` +
+          "byte count");
+    }
+    metrics[field] = value;
+  }
+
+  const capacity = metrics.wasm_linear_memory_capacity_bytes;
+  const maximum = metrics.wasm_linear_memory_maximum_bytes;
+  const mapped = metrics.page_allocator_total_mapped_bytes;
+  if (capacity < WASM_MEMORY_PAGE_BYTES ||
+      maximum < WASM_MEMORY_PAGE_BYTES) {
+    throw new Error("native Wasm linear-memory capacity is below one page");
+  }
+  for (const [field, value] of Object.entries({
+    page_allocator_total_mapped_bytes: mapped,
+    wasm_linear_memory_capacity_bytes: capacity,
+    wasm_linear_memory_maximum_bytes: maximum,
+  })) {
+    if (value % WASM_MEMORY_PAGE_BYTES !== 0) {
+      throw new Error(`native memory metric ${field} is not Wasm-page aligned`);
+    }
+  }
+  if (maximum < capacity) {
+    throw new Error("native Wasm linear-memory maximum is below current capacity");
+  }
+  const headroom = maximum - capacity;
+  if (!Number.isSafeInteger(headroom) || headroom < 0 ||
+      headroom % WASM_MEMORY_PAGE_BYTES !== 0) {
+    throw new Error("native Wasm linear-memory headroom is invalid");
+  }
+
+  return Object.freeze({
+    page_allocator_total_mapped_bytes: mapped,
+    wasm_linear_memory_capacity_bytes: capacity,
+    wasm_linear_memory_headroom_bytes: headroom,
+    wasm_linear_memory_maximum_bytes: maximum,
   });
 }
 
@@ -199,6 +274,9 @@ class ChromiumWasmM9MeasurementHost {
   #wasmHeapBufferCapacityAtRuntimeInitialized = null;
   #wasmHeapBufferCapacityAtFirstFrame = null;
   #wasmHeapBufferCapacityAtRuntimeExit = null;
+  #nativeMemoryAtRuntimeInitialized = null;
+  #nativeMemoryAtFirstFrame = null;
+  #nativeMemoryAtPreShutdown = null;
   #workersAtRuntimeInitialized = null;
   #workersAtFirstFrame = null;
   #workersAtRuntimeExit = null;
@@ -359,6 +437,14 @@ class ChromiumWasmM9MeasurementHost {
       this.#fail("first frame arrived before runtime initialization");
       return;
     }
+    let nativeMemory;
+    try {
+      nativeMemory = nativeMemorySnapshot(this.#module);
+    } catch (error) {
+      this.#fail(`native memory snapshot at first frame failed: ` +
+          boundedFailure(error));
+      return;
+    }
     // The canonical ozone_wasm bridge invokes reportFrame only after its
     // synchronous Canvas2D ImageData copy/putImageData work has returned.
     // This is not a claim about raster, compositor, display, or vsync timing.
@@ -373,6 +459,7 @@ class ChromiumWasmM9MeasurementHost {
     });
     this.#wasmHeapBufferCapacityAtFirstFrame =
         wasmHeapBufferCapacitySnapshot(this.#module);
+    this.#nativeMemoryAtFirstFrame = nativeMemory;
     this.#workersAtFirstFrame = this.#workerObservation.snapshot();
     this.#maybeReady();
   }
@@ -411,10 +498,19 @@ class ChromiumWasmM9MeasurementHost {
       this.#fail("runtime initialized more than once");
       return;
     }
+    let nativeMemory;
+    try {
+      nativeMemory = nativeMemorySnapshot(module);
+    } catch (error) {
+      this.#fail(`native memory snapshot at runtime initialization failed: ` +
+          boundedFailure(error));
+      return;
+    }
     this.#module = module;
     this.#setTiming("runtime_initialized");
     this.#wasmHeapBufferCapacityAtRuntimeInitialized =
         wasmHeapBufferCapacitySnapshot(module);
+    this.#nativeMemoryAtRuntimeInitialized = nativeMemory;
     this.#workersAtRuntimeInitialized = this.#workerObservation.snapshot();
     this.#maybeReady();
   }
@@ -432,6 +528,8 @@ class ChromiumWasmM9MeasurementHost {
         !this.#readiness.surfaceReady || !this.#activeOzoneFocus ||
         this.#wasmHeapBufferCapacityAtRuntimeInitialized?.shared !== true ||
         this.#wasmHeapBufferCapacityAtFirstFrame?.shared !== true ||
+        this.#nativeMemoryAtRuntimeInitialized === null ||
+        this.#nativeMemoryAtFirstFrame === null ||
         this.#workersAtFirstFrame === null ||
         this.#workersAtFirstFrame.workers_constructed < 1 ||
         this.#workersAtFirstFrame.loaded_control_messages < 1 ||
@@ -586,8 +684,12 @@ class ChromiumWasmM9MeasurementHost {
         this.#shutdownResults !== null) {
       return false;
     }
-    this.#setTiming("shutdown_requested");
     try {
+      // Capture this before the normal native shutdown ABI can invalidate the
+      // module's process state. This is an observation, not a drain or leak
+      // check, and it cannot request any browser action itself.
+      this.#nativeMemoryAtPreShutdown = nativeMemorySnapshot(this.#module);
+      this.#setTiming("shutdown_requested");
       const first = this.#module.ccall(
           "chromium_wasm_browser_host_request_shutdown", "number", [], []);
       const second = this.#module.ccall(
@@ -672,6 +774,12 @@ class ChromiumWasmM9MeasurementHost {
         window_error_count: this.#windowErrorCount,
       },
       m9_gate_complete: false,
+      native_memory_snapshot: {
+        at_first_frame: this.#nativeMemoryAtFirstFrame,
+        at_pre_shutdown: this.#nativeMemoryAtPreShutdown,
+        at_runtime_initialized: this.#nativeMemoryAtRuntimeInitialized,
+        definition: NATIVE_MEMORY_SNAPSHOT_DEFINITION,
+      },
       wasm_heap_buffer_capacity: {
         at_first_frame: frameCapacity,
         at_runtime_initialized: runtimeCapacity,

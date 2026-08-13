@@ -30,6 +30,20 @@ def wasm_heap_buffer_capacity_snapshot(capacity_bytes: int) -> dict[str, object]
     }
 
 
+def native_memory_snapshot(
+    capacity_bytes: int,
+    *,
+    maximum_bytes: int = 2_147_483_648,
+    mapped_bytes: int = 0,
+) -> dict[str, int]:
+    return {
+        "page_allocator_total_mapped_bytes": mapped_bytes,
+        "wasm_linear_memory_capacity_bytes": capacity_bytes,
+        "wasm_linear_memory_headroom_bytes": maximum_bytes - capacity_bytes,
+        "wasm_linear_memory_maximum_bytes": maximum_bytes,
+    }
+
+
 def worker_snapshot(
     *, workers_constructed: int = 8, loaded_messages: int = 8
 ) -> dict[str, int]:
@@ -109,6 +123,12 @@ def passing_snapshot() -> dict[str, object]:
         },
         "m9_gate_complete": False,
         "measurement_limits": list(baseline.SAMPLE_MEASUREMENT_LIMITS),
+        "native_memory_snapshot": {
+            "at_first_frame": native_memory_snapshot(67_108_864),
+            "at_pre_shutdown": native_memory_snapshot(67_108_864),
+            "at_runtime_initialized": native_memory_snapshot(67_108_864),
+            "definition": baseline.NATIVE_MEMORY_SNAPSHOT_DEFINITION,
+        },
         "wasm_heap_buffer_capacity": {
             "at_first_frame": wasm_heap_buffer_capacity_snapshot(67_108_864),
             "at_runtime_initialized": wasm_heap_buffer_capacity_snapshot(
@@ -412,6 +432,7 @@ class M9MeasurementValidationTest(unittest.TestCase):
             ("timing_ms", "runtime_exit"),
             ("lifecycle", "fatal_error_count"),
             ("lifecycle", "process_exit_code"),
+            ("native_memory_snapshot", "at_pre_shutdown"),
             ("wasm_heap_buffer_capacity", "at_runtime_exit"),
             ("worker_observation", "at_runtime_exit"),
         )
@@ -424,6 +445,11 @@ class M9MeasurementValidationTest(unittest.TestCase):
 
         sample = passing_snapshot()
         sample["wasm_heap_buffer_capacity"]["unbounded_peak_bytes"] = 1  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "schema mismatch"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample["native_memory_snapshot"]["unbounded_rss_bytes"] = 1  # type: ignore[index]
         with self.assertRaisesRegex(M0Error, "schema mismatch"):
             baseline.validate_measurement_snapshot(sample)
 
@@ -509,6 +535,81 @@ class M9MeasurementValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "runtime-exit growth flag disagrees"):
             baseline.validate_measurement_snapshot(sample)
 
+    def test_rejects_malformed_native_memory_snapshots(self) -> None:
+        native = "native_memory_snapshot"
+        point = "at_first_frame"
+
+        sample = passing_snapshot()
+        sample[native][point]["wasm_linear_memory_capacity_bytes"] = 3.5  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "capacity is invalid"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample[native][point]["page_allocator_total_mapped_bytes"] = 1  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "not Wasm-page aligned"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample[native][point]["wasm_linear_memory_maximum_bytes"] = 65_536  # type: ignore[index]
+        sample[native][point]["wasm_linear_memory_headroom_bytes"] = 0  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "maximum is below current capacity"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample[native][point]["wasm_linear_memory_headroom_bytes"] = -1  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "headroom is invalid"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample[native][point]["wasm_linear_memory_headroom_bytes"] += (  # type: ignore[index]
+            baseline.WASM_MEMORY_PAGE_BYTES
+        )
+        with self.assertRaisesRegex(M0Error, "headroom disagrees"):
+            baseline.validate_measurement_snapshot(sample)
+
+    def test_rejects_regressing_native_linear_memory_capacity(self) -> None:
+        sample = passing_snapshot()
+        sample["native_memory_snapshot"]["at_pre_shutdown"][  # type: ignore[index]
+            "wasm_linear_memory_capacity_bytes"
+        ] = 65_536
+        sample["native_memory_snapshot"]["at_pre_shutdown"][  # type: ignore[index]
+            "wasm_linear_memory_headroom_bytes"
+        ] = 2_147_418_112
+        with self.assertRaisesRegex(M0Error, "capacity regressed"):
+            baseline.validate_measurement_snapshot(sample)
+
+    def test_accepts_nonmonotonic_page_allocator_mappings_without_leak_inference(
+        self,
+    ) -> None:
+        sample = passing_snapshot()
+        snapshot = sample["native_memory_snapshot"]  # type: ignore[index]
+        snapshot["at_runtime_initialized"][  # type: ignore[index]
+            "page_allocator_total_mapped_bytes"
+        ] = 4 * baseline.WASM_MEMORY_PAGE_BYTES
+        snapshot["at_first_frame"][  # type: ignore[index]
+            "page_allocator_total_mapped_bytes"
+        ] = baseline.WASM_MEMORY_PAGE_BYTES
+        snapshot["at_pre_shutdown"][  # type: ignore[index]
+            "page_allocator_total_mapped_bytes"
+        ] = 8 * baseline.WASM_MEMORY_PAGE_BYTES
+        baseline.validate_measurement_snapshot(sample)
+
+    def test_accepts_asynchronously_refreshed_native_and_heap_capacity_samples(
+        self,
+    ) -> None:
+        sample = passing_snapshot()
+        snapshot = sample["native_memory_snapshot"]  # type: ignore[index]
+        for point in ("at_first_frame", "at_pre_shutdown"):
+            snapshot[point]["wasm_linear_memory_capacity_bytes"] += (  # type: ignore[index]
+                baseline.WASM_MEMORY_PAGE_BYTES
+            )
+            snapshot[point]["wasm_linear_memory_headroom_bytes"] -= (  # type: ignore[index]
+                baseline.WASM_MEMORY_PAGE_BYTES
+            )
+        # The independently refreshed HEAPU8 view can lag a concurrent
+        # memory.grow; the native counter remains internally exact.
+        baseline.validate_measurement_snapshot(sample)
+
     def test_rejects_impossible_or_regressing_worker_evidence(self) -> None:
         sample = passing_snapshot()
         sample["worker_observation"]["at_first_frame"][  # type: ignore[index]
@@ -567,7 +668,7 @@ class M9MeasurementValidationTest(unittest.TestCase):
         self.assertEqual(baseline.BASELINE_KIND, result["kind"])
         self.assertFalse(result["m9_gate_complete"])
         self.assertFalse(result["performance_gate"])
-        self.assertEqual(1, result["schema_version"])
+        self.assertEqual(baseline.SCHEMA_VERSION, result["schema_version"])
         self.assertEqual(
             baseline.SOURCE_SNAPSHOT_PROVENANCE,
             result["capture_harness"]["source_snapshot_provenance"],
@@ -1090,6 +1191,63 @@ process.stdout.write(JSON.stringify({{rootState: root.dataset.state, snapshot}})
             observed["snapshot"]["lifecycle"]["status_sequence"],
         )
         self.assertIn("query is invalid", observed["snapshot"]["failure"])
+
+    def test_native_memory_snapshot_rejects_unavailable_and_malformed_exports(self) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+        host = REPO_ROOT / "tools/wasm/host/chrome_wasm_m9_measurement_host.js"
+        script = f"""
+const {{nativeMemorySnapshot}} = await import({json.dumps(host.as_uri())});
+const exports = {{
+  chromium_wasm_browser_host_memory_linear_capacity_bytes: 67108864,
+  chromium_wasm_browser_host_memory_linear_maximum_bytes: 2147483648,
+  chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes: 0,
+}};
+function moduleFor(values) {{
+  return {{ccall(name) {{
+    if (!(name in values)) throw new Error("missing export");
+    return values[name];
+  }}}};
+}}
+function failure(values) {{
+  try {{
+    nativeMemorySnapshot(moduleFor(values));
+  }} catch (error) {{
+    return String(error);
+  }}
+  return "accepted";
+}}
+const valid = nativeMemorySnapshot(moduleFor(exports));
+const missing = failure({{
+  chromium_wasm_browser_host_memory_linear_capacity_bytes: 67108864,
+}});
+const malformed = failure({{...exports,
+  chromium_wasm_browser_host_memory_linear_capacity_bytes: 3.5,
+}});
+const unaligned = failure({{...exports,
+  chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes: 1,
+}});
+const maximum = failure({{...exports,
+  chromium_wasm_browser_host_memory_linear_maximum_bytes: 65536,
+}});
+process.stdout.write(JSON.stringify({{valid, missing, malformed, unaligned, maximum}}));
+"""
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        observed = json.loads(completed.stdout)
+        self.assertEqual(2_080_374_784, observed["valid"]["wasm_linear_memory_headroom_bytes"])
+        self.assertIn("unavailable", observed["missing"])
+        self.assertIn("exact nonnegative", observed["malformed"])
+        self.assertIn("not Wasm-page aligned", observed["unaligned"])
+        self.assertIn("maximum is below", observed["maximum"])
 
     def test_host_javascript_parses_when_node_is_available(self) -> None:
         node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
