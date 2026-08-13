@@ -12,6 +12,7 @@
 const HOST_PROTOCOL = 1;
 const SCHEMA_VERSION = 2;
 const CASE = "chrome_wasm_m9_measurement_baseline";
+const PRODUCT_MODULE_NAME = "chrome_wasm";
 const SCOPE = "one-fresh-host-run-cold-loader-runtime-frame-wasm-buffer-capacity-" +
     "native-memory-snapshot-worker-observation";
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
@@ -606,8 +607,9 @@ class ChromiumWasmM9MeasurementHost {
           timeoutMs > MAX_TIMEOUT_MS) {
         throw new Error("measurement timeout is out of range");
       }
-      if (!/^[A-Za-z0-9_]+$/.test(moduleName)) {
-        throw new Error("measurement module name is invalid");
+      if (moduleName !== PRODUCT_MODULE_NAME) {
+        throw new Error(
+            "M9 measurement host only supports the chrome_wasm product module");
       }
       this.#timing.host_run_started = this.#now();
       this.#canvas.focus({preventScroll: true});
@@ -621,7 +623,7 @@ class ChromiumWasmM9MeasurementHost {
       this.#setState("loading");
 
       const moduleUrl = new URL(
-          `./artifacts/${moduleName}.js`, document.baseURI);
+          `./artifacts/${PRODUCT_MODULE_NAME}.js`, document.baseURI);
       if (moduleUrl.origin !== location.origin) {
         throw new Error("measurement module must use the host origin");
       }
@@ -823,8 +825,12 @@ function parseQuery() {
   const parameters = new URLSearchParams(location.search);
   const moduleName = parameters.get("module");
   const timeoutText = parameters.get("timeout_ms");
-  if (parameters.size !== 2 || !/^[A-Za-z0-9_]+$/.test(moduleName || "")) {
+  if (parameters.size !== 2) {
     throw new Error("M9 measurement query is invalid");
+  }
+  if (moduleName !== PRODUCT_MODULE_NAME) {
+    throw new Error(
+        "M9 measurement query must select the chrome_wasm product module");
   }
   if (!/^\d+$/.test(timeoutText || "")) {
     throw new Error("M9 measurement timeout is invalid");

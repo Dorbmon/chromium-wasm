@@ -95,7 +95,8 @@ SCOPE = (
 BASELINE_KIND = "pre-release-m9-measurement-baseline"
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
 HOST_ROOT = "/__m9__"
-DEFAULT_MODULE_NAME = "chrome_wasm"
+PRODUCT_MODULE_NAME = "chrome_wasm"
+DEFAULT_MODULE_NAME = PRODUCT_MODULE_NAME
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -398,6 +399,17 @@ def _require_exact_fields(
     return value
 
 
+def _require_product_module_name(module_name: object, boundary: str) -> str:
+    if not isinstance(module_name, str) or not MODULE_NAME_RE.fullmatch(module_name):
+        raise M0Error(f"M9 measurement {boundary} module name is invalid")
+    if module_name != PRODUCT_MODULE_NAME:
+        raise M0Error(
+            "M9 measurement "
+            f"{boundary} only supports the {PRODUCT_MODULE_NAME} product module"
+        )
+    return module_name
+
+
 class M9MeasurementServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -415,6 +427,7 @@ class M9MeasurementServer(M9TrackingThreadingHTTPServer):
     ) -> None:
         # These bytes are the only inputs served or identified for this run.
         # They are copied from disk once at server startup and are immutable.
+        module_name = _require_product_module_name(module_name, "server")
         self.artifacts = dict(artifacts)
         self.served_artifact_names = frozenset(served_artifact_names)
         self.host_html = bytes(host_html)
@@ -512,14 +525,13 @@ def create_measurement_server(
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
 ) -> M9MeasurementServer:
-    """Snapshots artifact, host, and runner bytes before serving a measurement.
+    """Snapshots chrome_wasm artifact, host, and runner bytes before serving.
 
     ``host_dir`` and ``runner_source_path`` exist for focused snapshot tests;
     production capture uses this runner's own on-disk host and source files.
     """
 
-    if not MODULE_NAME_RE.fullmatch(module_name):
-        raise M0Error("M9 measurement module name is invalid")
+    module_name = _require_product_module_name(module_name, "server")
     resolved_out_dir = out_dir.resolve()
     if not resolved_out_dir.is_dir():
         raise M0Error(f"M9 measurement output directory is missing: {resolved_out_dir}")
@@ -558,8 +570,8 @@ def create_measurement_server(
 def measurement_url(
     server: M9MeasurementServer, *, module_name: str, timeout_seconds: float
 ) -> str:
-    if not MODULE_NAME_RE.fullmatch(module_name):
-        raise M0Error("M9 measurement URL module name is invalid")
+    module_name = _require_product_module_name(module_name, "URL")
+    _require_product_module_name(server.module_name, "URL server")
     timeout_ms = int(timeout_seconds * 1000)
     if timeout_ms < 10000 or timeout_ms > 120000:
         raise M0Error("M9 measurement URL timeout is out of range")
@@ -571,6 +583,8 @@ def measurement_url(
 def artifact_identity(
     server: M9MeasurementServer, *, module_name: str
 ) -> dict[str, object]:
+    module_name = _require_product_module_name(module_name, "artifact")
+    _require_product_module_name(server.module_name, "artifact server")
     loader_name = f"{module_name}.js"
     wasm_name = f"{module_name}.wasm"
     loader = server.artifacts[loader_name]
@@ -994,9 +1008,7 @@ def _validate_artifact_identity(value: object) -> None:
     artifact = _require_exact_fields(value, _ARTIFACT_FIELDS, "artifact identity")
     if artifact.get("artifact_source_provenance") != ARTIFACT_SOURCE_PROVENANCE:
         raise M0Error("M9 measurement artifact source provenance is invalid")
-    module_name = artifact.get("module_name")
-    if not isinstance(module_name, str) or not MODULE_NAME_RE.fullmatch(module_name):
-        raise M0Error("M9 measurement artifact module name is invalid")
+    _require_product_module_name(artifact.get("module_name"), "artifact")
     for field in ("args_gn", "loader", "wasm"):
         _validate_artifact_blob(artifact.get(field), f"artifact {field}")
 
@@ -1335,6 +1347,8 @@ def main() -> int:
         parser.error("--timeout must allow one cold Chrome Wasm host launch")
     if not MODULE_NAME_RE.fullmatch(args.module_name):
         parser.error("--module-name must contain only ASCII letters, digits, or _")
+    if args.module_name != PRODUCT_MODULE_NAME:
+        parser.error("--module-name must be chrome_wasm for this product measurement")
 
     out_dir = args.out_dir
     if not out_dir.is_absolute():

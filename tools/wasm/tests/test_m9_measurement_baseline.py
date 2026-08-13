@@ -309,6 +309,30 @@ class M9MeasurementServerTest(unittest.TestCase):
         )
         self.assertNotIn(str(self.out_dir), repr(identity))
 
+    def test_rejects_alternate_product_module_at_server_url_and_identity_boundaries(
+        self,
+    ) -> None:
+        alternate_module = "alternate_wasm"
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            baseline.create_measurement_server(
+                "127.0.0.1",
+                0,
+                self.root / "missing-output",
+                module_name=alternate_module,
+            )
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            baseline.measurement_url(
+                self.server, module_name=alternate_module, timeout_seconds=12.5
+            )
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            baseline.artifact_identity(self.server, module_name=alternate_module)
+
     def test_harness_identity_keeps_runner_and_host_source_snapshots(self) -> None:
         source_root = self.root / "measurement-source"
         source_root.mkdir()
@@ -680,6 +704,14 @@ class M9MeasurementValidationTest(unittest.TestCase):
         )
         self.assertNotIn("PASS", repr(result))
 
+    def test_result_schema_rejects_substituted_product_module(self) -> None:
+        result = passing_result()
+        result["artifact"]["module_name"] = "alternate_wasm"  # type: ignore[index]
+        with self.assertRaisesRegex(
+            M0Error, "only supports the chrome_wasm product module"
+        ):
+            baseline.validate_baseline_result(result)
+
     def test_result_schema_rejects_false_artifact_or_harness_provenance(self) -> None:
         result = baseline.make_baseline_result(
             artifact={
@@ -767,6 +799,29 @@ class M9MeasurementValidationTest(unittest.TestCase):
 
 
 class M9MeasurementCleanupTest(unittest.TestCase):
+    def test_main_rejects_alternate_module_before_server_or_browser(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(baseline, "check_boundary") as check_boundary,
+            mock.patch.object(
+                baseline, "create_measurement_server"
+            ) as create_measurement_server,
+            mock.patch.object(baseline, "run_measurement") as run_measurement,
+            mock.patch.object(
+                baseline.sys,
+                "argv",
+                ["measurement-baseline", "--module-name", "alternate_wasm"],
+            ),
+            mock.patch.object(baseline.sys, "stderr", stderr),
+            self.assertRaisesRegex(SystemExit, "^2$"),
+        ):
+            baseline.main()
+
+        self.assertIn("--module-name must be chrome_wasm", stderr.getvalue())
+        check_boundary.assert_not_called()
+        create_measurement_server.assert_not_called()
+        run_measurement.assert_not_called()
+
     def test_main_preserves_unstarted_server_thread_start_failure(self) -> None:
         server = mock.Mock()
         server_thread = mock.Mock()
@@ -897,6 +952,7 @@ class M9MeasurementCleanupTest(unittest.TestCase):
     ) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 12345)
+        server.module_name = baseline.PRODUCT_MODULE_NAME
         server.shutdown.side_effect = RuntimeError("server shutdown failed")
         server_thread = mock.Mock()
         stderr = io.StringIO()
@@ -938,6 +994,7 @@ class M9MeasurementCleanupTest(unittest.TestCase):
             with self.subTest(method=method):
                 server = mock.Mock()
                 server.server_address = ("127.0.0.1", 12345)
+                server.module_name = baseline.PRODUCT_MODULE_NAME
                 server_thread = mock.Mock()
                 if method == "join":
                     server_thread.join.side_effect = RuntimeError(failure)
@@ -1103,6 +1160,9 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
             "performance_gate: false",
             "status_sequence",
             "TERMINAL_GRACE_OBSERVATION_MS",
+            'const PRODUCT_MODULE_NAME = "chrome_wasm"',
+            "moduleName !== PRODUCT_MODULE_NAME",
+            "query must select the chrome_wasm product module",
             "HEAPU8.buffer.byteLength capacity; not allocated or resident memory usage",
             "not raster, compositor, or vsync presentation timing",
             "not worker utilization or saturation",
@@ -1123,6 +1183,9 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
             "runner_source",
             "source_snapshot_provenance",
             "toolchain_manifest_versions",
+            'PRODUCT_MODULE_NAME = "chrome_wasm"',
+            "_require_product_module_name",
+            "--module-name must be chrome_wasm",
             "one fresh host run only; no cross-run performance inference",
             ":CAPTURED ",
             "check_boundary(out_dir)",
@@ -1132,7 +1195,7 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
         self.assertNotIn(":PASS", runner)
         self.assertNotIn("benchmark score", host.lower())
 
-    def test_malformed_query_exposes_a_failed_host_snapshot(self) -> None:
+    def _run_host_query(self, query: str) -> dict[str, object]:
         node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
         if not node.is_file():
             self.skipTest("the pinned Node executable is unavailable")
@@ -1166,13 +1229,18 @@ globalThis.document = {{
 }};
 globalThis.location = {{
   origin: "http://127.0.0.1",
-  search: "?module=chrome_wasm",
+  search: {json.dumps(query)},
 }};
 globalThis.crossOriginIsolated = true;
+let fetchCalls = 0;
+globalThis.fetch = () => {{
+  fetchCalls += 1;
+  throw new Error("unexpected measurement loader fetch");
+}};
 const host = await import({json.dumps(host.as_uri())});
 await host.runChromeWasmM9MeasurementFromQuery();
 const snapshot = globalThis.__chromiumWasmM9MeasurementV1.snapshot();
-process.stdout.write(JSON.stringify({{rootState: root.dataset.state, snapshot}}));
+process.stdout.write(JSON.stringify({{rootState: root.dataset.state, snapshot, fetchCalls}}));
 """
         completed = subprocess.run(
             [str(node), "--input-type=module", "--eval", script],
@@ -1183,7 +1251,10 @@ process.stdout.write(JSON.stringify({{rootState: root.dataset.state, snapshot}})
         self.assertEqual(
             0, completed.returncode, completed.stdout + completed.stderr
         )
-        observed = json.loads(completed.stdout)
+        return json.loads(completed.stdout)
+
+    def test_malformed_query_exposes_a_failed_host_snapshot(self) -> None:
+        observed = self._run_host_query("?module=chrome_wasm")
         self.assertEqual("failed", observed["rootState"])
         self.assertEqual("failed", observed["snapshot"]["status"])
         self.assertEqual(
@@ -1191,6 +1262,23 @@ process.stdout.write(JSON.stringify({{rootState: root.dataset.state, snapshot}})
             observed["snapshot"]["lifecycle"]["status_sequence"],
         )
         self.assertIn("query is invalid", observed["snapshot"]["failure"])
+        self.assertEqual(0, observed["fetchCalls"])
+
+    def test_alternate_module_query_is_rejected_before_loader_fetch(self) -> None:
+        observed = self._run_host_query(
+            "?module=alternate_wasm&timeout_ms=10000"
+        )
+        self.assertEqual("failed", observed["rootState"])
+        self.assertEqual("failed", observed["snapshot"]["status"])
+        self.assertEqual(
+            ["starting", "failed"],
+            observed["snapshot"]["lifecycle"]["status_sequence"],
+        )
+        self.assertIn(
+            "must select the chrome_wasm product module",
+            observed["snapshot"]["failure"],
+        )
+        self.assertEqual(0, observed["fetchCalls"])
 
     def test_native_memory_snapshot_rejects_unavailable_and_malformed_exports(self) -> None:
         node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
