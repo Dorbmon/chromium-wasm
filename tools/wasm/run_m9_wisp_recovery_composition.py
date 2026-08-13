@@ -256,6 +256,7 @@ class _CappedPipeCapture:
         self._reader_errors: list[BaseException] = []
         self._stderr_chunks: list[bytes] = []
         self._stdout_chunks: list[bytes] = []
+        self._started_threads: list[threading.Thread] = []
         self._retained_bytes = 0
 
     @property
@@ -265,6 +266,12 @@ class _CappedPipeCapture:
     @property
     def reader_failed(self) -> bool:
         return self._reader_failed.is_set()
+
+    @property
+    def started_threads(self) -> tuple[threading.Thread, ...]:
+        """Return only readers whose Thread.start() call completed."""
+
+        return tuple(self._started_threads)
 
     def _append(self, chunks: list[bytes], chunk: bytes) -> None:
         with self._lock:
@@ -324,7 +331,9 @@ class _CappedPipeCapture:
             daemon=True,
         )
         stdout_thread.start()
+        self._started_threads.append(stdout_thread)
         stderr_thread.start()
+        self._started_threads.append(stderr_thread)
         return stdout_thread, stderr_thread
 
 
@@ -699,8 +708,6 @@ def _signal_child_process_group(
     failing, explicitly diagnostic outcome.
     """
 
-    if process.poll() is not None:
-        return
     try:
         os.killpg(process.pid, signal_number)
     except ProcessLookupError:
@@ -715,36 +722,131 @@ def _signal_child_process_group(
             return
 
 
-def _stop_child_cooperatively(process: subprocess.Popen[bytes]) -> bool:
-    """Request child cleanup, returning true only if force-kill was needed."""
+def _child_process_group_exists(process: subprocess.Popen[bytes]) -> bool:
+    """Return whether the dedicated runner process group still exists.
+
+    A reaped leader does not prove that browser or relay descendants have
+    exited: a same-group descendant can retain no output pipe at all. Probe
+    the group itself so a normal child result cannot hide that orphan. Hosts
+    that cannot make an authoritative process-group probe fail closed.
+    """
+
+    try:
+        os.killpg(process.pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError as exc:
+        raise M0Error(
+            "cannot verify child runner process-group absence after leader exit"
+        ) from exc
+
+
+def _output_threads_stopped(threads: Sequence[threading.Thread]) -> bool:
+    return not any(thread.is_alive() for thread in threads)
+
+
+def _wait_for_process_and_output(
+    process: subprocess.Popen[bytes],
+    threads: Sequence[threading.Thread],
+    timeout: float,
+) -> bool:
+    """Boundedly wait for the leader, its group, and inherited pipe readers."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if (
+            process.poll() is not None
+            and _output_threads_stopped(threads)
+            and not _child_process_group_exists(process)
+        ):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        alive_threads = [thread for thread in threads if thread.is_alive()]
+        if alive_threads:
+            for thread in alive_threads:
+                thread.join(timeout=min(OUTPUT_POLL_SECONDS, remaining))
+        else:
+            time.sleep(min(OUTPUT_POLL_SECONDS, remaining))
+
+
+def _stop_child_cooperatively(
+    process: subprocess.Popen[bytes], threads: Sequence[threading.Thread]
+) -> bool:
+    """Boundedly stop the runner group and inherited-pipe readers.
+
+    SIGINT is sent to the process group even if its leader has already been
+    reaped. A SIGKILL escalation is failure-only: it cannot prove the cleanup
+    of child-owned browser or relay sessions.
+    """
 
     _signal_child_process_group(process, signal.SIGINT)
-    try:
-        process.wait(timeout=COOPERATIVE_STOP_GRACE_SECONDS)
+    if _wait_for_process_and_output(process, threads, COOPERATIVE_STOP_GRACE_SECONDS):
         return False
-    except subprocess.TimeoutExpired:
-        _signal_child_process_group(process, signal.SIGKILL)
-        try:
-            process.wait(timeout=FORCED_KILL_GRACE_SECONDS)
-        except subprocess.TimeoutExpired as exc:
-            raise M0Error(
-                "child runner did not exit after cooperative SIGINT and "
-                "runner-process-group SIGKILL"
-            ) from exc
-        return True
+    _signal_child_process_group(process, signal.SIGKILL)
+    if not _wait_for_process_and_output(process, threads, FORCED_KILL_GRACE_SECONDS):
+        raise M0Error(
+            "child runner process group or inherited output pipes did not "
+            "exit after cooperative SIGINT and runner-process-group SIGKILL"
+        )
+    return True
 
 
 def _join_output_threads(threads: Sequence[threading.Thread]) -> None:
-    for thread in threads:
-        thread.join(timeout=FORCED_KILL_GRACE_SECONDS)
-    if any(thread.is_alive() for thread in threads):
+    if not _wait_for_output_threads(threads, FORCED_KILL_GRACE_SECONDS):
         raise M0Error("child output pipe did not close after child exit")
+
+
+def _wait_for_output_threads(
+    threads: Sequence[threading.Thread], timeout: float
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        alive_threads = [thread for thread in threads if thread.is_alive()]
+        if not alive_threads:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        for thread in alive_threads:
+            thread.join(timeout=min(OUTPUT_POLL_SECONDS, remaining))
 
 
 def _close_child_pipes(process: subprocess.Popen[bytes]) -> None:
     for stream in (process.stdout, process.stderr):
         if stream is not None:
-            stream.close()
+            try:
+                stream.close()
+            except OSError:
+                # Do not obscure an earlier child or capture failure while
+                # closing local diagnostic pipes.
+                pass
+
+
+def _cleanup_child_failure(
+    process: subprocess.Popen[bytes] | None,
+    threads: Sequence[threading.Thread],
+) -> None:
+    """Best-effort failure cleanup that never hides the primary exception."""
+
+    if process is None:
+        return
+    try:
+        _stop_child_cooperatively(process, threads)
+    except BaseException:
+        # The caller already has a primary failure. A cleanup failure is not
+        # promoted over it; this path never produces successful evidence.
+        pass
+    try:
+        _join_output_threads(threads)
+    except BaseException:
+        pass
+    # A BufferedReader can be mid-read in a live reader thread. Closing it
+    # first can itself block, so close only after bounded reader completion.
+    if _output_threads_stopped(threads):
+        _close_child_pipes(process)
 
 
 def run_child(name: str, command: Sequence[str], timeout: float) -> ChildExecution:
@@ -754,9 +856,10 @@ def run_child(name: str, command: Sequence[str], timeout: float) -> ChildExecuti
     started = time.perf_counter()
     process: subprocess.Popen[bytes] | None = None
     capture: _CappedPipeCapture | None = None
-    reader_threads: tuple[threading.Thread, threading.Thread] | None = None
+    reader_threads: tuple[threading.Thread, ...] | None = None
     interruption_reason: str | None = None
     forced_kill = False
+    group_cleanup_done = False
     try:
         process = subprocess.Popen(
             list(command),
@@ -766,7 +869,13 @@ def run_child(name: str, command: Sequence[str], timeout: float) -> ChildExecuti
             start_new_session=True,
         )
         capture = _CappedPipeCapture(MAX_CHILD_OUTPUT_BYTES)
-        reader_threads = capture.start(process)
+        try:
+            reader_threads = capture.start(process)
+        except BaseException:
+            # If stdout starts and stderr does not, retain only the started
+            # reader for the common failure cleanup path.
+            reader_threads = capture.started_threads
+            raise
         deadline = time.monotonic() + float(timeout) + CHILD_PROCESS_GRACE_SECONDS
         while process.poll() is None:
             if capture.overflowed:
@@ -781,11 +890,21 @@ def run_child(name: str, command: Sequence[str], timeout: float) -> ChildExecuti
             time.sleep(OUTPUT_POLL_SECONDS)
 
         if interruption_reason is not None:
-            forced_kill = _stop_child_cooperatively(process)
+            forced_kill = _stop_child_cooperatively(process, reader_threads)
+            group_cleanup_done = True
         else:
-            process.wait()
-        assert reader_threads is not None
-        _join_output_threads(reader_threads)
+            # A reaped leader alone is insufficient: descendants can retain
+            # neither stdout nor stderr while still occupying the dedicated
+            # runner group. Do not return any success evidence until the group
+            # is absent and every inherited-pipe reader has reached EOF.
+            if not _wait_for_process_and_output(
+                process, reader_threads, FORCED_KILL_GRACE_SECONDS
+            ):
+                interruption_reason = (
+                    "child process group did not exit after leader completion"
+                )
+                forced_kill = _stop_child_cooperatively(process, reader_threads)
+                group_cleanup_done = True
         assert capture is not None
         if interruption_reason is not None:
             if forced_kill:
@@ -805,15 +924,11 @@ def run_child(name: str, command: Sequence[str], timeout: float) -> ChildExecuti
             stderr=stderr,
         )
     except BaseException:
-        if process is not None and process.poll() is None:
-            _stop_child_cooperatively(process)
-        if reader_threads is not None:
-            if process is not None:
-                _close_child_pipes(process)
-            _join_output_threads(reader_threads)
+        if not group_cleanup_done:
+            _cleanup_child_failure(process, reader_threads or ())
         raise
     finally:
-        if process is not None:
+        if process is not None and _output_threads_stopped(reader_threads or ()):
             _close_child_pipes(process)
 
 

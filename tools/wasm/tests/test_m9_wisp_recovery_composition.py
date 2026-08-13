@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
+from typing import Sequence
 import unittest
 from unittest import mock
 
@@ -643,16 +647,112 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
         ):
             composition.run_child("capped output", command, 5.0)
 
+    def test_run_child_returns_only_after_normal_group_and_pipe_completion(self) -> None:
+        execution = composition.run_child(
+            "normal child",
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.stdout.buffer.write(b'normal output\\n'); "
+                    "sys.stderr.buffer.write(b'diagnostic output\\n')"
+                ),
+            ],
+            5.0,
+        )
+
+        self.assertEqual(0, execution.returncode)
+        self.assertEqual("normal output\n", execution.stdout)
+        self.assertEqual("diagnostic output\n", execution.stderr)
+
+    def test_partial_reader_start_preserves_error_and_cleans_started_reader(self) -> None:
+        process = mock.Mock()
+        process.stdout = io.BytesIO()
+        process.stderr = io.BytesIO()
+        process.poll.return_value = None
+        starts = 0
+        started_readers: list[threading.Thread] = []
+        failed_readers: list[threading.Thread] = []
+        joined_readers: list[threading.Thread] = []
+        events: list[str] = []
+        original_start = composition.threading.Thread.start
+        original_join = composition._join_output_threads
+
+        def start_stdout_then_fail_stderr(thread: threading.Thread) -> None:
+            nonlocal starts
+            starts += 1
+            if starts == 2:
+                failed_readers.append(thread)
+                raise RuntimeError("stderr reader did not start")
+            started_readers.append(thread)
+            original_start(thread)
+
+        def fail_group_cleanup(
+            observed_process: object, observed_threads: Sequence[threading.Thread]
+        ) -> None:
+            self.assertIs(process, observed_process)
+            self.assertEqual(tuple(started_readers), tuple(observed_threads))
+            events.append("stop")
+            raise M0Error("cleanup failure")
+
+        def join_started_readers(threads: Sequence[threading.Thread]) -> None:
+            events.append("join")
+            joined_readers.extend(threads)
+            original_join(threads)
+
+        def close_pipes(observed_process: object) -> None:
+            self.assertIs(process, observed_process)
+            events.append("close")
+
+        with (
+            mock.patch.object(composition.subprocess, "Popen", return_value=process),
+            mock.patch.object(
+                composition.threading.Thread,
+                "start",
+                autospec=True,
+                side_effect=start_stdout_then_fail_stderr,
+            ),
+            mock.patch.object(
+                composition,
+                "_stop_child_cooperatively",
+                side_effect=fail_group_cleanup,
+            ) as stop_child,
+            mock.patch.object(
+                composition,
+                "_join_output_threads",
+                side_effect=join_started_readers,
+            ),
+            mock.patch.object(
+                composition,
+                "_close_child_pipes",
+                side_effect=close_pipes,
+            ),
+            self.assertRaisesRegex(RuntimeError, "stderr reader did not start"),
+        ):
+            composition.run_child("partial reader start", ["child"], 1.0)
+
+        stop_child.assert_called_once_with(process, mock.ANY)
+        self.assertEqual(tuple(started_readers), stop_child.call_args.args[1])
+        self.assertEqual(1, len(started_readers))
+        self.assertEqual(1, len(failed_readers))
+        self.assertEqual(started_readers, joined_readers)
+        self.assertNotIn(failed_readers[0], joined_readers)
+        self.assertEqual(["stop", "join", "close"], events[:3])
+
     def test_cooperative_timeout_cleanup_escalates_only_the_runner_group(self) -> None:
         process = mock.Mock()
         process.pid = 1234
-        process.poll.return_value = None
-        process.wait.side_effect = [
-            subprocess.TimeoutExpired(["child"], 1.0),
-            0,
-        ]
-        with mock.patch.object(composition.os, "killpg") as killpg:
-            force_killed = composition._stop_child_cooperatively(process)
+        # The leader can already be reaped while descendants remain in its
+        # process group. Cleanup must still signal that group.
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(composition.os, "killpg") as killpg,
+            mock.patch.object(
+                composition, "_wait_for_process_and_output", side_effect=[False, True]
+            ),
+        ):
+            force_killed = composition._stop_child_cooperatively(process, ())
 
         self.assertTrue(force_killed)
         self.assertEqual(
@@ -666,13 +766,117 @@ class M9WispRecoveryCompositionTest(unittest.TestCase):
     def test_cooperative_timeout_cleanup_allows_child_finally_before_escalation(self) -> None:
         process = mock.Mock()
         process.pid = 1235
-        process.poll.return_value = None
-        process.wait.return_value = 0
-        with mock.patch.object(composition.os, "killpg") as killpg:
-            force_killed = composition._stop_child_cooperatively(process)
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(composition.os, "killpg") as killpg,
+            mock.patch.object(
+                composition, "_wait_for_process_and_output", return_value=True
+            ),
+        ):
+            force_killed = composition._stop_child_cooperatively(process, ())
 
         self.assertFalse(force_killed)
         killpg.assert_called_once_with(1235, signal.SIGINT)
+
+    def test_group_absence_probe_fails_closed_on_permission_error(self) -> None:
+        process = mock.Mock()
+        process.pid = 1236
+        with (
+            mock.patch.object(
+                composition.os, "killpg", side_effect=PermissionError("denied")
+            ),
+            self.assertRaisesRegex(M0Error, "cannot verify child runner process-group"),
+        ):
+            composition._child_process_group_exists(process)
+
+    def test_reaped_leader_pipe_holder_is_force_killed_before_return(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            child_pid_path = Path(temporary_directory) / "child.pid"
+            # The leader exits successfully after starting a same-group child
+            # that ignores SIGINT and retains both inherited output pipes.
+            command = [
+                "/bin/sh",
+                "-c",
+                (
+                    "trap '' INT; (trap '' INT; sleep 60) & "
+                    f"printf '%s' \"$!\" > {child_pid_path}"
+                ),
+            ]
+            try:
+                with (
+                    mock.patch.object(
+                        composition, "FORCED_KILL_GRACE_SECONDS", 0.25
+                    ),
+                    mock.patch.object(
+                        composition, "COOPERATIVE_STOP_GRACE_SECONDS", 0.1
+                    ),
+                    mock.patch.object(composition, "OUTPUT_POLL_SECONDS", 0.01),
+                    self.assertRaisesRegex(
+                        M0Error, "force-killed only the child runner"
+                    ),
+                ):
+                    composition.run_child("reaped pipe holder", command, 1.0)
+                child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                for _ in range(50):
+                    try:
+                        os.kill(child_pid, 0)
+                    except ProcessLookupError:
+                        break
+                    composition.time.sleep(0.01)
+                else:
+                    self.fail("force-killed pipe-holder descendant is still alive")
+            finally:
+                if child_pid_path.exists():
+                    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_reaped_leader_devnull_descendant_cannot_return_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            child_pid_path = Path(temporary_directory) / "child.pid"
+            # This descendant closes both captured pipes. It proves the normal
+            # path also waits for group absence rather than EOF alone.
+            command = [
+                "/bin/sh",
+                "-c",
+                (
+                    "trap '' INT; "
+                    "(trap '' INT; sleep 60 </dev/null >/dev/null 2>&1) & "
+                    f"printf '%s' \"$!\" > {child_pid_path}"
+                ),
+            ]
+            try:
+                with (
+                    mock.patch.object(
+                        composition, "FORCED_KILL_GRACE_SECONDS", 0.25
+                    ),
+                    mock.patch.object(
+                        composition, "COOPERATIVE_STOP_GRACE_SECONDS", 0.1
+                    ),
+                    mock.patch.object(composition, "OUTPUT_POLL_SECONDS", 0.01),
+                    self.assertRaisesRegex(
+                        M0Error, "force-killed only the child runner"
+                    ),
+                ):
+                    composition.run_child("reaped devnull descendant", command, 1.0)
+                child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                for _ in range(50):
+                    try:
+                        os.kill(child_pid, 0)
+                    except ProcessLookupError:
+                        break
+                    composition.time.sleep(0.01)
+                else:
+                    self.fail("force-killed devnull descendant is still alive")
+            finally:
+                if child_pid_path.exists():
+                    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_bounded_failure_diagnostics_omit_child_output_and_keep_nonrelease_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
