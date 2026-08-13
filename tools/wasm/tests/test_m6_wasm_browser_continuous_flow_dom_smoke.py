@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Callable
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -412,6 +413,7 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
         operational_error: BaseException | None = None,
         abort_browser_error: BaseException | None = None,
         abort_relay_error: BaseException | None = None,
+        before_compare: Callable[[], None] | None = None,
     ) -> tuple[int, str, str, dict[str, mock.Mock]]:
         """Run the post-launch path without a real server, relay, or Chrome."""
 
@@ -437,6 +439,11 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
         comparison.matches = True
         comparison.as_dict.return_value = {"matches": True}
 
+        def validate_flow(*_args: object, **_kwargs: object) -> bytes:
+            if before_compare is not None:
+                before_compare()
+            return b"png"
+
         stop_browser = mock.Mock(side_effect=browser_cleanup_error)
         stop_relay = mock.Mock(side_effect=relay_cleanup_error)
         cleanup_server = mock.Mock(return_value=server_cleanup_error)
@@ -461,6 +468,7 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
             "abort_relay": abort_relay,
             "wait_for_client": wait_for_client,
             "dispatch_address": dispatch_address,
+            "compare_screenshots": mock.Mock(return_value=comparison),
         }
 
         patches = (
@@ -518,8 +526,10 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
             mock.patch.object(
                 smoke, "wait_for_phase_result", side_effect=({"flow": True}, {"restart": True})
             ),
-            mock.patch.object(smoke, "validate_flow_result", return_value=b"png"),
-            mock.patch.object(smoke, "compare_screenshots", return_value=comparison),
+            mock.patch.object(smoke, "validate_flow_result", side_effect=validate_flow),
+            mock.patch.object(
+                smoke, "compare_screenshots", dependencies["compare_screenshots"]
+            ),
             mock.patch.object(smoke, "validate_restart_result"),
             mock.patch.object(
                 smoke.controlled_https, "fetch_relay_status", return_value={}
@@ -926,6 +936,72 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
         server.server_close.assert_called_once_with()
         thread.assert_not_called()
         find_browser.assert_not_called()
+
+    def test_main_compares_prelaunch_baseline_snapshot_after_disk_mutation(self) -> None:
+        """The browser run cannot replace the reviewed PNG used for comparison."""
+
+        baseline_a = b"reviewed baseline before launch"
+        baseline_b = b"replacement baseline after launch"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            contract_path = (
+                Path(temporary_directory)
+                / "m6_controlled_https_screenshot_contract.json"
+            )
+            baseline_path = contract_path.with_name(
+                "m6_controlled_https_browser_baseline.png"
+            )
+            baseline_path.write_bytes(baseline_a)
+
+            def mutate_baseline_before_compare() -> None:
+                baseline_path.write_bytes(baseline_b)
+
+            with mock.patch.object(
+                smoke, "CONTROLLED_HTTPS_SCREENSHOT_CONTRACT", contract_path
+            ):
+                result, _stdout, _stderr, dependencies = self._run_main_with_cleanup_fakes(
+                    before_compare=mutate_baseline_before_compare
+                )
+            self.assertEqual(baseline_b, baseline_path.read_bytes())
+
+        self.assertEqual(0, result)
+        compare = dependencies["compare_screenshots"]
+        compare.assert_called_once()
+        self.assertEqual(b"png", compare.call_args.args[0])
+        self.assertEqual(baseline_a, compare.call_args.args[1])
+        self.assertNotEqual(baseline_b, compare.call_args.args[1])
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX named pipes")
+    def test_snapshot_reviewed_baseline_rejects_non_regular_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            baseline_path = Path(temporary_directory) / "baseline.png"
+            os.mkfifo(baseline_path)
+            with self.assertRaisesRegex(M0Error, "must be a regular file"):
+                smoke._snapshot_reviewed_screenshot_baseline(baseline_path)
+
+    def test_snapshot_reviewed_baseline_rejects_empty_and_oversized_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            baseline_path = Path(temporary_directory) / "baseline.png"
+            for name, contents in (
+                ("empty", b""),
+                ("oversized", b"x" * (smoke.MAX_SCREENSHOT_BYTES + 1)),
+            ):
+                with self.subTest(name=name):
+                    baseline_path.write_bytes(contents)
+                    with self.assertRaisesRegex(M0Error, "baseline is invalid"):
+                        smoke._snapshot_reviewed_screenshot_baseline(baseline_path)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symbolic links")
+    def test_snapshot_reviewed_baseline_rejects_symlink_substitution(self) -> None:
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("host cannot reject final-component symlinks")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "reviewed.png"
+            baseline_path = root / "baseline.png"
+            target.write_bytes(b"reviewed baseline")
+            baseline_path.symlink_to(target)
+            with self.assertRaises(M0Error):
+                smoke._snapshot_reviewed_screenshot_baseline(baseline_path)
 
     def test_main_cleanup_failures_suppress_every_success_record(self) -> None:
         """A completed observation is not a pass until every owned cleanup succeeds."""

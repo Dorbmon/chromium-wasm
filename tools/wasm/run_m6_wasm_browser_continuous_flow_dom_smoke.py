@@ -30,6 +30,7 @@ import queue
 import re
 import secrets
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -301,6 +302,55 @@ def _read_snapshot(path: Path, description: str) -> bytes:
         raise M0Error(f"cannot snapshot continuous-flow {description}: {error}") from error
     if not contents or len(contents) > MAX_SNAPSHOT_BYTES:
         raise M0Error(f"continuous-flow {description} snapshot is invalid")
+    return contents
+
+
+def _snapshot_reviewed_screenshot_baseline(path: Path) -> bytes:
+    """Capture the one reviewed PNG used by this child before it launches.
+
+    A bounded read makes the comparison input independent of later filesystem
+    changes while the browser, relay, and host server are running.  The PNG
+    decoder and comparison retain responsibility for the established visual
+    contract validation at comparison time.
+    """
+
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NONBLOCK", 0)
+            # Reject final-component symlink substitution on hosts that can
+            # enforce it at open time.
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_metadata.st_mode):
+            raise M0Error(
+                "reviewed controlled-HTTPS screenshot baseline must be a regular file"
+            )
+        if opened_metadata.st_size <= 0 or opened_metadata.st_size > MAX_SCREENSHOT_BYTES:
+            raise M0Error("reviewed controlled-HTTPS screenshot baseline is invalid")
+        with os.fdopen(descriptor, "rb") as baseline_file:
+            descriptor = -1
+            contents = baseline_file.read(MAX_SCREENSHOT_BYTES + 1)
+    except FileNotFoundError as error:
+        raise M0Error(
+            f"reviewed controlled-HTTPS screenshot baseline is missing: {path}"
+        ) from error
+    except OSError as error:
+        raise M0Error(
+            f"cannot snapshot reviewed controlled-HTTPS screenshot baseline: {error}"
+        ) from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        type(contents) is not bytes
+        or not contents
+        or len(contents) > MAX_SCREENSHOT_BYTES
+    ):
+        raise M0Error("reviewed controlled-HTTPS screenshot baseline is invalid")
     return contents
 
 
@@ -1438,8 +1488,8 @@ def main() -> int:
         baseline_path = CONTROLLED_HTTPS_SCREENSHOT_CONTRACT.with_name(
             str(screenshot_contract["baseline"])
         )
-        if not baseline_path.is_file():
-            raise M0Error(f"reviewed controlled-HTTPS screenshot baseline is missing: {baseline_path}")
+        stage = "snapshot_reviewed_baseline"
+        baseline_png = _snapshot_reviewed_screenshot_baseline(baseline_path)
 
         stage = "load_manifest"
         manifest = load_manifest()
@@ -1624,7 +1674,7 @@ def main() -> int:
         stage = "compare_reviewed_baseline"
         comparison = compare_screenshots(
             actual_png,
-            baseline_path.read_bytes(),
+            baseline_png,
             channel_tolerance=int(screenshot_contract["channel_tolerance"]),
             maximum_different_pixel_ratio=float(
                 screenshot_contract["maximum_different_pixel_ratio"]
