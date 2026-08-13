@@ -15,11 +15,13 @@ import json
 import os
 from pathlib import Path
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
+import zlib
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -51,6 +53,28 @@ NORMAL_ARTIFACT_IDENTITY = {
     "module_name": runner.DEFAULT_NORMAL_MODULE_NAME,
     "wasm": {"bytes": 20, "sha256": "e" * 64},
 }
+
+
+def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(payload))
+        + chunk_type
+        + payload
+        + struct.pack(">I", zlib.crc32(chunk_type + payload) & 0xFFFFFFFF)
+    )
+
+
+def _solid_rgba_png(width: int, height: int, pixel: bytes) -> bytes:
+    if len(pixel) != 4:
+        raise ValueError("pixel must be one RGBA value")
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    rows = (b"\x00" + pixel * width) * height
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", zlib.compress(rows, level=9))
+        + _png_chunk(b"IEND", b"")
+    )
 
 
 def normal_execution(
@@ -130,6 +154,14 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             (out_dir / f"{module}.js").write_text("loader", encoding="utf-8")
             (out_dir / f"{module}.wasm").write_bytes(b"wasm")
         return temporary, out_dir
+
+    def _retained_screenshot_policy(
+        self,
+    ) -> tuple[dict[str, object], bytes, dict[str, object]]:
+        contract, baseline_png, identity = (
+            runner._snapshot_controlled_screenshot_policy()
+        )
+        return contract, baseline_png, identity
 
     def test_normal_child_requires_unique_markers_and_summary_schema(self) -> None:
         result = runner.validate_normal_lifecycle_execution(
@@ -321,6 +353,141 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             validate_restart.call_args.kwargs["expected_artifact_identity"],
         )
 
+    def test_controlled_flow_uses_one_retained_parent_visual_policy(self) -> None:
+        contract, baseline_png, policy_identity = self._retained_screenshot_policy()
+        expected_artifact_identity = copy.deepcopy(ARTIFACT_IDENTITY)
+        with (
+            mock.patch.object(
+                runner.continuous_flow.controlled_https,
+                "load_controlled_https_screenshot_contract",
+            ) as load_contract,
+            mock.patch.object(
+                runner.continuous_flow,
+                "validate_flow_result",
+                return_value=baseline_png,
+            ) as validate_flow,
+            mock.patch.object(runner.continuous_flow, "validate_restart_result"),
+        ):
+            result = runner.validate_controlled_flow_execution(
+                flow_execution(),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_artifact_identity=expected_artifact_identity,
+                screenshot_contract=contract,
+                screenshot_baseline_png=baseline_png,
+                expected_screenshot_policy_identity=policy_identity,
+            )
+
+        load_contract.assert_not_called()
+        self.assertEqual(policy_identity, result["screenshotPolicy"])
+        self.assertIs(contract, validate_flow.call_args.kwargs["screenshot_contract"])
+        self.assertEqual(
+            expected_artifact_identity,
+            validate_flow.call_args.kwargs["expected_artifact_identity"],
+        )
+
+    def test_screenshot_policy_identity_requires_exact_schema_and_snapshot(self) -> None:
+        identity = runner.screenshot_policy_identity(b'{"contract":1}', b"baseline")
+        self.assertEqual(
+            {
+                "contract": {
+                    "bytes": len(b'{"contract":1}'),
+                    "sha256": hashlib.sha256(b'{"contract":1}').hexdigest(),
+                },
+                "baseline": {
+                    "bytes": len(b"baseline"),
+                    "sha256": hashlib.sha256(b"baseline").hexdigest(),
+                },
+            },
+            identity,
+        )
+        cases = (
+            ("missing section", lambda value: value.pop("baseline")),
+            ("extra section", lambda value: value.__setitem__("extra", {})),
+            (
+                "missing byte field",
+                lambda value: value["contract"].pop("sha256"),
+            ),
+            (
+                "boolean byte count",
+                lambda value: value["baseline"].__setitem__("bytes", True),
+            ),
+            (
+                "upper-case digest",
+                lambda value: value["contract"].__setitem__("sha256", "A" * 64),
+            ),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                malformed = copy.deepcopy(identity)
+                mutate(malformed)
+                with self.assertRaisesRegex(M0Error, "policy identity is invalid"):
+                    runner.validate_screenshot_policy_identity(malformed)
+
+        drifted = copy.deepcopy(identity)
+        drifted["baseline"]["sha256"] = "f" * 64
+        with self.assertRaisesRegex(M0Error, "retained M9 snapshot"):
+            runner.validate_screenshot_policy_identity(
+                drifted, expected_screenshot_policy_identity=identity
+            )
+
+    def test_snapshot_retained_policy_requires_exact_contract_schema(self) -> None:
+        contract, baseline_png, identity = self._retained_screenshot_policy()
+        canonical_contract = json.dumps(
+            contract,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        self.assertEqual(
+            {
+                "bytes": len(canonical_contract),
+                "sha256": hashlib.sha256(canonical_contract).hexdigest(),
+            },
+            identity["contract"],
+        )
+        self.assertEqual(
+            {
+                "bytes": len(baseline_png),
+                "sha256": hashlib.sha256(baseline_png).hexdigest(),
+            },
+            identity["baseline"],
+        )
+        cases = (
+            ("missing field", lambda value: value.pop("comparison")),
+            ("extra field", lambda value: value.__setitem__("extra", "field")),
+            (
+                "boolean schema version",
+                lambda value: value.__setitem__("schema_version", True),
+            ),
+            (
+                "boolean dimension",
+                lambda value: value.__setitem__("width", True),
+            ),
+            (
+                "bad baseline name",
+                lambda value: value.__setitem__("baseline", "../baseline.png"),
+            ),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                malformed = copy.deepcopy(contract)
+                mutate(malformed)
+                with (
+                    mock.patch.object(
+                        runner.continuous_flow.controlled_https,
+                        "load_controlled_https_screenshot_contract",
+                        return_value=malformed,
+                    ),
+                    mock.patch.object(
+                        runner.continuous_flow,
+                        "_snapshot_reviewed_screenshot_baseline",
+                    ) as snapshot_baseline,
+                    self.assertRaisesRegex(M0Error, "screenshot contract is invalid"),
+                ):
+                    runner._snapshot_controlled_screenshot_policy()
+                snapshot_baseline.assert_not_called()
+
     def test_controlled_flow_rejects_disagreeing_restart_provenance(self) -> None:
         mismatched = dict(VERSIONS)
         mismatched["port"] = "other-port"
@@ -382,7 +549,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         executions: list[tuple[str, int, list[str], float]] = []
         normal_validation_inputs: list[tuple[str, object]] = []
-        controlled_flow_validation_inputs: list[tuple[str, object]] = []
+        controlled_flow_validation_inputs: list[
+            tuple[str, object, object, object, object]
+        ] = []
 
         def fake_run_child(
             name: str, cycle: int, command: list[str], timeout: float
@@ -414,17 +583,27 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             *,
             expected_module_name: str,
             expected_artifact_identity: dict[str, object] | None,
+            screenshot_contract: dict[str, object],
+            screenshot_baseline_png: bytes,
+            expected_screenshot_policy_identity: dict[str, object],
         ) -> dict[str, object]:
             self.assertEqual(
                 runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME, expected_module_name
             )
             controlled_flow_validation_inputs.append(
-                (expected_module_name, copy.deepcopy(expected_artifact_identity))
+                (
+                    expected_module_name,
+                    copy.deepcopy(expected_artifact_identity),
+                    screenshot_contract,
+                    screenshot_baseline_png,
+                    copy.deepcopy(expected_screenshot_policy_identity),
+                )
             )
             return {
                 "cycle": execution.cycle,
                 "artifact": copy.deepcopy(ARTIFACT_IDENTITY),
                 "elapsedMs": 10.0 * execution.cycle,
+                "screenshotPolicy": copy.deepcopy(expected_screenshot_policy_identity),
             }
 
         with (
@@ -435,6 +614,14 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             mock.patch.object(
                 runner, "validate_controlled_flow_execution", side_effect=fake_flow
             ),
+            mock.patch.object(
+                runner.continuous_flow.controlled_https,
+                "load_controlled_https_screenshot_contract",
+                wraps=(
+                    runner.continuous_flow.controlled_https
+                    .load_controlled_https_screenshot_contract
+                ),
+            ) as load_contract,
         ):
             result = runner.run_reliability(
                 out_dir=out_dir,
@@ -481,14 +668,36 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         )
         self.assertEqual(
             [
-                (runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME, None),
+                (
+                    runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                    None,
+                    controlled_flow_validation_inputs[0][2],
+                    controlled_flow_validation_inputs[0][3],
+                    controlled_flow_validation_inputs[0][4],
+                ),
                 (
                     runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
                     ARTIFACT_IDENTITY,
+                    controlled_flow_validation_inputs[0][2],
+                    controlled_flow_validation_inputs[0][3],
+                    controlled_flow_validation_inputs[0][4],
                 ),
             ],
             controlled_flow_validation_inputs,
         )
+        self.assertIs(
+            controlled_flow_validation_inputs[0][2],
+            controlled_flow_validation_inputs[1][2],
+        )
+        self.assertIs(
+            controlled_flow_validation_inputs[0][3],
+            controlled_flow_validation_inputs[1][3],
+        )
+        self.assertEqual(
+            controlled_flow_validation_inputs[0][4],
+            result["controlledFlow"]["screenshotPolicy"],
+        )
+        load_contract.assert_called_once_with()
         normal_commands = [record[2] for record in executions[:3]]
         self.assertTrue(
             all(
@@ -509,6 +718,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
     def test_controlled_flow_artifact_drift_stops_before_later_cycles(self) -> None:
         temporary, out_dir = self._make_out_dir()
         self.addCleanup(temporary.cleanup)
+        screenshot_contract, baseline_png, screenshot_policy = (
+            self._retained_screenshot_policy()
+        )
         substituted = copy.deepcopy(ARTIFACT_IDENTITY)
         substituted["wasm"] = {"bytes": 21, "sha256": "c" * 64}
         child_names: list[tuple[str, int]] = []
@@ -532,12 +744,18 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         with (
             mock.patch.object(runner, "run_child", side_effect=fake_run_child),
             mock.patch.object(
-                runner.continuous_flow.controlled_https,
-                "load_controlled_https_screenshot_contract",
-                return_value={"contract": "test"},
-            ) as load_contract,
+                runner,
+                "_snapshot_controlled_screenshot_policy",
+                return_value=(
+                    screenshot_contract,
+                    baseline_png,
+                    screenshot_policy,
+                ),
+            ) as snapshot_policy,
             mock.patch.object(
-                runner.continuous_flow, "validate_flow_result"
+                runner.continuous_flow,
+                "validate_flow_result",
+                return_value=baseline_png,
             ) as validate_flow,
             mock.patch.object(
                 runner.continuous_flow, "validate_restart_result"
@@ -569,9 +787,94 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             ],
             child_names,
         )
-        load_contract.assert_called_once_with()
+        snapshot_policy.assert_called_once_with()
         validate_flow.assert_called_once()
         validate_restart.assert_called_once()
+
+    def test_retained_visual_policy_rejects_cycle_two_drift_before_cycle_three(
+        self,
+    ) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        screenshot_contract, baseline_png, screenshot_policy = (
+            self._retained_screenshot_policy()
+        )
+        drifted_png = _solid_rgba_png(640, 480, bytes((255, 0, 0, 255)))
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del command, timeout
+            child_names.append((name, cycle))
+            if name == "normal lifecycle":
+                return normal_execution(cycle)
+            return flow_execution(cycle)
+
+        # The second PNG represents a child that could have accepted a later
+        # on-disk policy. M9 must still compare it to policy A, retained before
+        # its first controlled child, and never reach cycle three.
+        with (
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            mock.patch.object(
+                runner,
+                "_snapshot_controlled_screenshot_policy",
+                return_value=(
+                    screenshot_contract,
+                    baseline_png,
+                    screenshot_policy,
+                ),
+            ) as snapshot_policy,
+            mock.patch.object(
+                runner.continuous_flow,
+                "validate_flow_result",
+                side_effect=(baseline_png, drifted_png),
+            ) as validate_flow,
+            mock.patch.object(
+                runner.continuous_flow,
+                "validate_restart_result",
+            ) as validate_restart,
+            mock.patch.object(
+                runner.continuous_flow.controlled_https,
+                "load_controlled_https_screenshot_contract",
+            ) as load_contract,
+        ):
+            with self.assertRaisesRegex(M0Error, "retained M9 reviewed baseline"):
+                runner.run_reliability(
+                    out_dir=out_dir,
+                    normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    controlled_flow_module_name=(
+                        runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    ),
+                    normal_lifecycle_iterations=1,
+                    controlled_flow_iterations=3,
+                    normal_timeout=7.0,
+                    controlled_flow_timeout=11.0,
+                    diagnostics_dir=out_dir / "diagnostics",
+                    browser=None,
+                    node=None,
+                    relay_script=None,
+                    no_sandbox=False,
+                )
+
+        self.assertEqual(
+            [
+                ("normal lifecycle", 1),
+                ("controlled flow", 1),
+                ("controlled flow", 2),
+            ],
+            child_names,
+        )
+        snapshot_policy.assert_called_once_with()
+        load_contract.assert_not_called()
+        self.assertEqual(2, validate_flow.call_count)
+        self.assertEqual(2, validate_restart.call_count)
+        self.assertTrue(
+            all(
+                call.kwargs["screenshot_contract"] is screenshot_contract
+                for call in validate_flow.call_args_list
+            )
+        )
 
     def test_artifact_and_module_validation_fail_before_a_child_starts(self) -> None:
         temporary, out_dir = self._make_out_dir()

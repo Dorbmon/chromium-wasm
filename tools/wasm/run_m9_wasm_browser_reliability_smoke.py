@@ -68,7 +68,26 @@ OUTPUT_READ_CHUNK_BYTES = 64 * 1024
 MAX_CHILD_OUTPUT_BYTES = 12 * 1024 * 1024
 MAX_FAILURE_MESSAGE_CHARS = 2048
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 NORMAL_RESULT_PREFIX = f"{normal_lifecycle.SENTINEL}:NODE_RESULT "
+MAX_SCREENSHOT_POLICY_CONTRACT_BYTES = 64 * 1024
+_SNAPSHOT_BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
+_SCREENSHOT_POLICY_IDENTITY_FIELDS = frozenset(("baseline", "contract"))
+_SCREENSHOT_CONTRACT_FIELDS = frozenset(
+    (
+        "schema_version",
+        "fixture",
+        "gateway_url",
+        "baseline",
+        "baseline_policy",
+        "visual_strategy",
+        "width",
+        "height",
+        "channel_tolerance",
+        "maximum_different_pixel_ratio",
+        "comparison",
+    )
+)
 
 LIMITATIONS = (
     "does_not_measure_same_instance_tab_or_navigation_churn",
@@ -311,6 +330,178 @@ def _require_positive_int(value: object, description: str) -> int:
     return value
 
 
+def _canonical_screenshot_contract_bytes(contract: object) -> bytes:
+    """Encode the validated visual contract into one stable byte sequence."""
+
+    if not isinstance(contract, dict):
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    try:
+        canonical = json.dumps(
+            contract,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise M0Error("controlled-flow screenshot contract is invalid") from error
+    if not canonical or len(canonical) > MAX_SCREENSHOT_POLICY_CONTRACT_BYTES:
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    return canonical
+
+
+def _validate_retained_screenshot_contract(value: object) -> dict[str, Any]:
+    """Require the exact M6 visual contract before M9 retains its bytes."""
+
+    if not isinstance(value, dict) or set(value) != _SCREENSHOT_CONTRACT_FIELDS:
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    if (
+        type(value.get("schema_version")) is not int
+        or value.get("schema_version") != 1
+        or value.get("fixture") != "chromium-wasm-m6-controlled-https-v1"
+        or value.get("gateway_url")
+        != continuous_flow.controlled_https.GATEWAY_FIXTURE_URL
+    ):
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    baseline = value.get("baseline")
+    if (
+        type(baseline) is not str
+        or not baseline
+        or "\x00" in baseline
+        or Path(baseline).name != baseline
+        or Path(baseline).suffix != ".png"
+    ):
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    for field in ("baseline_policy", "visual_strategy", "comparison"):
+        if type(value.get(field)) is not str or not value[field]:
+            raise M0Error("controlled-flow screenshot contract is invalid")
+    if type(value.get("width")) is not int or value["width"] != 640:
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    if type(value.get("height")) is not int or value["height"] != 480:
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    tolerance = value.get("channel_tolerance")
+    ratio = value.get("maximum_different_pixel_ratio")
+    if (
+        type(tolerance) is not int
+        or not 0 <= tolerance <= 255
+        or isinstance(ratio, bool)
+        or not isinstance(ratio, (int, float))
+        or not math.isfinite(float(ratio))
+        or not 0 <= float(ratio) <= 1
+    ):
+        raise M0Error("controlled-flow screenshot contract is invalid")
+    return dict(value)
+
+
+def _snapshot_byte_identity(contents: object, description: str) -> dict[str, object]:
+    if type(contents) is not bytes or not contents:
+        raise M0Error(f"controlled-flow screenshot {description} is invalid")
+    return {
+        "bytes": len(contents),
+        "sha256": hashlib.sha256(contents).hexdigest(),
+    }
+
+
+def screenshot_policy_identity(
+    contract_bytes: object, baseline_png: object
+) -> dict[str, object]:
+    """Return the compact identity for one M9-held visual acceptance policy.
+
+    This is an identity for the parent runner's retained comparison inputs. It
+    is intentionally not an artifact-provenance or release assertion.
+    """
+
+    identity = {
+        "contract": _snapshot_byte_identity(contract_bytes, "contract"),
+        "baseline": _snapshot_byte_identity(baseline_png, "baseline"),
+    }
+    return validate_screenshot_policy_identity(identity)
+
+
+def validate_screenshot_policy_identity(
+    value: object,
+    *,
+    expected_screenshot_policy_identity: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Validate exact screenshot-policy identity shape and optional equality."""
+
+    if not isinstance(value, dict) or set(value) != _SCREENSHOT_POLICY_IDENTITY_FIELDS:
+        raise M0Error("controlled-flow screenshot policy identity is invalid")
+    normalized: dict[str, object] = {}
+    for name in sorted(_SCREENSHOT_POLICY_IDENTITY_FIELDS):
+        snapshot = value.get(name)
+        if not isinstance(snapshot, dict) or set(snapshot) != _SNAPSHOT_BYTE_IDENTITY_FIELDS:
+            raise M0Error("controlled-flow screenshot policy identity is invalid")
+        byte_count = snapshot.get("bytes")
+        digest = snapshot.get("sha256")
+        if (
+            type(byte_count) is not int
+            or byte_count < 1
+            or type(digest) is not str
+            or SHA256_RE.fullmatch(digest) is None
+        ):
+            raise M0Error("controlled-flow screenshot policy identity is invalid")
+        normalized[name] = {"bytes": byte_count, "sha256": digest}
+    if expected_screenshot_policy_identity is not None:
+        expected = validate_screenshot_policy_identity(
+            expected_screenshot_policy_identity
+        )
+        if normalized != expected:
+            raise M0Error(
+                "controlled-flow screenshot policy identity disagrees with the "
+                "retained M9 snapshot"
+            )
+    return normalized
+
+
+def _snapshot_controlled_screenshot_policy(
+) -> tuple[dict[str, Any], bytes, dict[str, object]]:
+    """Capture and validate the one M9 visual policy before any flow child.
+
+    The controlled-flow child still owns its single-run checks. M9's aggregate
+    acceptance instead retains these canonical contract bytes and reviewed PNG
+    bytes once, then uses them for every independently launched child. No
+    later child result causes a policy or baseline reread from disk.
+    """
+
+    loaded_contract = (
+        continuous_flow.controlled_https.load_controlled_https_screenshot_contract()
+    )
+    contract_bytes = _canonical_screenshot_contract_bytes(
+        _validate_retained_screenshot_contract(loaded_contract)
+    )
+    try:
+        contract = json.loads(contract_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise M0Error("controlled-flow screenshot contract is invalid") from error
+    contract = _validate_retained_screenshot_contract(contract)
+    baseline_path = continuous_flow.CONTROLLED_HTTPS_SCREENSHOT_CONTRACT.with_name(
+        contract["baseline"]
+    )
+    baseline_png = continuous_flow._snapshot_reviewed_screenshot_baseline(
+        baseline_path
+    )
+    try:
+        baseline = continuous_flow.decode_png(baseline_png)
+    except (M0Error, TypeError) as error:
+        raise M0Error(
+            "controlled-flow screenshot baseline snapshot is invalid"
+        ) from error
+    if (
+        baseline.width != contract.get("width")
+        or baseline.height != contract.get("height")
+    ):
+        raise M0Error(
+            "controlled-flow screenshot baseline dimensions disagree with the "
+            "retained contract"
+        )
+    return (
+        contract,
+        baseline_png,
+        screenshot_policy_identity(contract_bytes, baseline_png),
+    )
+
+
 def validate_normal_lifecycle_execution(
     execution: ChildExecution,
     *,
@@ -429,8 +620,16 @@ def validate_controlled_flow_execution(
     *,
     expected_module_name: str,
     expected_artifact_identity: dict[str, object] | None = None,
+    screenshot_contract: dict[str, Any] | None = None,
+    screenshot_baseline_png: bytes | None = None,
+    expected_screenshot_policy_identity: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Validate one fresh real-browser controlled-flow child result."""
+    """Validate one fresh real-browser controlled-flow child result.
+
+    M9 callers provide one retained contract, reviewed PNG, and compact policy
+    identity for every cycle. Standalone callers may omit them and retain the
+    existing M6-only structural validation behavior.
+    """
     _require_module_name(expected_module_name, "controlled flow module name")
     output = _validated_child_output(execution)
     _require_exact_marker(
@@ -478,10 +677,44 @@ def validate_controlled_flow_execution(
         )
     except M0Error as error:
         raise M0Error("controlled flow and restart artifact identities disagree") from error
-    screenshot_contract = (
-        continuous_flow.controlled_https.load_controlled_https_screenshot_contract()
-    )
-    continuous_flow.validate_flow_result(
+    if screenshot_contract is None:
+        if (
+            screenshot_baseline_png is not None
+            or expected_screenshot_policy_identity is not None
+        ):
+            raise M0Error(
+                "controlled-flow retained screenshot policy is missing its contract"
+            )
+        screenshot_contract = (
+            continuous_flow.controlled_https.load_controlled_https_screenshot_contract()
+        )
+    elif (
+        screenshot_baseline_png is None
+        or expected_screenshot_policy_identity is None
+    ):
+        raise M0Error(
+            "controlled-flow retained screenshot policy is missing its baseline "
+            "or identity"
+        )
+
+    screenshot_policy: dict[str, object] | None = None
+    if screenshot_baseline_png is not None:
+        expected_contract_bytes = _canonical_screenshot_contract_bytes(
+            screenshot_contract
+        )
+        screenshot_policy = screenshot_policy_identity(
+            expected_contract_bytes, screenshot_baseline_png
+        )
+        if expected_screenshot_policy_identity is None:
+            raise M0Error(
+                "controlled-flow retained screenshot policy is missing its identity"
+            )
+        validate_screenshot_policy_identity(
+            screenshot_policy,
+            expected_screenshot_policy_identity=expected_screenshot_policy_identity,
+        )
+
+    actual_png = continuous_flow.validate_flow_result(
         flow_result,
         expected_versions=versions,
         expected_artifact_identity=validation_artifact_identity,
@@ -496,7 +729,7 @@ def validate_controlled_flow_execution(
     restart_frames = restart_result.get("frameReports")
     if not isinstance(frames, list) or not isinstance(restart_frames, list):
         raise M0Error("controlled flow reports invalid frame evidence")
-    return {
+    validated = {
         "cycle": execution.cycle,
         "child": _child_evidence(
             execution,
@@ -523,6 +756,27 @@ def validate_controlled_flow_execution(
         "controlledReload": True,
         "controlledTabLifecycle": True,
     }
+    if screenshot_baseline_png is not None:
+        if screenshot_policy is None:
+            raise M0Error("controlled-flow retained screenshot policy is invalid")
+        comparison = continuous_flow.compare_screenshots(
+            actual_png,
+            screenshot_baseline_png,
+            channel_tolerance=int(screenshot_contract["channel_tolerance"]),
+            maximum_different_pixel_ratio=float(
+                screenshot_contract["maximum_different_pixel_ratio"]
+            ),
+        )
+        if not comparison.matches:
+            raise M0Error(
+                "controlled-flow screenshot differs from the retained M9 reviewed "
+                "baseline: "
+                + json.dumps(comparison.as_dict(), sort_keys=True, separators=(",", ":"))
+            )
+        # This denotes the M9 parent's comparison inputs, not a policy
+        # self-reported by the independently launched child.
+        validated["screenshotPolicy"] = screenshot_policy
+    return validated
 
 
 def normal_lifecycle_command(
@@ -887,6 +1141,14 @@ def run_reliability(
             normal_artifact_identity = copy.deepcopy(normal_cycle["artifact"])
         normal_cycles.append(normal_cycle)
 
+    # Capture the visual policy before the first controlled-flow child starts.
+    # Every later validation receives only these retained in-memory inputs.
+    (
+        flow_screenshot_contract,
+        flow_screenshot_baseline_png,
+        flow_screenshot_policy_identity,
+    ) = _snapshot_controlled_screenshot_policy()
+
     flow_cycles: list[dict[str, object]] = []
     flow_artifact_identity: dict[str, object] | None = None
     for cycle in range(1, controlled_flow_iterations + 1):
@@ -909,7 +1171,20 @@ def run_reliability(
             execution,
             expected_module_name=controlled_flow_module_name,
             expected_artifact_identity=flow_artifact_identity,
+            screenshot_contract=flow_screenshot_contract,
+            screenshot_baseline_png=flow_screenshot_baseline_png,
+            expected_screenshot_policy_identity=flow_screenshot_policy_identity,
         )
+        try:
+            validate_screenshot_policy_identity(
+                flow_cycle.get("screenshotPolicy"),
+                expected_screenshot_policy_identity=flow_screenshot_policy_identity,
+            )
+        except M0Error as error:
+            raise M0Error(
+                "controlled-flow cycle does not retain the M9 screenshot policy "
+                "identity"
+            ) from error
         if flow_artifact_identity is None:
             flow_artifact_identity = copy.deepcopy(flow_cycle["artifact"])
         flow_cycles.append(flow_cycle)
@@ -934,6 +1209,9 @@ def run_reliability(
             "kind": "fresh-real-host-browser-profile-and-outer-restart",
             "requestedCycles": controlled_flow_iterations,
             "controlledHttpsNavigation": True,
+            # This identity names only the M9 parent-held comparison inputs.
+            # It does not establish source provenance or release readiness.
+            "screenshotPolicy": flow_screenshot_policy_identity,
         }
     )
     return {
