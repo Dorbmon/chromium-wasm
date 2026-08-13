@@ -26,8 +26,9 @@ import time
 from typing import Callable
 import unittest
 from unittest import mock
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urlsplit
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -54,6 +55,12 @@ ARTIFACT_IDENTITY = {
     "loader": {"bytes": 10, "sha256": "a" * 64},
     "module_name": smoke.DEFAULT_MODULE_NAME,
     "wasm": {"bytes": 20, "sha256": "b" * 64},
+}
+HOST_RESOURCE_IDENTITY = {
+    "host_html": {"bytes": 11, "sha256": "c" * 64},
+    "host_js": {"bytes": 12, "sha256": "d" * 64},
+    "text_input_js": {"bytes": 13, "sha256": "e" * 64},
+    "pointer_input_js": {"bytes": 14, "sha256": "f" * 64},
 }
 
 
@@ -261,6 +268,7 @@ def flow_result() -> dict[str, object]:
         "unhandledRejections": [],
         "versions": copy.deepcopy(VERSIONS),
         "artifact": copy.deepcopy(ARTIFACT_IDENTITY),
+        "hostResources": copy.deepcopy(HOST_RESOURCE_IDENTITY),
         "frameReports": [
             {"id": index, "width": 640, "height": 480, "timestampMs": float(index)}
             for index in range(1, 30)
@@ -353,6 +361,7 @@ def restart_result() -> dict[str, object]:
         "unhandledRejections": [],
         "versions": copy.deepcopy(VERSIONS),
         "artifact": copy.deepcopy(ARTIFACT_IDENTITY),
+        "hostResources": copy.deepcopy(HOST_RESOURCE_IDENTITY),
         "continuousFlow": {
             "restartReadyObserved": True,
             "restartPresentationQueued": True,
@@ -758,6 +767,7 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
             result,
             expected_versions=VERSIONS,
             expected_artifact_identity=ARTIFACT_IDENTITY,
+            expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             screenshot_contract=contract,
         )
         serialized = json.dumps(result, sort_keys=True)
@@ -779,6 +789,47 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
                         artifact, expected_artifact_identity=ARTIFACT_IDENTITY
                     )
 
+    def test_validators_require_exact_server_host_resource_identity(self) -> None:
+        mutations = (
+            ("missing", lambda value: value.pop("host_html")),
+            ("extra", lambda value: value.__setitem__("extra", {})),
+            (
+                "boolean bytes",
+                lambda value: value["host_js"].__setitem__("bytes", True),
+            ),
+            (
+                "mismatch",
+                lambda value: value["host_js"].__setitem__("sha256", "0" * 64),
+            ),
+        )
+        contract = controlled_https.load_controlled_https_screenshot_contract()
+        for phase, result_factory in (
+            (smoke.FLOW_PHASE, flow_result),
+            (smoke.RESTART_PHASE, restart_result),
+        ):
+            for name, mutate in mutations:
+                with self.subTest(phase=phase, mutation=name):
+                    result = result_factory()
+                    resources = result["hostResources"]
+                    assert isinstance(resources, dict)
+                    mutate(resources)
+                    with self.assertRaisesRegex(M0Error, "host resource"):
+                        if phase == smoke.FLOW_PHASE:
+                            smoke.validate_flow_result(
+                                result,
+                                expected_versions=VERSIONS,
+                                expected_artifact_identity=ARTIFACT_IDENTITY,
+                                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
+                                screenshot_contract=contract,
+                            )
+                        else:
+                            smoke.validate_restart_result(
+                                result,
+                                expected_versions=VERSIONS,
+                                expected_artifact_identity=ARTIFACT_IDENTITY,
+                                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
+                            )
+
     def test_flow_and_restart_reject_artifact_substitution(self) -> None:
         contract = controlled_https.load_controlled_https_screenshot_contract()
         substituted = copy.deepcopy(ARTIFACT_IDENTITY)
@@ -790,6 +841,7 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
                 flow,
                 expected_versions=VERSIONS,
                 expected_artifact_identity=ARTIFACT_IDENTITY,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
                 screenshot_contract=contract,
             )
         restart = restart_result()
@@ -799,6 +851,7 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
                 restart,
                 expected_versions=VERSIONS,
                 expected_artifact_identity=ARTIFACT_IDENTITY,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             )
 
     def test_server_serves_immutable_artifact_snapshot_after_disk_mutation(self) -> None:
@@ -810,15 +863,16 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
             host_dir.mkdir()
             loader = b"export default function Module() {}\n"
             wasm = b"\x00asm\x01\x00\x00\x00"
+            host_resources = {
+                "chrome_wasm_browser_continuous_flow_smoke.html": b"<html>host</html>",
+                "chrome_wasm_browser_continuous_flow_smoke_host.js": b"host bridge",
+                "chrome_wasm_text_input.js": b"text bridge",
+                "chrome_wasm_pointer_input.js": b"pointer bridge",
+            }
             (out_dir / f"{smoke.DEFAULT_MODULE_NAME}.js").write_bytes(loader)
             (out_dir / f"{smoke.DEFAULT_MODULE_NAME}.wasm").write_bytes(wasm)
-            for name in (
-                "chrome_wasm_browser_continuous_flow_smoke.html",
-                "chrome_wasm_browser_continuous_flow_smoke_host.js",
-                "chrome_wasm_text_input.js",
-                "chrome_wasm_pointer_input.js",
-            ):
-                (host_dir / name).write_text("asset", encoding="utf-8")
+            for name, contents in host_resources.items():
+                (host_dir / name).write_bytes(contents)
             server = smoke.create_server(
                 "127.0.0.1",
                 0,
@@ -828,17 +882,47 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
                 module_name=smoke.DEFAULT_MODULE_NAME,
                 host_dir=host_dir,
             )
+            self.assertEqual(
+                smoke.host_resource_snapshot_identity(
+                    {
+                        logical_name: host_resources[filename]
+                        for logical_name, filename in smoke.HOST_RESOURCE_FILES.items()
+                    }
+                ),
+                server.host_resource_identity,
+            )
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
                 (out_dir / f"{smoke.DEFAULT_MODULE_NAME}.js").write_bytes(b"tampered")
                 (out_dir / f"{smoke.DEFAULT_MODULE_NAME}.wasm").write_bytes(b"tampered")
+                for name in host_resources:
+                    (host_dir / name).write_bytes(b"tampered host resource")
                 host, port = server.server_address[:2]
                 base = f"http://{host}:{port}{smoke.HOST_ROOT}/artifacts/"
                 with urlopen(base + f"{smoke.DEFAULT_MODULE_NAME}.js") as response:
                     self.assertEqual(loader, response.read())
                 with urlopen(base + f"{smoke.DEFAULT_MODULE_NAME}.wasm") as response:
                     self.assertEqual(wasm, response.read())
+                host_paths = {
+                    f"{smoke.HOST_ROOT}/": (
+                        "chrome_wasm_browser_continuous_flow_smoke.html"
+                    ),
+                    f"{smoke.HOST_ROOT}/chrome_wasm_browser_continuous_flow_smoke_host.js": (
+                        "chrome_wasm_browser_continuous_flow_smoke_host.js"
+                    ),
+                    f"{smoke.HOST_ROOT}/chrome_wasm_text_input.js": (
+                        "chrome_wasm_text_input.js"
+                    ),
+                    f"{smoke.HOST_ROOT}/chrome_wasm_pointer_input.js": (
+                        "chrome_wasm_pointer_input.js"
+                    ),
+                }
+                for path, resource_name in host_paths.items():
+                    with self.subTest(path=path), urlopen(
+                        f"http://{host}:{port}{path}"
+                    ) as response:
+                        self.assertEqual(host_resources[resource_name], response.read())
                 artifact = smoke.artifact_identity(
                     server, module_name=smoke.DEFAULT_MODULE_NAME
                 )
@@ -865,6 +949,124 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=1)
+
+    def test_result_handler_owns_host_resource_identity_for_both_phases(self) -> None:
+        server = smoke.ContinuousFlowServer(
+            ("127.0.0.1", 0), smoke.ContinuousFlowRequestHandler
+        )
+        server.result_token = "test-token"
+        server.result_queue = queue.Queue(maxsize=2)
+        server.result_lock = threading.Lock()
+        server.received_phases = set()
+        server.host_resource_identity = copy.deepcopy(HOST_RESOURCE_IDENTITY)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def post(phase: str, result: dict[str, object]) -> int:
+            host, port = server.server_address[:2]
+            request = Request(
+                f"http://{host}:{port}{smoke.HOST_ROOT}/result/"
+                f"{server.result_token}/{phase}",
+                data=json.dumps(result, separators=(",", ":")).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request) as response:
+                return response.status
+
+        try:
+            client_supplied = {
+                "protocol": 1,
+                "case": smoke.CASE,
+                "scope": smoke.SCOPE,
+                "phase": smoke.FLOW_PHASE,
+                "hostResources": copy.deepcopy(HOST_RESOURCE_IDENTITY),
+            }
+            with self.assertRaises(HTTPError) as error:
+                post(smoke.FLOW_PHASE, client_supplied)
+            self.assertEqual(400, error.exception.code)
+            error.exception.close()
+            self.assertTrue(server.result_queue.empty())
+            self.assertEqual(set(), server.received_phases)
+
+            for phase in (smoke.FLOW_PHASE, smoke.RESTART_PHASE):
+                self.assertEqual(
+                    204,
+                    post(
+                        phase,
+                        {
+                            "protocol": 1,
+                            "case": smoke.CASE,
+                            "scope": smoke.SCOPE,
+                            "phase": phase,
+                        },
+                    ),
+                )
+                received_phase, result = server.result_queue.get_nowait()
+                self.assertEqual(phase, received_phase)
+                self.assertEqual(HOST_RESOURCE_IDENTITY, result["hostResources"])
+                result["hostResources"]["host_js"]["bytes"] = 99
+                self.assertEqual(
+                    HOST_RESOURCE_IDENTITY["host_js"]["bytes"],
+                    server.host_resource_identity["host_js"]["bytes"],
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX named pipes")
+    def test_host_resource_snapshot_rejects_fifo_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            host_dir = Path(temporary_directory)
+            for name, filename in smoke.HOST_RESOURCE_FILES.items():
+                path = host_dir / filename
+                if name == "pointer_input_js":
+                    os.mkfifo(path)
+                else:
+                    path.write_bytes(b"host resource")
+            with self.assertRaisesRegex(M0Error, "must be a regular file"):
+                smoke.snapshot_host_resources(host_dir)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symbolic links")
+    def test_host_resource_snapshot_rejects_final_component_symlink(self) -> None:
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("host cannot reject final-component symlinks")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            host_dir = Path(temporary_directory) / "host"
+            host_dir.mkdir()
+            target = Path(temporary_directory) / "host-source.js"
+            target.write_bytes(b"host source")
+            for name, filename in smoke.HOST_RESOURCE_FILES.items():
+                path = host_dir / filename
+                if name == "host_js":
+                    path.symlink_to(target)
+                else:
+                    path.write_bytes(b"host resource")
+            with self.assertRaises(M0Error):
+                smoke.snapshot_host_resources(host_dir)
+
+    def test_main_forwards_explicit_host_dir_to_server_creation(self) -> None:
+        create_server = mock.Mock(side_effect=M0Error("stop after argument check"))
+        with (
+            mock.patch.object(smoke, "check_boundary"),
+            mock.patch.object(
+                smoke.controlled_https, "check_controlled_https_boundary"
+            ),
+            mock.patch.object(smoke, "create_server", create_server),
+            mock.patch.object(
+                smoke, "write_failure_diagnostics", return_value=Path("/diagnostic")
+            ),
+            mock.patch.object(
+                sys,
+                "argv",
+                ["continuous-flow-runner", "--host-dir", "relative-host"],
+            ),
+        ):
+            self.assertEqual(1, smoke.main())
+        self.assertEqual(
+            REPO_ROOT / "relative-host", create_server.call_args.kwargs["host_dir"]
+        )
 
     def test_private_key_scan_rejects_snapshot_after_disk_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1206,6 +1408,7 @@ process.stdout.write(JSON.stringify({{valid: valid.byteLength, substitution, boo
                 result,
                 expected_versions=VERSIONS,
                 expected_artifact_identity=ARTIFACT_IDENTITY,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
                 screenshot_contract=controlled_https.load_controlled_https_screenshot_contract(),
             )
 
@@ -1237,6 +1440,7 @@ process.stdout.write(JSON.stringify({{valid: valid.byteLength, substitution, boo
                         result,
                         expected_versions=VERSIONS,
                         expected_artifact_identity=ARTIFACT_IDENTITY,
+                        expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
                         screenshot_contract=controlled_https.load_controlled_https_screenshot_contract(),
                     )
 

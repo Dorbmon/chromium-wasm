@@ -19,6 +19,7 @@ import argparse
 import base64
 import binascii
 from collections import deque
+import copy
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -84,6 +85,7 @@ CONTROLLED_HTTPS_GN_TARGET = "//chrome:chrome_wasm_m6_https_test"
 HOST_ROOT = "/__m6_browser_continuous_flow__"
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
+MAX_HOST_RESOURCE_BYTES = 4 * 1024 * 1024
 MAX_FRAME_DIMENSION = 16384
 MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 MAX_SCREENSHOT_BASE64_LENGTH = ((MAX_SCREENSHOT_BYTES + 2) // 3) * 4
@@ -103,6 +105,13 @@ _ARTIFACT_IDENTITY_FIELDS = frozenset(
 )
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
 ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
+HOST_RESOURCE_FILES = {
+    "host_html": "chrome_wasm_browser_continuous_flow_smoke.html",
+    "host_js": "chrome_wasm_browser_continuous_flow_smoke_host.js",
+    "text_input_js": "chrome_wasm_text_input.js",
+    "pointer_input_js": "chrome_wasm_pointer_input.js",
+}
+_HOST_RESOURCE_FIELDS = frozenset(HOST_RESOURCE_FILES)
 CONTROLLED_HTTPS_SCREENSHOT_CONTRACT = (
     Path(__file__).with_name("testdata")
     / "m6_controlled_https_screenshot_contract.json"
@@ -143,6 +152,7 @@ class ContinuousFlowServer(M9TrackingThreadingHTTPServer):
     host_js_bytes: bytes
     text_input_js_bytes: bytes
     pointer_input_js_bytes: bytes
+    host_resource_identity: dict[str, object]
 
 
 class ContinuousFlowRequestHandler(BaseHTTPRequestHandler):
@@ -235,6 +245,14 @@ class ContinuousFlowRequestHandler(BaseHTTPRequestHandler):
                 b"invalid continuous-flow result\n",
             )
             return
+        if "hostResources" in result:
+            self._send_bytes(
+                HTTPStatus.BAD_REQUEST,
+                "text/plain; charset=utf-8",
+                b"client-supplied host resource identity is forbidden\n",
+            )
+            return
+        result["hostResources"] = copy.deepcopy(self.server.host_resource_identity)
         with self.server.result_lock:
             if phase in self.server.received_phases:
                 self._send_bytes(
@@ -305,15 +323,18 @@ def _read_snapshot(path: Path, description: str) -> bytes:
     return contents
 
 
-def _snapshot_reviewed_screenshot_baseline(path: Path) -> bytes:
-    """Capture the one reviewed PNG used by this child before it launches.
+def _snapshot_regular_file(
+    path: Path, *, maximum_bytes: int, description: str
+) -> bytes:
+    """Capture a bounded regular-file snapshot without following its leaf.
 
-    A bounded read makes the comparison input independent of later filesystem
-    changes while the browser, relay, and host server are running.  The PNG
-    decoder and comparison retain responsibility for the established visual
-    contract validation at comparison time.
+    The descriptor remains pinned through both metadata observations and the
+    read.  ``O_NONBLOCK`` makes a substituted FIFO fail safely at ``fstat``
+    rather than blocking the reliability runner.
     """
 
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise M0Error(f"continuous-flow {description} snapshot bound is invalid")
     descriptor = -1
     try:
         descriptor = os.open(
@@ -326,32 +347,63 @@ def _snapshot_reviewed_screenshot_baseline(path: Path) -> bytes:
         )
         opened_metadata = os.fstat(descriptor)
         if not stat.S_ISREG(opened_metadata.st_mode):
-            raise M0Error(
-                "reviewed controlled-HTTPS screenshot baseline must be a regular file"
+            raise M0Error(f"continuous-flow {description} must be a regular file")
+        if (
+            opened_metadata.st_size <= 0
+            or opened_metadata.st_size > maximum_bytes
+        ):
+            raise M0Error(f"continuous-flow {description} is invalid")
+        contents = bytearray()
+        while len(contents) <= maximum_bytes:
+            chunk = os.read(
+                descriptor, min(64 * 1024, maximum_bytes + 1 - len(contents))
             )
-        if opened_metadata.st_size <= 0 or opened_metadata.st_size > MAX_SCREENSHOT_BYTES:
-            raise M0Error("reviewed controlled-HTTPS screenshot baseline is invalid")
-        with os.fdopen(descriptor, "rb") as baseline_file:
-            descriptor = -1
-            contents = baseline_file.read(MAX_SCREENSHOT_BYTES + 1)
+            if not chunk:
+                break
+            contents.extend(chunk)
+        closed_metadata = os.fstat(descriptor)
     except FileNotFoundError as error:
         raise M0Error(
-            f"reviewed controlled-HTTPS screenshot baseline is missing: {path}"
+            f"continuous-flow {description} is missing: {path}"
         ) from error
     except OSError as error:
         raise M0Error(
-            f"cannot snapshot reviewed controlled-HTTPS screenshot baseline: {error}"
+            f"cannot snapshot continuous-flow {description}: {error}"
         ) from error
     finally:
         if descriptor >= 0:
             os.close(descriptor)
     if (
-        type(contents) is not bytes
-        or not contents
-        or len(contents) > MAX_SCREENSHOT_BYTES
+        not contents
+        or len(contents) > maximum_bytes
+        or len(contents) != opened_metadata.st_size
+        or (
+            opened_metadata.st_dev,
+            opened_metadata.st_ino,
+            opened_metadata.st_size,
+            opened_metadata.st_mtime_ns,
+            opened_metadata.st_ctime_ns,
+        )
+        != (
+            closed_metadata.st_dev,
+            closed_metadata.st_ino,
+            closed_metadata.st_size,
+            closed_metadata.st_mtime_ns,
+            closed_metadata.st_ctime_ns,
+        )
     ):
-        raise M0Error("reviewed controlled-HTTPS screenshot baseline is invalid")
-    return contents
+        raise M0Error(f"continuous-flow {description} changed while snapshotting")
+    return bytes(contents)
+
+
+def _snapshot_reviewed_screenshot_baseline(path: Path) -> bytes:
+    """Capture the one reviewed PNG used by this child before it launches."""
+
+    return _snapshot_regular_file(
+        path,
+        maximum_bytes=MAX_SCREENSHOT_BYTES,
+        description="reviewed controlled-HTTPS screenshot baseline",
+    )
 
 
 def _artifact_snapshot_path(out_dir: Path, artifact_name: str) -> Path:
@@ -359,6 +411,55 @@ def _artifact_snapshot_path(out_dir: Path, artifact_name: str) -> Path:
     if candidate.parent != out_dir or not candidate.is_file():
         raise M0Error(f"continuous-flow artifact is missing or unsafe: {artifact_name}")
     return candidate
+
+
+def validate_host_resource_snapshots(host_snapshots: object) -> dict[str, bytes]:
+    """Validate the exact four immutable resources served by this host."""
+
+    if (
+        not isinstance(host_snapshots, dict)
+        or set(host_snapshots) != _HOST_RESOURCE_FIELDS
+        or any(type(contents) is not bytes for contents in host_snapshots.values())
+    ):
+        raise M0Error("continuous-flow host resource snapshots are invalid")
+    snapshots = {
+        name: bytes(host_snapshots[name]) for name in _HOST_RESOURCE_FIELDS
+    }
+    if any(
+        not contents or len(contents) > MAX_HOST_RESOURCE_BYTES
+        for contents in snapshots.values()
+    ):
+        raise M0Error("continuous-flow host resource snapshot is invalid")
+    return snapshots
+
+
+def snapshot_host_resources(host_dir: Path | None = None) -> dict[str, bytes]:
+    """Capture all host inputs before constructing one continuous-flow server."""
+
+    selected_host_dir = (host_dir or Path(__file__).with_name("host")).resolve()
+    if not selected_host_dir.is_dir():
+        raise M0Error(
+            f"continuous-flow host resource directory is missing: {selected_host_dir}"
+        )
+    snapshots = {
+        name: _snapshot_regular_file(
+            selected_host_dir / filename,
+            maximum_bytes=MAX_HOST_RESOURCE_BYTES,
+            description=f"host resource {filename}",
+        )
+        for name, filename in HOST_RESOURCE_FILES.items()
+    }
+    return validate_host_resource_snapshots(snapshots)
+
+
+def host_resource_snapshot_identity(host_snapshots: object) -> dict[str, object]:
+    """Return path-free byte identities for the exact served host resources."""
+
+    snapshots = validate_host_resource_snapshots(host_snapshots)
+    identity = {
+        name: _byte_identity(snapshots[name]) for name in sorted(_HOST_RESOURCE_FIELDS)
+    }
+    return validate_host_resource_snapshot_identity(identity)
 
 
 def create_server(
@@ -382,7 +483,7 @@ def create_server(
         )
         for artifact_name in (f"{module_name}.js", f"{module_name}.wasm")
     }
-    selected_host_dir = host_dir or Path(__file__).with_name("host")
+    host_snapshots = snapshot_host_resources(host_dir)
     server = ContinuousFlowServer((host, port), ContinuousFlowRequestHandler)
     server.module_name = module_name
     server.artifacts = artifacts
@@ -390,18 +491,11 @@ def create_server(
     server.result_queue = result_queue
     server.result_lock = threading.Lock()
     server.received_phases = set()
-    server.html_bytes = (
-        selected_host_dir / "chrome_wasm_browser_continuous_flow_smoke.html"
-    ).read_bytes()
-    server.host_js_bytes = (
-        selected_host_dir / "chrome_wasm_browser_continuous_flow_smoke_host.js"
-    ).read_bytes()
-    server.text_input_js_bytes = (
-        selected_host_dir / "chrome_wasm_text_input.js"
-    ).read_bytes()
-    server.pointer_input_js_bytes = (
-        selected_host_dir / "chrome_wasm_pointer_input.js"
-    ).read_bytes()
+    server.html_bytes = host_snapshots["host_html"]
+    server.host_js_bytes = host_snapshots["host_js"]
+    server.text_input_js_bytes = host_snapshots["text_input_js"]
+    server.pointer_input_js_bytes = host_snapshots["pointer_input_js"]
+    server.host_resource_identity = host_resource_snapshot_identity(host_snapshots)
     return server
 
 
@@ -531,6 +625,37 @@ def _validate_byte_identity(value: object, description: str) -> None:
     sha256 = identity.get("sha256")
     if type(sha256) is not str or not SHA256_RE.fullmatch(sha256):
         raise M0Error(f"continuous-flow {description} SHA-256 is invalid")
+
+
+def validate_host_resource_snapshot_identity(
+    value: object,
+    *,
+    expected_host_resource_identity: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Validate the raw four-file identity captured by one server instance."""
+
+    identity = _require_exact_fields(
+        value, _HOST_RESOURCE_FIELDS, "host resource identity"
+    )
+    normalized: dict[str, object] = {}
+    for name in sorted(_HOST_RESOURCE_FIELDS):
+        snapshot = identity.get(name)
+        _validate_byte_identity(snapshot, f"host resource {name}")
+        assert isinstance(snapshot, dict)
+        normalized[name] = {
+            "bytes": snapshot["bytes"],
+            "sha256": snapshot["sha256"],
+        }
+    if expected_host_resource_identity is not None:
+        expected = validate_host_resource_snapshot_identity(
+            expected_host_resource_identity
+        )
+        if not browser_view_smoke._exact_json_value_equal(normalized, expected):
+            raise M0Error(
+                "continuous-flow host resource identity disagrees with served "
+                "snapshot"
+            )
+    return normalized
 
 
 def validate_artifact_identity(
@@ -745,6 +870,7 @@ def validate_flow_result(
     *,
     expected_versions: dict[str, str],
     expected_artifact_identity: dict[str, object],
+    expected_host_resource_identity: dict[str, object],
     screenshot_contract: dict[str, Any],
 ) -> bytes:
     for field, expected in {
@@ -770,6 +896,10 @@ def validate_flow_result(
     validate_artifact_identity(
         result.get("artifact"),
         expected_artifact_identity=expected_artifact_identity,
+    )
+    validate_host_resource_snapshot_identity(
+        result.get("hostResources"),
+        expected_host_resource_identity=expected_host_resource_identity,
     )
     for field in ("fatalErrors", "windowErrors", "unhandledRejections"):
         if not isinstance(result.get(field), list) or result[field]:
@@ -896,6 +1026,7 @@ def validate_restart_result(
     *,
     expected_versions: dict[str, str],
     expected_artifact_identity: dict[str, object],
+    expected_host_resource_identity: dict[str, object],
 ) -> None:
     for field, expected in {
         "protocol": 1,
@@ -919,6 +1050,10 @@ def validate_restart_result(
     validate_artifact_identity(
         result.get("artifact"),
         expected_artifact_identity=expected_artifact_identity,
+    )
+    validate_host_resource_snapshot_identity(
+        result.get("hostResources"),
+        expected_host_resource_identity=expected_host_resource_identity,
     )
     for field in ("fatalErrors", "windowErrors", "unhandledRejections"):
         if not isinstance(result.get(field), list) or result[field]:
@@ -1415,6 +1550,7 @@ def main() -> int:
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--module-name", default=DEFAULT_MODULE_NAME)
+    parser.add_argument("--host-dir", type=Path)
     parser.add_argument("--node", type=Path)
     parser.add_argument(
         "--relay-script",
@@ -1431,6 +1567,9 @@ def main() -> int:
         parser.error("--module-name must contain only ASCII letters, digits, or _")
 
     out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
+    host_dir = args.host_dir
+    if host_dir is not None and not host_dir.is_absolute():
+        host_dir = REPO_ROOT / host_dir
     diagnostics_dir = args.diagnostics_dir or out_dir / "diagnostics"
     if not diagnostics_dir.is_absolute():
         diagnostics_dir = REPO_ROOT / diagnostics_dir
@@ -1478,6 +1617,7 @@ def main() -> int:
             token,
             result_queue,
             module_name=args.module_name,
+            host_dir=host_dir,
         )
         artifact = artifact_identity(server, module_name=args.module_name)
         verify_required_exports(server.artifacts[f"{args.module_name}.js"])
@@ -1669,6 +1809,7 @@ def main() -> int:
             flow_result,
             expected_versions=versions,
             expected_artifact_identity=artifact,
+            expected_host_resource_identity=server.host_resource_identity,
             screenshot_contract=screenshot_contract,
         )
         stage = "compare_reviewed_baseline"
@@ -1695,6 +1836,7 @@ def main() -> int:
             restart_result,
             expected_versions=versions,
             expected_artifact_identity=artifact,
+            expected_host_resource_identity=server.host_resource_identity,
         )
         stage = "validate_relay"
         assert relay_ready is not None

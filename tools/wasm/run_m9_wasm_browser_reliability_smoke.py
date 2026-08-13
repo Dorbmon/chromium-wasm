@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import json
@@ -31,9 +32,10 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 from m0_common import (
     M0Error,
@@ -70,6 +72,8 @@ MAX_FAILURE_MESSAGE_CHARS = 2048
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT = "the M9 parent preflight snapshot"
+CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY = "private-m9-temporary-directory-snapshot"
+CONTROLLED_FLOW_HOST_FIXTURE_SOURCE_PROVENANCE = "unverified"
 NORMAL_RESULT_PREFIX = f"{normal_lifecycle.SENTINEL}:NODE_RESULT "
 CONTROLLED_FLOW_SCREENSHOT_PREFIX = f"{continuous_flow.SENTINEL}:SCREENSHOT "
 CONTROLLED_FLOW_RESULT_PREFIX = f"{continuous_flow.SENTINEL}:FLOW_RESULT "
@@ -87,6 +91,13 @@ _CONTROLLED_FLOW_TERMINAL_JSON_PREFIXES = (
 MAX_SCREENSHOT_POLICY_CONTRACT_BYTES = 64 * 1024
 _SNAPSHOT_BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
 _SCREENSHOT_POLICY_IDENTITY_FIELDS = frozenset(("baseline", "contract"))
+_CONTROLLED_FLOW_HOST_FIXTURE_IDENTITY_FIELDS = frozenset(
+    (
+        "delivery",
+        "source_provenance",
+        *continuous_flow.HOST_RESOURCE_FILES,
+    )
+)
 _SCREENSHOT_COMPARISON_FIELDS = frozenset(
     (
         "matches",
@@ -752,7 +763,10 @@ def validate_screenshot_policy_identity(
     normalized: dict[str, object] = {}
     for name in sorted(_SCREENSHOT_POLICY_IDENTITY_FIELDS):
         snapshot = value.get(name)
-        if not isinstance(snapshot, dict) or set(snapshot) != _SNAPSHOT_BYTE_IDENTITY_FIELDS:
+        if (
+            not isinstance(snapshot, dict)
+            or set(snapshot) != _SNAPSHOT_BYTE_IDENTITY_FIELDS
+        ):
             raise M0Error("controlled-flow screenshot policy identity is invalid")
         byte_count = snapshot.get("bytes")
         digest = snapshot.get("sha256")
@@ -774,6 +788,86 @@ def validate_screenshot_policy_identity(
                 "retained M9 snapshot"
             )
     return normalized
+
+
+def validate_controlled_flow_host_fixture_identity(
+    value: object,
+) -> dict[str, object]:
+    """Validate M9's path-free identity for its private host fixture copy."""
+
+    if (
+        not isinstance(value, dict)
+        or set(value) != _CONTROLLED_FLOW_HOST_FIXTURE_IDENTITY_FIELDS
+        or value.get("delivery") != CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY
+        or value.get("source_provenance")
+        != CONTROLLED_FLOW_HOST_FIXTURE_SOURCE_PROVENANCE
+    ):
+        raise M0Error("controlled-flow host fixture identity is invalid")
+    normalized: dict[str, object] = {
+        "delivery": CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY,
+        "source_provenance": CONTROLLED_FLOW_HOST_FIXTURE_SOURCE_PROVENANCE,
+    }
+    for name in sorted(continuous_flow.HOST_RESOURCE_FILES):
+        snapshot = value.get(name)
+        if (
+            not isinstance(snapshot, dict)
+            or set(snapshot) != _SNAPSHOT_BYTE_IDENTITY_FIELDS
+        ):
+            raise M0Error("controlled-flow host fixture identity is invalid")
+        byte_count = snapshot.get("bytes")
+        digest = snapshot.get("sha256")
+        if (
+            type(byte_count) is not int
+            or byte_count < 1
+            or type(digest) is not str
+            or SHA256_RE.fullmatch(digest) is None
+        ):
+            raise M0Error("controlled-flow host fixture identity is invalid")
+        normalized[name] = {"bytes": byte_count, "sha256": digest}
+    return normalized
+
+
+def controlled_flow_host_fixture_identity(host_snapshots: object) -> dict[str, object]:
+    """Identify the exact four source bytes frozen for all M9 flow children.
+
+    The provenance remains deliberately unverified.  This is only a path-free
+    record of the private M9 copy supplied to every independently launched
+    controlled-flow child in one invocation.
+    """
+
+    identity = {
+        "delivery": CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY,
+        "source_provenance": CONTROLLED_FLOW_HOST_FIXTURE_SOURCE_PROVENANCE,
+        **continuous_flow.host_resource_snapshot_identity(host_snapshots),
+    }
+    return validate_controlled_flow_host_fixture_identity(identity)
+
+
+@contextlib.contextmanager
+def materialized_controlled_flow_host_fixture(
+    host_snapshots: object,
+) -> Iterator[Path]:
+    """Materialize one private four-file fixture for every M9 flow child."""
+
+    snapshots = continuous_flow.validate_host_resource_snapshots(host_snapshots)
+    with tempfile.TemporaryDirectory(
+        prefix="chromium-wasm-m9-controlled-flow-host-"
+    ) as temporary_directory:
+        host_dir = Path(temporary_directory)
+        try:
+            for name, filename in continuous_flow.HOST_RESOURCE_FILES.items():
+                destination = host_dir / filename
+                with destination.open("xb") as fixture_file:
+                    written = fixture_file.write(snapshots[name])
+                if written != len(snapshots[name]):
+                    raise M0Error(
+                        "could not materialize complete controlled-flow host fixture"
+                    )
+        except OSError as error:
+            raise M0Error(
+                "could not materialize controlled-flow host fixture"
+            ) from error
+        yield host_dir
 
 
 def _snapshot_controlled_screenshot_policy(
@@ -943,6 +1037,7 @@ def validate_controlled_flow_execution(
     execution: ChildExecution,
     *,
     expected_module_name: str,
+    expected_host_resource_identity: dict[str, object],
     expected_artifact_identity: dict[str, object] | None = None,
     expected_artifact_identity_context: str = "a prior cycle",
     screenshot_contract: dict[str, Any] | None = None,
@@ -951,9 +1046,10 @@ def validate_controlled_flow_execution(
 ) -> dict[str, object]:
     """Validate one fresh real-browser controlled-flow child result.
 
-    M9 callers provide one retained contract, reviewed PNG, and compact policy
-    identity for every cycle. Standalone callers may omit them and retain the
-    existing M6-only structural validation behavior.
+    M9 callers provide one retained host-resource identity, visual contract,
+    reviewed PNG, and compact policy identity for every cycle. The raw host
+    identity is M6's server-owned snapshot fact; M9's separately labeled
+    private-fixture identity remains parent-only aggregate evidence.
     """
     _require_module_name(expected_module_name, "controlled flow module name")
     output = _validated_child_output(execution)
@@ -967,6 +1063,28 @@ def validate_controlled_flow_execution(
     screenshot_comparison = validate_screenshot_comparison(
         child_screenshot_comparison
     )
+    try:
+        expected_host_resources = continuous_flow.validate_host_resource_snapshot_identity(
+            expected_host_resource_identity
+        )
+    except M0Error as error:
+        raise M0Error(
+            "controlled-flow expected host resource identity is invalid"
+        ) from error
+    for phase, result in (
+        ("flow", flow_result),
+        ("restart", restart_result),
+    ):
+        try:
+            continuous_flow.validate_host_resource_snapshot_identity(
+                result.get("hostResources"),
+                expected_host_resource_identity=expected_host_resources,
+            )
+        except M0Error as error:
+            raise M0Error(
+                f"controlled-flow {phase} host resource identity disagrees "
+                "with the frozen M9 fixture snapshot"
+            ) from error
     versions = _versions_from_flow_result(flow_result)
     if restart_result.get("versions") != versions:
         raise M0Error("controlled flow and restart version identifiers disagree")
@@ -1039,12 +1157,14 @@ def validate_controlled_flow_execution(
         flow_result,
         expected_versions=versions,
         expected_artifact_identity=validation_artifact_identity,
+        expected_host_resource_identity=expected_host_resources,
         screenshot_contract=screenshot_contract,
     )
     continuous_flow.validate_restart_result(
         restart_result,
         expected_versions=versions,
         expected_artifact_identity=validation_artifact_identity,
+        expected_host_resource_identity=expected_host_resources,
     )
     frames = flow_result.get("frameReports")
     restart_frames = restart_result.get("frameReports")
@@ -1073,6 +1193,7 @@ def validate_controlled_flow_execution(
             },
         ),
         "artifact": artifact,
+        "hostResources": expected_host_resources,
         "versions": versions,
         "flowFrames": len(frames),
         "restartFrames": len(restart_frames),
@@ -1131,6 +1252,7 @@ def controlled_flow_command(
     module_name: str,
     timeout: float,
     diagnostics_dir: Path,
+    host_dir: Path,
     browser: Path | None,
     node: Path | None,
     relay_script: Path | None,
@@ -1147,6 +1269,8 @@ def controlled_flow_command(
         f"{timeout:g}",
         "--diagnostics-dir",
         str(diagnostics_dir),
+        "--host-dir",
+        str(host_dir),
     ]
     if browser is not None:
         command.extend(("--browser", str(browser)))
@@ -1496,8 +1620,16 @@ def run_reliability(
         )
         normal_cycles.append(normal_cycle)
 
-    # Capture the visual policy before the first controlled-flow child starts.
-    # Every later validation receives only these retained in-memory inputs.
+    # Freeze every controlled-flow input before its first child starts. Every
+    # later child receives only the parent-held visual policy and the same
+    # private copy of the exact four trusted-DOM host resources.
+    flow_host_snapshots = continuous_flow.snapshot_host_resources()
+    flow_host_resource_identity = continuous_flow.host_resource_snapshot_identity(
+        flow_host_snapshots
+    )
+    flow_host_fixture_identity = controlled_flow_host_fixture_identity(
+        flow_host_snapshots
+    )
     (
         flow_screenshot_contract,
         flow_screenshot_baseline_png,
@@ -1505,54 +1637,59 @@ def run_reliability(
     ) = _snapshot_controlled_screenshot_policy()
 
     flow_cycles: list[dict[str, object]] = []
-    for cycle in range(1, controlled_flow_iterations + 1):
-        _require_controlled_flow_preflight_artifact_identity(
-            out_dir,
-            controlled_flow_module_name,
-            controlled_flow_preflight_artifact_identity,
-        )
-        execution = run_child(
-            "controlled flow",
-            cycle,
-            controlled_flow_command(
-                out_dir=out_dir,
-                module_name=controlled_flow_module_name,
-                timeout=controlled_flow_timeout,
-                diagnostics_dir=diagnostics_dir / f"controlled-flow-{cycle:02d}",
-                browser=browser,
-                node=node,
-                relay_script=relay_script,
-                no_sandbox=no_sandbox,
-            ),
-            controlled_flow_timeout,
-        )
-        flow_cycle = validate_controlled_flow_execution(
-            execution,
-            expected_module_name=controlled_flow_module_name,
-            expected_artifact_identity=copy.deepcopy(
-                controlled_flow_preflight_artifact_identity
-            ),
-            expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
-            screenshot_contract=flow_screenshot_contract,
-            screenshot_baseline_png=flow_screenshot_baseline_png,
-            expected_screenshot_policy_identity=flow_screenshot_policy_identity,
-        )
-        try:
-            validate_screenshot_policy_identity(
-                flow_cycle.get("screenshotPolicy"),
+    with materialized_controlled_flow_host_fixture(flow_host_snapshots) as host_dir:
+        for cycle in range(1, controlled_flow_iterations + 1):
+            _require_controlled_flow_preflight_artifact_identity(
+                out_dir,
+                controlled_flow_module_name,
+                controlled_flow_preflight_artifact_identity,
+            )
+            execution = run_child(
+                "controlled flow",
+                cycle,
+                controlled_flow_command(
+                    out_dir=out_dir,
+                    module_name=controlled_flow_module_name,
+                    timeout=controlled_flow_timeout,
+                    diagnostics_dir=diagnostics_dir / f"controlled-flow-{cycle:02d}",
+                    host_dir=host_dir,
+                    browser=browser,
+                    node=node,
+                    relay_script=relay_script,
+                    no_sandbox=no_sandbox,
+                ),
+                controlled_flow_timeout,
+            )
+            flow_cycle = validate_controlled_flow_execution(
+                execution,
+                expected_module_name=controlled_flow_module_name,
+                expected_host_resource_identity=copy.deepcopy(
+                    flow_host_resource_identity
+                ),
+                expected_artifact_identity=copy.deepcopy(
+                    controlled_flow_preflight_artifact_identity
+                ),
+                expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
+                screenshot_contract=flow_screenshot_contract,
+                screenshot_baseline_png=flow_screenshot_baseline_png,
                 expected_screenshot_policy_identity=flow_screenshot_policy_identity,
             )
-        except M0Error as error:
-            raise M0Error(
-                "controlled-flow cycle does not retain the M9 screenshot policy "
-                "identity"
-            ) from error
-        _require_controlled_flow_preflight_artifact_identity(
-            out_dir,
-            controlled_flow_module_name,
-            controlled_flow_preflight_artifact_identity,
-        )
-        flow_cycles.append(flow_cycle)
+            try:
+                validate_screenshot_policy_identity(
+                    flow_cycle.get("screenshotPolicy"),
+                    expected_screenshot_policy_identity=flow_screenshot_policy_identity,
+                )
+            except M0Error as error:
+                raise M0Error(
+                    "controlled-flow cycle does not retain the M9 screenshot policy "
+                    "identity"
+                ) from error
+            _require_controlled_flow_preflight_artifact_identity(
+                out_dir,
+                controlled_flow_module_name,
+                controlled_flow_preflight_artifact_identity,
+            )
+            flow_cycles.append(flow_cycle)
 
     normal_summary = _aggregate_cycles(normal_cycles)
     normal_summary.update(
@@ -1570,6 +1707,9 @@ def run_reliability(
             "kind": "fresh-real-host-browser-profile-and-outer-restart",
             "requestedCycles": controlled_flow_iterations,
             "controlledHttpsNavigation": True,
+            # This identity names only the M9 parent-held four-file fixture
+            # copy. It deliberately leaves source provenance unverified.
+            "hostFixture": flow_host_fixture_identity,
             # This identity names only the M9 parent-held comparison inputs.
             # It does not establish source provenance or release readiness.
             "screenshotPolicy": flow_screenshot_policy_identity,

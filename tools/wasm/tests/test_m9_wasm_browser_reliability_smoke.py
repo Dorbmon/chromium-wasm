@@ -53,6 +53,10 @@ NORMAL_ARTIFACT_IDENTITY = {
     "module_name": runner.DEFAULT_NORMAL_MODULE_NAME,
     "wasm": {"bytes": 20, "sha256": "e" * 64},
 }
+HOST_RESOURCE_SNAPSHOTS = continuous_flow.snapshot_host_resources()
+HOST_RESOURCE_IDENTITY = continuous_flow.host_resource_snapshot_identity(
+    HOST_RESOURCE_SNAPSHOTS
+)
 
 
 def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
@@ -128,6 +132,8 @@ def flow_execution(
     restart_versions: object = VERSIONS,
     flow_artifact: object = ARTIFACT_IDENTITY,
     restart_artifact: object = ARTIFACT_IDENTITY,
+    flow_host_resources: object = HOST_RESOURCE_IDENTITY,
+    restart_host_resources: object = HOST_RESOURCE_IDENTITY,
     screenshot_comparison: object | None = None,
     stderr: str = "",
 ) -> runner.ChildExecution:
@@ -136,11 +142,13 @@ def flow_execution(
     flow = {
         "versions": VERSIONS,
         "artifact": copy.deepcopy(flow_artifact),
+        "hostResources": copy.deepcopy(flow_host_resources),
         "frameReports": [{"id": 1}],
     }
     restart = {
         "versions": restart_versions,
         "artifact": copy.deepcopy(restart_artifact),
+        "hostResources": copy.deepcopy(restart_host_resources),
         "frameReports": [{"id": 1}],
     }
     return runner.ChildExecution(
@@ -230,6 +238,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             runner.validate_controlled_flow_execution(
                 execution,
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             )
         validate_flow.assert_not_called()
         validate_restart.assert_not_called()
@@ -495,6 +504,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             result = runner.validate_controlled_flow_execution(
                 execution,
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
                 expected_artifact_identity=expected_artifact_identity,
             )
 
@@ -518,20 +528,24 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             {
                 "versions": VERSIONS,
                 "artifact": ARTIFACT_IDENTITY,
+                "hostResources": HOST_RESOURCE_IDENTITY,
                 "frameReports": [{"id": 1}],
             },
             expected_versions=VERSIONS,
             expected_artifact_identity=expected_artifact_identity,
+            expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             screenshot_contract=screenshot_contract,
         )
         validate_restart.assert_called_once_with(
             {
                 "versions": VERSIONS,
                 "artifact": ARTIFACT_IDENTITY,
+                "hostResources": HOST_RESOURCE_IDENTITY,
                 "frameReports": [{"id": 1}],
             },
             expected_versions=VERSIONS,
             expected_artifact_identity=expected_artifact_identity,
+            expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
         )
         self.assertIs(
             expected_artifact_identity,
@@ -560,6 +574,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             result = runner.validate_controlled_flow_execution(
                 flow_execution(),
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
                 expected_artifact_identity=expected_artifact_identity,
                 screenshot_contract=contract,
                 screenshot_baseline_png=baseline_png,
@@ -574,6 +589,94 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             expected_artifact_identity,
             validate_flow.call_args.kwargs["expected_artifact_identity"],
         )
+
+    def test_controlled_flow_binds_server_host_identity_for_both_phases(
+        self,
+    ) -> None:
+        """M9 accepts only the raw identity M6 captured from its server bytes."""
+
+        with (
+            mock.patch.object(
+                runner.continuous_flow.controlled_https,
+                "load_controlled_https_screenshot_contract",
+                return_value={"contract": "value"},
+            ),
+            mock.patch.object(runner.continuous_flow, "validate_flow_result") as flow,
+            mock.patch.object(
+                runner.continuous_flow, "validate_restart_result"
+            ) as restart,
+        ):
+            result = runner.validate_controlled_flow_execution(
+                flow_execution(),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
+            )
+
+        self.assertEqual(HOST_RESOURCE_IDENTITY, result["hostResources"])
+        self.assertEqual(
+            HOST_RESOURCE_IDENTITY,
+            flow.call_args.kwargs["expected_host_resource_identity"],
+        )
+        self.assertEqual(
+            HOST_RESOURCE_IDENTITY,
+            restart.call_args.kwargs["expected_host_resource_identity"],
+        )
+
+        cases = (
+            (
+                "flow",
+                lambda value: value.pop("host_html"),
+            ),
+            (
+                "flow",
+                lambda value: value.__setitem__("extra", {}),
+            ),
+            (
+                "flow",
+                lambda value: value["host_js"].__setitem__("bytes", True),
+            ),
+            (
+                "flow",
+                lambda value: value["host_js"].__setitem__("sha256", "0" * 64),
+            ),
+            (
+                "restart",
+                lambda value: value.pop("pointer_input_js"),
+            ),
+            (
+                "restart",
+                lambda value: value.__setitem__("extra", {}),
+            ),
+            (
+                "restart",
+                lambda value: value["host_js"].__setitem__("bytes", True),
+            ),
+            (
+                "restart",
+                lambda value: value["host_js"].__setitem__("sha256", "0" * 64),
+            ),
+        )
+        for phase, mutate in cases:
+            with self.subTest(phase=phase, mutation=mutate):
+                flow_resources = copy.deepcopy(HOST_RESOURCE_IDENTITY)
+                restart_resources = copy.deepcopy(HOST_RESOURCE_IDENTITY)
+                mutate(
+                    flow_resources if phase == "flow" else restart_resources
+                )
+                with self.assertRaisesRegex(
+                    M0Error,
+                    rf"controlled-flow {phase} host resource identity disagrees",
+                ):
+                    runner.validate_controlled_flow_execution(
+                        flow_execution(
+                            flow_host_resources=flow_resources,
+                            restart_host_resources=restart_resources,
+                        ),
+                        expected_module_name=(
+                            runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                        ),
+                        expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
+                    )
 
     def test_controlled_flow_requires_one_ordered_stdout_terminal_transcript(
         self,
@@ -765,6 +868,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             runner.validate_controlled_flow_execution(
                 flow_execution(screenshot_comparison=child_metrics),
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
                 expected_artifact_identity=ARTIFACT_IDENTITY,
                 screenshot_contract=contract,
                 screenshot_baseline_png=baseline_png,
@@ -815,6 +919,41 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             runner.validate_screenshot_policy_identity(
                 drifted, expected_screenshot_policy_identity=identity
             )
+
+    def test_controlled_flow_host_fixture_identity_is_exact_and_unverified(self) -> None:
+        snapshots = {
+            name: f"{name} fixture bytes".encode("ascii")
+            for name in continuous_flow.HOST_RESOURCE_FILES
+        }
+        identity = runner.controlled_flow_host_fixture_identity(snapshots)
+        self.assertEqual(
+            runner.CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY, identity["delivery"]
+        )
+        self.assertEqual("unverified", identity["source_provenance"])
+        self.assertEqual(
+            hashlib.sha256(snapshots["host_js"]).hexdigest(),
+            identity["host_js"]["sha256"],
+        )
+        cases = (
+            ("missing fixture", lambda value: value.pop("host_html")),
+            ("extra fixture", lambda value: value.__setitem__("extra", {})),
+            (
+                "verified provenance",
+                lambda value: value.__setitem__("source_provenance", "verified"),
+            ),
+            (
+                "boolean byte count",
+                lambda value: value["host_js"].__setitem__("bytes", True),
+            ),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                malformed = copy.deepcopy(identity)
+                mutate(malformed)
+                with self.assertRaisesRegex(
+                    M0Error, "host fixture identity is invalid"
+                ):
+                    runner.validate_controlled_flow_host_fixture_identity(malformed)
 
     def test_snapshot_retained_policy_requires_exact_contract_schema(self) -> None:
         contract, baseline_png, identity = self._retained_screenshot_policy()
@@ -881,6 +1020,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             runner.validate_controlled_flow_execution(
                 flow_execution(restart_versions=mismatched),
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             )
 
     def test_controlled_flow_rejects_restart_artifact_substitution_and_aliases(
@@ -892,6 +1032,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             runner.validate_controlled_flow_execution(
                 flow_execution(restart_artifact=substituted),
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             )
         bool_alias = copy.deepcopy(ARTIFACT_IDENTITY)
         bool_alias["loader"] = {"bytes": True, "sha256": "a" * 64}
@@ -899,6 +1040,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             runner.validate_controlled_flow_execution(
                 flow_execution(flow_artifact=bool_alias),
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             )
 
     def test_controlled_flow_rejects_prior_cycle_artifact_drift(self) -> None:
@@ -911,6 +1053,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                     restart_artifact=substituted,
                 ),
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
                 expected_artifact_identity=ARTIFACT_IDENTITY,
             )
 
@@ -928,6 +1071,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                     restart_artifact=wrong_module,
                 ),
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             )
 
     def test_run_aggregates_only_fresh_cycles_and_forwards_isolated_paths(self) -> None:
@@ -944,7 +1088,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         executions: list[tuple[str, int, list[str], float]] = []
         normal_validation_inputs: list[tuple[str, object, str]] = []
         controlled_flow_validation_inputs: list[
-            tuple[str, object, str, object, object, object]
+            tuple[str, object, str, object, object, object, object]
         ] = []
 
         def fake_run_child(
@@ -981,6 +1125,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             execution: runner.ChildExecution,
             *,
             expected_module_name: str,
+            expected_host_resource_identity: dict[str, object],
             expected_artifact_identity: dict[str, object] | None,
             expected_artifact_identity_context: str,
             screenshot_contract: dict[str, object],
@@ -995,6 +1140,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                     expected_module_name,
                     copy.deepcopy(expected_artifact_identity),
                     expected_artifact_identity_context,
+                    copy.deepcopy(expected_host_resource_identity),
                     screenshot_contract,
                     screenshot_baseline_png,
                     copy.deepcopy(expected_screenshot_policy_identity),
@@ -1003,6 +1149,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             return {
                 "cycle": execution.cycle,
                 "artifact": copy.deepcopy(ARTIFACT_IDENTITY),
+                "hostResources": copy.deepcopy(expected_host_resource_identity),
                 "elapsedMs": 10.0 * execution.cycle,
                 "screenshotPolicy": copy.deepcopy(expected_screenshot_policy_identity),
             }
@@ -1059,6 +1206,13 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             "fresh-real-host-browser-profile-and-outer-restart",
             result["controlledFlow"]["kind"],
         )
+        host_fixture = runner.validate_controlled_flow_host_fixture_identity(
+            result["controlledFlow"]["hostFixture"]
+        )
+        self.assertEqual(
+            runner.CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY,
+            host_fixture["delivery"],
+        )
         self.assertEqual(list(runner.LIMITATIONS), result["limitations"])
         self.assertEqual(5, len(executions))
         self.assertEqual(
@@ -1090,6 +1244,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                     controlled_flow_validation_inputs[0][3],
                     controlled_flow_validation_inputs[0][4],
                     controlled_flow_validation_inputs[0][5],
+                    controlled_flow_validation_inputs[0][6],
                 ),
                 (
                     runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
@@ -1098,21 +1253,29 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                     controlled_flow_validation_inputs[0][3],
                     controlled_flow_validation_inputs[0][4],
                     controlled_flow_validation_inputs[0][5],
+                    controlled_flow_validation_inputs[0][6],
                 ),
             ],
             controlled_flow_validation_inputs,
         )
         self.assertIs(
-            controlled_flow_validation_inputs[0][3],
-            controlled_flow_validation_inputs[1][3],
-        )
-        self.assertIs(
             controlled_flow_validation_inputs[0][4],
             controlled_flow_validation_inputs[1][4],
         )
-        self.assertEqual(
+        self.assertIs(
             controlled_flow_validation_inputs[0][5],
+            controlled_flow_validation_inputs[1][5],
+        )
+        self.assertEqual(
+            controlled_flow_validation_inputs[0][6],
             result["controlledFlow"]["screenshotPolicy"],
+        )
+        self.assertEqual(
+            {
+                name: host_fixture[name]
+                for name in continuous_flow.HOST_RESOURCE_FILES
+            },
+            controlled_flow_validation_inputs[0][3],
         )
         load_contract.assert_called_once_with()
         normal_commands = [record[2] for record in executions[:3]]
@@ -1131,6 +1294,259 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.assertIn(
             str(out_dir / "diagnostics" / "controlled-flow-02"), flow_commands[1]
         )
+        fixture_dirs = [
+            Path(command[command.index("--host-dir") + 1])
+            for command in flow_commands
+        ]
+        self.assertEqual(1, len(set(fixture_dirs)))
+        self.assertFalse(fixture_dirs[0].exists())
+
+    def test_controlled_flow_uses_one_private_host_fixture_after_source_mutation(
+        self,
+    ) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, controlled_preflight = self._preflight_artifact_identities(
+            out_dir
+        )
+        source_temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(source_temporary.cleanup)
+        source_dir = Path(source_temporary.name)
+        original = {
+            name: f"original {name}".encode("ascii")
+            for name in continuous_flow.HOST_RESOURCE_FILES
+        }
+        for name, filename in continuous_flow.HOST_RESOURCE_FILES.items():
+            (source_dir / filename).write_bytes(original[name])
+        original_snapshot_host_resources = continuous_flow.snapshot_host_resources
+        expected_identity = runner.controlled_flow_host_fixture_identity(original)
+        expected_host_resources = continuous_flow.host_resource_snapshot_identity(
+            original
+        )
+        fixture_dirs: list[Path] = []
+        observed_host_resources: list[dict[str, bytes]] = []
+
+        def snapshot_source_host_resources() -> dict[str, bytes]:
+            return original_snapshot_host_resources(source_dir)
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del timeout
+            if name == "normal lifecycle":
+                return normal_execution(cycle, artifact=normal_preflight)
+            fixture_dir = Path(command[command.index("--host-dir") + 1])
+            fixture_dirs.append(fixture_dir)
+            observed_host_resources.append(
+                {
+                    name: (fixture_dir / filename).read_bytes()
+                    for name, filename in continuous_flow.HOST_RESOURCE_FILES.items()
+                }
+            )
+            if cycle == 1:
+                (
+                    source_dir / continuous_flow.HOST_RESOURCE_FILES["host_js"]
+                ).write_bytes(b"mutated source host bridge")
+            return flow_execution(
+                cycle,
+                flow_artifact=controlled_preflight,
+                restart_artifact=controlled_preflight,
+                flow_host_resources=expected_host_resources,
+                restart_host_resources=expected_host_resources,
+            )
+
+        with (
+            mock.patch.object(
+                runner.continuous_flow,
+                "snapshot_host_resources",
+                side_effect=snapshot_source_host_resources,
+            ) as snapshot_host_resources,
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            mock.patch.object(
+                runner.continuous_flow,
+                "validate_flow_result",
+                return_value=self._retained_screenshot_policy()[1],
+            ),
+            mock.patch.object(runner.continuous_flow, "validate_restart_result"),
+        ):
+            result = runner.run_reliability(
+                out_dir=out_dir,
+                normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                controlled_flow_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                normal_lifecycle_iterations=1,
+                controlled_flow_iterations=2,
+                normal_timeout=7.0,
+                controlled_flow_timeout=11.0,
+                diagnostics_dir=out_dir / "diagnostics",
+                browser=None,
+                node=None,
+                relay_script=None,
+                no_sandbox=False,
+            )
+
+        snapshot_host_resources.assert_called_once_with()
+        self.assertEqual(
+            b"mutated source host bridge",
+            (source_dir / continuous_flow.HOST_RESOURCE_FILES["host_js"]).read_bytes(),
+        )
+        self.assertEqual([original, original], observed_host_resources)
+        self.assertEqual(1, len(set(fixture_dirs)))
+        self.assertFalse(fixture_dirs[0].exists())
+        self.assertEqual(expected_identity, result["controlledFlow"]["hostFixture"])
+
+    def test_m9_rejects_private_fixture_mutation_before_m6_server_capture(
+        self,
+    ) -> None:
+        """A child server attesting B cannot pass against M9's frozen A bytes."""
+
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, controlled_preflight = self._preflight_artifact_identities(
+            out_dir
+        )
+        source_temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(source_temporary.cleanup)
+        source_dir = Path(source_temporary.name)
+        source_snapshots = {
+            name: f"source fixture {name}".encode("ascii")
+            for name in continuous_flow.HOST_RESOURCE_FILES
+        }
+        for name, filename in continuous_flow.HOST_RESOURCE_FILES.items():
+            (source_dir / filename).write_bytes(source_snapshots[name])
+
+        actual_snapshot_host_resources = continuous_flow.snapshot_host_resources
+        child_names: list[tuple[str, int]] = []
+        fixture_dirs: list[Path] = []
+        served_identity: dict[str, object] | None = None
+
+        def snapshot_parent_host_resources() -> dict[str, bytes]:
+            return actual_snapshot_host_resources(source_dir)
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del timeout
+            child_names.append((name, cycle))
+            if name == "normal lifecycle":
+                return normal_execution(cycle, artifact=normal_preflight)
+            self.assertEqual(1, cycle)
+            host_dir = Path(command[command.index("--host-dir") + 1])
+            fixture_dirs.append(host_dir)
+            # This emulates a mutation after M9 materialized fixture A but
+            # before M6's real descriptor-pinned server snapshot captures B.
+            (host_dir / continuous_flow.HOST_RESOURCE_FILES["host_js"]).write_bytes(
+                b"mutated before server capture"
+            )
+            nonlocal served_identity
+            served_identity = continuous_flow.host_resource_snapshot_identity(
+                actual_snapshot_host_resources(host_dir)
+            )
+            return flow_execution(
+                cycle,
+                flow_artifact=controlled_preflight,
+                restart_artifact=controlled_preflight,
+                flow_host_resources=served_identity,
+                restart_host_resources=served_identity,
+            )
+
+        with (
+            mock.patch.object(
+                runner.continuous_flow,
+                "snapshot_host_resources",
+                side_effect=snapshot_parent_host_resources,
+            ) as snapshot_host_resources,
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            self.assertRaisesRegex(
+                M0Error,
+                "controlled-flow flow host resource identity disagrees with the "
+                "frozen M9 fixture snapshot",
+            ),
+        ):
+            runner.run_reliability(
+                out_dir=out_dir,
+                normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                controlled_flow_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                normal_lifecycle_iterations=1,
+                controlled_flow_iterations=2,
+                normal_timeout=7.0,
+                controlled_flow_timeout=11.0,
+                diagnostics_dir=out_dir / "diagnostics",
+                browser=None,
+                node=None,
+                relay_script=None,
+                no_sandbox=False,
+            )
+
+        snapshot_host_resources.assert_called_once_with()
+        self.assertIsNotNone(served_identity)
+        self.assertNotEqual(
+            continuous_flow.host_resource_snapshot_identity(source_snapshots),
+            served_identity,
+        )
+        self.assertEqual(
+            [("normal lifecycle", 1), ("controlled flow", 1)], child_names
+        )
+        self.assertEqual(1, len(fixture_dirs))
+        self.assertFalse(fixture_dirs[0].exists())
+
+    def test_controlled_flow_host_fixture_is_cleaned_after_nonzero_child(self) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, _controlled_preflight = self._preflight_artifact_identities(
+            out_dir
+        )
+        host_snapshots = {
+            name: f"fixture {name}".encode("ascii")
+            for name in continuous_flow.HOST_RESOURCE_FILES
+        }
+        fixture_dirs: list[Path] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del timeout
+            if name == "normal lifecycle":
+                return normal_execution(cycle, artifact=normal_preflight)
+            fixture_dirs.append(Path(command[command.index("--host-dir") + 1]))
+            self.assertTrue(fixture_dirs[-1].is_dir())
+            return runner.ChildExecution(
+                name=name,
+                cycle=cycle,
+                elapsed_ms=1.0,
+                returncode=1,
+                stdout="",
+                stderr="controlled child failed\n",
+            )
+
+        with (
+            mock.patch.object(
+                runner.continuous_flow,
+                "snapshot_host_resources",
+                return_value=host_snapshots,
+            ) as snapshot_host_resources,
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            self.assertRaisesRegex(
+                M0Error, "controlled flow cycle 1 exited with status 1"
+            ),
+        ):
+            runner.run_reliability(
+                out_dir=out_dir,
+                normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                controlled_flow_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                normal_lifecycle_iterations=1,
+                controlled_flow_iterations=1,
+                normal_timeout=7.0,
+                controlled_flow_timeout=11.0,
+                diagnostics_dir=out_dir / "diagnostics",
+                browser=None,
+                node=None,
+                relay_script=None,
+                no_sandbox=False,
+            )
+
+        snapshot_host_resources.assert_called_once_with()
+        self.assertEqual(1, len(fixture_dirs))
+        self.assertFalse(fixture_dirs[0].exists())
 
     def test_controlled_flow_artifact_drift_stops_before_later_cycles(self) -> None:
         temporary, out_dir = self._make_out_dir()
@@ -1946,6 +2362,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
             timeout=runner.DEFAULT_CONTROLLED_FLOW_TIMEOUT,
             diagnostics_dir=Path("/diagnostics"),
+            host_dir=Path("/host-fixture"),
             browser=None,
             node=None,
             relay_script=None,
@@ -1962,6 +2379,8 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 "120",
                 "--diagnostics-dir",
                 "/diagnostics",
+                "--host-dir",
+                "/host-fixture",
             ],
             flow[2:],
         )
