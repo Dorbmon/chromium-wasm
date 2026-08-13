@@ -263,6 +263,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
     ) -> None:
         execution = flow_execution()
         screenshot_contract = {"contract": "value"}
+        expected_artifact_identity = copy.deepcopy(ARTIFACT_IDENTITY)
         with (
             mock.patch.object(
                 runner.continuous_flow.controlled_https,
@@ -279,6 +280,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             result = runner.validate_controlled_flow_execution(
                 execution,
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_artifact_identity=expected_artifact_identity,
             )
 
         self.assertEqual(1, result["cycle"])
@@ -298,7 +300,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 "frameReports": [{"id": 1}],
             },
             expected_versions=VERSIONS,
-            expected_artifact_identity=ARTIFACT_IDENTITY,
+            expected_artifact_identity=expected_artifact_identity,
             screenshot_contract=screenshot_contract,
         )
         validate_restart.assert_called_once_with(
@@ -308,7 +310,15 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 "frameReports": [{"id": 1}],
             },
             expected_versions=VERSIONS,
-            expected_artifact_identity=ARTIFACT_IDENTITY,
+            expected_artifact_identity=expected_artifact_identity,
+        )
+        self.assertIs(
+            expected_artifact_identity,
+            validate_flow.call_args.kwargs["expected_artifact_identity"],
+        )
+        self.assertIs(
+            expected_artifact_identity,
+            validate_restart.call_args.kwargs["expected_artifact_identity"],
         )
 
     def test_controlled_flow_rejects_disagreeing_restart_provenance(self) -> None:
@@ -338,6 +348,19 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
             )
 
+    def test_controlled_flow_rejects_prior_cycle_artifact_drift(self) -> None:
+        substituted = copy.deepcopy(ARTIFACT_IDENTITY)
+        substituted["wasm"] = {"bytes": 21, "sha256": "c" * 64}
+        with self.assertRaisesRegex(M0Error, "prior cycle"):
+            runner.validate_controlled_flow_execution(
+                flow_execution(
+                    flow_artifact=substituted,
+                    restart_artifact=substituted,
+                ),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_artifact_identity=ARTIFACT_IDENTITY,
+            )
+
     def test_controlled_flow_rejects_artifact_module_disagreeing_with_configuration(
         self,
     ) -> None:
@@ -359,6 +382,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         executions: list[tuple[str, int, list[str], float]] = []
         normal_validation_inputs: list[tuple[str, object]] = []
+        controlled_flow_validation_inputs: list[tuple[str, object]] = []
 
         def fake_run_child(
             name: str, cycle: int, command: list[str], timeout: float
@@ -386,12 +410,22 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             }
 
         def fake_flow(
-            execution: runner.ChildExecution, *, expected_module_name: str
+            execution: runner.ChildExecution,
+            *,
+            expected_module_name: str,
+            expected_artifact_identity: dict[str, object] | None,
         ) -> dict[str, object]:
             self.assertEqual(
                 runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME, expected_module_name
             )
-            return {"cycle": execution.cycle, "elapsedMs": 10.0 * execution.cycle}
+            controlled_flow_validation_inputs.append(
+                (expected_module_name, copy.deepcopy(expected_artifact_identity))
+            )
+            return {
+                "cycle": execution.cycle,
+                "artifact": copy.deepcopy(ARTIFACT_IDENTITY),
+                "elapsedMs": 10.0 * execution.cycle,
+            }
 
         with (
             mock.patch.object(runner, "run_child", side_effect=fake_run_child),
@@ -423,6 +457,11 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             NORMAL_ARTIFACT_IDENTITY, result["normalLifecycle"]["artifact"]
         )
         self.assertEqual(2, result["controlledFlow"]["completedCycles"])
+        self.assertEqual(ARTIFACT_IDENTITY, result["controlledFlow"]["artifact"])
+        self.assertEqual(
+            continuous_flow.ARTIFACT_SOURCE_PROVENANCE,
+            result["controlledFlow"]["artifact"]["artifact_source_provenance"],
+        )
         self.assertEqual(
             "fresh-node-module-process", result["normalLifecycle"]["kind"]
         )
@@ -440,6 +479,16 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             ],
             normal_validation_inputs,
         )
+        self.assertEqual(
+            [
+                (runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME, None),
+                (
+                    runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                    ARTIFACT_IDENTITY,
+                ),
+            ],
+            controlled_flow_validation_inputs,
+        )
         normal_commands = [record[2] for record in executions[:3]]
         self.assertTrue(
             all(
@@ -456,6 +505,73 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.assertIn(
             str(out_dir / "diagnostics" / "controlled-flow-02"), flow_commands[1]
         )
+
+    def test_controlled_flow_artifact_drift_stops_before_later_cycles(self) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        substituted = copy.deepcopy(ARTIFACT_IDENTITY)
+        substituted["wasm"] = {"bytes": 21, "sha256": "c" * 64}
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            child_names.append((name, cycle))
+            if name == "normal lifecycle":
+                return normal_execution(cycle)
+            return flow_execution(
+                cycle,
+                flow_artifact=(
+                    ARTIFACT_IDENTITY if cycle == 1 else substituted
+                ),
+                restart_artifact=(
+                    ARTIFACT_IDENTITY if cycle == 1 else substituted
+                ),
+            )
+
+        with (
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            mock.patch.object(
+                runner.continuous_flow.controlled_https,
+                "load_controlled_https_screenshot_contract",
+                return_value={"contract": "test"},
+            ) as load_contract,
+            mock.patch.object(
+                runner.continuous_flow, "validate_flow_result"
+            ) as validate_flow,
+            mock.patch.object(
+                runner.continuous_flow, "validate_restart_result"
+            ) as validate_restart,
+        ):
+            with self.assertRaisesRegex(M0Error, "prior cycle"):
+                runner.run_reliability(
+                    out_dir=out_dir,
+                    normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    controlled_flow_module_name=(
+                        runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    ),
+                    normal_lifecycle_iterations=1,
+                    controlled_flow_iterations=3,
+                    normal_timeout=7.0,
+                    controlled_flow_timeout=11.0,
+                    diagnostics_dir=out_dir / "diagnostics",
+                    browser=None,
+                    node=None,
+                    relay_script=None,
+                    no_sandbox=False,
+                )
+
+        self.assertEqual(
+            [
+                ("normal lifecycle", 1),
+                ("controlled flow", 1),
+                ("controlled flow", 2),
+            ],
+            child_names,
+        )
+        load_contract.assert_called_once_with()
+        validate_flow.assert_called_once()
+        validate_restart.assert_called_once()
 
     def test_artifact_and_module_validation_fail_before_a_child_starts(self) -> None:
         temporary, out_dir = self._make_out_dir()

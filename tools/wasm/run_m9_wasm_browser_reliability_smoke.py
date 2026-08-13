@@ -425,7 +425,10 @@ def _artifact_identity_from_flow_result(result: dict[str, Any]) -> dict[str, obj
 
 
 def validate_controlled_flow_execution(
-    execution: ChildExecution, *, expected_module_name: str
+    execution: ChildExecution,
+    *,
+    expected_module_name: str,
+    expected_artifact_identity: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate one fresh real-browser controlled-flow child result."""
     _require_module_name(expected_module_name, "controlled flow module name")
@@ -454,9 +457,24 @@ def validate_controlled_flow_execution(
             "controlled flow artifact module name disagrees with configured "
             "controlled-flow module"
         )
+    if expected_artifact_identity is not None:
+        try:
+            continuous_flow.validate_artifact_identity(
+                artifact, expected_artifact_identity=expected_artifact_identity
+            )
+        except M0Error as error:
+            raise M0Error(
+                "controlled flow artifact identity disagrees with a prior cycle"
+            ) from error
+    validation_artifact_identity = (
+        expected_artifact_identity
+        if expected_artifact_identity is not None
+        else artifact
+    )
     try:
         continuous_flow.validate_artifact_identity(
-            restart_result.get("artifact"), expected_artifact_identity=artifact
+            restart_result.get("artifact"),
+            expected_artifact_identity=validation_artifact_identity,
         )
     except M0Error as error:
         raise M0Error("controlled flow and restart artifact identities disagree") from error
@@ -466,13 +484,13 @@ def validate_controlled_flow_execution(
     continuous_flow.validate_flow_result(
         flow_result,
         expected_versions=versions,
-        expected_artifact_identity=artifact,
+        expected_artifact_identity=validation_artifact_identity,
         screenshot_contract=screenshot_contract,
     )
     continuous_flow.validate_restart_result(
         restart_result,
         expected_versions=versions,
-        expected_artifact_identity=artifact,
+        expected_artifact_identity=validation_artifact_identity,
     )
     frames = flow_result.get("frameReports")
     restart_frames = restart_result.get("frameReports")
@@ -870,6 +888,7 @@ def run_reliability(
         normal_cycles.append(normal_cycle)
 
     flow_cycles: list[dict[str, object]] = []
+    flow_artifact_identity: dict[str, object] | None = None
     for cycle in range(1, controlled_flow_iterations + 1):
         execution = run_child(
             "controlled flow",
@@ -886,14 +905,19 @@ def run_reliability(
             ),
             controlled_flow_timeout,
         )
-        flow_cycles.append(
-            validate_controlled_flow_execution(
-                execution, expected_module_name=controlled_flow_module_name
-            )
+        flow_cycle = validate_controlled_flow_execution(
+            execution,
+            expected_module_name=controlled_flow_module_name,
+            expected_artifact_identity=flow_artifact_identity,
         )
+        if flow_artifact_identity is None:
+            flow_artifact_identity = copy.deepcopy(flow_cycle["artifact"])
+        flow_cycles.append(flow_cycle)
 
     if normal_artifact_identity is None:
         raise M0Error("reliability runner has no normal lifecycle artifact identity")
+    if flow_artifact_identity is None:
+        raise M0Error("reliability runner has no controlled-flow artifact identity")
     normal_summary = _aggregate_cycles(normal_cycles)
     normal_summary.update(
         {
@@ -906,6 +930,7 @@ def run_reliability(
     flow_summary = _aggregate_cycles(flow_cycles)
     flow_summary.update(
         {
+            "artifact": flow_artifact_identity,
             "kind": "fresh-real-host-browser-profile-and-outer-restart",
             "requestedCycles": controlled_flow_iterations,
             "controlledHttpsNavigation": True,
