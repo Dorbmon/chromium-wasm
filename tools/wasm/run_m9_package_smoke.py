@@ -29,6 +29,7 @@ from urllib.request import urlopen
 
 if __package__:
     from .m0_common import M0Error
+    from .m9_server_cleanup import shutdown_server_bounded
     from .package import (
         MAX_ARTIFACT_BYTES,
         PACKAGE_PATHS,
@@ -39,6 +40,7 @@ if __package__:
     )
 else:
     from m0_common import M0Error
+    from m9_server_cleanup import shutdown_server_bounded
     from package import (
         MAX_ARTIFACT_BYTES,
         PACKAGE_PATHS,
@@ -481,7 +483,12 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
     finally:
         cleanup_error: BaseException | None = None
         if thread_started:
-            cleanup_error = _run_cleanup_action(cleanup_error, server.shutdown)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: shutdown_server_bounded(
+                    server, timeout=5, description="M9 package smoke server"
+                ),
+            )
         cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
         if thread_started and thread is not None:
             cleanup_error = _run_cleanup_action(

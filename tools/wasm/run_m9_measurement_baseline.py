@@ -57,6 +57,7 @@ if __package__:
         abort_browser_group,
         stop_browser_group,
     )
+    from .m9_server_cleanup import shutdown_server_bounded
 else:
     from check_m6_chrome_boundary import check_boundary
     from m0_common import (
@@ -75,6 +76,7 @@ else:
         abort_browser_group,
         stop_browser_group,
     )
+    from m9_server_cleanup import shutdown_server_bounded
 
 
 SENTINEL = "CHROMIUM_WASM_M9_BASELINE"
@@ -1085,7 +1087,12 @@ def _cleanup_measurement_server(
     cleanup_error: BaseException | None = None
     if server is not None:
         if server_thread_started:
-            cleanup_error = _run_cleanup_action(cleanup_error, server.shutdown)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: shutdown_server_bounded(
+                    server, timeout=5, description="M9 measurement server"
+                ),
+            )
         cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
     if server_thread_started and server_thread is not None:
         cleanup_error = _run_cleanup_action(
