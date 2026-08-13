@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import http.client
+import io
 import json
 from pathlib import Path
 import queue
@@ -18,6 +20,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 import zlib
@@ -1064,6 +1067,248 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, target_fvp)
         self.assertNotIn("reportReadiness", target_fvp)
+
+
+class ControlledHttpsRunnerCleanupTest(unittest.TestCase):
+    """Exercise terminal-evidence ordering without launching Chrome or Node."""
+
+    def _run_main_with_cleanup_fakes(
+        self,
+        *,
+        browser_cleanup_error: BaseException | None = None,
+        operational_error: BaseException | None = None,
+        abort_browser_error: BaseException | None = None,
+        abort_relay_error: BaseException | None = None,
+        server_cleanup_error: BaseException | None = None,
+        profile_cleanup_error: BaseException | None = None,
+    ) -> tuple[int, str, str, dict[str, mock.Mock]]:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 8123)
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = False
+        relay = mock.Mock()
+        relay.stdout = object()
+        relay.stderr = object()
+        browser = mock.Mock()
+        browser.stderr = object()
+        relay_stdout_reader = mock.Mock()
+        relay_stderr_reader = mock.Mock()
+        browser_stderr_reader = mock.Mock()
+        profile = mock.Mock()
+        profile.name = "/fake-profile"
+        profile.cleanup.side_effect = profile_cleanup_error
+        client = mock.Mock()
+        relay_ready = smoke.RelayReady(
+            wisp_endpoint=WISP_ENDPOINT,
+            m6_ui_url=RELAY_FIXTURE_URL,
+            transcript_url=TRANSCRIPT_URL,
+        )
+        comparison = mock.Mock()
+        comparison.matches = True
+        comparison.as_dict.return_value = {"matches": True}
+        stop_browser = mock.Mock(side_effect=browser_cleanup_error)
+        stop_relay = mock.Mock()
+        cleanup_server = mock.Mock(return_value=server_cleanup_error)
+        abort_browser = mock.Mock(side_effect=abort_browser_error)
+        abort_relay = mock.Mock(side_effect=abort_relay_error)
+        wait_for_state = mock.Mock()
+        if operational_error is not None:
+            wait_for_state.side_effect = operational_error
+        dependencies = {
+            "server": server,
+            "server_thread": server_thread,
+            "relay": relay,
+            "browser": browser,
+            "relay_stdout_reader": relay_stdout_reader,
+            "relay_stderr_reader": relay_stderr_reader,
+            "browser_stderr_reader": browser_stderr_reader,
+            "profile": profile,
+            "client": client,
+            "stop_browser": stop_browser,
+            "stop_relay": stop_relay,
+            "cleanup_server": cleanup_server,
+            "abort_browser": abort_browser,
+            "abort_relay": abort_relay,
+        }
+        screenshot_contract = {
+            "baseline": "baseline.png",
+            "channel_tolerance": 2,
+            "maximum_different_pixel_ratio": 0.0025,
+        }
+        baseline = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        baseline.write(SCREENSHOT_PNG)
+        baseline.close()
+        patches = (
+            mock.patch.object(smoke, "check_controlled_https_boundary"),
+            mock.patch.object(smoke, "verify_explicit_text_heap_exports"),
+            mock.patch.object(smoke, "verify_no_private_key_pem_artifacts"),
+            mock.patch.object(smoke, "load_manifest", return_value={}),
+            mock.patch.object(smoke, "checked_output", return_value="head"),
+            mock.patch.object(smoke, "manifest_versions", return_value=VERSIONS),
+            mock.patch.object(smoke, "print_context", return_value={}),
+            mock.patch.object(
+                smoke,
+                "find_browser",
+                return_value=(Path("/fake-browser"), "test-browser"),
+            ),
+            mock.patch.object(smoke, "find_node", return_value=Path("/fake-node")),
+            mock.patch.object(
+                smoke,
+                "load_controlled_https_screenshot_contract",
+                return_value=screenshot_contract,
+            ),
+            mock.patch.object(smoke, "create_server", return_value=server),
+            mock.patch.object(smoke.threading, "Thread", return_value=server_thread),
+            mock.patch.object(smoke, "relay_command", return_value=["relay"]),
+            mock.patch.object(smoke, "m5_host_origin", return_value="http://host.test"),
+            mock.patch.object(smoke, "browser_command", return_value=["browser"]),
+            mock.patch.object(
+                smoke.subprocess, "Popen", side_effect=[relay, browser]
+            ),
+            mock.patch.object(
+                smoke,
+                "BrowserStderrReader",
+                side_effect=(
+                    relay_stdout_reader,
+                    relay_stderr_reader,
+                    browser_stderr_reader,
+                ),
+            ),
+            mock.patch.object(smoke, "wait_for_relay_ready", return_value=relay_ready),
+            mock.patch.object(smoke, "smoke_url", return_value="http://host.test/m6"),
+            mock.patch.object(
+                smoke.tempfile, "TemporaryDirectory", return_value=profile
+            ),
+            mock.patch.object(smoke, "unused_loopback_port", return_value=9222),
+            mock.patch.object(smoke, "wait_for_page_client", return_value=client),
+            mock.patch.object(smoke, "wait_for_state", wait_for_state),
+            mock.patch.object(smoke, "dispatch_unmodified_enter"),
+            mock.patch.object(smoke, "wait_for_result", return_value=passing_result()),
+            mock.patch.object(smoke, "validate_result", return_value=SCREENSHOT_PNG),
+            mock.patch.object(smoke, "fetch_relay_status", return_value={}),
+            mock.patch.object(smoke, "validate_relay_status"),
+            mock.patch.object(smoke, "compare_screenshots", return_value=comparison),
+            mock.patch.object(smoke, "stop_browser_group", stop_browser),
+            mock.patch.object(smoke, "stop_process_group", stop_relay),
+            mock.patch.object(
+                smoke, "_cleanup_controlled_https_server", cleanup_server
+            ),
+            mock.patch.object(smoke, "abort_browser_group", abort_browser),
+            mock.patch.object(smoke, "abort_process_group", abort_relay),
+            mock.patch.object(
+                smoke, "write_failure_diagnostics", return_value=Path("/diagnostic")
+            ),
+            mock.patch.object(
+                sys,
+                "argv",
+                ["controlled-https-runner", "--baseline", baseline.name],
+            ),
+        )
+        try:
+            with contextlib.ExitStack() as stack:
+                for patcher in patches:
+                    stack.enter_context(patcher)
+                stdout = stack.enter_context(
+                    mock.patch("sys.stdout", new_callable=io.StringIO)
+                )
+                stderr = stack.enter_context(
+                    mock.patch("sys.stderr", new_callable=io.StringIO)
+                )
+                result = smoke.main()
+        finally:
+            Path(baseline.name).unlink(missing_ok=True)
+        return result, stdout.getvalue(), stderr.getvalue(), dependencies
+
+    def test_main_suppresses_terminal_markers_when_cleanup_before_pass_fails(
+        self,
+    ) -> None:
+        result, stdout, stderr, dependencies = self._run_main_with_cleanup_fakes(
+            browser_cleanup_error=M0Error("browser cleanup failed")
+        )
+
+        self.assertEqual(1, result)
+        self.assertIn("FAIL reason=browser cleanup failed", stderr)
+        for marker in ("SCREENSHOT", "BROWSER_RESULT", "RELAY_STATUS", "PASS"):
+            with self.subTest(marker=marker):
+                self.assertNotIn(f"{smoke.SENTINEL}:{marker}", stdout + stderr)
+        dependencies["client"].close.assert_called_once_with()
+        dependencies["stop_browser"].assert_called_once_with(
+            dependencies["browser"], dependencies["browser_stderr_reader"]
+        )
+        dependencies["stop_relay"].assert_not_called()
+        dependencies["abort_browser"].assert_called_once_with(
+            dependencies["browser"],
+            dependencies["browser_stderr_reader"],
+            unowned_streams=(),
+        )
+        dependencies["abort_relay"].assert_called_once_with(
+            dependencies["relay"],
+            (
+                dependencies["relay_stdout_reader"],
+                dependencies["relay_stderr_reader"],
+            ),
+            description="controlled-HTTPS WISP relay",
+            unowned_streams=(),
+        )
+        dependencies["cleanup_server"].assert_called_once()
+        dependencies["profile"].cleanup.assert_called_once_with()
+
+    def test_main_preserves_operational_failure_while_attempting_all_cleanup(
+        self,
+    ) -> None:
+        result, stdout, stderr, dependencies = self._run_main_with_cleanup_fakes(
+            operational_error=M0Error("original operational failure"),
+            abort_browser_error=M0Error("abort browser cleanup failed"),
+            abort_relay_error=M0Error("abort relay cleanup failed"),
+            server_cleanup_error=M0Error("server cleanup failed"),
+            profile_cleanup_error=M0Error("profile cleanup failed"),
+        )
+
+        self.assertEqual(1, result)
+        self.assertIn("FAIL reason=original operational failure", stderr)
+        for message in (
+            "abort browser cleanup failed",
+            "abort relay cleanup failed",
+            "server cleanup failed",
+            "profile cleanup failed",
+        ):
+            with self.subTest(message=message):
+                self.assertNotIn(message, stderr)
+        for marker in ("SCREENSHOT", "BROWSER_RESULT", "RELAY_STATUS", "PASS"):
+            with self.subTest(marker=marker):
+                self.assertNotIn(f"{smoke.SENTINEL}:{marker}", stdout + stderr)
+        dependencies["client"].close.assert_called_once_with()
+        dependencies["stop_browser"].assert_not_called()
+        dependencies["stop_relay"].assert_not_called()
+        dependencies["abort_browser"].assert_called_once()
+        dependencies["abort_relay"].assert_called_once()
+        dependencies["cleanup_server"].assert_called_once()
+        dependencies["profile"].cleanup.assert_called_once_with()
+
+    def test_server_cleanup_uses_bounded_shutdown_and_handler_drain(self) -> None:
+        server = mock.Mock()
+        thread = mock.Mock()
+        thread.is_alive.return_value = False
+
+        with mock.patch.object(smoke, "shutdown_server_bounded") as shutdown:
+            error = smoke._cleanup_controlled_https_server(
+                server=server,
+                server_thread=thread,
+                server_thread_started=True,
+            )
+
+        self.assertIsNone(error)
+        shutdown.assert_called_once_with(
+            server,
+            timeout=smoke.CLEANUP_TIMEOUT_SECONDS,
+            description="controlled-HTTPS host server",
+        )
+        server.server_close.assert_called_once_with()
+        thread.join.assert_called_once_with(timeout=smoke.CLEANUP_TIMEOUT_SECONDS)
+        server.join_request_handlers.assert_called_once_with(
+            timeout=smoke.CLEANUP_TIMEOUT_SECONDS,
+            description="controlled-HTTPS host server",
+        )
 
 
 if __name__ == "__main__":

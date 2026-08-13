@@ -19,7 +19,7 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, Sequence, TextIO
 
 if __package__:
     from .m0_common import M0Error
@@ -271,14 +271,18 @@ def stop_browser_group(
 
 
 def abort_browser_group(
-    browser: subprocess.Popen[str], reader: BrowserStderrReader | None = None
+    browser: subprocess.Popen[str],
+    reader: BrowserStderrReader | None = None,
+    *,
+    unowned_streams: Sequence[TextIO] = (),
 ) -> None:
     """Best-effort failure-path cleanup for a browser lacking clean evidence.
 
     This helper is intentionally unsuitable for a success path.  It exists
     for failures before a stderr reader starts, where killing only the leader
     can leave Chrome descendants in the session.  It still requires the
-    process group to disappear if it returns normally.
+    process group to disappear if it returns normally. ``unowned_streams``
+    covers a raw pipe when reader construction itself failed.
     """
 
     # An unstarted reader has no concurrent read, so it cannot be part of the
@@ -303,6 +307,7 @@ def abort_browser_group(
         forced_wait_problem = None
 
     close_problem = _close_reader_after_cleanup(reader)
+    raw_close_problem = _close_unowned_streams_after_cleanup(unowned_streams)
     reader_problem = _reader_failure(wait_reader) if wait_reader is not None else None
     root_problem = (
         first_problem or kill_problem or forced_wait_problem or reader_problem
@@ -313,5 +318,282 @@ def abort_browser_group(
         ) from root_problem
     if close_problem is not None:
         raise M0Error("could not close M9 browser stderr pipe during abort") from close_problem
+    if raw_close_problem is not None:
+        raise M0Error("could not close unowned M9 browser stderr pipe during abort") from raw_close_problem
     if root_problem is not None:
         raise M0Error("cannot verify M9 browser abort cleanup") from root_problem
+
+
+def _process_group_exists(
+    process: subprocess.Popen[str], *, description: str
+) -> bool:
+    """Return whether a runner-owned process group remains, failing closed."""
+
+    try:
+        os.killpg(process.pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError as exc:
+        raise M0Error(
+            f"cannot verify {description} process-group absence after leader exit"
+        ) from exc
+
+
+def _signal_process_group(
+    process: subprocess.Popen[str], signal_number: int, *, description: str
+) -> None:
+    """Signal a dedicated group even after its leader has exited."""
+
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        raise M0Error(
+            f"cannot signal {description} process group during cleanup"
+        ) from exc
+
+
+def _process_reader_failure(
+    reader: BrowserStderrReader, *, description: str
+) -> M0Error | None:
+    if reader.error is not None:
+        return M0Error(f"{description} output reader failed: {reader.error}")
+    if not reader.is_alive() and not reader.reached_eof:
+        return M0Error(f"{description} output reader stopped before EOF")
+    return None
+
+
+def _process_readers_failure(
+    readers: Sequence[BrowserStderrReader], *, description: str
+) -> M0Error | None:
+    for reader in readers:
+        failure = _process_reader_failure(reader, description=description)
+        if failure is not None:
+            return failure
+    return None
+
+
+def _wait_for_process_group_cleanup(
+    process: subprocess.Popen[str],
+    readers: Sequence[BrowserStderrReader],
+    timeout: float,
+    *,
+    description: str,
+) -> tuple[bool, BaseException | None]:
+    """Wait for the leader, all output readers, and its group to finish."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            group_exists = _process_group_exists(process, description=description)
+        except BaseException as exc:
+            # A failed signal-zero probe cannot suppress the emergency group
+            # kill. The caller still treats this as a failed observation.
+            return False, exc
+        if (
+            process.poll() is not None
+            and not any(reader.is_alive() for reader in readers)
+            and not group_exists
+        ):
+            return True, None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, None
+        live_readers = [reader for reader in readers if reader.is_alive()]
+        if live_readers:
+            for reader in live_readers:
+                reader.join(timeout=min(POLL_SECONDS, remaining))
+        else:
+            time.sleep(min(POLL_SECONDS, remaining))
+
+
+def _close_process_readers_after_cleanup(
+    readers: Sequence[BrowserStderrReader],
+) -> BaseException | None:
+    """Close only output pipes whose readers have reached a terminal state."""
+
+    close_problem: BaseException | None = None
+    for reader in readers:
+        if reader.is_alive():
+            continue
+        try:
+            if reader.started:
+                reader.close_after_reader_stops()
+            else:
+                reader.close_unstarted_pipe()
+        except BaseException as exc:
+            if close_problem is None:
+                close_problem = exc
+    return close_problem
+
+
+def _close_unowned_streams_after_cleanup(
+    streams: Sequence[TextIO],
+) -> BaseException | None:
+    """Close raw pipes that failed before a reader could take ownership.
+
+    Callers may pass a stream here only when no ``BrowserStderrReader`` was
+    constructed for it. There is no concurrent reader in that ownership state,
+    so closing its parent descriptor cannot race a reader.
+    """
+
+    close_problem: BaseException | None = None
+    for stream in streams:
+        try:
+            stream.close()
+        except OSError:
+            # A child can close the read end before this failure-path cleanup
+            # reaches it.  This has the same harmless semantics as closing a
+            # stopped BrowserStderrReader's stream above.
+            pass
+        except BaseException as exc:
+            if close_problem is None:
+                close_problem = exc
+    return close_problem
+
+
+def _signal_process_group_or_record(
+    process: subprocess.Popen[str],
+    signal_number: int,
+    *,
+    description: str,
+) -> BaseException | None:
+    try:
+        _signal_process_group(process, signal_number, description=description)
+    except BaseException as exc:
+        return exc
+    return None
+
+
+def stop_process_group(
+    process: subprocess.Popen[str],
+    readers: Sequence[BrowserStderrReader],
+    *,
+    description: str,
+) -> None:
+    """Stop one runner-owned process group with complete output evidence.
+
+    This is for child harnesses that own a process with more than one pipe,
+    such as a WISP relay.  A reaped leader alone is insufficient: a descendant
+    can retain either pipe or remain in the dedicated process group.  SIGKILL
+    remains failure-only because it cannot prove normal process shutdown.
+    """
+
+    readers = tuple(readers)
+    if not readers or not all(reader.started for reader in readers):
+        raise M0Error(f"{description} output reader was never started")
+
+    first_problem = _signal_process_group_or_record(
+        process, signal.SIGTERM, description=description
+    )
+    cooperative_complete = False
+    if first_problem is None:
+        cooperative_complete, first_problem = _wait_for_process_group_cleanup(
+            process,
+            readers,
+            COOPERATIVE_STOP_SECONDS,
+            description=description,
+        )
+    if cooperative_complete:
+        close_problem = _close_process_readers_after_cleanup(readers)
+        reader_problem = _process_readers_failure(readers, description=description)
+        if first_problem is not None:
+            raise M0Error(f"cannot verify {description} cleanup") from first_problem
+        if close_problem is not None:
+            raise M0Error(f"could not close stopped {description} output pipe") from close_problem
+        if reader_problem is not None:
+            raise reader_problem
+        return
+
+    kill_problem = _signal_process_group_or_record(
+        process, signal.SIGKILL, description=description
+    )
+    forced_complete, forced_wait_problem = _wait_for_process_group_cleanup(
+        process,
+        readers,
+        FORCED_STOP_SECONDS,
+        description=description,
+    )
+    close_problem = _close_process_readers_after_cleanup(readers)
+    reader_problem = _process_readers_failure(readers, description=description)
+    root_problem = first_problem or kill_problem or forced_wait_problem or reader_problem
+    if not forced_complete:
+        raise M0Error(
+            f"{description} process group or output readers did not stop after "
+            "SIGTERM and SIGKILL"
+        ) from root_problem
+    if close_problem is not None:
+        raise M0Error(f"could not close stopped {description} output pipe") from close_problem
+    if root_problem is not None:
+        raise M0Error(f"cannot verify {description} cleanup") from root_problem
+    raise M0Error(
+        f"{description} cleanup required SIGKILL; normal process shutdown "
+        "cannot be proven"
+    )
+
+
+def abort_process_group(
+    process: subprocess.Popen[str],
+    readers: Sequence[BrowserStderrReader],
+    *,
+    description: str,
+    unowned_streams: Sequence[TextIO] = (),
+) -> None:
+    """Complete failure-path cleanup for a runner-owned multi-pipe process.
+
+    Unlike ``stop_process_group``, emergency SIGKILL is permitted here because
+    the caller already has an operational failure.  It still proves group
+    absence and a terminal state for each reader that actually started. Raw
+    streams are accepted only for failures before reader construction.
+    """
+
+    readers = tuple(readers)
+    started_readers = tuple(reader for reader in readers if reader.started)
+    first_problem = _signal_process_group_or_record(
+        process, signal.SIGTERM, description=description
+    )
+    cooperative_complete = False
+    if first_problem is None:
+        cooperative_complete, first_problem = _wait_for_process_group_cleanup(
+            process,
+            started_readers,
+            COOPERATIVE_STOP_SECONDS,
+            description=description,
+        )
+    if cooperative_complete:
+        kill_problem = None
+        forced_complete = True
+        forced_wait_problem = None
+    else:
+        kill_problem = _signal_process_group_or_record(
+            process, signal.SIGKILL, description=description
+        )
+        forced_complete, forced_wait_problem = _wait_for_process_group_cleanup(
+            process,
+            started_readers,
+            FORCED_STOP_SECONDS,
+            description=description,
+        )
+
+    close_problem = _close_process_readers_after_cleanup(readers)
+    raw_close_problem = _close_unowned_streams_after_cleanup(unowned_streams)
+    reader_problem = _process_readers_failure(
+        started_readers, description=description
+    )
+    root_problem = (
+        first_problem or kill_problem or forced_wait_problem or reader_problem
+    )
+    if not forced_complete:
+        raise M0Error(
+            f"{description} abort cleanup could not stop the process group"
+        ) from root_problem
+    if close_problem is not None:
+        raise M0Error(f"could not close {description} output pipe during abort") from close_problem
+    if raw_close_problem is not None:
+        raise M0Error(
+            f"could not close unowned {description} output pipe during abort"
+        ) from raw_close_problem
+    if root_problem is not None:
+        raise M0Error(f"cannot verify {description} abort cleanup") from root_problem

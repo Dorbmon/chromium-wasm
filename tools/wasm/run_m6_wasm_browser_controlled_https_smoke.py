@@ -20,7 +20,7 @@ import binascii
 from collections import deque
 from dataclasses import dataclass
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import http.client
 import ipaddress
 import json
@@ -34,7 +34,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 from urllib.parse import urlencode, urlsplit
 
 import check_m6_chrome_boundary
@@ -48,12 +48,15 @@ from m0_common import (
     print_context,
 )
 from m4_cdp import unused_loopback_port, wait_for_page_client
-from run_browser_smoke import (
-    browser_command,
-    drain_stream,
-    find_browser,
-    stop_browser,
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    abort_browser_group,
+    abort_process_group,
+    stop_browser_group,
+    stop_process_group,
 )
+from m9_server_cleanup import M9TrackingThreadingHTTPServer, shutdown_server_bounded
+from run_browser_smoke import browser_command, find_browser
 from run_content_shell_smoke import manifest_versions
 from m3_content_server import compare_screenshots, decode_png
 from run_m5_wisp_smoke import (
@@ -102,6 +105,7 @@ MAX_RELAY_COUNTER = 16
 MAX_RELAY_TRANSCRIPT_EVENT_LENGTH = 96
 RELAY_TRANSCRIPT_EVENT_RE = re.compile(r"^[a-z0-9:/._-]{1,96}$", re.IGNORECASE)
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -182,7 +186,7 @@ def load_controlled_https_screenshot_contract(
     return contract
 
 
-class ControlledHttpsSmokeServer(ThreadingHTTPServer):
+class ControlledHttpsSmokeServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
@@ -429,16 +433,16 @@ def parse_relay_ready_line(line: str) -> RelayReady:
     )
 
 
-def _drain_relay_stdout(
-    stream: TextIO,
-    destination: deque[str],
-    ready_lines: queue.Queue[str | None],
+def _queue_relay_ready_line(
+    ready_lines: queue.Queue[str | None], text: str
 ) -> None:
-    for line in stream:
-        text = line.rstrip()
-        destination.append(text)
-        if text:
-            ready_lines.put(text)
+    """Forward relay stdout to readiness parsing without losing EOF evidence."""
+
+    if text:
+        ready_lines.put(text)
+
+
+def _queue_relay_ready_eof(ready_lines: queue.Queue[str | None]) -> None:
     ready_lines.put(None)
 
 
@@ -1353,6 +1357,60 @@ def write_failure_diagnostics(
     return path
 
 
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Run every teardown action while preserving the first cleanup failure."""
+
+    try:
+        action()
+    except BaseException as error:
+        if cleanup_error is None:
+            return error
+    return cleanup_error
+
+
+def _join_controlled_https_server(thread: threading.Thread) -> None:
+    thread.join(timeout=CLEANUP_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        raise M0Error("controlled-HTTPS host server did not stop")
+
+
+def _cleanup_controlled_https_server(
+    *,
+    server: ControlledHttpsSmokeServer | None,
+    server_thread: threading.Thread | None,
+    server_thread_started: bool,
+) -> BaseException | None:
+    """Boundedly close the controlled-HTTPS listener and its handlers."""
+
+    cleanup_error: BaseException | None = None
+    if server is not None:
+        if server_thread_started:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: shutdown_server_bounded(
+                    server,
+                    timeout=CLEANUP_TIMEOUT_SECONDS,
+                    description="controlled-HTTPS host server",
+                ),
+            )
+        cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
+    if server_thread_started and server_thread is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error, lambda: _join_controlled_https_server(server_thread)
+        )
+    if server is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error,
+            lambda: server.join_request_handlers(
+                timeout=CLEANUP_TIMEOUT_SECONDS,
+                description="controlled-HTTPS host server",
+            ),
+        )
+    return cleanup_error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run Chrome's controlled HTTPS smoke over the local WISP relay."
@@ -1437,17 +1495,21 @@ def main() -> int:
 
     server: ControlledHttpsSmokeServer | None = None
     server_thread: threading.Thread | None = None
+    server_thread_started = False
     browser: subprocess.Popen[str] | None = None
     client: Any | None = None
     browser_path: Path | None = None
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
-    browser_stderr_thread: threading.Thread | None = None
+    browser_stderr_reader: BrowserStderrReader | None = None
+    browser_stderr_stream: TextIO | None = None
     relay: subprocess.Popen[str] | None = None
     relay_stdout: deque[str] = deque(maxlen=300)
     relay_stderr: deque[str] = deque(maxlen=300)
-    relay_stdout_thread: threading.Thread | None = None
-    relay_stderr_thread: threading.Thread | None = None
+    relay_stdout_reader: BrowserStderrReader | None = None
+    relay_stderr_reader: BrowserStderrReader | None = None
+    relay_stdout_stream: TextIO | None = None
+    relay_stderr_stream: TextIO | None = None
     relay_command_line: list[str] | None = None
     relay_ready: RelayReady | None = None
     relay_status: dict[str, Any] | None = None
@@ -1456,6 +1518,12 @@ def main() -> int:
     actual_png: bytes | None = None
     context: dict[str, object] | None = None
     stage = "check_artifacts"
+    primary_error: BaseException | None = None
+    client_closed = False
+    browser_cleanup_complete = False
+    relay_cleanup_complete = False
+    server_cleanup_complete = False
+    profile_cleanup_complete = False
 
     try:
         stage = "check_boundary"
@@ -1517,6 +1585,7 @@ def main() -> int:
             daemon=True,
         )
         server_thread.start()
+        server_thread_started = True
 
         stage = "launch_relay"
         relay_command_line = relay_command(node, relay_script, m5_host_origin(server))
@@ -1530,21 +1599,27 @@ def main() -> int:
         )
         assert relay.stdout is not None
         assert relay.stderr is not None
+        relay_stdout_stream = relay.stdout
+        relay_stderr_stream = relay.stderr
         ready_lines: queue.Queue[str | None] = queue.Queue()
-        relay_stdout_thread = threading.Thread(
-            target=_drain_relay_stdout,
-            args=(relay.stdout, relay_stdout, ready_lines),
+        relay_stdout_reader = BrowserStderrReader(
+            relay_stdout_stream,
+            relay_stdout,
             name="chromium-wasm-m6-controlled-https-relay-stdout",
-            daemon=True,
+            on_line=lambda text: _queue_relay_ready_line(ready_lines, text),
+            on_eof=lambda: _queue_relay_ready_eof(ready_lines),
         )
-        relay_stdout_thread.start()
-        relay_stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(relay.stderr, relay_stderr),
+        relay_stdout_stream = None
+        relay_stderr_reader = BrowserStderrReader(
+            relay_stderr_stream,
+            relay_stderr,
             name="chromium-wasm-m6-controlled-https-relay-stderr",
-            daemon=True,
         )
-        relay_stderr_thread.start()
+        relay_stderr_stream = None
+        # Construct both pipe owners before either read thread starts so a
+        # partial start still leaves failure cleanup with both descriptors.
+        relay_stdout_reader.start()
+        relay_stderr_reader.start()
         stage = "wait_for_relay_ready"
         relay_ready = wait_for_relay_ready(
             relay,
@@ -1598,13 +1673,14 @@ def main() -> int:
             start_new_session=True,
         )
         assert browser.stderr is not None
-        browser_stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(browser.stderr, browser_stderr),
+        browser_stderr_stream = browser.stderr
+        browser_stderr_reader = BrowserStderrReader(
+            browser_stderr_stream,
+            browser_stderr,
             name="chromium-wasm-m6-controlled-https-browser-stderr",
-            daemon=True,
         )
-        browser_stderr_thread.start()
+        browser_stderr_stream = None
+        browser_stderr_reader.start()
 
         deadline = time.monotonic() + args.timeout
         stage = "connect_devtools"
@@ -1707,6 +1783,41 @@ def main() -> int:
                     separators=(",", ":"),
                 )
             )
+        # The M9 composition parent can observe only this runner's exit. Do
+        # not expose terminal controlled-HTTPS evidence until the CDP client,
+        # browser group, relay group, HTTP server, and profile all complete
+        # bounded cleanup in this child.
+        stage = "cleanup_before_pass"
+        if client is not None:
+            client.close()
+            client_closed = True
+        if browser is None or browser_stderr_reader is None:
+            raise M0Error("controlled-HTTPS browser cleanup evidence is missing")
+        stop_browser_group(browser, browser_stderr_reader)
+        browser_cleanup_complete = True
+        if (
+            relay is None
+            or relay_stdout_reader is None
+            or relay_stderr_reader is None
+        ):
+            raise M0Error("controlled-HTTPS relay cleanup evidence is missing")
+        stop_process_group(
+            relay,
+            (relay_stdout_reader, relay_stderr_reader),
+            description="controlled-HTTPS WISP relay",
+        )
+        relay_cleanup_complete = True
+        server_cleanup_error = _cleanup_controlled_https_server(
+            server=server,
+            server_thread=server_thread,
+            server_thread_started=server_thread_started,
+        )
+        if server_cleanup_error is not None:
+            raise server_cleanup_error
+        server_cleanup_complete = True
+        if profile is not None:
+            profile.cleanup()
+            profile_cleanup_complete = True
         print(
             f"{SENTINEL}:SCREENSHOT "
             + json.dumps(
@@ -1733,16 +1844,7 @@ def main() -> int:
         print(f"{SENTINEL}:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
-        if browser is not None:
-            stop_browser(browser)
-        if relay is not None:
-            stop_browser(relay)
-        if browser_stderr_thread is not None:
-            browser_stderr_thread.join(timeout=1)
-        if relay_stdout_thread is not None:
-            relay_stdout_thread.join(timeout=1)
-        if relay_stderr_thread is not None:
-            relay_stderr_thread.join(timeout=1)
+        primary_error = exc
         try:
             diagnostic = write_failure_diagnostics(
                 diagnostics_dir,
@@ -1776,26 +1878,57 @@ def main() -> int:
             )
         print(f"{SENTINEL}:FAIL reason={exc}", file=sys.stderr, flush=True)
         return 1
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if client is not None:
-            client.close()
-        if browser is not None:
-            stop_browser(browser)
-        if relay is not None:
-            stop_browser(relay)
-        if profile is not None:
-            profile.cleanup()
-        if server is not None:
-            server.shutdown()
-            server.server_close()
-        if server_thread is not None:
-            server_thread.join(timeout=3)
-        if browser_stderr_thread is not None:
-            browser_stderr_thread.join(timeout=1)
-        if relay_stdout_thread is not None:
-            relay_stdout_thread.join(timeout=1)
-        if relay_stderr_thread is not None:
-            relay_stderr_thread.join(timeout=1)
+        cleanup_error: BaseException | None = None
+        if client is not None and not client_closed:
+            cleanup_error = _run_cleanup_action(cleanup_error, client.close)
+        if browser is not None and not browser_cleanup_complete:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_browser_group(
+                    browser,
+                    browser_stderr_reader,
+                    unowned_streams=(
+                        (browser_stderr_stream,)
+                        if browser_stderr_stream is not None
+                        else ()
+                    ),
+                ),
+            )
+        if relay is not None and not relay_cleanup_complete:
+            relay_readers = tuple(
+                reader
+                for reader in (relay_stdout_reader, relay_stderr_reader)
+                if reader is not None
+            )
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_process_group(
+                    relay,
+                    relay_readers,
+                    description="controlled-HTTPS WISP relay",
+                    unowned_streams=tuple(
+                        stream
+                        for stream in (relay_stdout_stream, relay_stderr_stream)
+                        if stream is not None
+                    ),
+                ),
+            )
+        if not server_cleanup_complete:
+            server_cleanup_error = _cleanup_controlled_https_server(
+                server=server,
+                server_thread=server_thread,
+                server_thread_started=server_thread_started,
+            )
+            if cleanup_error is None and server_cleanup_error is not None:
+                cleanup_error = server_cleanup_error
+        if profile is not None and not profile_cleanup_complete:
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 from urllib.parse import urlencode, urlsplit
 
 from m0_common import (
@@ -40,13 +40,16 @@ from m0_common import (
     parse_timeout,
     print_context,
 )
-from m3_content_server import create_m3_server
-from run_browser_smoke import (
-    browser_command,
-    drain_stream,
-    find_browser,
-    stop_browser,
+from m3_content_server import M3RequestHandler, M3ServerState, create_m3_server
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    abort_browser_group,
+    abort_process_group,
+    stop_browser_group,
+    stop_process_group,
 )
+from m9_server_cleanup import M9TrackingThreadingHTTPServer, shutdown_server_bounded
+from run_browser_smoke import browser_command, find_browser
 from run_content_shell_smoke import manifest_versions
 
 
@@ -95,6 +98,7 @@ PRIVATE_KEY_PEM_MARKERS = (
     b"-----BEGIN EC PRIVATE KEY-----",
 )
 ARTIFACT_SCAN_CHUNK_BYTES = 1024 * 1024
+CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,19 @@ class RelayReady:
     http1_url: str
     tls_failure_url: str
     transcript_url: str
+
+
+class M5WispServer(M9TrackingThreadingHTTPServer):
+    """M5's M3-compatible server with explicit request-handler drainage."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(
+        self, address: tuple[str, int], state: M3ServerState
+    ) -> None:
+        self.state = state
+        super().__init__(address, M3RequestHandler)
 
 
 def _validated_port(parsed: Any, description: str) -> int:
@@ -504,16 +521,16 @@ def relay_command(node: Path, relay_script: Path, host_origin: str) -> list[str]
     return [str(node), str(relay_script), "--host-origin", host_origin]
 
 
-def _drain_relay_stdout(
-    stream: TextIO,
-    destination: deque[str],
-    ready_lines: queue.Queue[str | None],
+def _queue_relay_ready_line(
+    ready_lines: queue.Queue[str | None], text: str
 ) -> None:
-    for line in stream:
-        text = line.rstrip()
-        destination.append(text)
-        if text:
-            ready_lines.put(text)
+    """Forward the relay's first nonempty stdout record to readiness parsing."""
+
+    if text:
+        ready_lines.put(text)
+
+
+def _queue_relay_ready_eof(ready_lines: queue.Queue[str | None]) -> None:
     ready_lines.put(None)
 
 
@@ -1871,6 +1888,60 @@ def write_failure_diagnostics(
     return diagnostic_path
 
 
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Run every teardown action while preserving the first cleanup failure."""
+
+    try:
+        action()
+    except BaseException as error:
+        if cleanup_error is None:
+            return error
+    return cleanup_error
+
+
+def _join_m5_server(thread: threading.Thread) -> None:
+    thread.join(timeout=CLEANUP_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        raise M0Error("M5 host server did not stop")
+
+
+def _cleanup_m5_server(
+    *,
+    server: M5WispServer | None,
+    server_thread: threading.Thread | None,
+    server_thread_started: bool,
+) -> BaseException | None:
+    """Boundedly close M5's HTTP listener and every accepted handler."""
+
+    cleanup_error: BaseException | None = None
+    if server is not None:
+        if server_thread_started:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: shutdown_server_bounded(
+                    server,
+                    timeout=CLEANUP_TIMEOUT_SECONDS,
+                    description="M5 host server",
+                ),
+            )
+        cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
+    if server_thread_started and server_thread is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error, lambda: _join_m5_server(server_thread)
+        )
+    if server is not None:
+        cleanup_error = _run_cleanup_action(
+            cleanup_error,
+            lambda: server.join_request_handlers(
+                timeout=CLEANUP_TIMEOUT_SECONDS,
+                description="M5 host server",
+            ),
+        )
+    return cleanup_error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run controlled Chromium HTTPS traffic over the M5 WISP relay."
@@ -1913,14 +1984,16 @@ def main() -> int:
         relay_script = REPO_ROOT / relay_script
     relay_script = relay_script.resolve()
 
-    server = None
-    server_thread = None
+    server: M5WispServer | None = None
+    server_thread: threading.Thread | None = None
     server_started = False
     relay: subprocess.Popen[str] | None = None
     relay_stdout: deque[str] = deque(maxlen=300)
     relay_stderr: deque[str] = deque(maxlen=300)
-    relay_stdout_thread: threading.Thread | None = None
-    relay_stderr_thread: threading.Thread | None = None
+    relay_stdout_reader: BrowserStderrReader | None = None
+    relay_stderr_reader: BrowserStderrReader | None = None
+    relay_stdout_stream: TextIO | None = None
+    relay_stderr_stream: TextIO | None = None
     relay_command_line: list[str] | None = None
     relay_ready: RelayReady | None = None
     relay_status: dict[str, Any] | None = None
@@ -1928,11 +2001,17 @@ def main() -> int:
     browser_path: Path | None = None
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
-    browser_stderr_thread: threading.Thread | None = None
+    browser_stderr_reader: BrowserStderrReader | None = None
+    browser_stderr_stream: TextIO | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
     result: dict[str, Any] | None = None
     context: dict[str, object] | None = None
     stage = "load_manifest"
+    primary_error: BaseException | None = None
+    browser_cleanup_complete = False
+    relay_cleanup_complete = False
+    server_cleanup_complete = False
+    profile_cleanup_complete = False
 
     try:
         manifest = load_manifest()
@@ -1978,6 +2057,7 @@ def main() -> int:
             result_queue,
             module_name=args.module_name,
             verbose=args.verbose_server,
+            server_factory=M5WispServer,
         )
         server_thread = threading.Thread(
             target=server.serve_forever,
@@ -1999,21 +2079,27 @@ def main() -> int:
         )
         assert relay.stdout is not None
         assert relay.stderr is not None
+        relay_stdout_stream = relay.stdout
+        relay_stderr_stream = relay.stderr
         ready_lines: queue.Queue[str | None] = queue.Queue()
-        relay_stdout_thread = threading.Thread(
-            target=_drain_relay_stdout,
-            args=(relay.stdout, relay_stdout, ready_lines),
+        relay_stdout_reader = BrowserStderrReader(
+            relay_stdout_stream,
+            relay_stdout,
             name="chromium-wasm-m5-relay-stdout",
-            daemon=True,
+            on_line=lambda text: _queue_relay_ready_line(ready_lines, text),
+            on_eof=lambda: _queue_relay_ready_eof(ready_lines),
         )
-        relay_stdout_thread.start()
-        relay_stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(relay.stderr, relay_stderr),
+        relay_stdout_stream = None
+        relay_stderr_reader = BrowserStderrReader(
+            relay_stderr_stream,
+            relay_stderr,
             name="chromium-wasm-m5-relay-stderr",
-            daemon=True,
         )
-        relay_stderr_thread.start()
+        relay_stderr_stream = None
+        # Build both owners before either thread can consume a pipe.  If the
+        # second start fails, failure cleanup still owns both raw descriptors.
+        relay_stdout_reader.start()
+        relay_stderr_reader.start()
         stage = "wait_for_relay_ready"
         relay_ready = wait_for_relay_ready(
             relay,
@@ -2068,13 +2154,14 @@ def main() -> int:
             start_new_session=True,
         )
         assert browser.stderr is not None
-        browser_stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(browser.stderr, browser_stderr),
+        browser_stderr_stream = browser.stderr
+        browser_stderr_reader = BrowserStderrReader(
+            browser_stderr_stream,
+            browser_stderr,
             name="chromium-wasm-m5-browser-stderr",
-            daemon=True,
         )
-        browser_stderr_thread.start()
+        browser_stderr_stream = None
+        browser_stderr_reader.start()
 
         deadline = time.monotonic() + args.timeout
         stage = "wait_for_result"
@@ -2090,6 +2177,38 @@ def main() -> int:
         )
         stage = "validate_relay_transcript"
         validate_relay_transcript(relay_status, relay_ready=relay_ready)
+        # The parent observation can establish only this runner's exit. Do
+        # not expose terminal M5 evidence until every independently-sessioned
+        # child and every host-server handler has reached a bounded terminal
+        # state inside this runner.
+        stage = "cleanup_before_pass"
+        if browser is None or browser_stderr_reader is None:
+            raise M0Error("M5 browser cleanup evidence is missing")
+        stop_browser_group(browser, browser_stderr_reader)
+        browser_cleanup_complete = True
+        if (
+            relay is None
+            or relay_stdout_reader is None
+            or relay_stderr_reader is None
+        ):
+            raise M0Error("M5 relay cleanup evidence is missing")
+        stop_process_group(
+            relay,
+            (relay_stdout_reader, relay_stderr_reader),
+            description="M5 WISP relay",
+        )
+        relay_cleanup_complete = True
+        server_cleanup_error = _cleanup_m5_server(
+            server=server,
+            server_thread=server_thread,
+            server_thread_started=server_started,
+        )
+        if server_cleanup_error is not None:
+            raise server_cleanup_error
+        server_cleanup_complete = True
+        if profile is not None:
+            profile.cleanup()
+            profile_cleanup_complete = True
         print(
             f"{SENTINEL}:BROWSER_RESULT "
             + json.dumps(result, sort_keys=True, separators=(",", ":")),
@@ -2103,16 +2222,7 @@ def main() -> int:
         print(f"{SENTINEL}:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
-        if browser is not None:
-            stop_browser(browser)
-        if relay is not None:
-            stop_browser(relay)
-        if browser_stderr_thread is not None:
-            browser_stderr_thread.join(timeout=1)
-        if relay_stdout_thread is not None:
-            relay_stdout_thread.join(timeout=1)
-        if relay_stderr_thread is not None:
-            relay_stderr_thread.join(timeout=1)
+        primary_error = exc
         try:
             diagnostic_path = write_failure_diagnostics(
                 diagnostics_dir,
@@ -2149,25 +2259,55 @@ def main() -> int:
             )
         print(f"{SENTINEL}:FAIL reason={exc}", file=sys.stderr, flush=True)
         return 1
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if browser is not None:
-            stop_browser(browser)
-        if relay is not None:
-            stop_browser(relay)
-        if profile is not None:
-            profile.cleanup()
-        if server is not None:
-            if server_started:
-                server.shutdown()
-            server.server_close()
-        if server_started and server_thread is not None:
-            server_thread.join(timeout=3)
-        if browser_stderr_thread is not None:
-            browser_stderr_thread.join(timeout=1)
-        if relay_stdout_thread is not None:
-            relay_stdout_thread.join(timeout=1)
-        if relay_stderr_thread is not None:
-            relay_stderr_thread.join(timeout=1)
+        cleanup_error: BaseException | None = None
+        if browser is not None and not browser_cleanup_complete:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_browser_group(
+                    browser,
+                    browser_stderr_reader,
+                    unowned_streams=(
+                        (browser_stderr_stream,)
+                        if browser_stderr_stream is not None
+                        else ()
+                    ),
+                ),
+            )
+        if relay is not None and not relay_cleanup_complete:
+            relay_readers = tuple(
+                reader
+                for reader in (relay_stdout_reader, relay_stderr_reader)
+                if reader is not None
+            )
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_process_group(
+                    relay,
+                    relay_readers,
+                    description="M5 WISP relay",
+                    unowned_streams=tuple(
+                        stream
+                        for stream in (relay_stdout_stream, relay_stderr_stream)
+                        if stream is not None
+                    ),
+                ),
+            )
+        if not server_cleanup_complete:
+            server_cleanup_error = _cleanup_m5_server(
+                server=server,
+                server_thread=server_thread,
+                server_thread_started=server_started,
+            )
+            if cleanup_error is None and server_cleanup_error is not None:
+                cleanup_error = server_cleanup_error
+        if profile is not None and not profile_cleanup_complete:
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 if __name__ == "__main__":

@@ -52,6 +52,24 @@ class M9BrowserCleanupTest(unittest.TestCase):
             name="m9-browser-cleanup-test-reader",
         )
 
+    def _output_readers(
+        self, process: subprocess.Popen[str]
+    ) -> tuple[cleanup.BrowserStderrReader, cleanup.BrowserStderrReader]:
+        self.assertIsNotNone(process.stdout)
+        self.assertIsNotNone(process.stderr)
+        return (
+            cleanup.BrowserStderrReader(
+                process.stdout,  # type: ignore[arg-type]
+                deque(),
+                name="m9-process-cleanup-test-stdout",
+            ),
+            cleanup.BrowserStderrReader(
+                process.stderr,  # type: ignore[arg-type]
+                deque(),
+                name="m9-process-cleanup-test-stderr",
+            ),
+        )
+
     def test_clean_eof_and_absent_group_are_required_for_success(self) -> None:
         process = self._start("import sys; sys.stderr.write('diagnostic\\n')")
         reader = self._reader(process)
@@ -84,6 +102,95 @@ class M9BrowserCleanupTest(unittest.TestCase):
                 cleanup.stop_browser_group(process, reader)
 
         self.assertFalse(reader.is_alive())
+
+    def test_multi_pipe_group_rejects_a_reaped_term_ignoring_descendant(self) -> None:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal, subprocess, sys, time; "
+                "subprocess.Popen([sys.executable, '-c', "
+                "'import signal, time; signal.signal(signal.SIGTERM, "
+                "signal.SIG_IGN); time.sleep(30)'], stdin=subprocess.DEVNULL, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+                "time.sleep(0.2); sys.stdout.write('leader exiting\\n'); "
+                "sys.stdout.flush()",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        stdout_reader, stderr_reader = self._output_readers(process)
+        stdout_reader.start()
+        stderr_reader.start()
+        try:
+            process.wait(timeout=2)
+            with mock.patch.object(cleanup, "COOPERATIVE_STOP_SECONDS", 0.1), mock.patch.object(
+                cleanup, "FORCED_STOP_SECONDS", 1.0
+            ):
+                with self.assertRaisesRegex(M0Error, "required SIGKILL"):
+                    cleanup.stop_process_group(
+                        process,
+                        (stdout_reader, stderr_reader),
+                        description="test relay",
+                    )
+            self.assertFalse(stdout_reader.is_alive())
+            self.assertFalse(stderr_reader.is_alive())
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(process.pid, 0)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def test_abort_multi_pipe_group_closes_streams_without_reader_owners(self) -> None:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        self.assertIsNotNone(process.stdout)
+        self.assertIsNotNone(process.stderr)
+        stdout = process.stdout
+        stderr = process.stderr
+        try:
+            cleanup.abort_process_group(
+                process,
+                (),
+                description="test relay",
+                unowned_streams=(stdout, stderr),  # type: ignore[arg-type]
+            )
+            self.assertTrue(stdout.closed)
+            self.assertTrue(stderr.closed)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(process.pid, 0)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def test_abort_browser_group_closes_a_pre_reader_stderr_pipe(self) -> None:
+        process = self._start("import time; time.sleep(30)")
+        self.assertIsNotNone(process.stderr)
+        stderr = process.stderr
+        try:
+            cleanup.abort_browser_group(
+                process,
+                unowned_streams=(stderr,),  # type: ignore[arg-type]
+            )
+            self.assertTrue(stderr.closed)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(process.pid, 0)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def test_probe_failure_after_sigterm_still_attempts_sigkill(self) -> None:
         browser = mock.Mock()

@@ -17,7 +17,7 @@ from pathlib import Path
 import queue
 import struct
 import threading
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlencode, urlsplit
 import zlib
 
@@ -436,6 +436,8 @@ def create_m3_server(
     artifact_snapshots: dict[str, bytes] | None = None,
     static_snapshots: dict[str, bytes] | None = None,
     require_ahem_font: bool = True,
+    server_factory: Callable[[tuple[str, int], M3ServerState], M3HTTPServer]
+    | None = None,
 ) -> M3HTTPServer:
     resolved_out_dir = out_dir.resolve()
     required_artifact_names = (
@@ -469,6 +471,8 @@ def create_m3_server(
         raise M0Error("M3 host snapshots are invalid")
     if type(require_ahem_font) is not bool:
         raise M0Error("M3 Ahem font requirement is invalid")
+    if server_factory is not None and not callable(server_factory):
+        raise M0Error("M3 server factory is invalid")
     if not require_ahem_font and (
         set(snapshots) != set(required_artifact_names)
         or set(static_snapshot_values) != M3_HOST_SNAPSHOT_PATHS
@@ -494,7 +498,9 @@ def create_m3_server(
             for request_path, contents in static_snapshot_values.items()
         },
     )
-    return M3HTTPServer((bind, port), state)
+    if server_factory is None:
+        return M3HTTPServer((bind, port), state)
+    return server_factory((bind, port), state)
 
 
 def m3_smoke_url(
