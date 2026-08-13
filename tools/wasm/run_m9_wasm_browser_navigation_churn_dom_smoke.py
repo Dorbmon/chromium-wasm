@@ -9,10 +9,11 @@ This runner serves immutable byte snapshots of one Chrome Wasm artifact and
 the narrow host harness. The host never supplies a URL or invokes a navigation
 command: C++ owns six fixed, script-free data: documents, their history/title/
 RFH/FVP checks, and shutdown. The host reports a later Canvas2D backing-store
-copy and current Wasm linear-memory capacity for each verified native stage.
-Capacity is a bounded observation only, not a navigation-performance, network,
-persistence, worker, allocation, residency, headroom, leak, out-of-memory,
-drain, or M8 feature test.
+copy plus existing read-only native Wasm capacity/maximum/headroom and
+PageAllocator logical-mapping counters for each verified native stage. These
+counters are bounded observations only, not navigation-performance, network,
+persistence, worker, RSS, committed-memory, allocation, residency, leak,
+out-of-memory, drain, or M8 feature tests.
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ SENTINEL = "CHROMIUM_WASM_M9_NAVIGATION_CHURN_DOM"
 CASE = "browser_same_instance_navigation_churn_m9"
 SCOPE = (
     "fixed-three-cycle-same-instance-local-data-navigation-churn-with-later-"
-    "backing-store-copy-observation-only"
+    "backing-store-copy-and-native-memory-observation-only"
 )
 SWITCH = "--wasm-browser-host-navigation-churn-smoke"
 READY_MARKER = "CHROMIUM_WASM_M9_NAVIGATION_CHURN:READY"
@@ -94,6 +95,20 @@ WASM_HEAP_BUFFER_CAPACITY_LIMITATION = (
     "Module.HEAPU8.buffer.byteLength capacity is not allocations, residency, "
     "address-space headroom, a leak, out-of-memory, or drain proof"
 )
+NATIVE_MEMORY_SAMPLE_COUNT = STAGE_COUNT + 1
+NATIVE_MEMORY_SNAPSHOT_DEFINITION = (
+    "read-only native Emscripten current linear-memory capacity, configured "
+    "linear-memory maximum, and derived headroom plus PageAllocator total "
+    "logical mappings across clients at runtime initialization and each "
+    "stage's later Canvas2D backing-store-copy observation; mappings may be "
+    "uncommitted; not RSS, committed memory, allocation, residency, leak, "
+    "out-of-memory, or drain evidence"
+)
+NATIVE_MEMORY_SNAPSHOT_LIMITATION = (
+    "native memory counters are point-in-time capacity/maximum/headroom and "
+    "logical-mapping observations, not RSS, committed memory, allocations, "
+    "residency, leaks, out-of-memory, or drain proof"
+)
 MAX_SAFE_INTEGER = (1 << 53) - 1
 LIMITATIONS = (
     "does_not_exercise_omnibox_or_trusted_dom_navigation_input",
@@ -103,6 +118,7 @@ LIMITATIONS = (
     "does_not_prove_opfs_persistence_or_recovery",
     "does_not_claim_m7_profile_persistence",
     WASM_HEAP_BUFFER_CAPACITY_LIMITATION,
+    NATIVE_MEMORY_SNAPSHOT_LIMITATION,
     "does_not_measure_or_exhaust_the_pthread_pool",
     "does_not_prove_raster_compositor_display_or_vsync_presentation",
     "does_not_claim_m8_feature_compatibility",
@@ -158,6 +174,25 @@ _WASM_HEAP_BUFFER_CAPACITY_SAMPLE_FIELDS = frozenset(
         "heapU8Exported",
         "observation",
         "stage",
+    )
+)
+_NATIVE_MEMORY_SNAPSHOT_FIELDS = frozenset(
+    (
+        "definition",
+        "nondecreasingLinearCapacity",
+        "sampleCount",
+        "samples",
+    )
+)
+_NATIVE_MEMORY_SAMPLE_FIELDS = frozenset(
+    (
+        "frameId",
+        "observation",
+        "pageAllocatorTotalMappedBytes",
+        "stage",
+        "wasmLinearMemoryCapacityBytes",
+        "wasmLinearMemoryHeadroomBytes",
+        "wasmLinearMemoryMaximumBytes",
     )
 )
 
@@ -469,6 +504,11 @@ def verify_required_exports(module_loader: bytes) -> None:
     for export in (
         'Module["_chromium_wasm_browser_host_navigation_churn_presented"]',
         'Module["ccall"]',
+        'Module["_chromium_wasm_browser_host_memory_linear_capacity_bytes"]',
+        'Module["_chromium_wasm_browser_host_memory_linear_maximum_bytes"]',
+        (
+            'Module["_chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes"]'
+        ),
     ):
         if export not in loader:
             raise M0Error(f"navigation-churn module lacks required export {export}")
@@ -751,6 +791,114 @@ def _validate_wasm_heap_buffer_capacity(
         raise M0Error("navigation-churn Wasm capacity growth flag is invalid")
 
 
+def _validate_native_memory_snapshot(
+    value: object, stages: list[dict[str, object]]
+) -> None:
+    """Validates fixed native counter observations without leak inference.
+
+    The seven samples are runtime initialization followed by each established
+    stage/frame copy. There is deliberately no post-``onExit`` observation:
+    native teardown can invalidate the application state. PageAllocator logical
+    mappings may rise or fall between points, so only Wasm linear capacity is
+    monotonic; mappings are neither compared nor treated as leak evidence.
+    """
+
+    snapshot = _require_exact_fields(
+        value, _NATIVE_MEMORY_SNAPSHOT_FIELDS, "native memory snapshot"
+    )
+    if snapshot.get("definition") != NATIVE_MEMORY_SNAPSHOT_DEFINITION:
+        raise M0Error("navigation-churn native memory definition is invalid")
+    if (
+        type(snapshot.get("sampleCount")) is not int
+        or snapshot["sampleCount"] != NATIVE_MEMORY_SAMPLE_COUNT
+    ):
+        raise M0Error("navigation-churn native memory sample count is invalid")
+    samples = snapshot.get("samples")
+    if not isinstance(samples, list) or len(samples) != NATIVE_MEMORY_SAMPLE_COUNT:
+        raise M0Error("navigation-churn native memory does not have seven samples")
+
+    capacities: list[int] = []
+    for index, raw_sample in enumerate(samples):
+        sample = _require_exact_fields(
+            raw_sample, _NATIVE_MEMORY_SAMPLE_FIELDS, f"native memory sample {index}"
+        )
+        expected_observation = "stage_backing_store_copy"
+        expected_stage: int | None = None
+        expected_frame_id: int | None = None
+        if index == 0:
+            expected_observation = "runtime_initialized"
+        else:
+            expected_stage = index
+            expected_frame_id = stages[index - 1]["backingStoreCopyFrameId"]
+        if sample.get("observation") != expected_observation:
+            raise M0Error(
+                f"navigation-churn native memory sample {index} observation is invalid"
+            )
+        if expected_stage is None:
+            if sample.get("stage") is not None or sample.get("frameId") is not None:
+                raise M0Error(
+                    f"navigation-churn native memory sample {index} is not runtime initialization"
+                )
+        elif (
+            type(sample.get("stage")) is not int
+            or sample["stage"] != expected_stage
+            or type(sample.get("frameId")) is not int
+            or sample["frameId"] != expected_frame_id
+        ):
+            raise M0Error(
+                f"navigation-churn native memory sample {index} is not bound to "
+                "its stage/frame copy observation"
+            )
+
+        values: dict[str, int] = {}
+        for field in (
+            "pageAllocatorTotalMappedBytes",
+            "wasmLinearMemoryCapacityBytes",
+            "wasmLinearMemoryHeadroomBytes",
+            "wasmLinearMemoryMaximumBytes",
+        ):
+            value_bytes = sample.get(field)
+            if (
+                type(value_bytes) is not int
+                or value_bytes < 0
+                or value_bytes > MAX_SAFE_INTEGER
+                or value_bytes % WASM_PAGE_SIZE_BYTES != 0
+            ):
+                raise M0Error(
+                    f"navigation-churn native memory sample {index} {field} is not "
+                    "a safe nonnegative Wasm-page multiple"
+                )
+            values[field] = value_bytes
+        if values["wasmLinearMemoryCapacityBytes"] < WASM_PAGE_SIZE_BYTES:
+            raise M0Error(
+                f"navigation-churn native memory sample {index} capacity is below one page"
+            )
+        if values["wasmLinearMemoryMaximumBytes"] < (
+            values["wasmLinearMemoryCapacityBytes"]
+        ):
+            raise M0Error(
+                f"navigation-churn native memory sample {index} maximum is below capacity"
+            )
+        if values["wasmLinearMemoryHeadroomBytes"] != (
+            values["wasmLinearMemoryMaximumBytes"]
+            - values["wasmLinearMemoryCapacityBytes"]
+        ):
+            raise M0Error(
+                f"navigation-churn native memory sample {index} headroom is inconsistent"
+            )
+        capacities.append(values["wasmLinearMemoryCapacityBytes"])
+
+    nondecreasing = all(
+        later >= earlier for earlier, later in zip(capacities, capacities[1:])
+    )
+    if snapshot.get("nondecreasingLinearCapacity") is not nondecreasing:
+        raise M0Error(
+            "navigation-churn native memory linear-capacity monotonic flag is invalid"
+        )
+    if not nondecreasing:
+        raise M0Error("navigation-churn native memory linear capacity regressed")
+
+
 def _navigated_marker(stage: dict[str, object]) -> str:
     return (
         f"{NAVIGATED_MARKER} cycle={stage['cycle']} stage={stage['stage']} "
@@ -884,6 +1032,7 @@ def validate_result(
         stages.append(stage)
     _validate_markers(result.get("stderr"), stages)
     _validate_wasm_heap_buffer_capacity(result.get("wasmHeapBufferCapacity"), stages)
+    _validate_native_memory_snapshot(result.get("nativeMemorySnapshot"), stages)
 
 
 def wait_for_result(

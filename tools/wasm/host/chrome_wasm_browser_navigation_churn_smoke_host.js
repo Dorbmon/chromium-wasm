@@ -5,16 +5,18 @@
 // This M9 preparation lane is intentionally narrow. Native C++ owns the
 // Browser, the original WebContents, all six fixed data: URLs, navigation,
 // history checks, and shutdown. The outer host can only report one later
-// Canvas2D backing-store copy for each native-completed navigation. That copy
-// orders host observation only; it does not establish raster, compositor,
-// display, or vsync presentation. There is no host URL, input, navigation,
-// persistence, WISP, page-Wasm, or worker-control API here.
+// Canvas2D backing-store copy for each native-completed navigation and sample
+// existing read-only native memory counters immediately before its existing
+// acknowledgement. This bounded evidence does not establish raster, compositor,
+// display, vsync, RSS, committed memory, allocations, or leaks. There is no
+// host URL, input, navigation, persistence, WISP, page-Wasm, or worker-control
+// API here.
 
 const HOST_PROTOCOL = 1;
 const CASE = "browser_same_instance_navigation_churn_m9";
 const PRODUCT_MODULE_NAME = "chrome_wasm";
 const SCOPE = "fixed-three-cycle-same-instance-local-data-navigation-churn-" +
-    "with-later-backing-store-copy-observation-only";
+    "with-later-backing-store-copy-and-native-memory-observation-only";
 const SWITCH = "--wasm-browser-host-navigation-churn-smoke";
 const READY_MARKER = "CHROMIUM_WASM_M9_NAVIGATION_CHURN:READY";
 const NAVIGATED_MARKER = "CHROMIUM_WASM_M9_NAVIGATION_CHURN:NAVIGATED";
@@ -45,6 +47,18 @@ const WASM_HEAP_BUFFER_CAPACITY_DEFINITION =
 const WASM_HEAP_BUFFER_CAPACITY_LIMITATION =
     "Module.HEAPU8.buffer.byteLength capacity is not allocations, residency, " +
     "address-space headroom, a leak, out-of-memory, or drain proof";
+const NATIVE_MEMORY_SAMPLE_COUNT = STAGE_COUNT + 1;
+const NATIVE_MEMORY_SNAPSHOT_DEFINITION =
+    "read-only native Emscripten current linear-memory capacity, configured " +
+    "linear-memory maximum, and derived headroom plus PageAllocator total " +
+    "logical mappings across clients at runtime initialization and each " +
+    "stage's later Canvas2D backing-store-copy observation; mappings may be " +
+    "uncommitted; not RSS, committed memory, allocation, residency, leak, " +
+    "out-of-memory, or drain evidence";
+const NATIVE_MEMORY_SNAPSHOT_LIMITATION =
+    "native memory counters are point-in-time capacity/maximum/headroom and " +
+    "logical-mapping observations, not RSS, committed memory, allocations, " +
+    "residency, leaks, out-of-memory, or drain proof";
 const ARTIFACT_SOURCE_PROVENANCE = "unverified";
 const ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot";
 const SOURCE_SNAPSHOT_PROVENANCE =
@@ -59,6 +73,7 @@ const LIMITATIONS = Object.freeze([
   "does_not_prove_opfs_persistence_or_recovery",
   "does_not_claim_m7_profile_persistence",
   WASM_HEAP_BUFFER_CAPACITY_LIMITATION,
+  NATIVE_MEMORY_SNAPSHOT_LIMITATION,
   "does_not_measure_or_exhaust_the_pthread_pool",
   "does_not_prove_raster_compositor_display_or_vsync_presentation",
   "does_not_claim_m8_feature_compatibility",
@@ -235,6 +250,59 @@ function wasmHeapBufferCapacitySample(module, observation, stage, frameId) {
   });
 }
 
+const NATIVE_MEMORY_EXPORTS = Object.freeze({
+  pageAllocatorTotalMappedBytes:
+      "chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes",
+  wasmLinearMemoryCapacityBytes:
+      "chromium_wasm_browser_host_memory_linear_capacity_bytes",
+  wasmLinearMemoryMaximumBytes:
+      "chromium_wasm_browser_host_memory_linear_maximum_bytes",
+});
+
+export function nativeMemorySample(module, observation, stage, frameId) {
+  if (!module || typeof module.ccall !== "function") {
+    throw new Error("navigation-churn native memory sample requires Module.ccall");
+  }
+  const metrics = {};
+  for (const [field, exportName] of Object.entries(NATIVE_MEMORY_EXPORTS)) {
+    let value;
+    try {
+      value = module.ccall(exportName, "number", [], []);
+    } catch (error) {
+      throw new Error(`navigation-churn native memory export ${exportName} failed: ` +
+          String(error));
+    }
+    if (!Number.isSafeInteger(value) || value < 0 ||
+        value % WASM_PAGE_SIZE_BYTES !== 0) {
+      throw new Error(`navigation-churn native memory metric ${field} is not a ` +
+          "safe nonnegative Wasm-page multiple");
+    }
+    metrics[field] = value;
+  }
+  const capacity = metrics.wasmLinearMemoryCapacityBytes;
+  const maximum = metrics.wasmLinearMemoryMaximumBytes;
+  if (capacity < WASM_PAGE_SIZE_BYTES) {
+    throw new Error("navigation-churn native memory capacity is below one page");
+  }
+  if (maximum < capacity) {
+    throw new Error("navigation-churn native memory maximum is below capacity");
+  }
+  const headroom = maximum - capacity;
+  if (!Number.isSafeInteger(headroom) || headroom < 0 ||
+      headroom % WASM_PAGE_SIZE_BYTES !== 0) {
+    throw new Error("navigation-churn native memory headroom is invalid");
+  }
+  return Object.freeze({
+    frameId,
+    observation,
+    pageAllocatorTotalMappedBytes: metrics.pageAllocatorTotalMappedBytes,
+    stage,
+    wasmLinearMemoryCapacityBytes: capacity,
+    wasmLinearMemoryHeadroomBytes: headroom,
+    wasmLinearMemoryMaximumBytes: maximum,
+  });
+}
+
 function stageInfo(stage) {
   if (!Number.isSafeInteger(stage) || stage < 1 || stage > STAGE_COUNT) {
     return null;
@@ -345,6 +413,7 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
   #lifecyclePassObserved = false;
   #stages = [];
   #wasmHeapBufferCapacitySamples = [];
+  #nativeMemorySamples = [];
 
   constructor(canvas, versions, artifact, captureHarness) {
     if (!(canvas instanceof HTMLCanvasElement)) {
@@ -463,6 +532,33 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
     };
   }
 
+  #recordNativeMemory(observation, stage, frameId) {
+    try {
+      if (this.#nativeMemorySamples.length >= NATIVE_MEMORY_SAMPLE_COUNT) {
+        throw new Error("navigation-churn recorded too many native memory samples");
+      }
+      const sample = nativeMemorySample(this.#module, observation, stage, frameId);
+      this.#nativeMemorySamples.push(sample);
+      return true;
+    } catch (error) {
+      this.#recordFatal(`invalid navigation-churn native memory sample: ${String(error)}`);
+      return false;
+    }
+  }
+
+  #nativeMemorySnapshot() {
+    const samples = this.#nativeMemorySamples.map((sample) => ({...sample}));
+    const capacities = samples.map((sample) => sample.wasmLinearMemoryCapacityBytes);
+    return {
+      definition: NATIVE_MEMORY_SNAPSHOT_DEFINITION,
+      nondecreasingLinearCapacity: capacities.length !== 0 &&
+          capacities.every((capacity, index) =>
+            index === 0 || capacity >= capacities[index - 1]),
+      sampleCount: samples.length,
+      samples,
+    };
+  }
+
   #reportFrame(value) {
     try {
       const report = asReport(value, "frame report");
@@ -545,6 +641,14 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
         return;
       }
       try {
+        // Keep this read-only native sample immediately before the existing
+        // acknowledgement. Do not take an onExit sample: teardown may already
+        // have invalidated native state by then.
+        if (!this.#recordNativeMemory(
+            "stage_backing_store_copy", stage.stage,
+            stage.backingStoreCopyFrameId)) {
+          return;
+        }
         const accepted = this.#module.ccall(
             "chromium_wasm_browser_host_navigation_churn_presented", "number",
             ["number"], [stage.stage]);
@@ -569,7 +673,9 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
     if (!frame) return;
     active.backingStoreCopyFrameId = frame.id;
     // This is the fixed stage/frame-bound later Canvas2D-copy observation
-    // already used to acknowledge each native navigation stage.
+    // already used to acknowledge each native navigation stage. Its native
+    // memory sample is taken in the acknowledgement callback immediately
+    // before that existing native ccall.
     if (!this.#recordWasmHeapBufferCapacity(
         "stage_backing_store_copy", active.stage, frame.id)) {
       return;
@@ -652,13 +758,27 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
     if (!module || typeof module !== "object" || this.#module !== null ||
         typeof module.ccall !== "function" ||
         typeof module._chromium_wasm_browser_host_navigation_churn_presented !==
+            "function" ||
+        typeof module._chromium_wasm_browser_host_memory_linear_capacity_bytes !==
+            "function" ||
+        typeof module._chromium_wasm_browser_host_memory_linear_maximum_bytes !==
+            "function" ||
+        typeof module._chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes !==
             "function") {
-      this.#recordFatal("Module lacks the narrow navigation-churn acknowledgement export");
+      this.#recordFatal(
+          "Module lacks the required navigation-churn acknowledgement or native memory export");
       return;
     }
     this.#module = module;
+    if (!this.#recordWasmHeapBufferCapacity(
+        "runtime_initialized", null, null) ||
+        !this.#recordNativeMemory("runtime_initialized", null, null)) {
+      // A failed runtime-initialization observation has already been made
+      // fatal. Leave runtimeInitialized false so it cannot satisfy the pass
+      // contract if the module later exits normally.
+      return;
+    }
     this.#runtimeInitialized = true;
-    this.#recordWasmHeapBufferCapacity("runtime_initialized", null, null);
   }
 
   #stageSnapshot(stage) {
@@ -720,6 +840,7 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
         stages: this.#stages.map((stage) => this.#stageSnapshot(stage)),
       },
       wasmHeapBufferCapacity: this.#wasmHeapBufferCapacitySnapshot(),
+      nativeMemorySnapshot: this.#nativeMemorySnapshot(),
       stdout: this.#stdout,
       stderr: this.#stderr,
       failedChecks: [],
@@ -923,6 +1044,82 @@ function validateWasmHeapBufferCapacity(result, churn, require) {
   "navigation-churn Wasm capacity growth flag is invalid");
 }
 
+function validateNativeMemorySnapshot(result, churn, require) {
+  const snapshot = result.nativeMemorySnapshot;
+  const snapshotFields = [
+    "definition", "nondecreasingLinearCapacity", "sampleCount", "samples",
+  ];
+  const sampleFields = [
+    "frameId", "observation", "pageAllocatorTotalMappedBytes", "stage",
+    "wasmLinearMemoryCapacityBytes", "wasmLinearMemoryHeadroomBytes",
+    "wasmLinearMemoryMaximumBytes",
+  ];
+  require(hasExactFields(snapshot, snapshotFields),
+      "navigation-churn native memory evidence schema is invalid");
+  if (!hasExactFields(snapshot, snapshotFields)) return;
+  require(snapshot.definition === NATIVE_MEMORY_SNAPSHOT_DEFINITION,
+      "navigation-churn native memory definition is invalid");
+  require(Number.isSafeInteger(snapshot.sampleCount) &&
+      snapshot.sampleCount === NATIVE_MEMORY_SAMPLE_COUNT &&
+      Array.isArray(snapshot.samples) &&
+      snapshot.samples.length === NATIVE_MEMORY_SAMPLE_COUNT,
+  "navigation-churn native memory sample count is invalid");
+  if (!Array.isArray(snapshot.samples) ||
+      snapshot.samples.length !== NATIVE_MEMORY_SAMPLE_COUNT) {
+    return;
+  }
+
+  const capacities = [];
+  for (let index = 0; index < snapshot.samples.length; ++index) {
+    const sample = snapshot.samples[index];
+    let expectedObservation = "stage_backing_store_copy";
+    let expectedStage = null;
+    let expectedFrameId = null;
+    if (index === 0) {
+      expectedObservation = "runtime_initialized";
+    } else {
+      const observedStage = churn?.stages?.[index - 1];
+      expectedStage = index;
+      expectedFrameId = observedStage?.backingStoreCopyFrameId;
+    }
+    require(hasExactFields(sample, sampleFields),
+        `navigation-churn native memory sample ${index} schema is invalid`);
+    if (!hasExactFields(sample, sampleFields)) continue;
+    require(sample.observation === expectedObservation &&
+        sample.stage === expectedStage && sample.frameId === expectedFrameId,
+    `navigation-churn native memory sample ${index} is not bound to its observation`);
+    const metricFields = [
+      "pageAllocatorTotalMappedBytes", "wasmLinearMemoryCapacityBytes",
+      "wasmLinearMemoryHeadroomBytes", "wasmLinearMemoryMaximumBytes",
+    ];
+    const validMetrics = metricFields.every((field) =>
+      Number.isSafeInteger(sample[field]) && sample[field] >= 0 &&
+      sample[field] % WASM_PAGE_SIZE_BYTES === 0);
+    require(validMetrics,
+        `navigation-churn native memory sample ${index} has invalid byte counters`);
+    if (!validMetrics) continue;
+    require(sample.wasmLinearMemoryCapacityBytes >= WASM_PAGE_SIZE_BYTES,
+        `navigation-churn native memory sample ${index} capacity is below one page`);
+    require(sample.wasmLinearMemoryMaximumBytes >=
+        sample.wasmLinearMemoryCapacityBytes,
+    `navigation-churn native memory sample ${index} maximum is below capacity`);
+    require(sample.wasmLinearMemoryHeadroomBytes ===
+        sample.wasmLinearMemoryMaximumBytes -
+            sample.wasmLinearMemoryCapacityBytes,
+    `navigation-churn native memory sample ${index} headroom is inconsistent`);
+    capacities.push(sample.wasmLinearMemoryCapacityBytes);
+  }
+  if (capacities.length !== NATIVE_MEMORY_SAMPLE_COUNT) return;
+  const nondecreasing = capacities.every((value, index) =>
+    index === 0 || value >= capacities[index - 1]);
+  require(snapshot.nondecreasingLinearCapacity === true &&
+      snapshot.nondecreasingLinearCapacity === nondecreasing,
+  "navigation-churn native memory linear capacity is not nondecreasing");
+  // PageAllocator's aggregate logical-mapping counter can legitimately rise or
+  // fall between samples. Do not derive allocation, RSS, or leak conclusions
+  // by comparing it across this bounded set of observations.
+}
+
 function validateResult(result) {
   const failures = [];
   const require = (condition, message) => {
@@ -1016,6 +1213,7 @@ function validateResult(result) {
   require(Array.isArray(result.frameReports) && result.frameReports.length >= STAGE_COUNT,
       "navigation churn has too few frame reports");
   validateWasmHeapBufferCapacity(result, churn, require);
+  validateNativeMemorySnapshot(result, churn, require);
   require(result.artifact?.artifact_source_provenance ===
       ARTIFACT_SOURCE_PROVENANCE,
   "navigation-churn artifact source provenance is not unverified");
