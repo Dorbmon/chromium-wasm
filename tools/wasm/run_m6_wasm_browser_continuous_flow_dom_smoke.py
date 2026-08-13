@@ -53,6 +53,7 @@ from m3_content_server import compare_screenshots, decode_png
 from m4_cdp import unused_loopback_port, wait_for_page_client
 from m9_browser_cleanup import (
     BrowserStderrReader,
+    RelayReadinessLatch,
     abort_browser_group,
     stop_browser_group,
 )
@@ -1604,12 +1605,12 @@ def main() -> int:
             start_new_session=True,
         )
         assert relay.stdout is not None and relay.stderr is not None
-        ready_lines: queue.Queue[str | None] = queue.Queue()
+        ready_lines = RelayReadinessLatch()
         relay_stdout_reader = BrowserStderrReader(
             relay.stdout,
             relay_stdout,
             name="chromium-wasm-m6-continuous-flow-relay-stdout",
-            on_line=lambda text: ready_lines.put(text) if text else None,
+            on_line=ready_lines.put,
             on_eof=lambda: ready_lines.put(None),
         )
         relay_stderr_reader = BrowserStderrReader(

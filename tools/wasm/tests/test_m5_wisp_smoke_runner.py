@@ -522,6 +522,16 @@ class RelayReadinessTest(unittest.TestCase):
         )
         self.assertEqual(ready.transcript_url, "http://127.0.0.1:40123/status")
 
+    def test_stdout_callbacks_retain_only_the_first_readiness_line(self) -> None:
+        latch = run_m5_wisp_smoke.RelayReadinessLatch()
+
+        run_m5_wisp_smoke._queue_relay_ready_line(latch, "")
+        run_m5_wisp_smoke._queue_relay_ready_line(latch, RELAY_READY_LINE)
+        run_m5_wisp_smoke._queue_relay_ready_line(latch, "later relay output")
+        run_m5_wisp_smoke._queue_relay_ready_eof(latch)
+
+        self.assertEqual(RELAY_READY_LINE, latch.get(block=False))
+
     def test_rejects_nonloopback_or_credentialed_wisp_endpoint(self) -> None:
         for endpoint in (
             "ws://example.test:40123/wisp/",

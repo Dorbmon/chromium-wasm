@@ -342,6 +342,16 @@ class ControlledHttpsRelayContractTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, expression):
                     smoke.parse_relay_ready_line(json.dumps(payload))
 
+    def test_stdout_callbacks_retain_only_the_first_readiness_line(self) -> None:
+        latch = smoke.RelayReadinessLatch()
+
+        smoke._queue_relay_ready_line(latch, "")
+        smoke._queue_relay_ready_line(latch, relay_ready_json())
+        smoke._queue_relay_ready_line(latch, "later relay output")
+        smoke._queue_relay_ready_eof(latch)
+
+        self.assertEqual(relay_ready_json(), latch.get(block=False))
+
     def test_rejects_duplicate_relay_ready_keys(self) -> None:
         duplicate = (
             '{"httpsUrl":"https://a.test:43211/m5/",'

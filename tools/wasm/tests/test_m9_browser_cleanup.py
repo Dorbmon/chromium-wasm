@@ -11,6 +11,7 @@ from collections import deque
 import io
 import os
 from pathlib import Path
+import queue
 import signal
 import subprocess
 import sys
@@ -65,6 +66,45 @@ class _DrainFailureTextStream:
 
     def close(self) -> None:
         return
+
+
+class RelayReadinessLatchTest(unittest.TestCase):
+    def test_retains_first_nonempty_line_and_ignores_later_eof(self) -> None:
+        latch = cleanup.RelayReadinessLatch()
+
+        latch.put("")
+        latch.put("first readiness")
+        latch.put("later diagnostic")
+        latch.put(None)
+
+        self.assertEqual("first readiness", latch.get(block=False))
+
+    def test_eof_resolves_only_an_unresolved_latch(self) -> None:
+        latch = cleanup.RelayReadinessLatch()
+        latch.put(None)
+        latch.put("late readiness")
+
+        self.assertIsNone(latch.get(block=False))
+
+    def test_timeout_preserves_queue_empty_compatibility(self) -> None:
+        latch = cleanup.RelayReadinessLatch()
+
+        with self.assertRaises(queue.Empty):
+            latch.get(timeout=0)
+        with self.assertRaises(queue.Empty):
+            latch.get(block=False)
+
+    def test_ten_thousand_short_lines_do_not_accumulate_readiness_records(self) -> None:
+        latch = cleanup.RelayReadinessLatch()
+
+        for index in range(10_000):
+            latch.put(f"line-{index}")
+
+        self.assertEqual("line-0", latch.get(block=False))
+
+    def test_rejects_non_text_non_eof_observations(self) -> None:
+        with self.assertRaisesRegex(TypeError, "text or None"):
+            cleanup.RelayReadinessLatch().put(object())  # type: ignore[arg-type]
 
 
 @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")

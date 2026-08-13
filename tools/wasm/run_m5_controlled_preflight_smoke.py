@@ -38,6 +38,7 @@ from m0_common import (
 )
 from m3_content_server import M5_CONTROLLED_PREFLIGHT_CASE, create_m3_server
 from m4_cdp import unused_loopback_port, wait_for_page_client
+from m9_browser_cleanup import RelayReadinessLatch
 from run_browser_smoke import drain_stream, find_browser, stop_browser
 from run_content_shell_smoke import manifest_versions
 from run_m5_wisp_smoke import (
@@ -1054,7 +1055,7 @@ def main() -> int:
             text=True, start_new_session=True)
         assert relay.stdout is not None
         assert relay.stderr is not None
-        ready_lines: queue.Queue[str | None] = queue.Queue()
+        ready_lines = RelayReadinessLatch()
         relay_stdout_thread = threading.Thread(
             target=_drain_relay_stdout,
             args=(relay.stdout, relay_stdout, ready_lines), daemon=True)

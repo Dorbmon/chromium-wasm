@@ -41,6 +41,7 @@ from m0_common import (
     print_context,
 )
 from m4_cdp import unused_loopback_port, wait_for_page_client
+from m9_browser_cleanup import RelayReadinessLatch
 from run_browser_smoke import (
     browser_command,
     drain_stream,
@@ -735,13 +736,12 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
 def _drain_relay_stdout(
     stream: Any,
     destination: deque[str],
-    ready_lines: queue.Queue[str | None],
+    ready_lines: RelayReadinessLatch,
 ) -> None:
     for line in stream:
         text = line.rstrip()
         destination.append(text)
-        if text:
-            ready_lines.put(text)
+        ready_lines.put(text)
     ready_lines.put(None)
 
 
@@ -1070,7 +1070,7 @@ def main() -> int:
         )
         assert relay.stdout is not None
         assert relay.stderr is not None
-        ready_lines: queue.Queue[str | None] = queue.Queue()
+        ready_lines = RelayReadinessLatch()
         relay_stdout_thread = threading.Thread(
             target=_drain_relay_stdout,
             args=(relay.stdout, relay_stdout, ready_lines),

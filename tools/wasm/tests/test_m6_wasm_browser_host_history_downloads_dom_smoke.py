@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import copy
+from collections import deque
+import io
 import json
 from pathlib import Path
 import sys
@@ -285,6 +287,17 @@ def successful_result() -> dict[str, object]:
 
 
 class M6WasmBrowserHostHistoryDownloadsDomSmokeTest(unittest.TestCase):
+    def test_legacy_stdout_drainer_retains_only_first_readiness_line(self) -> None:
+        latch = smoke.RelayReadinessLatch()
+
+        smoke._drain_relay_stdout(
+            io.StringIO("\nfirst readiness\nlater relay output\n"),
+            deque(),
+            latch,
+        )
+
+        self.assertEqual("first readiness", latch.get(block=False))
+
     def test_host_uses_shared_adapters_deferred_ordinals_and_no_navigation_api(self) -> None:
         host = source(
             "tools/wasm/host/chrome_wasm_browser_host_history_downloads_smoke_host.js"

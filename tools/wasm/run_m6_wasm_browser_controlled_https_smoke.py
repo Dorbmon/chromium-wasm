@@ -51,6 +51,7 @@ from m0_common import (
 from m4_cdp import unused_loopback_port, wait_for_page_client
 from m9_browser_cleanup import (
     BrowserStderrReader,
+    RelayReadinessLatch,
     abort_browser_group,
     abort_process_group,
     stop_browser_group,
@@ -607,21 +608,20 @@ def parse_relay_ready_line(line: str) -> RelayReady:
 
 
 def _queue_relay_ready_line(
-    ready_lines: queue.Queue[str | None], text: str
+    ready_lines: RelayReadinessLatch, text: str
 ) -> None:
     """Forward relay stdout to readiness parsing without losing EOF evidence."""
 
-    if text:
-        ready_lines.put(text)
+    ready_lines.put(text)
 
 
-def _queue_relay_ready_eof(ready_lines: queue.Queue[str | None]) -> None:
+def _queue_relay_ready_eof(ready_lines: RelayReadinessLatch) -> None:
     ready_lines.put(None)
 
 
 def wait_for_relay_ready(
     relay: subprocess.Popen[str],
-    ready_lines: queue.Queue[str | None],
+    ready_lines: RelayReadinessLatch,
     relay_stderr: deque[str],
     deadline: float,
 ) -> RelayReady:
@@ -1861,7 +1861,7 @@ def main() -> int:
         assert relay.stderr is not None
         relay_stdout_stream = relay.stdout
         relay_stderr_stream = relay.stderr
-        ready_lines: queue.Queue[str | None] = queue.Queue()
+        ready_lines = RelayReadinessLatch()
         relay_stdout_reader = BrowserStderrReader(
             relay_stdout_stream,
             relay_stdout,

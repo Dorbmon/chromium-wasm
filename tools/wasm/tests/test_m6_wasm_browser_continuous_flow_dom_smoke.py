@@ -608,6 +608,10 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
             "client.dispatch_primary_click",
             "compare_reviewed_baseline",
             "validate_restart_result",
+            "RelayReadinessLatch",
+            "ready_lines = RelayReadinessLatch()",
+            "on_line=ready_lines.put",
+            "on_eof=lambda: ready_lines.put(None)",
             "--wasm-browser-host-continuous-flow-smoke",
             "--wasm-browser-host-continuous-flow-restart-smoke",
         ):
@@ -616,6 +620,7 @@ class M6WasmBrowserContinuousFlowDomSmokeTest(unittest.TestCase):
         self.assertNotIn("Runtime.evaluate", runner)
         self.assertNotIn("ccall(", runner)
         self.assertNotIn("capture-baseline", runner)
+        self.assertNotIn("ready_lines: queue.Queue", runner)
 
     @unittest.skipUnless(os.name == "posix", "requires POSIX process groups")
     def test_reaped_relay_leader_with_pipe_holder_cannot_report_clean_cleanup(self) -> None:

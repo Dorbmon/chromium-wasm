@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 from collections import deque
+import io
 import json
 from pathlib import Path
 import sys
@@ -607,6 +608,17 @@ class M5ControlledPreflightSmokeTest(unittest.TestCase):
             "m5_plaintext_http_control_url",
         ):
             self.assertNotIn(forbidden, query)
+
+    def test_legacy_stdout_drainer_retains_only_first_readiness_line(self) -> None:
+        latch = controlled_smoke.RelayReadinessLatch()
+
+        controlled_smoke._drain_relay_stdout(
+            io.StringIO("\nfirst readiness\nlater relay output\n"),
+            deque(),
+            latch,
+        )
+
+        self.assertEqual("first readiness", latch.get(block=False))
 
     def test_passing_result_is_accepted(self) -> None:
         controlled_smoke.validate_controlled_preflight_result(

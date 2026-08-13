@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import deque
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -35,6 +36,66 @@ POLL_SECONDS = 0.05
 # even if a browser or child writes without a newline.
 STDERR_READ_CHUNK_CHARS = 4 * 1024
 MAX_STDERR_RECORD_CHARS = 64 * 1024
+
+
+class RelayReadinessLatch:
+    """Retain one relay readiness line without applying producer backpressure.
+
+    Relay stdout is otherwise retained in a bounded diagnostic deque, but its
+    readiness protocol needs just one terminal observation: the first
+    nonempty line, or EOF if no such line arrived.  A ``queue.Queue`` lets an
+    unbounded relay stdout stream accumulate readiness candidates while the
+    consumer is busy elsewhere.  This latch keeps only the first outcome and
+    wakes waiters through an ``Event``.  Its ``get`` method deliberately
+    raises ``queue.Empty`` on timeout so existing runner wait loops retain
+    their timeout behavior.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._event = threading.Event()
+        self._outcome: str | None = None
+        self._resolved = False
+
+    def put(self, line: str | None) -> None:
+        """Publish one relay stdout observation without waiting for a consumer.
+
+        Empty records are ignored.  ``None`` is reserved for EOF, making it
+        distinct from an empty text record.  Once a readiness line or EOF has
+        resolved the latch, later output cannot replace that evidence.
+        """
+
+        if line is not None and not isinstance(line, str):
+            raise TypeError("relay readiness observation must be text or None")
+        if line == "":
+            return
+        with self._lock:
+            if self._resolved:
+                return
+            self._outcome = line
+            self._resolved = True
+            self._event.set()
+
+    def get(
+        self, block: bool = True, timeout: float | None = None
+    ) -> str | None:
+        """Return the retained outcome or raise ``queue.Empty`` like Queue.get."""
+
+        if timeout is not None and timeout < 0:
+            raise ValueError("'timeout' must be a non-negative number")
+        if not block and timeout is not None:
+            raise ValueError("can't specify timeout for non-blocking get")
+        if block:
+            if not self._event.wait(timeout):
+                raise queue.Empty
+        elif not self._event.is_set():
+            raise queue.Empty
+        with self._lock:
+            if not self._resolved:
+                # ``Event`` is set while holding this lock, so this can only
+                # occur if a future implementation changes that ordering.
+                raise queue.Empty
+            return self._outcome
 
 
 class BrowserStderrReader:

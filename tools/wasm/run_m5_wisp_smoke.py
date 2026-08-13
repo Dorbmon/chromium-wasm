@@ -59,6 +59,7 @@ from m9_descriptor_snapshot import (
 )
 from m9_browser_cleanup import (
     BrowserStderrReader,
+    RelayReadinessLatch,
     abort_browser_group,
     abort_process_group,
     stop_browser_group,
@@ -903,39 +904,38 @@ def relay_command(node: Path, relay_script: Path, host_origin: str) -> list[str]
 def _drain_relay_stdout(
     stream: TextIO,
     destination: deque[str],
-    ready_lines: queue.Queue[str | None],
+    ready_lines: RelayReadinessLatch,
 ) -> None:
     """Legacy readiness drainer retained for the isolated preflight runner.
 
     The hardened M5 runner owns its relay pipes through BrowserStderrReader;
     this compatibility helper keeps the older controlled-preflight entrypoint
-    importable until that separate runner adopts the same cleanup protocol.
+    on the same bounded readiness contract until that runner adopts the full
+    cleanup protocol.
     """
 
     for line in stream:
         text = line.rstrip()
         destination.append(text)
-        if text:
-            ready_lines.put(text)
+        ready_lines.put(text)
     ready_lines.put(None)
 
 
 def _queue_relay_ready_line(
-    ready_lines: queue.Queue[str | None], text: str
+    ready_lines: RelayReadinessLatch, text: str
 ) -> None:
     """Forward the relay's first nonempty stdout record to readiness parsing."""
 
-    if text:
-        ready_lines.put(text)
+    ready_lines.put(text)
 
 
-def _queue_relay_ready_eof(ready_lines: queue.Queue[str | None]) -> None:
+def _queue_relay_ready_eof(ready_lines: RelayReadinessLatch) -> None:
     ready_lines.put(None)
 
 
 def wait_for_relay_ready(
     relay: subprocess.Popen[str],
-    ready_lines: queue.Queue[str | None],
+    ready_lines: RelayReadinessLatch,
     relay_stderr: deque[str],
     deadline: float,
 ) -> RelayReady:
@@ -2515,7 +2515,7 @@ def main() -> int:
         assert relay.stderr is not None
         relay_stdout_stream = relay.stdout
         relay_stderr_stream = relay.stderr
-        ready_lines: queue.Queue[str | None] = queue.Queue()
+        ready_lines = RelayReadinessLatch()
         relay_stdout_reader = BrowserStderrReader(
             relay_stdout_stream,
             relay_stdout,
