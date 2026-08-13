@@ -41,8 +41,16 @@ class M9PackageTest(unittest.TestCase):
         self.root = Path(self.temporary_directory.name)
         self.manifest = load_manifest()
         self.clean_output_directories: list[tempfile.TemporaryDirectory[str]] = []
+        self.target_notice_generator = package._generate_target_third_party_notices
+        self.target_notice_patch = mock.patch.object(
+            package,
+            "_generate_target_third_party_notices",
+            side_effect=self._write_fake_target_third_party_notices,
+        )
+        self.target_notice_patch.start()
 
     def tearDown(self) -> None:
+        self.target_notice_patch.stop()
         for directory in self.clean_output_directories:
             directory.cleanup()
         self.temporary_directory.cleanup()
@@ -124,6 +132,16 @@ class M9PackageTest(unittest.TestCase):
             if path.is_file()
         }
 
+    def _write_fake_target_third_party_notices(
+        self, *, out_dir: Path, destination: Path
+    ) -> None:
+        self.assertTrue(out_dir.is_dir())
+        package._write_file(
+            destination,
+            package.TARGET_THIRD_PARTY_NOTICES_MARKER
+            + b"\n--------------------\nSynthetic target notice for tests.\n",
+        )
+
     def test_stages_exact_layout_with_honest_pre_release_metadata(self) -> None:
         dist_dir = self._stage()
         result = package.verify_release_tree(dist_dir)
@@ -132,6 +150,7 @@ class M9PackageTest(unittest.TestCase):
             {
                 "LICENSES/Chromium-LICENSE.txt",
                 "LICENSES/PRE_RELEASE_NOTICE.txt",
+                "LICENSES/THIRD_PARTY_NOTICES.txt",
                 "README.txt",
                 "VERSION.json",
                 "chromium-wasm-clipboard-input.js",
@@ -166,6 +185,18 @@ class M9PackageTest(unittest.TestCase):
         self.assertNotIn("VERSION.json", [
             record["path"] for record in version["artifacts"]
         ])
+        notice_path = dist_dir / package.TARGET_THIRD_PARTY_NOTICES_PATH
+        notice_record = next(
+            record
+            for record in version["artifacts"]
+            if record["path"] == package.TARGET_THIRD_PARTY_NOTICES_PATH
+        )
+        self.assertEqual(package.sha256_file(notice_path), notice_record["sha256"])
+        self.assertEqual(notice_path.stat().st_size, notice_record["size_bytes"])
+        self.assertIn(
+            package.TARGET_THIRD_PARTY_NOTICES_MARKER,
+            notice_path.read_bytes(),
+        )
         self.assertIn(
             "not a distributable", (dist_dir / "README.txt").read_text("utf-8")
         )
@@ -178,6 +209,124 @@ class M9PackageTest(unittest.TestCase):
                 "utf-8"
             ),
         )
+        self.assertIn(
+            "does not establish Emscripten",
+            (dist_dir / "LICENSES/PRE_RELEASE_NOTICE.txt").read_text("utf-8"),
+        )
+        self.assertIn(
+            "Emscripten toolchain/runtime",
+            " ".join(version["known_limitations"]),
+        )
+
+    def test_target_notice_generator_uses_chromium_target_aware_command(
+        self,
+    ) -> None:
+        out_dir = self._make_out_dir()
+        destination = self.root / "target-notice.txt"
+        commands: list[list[str]] = []
+
+        def generate_notice(
+            command: list[str], *, cwd: Path, timeout: float
+        ) -> mock.Mock:
+            commands.append(command)
+            self.assertEqual(REPO_ROOT, cwd)
+            self.assertEqual(120.0, timeout)
+            destination.write_bytes(
+                package.TARGET_THIRD_PARTY_NOTICES_MARKER + b"\nnotice\n"
+            )
+            return mock.Mock()
+
+        with mock.patch.object(package, "run", side_effect=generate_notice):
+            self.target_notice_generator(
+                out_dir=out_dir,
+                destination=destination,
+            )
+
+        self.assertEqual(
+            [
+                [
+                    sys.executable,
+                    str(package.LICENSES_SCRIPT),
+                    "license_file",
+                    "--gn-out-dir",
+                    str(out_dir),
+                    "--gn-target",
+                    "//chrome:chrome_wasm",
+                    "--target-os",
+                    "emscripten",
+                    "--format",
+                    "notice",
+                    str(destination),
+                ]
+            ],
+            commands,
+        )
+        self.assertEqual(0o644, destination.stat().st_mode & 0o777)
+        self.assertEqual(0, destination.stat().st_mtime)
+
+    def test_staging_rejects_missing_generated_target_notice(self) -> None:
+        with mock.patch.object(
+            package,
+            "_generate_target_third_party_notices",
+            return_value=None,
+        ), self.assertRaisesRegex(package.PackageError, "target third-party notices"):
+            self._stage()
+
+    def test_staging_rejects_an_input_module_not_bound_to_target_notices(self) -> None:
+        generator = mock.Mock()
+        with mock.patch.object(
+            package,
+            "_generate_target_third_party_notices",
+            generator,
+        ), self.assertRaisesRegex(
+            package.PackageError, "only supports the chrome_wasm input module"
+        ):
+            package.package_release(
+                out_dir=self._make_out_dir(),
+                dist_dir=self.root / "alternate-module-dist",
+                module_name="alternate_wasm",
+                manifest=self.manifest,
+                port_revision=PORT_REVISION,
+            )
+        generator.assert_not_called()
+
+    def test_verification_rejects_substituted_target_notice(self) -> None:
+        dist_dir = self._stage()
+        (dist_dir / package.TARGET_THIRD_PARTY_NOTICES_PATH).write_bytes(
+            b"substituted target notice\n"
+        )
+
+        with self.assertRaisesRegex(
+            package.PackageError,
+            "hash mismatch: LICENSES/THIRD_PARTY_NOTICES.txt",
+        ):
+            package.verify_release_tree(dist_dir)
+
+    def test_verification_rejects_unhashed_target_notice(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        version["artifacts"] = [
+            record
+            for record in version["artifacts"]
+            if record["path"] != package.TARGET_THIRD_PARTY_NOTICES_PATH
+        ]
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(
+            package.PackageError, "artifacts are not complete and ordered"
+        ):
+            package.verify_release_tree(dist_dir)
+
+    def test_verification_rejects_substituted_input_module_identity(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        version["build"]["input_module_name"] = "alternate_wasm"
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(package.PackageError, "module name is invalid"):
+            package.verify_release_tree(dist_dir)
 
     def test_staging_is_byte_reproducible(self) -> None:
         first = self._stage(out_dir=self._make_out_dir("first-out"), name="first")
@@ -551,6 +700,7 @@ class M9PackageTest(unittest.TestCase):
             "/chromium-wasm.js": "text/javascript; charset=utf-8",
             "/chromium-wasm.wasm": "application/wasm",
             "/VERSION.json": "application/json; charset=utf-8",
+            "/LICENSES/THIRD_PARTY_NOTICES.txt": "text/plain; charset=utf-8",
         }.items():
             with self.subTest(request_path=request_path):
                 status, content_type, body = package_response(
