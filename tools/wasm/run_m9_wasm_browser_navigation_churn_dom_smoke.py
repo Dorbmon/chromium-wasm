@@ -73,7 +73,8 @@ DISCARDABLE_MEMORY_MANAGER_LEAK_MARKERS = (
     "will be leaked",
 )
 DEFAULT_OUT_DIR = Path("out/wasm-chrome-m6")
-DEFAULT_MODULE_NAME = "chrome_wasm"
+PRODUCT_MODULE_NAME = "chrome_wasm"
+DEFAULT_MODULE_NAME = PRODUCT_MODULE_NAME
 HOST_ROOT = "/__m9_browser_navigation_churn__"
 CYCLE_COUNT = 3
 NAVIGATION_NAMES = ("first", "second")
@@ -161,10 +162,22 @@ _WASM_HEAP_BUFFER_CAPACITY_SAMPLE_FIELDS = frozenset(
 )
 
 
+def _require_product_module_name(module_name: object, boundary: str) -> str:
+    if not isinstance(module_name, str) or not MODULE_NAME_RE.fullmatch(module_name):
+        raise M0Error(f"navigation-churn {boundary} module name is invalid")
+    if module_name != PRODUCT_MODULE_NAME:
+        raise M0Error(
+            "navigation-churn "
+            f"{boundary} only supports the {PRODUCT_MODULE_NAME} product module"
+        )
+    return module_name
+
+
 class NavigationChurnSmokeServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    module_name: str
     artifacts: dict[str, bytes]
     result_token: str
     result_queue: queue.Queue[dict[str, Any]]
@@ -341,8 +354,7 @@ def create_server(
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
 ) -> NavigationChurnSmokeServer:
-    if not MODULE_NAME_RE.fullmatch(module_name):
-        raise M0Error("module name must contain only ASCII letters, digits, or _")
+    module_name = _require_product_module_name(module_name, "server")
     out_dir = out_dir.resolve()
     if not out_dir.is_dir():
         raise M0Error(f"navigation-churn output directory is missing: {out_dir}")
@@ -358,6 +370,7 @@ def create_server(
     server = NavigationChurnSmokeServer(
         (host, port), NavigationChurnSmokeRequestHandler
     )
+    server.module_name = module_name
     server.artifacts = artifacts
     server.result_token = token
     server.result_queue = result_queue
@@ -382,6 +395,8 @@ def _byte_identity(contents: bytes) -> dict[str, object]:
 def artifact_identity(
     server: NavigationChurnSmokeServer, *, module_name: str
 ) -> dict[str, object]:
+    module_name = _require_product_module_name(module_name, "artifact")
+    _require_product_module_name(server.module_name, "artifact server")
     return {
         "artifact_delivery": ARTIFACT_DELIVERY,
         "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
@@ -428,6 +443,8 @@ def smoke_url(
     module_name: str,
     timeout_seconds: float,
 ) -> str:
+    module_name = _require_product_module_name(module_name, "URL")
+    _require_product_module_name(server.module_name, "URL server")
     host, port = server.server_address[:2]
     query = urlencode(
         {
@@ -496,9 +513,7 @@ def _validate_artifact_identity(
         raise M0Error("navigation-churn artifact source provenance is invalid")
     if artifact.get("artifact_delivery") != ARTIFACT_DELIVERY:
         raise M0Error("navigation-churn artifact delivery is invalid")
-    module_name = artifact.get("module_name")
-    if type(module_name) is not str or not MODULE_NAME_RE.fullmatch(module_name):
-        raise M0Error("navigation-churn artifact module name is invalid")
+    _require_product_module_name(artifact.get("module_name"), "artifact")
     for field in ("loader", "wasm"):
         _validate_byte_identity(artifact.get(field), f"artifact {field}")
     if not browser_view_smoke._exact_json_value_equal(artifact, expected_identity):
@@ -999,6 +1014,10 @@ def main() -> int:
         parser.error("--timeout must be at least fifteen seconds")
     if not MODULE_NAME_RE.fullmatch(args.module_name):
         parser.error("--module-name must contain only ASCII letters, digits, or _")
+    if args.module_name != PRODUCT_MODULE_NAME:
+        parser.error(
+            "--module-name must be chrome_wasm for this product navigation churn"
+        )
 
     out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
     diagnostics_dir = args.diagnostics_dir or out_dir / "diagnostics"

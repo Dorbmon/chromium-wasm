@@ -12,6 +12,7 @@
 
 const HOST_PROTOCOL = 1;
 const CASE = "browser_same_instance_navigation_churn_m9";
+const PRODUCT_MODULE_NAME = "chrome_wasm";
 const SCOPE = "fixed-three-cycle-same-instance-local-data-navigation-churn-" +
     "with-later-backing-store-copy-observation-only";
 const SWITCH = "--wasm-browser-host-navigation-churn-smoke";
@@ -142,6 +143,10 @@ function parseArtifactIdentity(value) {
       typeof artifact.module_name !== "string" ||
       !/^[A-Za-z0-9_]+$/.test(artifact.module_name)) {
     throw new Error("navigation-churn artifact identity has invalid provenance");
+  }
+  if (artifact.module_name !== PRODUCT_MODULE_NAME) {
+    throw new Error(
+        "navigation-churn artifact identity must select the chrome_wasm product module");
   }
   return Object.freeze({
     artifact_delivery: artifact.artifact_delivery,
@@ -1016,6 +1021,8 @@ function validateResult(result) {
   "navigation-churn artifact source provenance is not unverified");
   require(result.artifact?.artifact_delivery === ARTIFACT_DELIVERY,
       "navigation-churn artifact delivery is not an immutable snapshot");
+  require(result.artifact?.module_name === PRODUCT_MODULE_NAME,
+      "navigation-churn artifact module is not chrome_wasm");
   require(result.capture_harness?.source_snapshot_provenance ===
       SOURCE_SNAPSHOT_PROVENANCE,
   "navigation-churn harness source provenance is invalid");
@@ -1067,6 +1074,10 @@ export async function runChromeWasmBrowserNavigationChurnSmokeFromQuery() {
   if (!/^[A-Za-z0-9_]+$/.test(moduleName)) {
     throw new Error("module name contains unsupported characters");
   }
+  if (moduleName !== PRODUCT_MODULE_NAME) {
+    throw new Error(
+        "navigation-churn query must select the chrome_wasm product module");
+  }
   const timeoutMs = Number(query.get("timeoutMs") || "90000");
   const versions = parseVersions(query.get("versions"));
   const artifact = parseArtifactIdentity(query.get("artifact"));
@@ -1085,7 +1096,7 @@ export async function runChromeWasmBrowserNavigationChurnSmokeFromQuery() {
   const host = new ChromiumWasmBrowserNavigationChurnSmokeHost(
       canvas, versions, artifact, captureHarness);
   const result = validateResult(await host.run(
-      `${location.pathname.replace(/\/$/, "")}/artifacts/${moduleName}.js`,
+      `${location.pathname.replace(/\/$/, "")}/artifacts/${PRODUCT_MODULE_NAME}.js`,
       timeoutMs));
   root.dataset.state = result.status;
   status.textContent = JSON.stringify(result, null, 2);
@@ -1108,6 +1119,7 @@ export const chromeWasmBrowserNavigationChurnSmokeContract = Object.freeze({
   ARTIFACT_SOURCE_PROVENANCE,
   CASE,
   CYCLE_COUNT,
+  PRODUCT_MODULE_NAME,
   FRAME_TRANSITION_POLICY,
   HOST_PROTOCOL,
   LIMITATIONS,
