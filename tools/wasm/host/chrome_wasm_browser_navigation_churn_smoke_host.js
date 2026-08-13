@@ -327,6 +327,8 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
   #abort = null;
   #runtimeExitResolver;
   #runtimeExitPromise;
+  #processExitResolver;
+  #processExitPromise;
   #frameReports = [];
   #readiness = null;
   #readinessReports = [];
@@ -349,6 +351,9 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
     this.#captureHarness = captureHarness;
     this.#runtimeExitPromise = new Promise((resolve) => {
       this.#runtimeExitResolver = resolve;
+    });
+    this.#processExitPromise = new Promise((resolve) => {
+      this.#processExitResolver = resolve;
     });
   }
 
@@ -407,6 +412,7 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
         throw new Error("process exit report is invalid or duplicated");
       }
       this.#processExitCode = report.exitCode;
+      this.#processExitResolver(report.exitCode);
     } catch (error) {
       this.#recordFatal(`invalid process-exit report: ${String(error)}`);
     }
@@ -779,12 +785,24 @@ class ChromiumWasmBrowserNavigationChurnSmokeHost {
       });
 
       const deadline = startedAt + timeoutMs;
-      while ((this.#runtimeExitCode === null || !this.#factorySettled) &&
+      while ((this.#runtimeExitCode === null ||
+              this.#processExitCode === null || !this.#factorySettled) &&
              performance.now() < deadline) {
-        await Promise.race([this.#runtimeExitPromise, delay(25)]);
+        const waits = [delay(25)];
+        if (this.#runtimeExitCode === null) {
+          waits.push(this.#runtimeExitPromise);
+        }
+        if (this.#processExitCode === null) {
+          waits.push(this.#processExitPromise);
+        }
+        await Promise.race(waits);
       }
       if (this.#runtimeExitCode === null) {
         throw new Error("navigation-churn smoke did not exit before timeout");
+      }
+      if (this.#processExitCode === null) {
+        throw new Error(
+            "navigation-churn smoke did not report process exit before timeout");
       }
       if (!this.#factorySettled) {
         throw new Error("navigation-churn module factory did not settle before timeout");
@@ -907,6 +925,8 @@ function validateResult(result) {
   };
   require(result.status === "pass", "runtime status is not pass");
   require(result.runtimeExitCode === 0, "runtime did not exit zero");
+  require(result.processExitCode === 0,
+      "bridge process exit did not report zero");
   require(result.runtimeInitialized === true, "runtime did not initialize");
   require(result.factorySettled === true, "module factory did not settle");
   require(result.crossOriginIsolated === true, "host is not isolated");

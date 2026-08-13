@@ -429,6 +429,25 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, expression):
                     validate(result)
 
+    def test_requires_an_exact_zero_native_process_exit_report(self) -> None:
+        mutations = (
+            (lambda result: result.pop("processExitCode"), "missing"),
+            (
+                lambda result: result.__setitem__("processExitCode", True),
+                "boolean",
+            ),
+            (
+                lambda result: result.__setitem__("processExitCode", 1),
+                "nonzero",
+            ),
+        )
+        for mutate, description in mutations:
+            with self.subTest(description=description):
+                result = copy.deepcopy(successful_result())
+                mutate(result)
+                with self.assertRaisesRegex(M0Error, "processExitCode mismatch"):
+                    validate(result)
+
     def test_rejects_numeric_boolean_aliases_and_marker_reorder(self) -> None:
         mutations = (
             (
@@ -565,6 +584,7 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         popen.assert_not_called()
 
     def test_native_host_and_runner_keep_the_bounded_scope_explicit(self) -> None:
+        entrypoint = source("chrome/app/chrome_main_wasm.cc")
         native = source("chrome/browser/wasm/wasm_browser_navigation_churn_smoke.cc")
         native_header = source(
             "chrome/browser/wasm/wasm_browser_navigation_churn_smoke.h"
@@ -579,6 +599,13 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
         lifecycle = source("chrome/browser/wasm/wasm_browser_lifecycle.cc")
         build = source("chrome/browser/wasm/BUILD.gn")
+        self.assertIn("chromium_wasm_report_process_exit(exit_code)", entrypoint)
+        self.assertIn("host rejected process-exit report", entrypoint)
+        self.assertIn("return exit_code == 0 ? 1 : exit_code;", entrypoint)
+        self.assertLess(
+            entrypoint.index("const int exit_code ="),
+            entrypoint.index("chromium_wasm_report_process_exit(exit_code)"),
+        )
         for marker in (
             "constexpr int kCycleCount = 3;",
             "constexpr int kNavigationsPerCycle = 2;",
@@ -641,6 +668,9 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
             "const observedStage = churn.stages[stage - 1]",
             "artifact_source_provenance",
             "immutable-in-memory-server-snapshot",
+            "processExitPromise",
+            "processExitCode === null",
+            "bridge process exit did not report zero",
             "does not establish raster, compositor,",
         ):
             with self.subTest(host=marker):

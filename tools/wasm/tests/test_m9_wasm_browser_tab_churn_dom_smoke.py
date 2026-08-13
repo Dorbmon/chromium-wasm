@@ -177,6 +177,7 @@ def successful_result() -> dict[str, object]:
 
 class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
     def test_fixed_three_cycle_scope_and_host_contract_are_explicit(self) -> None:
+        entrypoint = source("chrome/app/chrome_main_wasm.cc")
         host = source("tools/wasm/host/chrome_wasm_browser_tab_churn_smoke_host.js")
         runner = source("tools/wasm/run_m9_wasm_browser_tab_churn_dom_smoke.py")
         cxx = source("chrome/browser/wasm/wasm_browser_tab_churn_smoke.cc")
@@ -206,6 +207,10 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "does_not_prove_raster_compositor_display_or_vsync_presentation",
             "artifact_source_provenance",
             "immutable-in-memory-server-snapshot",
+            "report.protocol !== HOST_PROTOCOL",
+            "processExitPromise",
+            "processExitCode === null",
+            "bridge process exit did not report zero",
             "not establish raster, compositor, display, or vsync presentation",
         ):
             with self.subTest(host=expected):
@@ -225,6 +230,13 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
                 self.assertIn(expected, runner)
         self.assertNotIn("ccall(", runner)
         self.assertNotIn("Runtime.evaluate", runner)
+        self.assertIn("chromium_wasm_report_process_exit(exit_code)", entrypoint)
+        self.assertIn("host rejected process-exit report", entrypoint)
+        self.assertIn("return exit_code == 0 ? 1 : exit_code;", entrypoint)
+        self.assertLess(
+            entrypoint.index("const int exit_code ="),
+            entrypoint.index("chromium_wasm_report_process_exit(exit_code)"),
+        )
         for expected in (
             "constexpr int kCycleCount = 3;",
             "constexpr int kActionsPerCycle = 4;",
@@ -300,6 +312,25 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
                 result = copy.deepcopy(successful_result())
                 mutate(result)
                 with self.assertRaisesRegex(M0Error, expression):
+                    validate(result)
+
+    def test_requires_an_exact_zero_native_process_exit_report(self) -> None:
+        mutations = (
+            (lambda result: result.pop("processExitCode"), "missing"),
+            (
+                lambda result: result.__setitem__("processExitCode", True),
+                "boolean",
+            ),
+            (
+                lambda result: result.__setitem__("processExitCode", 1),
+                "nonzero",
+            ),
+        )
+        for mutate, description in mutations:
+            with self.subTest(description=description):
+                result = copy.deepcopy(successful_result())
+                mutate(result)
+                with self.assertRaisesRegex(M0Error, "processExitCode mismatch"):
                     validate(result)
 
     def test_rejects_numeric_boolean_aliases_in_exact_tab_churn_evidence(self) -> None:

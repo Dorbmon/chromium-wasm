@@ -770,6 +770,7 @@ def validate_result(
         "status": "pass",
         "m9GateComplete": False,
         "runtimeExitCode": 0,
+        "processExitCode": 0,
         "runtimeInitialized": True,
         "factorySettled": True,
         "crossOriginIsolated": True,
@@ -782,11 +783,6 @@ def validate_result(
         _require_equal(result, field, expected)
     if result.get("limitations") != list(LIMITATIONS):
         raise M0Error("navigation-churn limitations are not exact")
-    process_exit_code = result.get("processExitCode")
-    if process_exit_code is not None and (
-        type(process_exit_code) is not int or process_exit_code != 0
-    ):
-        raise M0Error("navigation-churn bridge process exit disagrees with runtime")
     if not browser_view_smoke._exact_json_value_equal(
         result.get("versions"), expected_versions
     ):

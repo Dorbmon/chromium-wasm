@@ -295,6 +295,8 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
   #abort = null;
   #runtimeExitResolver;
   #runtimeExitPromise;
+  #processExitResolver;
+  #processExitPromise;
   #frameReports = [];
   #readinessReports = [];
   #readiness = null;
@@ -316,6 +318,9 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
     this.#captureHarness = captureHarness;
     this.#runtimeExitPromise = new Promise((resolve) => {
       this.#runtimeExitResolver = resolve;
+    });
+    this.#processExitPromise = new Promise((resolve) => {
+      this.#processExitResolver = resolve;
     });
     this.#publishState("starting");
   }
@@ -369,10 +374,13 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
   #reportProcessExit(value) {
     try {
       const report = asReport(value, "process-exit report");
-      if (!Number.isSafeInteger(report.exitCode) || this.#processExitCode !== null) {
+      if (report.protocol !== HOST_PROTOCOL ||
+          !Number.isSafeInteger(report.exitCode) ||
+          this.#processExitCode !== null) {
         throw new Error("process exit report is invalid or duplicated");
       }
       this.#processExitCode = report.exitCode;
+      this.#processExitResolver(report.exitCode);
     } catch (error) {
       this.#recordFatal(`invalid process-exit report: ${String(error)}`);
     }
@@ -838,12 +846,23 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
       });
 
       const deadline = startedAt + timeoutMs;
-      while ((this.#runtimeExitCode === null || !this.#factorySettled) &&
+      while ((this.#runtimeExitCode === null ||
+              this.#processExitCode === null || !this.#factorySettled) &&
              performance.now() < deadline) {
-        await Promise.race([this.#runtimeExitPromise, delay(25)]);
+        const waits = [delay(25)];
+        if (this.#runtimeExitCode === null) {
+          waits.push(this.#runtimeExitPromise);
+        }
+        if (this.#processExitCode === null) {
+          waits.push(this.#processExitPromise);
+        }
+        await Promise.race(waits);
       }
       if (this.#runtimeExitCode === null) {
         throw new Error("tab-churn smoke did not exit before timeout");
+      }
+      if (this.#processExitCode === null) {
+        throw new Error("tab-churn smoke did not report process exit before timeout");
       }
       if (!this.#factorySettled) {
         throw new Error("tab-churn module factory did not settle before timeout");
@@ -865,6 +884,8 @@ function validateResult(result) {
   };
   require(result.status === "pass", "runtime status is not pass");
   require(result.runtimeExitCode === 0, "runtime did not exit zero");
+  require(result.processExitCode === 0,
+      "bridge process exit did not report zero");
   require(result.runtimeInitialized === true, "runtime did not initialize");
   require(result.factorySettled === true, "module factory did not settle");
   require(result.crossOriginIsolated === true, "host is not isolated");

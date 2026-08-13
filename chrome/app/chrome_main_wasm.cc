@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <optional>
+#include <stdio.h>
 #include <utility>
 
 #include "base/command_line.h"
@@ -25,6 +26,8 @@
 #if !BUILDFLAG(IS_WASM)
 #error "chrome_main_wasm.cc must only be built for WebAssembly"
 #endif
+
+extern "C" int chromium_wasm_report_process_exit(int exit_code);
 
 namespace {
 
@@ -52,47 +55,55 @@ const base::CommandLine& GetInitialBrowserCommandLine() {
 }
 
 extern "C" int ChromeMain(int argc, const char** argv) {
-  WasmChromeMainDelegate chrome_main_delegate;
-  content::ContentMainParams params(&chrome_main_delegate);
-  params.argc = argc;
-  params.argv = argv;
+  int result;
+  {
+    WasmChromeMainDelegate chrome_main_delegate;
+    content::ContentMainParams params(&chrome_main_delegate);
+    params.argc = argc;
+    params.argv = argv;
 
-  base::CommandLine::Init(params.argc, params.argv);
+    base::CommandLine::Init(params.argc, params.argv);
 
 #if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
-  const base::CommandLine* const controlled_test_command_line =
-      base::CommandLine::ForCurrentProcess();
-  if (controlled_test_command_line->HasSwitch(
-          kWasmBrowserControlledHttpsSmokeSwitch) ||
-      controlled_test_command_line->HasSwitch(
-          kWasmBrowserHostHistoryDownloadsSmokeSwitch) ||
-      controlled_test_command_line->HasSwitch(
-          kWasmBrowserHostContinuousFlowSmokeSwitch) ||
-      controlled_test_command_line->HasSwitch(
-          kWasmBrowserHostContinuousFlowRestartSmokeSwitch)) {
-    // Install only for dedicated controlled-HTTPS test routes, after Chrome
-    // initialized its command line but before ContentMain can construct the
-    // Network Service and its certificate verifier. The normal Wasm Chrome
-    // target never calls this initializer, so a switch alone cannot add local
-    // test trust to production.
-    chrome::InstallWasmM6TestTrustRoot();
-    chrome::EnableWasmM6ControlledHttpsTestMode();
-  }
+    const base::CommandLine* const controlled_test_command_line =
+        base::CommandLine::ForCurrentProcess();
+    if (controlled_test_command_line->HasSwitch(
+            kWasmBrowserControlledHttpsSmokeSwitch) ||
+        controlled_test_command_line->HasSwitch(
+            kWasmBrowserHostHistoryDownloadsSmokeSwitch) ||
+        controlled_test_command_line->HasSwitch(
+            kWasmBrowserHostContinuousFlowSmokeSwitch) ||
+        controlled_test_command_line->HasSwitch(
+            kWasmBrowserHostContinuousFlowRestartSmokeSwitch)) {
+      // Install only for dedicated controlled-HTTPS test routes, after Chrome
+      // initialized its command line but before ContentMain can construct the
+      // Network Service and its certificate verifier. The normal Wasm Chrome
+      // target never calls this initializer, so a switch alone cannot add local
+      // test trust to production.
+      chrome::InstallWasmM6TestTrustRoot();
+      chrome::EnableWasmM6ControlledHttpsTestMode();
+    }
 #endif
 
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (!command_line->HasSwitch(switches::kProcessType)) {
-    GetInitialCommandLineStorage() = *command_line;
+    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+    if (!command_line->HasSwitch(switches::kProcessType)) {
+      GetInitialCommandLineStorage() = *command_line;
+    }
+
+    // Set up PartitionAlloc's sampling TLS before Content creates its thread
+    // pool, matching Chrome's desktop entry point without selecting any native
+    // headless, crash-handler, or process-launch integration.
+    base::PoissonAllocationSampler::Init();
+
+    result = content::ContentMain(std::move(params));
   }
 
-  // Set up PartitionAlloc's sampling TLS before Content creates its thread
-  // pool, matching Chrome's desktop entry point without selecting any native
-  // headless, crash-handler, or process-launch integration.
-  base::PoissonAllocationSampler::Init();
-
-  const int result = content::ContentMain(std::move(params));
-  if (IsNormalResultCode(static_cast<ResultCode>(result))) {
-    return content::RESULT_CODE_NORMAL_EXIT;
+  const int exit_code = IsNormalResultCode(static_cast<ResultCode>(result))
+                            ? content::RESULT_CODE_NORMAL_EXIT
+                            : result;
+  if (chromium_wasm_report_process_exit(exit_code) != 1) {
+    fputs("CHROMIUM_WASM: host rejected process-exit report\n", stderr);
+    return exit_code == 0 ? 1 : exit_code;
   }
-  return result;
+  return exit_code;
 }
