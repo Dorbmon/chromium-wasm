@@ -1220,9 +1220,9 @@ class M9PackageTest(unittest.TestCase):
             ),
             mock.patch.object(
                 package_browser_smoke,
-                "stop_browser",
+                "abort_browser_group",
                 side_effect=RuntimeError("browser cleanup failed"),
-            ) as stop_browser,
+            ) as abort_browser_group,
             self.assertRaisesRegex(RuntimeError, "stderr reader start failed"),
         ):
             package_browser_smoke.run_package_browser_smoke(
@@ -1233,7 +1233,7 @@ class M9PackageTest(unittest.TestCase):
             )
 
         server_thread.start.assert_called_once_with()
-        stop_browser.assert_called_once_with(browser)
+        abort_browser_group.assert_called_once_with(browser, mock.ANY)
         stderr_thread.join.assert_not_called()
         server.shutdown.assert_called_once_with()
         server.server_close.assert_called_once_with()
@@ -1353,7 +1353,9 @@ class M9PackageTest(unittest.TestCase):
                 "token_urlsafe",
                 return_value="first-epoch",
             ),
-            mock.patch.object(package_browser_smoke, "stop_browser"),
+            mock.patch.object(
+                package_browser_smoke, "stop_browser_group"
+            ) as stop_browser_group,
             mock.patch.object(
                 package_browser_smoke, "_restart_after_clean_shutdown"
             ) as restart,
@@ -1384,8 +1386,9 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual("first-epoch", wait_for_ready.call_args.kwargs["expected_epoch"])
         request_shutdown.assert_called_once()
         restart.assert_not_called()
+        stop_browser_group.assert_called_once_with(browser, mock.ANY)
 
-    def test_package_browser_main_rejects_live_server_without_pass_marker(self) -> None:
+    def test_package_browser_main_rejects_browser_cleanup_without_pass_marker(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
         server_thread = mock.Mock()
@@ -1459,7 +1462,11 @@ class M9PackageTest(unittest.TestCase):
                 "token_urlsafe",
                 return_value="first-epoch",
             ),
-            mock.patch.object(package_browser_smoke, "stop_browser"),
+            mock.patch.object(
+                package_browser_smoke,
+                "stop_browser_group",
+                side_effect=M0Error("browser group cleanup failed"),
+            ),
             mock.patch.object(
                 sys,
                 "argv",
@@ -1471,6 +1478,7 @@ class M9PackageTest(unittest.TestCase):
 
         self.assertIn(f"{package_browser_smoke.SENTINEL}:BROWSER_SMOKE_FAIL", stdout.getvalue())
         self.assertNotIn(f"{package_browser_smoke.SENTINEL}:BROWSER_SMOKE_PASS", stdout.getvalue())
+        self.assertIn("browser group cleanup failed", stdout.getvalue())
         server_thread.start.assert_called_once_with()
         server.shutdown.assert_called_once_with()
         server.server_close.assert_called_once_with()
@@ -1553,8 +1561,8 @@ class M9PackageTest(unittest.TestCase):
                 side_effect=["first-epoch", "restart-epoch"],
             ),
             mock.patch.object(
-                package_browser_smoke, "stop_browser"
-            ),
+                package_browser_smoke, "stop_browser_group"
+            ) as stop_browser_group,
             mock.patch.object(
                 package_browser_smoke,
                 "_restart_after_clean_shutdown",
@@ -1595,6 +1603,7 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual(2, wait_for_ready.call_count)
         self.assertEqual(2, request_shutdown.call_count)
         restart.assert_called_once()
+        stop_browser_group.assert_called_once_with(browser, mock.ANY)
         self.assertEqual(
             "http://127.0.0.1:32123/?m9_package_epoch=restart-epoch",
             restart.call_args.kwargs["restart_url"],

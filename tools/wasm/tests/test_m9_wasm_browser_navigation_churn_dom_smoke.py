@@ -634,14 +634,14 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
                 return_value=["/fake/browser", "profile", "url"],
             ),
             mock.patch.object(smoke.subprocess, "Popen", return_value=browser),
-            mock.patch.object(smoke, "stop_browser") as stop_browser,
+            mock.patch.object(smoke, "abort_browser_group") as abort_browser_group,
             mock.patch.object(sys, "argv", ["navigation-churn-runner"]),
             self.assertRaisesRegex(RuntimeError, "stderr reader start failed"),
         ):
             smoke.main()
 
         server_thread.start.assert_called_once_with()
-        stop_browser.assert_called_once_with(browser)
+        abort_browser_group.assert_called_once_with(browser, mock.ANY)
         stderr_thread.join.assert_not_called()
         server.shutdown.assert_called_once_with()
         server.server_close.assert_called_once_with()
@@ -649,7 +649,7 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         server_thread.is_alive.assert_called_once_with()
         profile.cleanup.assert_called_once_with()
 
-    def test_main_rejects_live_server_without_success_markers(self) -> None:
+    def test_main_rejects_browser_cleanup_without_success_markers(self) -> None:
         server = mock.Mock()
         server.artifacts = {"chrome_wasm.js": b"loader"}
         server_thread = mock.Mock()
@@ -717,19 +717,26 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
             )
             stack.enter_context(mock.patch.object(smoke, "wait_for_result", return_value={}))
             stack.enter_context(mock.patch.object(smoke, "validate_result"))
-            stack.enter_context(mock.patch.object(smoke, "stop_browser"))
+            stop_browser_group = stack.enter_context(
+                mock.patch.object(
+                    smoke,
+                    "stop_browser_group",
+                    side_effect=M0Error("browser group cleanup failed"),
+                )
+            )
             stack.enter_context(
                 mock.patch.object(sys, "argv", ["navigation-churn-runner"])
             )
             stack.enter_context(mock.patch.object(smoke.sys, "stdout", stdout))
 
             with self.assertRaisesRegex(
-                M0Error, "M9 navigation-churn server did not stop"
+                M0Error, "browser group cleanup failed"
             ):
                 smoke.main()
 
         self.assertNotIn(f"{smoke.SENTINEL}:BROWSER_RESULT", stdout.getvalue())
         self.assertNotIn(f"{smoke.SENTINEL}:PASS", stdout.getvalue())
+        stop_browser_group.assert_called_once_with(browser, mock.ANY)
         server_thread.start.assert_called_once_with()
         server.shutdown.assert_called_once_with()
         server.server_close.assert_called_once_with()

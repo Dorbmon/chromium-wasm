@@ -35,9 +35,12 @@ if __package__:
     from .m4_cdp import unused_loopback_port, wait_for_page_client
     from .run_browser_smoke import (
         browser_command,
-        drain_stream,
         find_browser,
-        stop_browser,
+    )
+    from .m9_browser_cleanup import (
+        BrowserStderrReader,
+        abort_browser_group,
+        stop_browser_group,
     )
     from .run_m9_package_smoke import create_package_smoke_server
 else:
@@ -45,9 +48,12 @@ else:
     from m4_cdp import unused_loopback_port, wait_for_page_client
     from run_browser_smoke import (
         browser_command,
-        drain_stream,
         find_browser,
-        stop_browser,
+    )
+    from m9_browser_cleanup import (
+        BrowserStderrReader,
+        abort_browser_group,
+        stop_browser_group,
     )
     from run_m9_package_smoke import create_package_smoke_server
 
@@ -399,8 +405,7 @@ def run_package_browser_smoke(
     server_thread = None
     server_thread_started = False
     browser: subprocess.Popen[str] | None = None
-    stderr_thread = None
-    stderr_thread_started = False
+    stderr_reader: BrowserStderrReader | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
     client: Any = None
     profile: tempfile.TemporaryDirectory[str] | None = None
@@ -439,14 +444,13 @@ def run_package_browser_smoke(
             start_new_session=True,
         )
         assert browser.stderr is not None
-        stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(browser.stderr, browser_stderr),
+        stderr_reader = BrowserStderrReader(
+            browser.stderr,
+            browser_stderr,
             name="chromium-wasm-m9-package-browser-stderr",
-            daemon=True,
+            thread_factory=threading.Thread,
         )
-        stderr_thread.start()
-        stderr_thread_started = True
+        stderr_reader.start()
         deadline = time.monotonic() + timeout
         client = wait_for_page_client(debug_port, first_url, deadline)
         first_ready, first_time_origin = _wait_for_ready_package_document(
@@ -521,13 +525,15 @@ def run_package_browser_smoke(
         cleanup_error: BaseException | None = None
         if client is not None:
             cleanup_error = _run_cleanup_action(cleanup_error, client.close)
-        if browser is not None:
+        if browser is not None and stderr_reader is not None and stderr_reader.started:
             cleanup_error = _run_cleanup_action(
-                cleanup_error, lambda: stop_browser(browser)
+                cleanup_error, lambda: stop_browser_group(browser, stderr_reader)
             )
-        if stderr_thread_started and stderr_thread is not None:
+        elif browser is not None:
+            # This can only be a startup-failure path.  It still needs to
+            # terminate the dedicated session, not merely the browser leader.
             cleanup_error = _run_cleanup_action(
-                cleanup_error, lambda: stderr_thread.join(timeout=1)
+                cleanup_error, lambda: abort_browser_group(browser, stderr_reader)
             )
         if server is not None:
             if server_thread_started:

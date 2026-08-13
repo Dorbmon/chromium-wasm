@@ -40,7 +40,12 @@ from m0_common import (
     parse_timeout,
 )
 from m4_cdp import unused_loopback_port, wait_for_page_client
-from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    abort_browser_group,
+    stop_browser_group,
+)
+from run_browser_smoke import browser_command, find_browser
 import run_wasm_browser_view_smoke as browser_view_smoke
 
 
@@ -970,8 +975,7 @@ def main() -> int:
     browser_path: Path | None = None
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
-    stderr_thread: threading.Thread | None = None
-    stderr_thread_started = False
+    stderr_reader: BrowserStderrReader | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
     runtime_result: dict[str, Any] | None = None
     context: dict[str, object] | None = None
@@ -1059,14 +1063,13 @@ def main() -> int:
             start_new_session=True,
         )
         assert browser.stderr is not None
-        stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(browser.stderr, browser_stderr),
+        stderr_reader = BrowserStderrReader(
+            browser.stderr,
+            browser_stderr,
             name="chromium-wasm-m9-tab-churn-browser-stderr",
-            daemon=True,
+            thread_factory=threading.Thread,
         )
-        stderr_thread.start()
-        stderr_thread_started = True
+        stderr_reader.start()
         deadline = time.monotonic() + args.timeout
         stage = "connect_devtools"
         client = wait_for_page_client(debug_port, url.split("?", 1)[0], deadline)
@@ -1097,13 +1100,13 @@ def main() -> int:
         cleanup_error: BaseException | None = None
         if client is not None:
             cleanup_error = _run_cleanup_action(cleanup_error, client.close)
-        if browser is not None:
+        if browser is not None and stderr_reader is not None and stderr_reader.started:
             cleanup_error = _run_cleanup_action(
-                cleanup_error, lambda: stop_browser(browser)
+                cleanup_error, lambda: stop_browser_group(browser, stderr_reader)
             )
-        if stderr_thread_started and stderr_thread is not None:
+        elif browser is not None:
             cleanup_error = _run_cleanup_action(
-                cleanup_error, lambda: stderr_thread.join(timeout=1)
+                cleanup_error, lambda: abort_browser_group(browser, stderr_reader)
             )
         server_cleanup_error = _cleanup_tab_churn_server(
             server=server,

@@ -726,9 +726,9 @@ class M9MeasurementCleanupTest(unittest.TestCase):
             ),
             mock.patch.object(
                 baseline,
-                "stop_browser",
+                "abort_browser_group",
                 side_effect=RuntimeError("browser cleanup failed"),
-            ) as stop_browser,
+            ) as abort_browser_group,
             self.assertRaisesRegex(RuntimeError, "stderr reader start failed"),
         ):
             baseline.run_measurement(
@@ -739,8 +739,56 @@ class M9MeasurementCleanupTest(unittest.TestCase):
                 timeout=120.0,
             )
 
-        stop_browser.assert_called_once_with(browser)
+        abort_browser_group.assert_called_once_with(browser, mock.ANY)
         stderr_thread.join.assert_not_called()
+        profile.cleanup.assert_called_once_with()
+
+    def test_run_measurement_rejects_browser_group_cleanup_after_completion(
+        self,
+    ) -> None:
+        browser = mock.Mock()
+        browser.stderr = object()
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-measurement-profile"
+        stderr_thread = mock.Mock()
+        client = mock.Mock()
+        client.evaluate.return_value = True
+
+        with (
+            mock.patch.object(
+                baseline,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                baseline.tempfile, "TemporaryDirectory", return_value=profile
+            ),
+            mock.patch.object(baseline, "unused_loopback_port", return_value=12345),
+            mock.patch.object(
+                baseline, "browser_command", return_value=["/fake/browser", "url"]
+            ),
+            mock.patch.object(baseline.subprocess, "Popen", return_value=browser),
+            mock.patch.object(
+                baseline.threading, "Thread", return_value=stderr_thread
+            ),
+            mock.patch.object(baseline, "wait_for_page_client", return_value=client),
+            mock.patch.object(baseline, "_wait_for_status", side_effect=[{}, {}]),
+            mock.patch.object(
+                baseline,
+                "stop_browser_group",
+                side_effect=M0Error("browser group cleanup failed"),
+            ) as stop_browser_group,
+            self.assertRaisesRegex(M0Error, "browser group cleanup failed"),
+        ):
+            baseline.run_measurement(
+                server=mock.Mock(),
+                url="http://127.0.0.1:12345/__m9__/",
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+            )
+
+        stop_browser_group.assert_called_once_with(browser, mock.ANY)
         profile.cleanup.assert_called_once_with()
 
     def test_main_closes_and_joins_after_shutdown_error_without_masking_failure(
@@ -886,7 +934,7 @@ class M9MeasurementCleanupTest(unittest.TestCase):
         server_thread.join.assert_called_once_with(timeout=5)
         server_thread.is_alive.assert_called_once_with()
 
-    def test_main_preserves_capture_failure_when_server_stays_alive(self) -> None:
+    def test_main_rejects_browser_cleanup_failure_without_capture_marker(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 12345)
         server_thread = mock.Mock()
@@ -910,7 +958,7 @@ class M9MeasurementCleanupTest(unittest.TestCase):
             mock.patch.object(
                 baseline,
                 "run_measurement",
-                side_effect=M0Error("measurement capture failed"),
+                side_effect=M0Error("browser group cleanup failed"),
             ),
             mock.patch.object(
                 baseline.threading, "Thread", return_value=server_thread
@@ -921,7 +969,7 @@ class M9MeasurementCleanupTest(unittest.TestCase):
         ):
             self.assertEqual(1, baseline.main())
 
-        self.assertIn("measurement capture failed", stderr.getvalue())
+        self.assertIn("browser group cleanup failed", stderr.getvalue())
         self.assertNotIn(f"{baseline.SENTINEL}:CAPTURED", stdout.getvalue())
         server_thread.start.assert_called_once_with()
         server.shutdown.assert_called_once_with()

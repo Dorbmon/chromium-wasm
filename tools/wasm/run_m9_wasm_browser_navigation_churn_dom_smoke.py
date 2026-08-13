@@ -37,7 +37,12 @@ from urllib.parse import urlencode, urlsplit
 
 from check_m6_chrome_boundary import check_boundary
 from m0_common import M0Error, REPO_ROOT, load_manifest, parse_timeout
-from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    abort_browser_group,
+    stop_browser_group,
+)
+from run_browser_smoke import browser_command, find_browser
 import run_wasm_browser_view_smoke as browser_view_smoke
 
 
@@ -972,8 +977,7 @@ def main() -> int:
     browser_path: Path | None = None
     browser_version: str | None = None
     browser_stderr: deque[str] = deque(maxlen=300)
-    stderr_thread: threading.Thread | None = None
-    stderr_thread_started = False
+    stderr_reader: BrowserStderrReader | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
     result: dict[str, Any] | None = None
     stage = "check_artifacts"
@@ -1050,14 +1054,13 @@ def main() -> int:
             start_new_session=True,
         )
         assert browser.stderr is not None
-        stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(browser.stderr, browser_stderr),
+        stderr_reader = BrowserStderrReader(
+            browser.stderr,
+            browser_stderr,
             name="chromium-wasm-m9-navigation-churn-browser-stderr",
-            daemon=True,
+            thread_factory=threading.Thread,
         )
-        stderr_thread.start()
-        stderr_thread_started = True
+        stderr_reader.start()
         stage = "wait_for_normal_close_result"
         result = wait_for_result(
             browser, browser_stderr, result_queue, time.monotonic() + args.timeout
@@ -1077,13 +1080,13 @@ def main() -> int:
         raise
     finally:
         cleanup_error: BaseException | None = None
-        if browser is not None:
+        if browser is not None and stderr_reader is not None and stderr_reader.started:
             cleanup_error = _run_cleanup_action(
-                cleanup_error, lambda: stop_browser(browser)
+                cleanup_error, lambda: stop_browser_group(browser, stderr_reader)
             )
-        if stderr_thread_started and stderr_thread is not None:
+        elif browser is not None:
             cleanup_error = _run_cleanup_action(
-                cleanup_error, lambda: stderr_thread.join(timeout=1)
+                cleanup_error, lambda: abort_browser_group(browser, stderr_reader)
             )
         server_cleanup_error = _cleanup_navigation_churn_server(
             server=server,
