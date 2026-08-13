@@ -521,6 +521,26 @@ def relay_command(node: Path, relay_script: Path, host_origin: str) -> list[str]
     return [str(node), str(relay_script), "--host-origin", host_origin]
 
 
+def _drain_relay_stdout(
+    stream: TextIO,
+    destination: deque[str],
+    ready_lines: queue.Queue[str | None],
+) -> None:
+    """Legacy readiness drainer retained for the isolated preflight runner.
+
+    The hardened M5 runner owns its relay pipes through BrowserStderrReader;
+    this compatibility helper keeps the older controlled-preflight entrypoint
+    importable until that separate runner adopts the same cleanup protocol.
+    """
+
+    for line in stream:
+        text = line.rstrip()
+        destination.append(text)
+        if text:
+            ready_lines.put(text)
+    ready_lines.put(None)
+
+
 def _queue_relay_ready_line(
     ready_lines: queue.Queue[str | None], text: str
 ) -> None:
