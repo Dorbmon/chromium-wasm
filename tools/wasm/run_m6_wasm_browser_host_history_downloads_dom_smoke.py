@@ -28,7 +28,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, TextIO
 from urllib.parse import urlencode, urlsplit
 
 from check_m6_chrome_boundary import check_boundary
@@ -41,7 +41,12 @@ from m0_common import (
     print_context,
 )
 from m4_cdp import unused_loopback_port, wait_for_page_client
-from m9_browser_cleanup import RelayReadinessLatch
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    RelayReadinessLatch,
+    abort_process_group,
+    stop_process_group,
+)
 from run_browser_smoke import (
     browser_command,
     drain_stream,
@@ -86,6 +91,19 @@ HOST_ROOT = "/__m6_browser_history_downloads__"
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_FRAME_DIMENSION = 16384
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Run every teardown action while preserving the first cleanup error."""
+
+    try:
+        action()
+    except BaseException as error:
+        if cleanup_error is None:
+            return error
+    return cleanup_error
 
 
 class HostHistoryDownloadsSmokeServer(ThreadingHTTPServer):
@@ -733,18 +751,6 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
         raise M0Error("History/Downloads backing store differs from final frame")
 
 
-def _drain_relay_stdout(
-    stream: Any,
-    destination: deque[str],
-    ready_lines: RelayReadinessLatch,
-) -> None:
-    for line in stream:
-        text = line.rstrip()
-        destination.append(text)
-        ready_lines.put(text)
-    ready_lines.put(None)
-
-
 def _take_early_result(
     result_queue: queue.Queue[dict[str, Any]], stage: str
 ) -> None:
@@ -990,14 +996,18 @@ def main() -> int:
     relay: subprocess.Popen[str] | None = None
     relay_stdout: deque[str] = deque(maxlen=300)
     relay_stderr: deque[str] = deque(maxlen=300)
-    relay_stdout_thread: threading.Thread | None = None
-    relay_stderr_thread: threading.Thread | None = None
+    relay_stdout_reader: BrowserStderrReader | None = None
+    relay_stderr_reader: BrowserStderrReader | None = None
+    relay_stdout_stream: TextIO | None = None
+    relay_stderr_stream: TextIO | None = None
     relay_ready: controlled_https.RelayReady | None = None
     relay_status: dict[str, Any] | None = None
     profile: tempfile.TemporaryDirectory[str] | None = None
     result: dict[str, Any] | None = None
     context: dict[str, object] | None = None
     stage = "check_artifacts"
+    primary_error: BaseException | None = None
+    relay_cleanup_complete = False
 
     try:
         stage = "check_boundary"
@@ -1068,23 +1078,32 @@ def main() -> int:
             text=True,
             start_new_session=True,
         )
-        assert relay.stdout is not None
-        assert relay.stderr is not None
+        relay_stdout_stream = relay.stdout
+        relay_stderr_stream = relay.stderr
+        if relay_stdout_stream is None or relay_stderr_stream is None:
+            raise M0Error("History/Downloads relay output pipes are unavailable")
         ready_lines = RelayReadinessLatch()
-        relay_stdout_thread = threading.Thread(
-            target=_drain_relay_stdout,
-            args=(relay.stdout, relay_stdout, ready_lines),
+        relay_stdout_reader = BrowserStderrReader(
+            relay_stdout_stream,
+            relay_stdout,
             name="chromium-wasm-m6-history-downloads-relay-stdout",
-            daemon=True,
+            thread_factory=threading.Thread,
+            on_line=ready_lines.put,
+            on_eof=lambda: ready_lines.put(None),
         )
-        relay_stdout_thread.start()
-        relay_stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(relay.stderr, relay_stderr),
+        relay_stdout_stream = None
+        relay_stderr_reader = BrowserStderrReader(
+            relay_stderr_stream,
+            relay_stderr,
             name="chromium-wasm-m6-history-downloads-relay-stderr",
-            daemon=True,
+            thread_factory=threading.Thread,
         )
-        relay_stderr_thread.start()
+        relay_stderr_stream = None
+        # Construct both owners before either reader starts. A later startup
+        # failure can then close an unstarted pipe without racing the reader
+        # already consuming the other stream.
+        relay_stdout_reader.start()
+        relay_stderr_reader.start()
         stage = "wait_for_relay_ready"
         relay_ready = controlled_https.wait_for_relay_ready(
             relay,
@@ -1229,6 +1248,19 @@ def main() -> int:
         # This shared controlled-relay checker requires exactly two H2 M6 UI
         # fixture requests and exact a.test:443 WISP destinations.
         controlled_https.validate_relay_status(relay_status)
+        stage = "cleanup_relay_before_pass"
+        if (
+            relay is None
+            or relay_stdout_reader is None
+            or relay_stderr_reader is None
+        ):
+            raise M0Error("History/Downloads relay cleanup evidence is missing")
+        stop_process_group(
+            relay,
+            (relay_stdout_reader, relay_stderr_reader),
+            description="M6 History/Downloads relay",
+        )
+        relay_cleanup_complete = True
         print(
             f"{SENTINEL}:BROWSER_RESULT "
             + json.dumps(result, sort_keys=True, separators=(",", ":")),
@@ -1237,10 +1269,7 @@ def main() -> int:
         print(f"{SENTINEL}:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
-        if browser is not None:
-            stop_browser(browser)
-        if browser_stderr_thread is not None:
-            browser_stderr_thread.join(timeout=1)
+        primary_error = exc
         try:
             diagnostic = write_failure_diagnostics(
                 diagnostics_dir,
@@ -1268,26 +1297,51 @@ def main() -> int:
             )
         print(f"{SENTINEL}:FAIL reason={exc}", file=sys.stderr, flush=True)
         return 1
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
+        cleanup_error: BaseException | None = None
         if client is not None:
-            client.close()
+            cleanup_error = _run_cleanup_action(cleanup_error, client.close)
         if browser is not None:
-            stop_browser(browser)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stop_browser(browser)
+            )
         if browser_stderr_thread is not None:
-            browser_stderr_thread.join(timeout=1)
-        if relay is not None:
-            stop_browser(relay)
-        if relay_stdout_thread is not None:
-            relay_stdout_thread.join(timeout=1)
-        if relay_stderr_thread is not None:
-            relay_stderr_thread.join(timeout=1)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: browser_stderr_thread.join(timeout=1)
+            )
+        if relay is not None and not relay_cleanup_complete:
+            relay_readers = tuple(
+                reader
+                for reader in (relay_stdout_reader, relay_stderr_reader)
+                if reader is not None
+            )
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_process_group(
+                    relay,
+                    relay_readers,
+                    description="M6 History/Downloads relay",
+                    unowned_streams=tuple(
+                        stream
+                        for stream in (relay_stdout_stream, relay_stderr_stream)
+                        if stream is not None
+                    ),
+                ),
+            )
         if server is not None:
-            server.shutdown()
-            server.server_close()
+            cleanup_error = _run_cleanup_action(cleanup_error, server.shutdown)
+            cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
         if server_thread is not None:
-            server_thread.join(timeout=1)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: server_thread.join(timeout=1)
+            )
         if profile is not None:
-            profile.cleanup()
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 if __name__ == "__main__":

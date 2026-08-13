@@ -25,7 +25,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, TextIO
 from urllib.parse import urlencode
 
 from m0_common import (
@@ -38,14 +38,18 @@ from m0_common import (
 )
 from m3_content_server import M5_CONTROLLED_PREFLIGHT_CASE, create_m3_server
 from m4_cdp import unused_loopback_port, wait_for_page_client
-from m9_browser_cleanup import RelayReadinessLatch
+from m9_browser_cleanup import (
+    BrowserStderrReader,
+    RelayReadinessLatch,
+    abort_process_group,
+    stop_process_group,
+)
 from run_browser_smoke import drain_stream, find_browser, stop_browser
 from run_content_shell_smoke import manifest_versions
 from run_m5_wisp_smoke import (
     M5_FIXTURE,
     M5_TEST_HOSTNAME,
     RelayReady,
-    _drain_relay_stdout,
     fetch_relay_transcript,
     find_node,
     m5_browser_command,
@@ -109,6 +113,21 @@ DEBUG_CDP_FATAL_MARKERS = (
     "uncaught",
     "invalid",
 )
+
+
+def _run_cleanup_action(
+    cleanup_error: BaseException | None, action: Callable[[], object]
+) -> BaseException | None:
+    """Run every teardown action while preserving the first cleanup error."""
+
+    try:
+        action()
+    except BaseException as error:
+        if cleanup_error is None:
+            return error
+    return cleanup_error
+
+
 CONTROLLED_PREFLIGHT_RELAY_CAPTURE_STATES = (
     "captured",
     "not_ready",
@@ -996,8 +1015,10 @@ def main() -> int:
     relay_stdout: deque[str] = deque(maxlen=300)
     relay_stderr: deque[str] = deque(maxlen=300)
     browser_stderr_thread = None
-    relay_stdout_thread = None
-    relay_stderr_thread = None
+    relay_stdout_reader: BrowserStderrReader | None = None
+    relay_stderr_reader: BrowserStderrReader | None = None
+    relay_stdout_stream: TextIO | None = None
+    relay_stderr_stream: TextIO | None = None
     result: dict[str, Any] | None = None
     relay_status: dict[str, Any] | None = None
     relay_capture_state = "not_ready"
@@ -1007,6 +1028,8 @@ def main() -> int:
     host_url_prefix: str | None = None
     stage = "load_manifest"
     server_started = False
+    primary_error: BaseException | None = None
+    relay_cleanup_complete = False
 
     try:
         manifest = load_manifest()
@@ -1053,16 +1076,32 @@ def main() -> int:
             relay_command(node, relay_script, m5_host_origin(server)),
             cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, start_new_session=True)
-        assert relay.stdout is not None
-        assert relay.stderr is not None
+        relay_stdout_stream = relay.stdout
+        relay_stderr_stream = relay.stderr
+        if relay_stdout_stream is None or relay_stderr_stream is None:
+            raise M0Error("controlled preflight relay output pipes are unavailable")
         ready_lines = RelayReadinessLatch()
-        relay_stdout_thread = threading.Thread(
-            target=_drain_relay_stdout,
-            args=(relay.stdout, relay_stdout, ready_lines), daemon=True)
-        relay_stdout_thread.start()
-        relay_stderr_thread = threading.Thread(
-            target=drain_stream, args=(relay.stderr, relay_stderr), daemon=True)
-        relay_stderr_thread.start()
+        relay_stdout_reader = BrowserStderrReader(
+            relay_stdout_stream,
+            relay_stdout,
+            name="chromium-wasm-m5-controlled-preflight-relay-stdout",
+            thread_factory=threading.Thread,
+            on_line=ready_lines.put,
+            on_eof=lambda: ready_lines.put(None),
+        )
+        relay_stdout_stream = None
+        relay_stderr_reader = BrowserStderrReader(
+            relay_stderr_stream,
+            relay_stderr,
+            name="chromium-wasm-m5-controlled-preflight-relay-stderr",
+            thread_factory=threading.Thread,
+        )
+        relay_stderr_stream = None
+        # Construct both owners before either reader starts. A later startup
+        # failure can then close an unstarted pipe without racing the reader
+        # already consuming the other stream.
+        relay_stdout_reader.start()
+        relay_stderr_reader.start()
         stage = "wait_for_relay_ready"
         relay_ready = wait_for_relay_ready(
             relay, ready_lines, relay_stderr,
@@ -1103,6 +1142,19 @@ def main() -> int:
         relay_capture_state = "captured"
         stage = "validate_relay_transcript"
         validate_controlled_preflight_relay_transcript(relay_status)
+        stage = "cleanup_relay_before_pass"
+        if (
+            relay is None
+            or relay_stdout_reader is None
+            or relay_stderr_reader is None
+        ):
+            raise M0Error("controlled preflight relay cleanup evidence is missing")
+        stop_process_group(
+            relay,
+            (relay_stdout_reader, relay_stderr_reader),
+            description="M5 controlled preflight relay",
+        )
+        relay_cleanup_complete = True
         print(
             f"{SENTINEL}:BROWSER_RESULT " + json.dumps(
                 result, sort_keys=True, separators=(",", ":")), flush=True)
@@ -1112,6 +1164,7 @@ def main() -> int:
         print(f"{SENTINEL}:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
+        primary_error = exc
         if relay_status is None:
             relay_status, relay_capture_state = (
                 capture_controlled_preflight_relay_status(
@@ -1131,10 +1184,6 @@ def main() -> int:
                 debug_port=debug_port,
                 host_url_prefix=host_url_prefix,
             )
-        if browser is not None:
-            stop_browser(browser)
-        if relay is not None:
-            stop_browser(relay)
         try:
             diagnostic = write_failure_diagnostics(
                 diagnostics_dir, stage=stage, error=exc, result=result,
@@ -1149,24 +1198,52 @@ def main() -> int:
                   file=sys.stderr, flush=True)
         print(f"{SENTINEL}:FAIL reason={exc}", file=sys.stderr, flush=True)
         return 1
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
+        cleanup_error: BaseException | None = None
         if browser is not None:
-            stop_browser(browser)
-        if relay is not None:
-            stop_browser(relay)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: stop_browser(browser)
+            )
+        if relay is not None and not relay_cleanup_complete:
+            relay_readers = tuple(
+                reader
+                for reader in (relay_stdout_reader, relay_stderr_reader)
+                if reader is not None
+            )
+            cleanup_error = _run_cleanup_action(
+                cleanup_error,
+                lambda: abort_process_group(
+                    relay,
+                    relay_readers,
+                    description="M5 controlled preflight relay",
+                    unowned_streams=tuple(
+                        stream
+                        for stream in (relay_stdout_stream, relay_stderr_stream)
+                        if stream is not None
+                    ),
+                ),
+            )
         if profile is not None:
-            profile.cleanup()
+            cleanup_error = _run_cleanup_action(cleanup_error, profile.cleanup)
         if server is not None:
             if server_started:
-                server.shutdown()
-            server.server_close()
+                cleanup_error = _run_cleanup_action(
+                    cleanup_error, server.shutdown
+                )
+            cleanup_error = _run_cleanup_action(cleanup_error, server.server_close)
         if server_thread is not None:
-            server_thread.join(timeout=3)
-        for thread in (
-            browser_stderr_thread, relay_stdout_thread, relay_stderr_thread,
-        ):
-            if thread is not None:
-                thread.join(timeout=1)
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: server_thread.join(timeout=3)
+            )
+        if browser_stderr_thread is not None:
+            cleanup_error = _run_cleanup_action(
+                cleanup_error, lambda: browser_stderr_thread.join(timeout=1)
+            )
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 if __name__ == "__main__":

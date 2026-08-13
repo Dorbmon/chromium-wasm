@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import copy
-from collections import deque
+import contextlib
 import io
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -287,16 +289,170 @@ def successful_result() -> dict[str, object]:
 
 
 class M6WasmBrowserHostHistoryDownloadsDomSmokeTest(unittest.TestCase):
-    def test_legacy_stdout_drainer_retains_only_first_readiness_line(self) -> None:
-        latch = smoke.RelayReadinessLatch()
-
-        smoke._drain_relay_stdout(
-            io.StringIO("\nfirst readiness\nlater relay output\n"),
-            deque(),
-            latch,
+    def test_runner_uses_bounded_relay_readers_and_terminal_cleanup(self) -> None:
+        runner = source(
+            "tools/wasm/run_m6_wasm_browser_host_history_downloads_dom_smoke.py"
         )
 
-        self.assertEqual("first readiness", latch.get(block=False))
+        self.assertNotIn("def _drain_relay_stdout", runner)
+        self.assertNotIn("assert relay.stdout", runner)
+        self.assertNotIn("assert relay.stderr", runner)
+        self.assertIn("BrowserStderrReader(", runner)
+        self.assertIn("relay_stdout_stream = relay.stdout", runner)
+        self.assertIn("relay_stderr_stream = relay.stderr", runner)
+        self.assertIn("relay output pipes are unavailable", runner)
+        self.assertIn("on_line=ready_lines.put", runner)
+        self.assertIn("on_eof=lambda: ready_lines.put(None)", runner)
+        self.assertIn("stop_process_group(", runner)
+        self.assertIn("abort_process_group(", runner)
+        self.assertIn("unowned_streams=tuple(", runner)
+        self.assertLess(
+            runner.index("relay_stdout_stream = relay.stdout"),
+            runner.index("relay output pipes are unavailable"),
+        )
+        self.assertLess(
+            runner.index("relay output pipes are unavailable"),
+            runner.index("BrowserStderrReader("),
+        )
+        self.assertLess(
+            runner.index('stage = "cleanup_relay_before_pass"'),
+            runner.index('f"{SENTINEL}:BROWSER_RESULT'),
+        )
+        self.assertLess(
+            runner.index('stage = "cleanup_relay_before_pass"'),
+            runner.index(f'print(f"{{SENTINEL}}:PASS"'),
+        )
+
+    def test_main_suppresses_terminal_records_when_relay_cleanup_fails(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdout = object()
+                self.stderr = object()
+
+            def poll(self) -> None:
+                return None
+
+        class FakeThread:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+
+            def start(self) -> None:
+                pass
+
+            def join(self, timeout: float | None = None) -> None:
+                del timeout
+
+        relay = FakeProcess()
+        browser = FakeProcess()
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 38123)
+        client = mock.Mock()
+        stop_relay = mock.Mock(side_effect=M0Error("relay cleanup failed"))
+        abort_relay = mock.Mock()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
+            out_dir = Path(temporary) / "out"
+            out_dir.mkdir()
+            for suffix in (".js", ".wasm"):
+                (out_dir / f"{smoke.DEFAULT_MODULE_NAME}{suffix}").write_bytes(b"x")
+            stack.enter_context(
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "run_m6_wasm_browser_host_history_downloads_dom_smoke.py",
+                        "--out-dir",
+                        str(out_dir),
+                        "--timeout",
+                        "5",
+                    ],
+                )
+            )
+            stack.enter_context(mock.patch.object(smoke, "check_boundary"))
+            stack.enter_context(
+                mock.patch.object(smoke.controlled_https, "check_controlled_https_boundary")
+            )
+            stack.enter_context(mock.patch.object(smoke, "verify_required_exports"))
+            stack.enter_context(
+                mock.patch.object(smoke, "verify_no_private_key_pem_artifacts")
+            )
+            stack.enter_context(mock.patch.object(smoke, "load_manifest", return_value={}))
+            stack.enter_context(mock.patch.object(smoke, "checked_output", return_value="head"))
+            stack.enter_context(
+                mock.patch.object(smoke, "manifest_versions", return_value=VERSIONS)
+            )
+            stack.enter_context(mock.patch.object(smoke, "print_context"))
+            stack.enter_context(
+                mock.patch.object(
+                    smoke,
+                    "find_browser",
+                    return_value=(Path("/browser"), "browser-version"),
+                )
+            )
+            stack.enter_context(mock.patch.object(smoke, "find_node", return_value=Path("/node")))
+            stack.enter_context(mock.patch.object(smoke, "create_server", return_value=server))
+            stack.enter_context(mock.patch.object(smoke.threading, "Thread", FakeThread))
+            stack.enter_context(
+                mock.patch.object(
+                    smoke, "m5_host_origin", return_value="http://127.0.0.1:38123"
+                )
+            )
+            stack.enter_context(mock.patch.object(smoke, "relay_command", return_value=["relay"]))
+            stack.enter_context(
+                mock.patch.object(
+                    smoke.controlled_https,
+                    "wait_for_relay_ready",
+                    return_value=mock.Mock(),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(smoke, "smoke_url", return_value="http://127.0.0.1:38123/")
+            )
+            stack.enter_context(mock.patch.object(smoke, "unused_loopback_port", return_value=40123))
+            stack.enter_context(mock.patch.object(smoke, "browser_command", return_value=["browser"]))
+            stack.enter_context(
+                mock.patch.object(smoke.subprocess, "Popen", side_effect=[relay, browser])
+            )
+            stack.enter_context(mock.patch.object(smoke, "wait_for_page_client", return_value=client))
+            stack.enter_context(mock.patch.object(smoke, "dispatch_address_transaction"))
+            stack.enter_context(mock.patch.object(smoke, "wait_for_state", return_value={}))
+            stack.enter_context(mock.patch.object(smoke, "click_target"))
+            stack.enter_context(
+                mock.patch.object(smoke, "wait_for_result", return_value=successful_result())
+            )
+            stack.enter_context(
+                mock.patch.object(smoke.controlled_https, "fetch_relay_status", return_value={})
+            )
+            stack.enter_context(
+                mock.patch.object(smoke.controlled_https, "validate_relay_status")
+            )
+            stack.enter_context(mock.patch.object(smoke, "stop_process_group", stop_relay))
+            stack.enter_context(mock.patch.object(smoke, "abort_process_group", abort_relay))
+            stack.enter_context(mock.patch.object(smoke, "stop_browser"))
+            stack.enter_context(
+                mock.patch.object(
+                    smoke,
+                    "write_failure_diagnostics",
+                    return_value=Path("/tmp/history-downloads.json"),
+                )
+            )
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                self.assertEqual(smoke.main(), 1)
+
+        terminal = stdout.getvalue() + stderr.getvalue()
+        for marker in ("BROWSER_RESULT", "PASS"):
+            with self.subTest(marker=marker):
+                self.assertNotIn(f"{smoke.SENTINEL}:{marker}", terminal)
+        self.assertIn("FAIL reason=relay cleanup failed", terminal)
+        stop_relay.assert_called_once()
+        abort_relay.assert_called_once()
+        self.assertEqual(
+            abort_relay.call_args.kwargs["description"],
+            "M6 History/Downloads relay",
+        )
+        self.assertEqual(abort_relay.call_args.kwargs["unowned_streams"], ())
 
     def test_host_uses_shared_adapters_deferred_ordinals_and_no_navigation_api(self) -> None:
         host = source(
