@@ -47,7 +47,7 @@ else:
 
 
 SENTINEL = "CHROMIUM_WASM_M9_PACKAGE"
-PACKAGE_SCHEMA_VERSION = 2
+PACKAGE_SCHEMA_VERSION = 3
 HOST_PROTOCOL_VERSION = 1
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
 PRODUCT_NAME = "chromium-wasm"
@@ -55,6 +55,16 @@ MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CLEAN_BUILD_ATTESTATION_BYTES = 1024 * 1024
+
+# This is a package truthfulness contract, not a feature-negotiation surface.
+# A staged pre-release must carry precisely these literal Boolean values until
+# the corresponding milestone gates have independent passing evidence.
+EXPECTED_GATE_STATE = {
+    "persistent_profile_complete": False,
+    "page_webassembly_enabled": False,
+    "m8_complete": False,
+    "m9_release_complete": False,
+}
 
 ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED = "unverified"
 ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED = (
@@ -115,6 +125,15 @@ This directory is a deterministic staging artifact, not a distributable
 Chromium release. Its VERSION.json has release_status
 \"pre_m7_m8_not_releasable\". Do not describe it as security-equivalent to
 desktop Chromium or as having a persistent browser profile.
+
+Its canonical VERSION.json gate_state is fixed to:
+
+  persistent_profile_complete=false
+  page_webassembly_enabled=false
+  m8_complete=false
+  m9_release_complete=false
+
+Those values are required package metadata, not optional limitations text.
 
 The build.staging_checkout value records only the Git checkout that ran this
 staging tool. The copied build artifacts have
@@ -596,6 +615,7 @@ def _version_manifest(
             "resource_delivery": "embedded-in-wasm-current-build",
             "staging_checkout": port_revision,
         },
+        "gate_state": EXPECTED_GATE_STATE.copy(),
         "host": {
             "bridge_protocol": HOST_PROTOCOL_VERSION,
             "mime_types": REQUIRED_MIME_TYPES,
@@ -603,6 +623,8 @@ def _version_manifest(
         },
         "known_limitations": [
             "M7 durable OPFS profile integration is incomplete.",
+            "The gate_state records persistent_profile_complete=false and "
+            "page_webassembly_enabled=false.",
             "M8 compatibility coverage is incomplete.",
             "M9 stress, reliability, and final release validation are incomplete.",
             "The single-process Wasm port is not security-equivalent to desktop Chromium.",
@@ -845,10 +867,26 @@ def _load_version(path: Path) -> dict[str, Any]:
     return value
 
 
+def _validate_gate_state(gate_state: object) -> None:
+    """Require the exact false-only milestone declaration for this package."""
+
+    if type(gate_state) is not dict or set(gate_state) != set(EXPECTED_GATE_STATE):
+        raise PackageError("VERSION.json gate state schema is invalid")
+    for key, expected_value in EXPECTED_GATE_STATE.items():
+        value = gate_state[key]
+        # bool is an int subclass in Python, so use an exact type check before
+        # comparing the value. JSON 0 or 1 must never stand in for a gate.
+        if type(value) is not bool:
+            raise PackageError("VERSION.json gate state values must be booleans")
+        if value is not expected_value:
+            raise PackageError("VERSION.json gate state must retain false values")
+
+
 def _validate_version(version: dict[str, Any], root: Path) -> None:
     expected_keys = {
         "artifacts",
         "build",
+        "gate_state",
         "host",
         "known_limitations",
         "product",
@@ -865,6 +903,8 @@ def _validate_version(version: dict[str, Any], root: Path) -> None:
         raise PackageError("VERSION.json product is invalid")
     if version["release_status"] != RELEASE_STATUS:
         raise PackageError("VERSION.json must retain the pre-release status")
+
+    _validate_gate_state(version["gate_state"])
 
     versions = version["versions"]
     if not isinstance(versions, dict) or set(versions) != {

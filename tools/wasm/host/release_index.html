@@ -71,6 +71,11 @@
       font-size: 16px;
     }
 
+    h2 {
+      margin: 16px 0 8px;
+      font-size: 14px;
+    }
+
     p {
       margin: 0 0 12px;
     }
@@ -137,6 +142,19 @@
         The artifact source provenance shown below is either unverified or a
         local clean-build attestation. Neither makes this package releasable.
       </p>
+      <h2>Required gate state</h2>
+      <p class="warning">
+        These machine-readable values are required false until their individual
+        gates have passing evidence; they are not hidden in generic limitations.
+      </p>
+      <p class="warning">
+        persistent_profile_complete=false;
+        page_webassembly_enabled=false;
+        m8_complete=false;
+        m9_release_complete=false.
+      </p>
+      <dl id="gate-state" aria-label="Required release gate state"></dl>
+      <h2>Build versions</h2>
       <dl id="versions"></dl>
       <button id="shutdown" type="button" disabled>Request shutdown</button>
       <pre id="chrome-status">Loading package metadata…</pre>

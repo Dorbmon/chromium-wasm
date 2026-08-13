@@ -12,6 +12,7 @@ import socket
 import tempfile
 import unittest
 from copy import deepcopy
+from typing import Callable
 from unittest import mock
 
 from tools.wasm import package
@@ -136,8 +137,10 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual("pre_m7_m8_not_releasable", result["release_status"])
 
         version = json.loads((dist_dir / "VERSION.json").read_text("utf-8"))
-        self.assertEqual(package.PACKAGE_SCHEMA_VERSION, version["schema_version"])
+        self.assertEqual(3, package.PACKAGE_SCHEMA_VERSION)
+        self.assertEqual(3, version["schema_version"])
         self.assertEqual(package.RELEASE_STATUS, version["release_status"])
+        self.assertEqual(package.EXPECTED_GATE_STATE, version["gate_state"])
         self.assertNotIn("port", version["versions"])
         self.assertEqual(PORT_REVISION, version["build"]["staging_checkout"])
         self.assertEqual(
@@ -459,6 +462,65 @@ class M9PackageTest(unittest.TestCase):
         with self.assertRaisesRegex(package.PackageError, "source provenance"):
             package.verify_release_tree(dist_dir)
 
+    def test_verification_rejects_legacy_schema_version(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        version["schema_version"] = 2
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(package.PackageError, "unsupported schema version"):
+            package.verify_release_tree(dist_dir)
+
+    def test_verification_rejects_missing_gate_state(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        del version["gate_state"]
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(package.PackageError, "package schema"):
+            package.verify_release_tree(dist_dir)
+
+    def test_verification_rejects_gate_state_mutations(self) -> None:
+        mutations: dict[str, Callable[[dict[str, object]], object]] = {
+            "missing": lambda state: state.pop("m8_complete"),
+            "extra": lambda state: state.__setitem__("future_gate", False),
+            "zero": lambda state: state.__setitem__(
+                "page_webassembly_enabled", 0
+            ),
+            "one": lambda state: state.__setitem__("m9_release_complete", 1),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                dist_dir = self._stage(
+                    out_dir=self._make_out_dir(f"out-gate-state-{name}"),
+                    name=f"gate-state-{name}",
+                )
+                version_path = dist_dir / "VERSION.json"
+                version = json.loads(version_path.read_text("utf-8"))
+                mutate(version["gate_state"])
+                version_path.write_bytes(package._canonical_json(version))
+
+                with self.assertRaisesRegex(package.PackageError, "gate state"):
+                    package.verify_release_tree(dist_dir)
+
+        for gate_name in package.EXPECTED_GATE_STATE:
+            with self.subTest(name=f"true-{gate_name}"):
+                dist_dir = self._stage(
+                    out_dir=self._make_out_dir(
+                        f"out-gate-state-true-{gate_name}"
+                    ),
+                    name=f"gate-state-true-{gate_name}",
+                )
+                version_path = dist_dir / "VERSION.json"
+                version = json.loads(version_path.read_text("utf-8"))
+                version["gate_state"][gate_name] = True
+                version_path.write_bytes(package._canonical_json(version))
+
+                with self.assertRaisesRegex(package.PackageError, "gate state"):
+                    package.verify_release_tree(dist_dir)
+
     def test_verification_requires_a_git_staging_checkout(self) -> None:
         dist_dir = self._stage()
         version_path = dist_dir / "VERSION.json"
@@ -524,8 +586,25 @@ class M9PackageTest(unittest.TestCase):
                 self.assertIn(module, host)
         self.assertIn("pre_m7_m8_not_releasable", host)
         self.assertIn("not passed the M7/M8/M9", index)
+        self.assertIn("Required gate state", index)
+        self.assertIn('id="gate-state"', index)
         self.assertIn("staging checkout", host)
         self.assertIn("artifact source provenance", host)
+        self.assertIn("EXPECTED_GATE_STATE", host)
+        self.assertIn("PACKAGE_SCHEMA_VERSION = 3", host)
+        self.assertIn(
+            "version?.schema_version !== PACKAGE_SCHEMA_VERSION", host
+        )
+        self.assertIn("validateGateState(version?.gate_state)", host)
+        self.assertIn("#renderGateState(gateState)", host)
+        self.assertLess(
+            host.index("validateGateState(version?.gate_state)"),
+            host.index("this.#installBridge()"),
+        )
+        for name in package.EXPECTED_GATE_STATE:
+            with self.subTest(gate_state_name=name):
+                self.assertIn(name, host)
+                self.assertIn(name, index)
         self.assertIn("ALLOWED_ARTIFACT_SOURCE_PROVENANCE", host)
         self.assertIn('"unverified"', host)
         self.assertIn('"local_clean_build_attested"', host)

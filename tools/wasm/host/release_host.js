@@ -17,11 +17,18 @@ const MAX_FRAME_DIMENSION = 16384;
 const MAX_LOG_LINES = 32;
 const MAX_LOG_LINE_CHARS = 512;
 const MAX_STATUS_BYTES = 64 * 1024;
+const PACKAGE_SCHEMA_VERSION = 3;
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
 const ALLOWED_ARTIFACT_SOURCE_PROVENANCE = new Set([
   "unverified",
   "local_clean_build_attested",
 ]);
+const EXPECTED_GATE_STATE = Object.freeze({
+  persistent_profile_complete: false,
+  page_webassembly_enabled: false,
+  m8_complete: false,
+  m9_release_complete: false,
+});
 
 function appendBounded(records, record) {
   records.push(record);
@@ -42,6 +49,29 @@ function asNonemptyString(value, description) {
     throw new Error(`${description} must be a nonempty string`);
   }
   return value;
+}
+
+function validateGateState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("VERSION.json gate_state must be an object");
+  }
+  const expectedKeys = Object.keys(EXPECTED_GATE_STATE);
+  const observedKeys = Object.keys(value);
+  if (observedKeys.length !== expectedKeys.length ||
+      !expectedKeys.every((key) => Object.hasOwn(value, key))) {
+    throw new Error("VERSION.json gate_state keys are invalid");
+  }
+  for (const key of expectedKeys) {
+    if (typeof value[key] !== "boolean") {
+      throw new Error("VERSION.json gate_state values must be booleans");
+    }
+    if (value[key] !== EXPECTED_GATE_STATE[key]) {
+      throw new Error("VERSION.json gate_state must retain false values");
+    }
+  }
+  // Do not retain untrusted metadata objects after validation. The rendered
+  // release-state section is always the canonical false-only declaration.
+  return EXPECTED_GATE_STATE;
 }
 
 function isReadinessReport(value) {
@@ -160,6 +190,7 @@ class ChromiumWasmPreReleaseHost {
   #root;
   #status;
   #versionsElement;
+  #gateStateElement;
   #shutdownButton;
   #module = null;
   #pointerInput = null;
@@ -172,14 +203,17 @@ class ChromiumWasmPreReleaseHost {
   #frameCount = 0;
   #processExitCode = null;
   #shutdownRequested = false;
+  #gateState = null;
   #windowErrorHandler = null;
   #unhandledRejectionHandler = null;
 
-  constructor(canvas, textProxy, root, status, versionsElement, shutdownButton) {
+  constructor(canvas, textProxy, root, status, versionsElement, gateStateElement,
+      shutdownButton) {
     if (!(canvas instanceof HTMLCanvasElement) ||
         !(textProxy instanceof HTMLTextAreaElement) ||
         !(root instanceof HTMLElement) || !(status instanceof HTMLElement) ||
         !(versionsElement instanceof HTMLElement) ||
+        !(gateStateElement instanceof HTMLElement) ||
         !(shutdownButton instanceof HTMLButtonElement)) {
       throw new Error("pre-release host page is missing a required element");
     }
@@ -188,6 +222,7 @@ class ChromiumWasmPreReleaseHost {
     this.#root = root;
     this.#status = status;
     this.#versionsElement = versionsElement;
+    this.#gateStateElement = gateStateElement;
     this.#shutdownButton = shutdownButton;
   }
 
@@ -202,6 +237,7 @@ class ChromiumWasmPreReleaseHost {
   #renderStatus() {
     const summary = {
       releaseStatus: RELEASE_STATUS,
+      gateState: this.#gateState,
       runtimeInitialized: this.#module !== null,
       framesPresented: this.#frameCount,
       readiness: this.#readiness,
@@ -239,6 +275,17 @@ class ChromiumWasmPreReleaseHost {
       term.textContent = name;
       definition.textContent = asNonemptyString(value, `version ${name}`);
       this.#versionsElement.append(term, definition);
+    }
+  }
+
+  #renderGateState(gateState) {
+    this.#gateStateElement.replaceChildren();
+    for (const [name, value] of Object.entries(gateState)) {
+      const term = document.createElement("dt");
+      const definition = document.createElement("dd");
+      term.textContent = name;
+      definition.textContent = String(value);
+      this.#gateStateElement.append(term, definition);
     }
   }
 
@@ -506,9 +553,13 @@ class ChromiumWasmPreReleaseHost {
   }
 
   async run(version) {
+    if (version?.schema_version !== PACKAGE_SCHEMA_VERSION) {
+      throw new Error("VERSION.json has an unsupported package schema version");
+    }
     if (version?.release_status !== RELEASE_STATUS) {
       throw new Error("VERSION.json does not declare this pre-release package");
     }
+    const gateState = validateGateState(version?.gate_state);
     const inputModuleName = version?.build?.input_module_name;
     if (typeof inputModuleName !== "string" ||
         !/^[A-Za-z0-9_]+$/.test(inputModuleName)) {
@@ -518,7 +569,9 @@ class ChromiumWasmPreReleaseHost {
         typeof SharedArrayBuffer !== "function") {
       throw new Error("this package requires COOP/COEP cross-origin isolation");
     }
+    this.#gateState = gateState;
     this.#renderVersions(version);
+    this.#renderGateState(gateState);
     this.#capturePageErrors();
     this.#installBridge();
     this.#shutdownButton.addEventListener("click", () => this.#requestShutdown());
@@ -590,8 +643,9 @@ export async function runChromiumWasmPreRelease() {
   const textProxy = document.querySelector("#browser-text-proxy");
   const status = document.querySelector("#chrome-status");
   const versions = document.querySelector("#versions");
+  const gateState = document.querySelector("#gate-state");
   const shutdownButton = document.querySelector("#shutdown");
   const host = new ChromiumWasmPreReleaseHost(
-      canvas, textProxy, root, status, versions, shutdownButton);
+      canvas, textProxy, root, status, versions, gateState, shutdownButton);
   await host.run(await loadVersion());
 }
