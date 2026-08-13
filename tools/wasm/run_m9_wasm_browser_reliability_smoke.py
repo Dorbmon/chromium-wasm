@@ -69,6 +69,7 @@ MAX_CHILD_OUTPUT_BYTES = 12 * 1024 * 1024
 MAX_FAILURE_MESSAGE_CHARS = 2048
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT = "the M9 parent preflight snapshot"
 NORMAL_RESULT_PREFIX = f"{normal_lifecycle.SENTINEL}:NODE_RESULT "
 MAX_SCREENSHOT_POLICY_CONTRACT_BYTES = 64 * 1024
 _SNAPSHOT_BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
@@ -240,6 +241,109 @@ def _require_artifacts(out_dir: Path, module_name: str, description: str) -> Non
     for suffix in (".js", ".wasm"):
         if not (out_dir / f"{module_name}{suffix}").is_file():
             raise M0Error(f"{description} artifact is missing")
+
+
+def _snapshot_normal_lifecycle_preflight_artifact_identity(
+    out_dir: Path, module_name: str
+) -> dict[str, object]:
+    """Hash the output bytes that every normal child must snapshot.
+
+    The returned delivery and provenance fields deliberately describe the
+    normal child runner's own temporary-file delivery, not an M9 source or GN
+    assertion.  M9 retains this only as an expected byte identity for every
+    independently launched child.
+    """
+
+    snapshot = normal_lifecycle.capture_artifact_snapshot(out_dir, module_name)
+    identity = normal_lifecycle.artifact_identity(snapshot)
+    normal_lifecycle.validate_artifact_identity(
+        identity, expected_module_name=module_name
+    )
+    return identity
+
+
+def _snapshot_controlled_flow_preflight_artifact_identity(
+    out_dir: Path, module_name: str
+) -> dict[str, object]:
+    """Hash the output bytes that every controlled-flow server must snapshot.
+
+    Reuse the bounded generic loader/Wasm capture from the normal runner, but
+    label the expected record with the controlled-flow child's documented
+    immutable-server delivery constant.  The common ``unverified`` provenance
+    stays explicit: these hashes bind one M9 run's byte observations only.
+    """
+
+    snapshot = normal_lifecycle.capture_artifact_snapshot(out_dir, module_name)
+    if (
+        type(snapshot.module_name) is not str
+        or snapshot.module_name != module_name
+        or type(snapshot.loader) is not bytes
+        or type(snapshot.wasm) is not bytes
+    ):
+        raise M0Error("controlled-flow M9 preflight artifact snapshot is invalid")
+    identity = {
+        "artifact_delivery": continuous_flow.ARTIFACT_DELIVERY,
+        "artifact_source_provenance": continuous_flow.ARTIFACT_SOURCE_PROVENANCE,
+        "loader": {
+            "bytes": len(snapshot.loader),
+            "sha256": hashlib.sha256(snapshot.loader).hexdigest(),
+        },
+        "module_name": snapshot.module_name,
+        "wasm": {
+            "bytes": len(snapshot.wasm),
+            "sha256": hashlib.sha256(snapshot.wasm).hexdigest(),
+        },
+    }
+    try:
+        continuous_flow.validate_artifact_identity(
+            identity, expected_artifact_identity=identity
+        )
+    except M0Error as error:
+        raise M0Error(
+            "controlled-flow M9 preflight artifact identity is invalid"
+        ) from error
+    return identity
+
+
+def _require_normal_lifecycle_preflight_artifact_identity(
+    out_dir: Path,
+    module_name: str,
+    expected_artifact_identity: dict[str, object],
+) -> None:
+    """Reject a normal-module output mutation before or after a child run."""
+
+    try:
+        normal_lifecycle.validate_artifact_identity(
+            _snapshot_normal_lifecycle_preflight_artifact_identity(
+                out_dir, module_name
+            ),
+            expected_module_name=module_name,
+            expected_artifact_identity=expected_artifact_identity,
+        )
+    except M0Error as error:
+        raise M0Error(
+            "normal lifecycle artifact identity changed since the M9 parent "
+            "preflight snapshot"
+        ) from error
+
+
+def _require_controlled_flow_preflight_artifact_identity(
+    out_dir: Path,
+    module_name: str,
+    expected_artifact_identity: dict[str, object],
+) -> None:
+    """Reject a controlled-module output mutation before or after a child run."""
+
+    try:
+        continuous_flow.validate_artifact_identity(
+            _snapshot_controlled_flow_preflight_artifact_identity(out_dir, module_name),
+            expected_artifact_identity=expected_artifact_identity,
+        )
+    except M0Error as error:
+        raise M0Error(
+            "controlled flow artifact identity changed since the M9 parent "
+            "preflight snapshot"
+        ) from error
 
 
 def _require_iteration_count(value: int, description: str) -> None:
@@ -507,6 +611,7 @@ def validate_normal_lifecycle_execution(
     *,
     expected_module_name: str,
     expected_artifact_identity: dict[str, object] | None = None,
+    expected_artifact_identity_context: str = "a prior cycle",
 ) -> dict[str, object]:
     """Validate one independent no-switch lifecycle child result."""
     _require_module_name(expected_module_name, "normal lifecycle module name")
@@ -545,7 +650,8 @@ def validate_normal_lifecycle_execution(
     except M0Error as error:
         if expected_artifact_identity is not None:
             raise M0Error(
-                "normal lifecycle artifact identity disagrees with a prior cycle"
+                "normal lifecycle artifact identity disagrees with "
+                f"{expected_artifact_identity_context}"
             ) from error
         raise M0Error(
             "normal lifecycle result has an invalid artifact identity"
@@ -620,6 +726,7 @@ def validate_controlled_flow_execution(
     *,
     expected_module_name: str,
     expected_artifact_identity: dict[str, object] | None = None,
+    expected_artifact_identity_context: str = "a prior cycle",
     screenshot_contract: dict[str, Any] | None = None,
     screenshot_baseline_png: bytes | None = None,
     expected_screenshot_policy_identity: dict[str, object] | None = None,
@@ -663,7 +770,8 @@ def validate_controlled_flow_execution(
             )
         except M0Error as error:
             raise M0Error(
-                "controlled flow artifact identity disagrees with a prior cycle"
+                "controlled flow artifact identity disagrees with "
+                f"{expected_artifact_identity_context}"
             ) from error
     validation_artifact_identity = (
         expected_artifact_identity
@@ -1119,9 +1227,27 @@ def run_reliability(
     _require_artifacts(out_dir, normal_module_name, "normal lifecycle")
     _require_artifacts(out_dir, controlled_flow_module_name, "controlled flow")
 
+    # Freeze both configured module identities before any child can snapshot
+    # them. The constants in these records describe the child delivery paths;
+    # provenance remains explicitly unverified.
+    normal_preflight_artifact_identity = (
+        _snapshot_normal_lifecycle_preflight_artifact_identity(
+            out_dir, normal_module_name
+        )
+    )
+    controlled_flow_preflight_artifact_identity = (
+        _snapshot_controlled_flow_preflight_artifact_identity(
+            out_dir, controlled_flow_module_name
+        )
+    )
+
     normal_cycles: list[dict[str, object]] = []
-    normal_artifact_identity: dict[str, object] | None = None
     for cycle in range(1, normal_lifecycle_iterations + 1):
+        _require_normal_lifecycle_preflight_artifact_identity(
+            out_dir,
+            normal_module_name,
+            normal_preflight_artifact_identity,
+        )
         execution = run_child(
             "normal lifecycle",
             cycle,
@@ -1135,10 +1261,16 @@ def run_reliability(
         normal_cycle = validate_normal_lifecycle_execution(
             execution,
             expected_module_name=normal_module_name,
-            expected_artifact_identity=normal_artifact_identity,
+            expected_artifact_identity=copy.deepcopy(
+                normal_preflight_artifact_identity
+            ),
+            expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
         )
-        if normal_artifact_identity is None:
-            normal_artifact_identity = copy.deepcopy(normal_cycle["artifact"])
+        _require_normal_lifecycle_preflight_artifact_identity(
+            out_dir,
+            normal_module_name,
+            normal_preflight_artifact_identity,
+        )
         normal_cycles.append(normal_cycle)
 
     # Capture the visual policy before the first controlled-flow child starts.
@@ -1150,8 +1282,12 @@ def run_reliability(
     ) = _snapshot_controlled_screenshot_policy()
 
     flow_cycles: list[dict[str, object]] = []
-    flow_artifact_identity: dict[str, object] | None = None
     for cycle in range(1, controlled_flow_iterations + 1):
+        _require_controlled_flow_preflight_artifact_identity(
+            out_dir,
+            controlled_flow_module_name,
+            controlled_flow_preflight_artifact_identity,
+        )
         execution = run_child(
             "controlled flow",
             cycle,
@@ -1170,7 +1306,10 @@ def run_reliability(
         flow_cycle = validate_controlled_flow_execution(
             execution,
             expected_module_name=controlled_flow_module_name,
-            expected_artifact_identity=flow_artifact_identity,
+            expected_artifact_identity=copy.deepcopy(
+                controlled_flow_preflight_artifact_identity
+            ),
+            expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
             screenshot_contract=flow_screenshot_contract,
             screenshot_baseline_png=flow_screenshot_baseline_png,
             expected_screenshot_policy_identity=flow_screenshot_policy_identity,
@@ -1185,18 +1324,17 @@ def run_reliability(
                 "controlled-flow cycle does not retain the M9 screenshot policy "
                 "identity"
             ) from error
-        if flow_artifact_identity is None:
-            flow_artifact_identity = copy.deepcopy(flow_cycle["artifact"])
+        _require_controlled_flow_preflight_artifact_identity(
+            out_dir,
+            controlled_flow_module_name,
+            controlled_flow_preflight_artifact_identity,
+        )
         flow_cycles.append(flow_cycle)
 
-    if normal_artifact_identity is None:
-        raise M0Error("reliability runner has no normal lifecycle artifact identity")
-    if flow_artifact_identity is None:
-        raise M0Error("reliability runner has no controlled-flow artifact identity")
     normal_summary = _aggregate_cycles(normal_cycles)
     normal_summary.update(
         {
-            "artifact": normal_artifact_identity,
+            "artifact": normal_preflight_artifact_identity,
             "kind": "fresh-node-module-process",
             "requestedCycles": normal_lifecycle_iterations,
             "ownedHostShutdown": True,
@@ -1205,7 +1343,7 @@ def run_reliability(
     flow_summary = _aggregate_cycles(flow_cycles)
     flow_summary.update(
         {
-            "artifact": flow_artifact_identity,
+            "artifact": controlled_flow_preflight_artifact_identity,
             "kind": "fresh-real-host-browser-profile-and-outer-restart",
             "requestedCycles": controlled_flow_iterations,
             "controlledHttpsNavigation": True,

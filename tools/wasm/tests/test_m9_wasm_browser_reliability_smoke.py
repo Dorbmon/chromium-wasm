@@ -163,6 +163,18 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         )
         return contract, baseline_png, identity
 
+    def _preflight_artifact_identities(
+        self, out_dir: Path
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        return (
+            runner._snapshot_normal_lifecycle_preflight_artifact_identity(
+                out_dir, runner.DEFAULT_NORMAL_MODULE_NAME
+            ),
+            runner._snapshot_controlled_flow_preflight_artifact_identity(
+                out_dir, runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+            ),
+        )
+
     def test_normal_child_requires_unique_markers_and_summary_schema(self) -> None:
         result = runner.validate_normal_lifecycle_execution(
             normal_execution(), expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME
@@ -289,6 +301,118 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
                 expected_artifact_identity=NORMAL_ARTIFACT_IDENTITY,
             )
+
+    def test_parent_preflight_artifact_identities_are_exact_and_type_safe(
+        self,
+    ) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_identity, controlled_flow_identity = (
+            self._preflight_artifact_identities(out_dir)
+        )
+        normal_bytes = {
+            "loader": (out_dir / "chrome_wasm.js").read_bytes(),
+            "wasm": (out_dir / "chrome_wasm.wasm").read_bytes(),
+        }
+        controlled_flow_bytes = {
+            "loader": (out_dir / "chrome_wasm_m6_https_test.js").read_bytes(),
+            "wasm": (out_dir / "chrome_wasm_m6_https_test.wasm").read_bytes(),
+        }
+        self.assertEqual(
+            {
+                "artifact_delivery": normal_lifecycle.ARTIFACT_DELIVERY,
+                "artifact_source_provenance": (
+                    normal_lifecycle.ARTIFACT_SOURCE_PROVENANCE
+                ),
+                "loader": {
+                    "bytes": len(normal_bytes["loader"]),
+                    "sha256": hashlib.sha256(normal_bytes["loader"]).hexdigest(),
+                },
+                "module_name": runner.DEFAULT_NORMAL_MODULE_NAME,
+                "wasm": {
+                    "bytes": len(normal_bytes["wasm"]),
+                    "sha256": hashlib.sha256(normal_bytes["wasm"]).hexdigest(),
+                },
+            },
+            normal_identity,
+        )
+        self.assertEqual(
+            {
+                "artifact_delivery": continuous_flow.ARTIFACT_DELIVERY,
+                "artifact_source_provenance": (
+                    continuous_flow.ARTIFACT_SOURCE_PROVENANCE
+                ),
+                "loader": {
+                    "bytes": len(controlled_flow_bytes["loader"]),
+                    "sha256": hashlib.sha256(
+                        controlled_flow_bytes["loader"]
+                    ).hexdigest(),
+                },
+                "module_name": runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                "wasm": {
+                    "bytes": len(controlled_flow_bytes["wasm"]),
+                    "sha256": hashlib.sha256(
+                        controlled_flow_bytes["wasm"]
+                    ).hexdigest(),
+                },
+            },
+            controlled_flow_identity,
+        )
+        normal_lifecycle.validate_artifact_identity(
+            normal_identity,
+            expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+            expected_artifact_identity=normal_identity,
+        )
+        continuous_flow.validate_artifact_identity(
+            controlled_flow_identity,
+            expected_artifact_identity=controlled_flow_identity,
+        )
+        self.assertEqual(
+            "unverified", normal_identity["artifact_source_provenance"]
+        )
+        self.assertEqual(
+            "unverified", controlled_flow_identity["artifact_source_provenance"]
+        )
+
+        malformed_snapshots = (
+            (
+                "boolean module name",
+                normal_lifecycle.ArtifactSnapshot(
+                    module_name=True, loader=b"loader", wasm=b"wasm"
+                ),
+                "module name",
+            ),
+            (
+                "unexpected module name",
+                normal_lifecycle.ArtifactSnapshot(
+                    module_name="other_module", loader=b"loader", wasm=b"wasm"
+                ),
+                "disagrees with configured module",
+            ),
+            (
+                "mutable loader",
+                normal_lifecycle.ArtifactSnapshot(
+                    module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    loader=bytearray(b"loader"),
+                    wasm=b"wasm",
+                ),
+                "snapshot is invalid",
+            ),
+        )
+        for name, malformed_snapshot, normal_error in malformed_snapshots:
+            with self.subTest(name=name), mock.patch.object(
+                runner.normal_lifecycle,
+                "capture_artifact_snapshot",
+                return_value=malformed_snapshot,
+            ):
+                with self.assertRaisesRegex(M0Error, normal_error):
+                    runner._snapshot_normal_lifecycle_preflight_artifact_identity(
+                        out_dir, runner.DEFAULT_NORMAL_MODULE_NAME
+                    )
+                with self.assertRaisesRegex(M0Error, "preflight artifact snapshot"):
+                    runner._snapshot_controlled_flow_preflight_artifact_identity(
+                        out_dir, runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    )
 
     def test_controlled_flow_delegates_to_existing_complete_validators(
         self,
@@ -547,10 +671,18 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
     def test_run_aggregates_only_fresh_cycles_and_forwards_isolated_paths(self) -> None:
         temporary, out_dir = self._make_out_dir()
         self.addCleanup(temporary.cleanup)
+        normal_preflight = runner._snapshot_normal_lifecycle_preflight_artifact_identity(
+            out_dir, runner.DEFAULT_NORMAL_MODULE_NAME
+        )
+        controlled_flow_preflight = (
+            runner._snapshot_controlled_flow_preflight_artifact_identity(
+                out_dir, runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+            )
+        )
         executions: list[tuple[str, int, list[str], float]] = []
-        normal_validation_inputs: list[tuple[str, object]] = []
+        normal_validation_inputs: list[tuple[str, object, str]] = []
         controlled_flow_validation_inputs: list[
-            tuple[str, object, object, object, object]
+            tuple[str, object, str, object, object, object]
         ] = []
 
         def fake_run_child(
@@ -568,9 +700,14 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             *,
             expected_module_name: str,
             expected_artifact_identity: dict[str, object] | None,
+            expected_artifact_identity_context: str,
         ) -> dict[str, object]:
             normal_validation_inputs.append(
-                (expected_module_name, copy.deepcopy(expected_artifact_identity))
+                (
+                    expected_module_name,
+                    copy.deepcopy(expected_artifact_identity),
+                    expected_artifact_identity_context,
+                )
             )
             return {
                 "cycle": execution.cycle,
@@ -583,6 +720,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             *,
             expected_module_name: str,
             expected_artifact_identity: dict[str, object] | None,
+            expected_artifact_identity_context: str,
             screenshot_contract: dict[str, object],
             screenshot_baseline_png: bytes,
             expected_screenshot_policy_identity: dict[str, object],
@@ -594,6 +732,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 (
                     expected_module_name,
                     copy.deepcopy(expected_artifact_identity),
+                    expected_artifact_identity_context,
                     screenshot_contract,
                     screenshot_baseline_png,
                     copy.deepcopy(expected_screenshot_policy_identity),
@@ -641,10 +780,12 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.assertEqual("pass", result["status"])
         self.assertEqual(3, result["normalLifecycle"]["completedCycles"])
         self.assertEqual(
-            NORMAL_ARTIFACT_IDENTITY, result["normalLifecycle"]["artifact"]
+            normal_preflight, result["normalLifecycle"]["artifact"]
         )
         self.assertEqual(2, result["controlledFlow"]["completedCycles"])
-        self.assertEqual(ARTIFACT_IDENTITY, result["controlledFlow"]["artifact"])
+        self.assertEqual(
+            controlled_flow_preflight, result["controlledFlow"]["artifact"]
+        )
         self.assertEqual(
             continuous_flow.ARTIFACT_SOURCE_PROVENANCE,
             result["controlledFlow"]["artifact"]["artifact_source_provenance"],
@@ -660,9 +801,21 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.assertEqual(5, len(executions))
         self.assertEqual(
             [
-                (runner.DEFAULT_NORMAL_MODULE_NAME, None),
-                (runner.DEFAULT_NORMAL_MODULE_NAME, NORMAL_ARTIFACT_IDENTITY),
-                (runner.DEFAULT_NORMAL_MODULE_NAME, NORMAL_ARTIFACT_IDENTITY),
+                (
+                    runner.DEFAULT_NORMAL_MODULE_NAME,
+                    normal_preflight,
+                    "the M9 parent preflight snapshot",
+                ),
+                (
+                    runner.DEFAULT_NORMAL_MODULE_NAME,
+                    normal_preflight,
+                    "the M9 parent preflight snapshot",
+                ),
+                (
+                    runner.DEFAULT_NORMAL_MODULE_NAME,
+                    normal_preflight,
+                    "the M9 parent preflight snapshot",
+                ),
             ],
             normal_validation_inputs,
         )
@@ -670,31 +823,33 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             [
                 (
                     runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
-                    None,
-                    controlled_flow_validation_inputs[0][2],
+                    controlled_flow_preflight,
+                    "the M9 parent preflight snapshot",
                     controlled_flow_validation_inputs[0][3],
                     controlled_flow_validation_inputs[0][4],
+                    controlled_flow_validation_inputs[0][5],
                 ),
                 (
                     runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
-                    ARTIFACT_IDENTITY,
-                    controlled_flow_validation_inputs[0][2],
+                    controlled_flow_preflight,
+                    "the M9 parent preflight snapshot",
                     controlled_flow_validation_inputs[0][3],
                     controlled_flow_validation_inputs[0][4],
+                    controlled_flow_validation_inputs[0][5],
                 ),
             ],
             controlled_flow_validation_inputs,
         )
         self.assertIs(
-            controlled_flow_validation_inputs[0][2],
-            controlled_flow_validation_inputs[1][2],
-        )
-        self.assertIs(
             controlled_flow_validation_inputs[0][3],
             controlled_flow_validation_inputs[1][3],
         )
-        self.assertEqual(
+        self.assertIs(
             controlled_flow_validation_inputs[0][4],
+            controlled_flow_validation_inputs[1][4],
+        )
+        self.assertEqual(
+            controlled_flow_validation_inputs[0][5],
             result["controlledFlow"]["screenshotPolicy"],
         )
         load_contract.assert_called_once_with()
@@ -718,10 +873,13 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
     def test_controlled_flow_artifact_drift_stops_before_later_cycles(self) -> None:
         temporary, out_dir = self._make_out_dir()
         self.addCleanup(temporary.cleanup)
+        normal_preflight, controlled_flow_preflight = (
+            self._preflight_artifact_identities(out_dir)
+        )
         screenshot_contract, baseline_png, screenshot_policy = (
             self._retained_screenshot_policy()
         )
-        substituted = copy.deepcopy(ARTIFACT_IDENTITY)
+        substituted = copy.deepcopy(controlled_flow_preflight)
         substituted["wasm"] = {"bytes": 21, "sha256": "c" * 64}
         child_names: list[tuple[str, int]] = []
 
@@ -730,14 +888,14 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         ) -> runner.ChildExecution:
             child_names.append((name, cycle))
             if name == "normal lifecycle":
-                return normal_execution(cycle)
+                return normal_execution(cycle, artifact=normal_preflight)
             return flow_execution(
                 cycle,
                 flow_artifact=(
-                    ARTIFACT_IDENTITY if cycle == 1 else substituted
+                    controlled_flow_preflight if cycle == 1 else substituted
                 ),
                 restart_artifact=(
-                    ARTIFACT_IDENTITY if cycle == 1 else substituted
+                    controlled_flow_preflight if cycle == 1 else substituted
                 ),
             )
 
@@ -761,7 +919,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 runner.continuous_flow, "validate_restart_result"
             ) as validate_restart,
         ):
-            with self.assertRaisesRegex(M0Error, "prior cycle"):
+            with self.assertRaisesRegex(M0Error, "M9 parent preflight snapshot"):
                 runner.run_reliability(
                     out_dir=out_dir,
                     normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
@@ -791,11 +949,232 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         validate_flow.assert_called_once()
         validate_restart.assert_called_once()
 
+    def test_normal_first_child_artifact_substitution_stops_later_launches(self) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, _ = self._preflight_artifact_identities(out_dir)
+        substituted = copy.deepcopy(normal_preflight)
+        substituted["loader"] = {"bytes": 7, "sha256": "f" * 64}
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del command, timeout
+            child_names.append((name, cycle))
+            if name != "normal lifecycle":
+                self.fail("controlled flow must not start after normal substitution")
+            return normal_execution(cycle, artifact=substituted)
+
+        with mock.patch.object(runner, "run_child", side_effect=fake_run_child):
+            with self.assertRaisesRegex(M0Error, "M9 parent preflight snapshot"):
+                runner.run_reliability(
+                    out_dir=out_dir,
+                    normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    controlled_flow_module_name=(
+                        runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    ),
+                    normal_lifecycle_iterations=2,
+                    controlled_flow_iterations=2,
+                    normal_timeout=7.0,
+                    controlled_flow_timeout=11.0,
+                    diagnostics_dir=out_dir / "diagnostics",
+                    browser=None,
+                    node=None,
+                    relay_script=None,
+                    no_sandbox=False,
+                )
+
+        self.assertEqual([("normal lifecycle", 1)], child_names)
+
+    def test_normal_postflight_disk_mutation_stops_later_launches(self) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, _ = self._preflight_artifact_identities(out_dir)
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del command, timeout
+            child_names.append((name, cycle))
+            if name != "normal lifecycle":
+                self.fail("controlled flow must not start after normal disk drift")
+            (out_dir / "chrome_wasm.js").write_text(
+                "mutated loader", encoding="utf-8"
+            )
+            return normal_execution(cycle, artifact=normal_preflight)
+
+        with mock.patch.object(runner, "run_child", side_effect=fake_run_child):
+            with self.assertRaisesRegex(M0Error, "changed since the M9 parent"):
+                runner.run_reliability(
+                    out_dir=out_dir,
+                    normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    controlled_flow_module_name=(
+                        runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    ),
+                    normal_lifecycle_iterations=2,
+                    controlled_flow_iterations=1,
+                    normal_timeout=7.0,
+                    controlled_flow_timeout=11.0,
+                    diagnostics_dir=out_dir / "diagnostics",
+                    browser=None,
+                    node=None,
+                    relay_script=None,
+                    no_sandbox=False,
+                )
+
+        self.assertEqual([("normal lifecycle", 1)], child_names)
+
+    def test_controlled_first_child_artifact_substitution_stops_later_launches(
+        self,
+    ) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, controlled_flow_preflight = (
+            self._preflight_artifact_identities(out_dir)
+        )
+        screenshot_contract, baseline_png, screenshot_policy = (
+            self._retained_screenshot_policy()
+        )
+        substituted = copy.deepcopy(controlled_flow_preflight)
+        substituted["wasm"] = {"bytes": 21, "sha256": "f" * 64}
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del command, timeout
+            child_names.append((name, cycle))
+            if name == "normal lifecycle":
+                return normal_execution(cycle, artifact=normal_preflight)
+            return flow_execution(
+                cycle,
+                flow_artifact=substituted,
+                restart_artifact=substituted,
+            )
+
+        with (
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            mock.patch.object(
+                runner,
+                "_snapshot_controlled_screenshot_policy",
+                return_value=(
+                    screenshot_contract,
+                    baseline_png,
+                    screenshot_policy,
+                ),
+            ),
+            mock.patch.object(
+                runner.continuous_flow, "validate_flow_result"
+            ) as validate_flow,
+            mock.patch.object(
+                runner.continuous_flow, "validate_restart_result"
+            ) as validate_restart,
+        ):
+            with self.assertRaisesRegex(M0Error, "M9 parent preflight snapshot"):
+                runner.run_reliability(
+                    out_dir=out_dir,
+                    normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    controlled_flow_module_name=(
+                        runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    ),
+                    normal_lifecycle_iterations=1,
+                    controlled_flow_iterations=2,
+                    normal_timeout=7.0,
+                    controlled_flow_timeout=11.0,
+                    diagnostics_dir=out_dir / "diagnostics",
+                    browser=None,
+                    node=None,
+                    relay_script=None,
+                    no_sandbox=False,
+                )
+
+        self.assertEqual(
+            [("normal lifecycle", 1), ("controlled flow", 1)], child_names
+        )
+        validate_flow.assert_not_called()
+        validate_restart.assert_not_called()
+
+    def test_controlled_postflight_disk_mutation_stops_later_launches(self) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, controlled_flow_preflight = (
+            self._preflight_artifact_identities(out_dir)
+        )
+        screenshot_contract, baseline_png, screenshot_policy = (
+            self._retained_screenshot_policy()
+        )
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del command, timeout
+            child_names.append((name, cycle))
+            if name == "normal lifecycle":
+                return normal_execution(cycle, artifact=normal_preflight)
+            (out_dir / "chrome_wasm_m6_https_test.wasm").write_bytes(
+                b"mutated wasm"
+            )
+            return flow_execution(
+                cycle,
+                flow_artifact=controlled_flow_preflight,
+                restart_artifact=controlled_flow_preflight,
+            )
+
+        with (
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            mock.patch.object(
+                runner,
+                "_snapshot_controlled_screenshot_policy",
+                return_value=(
+                    screenshot_contract,
+                    baseline_png,
+                    screenshot_policy,
+                ),
+            ),
+            mock.patch.object(
+                runner.continuous_flow,
+                "validate_flow_result",
+                return_value=baseline_png,
+            ) as validate_flow,
+            mock.patch.object(
+                runner.continuous_flow, "validate_restart_result"
+            ) as validate_restart,
+        ):
+            with self.assertRaisesRegex(M0Error, "changed since the M9 parent"):
+                runner.run_reliability(
+                    out_dir=out_dir,
+                    normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    controlled_flow_module_name=(
+                        runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                    ),
+                    normal_lifecycle_iterations=1,
+                    controlled_flow_iterations=2,
+                    normal_timeout=7.0,
+                    controlled_flow_timeout=11.0,
+                    diagnostics_dir=out_dir / "diagnostics",
+                    browser=None,
+                    node=None,
+                    relay_script=None,
+                    no_sandbox=False,
+                )
+
+        self.assertEqual(
+            [("normal lifecycle", 1), ("controlled flow", 1)], child_names
+        )
+        validate_flow.assert_called_once()
+        validate_restart.assert_called_once()
+
     def test_retained_visual_policy_rejects_cycle_two_drift_before_cycle_three(
         self,
     ) -> None:
         temporary, out_dir = self._make_out_dir()
         self.addCleanup(temporary.cleanup)
+        normal_preflight, controlled_flow_preflight = (
+            self._preflight_artifact_identities(out_dir)
+        )
         screenshot_contract, baseline_png, screenshot_policy = (
             self._retained_screenshot_policy()
         )
@@ -808,8 +1187,12 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             del command, timeout
             child_names.append((name, cycle))
             if name == "normal lifecycle":
-                return normal_execution(cycle)
-            return flow_execution(cycle)
+                return normal_execution(cycle, artifact=normal_preflight)
+            return flow_execution(
+                cycle,
+                flow_artifact=controlled_flow_preflight,
+                restart_artifact=controlled_flow_preflight,
+            )
 
         # The second PNG represents a child that could have accepted a later
         # on-disk policy. M9 must still compare it to policy A, retained before
@@ -910,7 +1293,8 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
     ) -> None:
         temporary, out_dir = self._make_out_dir()
         self.addCleanup(temporary.cleanup)
-        substituted = copy.deepcopy(NORMAL_ARTIFACT_IDENTITY)
+        normal_preflight, _ = self._preflight_artifact_identities(out_dir)
+        substituted = copy.deepcopy(normal_preflight)
         substituted["loader"] = {"bytes": 11, "sha256": "f" * 64}
         child_names: list[str] = []
 
@@ -923,12 +1307,12 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             return normal_execution(
                 cycle,
                 artifact=(
-                    NORMAL_ARTIFACT_IDENTITY if cycle == 1 else substituted
+                    normal_preflight if cycle == 1 else substituted
                 ),
             )
 
         with mock.patch.object(runner, "run_child", side_effect=fake_run_child):
-            with self.assertRaisesRegex(M0Error, "prior cycle"):
+            with self.assertRaisesRegex(M0Error, "M9 parent preflight snapshot"):
                 runner.run_reliability(
                     out_dir=out_dir,
                     normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
