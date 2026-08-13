@@ -71,9 +71,35 @@ MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT = "the M9 parent preflight snapshot"
 NORMAL_RESULT_PREFIX = f"{normal_lifecycle.SENTINEL}:NODE_RESULT "
+CONTROLLED_FLOW_SCREENSHOT_PREFIX = f"{continuous_flow.SENTINEL}:SCREENSHOT "
+CONTROLLED_FLOW_RESULT_PREFIX = f"{continuous_flow.SENTINEL}:FLOW_RESULT "
+CONTROLLED_FLOW_RESTART_RESULT_PREFIX = f"{continuous_flow.SENTINEL}:RESTART_RESULT "
+CONTROLLED_FLOW_PASS_MARKER = f"{continuous_flow.SENTINEL}:PASS"
+_CONTROLLED_FLOW_FAILURE_MARKERS = (
+    f"{continuous_flow.SENTINEL}:FAIL",
+    f"{continuous_flow.SENTINEL}:DIAGNOSTICS_FAIL",
+)
+_CONTROLLED_FLOW_TERMINAL_JSON_PREFIXES = (
+    CONTROLLED_FLOW_SCREENSHOT_PREFIX,
+    CONTROLLED_FLOW_RESULT_PREFIX,
+    CONTROLLED_FLOW_RESTART_RESULT_PREFIX,
+)
 MAX_SCREENSHOT_POLICY_CONTRACT_BYTES = 64 * 1024
 _SNAPSHOT_BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
 _SCREENSHOT_POLICY_IDENTITY_FIELDS = frozenset(("baseline", "contract"))
+_SCREENSHOT_COMPARISON_FIELDS = frozenset(
+    (
+        "matches",
+        "width",
+        "height",
+        "differentPixels",
+        "differentPixelRatio",
+        "maximumChannelDelta",
+        "meanChannelDelta",
+        "channelTolerance",
+        "maximumDifferentPixelRatio",
+    )
+)
 _SCREENSHOT_CONTRACT_FIELDS = frozenset(
     (
         "schema_version",
@@ -382,6 +408,105 @@ def _parse_unique_json_line(
     return result
 
 
+def _json_object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _reject_nonstandard_json_constant(value: str) -> None:
+    raise ValueError(f"nonstandard JSON constant {value!r}")
+
+
+def _parse_controlled_flow_terminal_json_line(
+    line: str, prefix: str, description: str
+) -> dict[str, Any]:
+    """Parse one authoritative child terminal JSON record strictly."""
+
+    try:
+        result = json.loads(
+            line[len(prefix) :],
+            object_pairs_hook=_json_object_without_duplicate_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as error:
+        raise M0Error(f"{description} emitted malformed JSON") from error
+    if not isinstance(result, dict):
+        raise M0Error(f"{description} result is not an object")
+    return result
+
+
+def _is_terminal_failure_marker(line: str, marker: str) -> bool:
+    return line == marker or line.startswith(marker + " ")
+
+
+def _validate_controlled_flow_terminal_records(
+    execution: ChildExecution, output: str
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Require one ordered, stdout-only terminal transcript from one child.
+
+    The M6 child emits its success transcript only after owned cleanup.  Its
+    stderr remains diagnostic-only, while either failure marker on either
+    stream is terminally disqualifying even if a forged success record follows.
+    """
+
+    description = f"controlled flow cycle {execution.cycle}"
+    for line in output.splitlines():
+        for marker in _CONTROLLED_FLOW_FAILURE_MARKERS:
+            if _is_terminal_failure_marker(line, marker):
+                raise M0Error(f"{description} emitted child failure marker {marker}")
+
+    stderr_lines = execution.stderr.splitlines()
+    for line in stderr_lines:
+        if line == CONTROLLED_FLOW_PASS_MARKER or any(
+            line.startswith(prefix)
+            for prefix in _CONTROLLED_FLOW_TERMINAL_JSON_PREFIXES
+        ):
+            raise M0Error(
+                f"{description} emitted a success terminal record on stderr"
+            )
+
+    stdout_lines = execution.stdout.splitlines()
+    ordered_records: list[tuple[str, int]] = []
+    for prefix in _CONTROLLED_FLOW_TERMINAL_JSON_PREFIXES:
+        indices = [
+            index
+            for index, line in enumerate(stdout_lines)
+            if line.startswith(prefix)
+        ]
+        if len(indices) != 1:
+            raise M0Error(
+                f"{description} did not emit exactly one stdout {prefix} record"
+            )
+        ordered_records.append((prefix, indices[0]))
+    pass_indices = [
+        index
+        for index, line in enumerate(stdout_lines)
+        if line == CONTROLLED_FLOW_PASS_MARKER
+    ]
+    if len(pass_indices) != 1:
+        raise M0Error(
+            f"{description} did not emit exactly one stdout "
+            f"{CONTROLLED_FLOW_PASS_MARKER}"
+        )
+    terminal_indices = [index for _prefix, index in ordered_records] + pass_indices
+    if terminal_indices != sorted(terminal_indices):
+        raise M0Error(f"{description} terminal records are missing or unordered")
+
+    records = [
+        _parse_controlled_flow_terminal_json_line(
+            stdout_lines[index], prefix, description
+        )
+        for prefix, index in ordered_records
+    ]
+    return records[0], records[1], records[2]
+
+
 def _validated_child_output(execution: ChildExecution) -> str:
     output = f"{execution.stdout}\n{execution.stderr}"
     # The separating newline above is only for line-oriented marker parsing;
@@ -432,6 +557,99 @@ def _require_positive_int(value: object, description: str) -> int:
     if type(value) is not int or value < 1:
         raise M0Error(f"{description} is invalid")
     return value
+
+
+def _exact_json_value_equal(value: object, expected: object) -> bool:
+    """Compare parsed JSON without accepting Python bool/int aliases."""
+
+    if type(value) is not type(expected):
+        return False
+    if isinstance(value, dict):
+        return set(value) == set(expected) and all(
+            _exact_json_value_equal(value[key], expected[key]) for key in value
+        )
+    if isinstance(value, list):
+        return len(value) == len(expected) and all(
+            _exact_json_value_equal(actual, wanted)
+            for actual, wanted in zip(value, expected)
+        )
+    return value == expected
+
+
+def validate_screenshot_comparison(
+    value: object,
+    *,
+    expected_screenshot_comparison: dict[str, int | float | bool] | None = None,
+) -> dict[str, int | float | bool]:
+    """Validate one child visual metric record and optional parent equality.
+
+    A successful controlled-flow child may not substitute a looser visual
+    threshold or report numerically equivalent-looking, differently typed
+    values.  When M9 retained a policy, its own PNG recomputation is the
+    authoritative metric record.
+    """
+
+    if not isinstance(value, dict) or set(value) != _SCREENSHOT_COMPARISON_FIELDS:
+        raise M0Error("controlled-flow screenshot comparison is invalid")
+    matches = value.get("matches")
+    width = value.get("width")
+    height = value.get("height")
+    different_pixels = value.get("differentPixels")
+    different_pixel_ratio = value.get("differentPixelRatio")
+    maximum_channel_delta = value.get("maximumChannelDelta")
+    mean_channel_delta = value.get("meanChannelDelta")
+    channel_tolerance = value.get("channelTolerance")
+    maximum_different_pixel_ratio = value.get("maximumDifferentPixelRatio")
+    if (
+        type(matches) is not bool
+        or type(width) is not int
+        or not 1 <= width <= continuous_flow.MAX_FRAME_DIMENSION
+        or type(height) is not int
+        or not 1 <= height <= continuous_flow.MAX_FRAME_DIMENSION
+        or type(different_pixels) is not int
+        or not 0 <= different_pixels <= width * height
+        or type(maximum_channel_delta) is not int
+        or not 0 <= maximum_channel_delta <= 255
+        or type(channel_tolerance) is not int
+        or not 0 <= channel_tolerance <= 255
+        or type(different_pixel_ratio) is not float
+        or not math.isfinite(different_pixel_ratio)
+        or not 0 <= different_pixel_ratio <= 1
+        or type(mean_channel_delta) is not float
+        or not math.isfinite(mean_channel_delta)
+        or not 0 <= mean_channel_delta <= 255
+        or type(maximum_different_pixel_ratio) is not float
+        or not math.isfinite(maximum_different_pixel_ratio)
+        or not 0 <= maximum_different_pixel_ratio <= 1
+    ):
+        raise M0Error("controlled-flow screenshot comparison is invalid")
+    pixel_count = width * height
+    if (
+        different_pixel_ratio != different_pixels / pixel_count
+        or mean_channel_delta > maximum_channel_delta
+        or matches is not (different_pixel_ratio <= maximum_different_pixel_ratio)
+        or matches is not True
+    ):
+        raise M0Error("controlled-flow screenshot comparison is invalid")
+    normalized: dict[str, int | float | bool] = {
+        "matches": matches,
+        "width": width,
+        "height": height,
+        "differentPixels": different_pixels,
+        "differentPixelRatio": different_pixel_ratio,
+        "maximumChannelDelta": maximum_channel_delta,
+        "meanChannelDelta": mean_channel_delta,
+        "channelTolerance": channel_tolerance,
+        "maximumDifferentPixelRatio": maximum_different_pixel_ratio,
+    }
+    if expected_screenshot_comparison is not None and not _exact_json_value_equal(
+        normalized, expected_screenshot_comparison
+    ):
+        raise M0Error(
+            "controlled-flow screenshot comparison disagrees with the retained "
+            "M9 parent recomputation"
+        )
+    return normalized
 
 
 def _canonical_screenshot_contract_bytes(contract: object) -> bytes:
@@ -739,20 +957,15 @@ def validate_controlled_flow_execution(
     """
     _require_module_name(expected_module_name, "controlled flow module name")
     output = _validated_child_output(execution)
-    _require_exact_marker(
-        output,
-        f"{continuous_flow.SENTINEL}:PASS",
-        f"controlled flow cycle {execution.cycle}",
+    (
+        child_screenshot_comparison,
+        flow_result,
+        restart_result,
+    ) = _validate_controlled_flow_terminal_records(
+        execution, output
     )
-    flow_result = _parse_unique_json_line(
-        execution.stdout,
-        f"{continuous_flow.SENTINEL}:FLOW_RESULT ",
-        f"controlled flow cycle {execution.cycle}",
-    )
-    restart_result = _parse_unique_json_line(
-        execution.stdout,
-        f"{continuous_flow.SENTINEL}:RESTART_RESULT ",
-        f"controlled flow cycle {execution.cycle}",
+    screenshot_comparison = validate_screenshot_comparison(
+        child_screenshot_comparison
     )
     versions = _versions_from_flow_result(flow_result)
     if restart_result.get("versions") != versions:
@@ -843,14 +1056,18 @@ def validate_controlled_flow_execution(
             execution,
             terminal_markers={
                 "flowPass": _exact_line_count(
-                    output, f"{continuous_flow.SENTINEL}:PASS"
+                    execution.stdout, CONTROLLED_FLOW_PASS_MARKER
                 ),
                 "flowResult": sum(
-                    line.startswith(f"{continuous_flow.SENTINEL}:FLOW_RESULT ")
+                    line.startswith(CONTROLLED_FLOW_RESULT_PREFIX)
                     for line in execution.stdout.splitlines()
                 ),
                 "restartResult": sum(
-                    line.startswith(f"{continuous_flow.SENTINEL}:RESTART_RESULT ")
+                    line.startswith(CONTROLLED_FLOW_RESTART_RESULT_PREFIX)
+                    for line in execution.stdout.splitlines()
+                ),
+                "screenshot": sum(
+                    line.startswith(CONTROLLED_FLOW_SCREENSHOT_PREFIX)
                     for line in execution.stdout.splitlines()
                 ),
             },
@@ -863,6 +1080,7 @@ def validate_controlled_flow_execution(
         "outerPageFreshRestart": True,
         "controlledReload": True,
         "controlledTabLifecycle": True,
+        "screenshotComparison": screenshot_comparison,
     }
     if screenshot_baseline_png is not None:
         if screenshot_policy is None:
@@ -881,6 +1099,11 @@ def validate_controlled_flow_execution(
                 "baseline: "
                 + json.dumps(comparison.as_dict(), sort_keys=True, separators=(",", ":"))
             )
+        screenshot_comparison = validate_screenshot_comparison(
+            screenshot_comparison,
+            expected_screenshot_comparison=comparison.as_dict(),
+        )
+        validated["screenshotComparison"] = screenshot_comparison
         # This denotes the M9 parent's comparison inputs, not a policy
         # self-reported by the independently launched child.
         validated["screenshotPolicy"] = screenshot_policy

@@ -106,13 +106,33 @@ def normal_execution(
     )
 
 
+def valid_screenshot_comparison() -> dict[str, object]:
+    """Return the successful M6 comparison for its retained test baseline."""
+
+    return {
+        "matches": True,
+        "width": 640,
+        "height": 480,
+        "differentPixels": 0,
+        "differentPixelRatio": 0.0,
+        "maximumChannelDelta": 0,
+        "meanChannelDelta": 0.0,
+        "channelTolerance": 2,
+        "maximumDifferentPixelRatio": 0.0025,
+    }
+
+
 def flow_execution(
     cycle: int = 1,
     *,
     restart_versions: object = VERSIONS,
     flow_artifact: object = ARTIFACT_IDENTITY,
     restart_artifact: object = ARTIFACT_IDENTITY,
+    screenshot_comparison: object | None = None,
+    stderr: str = "",
 ) -> runner.ChildExecution:
+    if screenshot_comparison is None:
+        screenshot_comparison = valid_screenshot_comparison()
     flow = {
         "versions": VERSIONS,
         "artifact": copy.deepcopy(flow_artifact),
@@ -130,15 +150,19 @@ def flow_execution(
         returncode=0,
         stdout="\n".join(
             (
-                f"{continuous_flow.SENTINEL}:PASS",
+                f"{continuous_flow.SENTINEL}:SCREENSHOT "
+                + json.dumps(
+                    screenshot_comparison, sort_keys=True, separators=(",", ":")
+                ),
                 f"{continuous_flow.SENTINEL}:FLOW_RESULT "
                 + json.dumps(flow, sort_keys=True, separators=(",", ":")),
                 f"{continuous_flow.SENTINEL}:RESTART_RESULT "
                 + json.dumps(restart, sort_keys=True, separators=(",", ":")),
+                f"{continuous_flow.SENTINEL}:PASS",
             )
         )
         + "\n",
-        stderr="",
+        stderr=stderr,
     )
 
 
@@ -174,6 +198,41 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 out_dir, runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
             ),
         )
+
+    @staticmethod
+    def _replace_child_execution(
+        execution: runner.ChildExecution,
+        *,
+        stdout: str | None = None,
+        stderr: str | None = None,
+    ) -> runner.ChildExecution:
+        return runner.ChildExecution(
+            name=execution.name,
+            cycle=execution.cycle,
+            elapsed_ms=execution.elapsed_ms,
+            returncode=execution.returncode,
+            stdout=execution.stdout if stdout is None else stdout,
+            stderr=execution.stderr if stderr is None else stderr,
+        )
+
+    def _assert_controlled_flow_terminal_rejected(
+        self, execution: runner.ChildExecution, error: str
+    ) -> None:
+        with (
+            mock.patch.object(
+                runner.continuous_flow, "validate_flow_result"
+            ) as validate_flow,
+            mock.patch.object(
+                runner.continuous_flow, "validate_restart_result"
+            ) as validate_restart,
+            self.assertRaisesRegex(M0Error, error),
+        ):
+            runner.validate_controlled_flow_execution(
+                execution,
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+            )
+        validate_flow.assert_not_called()
+        validate_restart.assert_not_called()
 
     def test_normal_child_requires_unique_markers_and_summary_schema(self) -> None:
         result = runner.validate_normal_lifecycle_execution(
@@ -443,9 +502,15 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.assertTrue(result["outerPageFreshRestart"])
         self.assertEqual("controlled flow", result["child"]["name"])
         self.assertEqual(
-            {"flowPass": 1, "flowResult": 1, "restartResult": 1},
+            {
+                "flowPass": 1,
+                "flowResult": 1,
+                "restartResult": 1,
+                "screenshot": 1,
+            },
             result["child"]["terminalMarkers"],
         )
+        self.assertEqual(valid_screenshot_comparison(), result["screenshotComparison"])
         self.assertEqual(VERSIONS, result["versions"])
         self.assertEqual(ARTIFACT_IDENTITY, result["artifact"])
         load_contract.assert_called_once_with()
@@ -503,11 +568,208 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
 
         load_contract.assert_not_called()
         self.assertEqual(policy_identity, result["screenshotPolicy"])
+        self.assertEqual(valid_screenshot_comparison(), result["screenshotComparison"])
         self.assertIs(contract, validate_flow.call_args.kwargs["screenshot_contract"])
         self.assertEqual(
             expected_artifact_identity,
             validate_flow.call_args.kwargs["expected_artifact_identity"],
         )
+
+    def test_controlled_flow_requires_one_ordered_stdout_terminal_transcript(
+        self,
+    ) -> None:
+        execution = flow_execution()
+        screenshot, flow_result, restart_result, passed = execution.stdout.splitlines()
+        records = (screenshot, flow_result, restart_result, passed)
+        prefixes = (
+            "SCREENSHOT",
+            "FLOW_RESULT",
+            "RESTART_RESULT",
+            "PASS",
+        )
+        for name, record, prefix in zip(
+            ("screenshot", "flow", "restart", "pass"), records, prefixes
+        ):
+            with self.subTest(case=f"missing {name}"):
+                stdout = "\n".join(item for item in records if item != record) + "\n"
+                self._assert_controlled_flow_terminal_rejected(
+                    self._replace_child_execution(execution, stdout=stdout),
+                    rf"exactly one stdout .*{prefix}",
+                )
+            with self.subTest(case=f"duplicate {name}"):
+                stdout = "\n".join((*records, record)) + "\n"
+                self._assert_controlled_flow_terminal_rejected(
+                    self._replace_child_execution(execution, stdout=stdout),
+                    rf"exactly one stdout .*{prefix}",
+                )
+            with self.subTest(case=f"{name} on stderr"):
+                self._assert_controlled_flow_terminal_rejected(
+                    self._replace_child_execution(execution, stderr=record + "\n"),
+                    "success terminal record on stderr",
+                )
+
+        reordered = "\n".join((flow_result, screenshot, restart_result, passed)) + "\n"
+        self._assert_controlled_flow_terminal_rejected(
+            self._replace_child_execution(execution, stdout=reordered),
+            "terminal records are missing or unordered",
+        )
+
+    def test_controlled_flow_rejects_failure_markers_in_combined_output(self) -> None:
+        execution = flow_execution()
+        for marker in runner._CONTROLLED_FLOW_FAILURE_MARKERS:
+            for stream in ("stdout", "stderr"):
+                with self.subTest(marker=marker, stream=stream):
+                    failure = marker + " reason=synthetic\n"
+                    if stream == "stdout":
+                        rejected = self._replace_child_execution(
+                            execution, stdout=execution.stdout + failure
+                        )
+                    else:
+                        rejected = self._replace_child_execution(
+                            execution, stderr=failure
+                        )
+                    self._assert_controlled_flow_terminal_rejected(
+                        rejected, "child failure marker"
+                    )
+
+    def test_controlled_flow_rejects_malformed_terminal_json_records(self) -> None:
+        execution = flow_execution()
+        screenshot, flow_result, restart_result, passed = execution.stdout.splitlines()
+        cases = (
+            (
+                "malformed screenshot",
+                (
+                    runner.CONTROLLED_FLOW_SCREENSHOT_PREFIX + "{not-json",
+                    flow_result,
+                    restart_result,
+                    passed,
+                ),
+                "malformed JSON",
+            ),
+            (
+                "duplicate screenshot key",
+                (
+                    runner.CONTROLLED_FLOW_SCREENSHOT_PREFIX
+                    + '{"matches":true,"matches":true}',
+                    flow_result,
+                    restart_result,
+                    passed,
+                ),
+                "malformed JSON",
+            ),
+            (
+                "nonstandard screenshot number",
+                (
+                    runner.CONTROLLED_FLOW_SCREENSHOT_PREFIX + '{"matches":NaN}',
+                    flow_result,
+                    restart_result,
+                    passed,
+                ),
+                "malformed JSON",
+            ),
+            (
+                "malformed flow result",
+                (
+                    screenshot,
+                    runner.CONTROLLED_FLOW_RESULT_PREFIX + "{not-json",
+                    restart_result,
+                    passed,
+                ),
+                "malformed JSON",
+            ),
+            (
+                "malformed restart result",
+                (
+                    screenshot,
+                    flow_result,
+                    runner.CONTROLLED_FLOW_RESTART_RESULT_PREFIX + "{not-json",
+                    passed,
+                ),
+                "malformed JSON",
+            ),
+        )
+        for name, records, error in cases:
+            with self.subTest(case=name):
+                self._assert_controlled_flow_terminal_rejected(
+                    self._replace_child_execution(
+                        execution, stdout="\n".join(records) + "\n"
+                    ),
+                    error,
+                )
+
+    def test_controlled_flow_rejects_invalid_screenshot_comparison_schema_and_types(
+        self,
+    ) -> None:
+        cases = (
+            ("missing metric", lambda value: value.pop("meanChannelDelta")),
+            ("extra metric", lambda value: value.__setitem__("extra", 1)),
+            ("integer matches alias", lambda value: value.__setitem__("matches", 1)),
+            ("boolean width alias", lambda value: value.__setitem__("width", True)),
+            (
+                "boolean different-pixel count alias",
+                lambda value: value.__setitem__("differentPixels", False),
+            ),
+            (
+                "integer different-pixel ratio alias",
+                lambda value: value.__setitem__("differentPixelRatio", 0),
+            ),
+            (
+                "boolean maximum delta alias",
+                lambda value: value.__setitem__("maximumChannelDelta", True),
+            ),
+            (
+                "integer mean delta alias",
+                lambda value: value.__setitem__("meanChannelDelta", 0),
+            ),
+            (
+                "boolean channel tolerance alias",
+                lambda value: value.__setitem__("channelTolerance", False),
+            ),
+            (
+                "integer maximum ratio alias",
+                lambda value: value.__setitem__("maximumDifferentPixelRatio", 0),
+            ),
+            (
+                "inconsistent pixel metrics",
+                lambda value: value.__setitem__("differentPixels", 1),
+            ),
+        )
+        for name, mutate in cases:
+            with self.subTest(case=name):
+                comparison = valid_screenshot_comparison()
+                mutate(comparison)
+                self._assert_controlled_flow_terminal_rejected(
+                    flow_execution(screenshot_comparison=comparison),
+                    "screenshot comparison is invalid",
+                )
+
+    def test_controlled_flow_requires_metrics_to_match_parent_recomputation(
+        self,
+    ) -> None:
+        contract, baseline_png, policy_identity = self._retained_screenshot_policy()
+        child_metrics = valid_screenshot_comparison()
+        child_metrics["maximumChannelDelta"] = 1
+        with (
+            mock.patch.object(
+                runner.continuous_flow,
+                "validate_flow_result",
+                return_value=baseline_png,
+            ),
+            mock.patch.object(runner.continuous_flow, "validate_restart_result"),
+            self.assertRaisesRegex(
+                M0Error,
+                "screenshot comparison disagrees with the retained M9 parent "
+                "recomputation",
+            ),
+        ):
+            runner.validate_controlled_flow_execution(
+                flow_execution(screenshot_comparison=child_metrics),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_artifact_identity=ARTIFACT_IDENTITY,
+                screenshot_contract=contract,
+                screenshot_baseline_png=baseline_png,
+                expected_screenshot_policy_identity=policy_identity,
+            )
 
     def test_screenshot_policy_identity_requires_exact_schema_and_snapshot(self) -> None:
         identity = runner.screenshot_policy_identity(b'{"contract":1}', b"baseline")
