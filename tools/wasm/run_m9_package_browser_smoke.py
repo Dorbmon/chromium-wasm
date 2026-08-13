@@ -126,6 +126,7 @@ _STATUS_EXPRESSION = r"""
     records: payload.records,
     releaseStatus: payload.releaseStatus,
     runtimeInitialized: payload.runtimeInitialized,
+    runtimeExitCode: payload.runtimeExitCode,
     processExitCode: payload.processExitCode,
     shutdownDisabled: shutdown.disabled,
     shutdownRequested: payload.shutdownRequested,
@@ -279,21 +280,55 @@ def _require_ready_package_document(
     )
 
 
+def _require_terminal_package_document(
+    status: dict[str, Any],
+    *,
+    expected_url: str,
+    expected_epoch: str,
+    expected_package_metadata: dict[str, object],
+    expected_time_origin: float,
+) -> None:
+    """Bind terminal exit evidence to the exact ready package document."""
+
+    if (
+        isinstance(expected_time_origin, bool)
+        or not isinstance(expected_time_origin, (int, float))
+        or not math.isfinite(float(expected_time_origin))
+        or float(expected_time_origin) <= 0
+    ):
+        raise M0Error("expected package ready document time origin is invalid")
+    _require_runtime_metadata(status.get("packageMetadata"), expected_package_metadata)
+    observed_time_origin = _require_document_identity(
+        status,
+        expected_url=expected_url,
+        expected_epoch=expected_epoch,
+    )
+    if observed_time_origin != float(expected_time_origin):
+        raise M0Error(
+            "package host shutdown document time origin does not match ready document"
+        )
+
+
 def _is_clean_shutdown(status: dict[str, Any]) -> bool:
-    exit_code = status.get("processExitCode")
+    runtime_exit_code = status.get("runtimeExitCode")
+    process_exit_code = status.get("processExitCode")
     return (
         _has_zero_fatal_count(status)
         and status.get("shutdownRequested") is True
         and status.get("shutdownDisabled") is True
-        and type(exit_code) is int
-        and exit_code == 0
+        and type(runtime_exit_code) is int
+        and runtime_exit_code == 0
+        and type(process_exit_code) is int
+        and process_exit_code == 0
+        and runtime_exit_code == process_exit_code
     )
 
 
 def _require_clean_shutdown(status: dict[str, Any], description: str) -> None:
     if not _is_clean_shutdown(status):
         raise M0Error(
-            f"{description} did not complete with zero fatal count and process exit code 0"
+            f"{description} did not complete with zero fatal count and matching "
+            "runtime and native process exit codes 0"
         )
 
 
@@ -446,6 +481,10 @@ def _request_clean_shutdown(
     browser: subprocess.Popen[str],
     browser_stderr: deque[str],
     deadline: float,
+    expected_url: str,
+    expected_epoch: str,
+    expected_package_metadata: dict[str, object],
+    expected_time_origin: float,
     description: str,
 ) -> dict[str, Any]:
     client.evaluate('document.querySelector("#shutdown").click(); true')
@@ -458,6 +497,13 @@ def _request_clean_shutdown(
         description=description,
     )
     _require_clean_shutdown(clean_shutdown, description)
+    _require_terminal_package_document(
+        clean_shutdown,
+        expected_url=expected_url,
+        expected_epoch=expected_epoch,
+        expected_package_metadata=expected_package_metadata,
+        expected_time_origin=expected_time_origin,
+    )
     return clean_shutdown
 
 
@@ -467,6 +513,7 @@ def _epoch_result(
     _require_clean_shutdown(clean_shutdown, "package-host shutdown")
     return {
         "frames_presented": ready["framesPresented"],
+        "runtime_exit_code": clean_shutdown["runtimeExitCode"],
         "process_exit_code": clean_shutdown["processExitCode"],
         "shutdown_disabled": clean_shutdown["shutdownDisabled"],
         "shutdown_requested": clean_shutdown["shutdownRequested"],
@@ -571,6 +618,10 @@ def run_package_browser_smoke(
             browser=browser,
             browser_stderr=browser_stderr,
             deadline=deadline,
+            expected_url=first_url,
+            expected_epoch=first_epoch,
+            expected_package_metadata=expected_package_metadata,
+            expected_time_origin=first_time_origin,
             description="waiting for the first clean fixed package-host shutdown",
         )
         first_result = _epoch_result(first_ready, first_shutdown)
@@ -578,6 +629,7 @@ def run_package_browser_smoke(
             return {
                 "browser_version": browser_version,
                 "frames_presented": first_result["frames_presented"],
+                "runtime_exit_code": first_result["runtime_exit_code"],
                 "process_exit_code": first_result["process_exit_code"],
                 "release_status": first_ready["releaseStatus"],
                 "scope": SCOPE,
@@ -599,7 +651,7 @@ def run_package_browser_smoke(
             debug_port=debug_port,
             deadline=deadline,
         )
-        second_ready, _second_time_origin = _wait_for_ready_package_document(
+        second_ready, second_time_origin = _wait_for_ready_package_document(
             client=client,
             browser=browser,
             browser_stderr=browser_stderr,
@@ -615,6 +667,10 @@ def run_package_browser_smoke(
             browser=browser,
             browser_stderr=browser_stderr,
             deadline=deadline,
+            expected_url=second_url,
+            expected_epoch=second_epoch,
+            expected_package_metadata=expected_package_metadata,
+            expected_time_origin=second_time_origin,
             description="waiting for the second clean fixed package-host shutdown",
         )
         second_result = _epoch_result(second_ready, second_shutdown)

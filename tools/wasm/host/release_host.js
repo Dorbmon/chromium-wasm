@@ -502,6 +502,7 @@ class ChromiumWasmPreReleaseHost {
   #fatalCount = 0;
   #readiness = null;
   #frameCount = 0;
+  #runtimeExitCode = null;
   #processExitCode = null;
   #shutdownRequested = false;
   #gateState = null;
@@ -544,6 +545,7 @@ class ChromiumWasmPreReleaseHost {
       runtimeInitialized: this.#module !== null,
       framesPresented: this.#frameCount,
       readiness: this.#readiness,
+      runtimeExitCode: this.#runtimeExitCode,
       processExitCode: this.#processExitCode,
       shutdownRequested: this.#shutdownRequested,
       fatalCount: this.#fatalCount,
@@ -599,18 +601,42 @@ class ChromiumWasmPreReleaseHost {
     this.#record("fatal", value);
   }
 
-  #reportProcessExit(value) {
+  #verifyExitAgreement() {
+    if (this.#runtimeExitCode !== null && this.#processExitCode !== null &&
+        this.#runtimeExitCode !== this.#processExitCode) {
+      this.#reportFatal("runtime and native process exit codes disagree");
+    }
+  }
+
+  #reportRuntimeExit(value) {
     try {
-      const report = asReport(value, "process-exit report");
+      if (!Number.isSafeInteger(value) || this.#runtimeExitCode !== null) {
+        throw new Error("runtime exit report is invalid or duplicated");
+      }
+      this.#runtimeExitCode = value;
+      this.#shutdownButton.disabled = true;
+      this.#record("runtime-exit", value);
+      this.#verifyExitAgreement();
+    } catch (error) {
+      this.#reportFatal(`invalid runtime exit report: ${String(error)}`);
+    }
+  }
+
+  #reportNativeProcessExit(value) {
+    try {
+      const report = requireExactKeys(
+          value, ["protocol", "exitCode"], "native process-exit report");
       if (report.protocol !== HOST_PROTOCOL ||
-          !Number.isSafeInteger(report.exitCode)) {
-        throw new Error("process-exit report is invalid");
+          !Number.isSafeInteger(report.exitCode) ||
+          this.#processExitCode !== null) {
+        throw new Error("native process-exit report is invalid or duplicated");
       }
       this.#processExitCode = report.exitCode;
       this.#shutdownButton.disabled = true;
-      this.#record("process-exit", report.exitCode);
+      this.#record("native-process-exit", report.exitCode);
+      this.#verifyExitAgreement();
     } catch (error) {
-      this.#reportFatal(`invalid process-exit report: ${String(error)}`);
+      this.#reportFatal(`invalid native process-exit report: ${String(error)}`);
     }
   }
 
@@ -755,7 +781,7 @@ class ChromiumWasmPreReleaseHost {
         host.#reportFatal(value);
       },
       reportProcessExit(value) {
-        host.#reportProcessExit(value);
+        host.#reportNativeProcessExit(value);
       },
       reportFrame(value) {
         host.#reportFrame(value);
@@ -932,7 +958,7 @@ class ChromiumWasmPreReleaseHost {
         host.#reportFatal(`Wasm abort: ${String(reason)}`);
       },
       onExit(code) {
-        host.#reportProcessExit({protocol: HOST_PROTOCOL, exitCode: Number(code)});
+        host.#reportRuntimeExit(code);
       },
     };
     Promise.resolve(namespace.default(moduleOptions)).catch((error) => {

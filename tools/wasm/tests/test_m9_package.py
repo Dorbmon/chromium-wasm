@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import hashlib
 import io
 import json
@@ -1678,6 +1679,236 @@ process.stdout.write(JSON.stringify({
             json.loads(completed.stdout),
         )
 
+    def test_release_host_separates_runtime_and_native_exit_channels(self) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+
+        fixture = self.root / "release-host-exit-channel-fixture"
+        shutil.copytree(self._stage(), fixture)
+        (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+        (fixture / "chromium-wasm.js").write_text(
+            """export default function(options) {
+  queueMicrotask(() => {
+    const module = {ccall() { return 1; }};
+    options.onRuntimeInitialized.call(module);
+    const bridge = globalThis.__chromiumWasmHostBridgeV1;
+    const nativeExit = (code) => bridge.reportProcessExit({
+      protocol: 1,
+      exitCode: code,
+    });
+    switch (globalThis.__m9ExitMode) {
+      case "clean":
+        options.onExit(0);
+        nativeExit(0);
+        break;
+      case "mismatch-runtime-first":
+        options.onExit(0);
+        nativeExit(1);
+        break;
+      case "mismatch-native-first":
+        nativeExit(1);
+        options.onExit(0);
+        break;
+      case "duplicate-runtime":
+        options.onExit(0);
+        options.onExit(0);
+        nativeExit(0);
+        break;
+      case "duplicate-native":
+        options.onExit(0);
+        nativeExit(0);
+        nativeExit(0);
+        break;
+      case "missing-runtime":
+        nativeExit(0);
+        break;
+      case "missing-native":
+        options.onExit(0);
+        break;
+      default:
+        throw new Error(`unexpected exit mode ${String(globalThis.__m9ExitMode)}`);
+    }
+  });
+  return new Promise(() => {});
+}
+""",
+            encoding="utf-8",
+        )
+        script = """
+import {readFile} from "node:fs/promises";
+
+class HTMLElement {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.disabled = false;
+    this.style = {};
+    this.textContent = "";
+    this.value = "";
+  }
+  addEventListener() {}
+  removeEventListener() {}
+  append(...nodes) {
+    this.children.push(...nodes);
+    this.textContent += nodes.map((node) => node.textContent).join("");
+  }
+  replaceChildren(...nodes) {
+    this.children = nodes;
+    this.textContent = nodes.map((node) => node.textContent).join("");
+  }
+  focus() { document.activeElement = this; }
+  blur() {
+    if (document.activeElement === this) document.activeElement = null;
+  }
+  setSelectionRange() {}
+}
+class HTMLCanvasElement extends HTMLElement {}
+class HTMLTextAreaElement extends HTMLElement {}
+class HTMLButtonElement extends HTMLElement {}
+Object.assign(globalThis, {
+  HTMLElement,
+  HTMLButtonElement,
+  HTMLCanvasElement,
+  HTMLTextAreaElement,
+  crossOriginIsolated: true,
+});
+globalThis.window = globalThis;
+globalThis.addEventListener = () => {};
+globalThis.removeEventListener = () => {};
+const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
+const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
+function responseFor(bytes) {
+  return {
+    ok: true,
+    headers: {get(name) {
+      return String(name).toLowerCase() === "content-length" ?
+          String(bytes.byteLength) : null;
+    }},
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+    async blob() { return new Blob([bytes]); },
+  };
+}
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith("VERSION.json")) return responseFor(versionBytes);
+  if (url.endsWith("chromium-wasm.js")) return responseFor(loaderBytes);
+  throw new Error(`unexpected fetch ${url}`);
+};
+const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
+function installElements() {
+  const root = new HTMLElement();
+  const canvas = new HTMLCanvasElement();
+  const textProxy = new HTMLTextAreaElement();
+  const status = new HTMLElement();
+  const versions = new HTMLElement();
+  const gateState = new HTMLElement();
+  const shutdown = new HTMLButtonElement();
+  const elements = new Map([
+    ["#chrome-root", root], ["#browser-canvas", canvas],
+    ["#browser-text-proxy", textProxy], ["#chrome-status", status],
+    ["#versions", versions], ["#gate-state", gateState], ["#shutdown", shutdown],
+  ]);
+  globalThis.document = {
+    activeElement: null,
+    hidden: false,
+    addEventListener() {},
+    removeEventListener() {},
+    createElement() { return new HTMLElement(); },
+    querySelector(selector) { return elements.get(selector) || null; },
+  };
+  return {root, status};
+}
+async function observe(mode) {
+  globalThis.__chromiumWasmHostBridgeV1 = undefined;
+  globalThis.__m9ExitMode = mode;
+  const {root, status} = installElements();
+  await runChromiumWasmPreRelease();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const payload = JSON.parse(status.textContent);
+  return {
+    fatalCount: payload.fatalCount,
+    processExitCode: payload.processExitCode,
+    runtimeExitCode: payload.runtimeExitCode,
+    pageState: root.dataset.state || null,
+  };
+}
+const results = {};
+for (const mode of [
+  "clean", "mismatch-runtime-first", "mismatch-native-first",
+  "duplicate-runtime", "duplicate-native", "missing-runtime", "missing-native",
+]) {
+  results[mode] = await observe(mode);
+}
+process.stdout.write(JSON.stringify(results));
+"""
+        script = script.replace(
+            "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
+        ).replace(
+            "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__HOST_URI__",
+            json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
+        )
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        self.assertEqual(
+            {
+                "clean": {
+                    "fatalCount": 0,
+                    "pageState": None,
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                },
+                "mismatch-runtime-first": {
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 1,
+                    "runtimeExitCode": 0,
+                },
+                "mismatch-native-first": {
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 1,
+                    "runtimeExitCode": 0,
+                },
+                "duplicate-runtime": {
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                },
+                "duplicate-native": {
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                },
+                "missing-runtime": {
+                    "fatalCount": 0,
+                    "pageState": None,
+                    "processExitCode": 0,
+                    "runtimeExitCode": None,
+                },
+                "missing-native": {
+                    "fatalCount": 0,
+                    "pageState": None,
+                    "processExitCode": None,
+                    "runtimeExitCode": 0,
+                },
+            },
+            json.loads(completed.stdout),
+        )
+
     def test_browser_smoke_requires_the_blob_backed_renamed_loader_path(self) -> None:
         smoke = (REPO_ROOT / "tools/wasm/run_m9_package_browser_smoke.py").read_text(
             encoding="utf-8"
@@ -1690,6 +1921,7 @@ process.stdout.write(JSON.stringify({
         self.assertIn("*only* the staged names", smoke)
         self.assertIn("framesPresented", smoke)
         self.assertIn("fatalCount", smoke)
+        self.assertIn("runtimeExitCode", smoke)
         self.assertIn("processExitCode", smoke)
         self.assertIn("shutdownDisabled", smoke)
         self.assertIn("clean fixed package-host shutdown", smoke)
@@ -1703,6 +1935,11 @@ process.stdout.write(JSON.stringify({
         self.assertIn('"./chromium-wasm.wasm"', host)
         self.assertIn("#fatalCount = 0", host)
         self.assertIn("fatalCount: this.#fatalCount", host)
+        self.assertIn("#runtimeExitCode = null", host)
+        self.assertIn("runtimeExitCode: this.#runtimeExitCode", host)
+        self.assertIn("#reportRuntimeExit", host)
+        self.assertIn("#reportNativeProcessExit", host)
+        self.assertIn("host.#reportRuntimeExit(code)", host)
         self.assertIn("if (this.#fatalCount === 0)", host)
 
     def test_package_browser_restart_epoch_binds_exact_url_and_fresh_document(self) -> None:
@@ -1784,6 +2021,7 @@ process.stdout.write(JSON.stringify({
                     "fatalCount": 0,
                     "shutdownRequested": True,
                     "shutdownDisabled": True,
+                    "runtimeExitCode": 0,
                     "processExitCode": 1,
                 },
                 restart_url="http://127.0.0.1:32123/?m9_package_epoch=restart",
@@ -1794,27 +2032,116 @@ process.stdout.write(JSON.stringify({
         self.assertFalse(client.closed)
         wait_for_client.assert_not_called()
 
-    def test_package_browser_clean_shutdown_rejects_boolean_exit_code(self) -> None:
-        self.assertFalse(
-            package_browser_smoke._is_clean_shutdown(
-                {
-                    "fatalCount": 0,
-                    "shutdownRequested": True,
-                    "shutdownDisabled": True,
-                    "processExitCode": False,
-                }
-            )
+    def test_package_browser_clean_shutdown_requires_exact_distinct_exit_channels(
+        self,
+    ) -> None:
+        clean_shutdown = {
+            "fatalCount": 0,
+            "shutdownRequested": True,
+            "shutdownDisabled": True,
+            "runtimeExitCode": 0,
+            "processExitCode": 0,
+        }
+        self.assertTrue(package_browser_smoke._is_clean_shutdown(clean_shutdown))
+        for description, mutation in (
+            ("missing runtime exit", {"runtimeExitCode": None}),
+            ("missing native exit", {"processExitCode": None}),
+            ("runtime boolean alias", {"runtimeExitCode": False}),
+            ("runtime float alias", {"runtimeExitCode": 0.0}),
+            ("native boolean alias", {"processExitCode": False}),
+            ("native float alias", {"processExitCode": 0.0}),
+            ("runtime nonzero", {"runtimeExitCode": 1}),
+            ("native nonzero", {"processExitCode": 1}),
+            ("mismatched exits", {"runtimeExitCode": 0, "processExitCode": 1}),
+        ):
+            with self.subTest(description=description):
+                invalid = {**clean_shutdown, **mutation}
+                self.assertFalse(package_browser_smoke._is_clean_shutdown(invalid))
+                with self.assertRaisesRegex(
+                    M0Error, "runtime and native process exit codes 0"
+                ):
+                    package_browser_smoke._require_clean_shutdown(
+                        invalid, "fixed package-host shutdown"
+                    )
+
+    def test_package_browser_shutdown_revalidates_ready_document_and_metadata(
+        self,
+    ) -> None:
+        expected_metadata = package.package_runtime_status_metadata(
+            (self._stage() / "VERSION.json").read_bytes()
         )
-        with self.assertRaisesRegex(M0Error, "process exit code 0"):
-            package_browser_smoke._require_clean_shutdown(
-                {
-                    "fatalCount": 0,
-                    "shutdownRequested": True,
-                    "shutdownDisabled": True,
-                    "processExitCode": False,
+        expected_url = package_browser_smoke._make_epoch_url(
+            "http://127.0.0.1:32123/", "ready-epoch"
+        )
+
+        def terminal_status() -> dict[str, object]:
+            return {
+                "fatalCount": 0,
+                "shutdownRequested": True,
+                "shutdownDisabled": True,
+                "runtimeExitCode": 0,
+                "processExitCode": 0,
+                "packageMetadata": deepcopy(expected_metadata),
+                "documentIdentity": {
+                    "href": expected_url,
+                    "navigation": {
+                        "name": expected_url,
+                        "startTime": 0,
+                        "type": "navigate",
+                    },
+                    "timeOrigin": 1000.0,
                 },
-                "fixed package-host shutdown",
-            )
+            }
+
+        client = mock.Mock()
+
+        def request(status: dict[str, object]) -> dict[str, object]:
+            with mock.patch.object(
+                package_browser_smoke, "_wait_for_status", return_value=status
+            ):
+                return package_browser_smoke._request_clean_shutdown(
+                    client=client,
+                    browser=mock.Mock(),
+                    browser_stderr=deque(),
+                    deadline=123.0,
+                    expected_url=expected_url,
+                    expected_epoch="ready-epoch",
+                    expected_package_metadata=expected_metadata,
+                    expected_time_origin=1000.0,
+                    description="waiting for fixed package-host shutdown",
+                )
+
+        accepted = terminal_status()
+        self.assertEqual(accepted, request(accepted))
+        client.evaluate.assert_called_once_with(
+            'document.querySelector("#shutdown").click(); true'
+        )
+
+        foreign_document = terminal_status()
+        foreign_url = package_browser_smoke._make_epoch_url(
+            "http://127.0.0.1:32123/", "foreign-epoch"
+        )
+        foreign_document["documentIdentity"] = {
+            "href": foreign_url,
+            "navigation": {
+                "name": foreign_url,
+                "startTime": 0,
+                "type": "navigate",
+            },
+            "timeOrigin": 1000.0,
+        }
+        with self.assertRaisesRegex(M0Error, "document URL does not match"):
+            request(foreign_document)
+
+        reloaded_document = terminal_status()
+        reloaded_document["documentIdentity"]["timeOrigin"] = 1001.0  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "time origin does not match ready document"):
+            request(reloaded_document)
+
+        substituted_metadata = terminal_status()
+        substituted_metadata["packageMetadata"]["releaseStatus"] = "forged"  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "immutable VERSION.json snapshot"):
+            request(substituted_metadata)
 
     def test_package_browser_sticky_fatal_health_rejects_evicted_record(self) -> None:
         # The host record history is bounded to 32 entries. Model a fatal that
@@ -1828,6 +2155,7 @@ process.stdout.write(JSON.stringify({
             "fatalCount": 1,
             "framesPresented": 1,
             "pageState": "running",
+            "runtimeExitCode": 0,
             "processExitCode": 0,
             "readiness": {"surfaceReady": True},
             "records": [
@@ -2008,6 +2336,7 @@ process.stdout.write(JSON.stringify({
                     "fatalCount": 0,
                     "shutdownRequested": True,
                     "shutdownDisabled": True,
+                    "runtimeExitCode": 0,
                     "processExitCode": 0,
                 },
                 restart_url=restart_url,
@@ -2044,6 +2373,7 @@ process.stdout.write(JSON.stringify({
             "fatalCount": 0,
             "shutdownRequested": True,
             "shutdownDisabled": True,
+            "runtimeExitCode": 0,
             "processExitCode": 0,
         }
 
@@ -2120,6 +2450,7 @@ process.stdout.write(JSON.stringify({
             {
                 "browser_version": "test-browser",
                 "frames_presented": 7,
+                "runtime_exit_code": 0,
                 "process_exit_code": 0,
                 "release_status": package.RELEASE_STATUS,
                 "scope": package_browser_smoke.SCOPE,
@@ -2140,6 +2471,19 @@ process.stdout.write(JSON.stringify({
             wait_for_ready.call_args.kwargs["expected_package_metadata"],
         )
         request_shutdown.assert_called_once()
+        self.assertEqual(
+            initial_url, request_shutdown.call_args.kwargs["expected_url"]
+        )
+        self.assertEqual(
+            "first-epoch", request_shutdown.call_args.kwargs["expected_epoch"]
+        )
+        self.assertEqual(
+            expected_metadata,
+            request_shutdown.call_args.kwargs["expected_package_metadata"],
+        )
+        self.assertEqual(
+            1000.0, request_shutdown.call_args.kwargs["expected_time_origin"]
+        )
         restart.assert_not_called()
         stop_browser_group.assert_called_once_with(browser, mock.ANY)
 
@@ -2165,6 +2509,7 @@ process.stdout.write(JSON.stringify({
             "fatalCount": 0,
             "shutdownRequested": True,
             "shutdownDisabled": True,
+            "runtimeExitCode": 0,
             "processExitCode": 0,
         }
         stdout = io.StringIO()
@@ -2277,6 +2622,7 @@ process.stdout.write(JSON.stringify({
             "fatalCount": 0,
             "shutdownRequested": True,
             "shutdownDisabled": True,
+            "runtimeExitCode": 0,
             "processExitCode": 0,
         }
 
@@ -2357,12 +2703,14 @@ process.stdout.write(JSON.stringify({
                 "epochs": [
                     {
                         "frames_presented": 7,
+                        "runtime_exit_code": 0,
                         "process_exit_code": 0,
                         "shutdown_disabled": True,
                         "shutdown_requested": True,
                     },
                     {
                         "frames_presented": 11,
+                        "runtime_exit_code": 0,
                         "process_exit_code": 0,
                         "shutdown_disabled": True,
                         "shutdown_requested": True,
@@ -2394,6 +2742,26 @@ process.stdout.write(JSON.stringify({
             expected_metadata,
             wait_for_ready.call_args_list[1].kwargs["expected_package_metadata"],
         )
+        first_shutdown_kwargs = request_shutdown.call_args_list[0].kwargs
+        self.assertEqual(
+            "http://127.0.0.1:32123/?m9_package_epoch=first-epoch",
+            first_shutdown_kwargs["expected_url"],
+        )
+        self.assertEqual("first-epoch", first_shutdown_kwargs["expected_epoch"])
+        self.assertEqual(
+            expected_metadata, first_shutdown_kwargs["expected_package_metadata"]
+        )
+        self.assertEqual(1000.0, first_shutdown_kwargs["expected_time_origin"])
+        second_shutdown_kwargs = request_shutdown.call_args_list[1].kwargs
+        self.assertEqual(
+            "http://127.0.0.1:32123/?m9_package_epoch=restart-epoch",
+            second_shutdown_kwargs["expected_url"],
+        )
+        self.assertEqual("restart-epoch", second_shutdown_kwargs["expected_epoch"])
+        self.assertEqual(
+            expected_metadata, second_shutdown_kwargs["expected_package_metadata"]
+        )
+        self.assertEqual(1001.0, second_shutdown_kwargs["expected_time_origin"])
 
 
 if __name__ == "__main__":
