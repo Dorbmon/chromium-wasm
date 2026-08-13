@@ -34,7 +34,6 @@ POLL_SECONDS = 0.05
 # Browser output is decoded through ``text=True``, so this cap is expressed in
 # decoded characters rather than source bytes.  It bounds one retained record
 # even if a browser or child writes without a newline.
-STDERR_READ_CHUNK_CHARS = 4 * 1024
 MAX_STDERR_RECORD_CHARS = 64 * 1024
 
 
@@ -174,42 +173,29 @@ class BrowserStderrReader:
             pass
 
     def _drain(self) -> None:
-        pending = ""
         try:
             while True:
-                chunk = self._stream.read(STDERR_READ_CHUNK_CHARS)
-                if not chunk:
+                # ``TextIOWrapper.read(n)`` waits for all ``n`` characters or
+                # EOF.  Relay readiness records are much smaller than the
+                # record cap and their process deliberately stays alive, so a
+                # fixed-size ``read`` would hold a valid newline-delimited
+                # readiness record until shutdown.  ``readline(limit)``
+                # wakes as soon as that newline arrives while still bounding
+                # one decoded record in memory.
+                record = self._stream.readline(MAX_STDERR_RECORD_CHARS + 1)
+                if not record:
                     break
-
-                while chunk:
-                    newline = chunk.find("\n")
-                    if newline < 0:
-                        if len(pending) + len(chunk) > MAX_STDERR_RECORD_CHARS:
-                            self._record_limit_error()
-                            self._drain_after_record_limit()
-                            return
-                        pending += chunk
-                        break
-
-                    record = chunk[:newline]
-                    if len(pending) + len(record) > MAX_STDERR_RECORD_CHARS:
-                        self._record_limit_error()
-                        self._drain_after_record_limit()
-                        return
-                    self._emit_record(pending + record)
-                    pending = ""
-                    chunk = chunk[newline + 1 :]
+                payload = record[:-1] if record.endswith("\n") else record
+                if len(payload) > MAX_STDERR_RECORD_CHARS:
+                    self._record_limit_error()
+                    self._drain_after_record_limit()
+                    return
+                self._emit_record(payload)
         except BaseException as exc:
             if self._error is None:
                 self._error = exc
             return
 
-        if pending:
-            try:
-                self._emit_record(pending)
-            except BaseException as exc:
-                self._error = exc
-                return
         self._reached_eof = True
         if self._on_eof is not None:
             try:
@@ -240,7 +226,7 @@ class BrowserStderrReader:
         browser completion.
         """
 
-        while self._stream.read(STDERR_READ_CHUNK_CHARS):
+        while self._stream.readline(MAX_STDERR_RECORD_CHARS + 1):
             pass
 
 

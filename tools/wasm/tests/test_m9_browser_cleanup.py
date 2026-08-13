@@ -15,6 +15,7 @@ import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
@@ -34,22 +35,22 @@ class _BrokenTextStream:
         return
 
 
-class _BoundedReadTextStream(io.StringIO):
-    """Text stream that proves the reader never asks for an unbounded read."""
+class _BoundedReadlineTextStream(io.StringIO):
+    """Text stream that proves the reader never asks for an unbounded line."""
 
     def __init__(self, value: str, maximum_read_chars: int):
         super().__init__(value)
         self.maximum_read_chars = maximum_read_chars
-        self.read_sizes: list[int] = []
+        self.readline_sizes: list[int] = []
 
-    def __iter__(self) -> _BoundedReadTextStream:
-        raise AssertionError("BrowserStderrReader must use fixed-size read framing")
+    def __iter__(self) -> _BoundedReadlineTextStream:
+        raise AssertionError("BrowserStderrReader must use bounded line framing")
 
-    def read(self, size: int = -1) -> str:
-        self.read_sizes.append(size)
+    def readline(self, size: int = -1) -> str:
+        self.readline_sizes.append(size)
         if size < 0 or size > self.maximum_read_chars:
-            raise AssertionError(f"unexpected unbounded read size: {size}")
-        return super().read(size)
+            raise AssertionError(f"unexpected unbounded readline size: {size}")
+        return super().readline(size)
 
 
 class _DrainFailureTextStream:
@@ -58,7 +59,7 @@ class _DrainFailureTextStream:
     def __init__(self):
         self._reads = 0
 
-    def read(self, size: int = -1) -> str:
+    def readline(self, size: int = -1) -> str:
         self._reads += 1
         if self._reads == 1:
             return "xxxx"
@@ -394,11 +395,11 @@ class M9BrowserCleanupTest(unittest.TestCase):
         self.assertEqual(["first", "second"], lines)
         self.assertEqual([True], eof)
 
-    def test_reader_fixed_size_framing_preserves_lines_and_eof(self) -> None:
+    def test_reader_bounded_line_framing_preserves_lines_and_eof(self) -> None:
         lines: list[str] = []
         eof: list[bool] = []
         destination: deque[str] = deque()
-        stream = _BoundedReadTextStream("first\nsecond\nlast", 3)
+        stream = _BoundedReadlineTextStream("one\ntwo\nlast", 5)
         reader = cleanup.BrowserStderrReader(
             stream,
             destination,
@@ -407,18 +408,18 @@ class M9BrowserCleanupTest(unittest.TestCase):
             on_eof=lambda: eof.append(True),
         )
 
-        with mock.patch.object(cleanup, "STDERR_READ_CHUNK_CHARS", 3):
+        with mock.patch.object(cleanup, "MAX_STDERR_RECORD_CHARS", 4):
             reader.start()
             reader.join(timeout=1)
 
         self.assertFalse(reader.is_alive())
         self.assertTrue(reader.reached_eof)
         self.assertIsNone(reader.error)
-        self.assertEqual(["first", "second", "last"], list(destination))
-        self.assertEqual(["first", "second", "last"], lines)
+        self.assertEqual(["one", "two", "last"], list(destination))
+        self.assertEqual(["one", "two", "last"], lines)
         self.assertEqual([True], eof)
-        self.assertGreater(len(stream.read_sizes), 1)
-        self.assertEqual([3] * len(stream.read_sizes), stream.read_sizes)
+        self.assertGreater(len(stream.readline_sizes), 1)
+        self.assertEqual([5] * len(stream.readline_sizes), stream.readline_sizes)
 
     def test_reader_rejects_one_mebibyte_unterminated_record_and_drains(self) -> None:
         lines: list[str] = []
@@ -451,7 +452,6 @@ class M9BrowserCleanupTest(unittest.TestCase):
         )
 
         with (
-            mock.patch.object(cleanup, "STDERR_READ_CHUNK_CHARS", 4),
             mock.patch.object(cleanup, "MAX_STDERR_RECORD_CHARS", 3),
         ):
             reader.start()
@@ -461,6 +461,29 @@ class M9BrowserCleanupTest(unittest.TestCase):
         self.assertFalse(reader.reached_eof)
         self.assertIsInstance(reader.error, M0Error)
         self.assertIn("record exceeds", str(reader.error))
+
+    def test_reader_delivers_a_short_live_pipe_line_before_process_exit(self) -> None:
+        delivered = threading.Event()
+        lines: list[str] = []
+        process = self._start(
+            "import sys, time; "
+            "sys.stderr.write('relay-ready\\n'); sys.stderr.flush(); time.sleep(30)"
+        )
+        reader = cleanup.BrowserStderrReader(
+            process.stderr,  # type: ignore[arg-type]
+            deque(),
+            name="m9-browser-cleanup-short-live-line",
+            on_line=lambda line: (lines.append(line), delivered.set()),
+        )
+        reader.start()
+        try:
+            self.assertTrue(
+                delivered.wait(timeout=1),
+                "short newline-delimited pipe output was not delivered before exit",
+            )
+            self.assertEqual(["relay-ready"], lines)
+        finally:
+            cleanup.abort_browser_group(process, reader)
 
     def test_stop_reaps_subprocess_but_rejects_oversized_stderr_record(self) -> None:
         process = self._start(
