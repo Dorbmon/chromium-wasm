@@ -48,12 +48,15 @@ CAPTURE_HARNESS_IDENTITY = {
 }
 
 
-def validate(result: dict[str, object]) -> None:
+def validate(
+    result: dict[str, object], *, pointer_abi_rejection_seed: bool = False
+) -> None:
     smoke.validate_result(
         result,
         expected_versions=VERSIONS,
         expected_artifact_identity=ARTIFACT_IDENTITY,
         expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
+        expected_pointer_abi_rejection_seed=pointer_abi_rejection_seed,
     )
 
 
@@ -131,7 +134,34 @@ def native_memory_snapshot(
     }
 
 
-def successful_result() -> dict[str, object]:
+def pointer_abi_rejections(enabled: bool = False) -> dict[str, object]:
+    return {
+        "protocol": smoke.POINTER_ABI_REJECTIONS_PROTOCOL,
+        "phase": (
+            smoke.POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE
+            if enabled
+            else smoke.POINTER_ABI_REJECTIONS_DISABLED_PHASE
+        ),
+        "cases": (
+            [
+                {
+                    "arguments": list(arguments),
+                    "expectedResult": 0,
+                    "name": name,
+                    "operation": operation,
+                    "result": 0,
+                }
+                for name, operation, arguments in smoke.POINTER_ABI_REJECTION_CASES
+            ]
+            if enabled
+            else []
+        ),
+    }
+
+
+def successful_result(
+    *, pointer_abi_rejection_seed: bool = False
+) -> dict[str, object]:
     stages: list[dict[str, object]] = []
     pointer_records: list[dict[str, object]] = []
     stderr: list[str] = []
@@ -223,6 +253,9 @@ def successful_result() -> dict[str, object]:
             "stages": stages,
             "pointerRecords": pointer_records,
         },
+        "pointerAbiRejections": pointer_abi_rejections(
+            pointer_abi_rejection_seed
+        ),
         "nativeMemorySnapshot": native_memory_snapshot(stages),
         "stdout": [],
         "stderr": stderr,
@@ -262,6 +295,14 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "nativeMemorySample",
             "nativeMemorySnapshot",
             "validateNativeMemorySnapshot",
+            "POINTER_ABI_REJECTIONS_PROTOCOL",
+            "POINTER_ABI_REJECTION_CASES",
+            "runPointerAbiRejections",
+            "pointerAbiRejections",
+            "pointerAbiRejectionSeed",
+            "after-native-ready-before-trusted-dom-adapter-attach",
+            "valid-coordinate-release-without-press",
+            "result_one_would_mean_only_queue_and_state_admission",
             "chromium_wasm_browser_host_memory_linear_capacity_bytes",
             "chromium_wasm_browser_host_memory_linear_maximum_bytes",
             "chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes",
@@ -305,6 +346,12 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             "NATIVE_MEMORY_SAMPLE_COUNT",
             "NATIVE_MEMORY_SNAPSHOT_DEFINITION",
             "nativeMemorySnapshot",
+            "POINTER_ABI_REJECTIONS_PROTOCOL",
+            "POINTER_ABI_REJECTION_CASES",
+            "_validate_pointer_abi_rejections",
+            "pointerAbiRejections",
+            "--pointer-abi-rejection-seed",
+            "pointerAbiRejectionSeed",
             "_chromium_wasm_browser_host_memory_linear_capacity_bytes",
             "_chromium_wasm_browser_host_memory_linear_maximum_bytes",
             "_chromium_wasm_browser_host_memory_page_allocator_total_mapped_bytes",
@@ -335,6 +382,28 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             set_module.index("this.#runtimeInitialized = true"),
         )
         self.assertIn("cannot satisfy pass", set_module)
+        self.assertNotIn("runPointerAbiRejections(", set_module)
+        self.assertNotIn("new ChromiumWasmTrustedPointerInput", set_module)
+        native_ready_attach = host[
+            host.index("  #attachPointerInputAfterNativeReady() {") : host.index(
+                "  #recordOutput(value) {"
+            )
+        ]
+        self.assertLess(
+            native_ready_attach.index("runPointerAbiRejections("),
+            native_ready_attach.index("new ChromiumWasmTrustedPointerInput"),
+        )
+        record_output = host[
+            host.index("  #recordOutput(value) {") : host.index("  #setModule(module) {")
+        ]
+        self.assertLess(
+            record_output.index("this.#stages.push({"),
+            record_output.index("if (targetMarker.info.stage === 1)"),
+        )
+        self.assertLess(
+            record_output.index("if (targetMarker.info.stage === 1)"),
+            record_output.index("this.#attachPointerInputAfterNativeReady();"),
+        )
         queue_verifier = host[
             host.index("  #queueVerifier(") : host.index("  #maybeQueueCheck() {")
         ]
@@ -400,6 +469,100 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
     def test_accepts_complete_three_cycle_evidence(self) -> None:
         result = successful_result()
         validate(result)
+
+    def test_accepts_exact_opt_in_pointer_abi_rejection_evidence(self) -> None:
+        result = successful_result(pointer_abi_rejection_seed=True)
+        validate(result, pointer_abi_rejection_seed=True)
+        with self.assertRaisesRegex(
+            M0Error, "pointer ABI rejection phase is invalid"
+        ):
+            validate(result)
+
+    def test_rejects_invalid_pointer_abi_rejection_evidence(self) -> None:
+        mutations = (
+            (
+                lambda result: result["pointerAbiRejections"].pop("protocol"),
+                "pointer ABI rejection evidence schema is invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"].__setitem__(
+                    "unexpected", True
+                ),
+                "pointer ABI rejection evidence schema is invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"].__setitem__(
+                    "protocol", True
+                ),
+                "pointer ABI rejection protocol is invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"].__setitem__(
+                    "phase", smoke.POINTER_ABI_REJECTIONS_DISABLED_PHASE
+                ),
+                "pointer ABI rejection phase is invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"]["cases"].pop(),
+                "pointer ABI rejection case count is invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"]["cases"][0].pop(
+                    "result"
+                ),
+                "pointer ABI rejection case 0 schema is invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"]["cases"][0].__setitem__(
+                    "arguments", [True, 0, 0, 0]
+                ),
+                "pointer ABI rejection case 0 arguments are invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"]["cases"][0].__setitem__(
+                    "operation", "pointer-exit"
+                ),
+                "pointer ABI rejection case 0 descriptor is invalid",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"]["cases"][0].__setitem__(
+                    "expectedResult", True
+                ),
+                "pointer ABI rejection case 0 expectedResult did not reject exactly",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"]["cases"][0].__setitem__(
+                    "result", True
+                ),
+                "pointer ABI rejection case 0 result did not reject exactly",
+            ),
+            (
+                lambda result: result["pointerAbiRejections"]["cases"].reverse(),
+                "pointer ABI rejection case 0 arguments are invalid",
+            ),
+        )
+        for mutate, expression in mutations:
+            with self.subTest(expression=expression):
+                result = successful_result(pointer_abi_rejection_seed=True)
+                mutate(result)
+                with self.assertRaisesRegex(M0Error, expression):
+                    validate(result, pointer_abi_rejection_seed=True)
+
+    def test_rejects_pointer_abi_rejection_seed_cases_when_disabled(self) -> None:
+        result = successful_result()
+        result["pointerAbiRejections"]["cases"] = [  # type: ignore[index]
+            {
+                "arguments": [],
+                "expectedResult": 0,
+                "name": "exit-without-unpressed-hover",
+                "operation": "pointer-exit",
+                "result": 0,
+            }
+        ]
+        with self.assertRaisesRegex(
+            M0Error, "pointer ABI rejection case count is invalid"
+        ):
+            validate(result)
 
     def test_accepts_independent_native_capacity_and_nonmonotonic_mappings(
         self,
@@ -889,6 +1052,45 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             )
         )
 
+    def test_pointer_abi_rejection_seed_url_is_opt_in_and_bounded(self) -> None:
+        server = mock.Mock()
+        server.module_name = smoke.PRODUCT_MODULE_NAME
+        server.server_address = ("127.0.0.1", 12345)
+        default_url = smoke.smoke_url(
+            server,
+            "test-token",
+            VERSIONS,
+            artifact=ARTIFACT_IDENTITY,
+            capture_harness=CAPTURE_HARNESS_IDENTITY,
+            module_name=smoke.PRODUCT_MODULE_NAME,
+            timeout_seconds=15.0,
+        )
+        seeded_url = smoke.smoke_url(
+            server,
+            "test-token",
+            VERSIONS,
+            artifact=ARTIFACT_IDENTITY,
+            capture_harness=CAPTURE_HARNESS_IDENTITY,
+            module_name=smoke.PRODUCT_MODULE_NAME,
+            timeout_seconds=15.0,
+            pointer_abi_rejection_seed=True,
+        )
+        self.assertNotIn("pointerAbiRejectionSeed", default_url)
+        self.assertIn("pointerAbiRejectionSeed=1", seeded_url)
+        with self.assertRaisesRegex(
+            M0Error, "pointer ABI rejection seed flag is invalid"
+        ):
+            smoke.smoke_url(
+                server,
+                "test-token",
+                VERSIONS,
+                artifact=ARTIFACT_IDENTITY,
+                capture_harness=CAPTURE_HARNESS_IDENTITY,
+                module_name=smoke.PRODUCT_MODULE_NAME,
+                timeout_seconds=15.0,
+                pointer_abi_rejection_seed=1,  # type: ignore[arg-type]
+            )
+
     def test_server_captures_immutable_artifact_and_harness_snapshots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1200,11 +1402,125 @@ process.stdout.write(JSON.stringify({{calls, valid, missing, throwing, noCcall, 
         self.assertIn("failed", observed["throwing"])
         self.assertIn("requires Module.ccall", observed["noCcall"])
 
+    def test_pointer_abi_rejection_seed_ccalls_are_exact_and_fail_closed(
+        self,
+    ) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+        host = REPO_ROOT / "tools/wasm/host/chrome_wasm_browser_tab_churn_smoke_host.js"
+        script = f"""
+const {{runPointerAbiRejections, validatePointerAbiRejections}} = await import(
+    {json.dumps(host.as_uri())});
+const calls = [];
+const enabled = runPointerAbiRejections({{ccall(name, returnType, argTypes, args) {{
+  calls.push([name, returnType, argTypes, args]);
+  return 0;
+}}}}, true);
+const disabled = runPointerAbiRejections(null, false);
+function failure(module, enabled = true) {{
+  try {{
+    runPointerAbiRejections(module, enabled);
+  }} catch (error) {{
+    return String(error);
+  }}
+  return "accepted";
+}}
+const nonzero = failure({{ccall: () => 1}});
+const boolean = failure({{ccall: () => true}});
+const missing = failure({{}});
+const badFlag = failure(null, 1);
+function validation(evidence) {{
+  const failures = [];
+  validatePointerAbiRejections(
+      {{pointerAbiRejections: evidence}},
+      (condition, message) => {{ if (!condition) failures.push(message); }});
+  return failures;
+}}
+const badEvidence = structuredClone(enabled);
+badEvidence.cases[0].result = true;
+process.stdout.write(JSON.stringify({{
+  calls, enabled, disabled, nonzero, boolean, missing, badFlag,
+  enabledValidation: validation(enabled),
+  disabledValidation: validation(disabled),
+  badValidation: validation(badEvidence),
+}}));
+"""
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        observed = json.loads(completed.stdout)
+        self.assertEqual(
+            smoke.POINTER_ABI_REJECTIONS_PROTOCOL, observed["enabled"]["protocol"]
+        )
+        self.assertEqual(
+            smoke.POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE,
+            observed["enabled"]["phase"],
+        )
+        self.assertEqual(
+            smoke.POINTER_ABI_REJECTIONS_DISABLED_PHASE,
+            observed["disabled"]["phase"],
+        )
+        self.assertEqual([], observed["disabled"]["cases"])
+        self.assertEqual(
+            [
+                {
+                    "arguments": list(arguments),
+                    "expectedResult": 0,
+                    "name": name,
+                    "operation": operation,
+                    "result": 0,
+                }
+                for name, operation, arguments in smoke.POINTER_ABI_REJECTION_CASES
+            ],
+            observed["enabled"]["cases"],
+        )
+        self.assertEqual(
+            [
+                [
+                    (
+                        "chromium_wasm_browser_host_pointer"
+                        if operation == "pointer"
+                        else "chromium_wasm_browser_host_pointer_exit"
+                    ),
+                    "number",
+                    ["number", "number", "number", "number"]
+                    if operation == "pointer"
+                    else [],
+                    list(arguments),
+                ]
+                for _, operation, arguments in smoke.POINTER_ABI_REJECTION_CASES
+            ],
+            observed["calls"],
+        )
+        self.assertIn("returned 1, expected 0", observed["nonzero"])
+        self.assertIn("invalid result", observed["boolean"])
+        self.assertIn("require Module.ccall", observed["missing"])
+        self.assertIn("seed flag is invalid", observed["badFlag"])
+        self.assertEqual([], observed["enabledValidation"])
+        self.assertEqual([], observed["disabledValidation"])
+        self.assertTrue(
+            any("did not reject exactly" in message for message in observed["badValidation"])
+        )
+
     def test_alternate_module_query_is_rejected_before_loader_fetch(self) -> None:
         observed = self._run_host_query("?token=test-token&module=alternate_wasm")
         self.assertIn(
             "must select the chrome_wasm product module", observed["error"]
         )
+        self.assertEqual(0, observed["fetchCalls"])
+
+    def test_invalid_pointer_abi_rejection_seed_query_is_rejected_before_fetch(
+        self,
+    ) -> None:
+        observed = self._run_host_query(
+            "?token=test-token&module=chrome_wasm&pointerAbiRejectionSeed=0"
+        )
+        self.assertIn("pointer ABI rejection seed is invalid", observed["error"])
         self.assertEqual(0, observed["fetchCalls"])
 
     def test_main_closes_an_unstarted_server_without_shutdown(self) -> None:

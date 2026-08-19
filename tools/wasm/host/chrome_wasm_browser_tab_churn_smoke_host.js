@@ -51,6 +51,81 @@ const NATIVE_MEMORY_SNAPSHOT_LIMITATION =
     "native memory counters are point-in-time capacity/maximum/headroom and " +
     "logical-mapping observations, not RSS, committed memory, allocations, " +
     "residency, leaks, out-of-memory, or drain proof";
+const POINTER_ABI_REJECTIONS_PROTOCOL = "m9-host-native-pointer-abi-rejections-v1";
+const POINTER_ABI_REJECTIONS_DISABLED_PHASE = "disabled";
+const POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE =
+    "after-native-ready-before-trusted-dom-adapter-attach";
+const POINTER_ABI_REJECTIONS_LIMITATION =
+    "pointer_abi_rejections_are_disabled_by_default_and_when_enabled_prove_" +
+    "only_host_c_abi_rejections_not_trusted_dom_input_or_ui_dispatch_and_any_" +
+    "result_one_would_mean_only_queue_and_state_admission";
+// This is a static, negative-only corpus. In particular, it must never send a
+// valid move/down/up that the native bridge could queue before the normal
+// trusted-DOM adapter owns input. The valid-coordinate release case is denied
+// because no press has been admitted, so it also leaves no pointer cleanup
+// work for the following tab-churn flow.
+const POINTER_ABI_REJECTION_CASES = Object.freeze([
+  Object.freeze({
+    arguments: Object.freeze([-1, 0, 0, 0]),
+    expectedResult: 0,
+    name: "invalid-pointer-type-negative",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([3, 0, 0, 0]),
+    expectedResult: 0,
+    name: "invalid-pointer-type-high",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([0, -1, 0, 0]),
+    expectedResult: 0,
+    name: "invalid-pointer-x-negative",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([0, MAX_FRAME_DIMENSION, 0, 0]),
+    expectedResult: 0,
+    name: "invalid-pointer-x-high",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([0, 0, -1, 0]),
+    expectedResult: 0,
+    name: "invalid-pointer-y-negative",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([0, 0, MAX_FRAME_DIMENSION, 0]),
+    expectedResult: 0,
+    name: "invalid-pointer-y-high",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([0, 0, 0, -1]),
+    expectedResult: 0,
+    name: "invalid-pointer-button-negative",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([0, 0, 0, 3]),
+    expectedResult: 0,
+    name: "invalid-pointer-button-high",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([2, 0, 0, 0]),
+    expectedResult: 0,
+    name: "valid-coordinate-release-without-press",
+    operation: "pointer",
+  }),
+  Object.freeze({
+    arguments: Object.freeze([]),
+    expectedResult: 0,
+    name: "exit-without-unpressed-hover",
+    operation: "pointer-exit",
+  }),
+]);
 const ARTIFACT_SOURCE_PROVENANCE = "unverified";
 const ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot";
 const SOURCE_SNAPSHOT_PROVENANCE =
@@ -65,6 +140,7 @@ const LIMITATIONS = Object.freeze([
   NATIVE_MEMORY_SNAPSHOT_LIMITATION,
   "does_not_measure_or_exhaust_the_pthread_pool",
   "does_not_prove_raster_compositor_display_or_vsync_presentation",
+  POINTER_ABI_REJECTIONS_LIMITATION,
   "does_not_claim_m8_feature_compatibility",
 ]);
 
@@ -182,6 +258,17 @@ function parseCaptureHarnessIdentity(value) {
     source_snapshot_provenance: harness.source_snapshot_provenance,
     version_provenance: harness.version_provenance,
   });
+}
+
+function parsePointerAbiRejectionSeed(query) {
+  const values = query.getAll("pointerAbiRejectionSeed");
+  if (values.length === 0) {
+    return false;
+  }
+  if (values.length !== 1 || values[0] !== "1") {
+    throw new Error("tab-churn pointer ABI rejection seed is invalid");
+  }
+  return true;
 }
 
 function renderVersions(element, versions) {
@@ -312,6 +399,62 @@ export function nativeMemorySample(module, observation, stage, frameId) {
   });
 }
 
+function pointerAbiRejectionsEvidence(phase, cases) {
+  return Object.freeze({
+    protocol: POINTER_ABI_REJECTIONS_PROTOCOL,
+    phase,
+    cases: Object.freeze(cases.map((entry) => Object.freeze({...entry}))),
+  });
+}
+
+// Runs the static direct-C-ABI rejection corpus before the trusted DOM adapter
+// exists. This is not DOM fuzzing or a generic host dispatcher: every case is
+// fixed here, every result must be an exact rejected `0`, and a thrown call
+// fails the host instead of being converted into an acceptance signal.
+export function runPointerAbiRejections(module, enabled) {
+  if (typeof enabled !== "boolean") {
+    throw new Error("tab-churn pointer ABI rejection seed flag is invalid");
+  }
+  if (!enabled) {
+    return pointerAbiRejectionsEvidence(POINTER_ABI_REJECTIONS_DISABLED_PHASE, []);
+  }
+  if (!module || typeof module.ccall !== "function") {
+    throw new Error("tab-churn pointer ABI rejections require Module.ccall");
+  }
+
+  const cases = [];
+  for (const expected of POINTER_ABI_REJECTION_CASES) {
+    let result;
+    try {
+      result = expected.operation === "pointer" ? module.ccall(
+          "chromium_wasm_browser_host_pointer", "number",
+          ["number", "number", "number", "number"], expected.arguments) :
+          module.ccall("chromium_wasm_browser_host_pointer_exit", "number", [], []);
+    } catch (error) {
+      throw new Error(`tab-churn pointer ABI rejection ${expected.name} failed: ` +
+          String(error));
+    }
+    if (!Number.isSafeInteger(result) || (result !== 0 && result !== 1)) {
+      throw new Error(`tab-churn pointer ABI rejection ${expected.name} returned ` +
+          `an invalid result: ${String(result)}`);
+    }
+    const observed = {
+      arguments: [...expected.arguments],
+      expectedResult: expected.expectedResult,
+      name: expected.name,
+      operation: expected.operation,
+      result,
+    };
+    cases.push(observed);
+    if (result !== expected.expectedResult) {
+      throw new Error(`tab-churn pointer ABI rejection ${expected.name} returned ` +
+          `${result}, expected ${expected.expectedResult}`);
+    }
+  }
+  return pointerAbiRejectionsEvidence(POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE,
+      cases);
+}
+
 function stageInfo(stage) {
   if (!Number.isSafeInteger(stage) || stage < 1 || stage > STAGE_COUNT) {
     return null;
@@ -363,6 +506,8 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
   #captureHarness;
   #module = null;
   #pointerInput = null;
+  #pointerAbiRejectionSeedEnabled;
+  #pointerAbiRejections;
   #stdout = [];
   #stderr = [];
   #fatalErrors = [];
@@ -389,14 +534,23 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
   #pointerRecords = [];
   #nativeMemorySamples = [];
 
-  constructor(canvas, versions, artifact, captureHarness) {
+  constructor(canvas, versions, artifact, captureHarness,
+      pointerAbiRejectionSeedEnabled) {
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("tab-churn smoke requires a canvas");
+    }
+    if (typeof pointerAbiRejectionSeedEnabled !== "boolean") {
+      throw new Error("tab-churn pointer ABI rejection seed flag is invalid");
     }
     this.#canvas = canvas;
     this.#versions = versions;
     this.#artifact = artifact;
     this.#captureHarness = captureHarness;
+    this.#pointerAbiRejectionSeedEnabled = pointerAbiRejectionSeedEnabled;
+    this.#pointerAbiRejections = pointerAbiRejectionsEvidence(
+        pointerAbiRejectionSeedEnabled ? POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE :
+            POINTER_ABI_REJECTIONS_DISABLED_PHASE,
+        []);
     this.#runtimeExitPromise = new Promise((resolve) => {
       this.#runtimeExitResolver = resolve;
     });
@@ -661,8 +815,12 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
       return;
     }
     const active = this.#activeStage();
-    if (!this.#module || this.#pointerInput?.attached !== true) {
+    if (!this.#module) {
       this.#publishState("awaiting-runtime");
+      return;
+    }
+    if (this.#pointerInput?.attached !== true) {
+      this.#publishState("awaiting-native-pointer-ready");
       return;
     }
     if (!active) {
@@ -777,6 +935,35 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
     this.#updateState();
   }
 
+  #attachPointerInputAfterNativeReady() {
+    if (this.#pointerInput !== null || !this.#module) {
+      this.#recordFatal("tab-churn native READY cannot install pointer input");
+      return;
+    }
+    try {
+      // onRuntimeInitialized precedes Chrome's C++ main and therefore cannot
+      // prove that the Ozone pointer bridge is active. The first native READY
+      // marker is emitted only after the browser tab-churn coordinator is
+      // live. Run the fixed rejection corpus here, before trusted DOM input
+      // is attached, so every zero is an active-bridge validation/state
+      // rejection rather than a pre-initialization false pass.
+      this.#pointerAbiRejections = runPointerAbiRejections(
+          this.#module, this.#pointerAbiRejectionSeedEnabled);
+      this.#pointerInput = new ChromiumWasmTrustedPointerInput(this.#canvas, {
+        getModule: () => this.#module,
+        recordFatal: (message) => this.#recordFatal(message),
+        record: (record) => this.#recordPointer(record),
+        maximumFrameDimension: MAX_FRAME_DIMENSION,
+      });
+      this.#pointerInput.attach();
+      if (this.#pointerInput.attached !== true) {
+        throw new Error("tab-churn pointer adapter did not attach");
+      }
+    } catch (error) {
+      this.#recordFatal(`invalid tab-churn pointer ABI rejections: ${String(error)}`);
+    }
+  }
+
   #recordOutput(value) {
     const line = String(value);
     try {
@@ -809,6 +996,9 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
           backingStoreCopyQueued: false,
           passObserved: false,
         });
+        if (targetMarker.info.stage === 1) {
+          this.#attachPointerInputAfterNativeReady();
+        }
       }
       const verifiedMarker = parseVerifiedMarker(line);
       if (verifiedMarker) {
@@ -862,13 +1052,6 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
       return;
     }
     this.#runtimeInitialized = true;
-    this.#pointerInput = new ChromiumWasmTrustedPointerInput(this.#canvas, {
-      getModule: () => this.#module,
-      recordFatal: (message) => this.#recordFatal(message),
-      record: (record) => this.#recordPointer(record),
-      maximumFrameDimension: MAX_FRAME_DIMENSION,
-    });
-    this.#pointerInput.attach();
     this.#updateState();
   }
 
@@ -906,6 +1089,7 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
         stages: this.#stages.map((stage) => this.#stageSnapshot(stage)),
         pointerRecords: this.#pointerRecords,
       },
+      pointerAbiRejections: this.#pointerAbiRejections,
       nativeMemorySnapshot: this.#nativeMemorySnapshot(),
       stdout: this.#stdout,
       stderr: this.#stderr,
@@ -1085,6 +1269,46 @@ function validateNativeMemorySnapshot(result, churn, require) {
   // by comparing it across this bounded set of observations.
 }
 
+export function validatePointerAbiRejections(result, require) {
+  const evidence = result.pointerAbiRejections;
+  const evidenceFields = ["protocol", "phase", "cases"];
+  const caseFields = [
+    "arguments", "expectedResult", "name", "operation", "result",
+  ];
+  require(hasExactFields(evidence, evidenceFields),
+      "tab-churn pointer ABI rejection evidence schema is invalid");
+  if (!hasExactFields(evidence, evidenceFields)) return;
+  require(evidence.protocol === POINTER_ABI_REJECTIONS_PROTOCOL,
+      "tab-churn pointer ABI rejection protocol is invalid");
+  const enabled = evidence.phase === POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE;
+  require(enabled || evidence.phase === POINTER_ABI_REJECTIONS_DISABLED_PHASE,
+      "tab-churn pointer ABI rejection phase is invalid");
+  const expectedCases = enabled ? POINTER_ABI_REJECTION_CASES : [];
+  require(Array.isArray(evidence.cases) &&
+      evidence.cases.length === expectedCases.length,
+  "tab-churn pointer ABI rejection case count is invalid");
+  if (!Array.isArray(evidence.cases) ||
+      evidence.cases.length !== expectedCases.length) {
+    return;
+  }
+  for (let index = 0; index < expectedCases.length; ++index) {
+    const actual = evidence.cases[index];
+    const expected = expectedCases[index];
+    require(hasExactFields(actual, caseFields),
+        `tab-churn pointer ABI rejection case ${index} schema is invalid`);
+    if (!hasExactFields(actual, caseFields)) continue;
+    const validArguments = Array.isArray(actual.arguments) &&
+        actual.arguments.length === expected.arguments.length &&
+        actual.arguments.every((value, argumentIndex) =>
+          Number.isSafeInteger(value) && value === expected.arguments[argumentIndex]);
+    require(actual.name === expected.name &&
+        actual.operation === expected.operation && validArguments,
+    `tab-churn pointer ABI rejection case ${index} descriptor is invalid`);
+    require(actual.expectedResult === 0 && actual.result === 0,
+        `tab-churn pointer ABI rejection case ${index} did not reject exactly`);
+  }
+}
+
 function validateResult(result) {
   const failures = [];
   const require = (condition, message) => {
@@ -1172,6 +1396,7 @@ function validateResult(result) {
     }
   }
   validateNativeMemorySnapshot(result, churn, require);
+  validatePointerAbiRejections(result, require);
   require(result.artifact?.artifact_source_provenance ===
       ARTIFACT_SOURCE_PROVENANCE,
   "tab-churn artifact source provenance is not unverified");
@@ -1207,6 +1432,7 @@ export async function runChromeWasmBrowserTabChurnSmokeFromQuery() {
         "tab-churn query must select the chrome_wasm product module");
   }
   const timeoutMs = Number(query.get("timeoutMs") || "90000");
+  const pointerAbiRejectionSeedEnabled = parsePointerAbiRejectionSeed(query);
   const versions = parseVersions(query.get("versions"));
   const artifact = parseArtifactIdentity(query.get("artifact"));
   if (artifact.module_name !== moduleName) {
@@ -1222,7 +1448,7 @@ export async function runChromeWasmBrowserTabChurnSmokeFromQuery() {
   }
   renderVersions(document.querySelector("#versions"), versions);
   const host = new ChromiumWasmBrowserTabChurnSmokeHost(
-      canvas, versions, artifact, captureHarness);
+      canvas, versions, artifact, captureHarness, pointerAbiRejectionSeedEnabled);
   const result = validateResult(await host.run(
       `${location.pathname.replace(/\/$/, "")}/artifacts/${PRODUCT_MODULE_NAME}.js`,
       timeoutMs));

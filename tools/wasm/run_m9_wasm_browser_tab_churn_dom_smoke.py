@@ -98,6 +98,31 @@ MAX_SAFE_INTEGER = (1 << 53) - 1
 MAX_RESULT_BYTES = 2 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FRAME_DIMENSION = 16384
+POINTER_ABI_REJECTIONS_PROTOCOL = "m9-host-native-pointer-abi-rejections-v1"
+POINTER_ABI_REJECTIONS_DISABLED_PHASE = "disabled"
+POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE = (
+    "after-native-ready-before-trusted-dom-adapter-attach"
+)
+POINTER_ABI_REJECTIONS_LIMITATION = (
+    "pointer_abi_rejections_are_disabled_by_default_and_when_enabled_prove_"
+    "only_host_c_abi_rejections_not_trusted_dom_input_or_ui_dispatch_and_any_"
+    "result_one_would_mean_only_queue_and_state_admission"
+)
+# Keep this independently declared from the host implementation. The runner
+# binds the uploaded evidence to this fixed negative-only sequence rather than
+# treating the opt-in seed as a generic host C-ABI dispatcher.
+POINTER_ABI_REJECTION_CASES = (
+    ("invalid-pointer-type-negative", "pointer", (-1, 0, 0, 0)),
+    ("invalid-pointer-type-high", "pointer", (3, 0, 0, 0)),
+    ("invalid-pointer-x-negative", "pointer", (0, -1, 0, 0)),
+    ("invalid-pointer-x-high", "pointer", (0, MAX_FRAME_DIMENSION, 0, 0)),
+    ("invalid-pointer-y-negative", "pointer", (0, 0, -1, 0)),
+    ("invalid-pointer-y-high", "pointer", (0, 0, MAX_FRAME_DIMENSION, 0)),
+    ("invalid-pointer-button-negative", "pointer", (0, 0, 0, -1)),
+    ("invalid-pointer-button-high", "pointer", (0, 0, 0, 3)),
+    ("valid-coordinate-release-without-press", "pointer", (2, 0, 0, 0)),
+    ("exit-without-unpressed-hover", "pointer-exit", ()),
+)
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -117,6 +142,7 @@ LIMITATIONS = (
     NATIVE_MEMORY_SNAPSHOT_LIMITATION,
     "does_not_measure_or_exhaust_the_pthread_pool",
     "does_not_prove_raster_compositor_display_or_vsync_presentation",
+    POINTER_ABI_REJECTIONS_LIMITATION,
     "does_not_claim_m8_feature_compatibility",
 )
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
@@ -165,6 +191,10 @@ _NATIVE_MEMORY_SAMPLE_FIELDS = frozenset(
         "wasmLinearMemoryHeadroomBytes",
         "wasmLinearMemoryMaximumBytes",
     )
+)
+_POINTER_ABI_REJECTIONS_FIELDS = frozenset(("protocol", "phase", "cases"))
+_POINTER_ABI_REJECTION_CASE_FIELDS = frozenset(
+    ("arguments", "expectedResult", "name", "operation", "result")
 )
 
 
@@ -445,22 +475,28 @@ def smoke_url(
     capture_harness: dict[str, object],
     module_name: str,
     timeout_seconds: float,
+    pointer_abi_rejection_seed: bool = False,
 ) -> str:
     module_name = _require_product_module_name(module_name, "URL")
     _require_product_module_name(server.module_name, "URL server")
+    if type(pointer_abi_rejection_seed) is not bool:
+        raise M0Error("tab-churn pointer ABI rejection seed flag is invalid")
     host, port = server.server_address[:2]
-    query = urlencode(
-        {
-            "token": token,
-            "module": module_name,
-            "timeoutMs": str(int(timeout_seconds * 1000)),
-            "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
-            "artifact": json.dumps(artifact, sort_keys=True, separators=(",", ":")),
-            "captureHarness": json.dumps(
-                capture_harness, sort_keys=True, separators=(",", ":")
-            ),
-        }
-    )
+    query_fields = {
+        "token": token,
+        "module": module_name,
+        "timeoutMs": str(int(timeout_seconds * 1000)),
+        "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
+        "artifact": json.dumps(artifact, sort_keys=True, separators=(",", ":")),
+        "captureHarness": json.dumps(
+            capture_harness, sort_keys=True, separators=(",", ":")
+        ),
+    }
+    if pointer_abi_rejection_seed:
+        # This is a bounded enablement handshake for the fixed host corpus,
+        # never caller-controlled C ABI data.
+        query_fields["pointerAbiRejectionSeed"] = "1"
+    query = urlencode(query_fields)
     return f"http://{host}:{port}{HOST_ROOT}/?{query}"
 
 
@@ -677,6 +713,64 @@ def _validate_pointer_records(records: object, stages: list[dict[str, object]]) 
                     )
 
 
+def _validate_pointer_abi_rejections(
+    value: object, *, expected_enabled: bool
+) -> None:
+    """Binds the optional fixed host-native rejection corpus exactly.
+
+    The host must run this only before installing the trusted DOM adapter. All
+    ten cases are expected to return the explicit rejection value ``0``; this
+    is not a trusted-DOM input trace and does not prove native UI dispatch.
+    """
+
+    if type(expected_enabled) is not bool:
+        raise M0Error("tab-churn pointer ABI rejection seed flag is invalid")
+    evidence = _require_exact_fields(
+        value, _POINTER_ABI_REJECTIONS_FIELDS, "pointer ABI rejection evidence"
+    )
+    if evidence.get("protocol") != POINTER_ABI_REJECTIONS_PROTOCOL:
+        raise M0Error("tab-churn pointer ABI rejection protocol is invalid")
+    expected_phase = (
+        POINTER_ABI_REJECTIONS_PRE_ADAPTER_PHASE
+        if expected_enabled
+        else POINTER_ABI_REJECTIONS_DISABLED_PHASE
+    )
+    if evidence.get("phase") != expected_phase:
+        raise M0Error("tab-churn pointer ABI rejection phase is invalid")
+    cases = evidence.get("cases")
+    expected_cases = POINTER_ABI_REJECTION_CASES if expected_enabled else ()
+    if not isinstance(cases, list) or len(cases) != len(expected_cases):
+        raise M0Error("tab-churn pointer ABI rejection case count is invalid")
+    for index, (name, operation, arguments) in enumerate(expected_cases):
+        case = _require_exact_fields(
+            cases[index],
+            _POINTER_ABI_REJECTION_CASE_FIELDS,
+            f"pointer ABI rejection case {index}",
+        )
+        actual_arguments = case.get("arguments")
+        if (
+            not isinstance(actual_arguments, list)
+            or len(actual_arguments) != len(arguments)
+            or any(
+                type(actual) is not int or actual != expected
+                for actual, expected in zip(actual_arguments, arguments)
+            )
+        ):
+            raise M0Error(
+                f"tab-churn pointer ABI rejection case {index} arguments are invalid"
+            )
+        if case.get("name") != name or case.get("operation") != operation:
+            raise M0Error(
+                f"tab-churn pointer ABI rejection case {index} descriptor is invalid"
+            )
+        for field in ("expectedResult", "result"):
+            if type(case.get(field)) is not int or case[field] != 0:
+                raise M0Error(
+                    f"tab-churn pointer ABI rejection case {index} {field} "
+                    "did not reject exactly"
+                )
+
+
 def _validate_native_memory_snapshot(
     value: object, stages: list[dict[str, object]]
 ) -> None:
@@ -866,6 +960,7 @@ def validate_result(
     expected_versions: dict[str, str],
     expected_artifact_identity: dict[str, object],
     expected_capture_harness_identity: dict[str, object],
+    expected_pointer_abi_rejection_seed: bool = False,
 ) -> None:
     for field, expected in {
         "protocol": 1,
@@ -945,6 +1040,10 @@ def validate_result(
         stages.append(stage)
     _validate_markers(result.get("stderr"), stages)
     _validate_pointer_records(churn.get("pointerRecords"), stages)
+    _validate_pointer_abi_rejections(
+        result.get("pointerAbiRejections"),
+        expected_enabled=expected_pointer_abi_rejection_seed,
+    )
     _validate_native_memory_snapshot(result.get("nativeMemorySnapshot"), stages)
 
 
@@ -1124,6 +1223,7 @@ def main() -> int:
     parser.add_argument("--module-name", default=DEFAULT_MODULE_NAME)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
+    parser.add_argument("--pointer-abi-rejection-seed", action="store_true")
     parser.add_argument("--timeout", type=parse_timeout, default=90.0)
     args = parser.parse_args()
     if args.timeout < 15.0:
@@ -1184,6 +1284,7 @@ def main() -> int:
             "host_browser_sandbox": not args.no_sandbox,
             "limitations": list(LIMITATIONS),
             "module_name": args.module_name,
+            "pointer_abi_rejection_seed": args.pointer_abi_rejection_seed,
             "runtime_arguments": [SWITCH],
             "scope": SCOPE,
             "script": "run_m9_wasm_browser_tab_churn_dom_smoke.py",
@@ -1213,6 +1314,7 @@ def main() -> int:
             capture_harness=capture_harness,
             module_name=args.module_name,
             timeout_seconds=max(1.0, args.timeout - 1.0),
+            pointer_abi_rejection_seed=args.pointer_abi_rejection_seed,
         )
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m9-tab-churn-")
         debug_port = unused_loopback_port()
@@ -1259,6 +1361,7 @@ def main() -> int:
             expected_versions=versions,
             expected_artifact_identity=artifact,
             expected_capture_harness_identity=capture_harness,
+            expected_pointer_abi_rejection_seed=args.pointer_abi_rejection_seed,
         )
     except (M0Error, OSError, KeyError, TypeError, ValueError) as error:
         primary_error = error
