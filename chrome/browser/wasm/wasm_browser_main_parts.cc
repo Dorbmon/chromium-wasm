@@ -80,6 +80,8 @@ constexpr char kWasmBrowserWindowCoreSmokeSwitch[] =
 constexpr char kWasmBrowserSmokeSwitch[] = "wasm-browser-smoke";
 constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
+constexpr char kWasmBrowserM9WispRecoverySmokeSwitch[] =
+    "wasm-browser-m9-wisp-recovery-smoke";
 constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
     "wasm-browser-lifecycle-smoke";
 constexpr char kWasmBrowserDevToolsProtocolSmokeSwitch[] =
@@ -343,6 +345,24 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     }
     if (!chrome::RunWasmBrowserControlledHttpsSmoke(profile_.get())) {
       LOG(ERROR) << "chrome_wasm controlled HTTPS browser smoke failed";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+
+  // M9's bounded carrier-close proof is another privileged fixture route in
+  // the same dedicated executable: only its local root may trust a.test, and
+  // the tab itself still reaches the canonical URL solely through Ozone input.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM9WispRecoverySmokeSwitch)) {
+    if (!chrome::IsWasmM6ControlledHttpsTestModeEnabled()) {
+      LOG(ERROR) << "chrome_wasm rejects the M9 WISP recovery smoke switch "
+                    "outside its dedicated test executable";
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    if (!chrome::RunWasmBrowserM9WispRecoverySmoke(profile_.get())) {
+      LOG(ERROR) << "chrome_wasm M9 WISP recovery smoke failed";
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
     RequestShutdown();

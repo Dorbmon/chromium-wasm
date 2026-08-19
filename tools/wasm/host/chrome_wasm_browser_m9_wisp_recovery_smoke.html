@@ -1,0 +1,89 @@
+<!doctype html>
+<!--
+  Copyright 2026 The Chromium Authors
+  Use of this source code is governed by a BSD-style license that can be
+  found in the LICENSE file.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm M9 WISP recovery smoke</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      background: #10141b;
+      color: #dbe7f5;
+    }
+    body { margin: 0; padding: 16px; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(640px, 1fr) 320px;
+      gap: 16px;
+      align-items: start;
+    }
+    #browser-canvas {
+      display: block;
+      width: 640px;
+      height: 480px;
+      border: 1px solid #53657d;
+      background: #000;
+      outline: none;
+    }
+    #browser-canvas:focus { border-color: #72ddf7; }
+    #browser-text-proxy {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+      padding: 0;
+      opacity: 0;
+      border: 0;
+      outline: 0;
+      overflow: clip;
+      white-space: nowrap;
+    }
+    aside {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid #53657d;
+      background: #171e28;
+    }
+    h1 { margin: 0 0 12px; font-size: 16px; }
+    pre {
+      max-height: 420px;
+      margin: 0;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    main[data-state="pass"] h1 { color: #80ed99; }
+    main[data-state="fail"] h1 { color: #ff758f; }
+  </style>
+</head>
+<body>
+  <main id="m9-wisp-recovery-root" data-state="running">
+    <canvas id="browser-canvas" width="640" height="480" tabindex="0"
+        aria-label="Chromium browser M9 WISP recovery output"></canvas>
+    <textarea id="browser-text-proxy"
+        aria-label="Chromium trusted text input proxy" autocomplete="off"
+        autocapitalize="off" spellcheck="false" inputmode="none"></textarea>
+    <aside aria-label="M9 WISP recovery smoke diagnostics">
+      <h1>Chromium Wasm M9 WISP recovery smoke</h1>
+      <pre id="m9-wisp-recovery-status">Starting M9 WISP recovery smoke…</pre>
+    </aside>
+  </main>
+  <script type="module">
+    import {runChromeWasmBrowserM9WispRecoverySmokeFromQuery} from "/__m9_browser_wisp_recovery__/chrome_wasm_browser_m9_wisp_recovery_smoke_host.js";
+
+    runChromeWasmBrowserM9WispRecoverySmokeFromQuery().catch((error) => {
+      document.querySelector("#m9-wisp-recovery-root").dataset.state = "fail";
+      document.querySelector("#m9-wisp-recovery-status").textContent =
+          "HOST FAILURE: " + String(error);
+    });
+  </script>
+</body>
+</html>

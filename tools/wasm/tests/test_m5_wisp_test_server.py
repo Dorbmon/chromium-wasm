@@ -224,6 +224,25 @@ class M5WispTestServerTest(unittest.TestCase):
         with urlopen(self.metadata["transcriptUrl"], timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _open_wisp_peer(self) -> tuple[socket.socket, BufferedSocket]:
+        host, port, endpoint_path = self._endpoint("wispEndpoint")
+        raw = socket.create_connection((host, port), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        raw.sendall(
+            f"GET {endpoint_path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Origin: http://127.0.0.1:8765\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Protocol: wisp\r\n\r\n".encode("ascii")
+        )
+        header, pending = read_http_headers(raw)
+        self.assertIn("101 Switching Protocols", header)
+        self.assertIn("Sec-WebSocket-Protocol: wisp", header)
+        return raw, BufferedSocket(raw, pending)
+
     def _wait_for_tls_failure_tcp_connection(self) -> dict[str, object]:
         deadline = time.monotonic() + 5
         status: dict[str, object] = {}
@@ -1978,6 +1997,99 @@ try {
         }
         self.assertIn("tls-failure-tcp-connect", events)
         self.assertNotIn("tls-failure-http-request", events)
+
+    def test_wisp_peer_half_close_releases_relay_and_transport(self) -> None:
+        raw, peer = self._open_wisp_peer()
+        self.addCleanup(raw.close)
+        finished, opcode, payload = read_websocket_frame(peer)
+        self.assertTrue(finished)
+        self.assertEqual(opcode, 0x02)
+        self.assertEqual(parse_wisp_packet(payload)[:2], (0x05, 0))
+
+        before = self._status()
+        self.assertEqual(before["activeWispSessions"], 1)
+        self.assertEqual(before["activeWispTransports"], 1)
+        self.assertEqual(before["wispTransportClosures"], 0)
+        self.assertEqual(before["wispTransportCloseTimeouts"], 0)
+
+        # A browser process can leave its carrier read side in EOF while its
+        # write side is already gone. The peer must destroy that terminal
+        # transport and remove the relay instead of waiting for fixture exit.
+        raw.shutdown(socket.SHUT_WR)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = self._status()
+            if (
+                status["activeWispSessions"] == 0
+                and status["activeWispTransports"] == 0
+            ):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("WISP peer half-close retained relay or transport state")
+
+        self.assertEqual(status["wispSessions"], 1)
+        self.assertEqual(status["wispTransportClosures"], 1)
+        self.assertEqual(status["wispTransportCloseTimeouts"], 0)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(events.count("wisp-disconnected"), 1)
+        self.assertEqual(events.count("wisp-transport-closed"), 1)
+        self.assertNotIn("wisp-transport-close-timeout", events)
+
+    def test_wisp_close_without_peer_fin_forces_bounded_transport_close(self) -> None:
+        raw, peer = self._open_wisp_peer()
+        self.addCleanup(raw.close)
+        finished, opcode, payload = read_websocket_frame(peer)
+        self.assertTrue(finished)
+        self.assertEqual(opcode, 0x02)
+        self.assertEqual(parse_wisp_packet(payload)[:2], (0x05, 0))
+
+        # Send a valid RFC 6455 close frame but deliberately retain our TCP
+        # half after the echoed close. This keeps the server in FIN_WAIT until
+        # its bounded terminal-close timer explicitly destroys the transport.
+        send_websocket_frame(raw, 0x08, struct.pack("!H", 1000))
+        finished, opcode, _ = read_websocket_frame(peer)
+        self.assertTrue(finished)
+        self.assertEqual(opcode, 0x08)
+
+        pending = self._status()
+        self.assertEqual(pending["activeWispSessions"], 0)
+        self.assertEqual(pending["activeWispTransports"], 1)
+        self.assertEqual(pending["wispTransportClosures"], 0)
+        self.assertEqual(pending["wispTransportCloseTimeouts"], 0)
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = self._status()
+            if status["activeWispTransports"] == 0:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("WISP close without FIN was not bounded")
+
+        self.assertEqual(status["activeWispSessions"], 0)
+        self.assertEqual(status["wispTransportClosures"], 1)
+        self.assertEqual(status["wispTransportCloseTimeouts"], 1)
+        events = [
+            entry.get("event")
+            for entry in status["transcript"]
+            if isinstance(entry, dict)
+        ]
+        self.assertEqual(events.count("wisp-disconnected"), 1)
+        self.assertEqual(events.count("wisp-transport-close-timeout"), 1)
+        self.assertEqual(events.count("wisp-transport-closed"), 1)
+        self.assertLess(
+            events.index("wisp-disconnected"),
+            events.index("wisp-transport-close-timeout"),
+        )
+        self.assertLess(
+            events.index("wisp-transport-close-timeout"),
+            events.index("wisp-transport-closed"),
+        )
 
     def test_wisp_v21_fragmentation_ping_allowlist_and_transcript(self) -> None:
         control_header, _, _ = self._plaintext_http_get(

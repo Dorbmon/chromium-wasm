@@ -22,6 +22,14 @@ bool RunWasmBrowserSmoke(WasmProfile* profile);
 // chrome_wasm never links that root or expands its certificate policy.
 bool RunWasmBrowserControlledHttpsSmoke(WasmProfile* profile);
 
+// Drives one test-only Chrome Browser through the normal Ozone address-field
+// route to the fixed M9 WISP recovery document. The document deliberately
+// loses its carrier while a fetch is active, then completes a fresh HTTP/2
+// recovery request in the same Browser and WebContents before normal close.
+// The dedicated M6 test executable is the only binary allowed to select this
+// route because it installs the local fixture root before ContentMain.
+bool RunWasmBrowserM9WispRecoverySmoke(WasmProfile* profile);
+
 }  // namespace chrome
 
 #endif  // CHROME_BROWSER_WASM_WASM_BROWSER_SMOKE_H_

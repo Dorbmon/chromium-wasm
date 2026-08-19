@@ -33,6 +33,16 @@ const TEST_HOSTNAME = "a.test";
 const M6_UI_PATH = "/m5/m6-ui";
 const M6_UI_TITLE = "Chromium Wasm M6 UI fixture";
 const M6_UI_BODY = "CHROMIUM_WASM_M6_UI_READY";
+// M9 uses the same narrowly mapped a.test:443 H2 listener, but keeps its
+// carrier-close page separate from the broad M5 network fixture. Its first
+// navigation is always the canonical no-port URL; all reconnect work happens
+// inside that browser document after trusted Ozone address-field input.
+const M9_WISP_RECOVERY_PATH = "/m5/m9-wisp-recovery";
+const M9_WISP_RECOVERY_SCRIPT_PATH = "/m5/m9-wisp-recovery-script.js";
+const M9_WISP_RECOVERY_COMPLETE_PATH = "/m5/m9-wisp-recovery-complete";
+const M9_WISP_RECOVERY_TITLE = "Chromium Wasm M9 WISP recovery fixture";
+const M9_WISP_RECOVERY_COMPLETE_TITLE =
+    "Chromium Wasm M9 WISP recovery complete";
 // The controlled local-gateway proof deliberately presents an ordinary
 // HTTPS authority to Chromium while keeping the actual target listener on an
 // ephemeral loopback port. The relay owns this exact logical-destination
@@ -141,6 +151,12 @@ const MAX_TRANSCRIPT_ENTRIES = 256;
 // Test counters are compact evidence rather than request logs. Keep them
 // saturating so a loopback client cannot make status output unbounded.
 const MAX_TEST_COUNTER = 16;
+// A WebSocket close frame does not itself prove that the peer completed the
+// underlying TCP close.  Keep the browser-facing graceful-close interval
+// short and finite; a peer that never sends its FIN is explicitly destroyed
+// rather than being removed from relay accounting while retaining a live
+// transport forever.
+const WEBSOCKET_TERMINAL_CLOSE_TIMEOUT_MS = 1000;
 const RELAY_HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 const DESTINATION_IDLE_TIMEOUT_MS = 30 * 1000;
 const CANCEL_STREAM_PROOF_TIMEOUT_MS = 5 * 1000;
@@ -322,14 +338,20 @@ class WebSocketPeer {
     this.closed = false;
     this.closeSent = false;
     this.closeNotified = false;
+    this.terminalCloseTimer = null;
+    this.onTerminalCloseTimeout = options.onTerminalCloseTimeout || (() => {});
 
     socket.on("data", (chunk) => this._receive(chunk));
+    socket.on("end", () => this.destroy());
     socket.on("drain", () => {
       this.backpressured = false;
       this.onWritable();
     });
-    socket.on("error", () => this._notifyClosed());
-    socket.on("close", () => this._notifyClosed());
+    socket.on("error", () => this.destroy());
+    socket.on("close", () => {
+      this._clearTerminalCloseTimer();
+      this._notifyClosed();
+    });
   }
 
   receiveInitial(bytes) {
@@ -394,17 +416,47 @@ class WebSocketPeer {
         // The socket is terminal either way.
       }
     }
-    this.closed = true;
-    this.socket.end();
-    this._notifyClosed();
+    this._beginTerminalClose();
   }
 
   destroy() {
+    this._clearTerminalCloseTimer();
     if (!this.closed) {
       this.closed = true;
     }
-    this.socket.destroy();
+    if (!this.socket.destroyed) {
+      this.socket.destroy();
+    }
     this._notifyClosed();
+  }
+
+  _beginTerminalClose() {
+    this.closed = true;
+    this.socket.end();
+    this._armTerminalCloseTimer();
+    this._notifyClosed();
+  }
+
+  _armTerminalCloseTimer() {
+    if (this.socket.destroyed || this.terminalCloseTimer !== null) {
+      return;
+    }
+    this.terminalCloseTimer = setTimeout(() => {
+      this.terminalCloseTimer = null;
+      if (this.socket.destroyed) {
+        return;
+      }
+      this.onTerminalCloseTimeout();
+      this.destroy();
+    }, WEBSOCKET_TERMINAL_CLOSE_TIMEOUT_MS);
+    this.terminalCloseTimer.unref?.();
+  }
+
+  _clearTerminalCloseTimer() {
+    if (this.terminalCloseTimer !== null) {
+      clearTimeout(this.terminalCloseTimer);
+      this.terminalCloseTimer = null;
+    }
   }
 
   _receive(chunk) {
@@ -490,9 +542,7 @@ class WebSocketPeer {
               // Close below.
             }
           }
-          this.closed = true;
-          this.socket.end();
-          this._notifyClosed();
+          this._beginTerminalClose();
           return;
         }
         if (opcode === 0x09) {
@@ -629,6 +679,7 @@ function acceptWebSocketUpgrade(request, socket, head, options) {
   }
   socket.write(`${responseHeaders.join("\r\n")}\r\n\r\n`);
   const peer = new WebSocketPeer(socket, options);
+  options.onAccepted?.(socket);
   peer.receiveInitial(head);
   return peer;
 }
@@ -753,6 +804,7 @@ function statusSnapshot(context) {
     protocol: 1,
     ready: true,
     activeWispSessions: context.relays.size,
+    activeWispTransports: context.wispTransportSockets.size,
     cacheConditionalRequests: context.stats.cacheConditionalRequests,
     cacheNotModified304s: context.stats.cacheNotModified304s,
     cacheStore200s: context.stats.cacheStore200s,
@@ -790,6 +842,10 @@ function statusSnapshot(context) {
     localGatewayBlockedPortAttempts:
       context.stats.localGatewayBlockedPortAttempts,
     m6UiRequests: context.stats.m6UiRequests,
+    m9WispRecoveryCompleteRequests:
+      context.stats.m9WispRecoveryCompleteRequests,
+    m9WispRecoveryRequests: context.stats.m9WispRecoveryRequests,
+    m9WispRecoveryScriptRequests: context.stats.m9WispRecoveryScriptRequests,
     multiplexBarrierReleases: context.stats.multiplexBarrierReleases,
     multiplexBarrierTimeouts: context.stats.multiplexBarrierTimeouts,
     multiplexBothStreamsOpen: context.stats.multiplexBothStreamsOpen,
@@ -857,6 +913,8 @@ function statusSnapshot(context) {
     udpPackets: context.stats.udpPackets,
     webSocketEchoes: context.stats.webSocketEchoes,
     wispSessions: context.stats.wispSessions,
+    wispTransportClosures: context.stats.wispTransportClosures,
+    wispTransportCloseTimeouts: context.stats.wispTransportCloseTimeouts,
     transcript: context.transcript.snapshot(),
   };
 }
@@ -3290,6 +3348,145 @@ function m6UiPage() {
 </main>`;
 }
 
+function m9WispRecoveryPage() {
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>${M9_WISP_RECOVERY_TITLE}</title>
+<main>
+<h1>${M9_WISP_RECOVERY_TITLE}</h1>
+<p id="m9-wisp-recovery-status">Waiting for the carrier-close recovery.</p>
+</main>
+<script src="/m5/m9-wisp-recovery-script.js" defer></script>`;
+}
+
+function m9WispRecoveryScript() {
+  return `(() => {
+  "use strict";
+  const reconnectStreamUrl =
+      new URL("/m5/reconnect-stream", location.href).href;
+  const reconnectFirstChunkAckUrl =
+      new URL("/m5/reconnect-first-chunk-ack", location.href).href;
+  const reconnectRecoveryUrl =
+      new URL("/m5/reconnect-recovery", location.href).href;
+  const completionUrl =
+      new URL("/m5/m9-wisp-recovery-complete", location.href).href;
+  const firstChunk = ${JSON.stringify(RECONNECT_STREAM_FIRST_CHUNK)};
+  const firstChunkAck = ${JSON.stringify(RECONNECT_FIRST_CHUNK_ACK_BODY)};
+  const recoveryBody = ${JSON.stringify(RECONNECT_RECOVERY_BODY)};
+  const status = document.querySelector("#m9-wisp-recovery-status");
+
+  function nextHopProtocol(url) {
+    const entries = performance.getEntriesByName(url, "resource");
+    const entry = entries.length === 0 ? null : entries[entries.length - 1];
+    return entry && entry.nextHopProtocol === "h2" ? "h2" : "";
+  }
+
+  function failure() {
+    if (status) {
+      status.textContent = "Carrier-close recovery did not complete.";
+    }
+  }
+
+  async function readFirstChunk(response) {
+    if (!response.ok || !response.body ||
+        response.headers.get("content-length") !==
+            String(firstChunk.length + 1) ||
+        response.headers.get("x-m5-wisp-reconnect") !== "partial-stream") {
+      throw new Error("unexpected reconnect stream response");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    while (received.length < firstChunk.length) {
+      const part = await reader.read();
+      if (part.done) {
+        throw new Error("reconnect stream ended before its first chunk");
+      }
+      received += decoder.decode(part.value, {stream: true});
+    }
+    if (received !== firstChunk) {
+      throw new Error("reconnect stream first chunk differed");
+    }
+    return reader;
+  }
+
+  async function requireCarrierFailure(reader) {
+    const outcome = await Promise.race([
+      reader.read().then(
+          () => ({errorName: ""}),
+          (error) => ({
+            errorName: typeof error?.name === "string" ? error.name : "",
+          })),
+      new Promise((resolve) => setTimeout(
+          () => resolve({errorName: ""}),
+          ${RECONNECT_STREAM_FAILURE_TIMEOUT_MS})),
+    ]);
+    // The page only observes Fetch's standard rejection category. The Chrome
+    // C++ recorder separately binds this pending request to the native
+    // net::ERR_INTERNET_DISCONNECTED event; no native error string enters JS.
+    if (outcome.errorName !== "TypeError") {
+      throw new Error("carrier close did not fail the pending Fetch");
+    }
+  }
+
+  async function run() {
+    const partial = await fetch(reconnectStreamUrl, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    const reader = await readFirstChunk(partial);
+    const acknowledgement = await fetch(reconnectFirstChunkAckUrl, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!acknowledgement.ok ||
+        await acknowledgement.text() !== firstChunkAck) {
+      throw new Error("reconnect first-chunk acknowledgement failed");
+    }
+    await requireCarrierFailure(reader);
+
+    const recovery = await fetch(reconnectRecoveryUrl, {
+      cache: "no-store",
+      credentials: "omit",
+    });
+    if (!recovery.ok || await recovery.text() !== recoveryBody ||
+        recovery.headers.get("x-m5-wisp-reconnect") !== "recovered" ||
+        nextHopProtocol(reconnectRecoveryUrl) !== "h2") {
+      throw new Error("fresh HTTP/2 recovery Fetch failed");
+    }
+    if (status) {
+      status.textContent = "Recovery completed; loading the completion page.";
+    }
+    // This renderer-owned replacement is deliberately downstream of the
+    // recovery body and its Resource Timing H2 witness. It is not a host or
+    // DevTools navigation command and does not create a new Browser/tab.
+    location.replace(completionUrl);
+  }
+
+  // The browser-side fixed Network.enable recorder is armed before trusted
+  // address-bar input and becomes active at the initial-FVP boundary once the
+  // target renderer exists. Keep the carrier-close Fetch behind two renderer
+  // presentation turns. This is a bounded fixture gate, not a host control or
+  // direct-navigation bridge; the native recorder still fails closed if its
+  // required recovery events do not arrive.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      run().catch(() => failure());
+    });
+  });
+})();`;
+}
+
+function m9WispRecoveryCompletePage() {
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>${M9_WISP_RECOVERY_COMPLETE_TITLE}</title>
+<main>
+<h1>${M9_WISP_RECOVERY_COMPLETE_TITLE}</h1>
+<p id="m9-wisp-recovery-complete-status">M9 WISP recovery complete.</p>
+</main>`;
+}
+
 function hasExpectedRedirectCookie(headers, context) {
   const header = headers.cookie;
   const cookieLine = Array.isArray(header) ? header.join(";") : header;
@@ -3329,6 +3526,45 @@ function createH2Server(context, tlsMaterial) {
       }));
       stream.end(body);
       context.transcript.add("h2-m6-ui");
+      return;
+    }
+    if (requestPath === M9_WISP_RECOVERY_PATH) {
+      const body = Buffer.from(m9WispRecoveryPage());
+      incrementBoundedCounter(context, "m9WispRecoveryRequests");
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-length": String(body.length),
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+      }));
+      stream.end(body);
+      context.transcript.add("h2-m9-wisp-recovery");
+      return;
+    }
+    if (requestPath === M9_WISP_RECOVERY_SCRIPT_PATH) {
+      const body = Buffer.from(m9WispRecoveryScript());
+      incrementBoundedCounter(context, "m9WispRecoveryScriptRequests");
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-length": String(body.length),
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "no-store",
+      }));
+      stream.end(body);
+      context.transcript.add("h2-m9-wisp-recovery-script");
+      return;
+    }
+    if (requestPath === M9_WISP_RECOVERY_COMPLETE_PATH) {
+      const body = Buffer.from(m9WispRecoveryCompletePage());
+      incrementBoundedCounter(context, "m9WispRecoveryCompleteRequests");
+      stream.respond(h2Headers({
+        ":status": 200,
+        "content-length": String(body.length),
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+      }));
+      stream.end(body);
+      context.transcript.add("h2-m9-wisp-recovery-complete");
       return;
     }
     if (requestPath === "/m5/redirect-cookie") {
@@ -4004,10 +4240,24 @@ function createWispServer(context) {
       expectedOrigin: context.hostOrigin,
       path: WISP_PATH,
       subprotocol: "wisp",
+      onAccepted: (acceptedSocket) => {
+        context.wispTransportSockets.add(acceptedSocket);
+        acceptedSocket.once("close", () => {
+          if (!context.wispTransportSockets.delete(acceptedSocket)) {
+            return;
+          }
+          incrementBoundedCounter(context, "wispTransportClosures");
+          context.transcript.add("wisp-transport-closed");
+        });
+      },
       onClosed: () => {
         if (relay) {
           relay.close();
         }
+      },
+      onTerminalCloseTimeout: () => {
+        incrementBoundedCounter(context, "wispTransportCloseTimeouts");
+        context.transcript.add("wisp-transport-close-timeout");
       },
       onWritable: () => relay?.writable(),
       onMessage: (message) => relay?.receive(message),
@@ -4016,12 +4266,16 @@ function createWispServer(context) {
       context.transcript.add("wisp-upgrade-rejected");
       return;
     }
+    if (peer.closed) {
+      return;
+    }
     relay = new WispRelay(peer, context, () => context.relays.delete(relay));
     context.relays.add(relay);
   });
-  // Upgraded sockets leave HTTP's normal keep-alive accounting. Keep explicit
-  // ownership so a client that receives a close frame but never sends its TCP
-  // FIN cannot make the fixture or a browser smoke wait indefinitely.
+  // Keep raw server connections explicit for fixture shutdown. The distinct
+  // |wispTransportSockets| set above contains only accepted upgrades, so the
+  // status endpoint's own short-lived HTTP connection cannot masquerade as a
+  // live WISP transport.
   server.on("connection", (socket) => {
     context.wispSockets.add(socket);
     socket.once("close", () => context.wispSockets.delete(socket));
@@ -4099,6 +4353,9 @@ async function start(options) {
       localGateway443StreamsOpened: 0,
       localGatewayBlockedPortAttempts: 0,
       m6UiRequests: 0,
+      m9WispRecoveryCompleteRequests: 0,
+      m9WispRecoveryRequests: 0,
+      m9WispRecoveryScriptRequests: 0,
       multiplexBarrierReleases: 0,
       multiplexBarrierTimeouts: 0,
       multiplexBothStreamsOpen: false,
@@ -4158,10 +4415,13 @@ async function start(options) {
       udpPackets: 0,
       webSocketEchoes: 0,
       wispSessions: 0,
+      wispTransportClosures: 0,
+      wispTransportCloseTimeouts: 0,
     },
     tlsFailurePort: 0,
     tlsFailureSockets: new Set(),
     transcript: new Transcript(),
+    wispTransportSockets: new Set(),
     wispTargetStreamsBySourcePort: new Map(),
     wispSockets: new Set(),
   };

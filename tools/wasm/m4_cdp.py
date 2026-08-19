@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
 import hashlib
 import json
+import math
 import os
+import select
 import socket
 import time
 from typing import Any
@@ -18,6 +21,9 @@ from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 from m0_common import M0Error
+
+
+MAX_PENDING_EVENTS = 256
 
 
 def unused_loopback_port() -> int:
@@ -81,6 +87,7 @@ class DevToolsClient:
         ):
             raise M0Error("DevTools returned an invalid WebSocket handshake")
         self._next_id = 0
+        self._pending_events: deque[dict[str, Any]] = deque()
 
     def _read_headers(self) -> bytes:
         received = bytearray()
@@ -158,13 +165,78 @@ class DevToolsClient:
         while True:
             response = self._receive()
             if response.get("id") != self._next_id:
-                continue
+                if "method" in response:
+                    self._queue_event(response)
+                    continue
+                raise M0Error("DevTools returned an unexpected response")
+            if "method" in response:
+                raise M0Error("DevTools returned an event with a command ID")
+            if "id" not in response:
+                raise M0Error("DevTools returned a response without a command ID")
             if "error" in response:
                 raise M0Error(f"DevTools {method} failed: {response['error']!r}")
             result = response.get("result")
             if not isinstance(result, dict):
                 raise M0Error(f"DevTools {method} returned an invalid result")
             return result
+
+    def _queue_event(self, event: dict[str, Any]) -> None:
+        method = event.get("method")
+        if not isinstance(method, str) or not method:
+            raise M0Error("DevTools returned an invalid event")
+        if len(self._pending_events) >= MAX_PENDING_EVENTS:
+            raise M0Error("DevTools event queue exceeded its bounded limit")
+        self._pending_events.append(event)
+
+    def next_event(self, idle_timeout_seconds: float) -> dict[str, Any] | None:
+        """Return one queued event after an idle readiness wait.
+
+        Command responses continue to be matched by ``call``. This small
+        bounded queue exists for host runners that must wait for a console or
+        lifecycle signal before issuing their next trusted input event; it is
+        deliberately not a generic runtime-command facility.
+
+        ``idle_timeout_seconds`` bounds only waiting for the socket to become
+        readable. Once a frame prefix is readable, the normal full-frame
+        reader keeps its existing socket deadline and either returns one whole
+        message or fails closed. It must not abandon a partially consumed
+        frame merely to emulate a per-frame deadline.
+        """
+
+        if (
+            not isinstance(idle_timeout_seconds, (int, float))
+            or isinstance(idle_timeout_seconds, bool)
+            or not math.isfinite(float(idle_timeout_seconds))
+            or idle_timeout_seconds < 0
+        ):
+            raise M0Error("DevTools event idle readiness timeout is invalid")
+        if self._pending_events:
+            return self._pending_events.popleft()
+        try:
+            readable, _, _ = select.select(
+                [self._connection], [], [], float(idle_timeout_seconds)
+            )
+        except (OSError, ValueError) as exc:
+            raise M0Error("DevTools event readiness wait failed") from exc
+        if not readable:
+            return None
+        # Do not mutate the socket timeout around _receive(): a timeout after
+        # consuming only a frame prefix would discard those bytes and corrupt
+        # the next WebSocket message. select() gates the idle wait, then the
+        # ordinary full-frame reader either succeeds or fails closed.
+        try:
+            response = self._receive()
+        except socket.timeout as exc:
+            # A timeout can happen after _read_exact() consumed a frame
+            # prefix. The connection is no longer safely reusable; close it
+            # before exposing the terminal error to a caller that might catch
+            # it and continue its observation loop.
+            self.close()
+            raise M0Error("DevTools event frame did not complete") from exc
+        if "method" not in response:
+            raise M0Error("DevTools returned a command response while waiting for an event")
+        self._queue_event(response)
+        return self._pending_events.popleft()
 
     def evaluate(self, expression: str) -> Any:
         result = self.call(

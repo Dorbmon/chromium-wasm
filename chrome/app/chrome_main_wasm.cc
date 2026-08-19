@@ -46,6 +46,8 @@ constexpr char kWasmBrowserHostContinuousFlowSmokeSwitch[] =
     "wasm-browser-host-continuous-flow-smoke";
 constexpr char kWasmBrowserHostContinuousFlowRestartSmokeSwitch[] =
     "wasm-browser-host-continuous-flow-restart-smoke";
+constexpr char kWasmBrowserM9WispRecoverySmokeSwitch[] =
+    "wasm-browser-m9-wisp-recovery-smoke";
 #endif
 
 }  // namespace
@@ -74,7 +76,9 @@ extern "C" int ChromeMain(int argc, const char** argv) {
         controlled_test_command_line->HasSwitch(
             kWasmBrowserHostContinuousFlowSmokeSwitch) ||
         controlled_test_command_line->HasSwitch(
-            kWasmBrowserHostContinuousFlowRestartSmokeSwitch)) {
+            kWasmBrowserHostContinuousFlowRestartSmokeSwitch) ||
+        controlled_test_command_line->HasSwitch(
+            kWasmBrowserM9WispRecoverySmokeSwitch)) {
       // Install only for dedicated controlled-HTTPS test routes, after Chrome
       // initialized its command line but before ContentMain can construct the
       // Network Service and its certificate verifier. The normal Wasm Chrome
