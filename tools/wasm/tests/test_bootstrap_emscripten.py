@@ -53,6 +53,48 @@ EXPECTED_ENTRY_POINT_OUTPUTS = (
     "test/runner",
 )
 
+EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
+    (
+        "src/lib/libdylink.js",
+        "src/lib/libsigs.js",
+        "src/lib/libsyscall.js",
+        "src/lib/libwasmfs.js",
+        "src/lib/libwasmfs_node.js",
+        "src/lib/libwasmfs_opfs.js",
+        "src/settings.js",
+        "system/include/emscripten/wasmfs.h",
+        "system/include/emscripten/wasmfs_terminal_drain.h",
+        "system/lib/libc/emscripten_libc_stubs.c",
+        "system/lib/libc/emscripten_mmap.c",
+        "system/lib/wasmfs/backend.h",
+        "system/lib/wasmfs/backends/fetch_backend.cpp",
+        "system/lib/wasmfs/backends/ignore_case_backend.cpp",
+        "system/lib/wasmfs/backends/js_file_backend.cpp",
+        "system/lib/wasmfs/backends/memory_backend.cpp",
+        "system/lib/wasmfs/backends/node_backend.cpp",
+        "system/lib/wasmfs/backends/opfs_backend.cpp",
+        "system/lib/wasmfs/backends/opfs_backend.h",
+        "system/lib/wasmfs/emscripten.cpp",
+        "system/lib/wasmfs/file.cpp",
+        "system/lib/wasmfs/file.h",
+        "system/lib/wasmfs/file_table.cpp",
+        "system/lib/wasmfs/file_table.h",
+        "system/lib/wasmfs/js_api.cpp",
+        "system/lib/wasmfs/js_impl_backend.h",
+        "system/lib/wasmfs/pipe_backend.h",
+        "system/lib/wasmfs/syscalls.cpp",
+        "system/lib/wasmfs/wasmfs.cpp",
+        "system/lib/wasmfs/wasmfs.h",
+        "tools/emscripten.py",
+        "tools/link.py",
+        "tools/system_libs.py",
+    )
+)
+
+EXPECTED_M7_OPFS_SOURCE_FILE_HASHES_SHA256 = (
+    "f1708df6a10b7bf04461a80f9c35d46bc9aca437efa653a5e1b865aed95aba96"
+)
+
 
 def run_git(cwd: Path, *arguments: str) -> str:
     return subprocess.run(
@@ -355,7 +397,7 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
             EXPECTED_ENTRY_POINT_OUTPUTS,
         )
 
-    def test_release_manifest_pins_default_cxx_launcher(self) -> None:
+    def test_manifest_pins_default_cxx_launcher(self) -> None:
         emscripten = load_manifest()["emscripten"]
         self.assertIsInstance(emscripten, dict)
         self.assertEqual(
@@ -367,24 +409,38 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
             "e71423cc294141b49ef763e9d581232315dd5568ae75e595441072861574645b",
         )
 
-    def test_release_manifest_has_no_source_fork_pin(self) -> None:
+    def test_manifest_pins_m7_opfs_source_fork(self) -> None:
         emscripten = load_manifest()["emscripten"]
         self.assertIsInstance(emscripten, dict)
-        self.assertFalse(
-            set(emscripten) & bootstrap.EMSCRIPTEN_SOURCE_PIN_OPTIONAL_FIELDS
+        source_pin = bootstrap.emscripten_source_pin(emscripten)
+        self.assertIsNotNone(source_pin)
+        assert source_pin is not None
+        self.assertEqual(
+            source_pin["remote"],
+            "https://github.com/Dorbmon/REmscripten.git",
         )
-        self.assertIsNone(bootstrap.emscripten_source_pin(emscripten))
-        with mock.patch.object(
-            bootstrap, "install_emscripten_source_pin"
-        ) as install:
-            result = bootstrap.ensure_emscripten_source_pin(
-                emscripten,
-                Path("unused-emsdk"),
-                Path(sys.executable),
-                install=True,
-            )
-        self.assertIsNone(result)
-        install.assert_not_called()
+        self.assertEqual(
+            source_pin["revision"],
+            "261555fc28f749c80eaa6b2e359f1dbca243b7aa",
+        )
+        self.assertEqual(source_pin["version"], "5.0.6-git")
+        self.assertEqual(
+            source_pin["npm_tree_sha256"],
+            "a8fa3d3fa1c47360b757c93af09e02fea4932f366367c706dd59b0c5af6dec50",
+        )
+        self.assertEqual(
+            set(source_pin["file_hashes"]), EXPECTED_M7_OPFS_SOURCE_FILES
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                json.dumps(
+                    source_pin["file_hashes"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            EXPECTED_M7_OPFS_SOURCE_FILE_HASHES_SHA256,
+        )
 
     def test_source_fork_fields_are_strict_and_all_or_none(self) -> None:
         revision = "a" * 40
