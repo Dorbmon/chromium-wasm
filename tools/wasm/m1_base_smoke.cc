@@ -367,13 +367,20 @@ void TestPathsAndFiles() {
                                          base::File::FLAG_READ |
                                          base::File::FLAG_WRITE);
   Require(lock_file.IsValid(), "lock_file_open");
+  errno = 0;
   Require(lock_file.Lock(base::File::LockMode::kShared) ==
-                  base::File::FILE_ERROR_INVALID_OPERATION &&
-              lock_file.Lock(base::File::LockMode::kExclusive) ==
-                  base::File::FILE_ERROR_INVALID_OPERATION &&
-              lock_file.Unlock() ==
-                  base::File::FILE_ERROR_INVALID_OPERATION,
-          "file_lock_not_explicitly_unsupported");
+                  base::File::FILE_ERROR_FAILED &&
+              errno == ENOTSUP,
+          "file_lock_shared_enotsup");
+  errno = 0;
+  Require(lock_file.Lock(base::File::LockMode::kExclusive) ==
+                  base::File::FILE_ERROR_FAILED &&
+              errno == ENOTSUP,
+          "file_lock_exclusive_enotsup");
+  errno = 0;
+  Require(lock_file.Unlock() == base::File::FILE_ERROR_FAILED &&
+              errno == ENOTSUP,
+          "file_unlock_enotsup");
 
   const base::PlatformFile closed_descriptor = lock_file.GetPlatformFile();
   Require(closed_descriptor != base::kInvalidPlatformFile,
@@ -1287,7 +1294,7 @@ int main() {
       "file_zero_fill=ok file_flush=memfs_only file_reopen=ok "
       "file_rename_stat=ok "
       "directories=ok enumeration=ok file_errors=ok "
-      "parent_traversal=denied file_lock=invalid_operation "
+      "parent_traversal=denied file_lock=unsupported_backend "
       "closed_fd=ebadf cleanup=ok process_identity=ok "
       "process_handle=ok unique_proc_id=ok process_current=ok "
       "process_duplicate=ok process_release_close=ok "

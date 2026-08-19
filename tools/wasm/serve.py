@@ -99,7 +99,7 @@ BASE_RESULT_VALUES = {
     "enumeration": "ok",
     "file_errors": "ok",
     "parent_traversal": "denied",
-    "file_lock": "invalid_operation",
+    "file_lock": "unsupported_backend",
     "closed_fd": "ebadf",
     "cleanup": "ok",
     "process_identity": "ok",
