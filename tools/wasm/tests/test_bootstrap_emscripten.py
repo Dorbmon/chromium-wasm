@@ -56,6 +56,7 @@ EXPECTED_ENTRY_POINT_OUTPUTS = (
 EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
     (
         "src/lib/libdylink.js",
+        "src/lib/libpthread.js",
         "src/lib/libsigs.js",
         "src/lib/libsyscall.js",
         "src/lib/libwasmfs.js",
@@ -85,6 +86,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
         "system/lib/wasmfs/paths.cpp",
         "system/lib/wasmfs/pipe_backend.h",
         "system/lib/wasmfs/syscalls.cpp",
+        "system/lib/wasmfs/thread_utils.h",
         "system/lib/wasmfs/wasmfs.cpp",
         "system/lib/wasmfs/wasmfs.h",
         "tools/emscripten.py",
@@ -94,7 +96,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
 )
 
 EXPECTED_M7_OPFS_SOURCE_FILE_HASHES_SHA256 = (
-    "8872c5ff73f0c41532f552bb807e11be13d82bd3ad0eba4d96c990c96eb1354d"
+    "237c24a8929b68ec68f4944b19f61b6d078515baa93ba60ab004a57a51d1dcc5"
 )
 
 
@@ -423,7 +425,7 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
         )
         self.assertEqual(
             source_pin["revision"],
-            "4abc6db69c29fd3c3923eccdcf3422f6c72f2af8",
+            "c29be46c0c37efd5e58c9e6ef441321a7ee84e98",
         )
         self.assertEqual(source_pin["version"], "5.0.6-git")
         self.assertEqual(
