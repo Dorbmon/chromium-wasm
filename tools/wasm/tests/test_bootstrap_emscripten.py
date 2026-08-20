@@ -63,6 +63,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
         "src/lib/libwasmfs_opfs.js",
         "src/settings.js",
         "system/include/emscripten/wasmfs.h",
+        "system/include/emscripten/wasmfs_opfs_profile_drain.h",
         "system/include/emscripten/wasmfs_terminal_drain.h",
         "system/lib/libc/emscripten_libc_stubs.c",
         "system/lib/libc/emscripten_mmap.c",
@@ -81,6 +82,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
         "system/lib/wasmfs/file_table.h",
         "system/lib/wasmfs/js_api.cpp",
         "system/lib/wasmfs/js_impl_backend.h",
+        "system/lib/wasmfs/paths.cpp",
         "system/lib/wasmfs/pipe_backend.h",
         "system/lib/wasmfs/syscalls.cpp",
         "system/lib/wasmfs/wasmfs.cpp",
@@ -92,7 +94,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
 )
 
 EXPECTED_M7_OPFS_SOURCE_FILE_HASHES_SHA256 = (
-    "f1708df6a10b7bf04461a80f9c35d46bc9aca437efa653a5e1b865aed95aba96"
+    "8872c5ff73f0c41532f552bb807e11be13d82bd3ad0eba4d96c990c96eb1354d"
 )
 
 
@@ -421,7 +423,7 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
         )
         self.assertEqual(
             source_pin["revision"],
-            "261555fc28f749c80eaa6b2e359f1dbca243b7aa",
+            "4abc6db69c29fd3c3923eccdcf3422f6c72f2af8",
         )
         self.assertEqual(source_pin["version"], "5.0.6-git")
         self.assertEqual(
