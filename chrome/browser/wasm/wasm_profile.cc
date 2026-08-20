@@ -4,24 +4,33 @@
 
 #include "chrome/browser/wasm/wasm_profile.h"
 
+#include <cstddef>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/check.h"
+#include "base/files/file_util.h"
+#include "base/functional/bind.h"
+#include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "base/uuid.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
+#include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/dependency_manager.h"
 #include "components/keyed_service/core/simple_dependency_manager.h"
 #include "components/keyed_service/core/simple_key_map.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/prefs/in_memory_pref_store.h"
+#include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/pref_service_factory.h"
 #include "components/profile_metrics/browser_profile_type.h"
@@ -40,6 +49,45 @@ namespace {
 // DeveloperToolsPolicyHandler::Availability::kDisallowed, kept local to avoid
 // pulling the desktop policy-factory graph into the bootstrap profile.
 constexpr int kDevToolsAvailabilityDisallowed = 2;
+
+// This private, non-default user preference creates a fresh pending write for
+// every WasmProfile construction. It is never surfaced to the host or UI; its
+// sole purpose is to ensure the M7 shutdown fence proves an actual Preferences
+// write instead of accepting an untouched default dictionary.
+constexpr char kWasmPersistentPrefsFenceUuid[] =
+    "wasm.profile.persistent_prefs_fence_uuid";
+
+// A Preferences file contains only the source-selected Wasm profile's user
+// preferences. Bound its verification read so a malformed or unexpectedly
+// large file cannot turn shutdown into unbounded profile I/O.
+constexpr size_t kMaxPersistentPrefsFileSize = 1024 * 1024;
+
+bool VerifyPersistentPrefsOnFileSequence(
+    const base::FilePath& preferences_path,
+    const base::DictValue& expected_values) {
+  std::string serialized_preferences;
+  if (!base::ReadFileToStringWithMaxSize(preferences_path,
+                                         &serialized_preferences,
+                                         kMaxPersistentPrefsFileSize)) {
+    return false;
+  }
+
+  std::optional<base::DictValue> persisted_values = base::JSONReader::ReadDict(
+      serialized_preferences, base::JSON_PARSE_RFC);
+  return persisted_values && *persisted_values == expected_values;
+}
+
+void VerifyPersistentPrefsAndReplyOnFileSequence(
+    base::FilePath preferences_path,
+    base::DictValue expected_values,
+    base::OnceCallback<void(bool success)> reply) {
+  // JsonPrefStore invokes CommitPendingWrite's synchronous callback on its
+  // file runner after all already-queued writes. Keep the bounded readback on
+  // that same sequence; neither operation blocks Chrome's UI sequence.
+  const bool success =
+      VerifyPersistentPrefsOnFileSequence(preferences_path, expected_values);
+  std::move(reply).Run(success);
+}
 
 }  // namespace
 
@@ -61,16 +109,28 @@ WasmProfile::WasmProfile(base::FilePath profile_path)
   Profile::RegisterProfilePrefs(pref_registry_.get());
   pref_registry_->RegisterIntegerPref(prefs::kDevToolsAvailability,
                                       kDevToolsAvailabilityDisallowed);
+  pref_registry_->RegisterStringPref(kWasmPersistentPrefsFenceUuid,
+                                     std::string());
   SimpleDependencyManager::GetInstance()->RegisterProfilePrefsForServices(
       pref_registry_.get());
   BrowserContextDependencyManager::GetInstance()
       ->RegisterProfilePrefsForServices(pref_registry_.get());
 
   PrefServiceFactory pref_service_factory;
-  pref_service_factory.set_user_prefs(
-      base::MakeRefCounted<InMemoryPrefStore>());
+  json_pref_store_ = base::MakeRefCounted<JsonPrefStore>(
+      profile_path_.Append(chrome::kPreferencesFilename), nullptr,
+      io_task_runner_);
+  pref_service_factory.set_user_prefs(json_pref_store_);
   prefs_ = pref_service_factory.Create(pref_registry_);
   CHECK(prefs_);
+
+  // Do not print or expose this UUID: it is only a private non-default value
+  // that forces an independently observable JsonPrefStore write during every
+  // M7 profile shutdown.
+  const std::string persistence_fence_uuid =
+      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  CHECK(!persistence_fence_uuid.empty());
+  prefs_->SetString(kWasmPersistentPrefsFenceUuid, persistence_fence_uuid);
 
   key_ = std::make_unique<ProfileKey>(profile_path_);
   key_->SetPrefs(prefs_.get());
@@ -122,6 +182,60 @@ void WasmProfile::Shutdown() {
       SimpleDependencyManager::GetInstance(), key_.get());
   SimpleKeyMap::GetInstance()->Dissociate(this);
   ShutdownStoragePartitions();
+}
+
+void WasmProfile::BeginPersistentPrefsShutdownFence(
+    base::OnceCallback<void(bool success)> completion) {
+  CHECK(shutdown_);
+  CHECK(completion);
+  CHECK_EQ(persistent_prefs_shutdown_fence_state_,
+           PersistentPrefsShutdownFenceState::kNotStarted);
+  CHECK(prefs_);
+  CHECK(json_pref_store_);
+
+  persistent_prefs_shutdown_fence_state_ =
+      PersistentPrefsShutdownFenceState::kPending;
+
+  // Bind the result back to the UI sequence before handing it to the
+  // JsonPrefStore file runner. WeakPtr is only dereferenced there; the file
+  // runner merely owns the completion callback while it verifies the file.
+  auto complete_on_ui = base::BindPostTask(
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      base::BindOnce(&WasmProfile::OnPersistentPrefsShutdownFenceComplete,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(completion)));
+  prefs_->CommitPendingWrite(
+      base::OnceClosure(),
+      base::BindOnce(&VerifyPersistentPrefsAndReplyOnFileSequence,
+                     profile_path_.Append(chrome::kPreferencesFilename),
+                     json_pref_store_->GetValues(), std::move(complete_on_ui)));
+}
+
+bool WasmProfile::IsPersistentPrefsShutdownFencePending() const {
+  return persistent_prefs_shutdown_fence_state_ ==
+         PersistentPrefsShutdownFenceState::kPending;
+}
+
+bool WasmProfile::HasPersistentPrefsShutdownFenceCompleted() const {
+  return persistent_prefs_shutdown_fence_state_ ==
+             PersistentPrefsShutdownFenceState::kSucceeded ||
+         persistent_prefs_shutdown_fence_state_ ==
+             PersistentPrefsShutdownFenceState::kFailed;
+}
+
+bool WasmProfile::DidPersistentPrefsShutdownFenceSucceed() const {
+  return persistent_prefs_shutdown_fence_state_ ==
+         PersistentPrefsShutdownFenceState::kSucceeded;
+}
+
+void WasmProfile::OnPersistentPrefsShutdownFenceComplete(
+    base::OnceCallback<void(bool success)> completion,
+    bool success) {
+  CHECK_EQ(persistent_prefs_shutdown_fence_state_,
+           PersistentPrefsShutdownFenceState::kPending);
+  persistent_prefs_shutdown_fence_state_ =
+      success ? PersistentPrefsShutdownFenceState::kSucceeded
+              : PersistentPrefsShutdownFenceState::kFailed;
+  std::move(completion).Run(success);
 }
 
 base::WeakPtr<WasmSessionNavigationJournal>

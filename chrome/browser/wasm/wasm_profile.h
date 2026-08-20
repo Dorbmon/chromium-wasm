@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/files/file_path.h"
+#include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -20,6 +21,7 @@
 class ChromeZoomLevelPrefs;
 class ExtensionSpecialStoragePolicy;
 class GURL;
+class JsonPrefStore;
 class PrefService;
 class ProfileKey;
 class WasmSessionNavigationJournal;
@@ -73,10 +75,10 @@ class PrefRegistrySyncable;
 
 // The Stage-A Chrome profile for the WebAssembly browser process.
 //
-// Its path resides in Chrome's leased OPFS WasmFS mount, but preferences use a
-// real in-memory PersistentPrefStore. This class does not claim durable
-// preferences, databases, sessions, or profile recovery until those
-// Chrome-owned stores have individually migrated and been proven.
+// Its path resides in Chrome's leased OPFS WasmFS mount. User preferences use
+// a real JsonPrefStore at the canonical Preferences path; the Chrome-process
+// Local State and all other profile stores remain independently scoped until
+// they have their own durable migration and recovery evidence.
 class WasmProfile final : public Profile {
  public:
   explicit WasmProfile(base::FilePath profile_path);
@@ -88,6 +90,17 @@ class WasmProfile final : public Profile {
   // profile has been destroyed. It is idempotent so main-parts teardown can
   // call it before ownership is released.
   void Shutdown();
+
+  // Starts the final user-preference persistence fence after Shutdown(). It
+  // writes pending preferences, reads the bounded Preferences file back on the
+  // JsonPrefStore file sequence, and compares the parsed strict JSON dictionary
+  // with a UI-sequence snapshot. |completion| runs exactly once on the UI
+  // sequence while this profile remains alive.
+  void BeginPersistentPrefsShutdownFence(
+      base::OnceCallback<void(bool success)> completion);
+  bool IsPersistentPrefsShutdownFencePending() const;
+  bool HasPersistentPrefsShutdownFenceCompleted() const;
+  bool DidPersistentPrefsShutdownFenceSucceed() const;
 
   // The M6 history bootstrap reads this process-local journal through a weak
   // reference. It is intentionally not HistoryService and becomes inert
@@ -179,19 +192,34 @@ class WasmProfile final : public Profile {
   bool IsSignedIn() override;
 
  private:
+  enum class PersistentPrefsShutdownFenceState {
+    kNotStarted,
+    kPending,
+    kSucceeded,
+    kFailed,
+  };
+
+  void OnPersistentPrefsShutdownFenceComplete(
+      base::OnceCallback<void(bool success)> completion,
+      bool success);
+
   base::FilePath profile_path_;
   base::FilePath last_selected_directory_;
   base::Time creation_time_;
   base::Time start_time_;
 
-  // Profile I/O must not run on the UI/application sequence. The runner is
-  // shutdown-blocking so storage cleanup completes before the Wasm module
-  // tears down its worker pool.
+  // Chrome's UI/application sequence runs on the application pthread, never
+  // the host browser's JavaScript main thread. PrefServiceFactory's initial
+  // JsonPrefStore read remains synchronous there to preserve Profile
+  // construction ordering; this shutdown-blocking runner is for asynchronous
+  // writes and readback before the Wasm module tears down its worker pool.
   scoped_refptr<base::SequencedTaskRunner> io_task_runner_;
 
-  // Keep the registry alive for the PrefService. The in-memory store is owned
-  // by |prefs_| and is deliberately discarded at shutdown.
+  // Keep the registry and the concrete user store alive for PrefService. The
+  // JsonPrefStore uses |io_task_runner_| for its asynchronous write and
+  // readback fence; Local State remains outside this profile and in-memory.
   scoped_refptr<user_prefs::PrefRegistrySyncable> pref_registry_;
+  scoped_refptr<JsonPrefStore> json_pref_store_;
   std::unique_ptr<PrefService> prefs_;
 
   // ProfileKey is associated with this BrowserContext for the lifetime of the
@@ -204,7 +232,10 @@ class WasmProfile final : public Profile {
   std::unique_ptr<WasmSessionNavigationJournal> session_navigation_journal_;
 
   bool shutdown_ = false;
+  PersistentPrefsShutdownFenceState persistent_prefs_shutdown_fence_state_ =
+      PersistentPrefsShutdownFenceState::kNotStarted;
   uint32_t primary_main_frame_navigations_ = 0;
+  base::WeakPtrFactory<WasmProfile> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_WASM_WASM_PROFILE_H_

@@ -1820,10 +1820,11 @@ source_set("wasm_browser_process") {
   ]
 }
 
-# A production Profile implementation with an explicitly volatile backing
-# store. It deliberately selects Profile and ProfileKey directly instead of
-# the desktop profiles/misc aggregate, which owns services not available in
-# the first Wasm Chrome browser process.
+# A production Profile implementation with a durable JsonPrefStore at its
+# leased OPFS path. It deliberately selects Profile and ProfileKey directly
+# instead of the desktop profiles/misc aggregate, which owns services not
+# available in the first Wasm Chrome browser process. Other Chrome-owned
+# stores, including process Local State, retain their independent lifecycles.
 source_set("wasm_profile") {
   sources = [
     "wasm_profile.cc",
@@ -1835,6 +1836,7 @@ source_set("wasm_profile") {
     "//base",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_key",
+    "//chrome/common:non_code_constants",
     "//chrome/common:pref_names",
     "//components/keyed_service/content",
     "//components/keyed_service/core",
@@ -1848,10 +1850,11 @@ source_set("wasm_profile") {
 }
 
 # This owns the one leased OPFS mount used by the Chrome profile path. It is
-# intentionally separate from WasmProfile: the current PrefService remains
-# in-memory until a later migration can provide durable Chrome-owned stores.
-# The owner exists now so its scoped backend transition follows profile-service
-# shutdown and the complete ContentMain teardown.
+# intentionally separate from WasmProfile: JsonPrefStore owns only the
+# profile's Preferences file, while other Chrome-owned stores migrate only
+# behind their own durable lifecycle gates. The owner exists so its scoped
+# backend transition follows profile-service shutdown and complete ContentMain
+# teardown.
 source_set("wasm_profile_storage") {
   public = [ "wasm_profile_storage.h" ]
 

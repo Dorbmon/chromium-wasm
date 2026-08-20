@@ -6,9 +6,9 @@
 """Contracts for Chrome's staged M7 OPFS profile-lifecycle integration.
 
 The first M7 slice mounts the canonical /profile root on a leased OPFS WasmFS
-backend and records a result-bearing scoped backend drain. It does not turn the
-current in-memory PrefService into durable profile evidence; later migrations
-must prove each Chrome-owned persistent store independently.
+backend and records a result-bearing scoped backend drain. The profile's
+Preferences file is the first Chrome-owned durable store; later migrations
+must prove every other persistent store independently.
 """
 
 from __future__ import annotations
@@ -394,20 +394,21 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         self.chrome_build = source("chrome/BUILD.gn")
         self.wasm_tools_build = source("tools/wasm/BUILD.gn")
 
-    def test_profile_keeps_its_pref_store_explicitly_in_memory(self) -> None:
-        """The mounted path alone must not be mistaken for durable prefs."""
+    def test_profile_owns_a_durable_json_pref_store(self) -> None:
+        """Preferences use the leased profile path, not an in-memory store."""
 
         for phrase in (
             "leased OPFS WasmFS mount",
-            "in-memory PersistentPrefStore",
-            "does not claim durable\n// preferences, databases, sessions, or profile recovery",
+            "real JsonPrefStore",
+            "Local State and all other profile stores remain independently scoped",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.profile_header)
 
         self.assertIn(
-            '#include "components/prefs/in_memory_pref_store.h"', self.profile
+            '#include "components/prefs/json_pref_store.h"', self.profile
         )
+        self.assertNotIn("InMemoryPrefStore", self.profile)
         constructor = re.search(
             r"WasmProfile::WasmProfile\(base::FilePath profile_path\)",
             self.profile,
@@ -420,10 +421,151 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             constructor.end() + constructor_opening.end() - 1,
             "WasmProfile constructor",
         )
-        self.assertRegex(
-            constructor_body,
-            r"pref_service_factory\.set_user_prefs\(\s*"
-            r"base::MakeRefCounted<InMemoryPrefStore>\(\)\s*\);",
+        for required in (
+            "json_pref_store_ = base::MakeRefCounted<JsonPrefStore>(",
+            "profile_path_.Append(chrome::kPreferencesFilename)",
+            "io_task_runner_",
+            "pref_service_factory.set_user_prefs(json_pref_store_);",
+            "pref_registry_->RegisterStringPref(kWasmPersistentPrefsFenceUuid,",
+            "base::Uuid::GenerateRandomV4().AsLowercaseString()",
+            "prefs_->SetString(kWasmPersistentPrefsFenceUuid,",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, constructor_body)
+
+        self.assertLess(
+            constructor_body.index("json_pref_store_ ="),
+            constructor_body.index("pref_service_factory.set_user_prefs("),
+        )
+        self.assertLess(
+            constructor_body.index("pref_service_factory.set_user_prefs("),
+            constructor_body.index("prefs_ = pref_service_factory.Create("),
+        )
+        self.assertLess(
+            constructor_body.index("prefs_ = pref_service_factory.Create("),
+            constructor_body.index("prefs_->SetString(kWasmPersistentPrefsFenceUuid,"),
+        )
+
+    def test_preferences_shutdown_fence_is_async_and_strict(self) -> None:
+        """A completed write must round-trip on the JsonPrefStore file runner."""
+
+        fence = re.search(
+            r"void WasmProfile::BeginPersistentPrefsShutdownFence\(\s*"
+            r"base::OnceCallback<void\(bool success\)> completion\)\s*\{",
+            self.profile,
+        )
+        self.assertIsNotNone(fence)
+        fence_body = _balanced_body(
+            self.profile,
+            self.profile.find("{", fence.start()),
+            "WasmProfile::BeginPersistentPrefsShutdownFence",
+        )
+        for required in (
+            "CHECK(shutdown_)",
+            "PersistentPrefsShutdownFenceState::kNotStarted",
+            "PersistentPrefsShutdownFenceState::kPending",
+            "base::BindPostTask(",
+            "base::SequencedTaskRunner::GetCurrentDefault()",
+            "prefs_->CommitPendingWrite(",
+            "base::OnceClosure()",
+            "json_pref_store_->GetValues()",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, fence_body)
+        for forbidden in ("base::RunLoop", "WaitableEvent", ".Wait("):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, fence_body)
+
+        verify = re.search(
+            r"void VerifyPersistentPrefsAndReplyOnFileSequence\(", self.profile
+        )
+        self.assertIsNotNone(verify)
+        verify_body = _balanced_body(
+            self.profile,
+            self.profile.find("{", verify.start()),
+            "VerifyPersistentPrefsAndReplyOnFileSequence",
+        )
+        self.assertIn("VerifyPersistentPrefsOnFileSequence", verify_body)
+        self.assertIn("std::move(reply).Run(success);", verify_body)
+
+        readback = re.search(
+            r"bool VerifyPersistentPrefsOnFileSequence\(", self.profile
+        )
+        self.assertIsNotNone(readback)
+        readback_body = _balanced_body(
+            self.profile,
+            self.profile.find("{", readback.start()),
+            "VerifyPersistentPrefsOnFileSequence",
+        )
+        for required in (
+            "base::ReadFileToStringWithMaxSize(",
+            "kMaxPersistentPrefsFileSize",
+            "base::JSONReader::ReadDict(",
+            "base::JSON_PARSE_RFC",
+            "*persisted_values == expected_values",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, readback_body)
+
+    def test_main_parts_waits_for_the_fence_and_fails_closed(self) -> None:
+        """No normal storage handoff may bypass a failed preference readback."""
+
+        finish = re.search(
+            r"void WasmBrowserMainParts::FinishShutdown\(\)\s*\{",
+            self.main_parts,
+        )
+        self.assertIsNotNone(finish)
+        finish_body = _balanced_body(
+            self.main_parts,
+            self.main_parts.find("{", finish.start()),
+            "WasmBrowserMainParts::FinishShutdown",
+        )
+        for required in (
+            "profile_->Shutdown();",
+            "HasPersistentPrefsShutdownFenceCompleted()",
+            "IsPersistentPrefsShutdownFencePending()",
+            "BeginPersistentPrefsShutdownFence(",
+            "weak_ptr_factory_.GetWeakPtr()",
+            "main_parts->FinishShutdown();",
+            "DidPersistentPrefsShutdownFenceSucceed()",
+            "profile_.reset();",
+            "chrome::NotifyWasmProfileStorageProfileShutdown()",
+            "main_message_loop_quit_closure_.Run();",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, finish_body)
+        self.assertLess(
+            finish_body.index("BeginPersistentPrefsShutdownFence("),
+            finish_body.index("main_message_loop_quit_closure_.Run();"),
+        )
+        self.assertLess(
+            finish_body.index("profile_.reset();"),
+            finish_body.index("chrome::NotifyWasmProfileStorageProfileShutdown()"),
+        )
+        self.assertLess(
+            finish_body.index("chrome::NotifyWasmProfileStorageProfileShutdown()"),
+            finish_body.index("main_message_loop_quit_closure_.Run();"),
+        )
+        self.assertEqual(
+            1, finish_body.count("chrome::NotifyWasmProfileStorageProfileShutdown()")
+        )
+        self.assertEqual(1, finish_body.count("profile_.reset();"))
+
+        foundation = re.search(
+            r"void WasmBrowserMainParts::ShutdownFoundation\(\)\s*\{",
+            self.main_parts,
+        )
+        self.assertIsNotNone(foundation)
+        foundation_body = _balanced_body(
+            self.main_parts,
+            self.main_parts.find("{", foundation.start()),
+            "WasmBrowserMainParts::ShutdownFoundation",
+        )
+        self.assertIn("profile_->Shutdown();", foundation_body)
+        self.assertIn("neither resetting |profile_| nor notifying storage", foundation_body)
+        self.assertNotIn("profile_.reset();", foundation_body)
+        self.assertNotIn(
+            "NotifyWasmProfileStorageProfileShutdown", foundation_body
         )
 
     def test_gn_helpers_require_addition_and_unconditional_testonly(self) -> None:
@@ -528,6 +670,7 @@ executable("m7_wasmfs_conditional_testonly") {
         )
         self.assertIn("wasm_profile_storage.cc", chrome_profile_storage)
         self.assertIn("wasm_profile_storage.h", chrome_profile_storage)
+        self.assertIn('"//chrome/common:non_code_constants",', chrome_profile)
         for label, target in (
             ("chrome_wasm assets", chrome_assets),
             ("WasmProfile source set", chrome_profile),

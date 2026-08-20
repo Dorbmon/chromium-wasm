@@ -849,6 +849,56 @@ void WasmBrowserMainParts::FinishShutdown() {
   CHECK(shutdown_requested_);
   CHECK(!browser_lifecycle_);
   CHECK(!browser_window_lifecycle_);
+
+  if (profile_) {
+    // Browser/Core destruction completed before this method can run. Shut the
+    // profile's keyed services down first, then keep the UI loop alive until
+    // the JsonPrefStore has committed and strictly read back Preferences on
+    // its file sequence. Do not use a nested RunLoop or block this sequence.
+    profile_->Shutdown();
+    if (!profile_->HasPersistentPrefsShutdownFenceCompleted()) {
+      if (!profile_->IsPersistentPrefsShutdownFencePending()) {
+        profile_->BeginPersistentPrefsShutdownFence(base::BindOnce(
+            [](base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
+              if (!main_parts) {
+                return;
+              }
+              if (!success) {
+                LOG(ERROR) << "chrome_wasm Preferences persistence fence "
+                              "failed";
+              }
+              // Re-enter only after the UI-sequence state changed to a
+              // terminal result. This is the sole path that may quit the UI
+              // loop after a live profile has begun shutdown.
+              main_parts->FinishShutdown();
+            },
+            weak_ptr_factory_.GetWeakPtr()));
+      }
+      return;
+    }
+    if (!profile_->DidPersistentPrefsShutdownFenceSucceed()) {
+      // ShutdownFoundation intentionally withholds the storage lifecycle
+      // acknowledgement. ChromeMain's scoped backend drain will then
+      // retain the lease and turn this otherwise normal Content result into a
+      // non-normal process exit.
+      LOG(ERROR) << "chrome_wasm will retain its OPFS profile lease after a "
+                    "failed Preferences persistence fence";
+    } else {
+      // Complete the Chrome-owned profile handoff before quitting the UI loop.
+      // PostMainMessageLoopRun must never be the first place that releases
+      // this Profile or acknowledges its storage lifecycle: ContentMain's
+      // outer scoped drain follows that hook and needs this ordering.
+      profile_.reset();
+      if (!chrome::NotifyWasmProfileStorageProfileShutdown()) {
+        // Do not synthesize a clean handoff. The outer scoped drain observes
+        // this missing acknowledgement, retains the lease, and changes the
+        // process result to non-normal.
+        LOG(ERROR) << "chrome_wasm could not complete its profile storage "
+                      "lifecycle";
+      }
+    }
+  }
+
   if (main_message_loop_quit_closure_) {
     main_message_loop_quit_closure_.Run();
   }
@@ -874,10 +924,12 @@ void WasmBrowserMainParts::ShutdownFoundation() {
   }
   if (profile_) {
     profile_->Shutdown();
-    profile_.reset();
-  }
-  if (!chrome::NotifyWasmProfileStorageProfileShutdown()) {
-    LOG(ERROR) << "chrome_wasm could not complete its profile storage lifecycle";
+    // A normal FinishShutdown() releases the profile and acknowledges storage
+    // before it quits the UI loop. Reaching this fallback means startup or
+    // persistence failed before that fence, so retain the leased OPFS backend
+    // by neither resetting |profile_| nor notifying storage.
+    LOG(ERROR) << "chrome_wasm retains its OPFS profile lease because "
+                  "Preferences did not pass their shutdown fence";
   }
   if (browser_process_) {
     browser_process_.reset();
