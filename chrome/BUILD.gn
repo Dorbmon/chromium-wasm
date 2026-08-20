@@ -507,6 +507,14 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ]
   }
 
+  # Chrome's owned profile root is mounted by WasmProfileStorage before
+  # ContentMain. Keep this link setting on both production and the dedicated
+  # controlled-HTTPS executable, which share that startup path; no standalone
+  # tools/wasm feasibility target is used to provide production storage.
+  config("chrome_wasm_profile_storage") {
+    ldflags = [ "-sWASMFS=1" ]
+  }
+
   # The source PEM also contains a test private key. This action deliberately
   # extracts only the CERTIFICATE block into a generated C++ include for the
   # dedicated M6 controlled-HTTPS executable; it is never an embedded runtime
@@ -535,13 +543,17 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "$root_out_dir/icudtl.dat",
       wasm_default_font_asset,
     ]
-    configs += [ ":chrome_wasm_assets" ]
+    configs += [
+      ":chrome_wasm_assets",
+      ":chrome_wasm_profile_storage",
+    ]
     deps = [
       ":wasm_packed_resources",
       "//chrome/app:generated_resources",
       "//chrome/browser/wasm:wasm_browser_views_platform",
       "//chrome/browser/wasm:wasm_chrome_main_delegate",
       "//chrome/browser/wasm:wasm_chrome_result_codes",
+      "//chrome/browser/wasm:wasm_profile_storage",
       "//chrome/common:buildflags",
       "//content/public/app",
       "//content/public/common",
@@ -570,7 +582,10 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "$root_out_dir/icudtl.dat",
       wasm_default_font_asset,
     ]
-    configs += [ ":chrome_wasm_assets" ]
+    configs += [
+      ":chrome_wasm_assets",
+      ":chrome_wasm_profile_storage",
+    ]
     defines = [ "CHROME_WASM_M6_CONTROLLED_HTTPS_TEST=1" ]
     deps = [
       ":generate_wasm_m6_test_root_cert",
@@ -581,6 +596,7 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "//chrome/browser/wasm:wasm_chrome_main_delegate",
       "//chrome/browser/wasm:wasm_chrome_result_codes",
       "//chrome/browser/wasm:wasm_m6_controlled_https_test_mode",
+      "//chrome/browser/wasm:wasm_profile_storage",
       "//chrome/common:buildflags",
       "//content/public/app",
       "//content/public/common",

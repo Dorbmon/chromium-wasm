@@ -12,6 +12,7 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_main.h"
 #include "chrome/browser/wasm/wasm_chrome_main_delegate.h"
+#include "chrome/browser/wasm/wasm_profile_storage.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "content/public/app/content_main.h"
 #include "content/public/common/content_switches.h"
@@ -58,6 +59,7 @@ const base::CommandLine& GetInitialBrowserCommandLine() {
 
 extern "C" int ChromeMain(int argc, const char** argv) {
   int result;
+  bool profile_storage_initialized = false;
   {
     WasmChromeMainDelegate chrome_main_delegate;
     content::ContentMainParams params(&chrome_main_delegate);
@@ -94,18 +96,50 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       GetInitialCommandLineStorage() = *command_line;
     }
 
-    // Set up PartitionAlloc's sampling TLS before Content creates its thread
-    // pool, matching Chrome's desktop entry point without selecting any native
-    // headless, crash-handler, or process-launch integration.
-    base::PoissonAllocationSampler::Init();
+    // This must happen before Content's delegate can register or resolve the
+    // /profile path. The leased backend has no in-memory or unleased fallback:
+    // a missing Web Locks/OPFS/pthread capability is a startup failure.
+    profile_storage_initialized = chrome::InitializeWasmProfileStorage();
+    if (!profile_storage_initialized) {
+      // A failed mount can still have acquired a lease. Its scoped cleanup
+      // runs after this delegate scope, while the non-normal result reaches
+      // the host through chromium_wasm_report_process_exit below.
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    } else {
+      // Set up PartitionAlloc's sampling TLS before Content creates its thread
+      // pool, matching Chrome's desktop entry point without selecting any
+      // native headless, crash-handler, or process-launch integration.
+      base::PoissonAllocationSampler::Init();
 
-    result = content::ContentMain(std::move(params));
+      result = content::ContentMain(std::move(params));
+    }
+  }
+
+  // BrowserMainParts records the profile-service shutdown boundary. Seal and
+  // drain the exact leased OPFS backend only after ContentMain and its
+  // delegate have both returned, when no Content teardown can issue another
+  // profile operation. A failed mount can also require this cleanup if
+  // leased-backend construction succeeded before mounting failed.
+  if (chrome::NeedsWasmProfileStorageBackendDrain()) {
+    const chrome::WasmProfileStorageDrainResult drain_result =
+        chrome::DrainAndReleaseWasmProfileStorageBackend();
+    if (!drain_result.Succeeded()) {
+      // A failed scoped drain retains its lease. If it reached the sealing
+      // transition, that backend remains sealed. Keep the structured result
+      // in the storage component and communicate the failure through the
+      // existing process-exit bridge.
+      if (IsNormalResultCode(static_cast<ResultCode>(result))) {
+        result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+      }
+    }
   }
 
   const int exit_code = IsNormalResultCode(static_cast<ResultCode>(result))
                             ? content::RESULT_CODE_NORMAL_EXIT
                             : result;
   if (chromium_wasm_report_process_exit(exit_code) != 1) {
+    // A scoped profile drain leaves standard error intact, unlike a
+    // process-global filesystem teardown.
     fputs("CHROMIUM_WASM: host rejected process-exit report\n", stderr);
     return exit_code == 0 ? 1 : exit_code;
   }

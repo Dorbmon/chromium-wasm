@@ -3,12 +3,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for keeping Chrome's M6 profile outside the M7 OPFS closure.
+"""Contracts for Chrome's staged M7 OPFS profile-lifecycle integration.
 
-These source-level checks deliberately describe the current boundary, rather
-than treating it as persistent-profile evidence.  A future M7 migration must
-replace them with a Chrome-owned, result-bearing profile I/O lifecycle and
-end-to-end persistence evidence before it enables WasmFS for Chrome.
+The first M7 slice mounts the canonical /profile root on a leased OPFS WasmFS
+backend and records a result-bearing scoped backend drain. It does not turn the
+current in-memory PrefService into durable profile evidence; later migrations
+must prove each Chrome-owned persistent store independently.
 """
 
 from __future__ import annotations
@@ -394,14 +394,13 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         self.chrome_build = source("chrome/BUILD.gn")
         self.wasm_tools_build = source("tools/wasm/BUILD.gn")
 
-    def test_profile_explicitly_uses_an_in_memory_pref_store(self) -> None:
-        """The current profile must not be mistaken for a durable profile."""
+    def test_profile_keeps_its_pref_store_explicitly_in_memory(self) -> None:
+        """The mounted path alone must not be mistaken for durable prefs."""
 
         for phrase in (
-            "ephemeral Wasm filesystem namespace during M6",
+            "leased OPFS WasmFS mount",
             "in-memory PersistentPrefStore",
-            "does not claim durable\n// profile storage",
-            "M7 replaces the backing with the OPFS implementation",
+            "does not claim durable\n// preferences, databases, sessions, or profile recovery",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.profile_header)
@@ -454,8 +453,8 @@ executable("m7_wasmfs_conditional_testonly") {
         self.assertEqual(1, len(_gn_config_assignments(conditional_tokens)))
         self.assertFalse(_set_testonly(conditional_tokens, conditional_scopes[0]))
 
-    def test_main_parts_labels_and_constructs_a_volatile_default_profile(self) -> None:
-        """The existing Default path remains marked volatile, not persistent."""
+    def test_main_parts_requires_the_mount_and_constructs_default_profile(self) -> None:
+        """DIR_USER_DATA must be resolved only after the storage mount."""
 
         pre_main = re.search(
             r"int WasmBrowserMainParts::PreMainMessageLoopRun\(\) "
@@ -469,46 +468,76 @@ executable("m7_wasmfs_conditional_testonly") {
             "WasmBrowserMainParts::PreMainMessageLoopRun",
         )
         for required in (
+            "chrome::IsWasmProfileStorageMounted()",
+            'LOG(ERROR) << "chrome_wasm profile storage is not mounted"',
             "base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)",
-            'LOG(ERROR) << "chrome_wasm could not resolve its volatile profile root"',
+            'LOG(ERROR) << "chrome_wasm could not resolve its mounted profile root"',
             'user_data_directory.AppendASCII("Default")',
             "base::CreateDirectory(profile_path)",
-            'LOG(ERROR) << "chrome_wasm could not create its volatile profile path"',
+            'LOG(ERROR) << "chrome_wasm could not create its mounted profile path"',
             "profile_ = std::make_unique<WasmProfile>(profile_path);",
+            "chrome::NotifyWasmProfileStorageProfileCreated()",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, body)
 
         self.assertLess(
+            body.index("chrome::IsWasmProfileStorageMounted()"),
+            body.index("base::PathService::Get(chrome::DIR_USER_DATA"),
+        )
+        self.assertLess(
             body.index("base::CreateDirectory(profile_path)"),
             body.index("profile_ = std::make_unique<WasmProfile>(profile_path);"),
         )
+        self.assertLess(
+            body.index("profile_ = std::make_unique<WasmProfile>(profile_path);"),
+            body.index("chrome::NotifyWasmProfileStorageProfileCreated()"),
+        )
 
-    def test_chrome_wasm_owns_no_wasmfs_link_flag(self) -> None:
-        """Selected direct Chrome target bodies may not opt into WasmFS."""
+    def test_chrome_wasm_owns_its_wasmfs_link_flag_and_storage_target(self) -> None:
+        """Production Chrome must select its owned M7 lifecycle, not a smoke."""
 
         chrome_assets = _gn_target_body(
             self.chrome_build, "config", "chrome_wasm_assets"
         )
+        chrome_storage = _gn_target_body(
+            self.chrome_build, "config", "chrome_wasm_profile_storage"
+        )
         chrome_wasm = _gn_target_body(
             self.chrome_build, "executable", "chrome_wasm"
+        )
+        chrome_https_test = _gn_target_body(
+            self.chrome_build, "executable", "chrome_wasm_m6_https_test"
         )
         chrome_profile = _gn_target_body(
             self.wasm_browser_build, "source_set", "wasm_profile"
         )
+        chrome_profile_storage = _gn_target_body(
+            self.wasm_browser_build, "source_set", "wasm_profile_storage"
+        )
 
-        self.assertIn('configs += [ ":chrome_wasm_assets" ]', chrome_wasm)
+        self.assertIn("-sWASMFS=1", chrome_storage)
+        self.assertIn('":chrome_wasm_assets",', chrome_wasm)
+        self.assertIn('":chrome_wasm_profile_storage",', chrome_wasm)
+        self.assertIn('":chrome_wasm_profile_storage",', chrome_https_test)
+        self.assertIn(
+            '"//chrome/browser/wasm:wasm_profile_storage",', chrome_wasm
+        )
+        self.assertIn(
+            '"//chrome/browser/wasm:wasm_profile_storage",', chrome_https_test
+        )
+        self.assertIn("wasm_profile_storage.cc", chrome_profile_storage)
+        self.assertIn("wasm_profile_storage.h", chrome_profile_storage)
         for label, target in (
             ("chrome_wasm assets", chrome_assets),
-            ("chrome_wasm executable", chrome_wasm),
             ("WasmProfile source set", chrome_profile),
+            ("WasmProfile storage source set", chrome_profile_storage),
         ):
             with self.subTest(label=label):
-                self.assertNotIn("-sWASMFS=1", target)
                 self.assertNotIn("m7_wasmfs_", target)
 
-    def test_wasmfs_flags_are_confined_to_testonly_m7_tool_targets(self) -> None:
-        """Every tracked literal direct WasmFS consumer remains a test target."""
+    def test_isolated_wasmfs_flags_remain_confined_to_testonly_m7_tools(self) -> None:
+        """The old primitive smokes remain separate from Chrome's link config."""
 
         wasmfs_configs = frozenset(
             name
@@ -539,9 +568,9 @@ executable("m7_wasmfs_conditional_testonly") {
                         )
                         self.assertTrue(consumer.testonly)
 
-        # Chrome's executable target body must not name the feasibility
-        # package. This deliberately says nothing about unrelated non-WasmFS
-        # tools/wasm utilities that may be added later.
+        # Chrome's executable target owns its distinct lifecycle config and
+        # must not name an isolated feasibility package. This deliberately says
+        # nothing about unrelated non-WasmFS tools/wasm utilities.
         chrome_wasm = _gn_target_body(
             self.chrome_build, "executable", "chrome_wasm"
         )

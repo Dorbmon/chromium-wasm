@@ -73,10 +73,10 @@ class PrefRegistrySyncable;
 
 // The Stage-A Chrome profile for the WebAssembly browser process.
 //
-// The path names an ephemeral Wasm filesystem namespace during M6. Preferences
-// use a real in-memory PersistentPrefStore; this class does not claim durable
-// profile storage. M7 replaces the backing with the OPFS implementation before
-// profile persistence is enabled in the browser UI.
+// Its path resides in Chrome's leased OPFS WasmFS mount, but preferences use a
+// real in-memory PersistentPrefStore. This class does not claim durable
+// preferences, databases, sessions, or profile recovery until those
+// Chrome-owned stores have individually migrated and been proven.
 class WasmProfile final : public Profile {
  public:
   explicit WasmProfile(base::FilePath profile_path);

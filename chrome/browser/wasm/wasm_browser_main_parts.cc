@@ -36,6 +36,7 @@
 #include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_version_ui.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#include "chrome/browser/wasm/wasm_profile_storage.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_core_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_lifecycle.h"
@@ -239,17 +240,21 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   if (!browser_process_) {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
+  if (!chrome::IsWasmProfileStorageMounted()) {
+    LOG(ERROR) << "chrome_wasm profile storage is not mounted";
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
 
   base::FilePath user_data_directory;
   if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)) {
-    LOG(ERROR) << "chrome_wasm could not resolve its volatile profile root";
+    LOG(ERROR) << "chrome_wasm could not resolve its mounted profile root";
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
   const base::FilePath profile_path =
       user_data_directory.AppendASCII("Default");
   if (!base::CreateDirectory(profile_path)) {
-    LOG(ERROR) << "chrome_wasm could not create its volatile profile path";
+    LOG(ERROR) << "chrome_wasm could not create its mounted profile path";
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
@@ -273,6 +278,10 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   profile_ = std::make_unique<WasmProfile>(profile_path);
   if (!profile_) {
     return CHROME_RESULT_CODE_MISSING_DATA;
+  }
+  if (!chrome::NotifyWasmProfileStorageProfileCreated()) {
+    LOG(ERROR) << "chrome_wasm could not admit its profile storage lifecycle";
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
 
   // Keep Chrome's bounded physical-key ABI separate from Content Shell's test
@@ -866,6 +875,9 @@ void WasmBrowserMainParts::ShutdownFoundation() {
   if (profile_) {
     profile_->Shutdown();
     profile_.reset();
+  }
+  if (!chrome::NotifyWasmProfileStorageProfileShutdown()) {
+    LOG(ERROR) << "chrome_wasm could not complete its profile storage lifecycle";
   }
   if (browser_process_) {
     browser_process_.reset();

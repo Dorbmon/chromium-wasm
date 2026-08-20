@@ -420,6 +420,7 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
         self.assertIn("true);", backing_store_copy)
         self.assertIn("chromium_wasm_report_process_exit(exit_code)", entrypoint)
         self.assertIn("host rejected process-exit report", entrypoint)
+        self.assertIn("fputs(", entrypoint)
         self.assertIn("return exit_code == 0 ? 1 : exit_code;", entrypoint)
         self.assertLess(
             entrypoint.index("const int exit_code ="),

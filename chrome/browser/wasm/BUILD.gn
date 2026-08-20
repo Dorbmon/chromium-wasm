@@ -1847,6 +1847,19 @@ source_set("wasm_profile") {
   ]
 }
 
+# This owns the one leased OPFS mount used by the Chrome profile path. It is
+# intentionally separate from WasmProfile: the current PrefService remains
+# in-memory until a later migration can provide durable Chrome-owned stores.
+# The owner exists now so its scoped backend transition follows profile-service
+# shutdown and the complete ContentMain teardown.
+source_set("wasm_profile_storage") {
+  public = [ "wasm_profile_storage.h" ]
+
+  sources = [ "wasm_profile_storage.cc" ]
+
+  deps = [ "//base" ]
+}
+
 # A direct WasmProfile member records committed primary-main-frame web visits
 # for chrome://history. Each WebContents owns only a weak observer; it neither
 # creates HistoryService nor persists data across the Wasm process lifetime.
@@ -1913,6 +1926,7 @@ source_set("wasm_browser_main_parts") {
     ":wasm_chrome_paths",
     ":wasm_chrome_result_codes",
     ":wasm_profile",
+    ":wasm_profile_storage",
     "//base",
     "//components/color",
     "//content/public/browser",
