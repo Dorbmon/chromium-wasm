@@ -2722,6 +2722,31 @@ def ensure_emscripten_source_pin(
     return source_pin
 
 
+def ensure_pinned_emscripten_source_distribution(
+    manifest: dict[str, object], *, install: bool
+) -> None:
+    """Install or verify only the immutable Emscripten source distribution.
+
+    This deliberately does not call ``ensure_source_dependencies()``: it is a
+    recovery path for an otherwise unrelated Chromium provenance failure, not
+    a replacement for either normal M0 or M3 bootstrap. It still requires the
+    installed, pinned depot_tools bootstrap and runs the complete Emscripten
+    SDK/source-pin validation and promotion flow.
+    """
+    emscripten = manifest["emscripten"]
+    assert isinstance(emscripten, dict)
+    if emscripten_source_pin(emscripten) is None:
+        raise M0Error(
+            "Emscripten source-only mode requires a complete immutable "
+            "source pin"
+        )
+
+    _, bootstrap_python = ensure_depot_tools_bootstrap(
+        manifest, install=False
+    )
+    ensure_emscripten(manifest, bootstrap_python, install=install)
+
+
 def ensure_emscripten(
     manifest: dict[str, object],
     bootstrap_python: Path,
@@ -3596,11 +3621,21 @@ def main() -> int:
             "toolchain pins."
         )
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--profile",
         choices=("m0", "m3"),
         default="m0",
         help="select the exact milestone source dependency closure",
+    )
+    mode_group.add_argument(
+        "--emscripten-source-only",
+        action="store_true",
+        help=(
+            "install or verify only the immutable pinned Emscripten source "
+            "distribution; does not validate Chromium/dependency provenance "
+            "or constitute a full bootstrap"
+        ),
     )
     parser.add_argument(
         "--verify-only",
@@ -3611,6 +3646,27 @@ def main() -> int:
 
     try:
         manifest = load_manifest()
+        install = not args.verify_only
+        if args.emscripten_source_only:
+            source_only_action = "verify-only" if args.verify_only else "install"
+            print_context(
+                "bootstrap.py",
+                manifest,
+                mode=f"{source_only_action}:emscripten-source-only",
+                scope="pinned-emscripten-source-distribution-only",
+                full_bootstrap=False,
+            )
+            ensure_pinned_emscripten_source_distribution(
+                manifest, install=install
+            )
+            print(
+                "CHROMIUM_WASM_EMSCRIPTEN_SOURCE_ONLY:"
+                "PINNED_SOURCE_DISTRIBUTION_PASS "
+                f"mode={source_only_action}",
+                flush=True,
+            )
+            return 0
+
         print_context(
             "bootstrap.py",
             manifest,
@@ -3619,7 +3675,6 @@ def main() -> int:
                 f"{args.profile}"
             ),
         )
-        install = not args.verify_only
         required_submodules = (
             M0_REQUIRED_SUBMODULES
             if args.profile == "m0"

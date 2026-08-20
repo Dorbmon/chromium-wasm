@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -524,6 +525,401 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
             self.assertEqual(
                 bootstrap.emscripten_release_version(source_root), "5.0.6"
             )
+
+
+class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
+    def test_requires_a_complete_source_pin_before_touching_depot_tools(self) -> None:
+        manifest: dict[str, object] = {"emscripten": {}}
+        with (
+            mock.patch.object(bootstrap, "ensure_depot_tools_bootstrap") as depot,
+            mock.patch.object(bootstrap, "ensure_emscripten") as emscripten,
+            self.assertRaisesRegex(M0Error, "requires a complete immutable source pin"),
+        ):
+            bootstrap.ensure_pinned_emscripten_source_distribution(
+                manifest, install=True
+            )
+
+        depot.assert_not_called()
+        emscripten.assert_not_called()
+
+    def test_reuses_verified_depot_tools_and_complete_emscripten_flow(self) -> None:
+        manifest = load_manifest()
+        bootstrap_python = Path("/pinned/depot-tools/python3")
+        with (
+            mock.patch.object(
+                bootstrap,
+                "ensure_depot_tools_bootstrap",
+                return_value=(Path("/pinned/depot-tools/cipd"), bootstrap_python),
+            ) as depot,
+            mock.patch.object(bootstrap, "ensure_emscripten") as emscripten,
+            mock.patch.object(bootstrap, "ensure_source_dependencies") as source_deps,
+        ):
+            bootstrap.ensure_pinned_emscripten_source_distribution(
+                manifest, install=True
+            )
+
+        depot.assert_called_once_with(manifest, install=False)
+        emscripten.assert_called_once_with(
+            manifest, bootstrap_python, install=True
+        )
+        source_deps.assert_not_called()
+
+    def test_cli_reports_source_only_scope_without_full_bootstrap_marker(self) -> None:
+        manifest = load_manifest()
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(bootstrap, "load_manifest", return_value=manifest),
+            mock.patch.object(bootstrap, "print_context") as print_context,
+            mock.patch.object(
+                bootstrap, "ensure_pinned_emscripten_source_distribution"
+            ) as source_distribution,
+            mock.patch.object(bootstrap, "ensure_source_dependencies") as source_deps,
+            mock.patch.object(
+                bootstrap, "ensure_nested_source_dependencies"
+            ) as nested_source_deps,
+            mock.patch.object(
+                bootstrap, "ensure_skia_lastchange"
+            ) as skia_lastchange,
+            mock.patch.object(
+                bootstrap, "ensure_dawn_lastchange"
+            ) as dawn_lastchange,
+            mock.patch.object(bootstrap, "ensure_test262") as test262,
+            mock.patch.object(bootstrap, "ensure_build_tools") as build_tools,
+            mock.patch.object(
+                bootstrap, "ensure_chromium_node_runtime"
+            ) as chromium_node_runtime,
+            mock.patch.object(
+                bootstrap, "ensure_webui_node_modules"
+            ) as webui_node_modules,
+            mock.patch.object(bootstrap, "ensure_host_clang") as host_clang,
+            mock.patch.object(bootstrap, "ensure_host_sysroot") as host_sysroot,
+            mock.patch.object(
+                bootstrap, "ensure_chromium_sysroot"
+            ) as chromium_sysroot,
+            mock.patch.object(
+                bootstrap, "ensure_v8_snapshot_runtime"
+            ) as v8_snapshot_runtime,
+            mock.patch.object(
+                bootstrap, "ensure_generated_configuration"
+            ) as generated_configuration,
+            mock.patch.object(bootstrap, "ensure_rust_toolchain") as rust,
+            mock.patch.object(
+                sys, "argv", ["bootstrap.py", "--emscripten-source-only"]
+            ),
+            mock.patch("sys.stdout", stdout),
+        ):
+            self.assertEqual(bootstrap.main(), 0)
+
+        print_context.assert_called_once_with(
+            "bootstrap.py",
+            manifest,
+            mode="install:emscripten-source-only",
+            scope="pinned-emscripten-source-distribution-only",
+            full_bootstrap=False,
+        )
+        source_distribution.assert_called_once_with(manifest, install=True)
+        source_deps.assert_not_called()
+        nested_source_deps.assert_not_called()
+        skia_lastchange.assert_not_called()
+        dawn_lastchange.assert_not_called()
+        test262.assert_not_called()
+        build_tools.assert_not_called()
+        chromium_node_runtime.assert_not_called()
+        webui_node_modules.assert_not_called()
+        host_clang.assert_not_called()
+        host_sysroot.assert_not_called()
+        chromium_sysroot.assert_not_called()
+        v8_snapshot_runtime.assert_not_called()
+        generated_configuration.assert_not_called()
+        rust.assert_not_called()
+        self.assertEqual(
+            stdout.getvalue(),
+            "CHROMIUM_WASM_EMSCRIPTEN_SOURCE_ONLY:"
+            "PINNED_SOURCE_DISTRIBUTION_PASS mode=install\n",
+        )
+        self.assertNotIn("BOOTSTRAP_PASS", stdout.getvalue())
+
+    def test_cli_verify_only_uses_the_same_isolated_flow(self) -> None:
+        manifest = load_manifest()
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(bootstrap, "load_manifest", return_value=manifest),
+            mock.patch.object(bootstrap, "print_context") as print_context,
+            mock.patch.object(
+                bootstrap, "ensure_pinned_emscripten_source_distribution"
+            ) as source_distribution,
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "bootstrap.py",
+                    "--emscripten-source-only",
+                    "--verify-only",
+                ],
+            ),
+            mock.patch("sys.stdout", stdout),
+        ):
+            self.assertEqual(bootstrap.main(), 0)
+
+        print_context.assert_called_once_with(
+            "bootstrap.py",
+            manifest,
+            mode="verify-only:emscripten-source-only",
+            scope="pinned-emscripten-source-distribution-only",
+            full_bootstrap=False,
+        )
+        source_distribution.assert_called_once_with(manifest, install=False)
+        self.assertEqual(
+            stdout.getvalue(),
+            "CHROMIUM_WASM_EMSCRIPTEN_SOURCE_ONLY:"
+            "PINNED_SOURCE_DISTRIBUTION_PASS mode=verify-only\n",
+        )
+
+    def test_cli_failure_never_emits_the_source_only_success_marker(self) -> None:
+        manifest = load_manifest()
+        stdout = io.StringIO()
+        failure = M0Error("forced source-only failure")
+        with (
+            mock.patch.object(bootstrap, "load_manifest", return_value=manifest),
+            mock.patch.object(bootstrap, "print_context"),
+            mock.patch.object(
+                bootstrap,
+                "ensure_pinned_emscripten_source_distribution",
+                side_effect=failure,
+            ),
+            mock.patch.object(bootstrap, "fail", return_value=1) as fail,
+            mock.patch.object(
+                sys, "argv", ["bootstrap.py", "--emscripten-source-only"]
+            ),
+            mock.patch("sys.stdout", stdout),
+        ):
+            self.assertEqual(bootstrap.main(), 1)
+
+        fail.assert_called_once_with(str(failure))
+        self.assertNotIn("PINNED_SOURCE_DISTRIBUTION_PASS", stdout.getvalue())
+
+    def test_cli_rejects_combining_source_only_with_a_full_profile(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "bootstrap.py",
+                    "--profile",
+                    "m3",
+                    "--emscripten-source-only",
+                ],
+            ),
+            mock.patch("sys.stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            bootstrap.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("not allowed with argument --profile", stderr.getvalue())
+
+    def test_normal_profile_keeps_provenance_ahead_of_emscripten(self) -> None:
+        manifest = load_manifest()
+        bootstrap_python = Path("/pinned/depot-tools/python3")
+        call_order: list[str] = []
+
+        def record_provenance(*_args: object, **_kwargs: object) -> None:
+            call_order.append("provenance")
+
+        def record_emscripten(*_args: object, **_kwargs: object) -> None:
+            call_order.append("emscripten")
+
+        with (
+            mock.patch.object(bootstrap, "load_manifest", return_value=manifest),
+            mock.patch.object(bootstrap, "print_context"),
+            mock.patch.object(
+                bootstrap,
+                "ensure_source_dependencies",
+                side_effect=record_provenance,
+            ) as source_deps,
+            mock.patch.object(bootstrap, "ensure_test262"),
+            mock.patch.object(
+                bootstrap,
+                "ensure_depot_tools_bootstrap",
+                return_value=(Path("/pinned/depot-tools/cipd"), bootstrap_python),
+            ),
+            mock.patch.object(bootstrap, "ensure_build_tools"),
+            mock.patch.object(bootstrap, "ensure_host_clang"),
+            mock.patch.object(bootstrap, "ensure_host_sysroot"),
+            mock.patch.object(
+                bootstrap, "ensure_emscripten", side_effect=record_emscripten
+            ),
+            mock.patch.object(bootstrap, "ensure_generated_configuration"),
+            mock.patch.object(bootstrap, "ensure_rust_toolchain"),
+            mock.patch.object(
+                bootstrap, "ensure_pinned_emscripten_source_distribution"
+            ) as source_distribution,
+            mock.patch.object(
+                sys, "argv", ["bootstrap.py", "--profile", "m0", "--verify-only"]
+            ),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertEqual(bootstrap.main(), 0)
+
+        source_deps.assert_called_once_with(
+            manifest,
+            install=False,
+            required_submodules=bootstrap.M0_REQUIRED_SUBMODULES,
+        )
+        self.assertEqual(call_order, ["provenance", "emscripten"])
+        source_distribution.assert_not_called()
+
+    def test_normal_m3_keeps_its_complete_dependency_path_before_emscripten(
+        self,
+    ) -> None:
+        manifest = load_manifest()
+        bootstrap_python = Path("/pinned/depot-tools/python3")
+        call_order: list[str] = []
+
+        def record(name: str):
+            def implementation(*_args: object, **_kwargs: object) -> None:
+                call_order.append(name)
+
+            return implementation
+
+        def record_depot_tools(
+            *_args: object, **_kwargs: object
+        ) -> tuple[Path, Path]:
+            call_order.append("depot-tools")
+            return Path("/pinned/depot-tools/cipd"), bootstrap_python
+
+        with (
+            mock.patch.object(bootstrap, "load_manifest", return_value=manifest),
+            mock.patch.object(bootstrap, "print_context"),
+            mock.patch.object(
+                bootstrap,
+                "ensure_source_dependencies",
+                side_effect=record("provenance"),
+            ) as source_deps,
+            mock.patch.object(
+                bootstrap,
+                "ensure_nested_source_dependencies",
+                side_effect=record("nested-provenance"),
+            ) as nested_source_deps,
+            mock.patch.object(
+                bootstrap,
+                "ensure_skia_lastchange",
+                side_effect=record("skia-lastchange"),
+            ) as skia_lastchange,
+            mock.patch.object(
+                bootstrap,
+                "ensure_dawn_lastchange",
+                side_effect=record("dawn-lastchange"),
+            ) as dawn_lastchange,
+            mock.patch.object(
+                bootstrap, "ensure_test262", side_effect=record("test262")
+            ),
+            mock.patch.object(
+                bootstrap,
+                "ensure_depot_tools_bootstrap",
+                side_effect=record_depot_tools,
+            ),
+            mock.patch.object(
+                bootstrap,
+                "ensure_build_tools",
+                side_effect=record("build-tools"),
+            ),
+            mock.patch.object(
+                bootstrap,
+                "ensure_chromium_node_runtime",
+                side_effect=record("node-runtime"),
+            ) as chromium_node_runtime,
+            mock.patch.object(
+                bootstrap,
+                "ensure_webui_node_modules",
+                side_effect=record("webui-node-modules"),
+            ) as webui_node_modules,
+            mock.patch.object(
+                bootstrap,
+                "ensure_host_clang",
+                side_effect=record("host-clang"),
+            ),
+            mock.patch.object(
+                bootstrap,
+                "ensure_host_sysroot",
+                side_effect=record("host-sysroot"),
+            ),
+            mock.patch.object(
+                bootstrap,
+                "ensure_chromium_sysroot",
+                side_effect=record("v8-sysroot"),
+            ) as chromium_sysroot,
+            mock.patch.object(
+                bootstrap,
+                "ensure_v8_snapshot_runtime",
+                side_effect=record("v8-runtime"),
+            ) as v8_snapshot_runtime,
+            mock.patch.object(
+                bootstrap,
+                "ensure_emscripten",
+                side_effect=record("emscripten"),
+            ),
+            mock.patch.object(
+                bootstrap,
+                "ensure_generated_configuration",
+                side_effect=record("generated-configuration"),
+            ),
+            mock.patch.object(
+                bootstrap,
+                "ensure_rust_toolchain",
+                side_effect=record("rust"),
+            ),
+            mock.patch.object(
+                bootstrap, "ensure_pinned_emscripten_source_distribution"
+            ) as source_distribution,
+            mock.patch.object(
+                sys, "argv", ["bootstrap.py", "--profile", "m3", "--verify-only"]
+            ),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertEqual(bootstrap.main(), 0)
+
+        source_deps.assert_called_once_with(
+            manifest,
+            install=False,
+            required_submodules=bootstrap.M3_REQUIRED_SUBMODULES,
+        )
+        nested_source_deps.assert_called_once_with(manifest, install=False)
+        skia_lastchange.assert_called_once_with(manifest, install=False)
+        dawn_lastchange.assert_called_once_with(manifest, install=False)
+        chromium_node_runtime.assert_called_once_with(manifest, install=False)
+        webui_node_modules.assert_called_once_with(manifest, install=False)
+        chromium_sysroot.assert_called_once_with(
+            manifest,
+            bootstrap_python,
+            manifest_key="v8_snapshot_sysroot",
+            label="V8 snapshot",
+            install=False,
+        )
+        v8_snapshot_runtime.assert_called_once_with(manifest, install=False)
+        self.assertEqual(
+            call_order,
+            [
+                "provenance",
+                "nested-provenance",
+                "skia-lastchange",
+                "dawn-lastchange",
+                "test262",
+                "depot-tools",
+                "build-tools",
+                "node-runtime",
+                "webui-node-modules",
+                "host-clang",
+                "host-sysroot",
+                "v8-sysroot",
+                "v8-runtime",
+                "emscripten",
+                "generated-configuration",
+                "rust",
+            ],
+        )
+        source_distribution.assert_not_called()
 
 
 class EmscriptenSourcePinBootstrapTest(unittest.TestCase):
