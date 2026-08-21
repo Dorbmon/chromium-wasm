@@ -25,6 +25,17 @@ config("platform_config") {
   }
 }
 
+# The library is inert unless an outer host installs the exact versioned
+# WebAudio capability object.  Attaching it here makes the bridge available to
+# the real Wasm media closure without selecting a host device or AudioService.
+if (is_wasm) {
+  config("wasm_audio_bridge") {
+    ldflags = [
+      "--js-library=" + rebase_path("wasm_audio_bridge.js", root_build_dir),
+    ]
+  }
+}
+
 source_set("audio") {
   # Do not expand the visibility here without double-checking with OWNERS, this
   # is a roll-up target which is part of the //media component. Most other DEPs
@@ -32,6 +43,9 @@ source_set("audio") {
   visibility = [
     "//media",
     "//media/renderers",
+    # The target-local M8 browser smoke exercises this implementation through
+    # the real AudioManager factory rather than duplicating its sources.
+    "//media/audio:wasm_audio_manager_output_smoke",
 
     # TODO(dalecurtis): CoreAudioUtil::IsCoreAudioSupported() should probably
     # move into media/base/win.
@@ -147,7 +161,15 @@ source_set("audio") {
   ]
 
   if (is_wasm) {
-    sources += [ "audio_manager_wasm.cc" ]
+    sources += [
+      "audio_manager_wasm.cc",
+      "audio_output_stream_wasm.cc",
+      "audio_output_stream_wasm.h",
+      "wasm_audio_bridge.cc",
+      "wasm_audio_bridge.h",
+    ]
+    inputs = [ "wasm_audio_bridge.js" ]
+    all_dependent_configs = [ ":wasm_audio_bridge" ]
   }
 
   if (!is_wasm) {
@@ -385,6 +407,20 @@ if (use_cras) {
 if (use_pulseaudio && link_pulseaudio) {
   pkg_config("libpulse") {
     packages = [ "libpulse" ]
+  }
+}
+
+if (is_wasm) {
+  # This links the actual Wasm AudioManager implementation, rather than a
+  # standalone producer.  The outer host/runner remains target-local under
+  # //tools/wasm and supplies the trusted WebAudio capability object.
+  executable("wasm_audio_manager_output_smoke") {
+    testonly = true
+    sources = [ "wasm_audio_manager_output_smoke.cc" ]
+    deps = [
+      "//base",
+      "//media:media",
+    ]
   }
 }
 

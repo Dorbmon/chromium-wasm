@@ -9,6 +9,7 @@
 #include "base/test/test_message_loop.h"
 #include "media/audio/audio_device_description.h"
 #include "media/audio/audio_device_info_accessor_for_tests.h"
+#include "media/audio/audio_io.h"
 #include "media/audio/test_audio_thread.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/channel_layout.h"
@@ -33,7 +34,7 @@ class AudioManagerWasmTest : public testing::Test {
   AudioDeviceInfoAccessorForTests device_info_;
 };
 
-TEST_F(AudioManagerWasmTest, ReportsUnavailableDevicesAndParameters) {
+TEST_F(AudioManagerWasmTest, ReportsUnavailableDevicesWithoutAnArmedHost) {
   EXPECT_EQ("WebAssembly", audio_manager_->GetName());
   EXPECT_FALSE(device_info_.HasAudioInputDevices());
   EXPECT_FALSE(device_info_.HasAudioOutputDevices());
@@ -57,14 +58,16 @@ TEST_F(AudioManagerWasmTest, ReportsUnavailableDevicesAndParameters) {
                   .Equals(unavailable));
 }
 
-TEST_F(AudioManagerWasmTest, RejectsEveryStreamCreationPath) {
+TEST_F(AudioManagerWasmTest, RejectsOpeningOutputWithoutAnArmedHost) {
   const AudioParameters params(AudioParameters::AUDIO_PCM_LOW_LATENCY,
                                ChannelLayoutConfig::Stereo(), 48000, 480);
   const std::string device_id = AudioDeviceDescription::kDefaultDeviceId;
 
-  EXPECT_EQ(nullptr,
-            audio_manager_->MakeAudioOutputStream(
-                params, device_id, AudioManager::LogCallback()));
+  AudioOutputStream* output = audio_manager_->MakeAudioOutputStream(
+      params, device_id, AudioManager::LogCallback());
+  ASSERT_NE(nullptr, output);
+  EXPECT_FALSE(output->Open());
+  output->Close();
   EXPECT_EQ(nullptr,
             audio_manager_->MakeAudioOutputStreamProxy(params, device_id));
   EXPECT_EQ(nullptr,

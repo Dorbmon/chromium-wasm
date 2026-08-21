@@ -1,0 +1,68 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chromium Wasm M8 AudioManager output smoke</title>
+  <style>
+    body {
+      margin: 32px;
+      color: #102a43;
+      background: #f3f7fb;
+      font: 16px/1.4 system-ui, sans-serif;
+    }
+
+    main {
+      max-width: 48rem;
+      padding: 24px;
+      border: 3px solid #102a43;
+      background: #fff;
+    }
+
+    button {
+      position: fixed;
+      top: 24px;
+      left: 24px;
+      width: 192px;
+      height: 48px;
+      font: inherit;
+    }
+
+    pre {
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <main id="m8-audio-manager-output-root" data-state="loading-runtime">
+    <h1>AudioManager output smoke</h1>
+    <p>
+      This bounded probe exercises one native default low-latency output
+      stream after a trusted WebAudio gesture. It is not a browser media
+      playback or device-policy test.
+    </p>
+    <button id="m8-audio-manager-output-start" type="button" disabled>
+      Start audio output
+    </button>
+    <pre id="m8-audio-manager-output-status" aria-live="polite">Loading Wasm runtime…</pre>
+  </main>
+  <script type="module">
+    import {runM8AudioManagerOutputSmokeFromQuery} from
+        "./m8_audio_manager_output_smoke.js";
+
+    runM8AudioManagerOutputSmokeFromQuery().catch(() => {
+      const root = document.querySelector("#m8-audio-manager-output-root");
+      const status = document.querySelector("#m8-audio-manager-output-status");
+      if (root instanceof HTMLElement) {
+        root.dataset.state = "fail";
+      }
+      if (status instanceof HTMLElement) {
+        status.textContent = "M8 AudioManager output host failure.";
+      }
+    });
+  </script>
+</body>
+</html>
