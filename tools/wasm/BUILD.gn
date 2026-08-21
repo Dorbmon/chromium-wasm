@@ -153,6 +153,18 @@ if (enable_chromium_wasm_content) {
 # it must establish the pinned backend's real semantics before `/profile` or
 # Chromium's embedded asset filesystem changes away from the proven MEMFS path.
 if (enable_chromium_wasm_port) {
+  # This WebAudio experiment is intentionally a standalone target.  It proves
+  # only a C++ pthread producer, a bounded SharedArrayBuffer PCM ring, and a
+  # browser-owned AudioWorklet consumer.  It does not select Chromium's audio
+  # manager or audio service and must not pull media code into the normal
+  # executable closure.
+  config("m8_webaudio_ring_smoke_link") {
+    ldflags = [
+      "--js-library=" +
+          rebase_path("m8_webaudio_ring_bridge.js", root_build_dir),
+    ]
+  }
+
   config("m7_wasmfs_opfs_smoke_link") {
     ldflags = [ "-sWASMFS=1" ]
   }
@@ -222,6 +234,20 @@ if (enable_chromium_wasm_port) {
     sources = [ "m7_wasmfs_opfs_handle_lifecycle_smoke.cc" ]
     configs += [ ":m7_wasmfs_opfs_handle_lifecycle_smoke_link" ]
 
+    no_default_deps = true
+    use_libcxx_modules = false
+    configs -= [ "//build/config/compiler:runtime_library" ]
+  }
+
+  executable("m8_webaudio_ring_smoke") {
+    testonly = true
+    sources = [ "m8_webaudio_ring_smoke.cc" ]
+    inputs = [ "m8_webaudio_ring_bridge.js" ]
+    configs += [ ":m8_webaudio_ring_smoke_link" ]
+
+    # Emscripten supplies pthreads and the standalone C++ runtime.  Keeping
+    # this target dependency-free is deliberate: it is a host WebAudio
+    # feasibility smoke, not a Chromium media implementation.
     no_default_deps = true
     use_libcxx_modules = false
     configs -= [ "//build/config/compiler:runtime_library" ]
