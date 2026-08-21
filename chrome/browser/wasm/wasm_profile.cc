@@ -22,6 +22,10 @@
 #include "base/uuid.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile_key.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
@@ -111,6 +115,12 @@ WasmProfile::WasmProfile(base::FilePath profile_path)
                                       kDevToolsAvailabilityDisallowed);
   pref_registry_->RegisterStringPref(kWasmPersistentPrefsFenceUuid,
                                      std::string());
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // This narrow pref exists only in the dedicated two-module M7 acceptance
+  // artifact. The helper registers it before PrefService construction and
+  // keeps its opaque test value out of normal Chrome profiles and diagnostics.
+  chrome::RegisterWasmProfilePreferencesSmokePref(pref_registry_.get());
+#endif
   SimpleDependencyManager::GetInstance()->RegisterProfilePrefsForServices(
       pref_registry_.get());
   BrowserContextDependencyManager::GetInstance()

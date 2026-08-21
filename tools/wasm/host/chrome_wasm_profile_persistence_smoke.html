@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 profile Preferences persistence smoke</title>
+<main id="m7-profile-preferences-root" data-state="starting">
+  <h1>Chromium Wasm M7 profile Preferences persistence smoke</h1>
+  <dl id="m7-profile-preferences-versions"></dl>
+  <canvas id="m7-profile-preferences-canvas" width="1" height="1" tabindex="0"
+      aria-label="Chromium Wasm profile persistence smoke canvas"></canvas>
+  <pre id="m7-profile-preferences-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmProfilePersistenceFromQuery} from
+      "./chrome_wasm_profile_persistence_smoke.js";
+
+  runChromeWasmProfilePersistenceFromQuery().catch((error) => {
+    const root = document.querySelector("#m7-profile-preferences-root");
+    const status = document.querySelector("#m7-profile-preferences-status");
+    if (root instanceof HTMLElement) {
+      root.dataset.state = "fail";
+    }
+    if (status instanceof HTMLElement) {
+      status.textContent = String(error);
+    }
+    throw error;
+  });
+</script>

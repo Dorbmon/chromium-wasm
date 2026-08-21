@@ -12,6 +12,11 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_main.h"
 #include "chrome/browser/wasm/wasm_chrome_main_delegate.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// The dedicated M7 GN configuration alone supplies this header and target.
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_storage.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "content/public/app/content_main.h"
@@ -38,6 +43,11 @@ std::optional<base::CommandLine>& GetInitialCommandLineStorage() {
   return *initial_command_line;
 }
 
+bool IsNormalChromeMainResult(int result) {
+  return result == content::RESULT_CODE_NORMAL_EXIT ||
+         IsNormalResultCode(static_cast<ResultCode>(result));
+}
+
 #if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
 constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
@@ -58,8 +68,11 @@ const base::CommandLine& GetInitialBrowserCommandLine() {
 }
 
 extern "C" int ChromeMain(int argc, const char** argv) {
-  int result;
+  int result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   bool profile_storage_initialized = false;
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  bool preferences_smoke_enabled = false;
+#endif
   {
     WasmChromeMainDelegate chrome_main_delegate;
     content::ContentMainParams params(&chrome_main_delegate);
@@ -67,6 +80,19 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     params.argv = argv;
 
     base::CommandLine::Init(params.argc, params.argv);
+
+    // The M7 two-module Preferences acceptance is compiled only into its
+    // dedicated GN configuration. The primary chrome_wasm build neither
+    // parses these private switches nor links the helper that owns their raw
+    // tokens.
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    const bool preferences_smoke_requested =
+        chrome::HasWasmProfilePreferencesSmokeArguments();
+    if (preferences_smoke_requested) {
+      preferences_smoke_enabled =
+          chrome::EnableWasmProfilePreferencesSmokeTestMode();
+    }
+#endif
 
 #if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
     const base::CommandLine* const controlled_test_command_line =
@@ -99,8 +125,20 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     // This must happen before Content's delegate can register or resolve the
     // /profile path. The leased backend has no in-memory or unleased fallback:
     // a missing Web Locks/OPFS/pthread capability is a startup failure.
-    profile_storage_initialized = chrome::InitializeWasmProfileStorage();
-    if (!profile_storage_initialized) {
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    if (preferences_smoke_requested && !preferences_smoke_enabled) {
+      // Invalid test input stops before the profile mount. The helper already
+      // emitted its fixed redacted failure marker.
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    } else if (!(profile_storage_initialized =
+#else
+    if (!(profile_storage_initialized =
+#endif
+                     chrome::InitializeWasmProfileStorage())) {
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+      chrome::ReportWasmProfilePreferencesSmokeFailure(
+          chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
+#endif
       // A failed mount can still have acquired a lease. Its scoped cleanup
       // runs after this delegate scope, while the non-normal result reaches
       // the host through chromium_wasm_report_process_exit below.
@@ -115,6 +153,14 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     }
   }
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  if (preferences_smoke_enabled &&
+      !IsNormalChromeMainResult(result)) {
+    chrome::ReportWasmProfilePreferencesSmokeFailure(
+        chrome::WasmProfilePreferencesSmokeFailureStage::kContent);
+  }
+#endif
+
   // BrowserMainParts records the profile-service shutdown boundary. Seal and
   // drain the exact leased OPFS backend only after ContentMain and its
   // delegate have both returned, when no Content teardown can issue another
@@ -123,18 +169,30 @@ extern "C" int ChromeMain(int argc, const char** argv) {
   if (chrome::NeedsWasmProfileStorageBackendDrain()) {
     const chrome::WasmProfileStorageDrainResult drain_result =
         chrome::DrainAndReleaseWasmProfileStorageBackend();
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    chrome::NotifyWasmProfilePreferencesSmokeBackendDrain(
+        drain_result.Succeeded());
+#endif
     if (!drain_result.Succeeded()) {
-      // A failed scoped drain retains its lease. If it reached the sealing
-      // transition, that backend remains sealed. Keep the structured result
-      // in the storage component and communicate the failure through the
-      // existing process-exit bridge.
-      if (IsNormalResultCode(static_cast<ResultCode>(result))) {
+      // Before acknowledged Web Locks release, a drain failure has no safe
+      // handoff. A post-release worker-retirement failure has already released
+      // its lease and cannot be retried. Either outcome leaves a sealed backend
+      // unavailable. Keep the structured result in the storage component and
+      // communicate the failure through the existing process-exit bridge.
+      if (IsNormalChromeMainResult(result)) {
         result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
       }
     }
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  } else if (preferences_smoke_enabled) {
+    chrome::NotifyWasmProfilePreferencesSmokeBackendDrain(false);
+    if (IsNormalChromeMainResult(result)) {
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+#endif
   }
 
-  const int exit_code = IsNormalResultCode(static_cast<ResultCode>(result))
+  const int exit_code = IsNormalChromeMainResult(result)
                             ? content::RESULT_CODE_NORMAL_EXIT
                             : result;
   if (chromium_wasm_report_process_exit(exit_code) != 1) {

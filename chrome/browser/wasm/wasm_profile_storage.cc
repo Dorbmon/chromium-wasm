@@ -197,17 +197,20 @@ class WasmProfileStorageState {
     result.data_close_failures = wasmfs_result.data_close_failures;
     result.prior_close_failures = wasmfs_result.prior_close_failures;
     result.lease_release_failures = wasmfs_result.lease_release_failures;
+    result.backend_retire_failures = wasmfs_result.backend_retire_failures;
     result.backend_sealed = wasmfs_result.backend_sealed != 0;
     result.lease_released = wasmfs_result.lease_released != 0;
+    result.backend_retired = wasmfs_result.backend_retired != 0;
     if (result.error == 0 &&
         (result.libc_flush_failed != 0 || result.data_flush_failures != 0 ||
          result.data_close_failures != 0 || result.prior_close_failures != 0 ||
-         result.lease_release_failures != 0 || !result.backend_sealed ||
-         !result.lease_released)) {
+         result.lease_release_failures != 0 ||
+         result.backend_retire_failures != 0 || !result.backend_sealed ||
+         !result.lease_released || !result.backend_retired)) {
       // The pinned API promises a first negative errno whenever a failure
       // counter is nonzero. Treat a contradictory success, an unsealed
-      // backend, or an unacknowledged release as EIO rather than reporting a
-      // clean profile handoff.
+      // backend, an unacknowledged release, or an unretired worker as EIO
+      // rather than reporting a clean profile handoff.
       result.error = -EIO;
     }
     return result;
@@ -233,7 +236,8 @@ WasmProfileStorageState& GetWasmProfileStorageState() {
 bool WasmProfileStorageDrainResult::Succeeded() const {
   return error == 0 && libc_flush_failed == 0 && data_flush_failures == 0 &&
          data_close_failures == 0 && prior_close_failures == 0 &&
-         lease_release_failures == 0 && backend_sealed && lease_released;
+         lease_release_failures == 0 && backend_retire_failures == 0 &&
+         backend_sealed && lease_released && backend_retired;
 }
 
 bool InitializeWasmProfileStorage() {

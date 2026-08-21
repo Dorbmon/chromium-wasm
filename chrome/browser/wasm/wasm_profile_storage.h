@@ -11,10 +11,14 @@ namespace chrome {
 
 // The observable result of draining just Chrome's leased OPFS backend. A
 // successful result means WasmFS sealed that exact backend, flushed and closed
-// its detached data files, and synchronously released its OPFS profile lock.
-// It does not stop unrelated WasmFS mounts or stdio.
+// its detached data files, synchronously released its OPFS profile lock, and
+// safely retired its dedicated OPFS worker before the normal Emscripten exit
+// tail. It does not stop unrelated WasmFS mounts or stdio.
 // |detached_descriptors| and |data_file_states| describe work performed, not
-// failures; every other counter must be zero for Succeeded().
+// failures; every other counter must be zero for Succeeded(). A failure before
+// acknowledged lease release has no safe handoff. A post-release worker
+// retirement failure may already have released the lease, but remains sealed
+// and terminal.
 struct WasmProfileStorageDrainResult {
   int error = 0;
   uint32_t detached_descriptors = 0;
@@ -24,8 +28,10 @@ struct WasmProfileStorageDrainResult {
   uint32_t data_close_failures = 0;
   uint32_t prior_close_failures = 0;
   uint32_t lease_release_failures = 0;
+  uint32_t backend_retire_failures = 0;
   bool backend_sealed = false;
   bool lease_released = false;
+  bool backend_retired = false;
 
   bool Succeeded() const;
 };
@@ -50,10 +56,11 @@ bool NeedsWasmProfileStorageBackendDrain();
 bool NotifyWasmProfileStorageProfileCreated();
 bool NotifyWasmProfileStorageProfileShutdown();
 
-// Permanently seals only Chrome's leased OPFS backend and releases its profile
-// lease. ChromeMain calls this only after ContentMain returns, because the
-// profile backend must be quiesced after all Content teardown. Unrelated
-// WasmFS operations and the normal Emscripten exit tail remain usable.
+// Attempts to permanently seal only Chrome's leased OPFS backend, release its
+// profile lease, and retire its dedicated worker. ChromeMain calls this only
+// after ContentMain returns, because the profile backend must be quiesced after
+// all Content teardown. Unrelated WasmFS operations and the normal Emscripten
+// exit tail remain usable.
 WasmProfileStorageDrainResult DrainAndReleaseWasmProfileStorageBackend();
 
 }  // namespace chrome

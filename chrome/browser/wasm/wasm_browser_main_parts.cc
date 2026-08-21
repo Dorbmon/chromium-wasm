@@ -36,6 +36,10 @@
 #include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_version_ui.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_storage.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_core_smoke.h"
@@ -283,6 +287,21 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     LOG(ERROR) << "chrome_wasm could not admit its profile storage lifecycle";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // The M7 two-fresh-module Preferences acceptance intentionally stops here:
+  // its native PrefService action runs after profile admission, but before any
+  // host input, clipboard, pointer, storage-estimate, Browser, WebContents,
+  // or BrowserWindow setup. RequestShutdown() lets the ordinary asynchronous
+  // JsonPrefStore fence and Chrome-owned scoped OPFS drain prove the handoff.
+  if (chrome::IsWasmProfilePreferencesSmokeEnabled()) {
+    if (!chrome::StartWasmProfilePreferencesSmoke(profile_->GetPrefs())) {
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+#endif
 
   // Keep Chrome's bounded physical-key ABI separate from Content Shell's test
   // bridge. It must capture Ozone's injector while the UI sequence and Ozone
@@ -861,8 +880,14 @@ void WasmBrowserMainParts::FinishShutdown() {
         profile_->BeginPersistentPrefsShutdownFence(base::BindOnce(
             [](base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
               if (!main_parts) {
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+                chrome::NotifyWasmProfilePreferencesSmokeFenceResult(false);
+#endif
                 return;
               }
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+              chrome::NotifyWasmProfilePreferencesSmokeFenceResult(success);
+#endif
               if (!success) {
                 LOG(ERROR) << "chrome_wasm Preferences persistence fence "
                               "failed";
@@ -889,7 +914,13 @@ void WasmBrowserMainParts::FinishShutdown() {
       // this Profile or acknowledges its storage lifecycle: ContentMain's
       // outer scoped drain follows that hook and needs this ordering.
       profile_.reset();
-      if (!chrome::NotifyWasmProfileStorageProfileShutdown()) {
+      const bool storage_lifecycle_notified =
+          chrome::NotifyWasmProfileStorageProfileShutdown();
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+      chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(
+          storage_lifecycle_notified);
+#endif
+      if (!storage_lifecycle_notified) {
         // Do not synthesize a clean handoff. The outer scoped drain observes
         // this missing acknowledgement, retains the lease, and changes the
         // process result to non-normal.

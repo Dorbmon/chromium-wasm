@@ -16,6 +16,7 @@ import("//build/config/win/manifest.gni")
 import("//build/private_code_test/private_code_test.gni")
 import("//build/toolchain/toolchain.gni")
 import("//chrome/browser/buildflags.gni")
+import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/chrome_paks.gni")
 import("//chrome/common/features.gni")
 import("//chrome/process_version_rc_template.gni")
@@ -547,6 +548,13 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       ":chrome_wasm_assets",
       ":chrome_wasm_profile_storage",
     ]
+    if (enable_chromium_wasm_m7_profile_preferences_test) {
+      # This capability exists only in the dedicated fresh M7 output
+      # configuration. Its normal target label remains chrome_wasm so the
+      # source closure and OPFS startup stay identical to production.
+      output_name = "chrome_wasm_m7_profile_preferences_test"
+      defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
+    }
     deps = [
       ":wasm_packed_resources",
       "//chrome/app:generated_resources",
@@ -560,6 +568,9 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "//third_party/icu:icudata",
       "//ui/ozone",
     ]
+    if (enable_chromium_wasm_m7_profile_preferences_test) {
+      deps += [ "//chrome/browser/wasm:wasm_profile_preferences_smoke" ]
+    }
   }
 
   # This executable exists solely for the controlled M6 HTTPS browser-flow

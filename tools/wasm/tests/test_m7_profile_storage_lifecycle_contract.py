@@ -86,16 +86,31 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "result.data_close_failures = wasmfs_result.data_close_failures;",
             "result.prior_close_failures = wasmfs_result.prior_close_failures;",
             "result.lease_release_failures = wasmfs_result.lease_release_failures;",
+            "result.backend_retire_failures = wasmfs_result.backend_retire_failures;",
             "result.backend_sealed = wasmfs_result.backend_sealed != 0;",
             "result.lease_released = wasmfs_result.lease_released != 0;",
+            "result.backend_retired = wasmfs_result.backend_retired != 0;",
             "result.error = -EIO;",
             "return error == 0 && libc_flush_failed == 0 &&",
-            "backend_sealed && lease_released;",
+            "backend_retire_failures == 0",
+            "backend_sealed && lease_released && backend_retired;",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.storage)
 
         self.assertNotIn("wasmfs_terminal_drain(", self.storage)
+        self.assertIn("uint32_t backend_retire_failures = 0;", self.storage_header)
+        self.assertIn("bool backend_retired = false;", self.storage_header)
+        self.assertLess(
+            self.storage_header.index("uint32_t lease_release_failures = 0;"),
+            self.storage_header.index("uint32_t backend_retire_failures = 0;"),
+        )
+        self.assertLess(
+            self.storage_header.index("bool lease_released = false;"),
+            self.storage_header.index("bool backend_retired = false;"),
+        )
+        self.assertIn("result.backend_retire_failures != 0", self.storage)
+        self.assertIn("!result.backend_retired", self.storage)
         self.assertIn("result.error = -EBUSY;", self.storage)
         self.assertIn("profile_created_ && !profile_shutdown_", self.storage)
         self.assertIn(
@@ -110,6 +125,13 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.storage.index(
                 "WasmProfileStorageDrainResult result = DrainBackend(backend);"
             ),
+        )
+        self.assertIn(
+            "backend_drain_result_ = result;\n"
+            "    state_ = backend_drain_result_.Succeeded() ? State::kDrained\n"
+            "                                               : State::kDrainFailed;\n"
+            "    return backend_drain_result_;",
+            self.storage,
         )
 
     def test_chrome_main_orders_mount_before_content_and_drain_after_teardown(
@@ -131,6 +153,14 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertLess(content_main, scope_end)
         self.assertLess(scope_end, needs_drain)
         self.assertLess(needs_drain, drain)
+        drain_marker = self.chrome_main.index(
+            "chrome::NotifyWasmProfilePreferencesSmokeBackendDrain("
+        )
+        process_exit = self.chrome_main.index(
+            "chromium_wasm_report_process_exit(exit_code)"
+        )
+        self.assertLess(drain, drain_marker)
+        self.assertLess(drain_marker, process_exit)
         for token in (
             "CHROME_RESULT_CODE_UNSUPPORTED_PARAM",
             "drain_result.Succeeded()",
@@ -148,6 +178,15 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertIn("return exit_code == 0 ? 1 : exit_code;", self.chrome_main)
         self.assertIn(
             "Its scoped cleanup\n      // runs after this delegate scope",
+            self.chrome_main,
+        )
+        self.assertNotIn(
+            "A failed scoped drain retains its lease.", self.chrome_main
+        )
+        self.assertIn(
+            "Before acknowledged Web Locks release, a drain failure has no safe\n"
+            "      // handoff. A post-release worker-retirement failure has already released\n"
+            "      // its lease and cannot be retried.",
             self.chrome_main,
         )
         self.assertLess(

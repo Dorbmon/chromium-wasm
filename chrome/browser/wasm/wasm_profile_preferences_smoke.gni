@@ -1,0 +1,21 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# This is a build-time capability, not a production runtime feature. It is
+# permitted only in the fresh, dedicated M7 Preferences acceptance output
+# directory, where //chrome:chrome_wasm is renamed to the test artifact.
+declare_args() {
+  enable_chromium_wasm_m7_profile_preferences_test = false
+}
+
+assert(!enable_chromium_wasm_m7_profile_preferences_test ||
+           (is_wasm && enable_chromium_wasm_chrome),
+       "M7 Preferences acceptance requires the Wasm Chrome source graph")
+
+if (enable_chromium_wasm_m7_profile_preferences_test) {
+  assert(
+      get_path_info(root_out_dir, "name") ==
+          "wasm-chrome-m7-profile-preferences",
+      "M7 Preferences acceptance must use out/wasm-chrome-m7-profile-preferences")
+}

@@ -9,6 +9,7 @@
 # available without making that aggregate part of the Wasm dependency graph.
 
 import("//chrome/common/features.gni")
+import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//tools/grit/grit_rule.gni")
 
 assert(is_wasm && enable_chromium_wasm_chrome)
@@ -1847,6 +1848,29 @@ source_set("wasm_profile") {
     "//content/public/browser",
     "//url",
   ]
+
+  if (enable_chromium_wasm_m7_profile_preferences_test) {
+    defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
+    deps += [ ":wasm_profile_preferences_smoke" ]
+  }
+}
+
+# The test-only M7 Preferences protocol is linked into the source-selected
+# M7 artifact only. The normal chrome_wasm configuration neither compiles this
+# target nor recognizes its runtime switches.
+if (enable_chromium_wasm_m7_profile_preferences_test) {
+  source_set("wasm_profile_preferences_smoke") {
+    public = [ "wasm_profile_preferences_smoke.h" ]
+
+    sources = [ "wasm_profile_preferences_smoke.cc" ]
+
+    deps = [
+      "//base",
+      "//components/pref_registry",
+      "//components/prefs",
+      "//crypto",
+    ]
+  }
 }
 
 # This owns the one leased OPFS mount used by the Chrome profile path. It is
@@ -1940,6 +1964,11 @@ source_set("wasm_browser_main_parts") {
     "//ui/views",
     "//ui/wm",
   ]
+
+  if (enable_chromium_wasm_m7_profile_preferences_test) {
+    defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
+    deps += [ ":wasm_profile_preferences_smoke" ]
+  }
 }
 
 # This intentionally begins with ContentBrowserClient rather than the desktop
