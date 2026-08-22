@@ -11,6 +11,7 @@
 import("//chrome/common/features.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//tools/grit/grit_rule.gni")
+import("//testing/test.gni")
 
 assert(is_wasm && enable_chromium_wasm_chrome)
 
@@ -1885,6 +1886,29 @@ source_set("wasm_profile_storage") {
   sources = [ "wasm_profile_storage.cc" ]
 
   deps = [ "//base" ]
+}
+
+# This control-plane primitive is deliberately separate from WasmProfile.
+# Its explicit participants will be added only after each profile owner can
+# report a terminal, result-bearing drain/close operation.
+source_set("wasm_profile_shutdown_coordinator") {
+  public = [ "wasm_profile_shutdown_coordinator.h" ]
+
+  sources = [ "wasm_profile_shutdown_coordinator.cc" ]
+
+  deps = [ "//base" ]
+}
+
+test("wasm_profile_shutdown_coordinator_unittests") {
+  sources = [ "wasm_profile_shutdown_coordinator_unittest.cc" ]
+
+  deps = [
+    ":wasm_profile_shutdown_coordinator",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//testing/gtest",
+  ]
 }
 
 # A direct WasmProfile member records committed primary-main-frame web visits
