@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//testing/test.gni")
 import("//third_party/protobuf/proto_library.gni")
 
 source_set("storage") {
@@ -275,6 +276,59 @@ source_set("tests") {
   }
 
   data = [ "//components/services/storage/test_data/" ]
+}
+
+# Keep the StorageAreaImpl completion-contract tests independently runnable on
+# Wasm. The aggregate :tests source_set intentionally pulls broad Content and
+# storage coverage that is not part of this focused component boundary.
+test("storage_area_impl_unittests") {
+  sources = [ "dom_storage/storage_area_impl_unittest.cc" ]
+
+  deps = [
+    ":storage",
+    ":storage_features",
+    ":storage_area_test_support",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//components/services/storage/public/mojom",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
+    "//mojo/public/cpp/test_support:test_utils",
+    "//testing/gmock",
+    "//testing/gtest",
+  ]
+}
+
+# Keep StorageAreaImpl's database fakes separate from the broad storage test
+# support bundle, which intentionally depends on desktop Content test support.
+source_set("storage_area_test_support") {
+  testonly = true
+
+  sources = [
+    "dom_storage/test_support/dom_storage_database_testing.cc",
+    "dom_storage/test_support/dom_storage_database_testing.h",
+    "dom_storage/test_support/fake_dom_storage_database.cc",
+    "dom_storage/test_support/fake_dom_storage_database.h",
+    "dom_storage/test_support/scoped_dom_storage_database_factory_for_testing.cc",
+    "dom_storage/test_support/scoped_dom_storage_database_factory_for_testing.h",
+    "dom_storage/test_support/storage_area_test_util.cc",
+    "dom_storage/test_support/storage_area_test_util.h",
+  ]
+
+  deps = [
+    ":storage",
+    "//base/test:test_support",
+    "//testing/gmock",
+    "//testing/gtest",
+  ]
+
+  public_deps = [
+    "//base",
+    "//mojo/public/cpp/bindings",
+    "//testing/gmock",
+  ]
 }
 
 source_set("test_support") {

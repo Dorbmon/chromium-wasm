@@ -4,6 +4,7 @@
 
 #include "components/services/storage/dom_storage/storage_area_impl.h"
 
+#include <array>
 #include <list>
 #include <memory>
 #include <string>
@@ -12,7 +13,9 @@
 #include <vector>
 
 #include "base/atomic_ref_count.h"
+#include "base/barrier_closure.h"
 #include "base/containers/span.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -27,6 +30,7 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread.h"
+#include "base/threading/sequence_bound.h"
 #include "base/token.h"
 #include "base/trace_event/memory_allocator_dump_guid.h"
 #include "base/uuid.h"
@@ -35,7 +39,10 @@
 #include "components/services/storage/dom_storage/dom_storage_database.h"
 #include "components/services/storage/dom_storage/features.h"
 #include "components/services/storage/dom_storage/test_support/dom_storage_database_testing.h"
+#include "components/services/storage/dom_storage/test_support/fake_dom_storage_database.h"
+#include "components/services/storage/dom_storage/test_support/scoped_dom_storage_database_factory_for_testing.h"
 #include "components/services/storage/dom_storage/test_support/storage_area_test_util.h"
+#include "mojo/core/embedder/embedder.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -48,6 +55,10 @@ namespace {
 using test::MakeGetAllCallback;
 using test::MakeSuccessCallback;
 using CacheMode = StorageAreaImpl::CacheMode;
+using ImmediateCommitSnapshotResult =
+    StorageAreaImpl::ImmediateCommitSnapshotResult;
+using ImmediateCommitSnapshotOutcome =
+    StorageAreaImpl::ImmediateCommitSnapshotResult::Outcome;
 
 constexpr base::Token kTestStorageAreaId(1, 2);
 const size_t kTestSizeLimit = 512;
@@ -75,6 +86,14 @@ std::string ToString(const std::vector<uint8_t>& input) {
 
 std::vector<uint8_t> ToBytes(std::string_view input) {
   return std::vector<uint8_t>(input.begin(), input.end());
+}
+
+void InitializeMojoCoreForStorageAreaTests() {
+  static const bool initialized = [] {
+    mojo::core::Init();
+    return true;
+  }();
+  static_cast<void>(initialized);
 }
 
 std::string ToString(CacheMode cache_mode) {
@@ -123,6 +142,7 @@ class MockDelegate : public StorageAreaImpl::Delegate {
 
   void OnNoBindings() override {}
   void DidCommit(DbStatus status) override {
+    ++did_commit_count_;
     if (!status.ok())
       LOG(ERROR) << "error committing: " << status.ToString();
     if (committed_)
@@ -131,6 +151,7 @@ class MockDelegate : public StorageAreaImpl::Delegate {
   void OnMapLoaded() override { ++map_load_count_; }
 
   int map_load_count() const { return map_load_count_; }
+  int did_commit_count() const { return did_commit_count_; }
 
   void SetDidCommitCallback(base::OnceClosure committed) {
     committed_ = std::move(committed);
@@ -138,7 +159,31 @@ class MockDelegate : public StorageAreaImpl::Delegate {
 
  private:
   int map_load_count_ = 0;
+  int did_commit_count_ = 0;
   base::OnceClosure committed_;
+};
+
+class DestroyingDelegate : public StorageAreaImpl::Delegate {
+ public:
+  explicit DestroyingDelegate(std::unique_ptr<StorageAreaImpl>* area)
+      : area_(area) {}
+  ~DestroyingDelegate() override = default;
+
+  void OnNoBindings() override {}
+  void DidCommit(DbStatus) override { area_->reset(); }
+
+ private:
+  std::unique_ptr<StorageAreaImpl>* area_;
+};
+
+class FailingReadFakeDomStorageDatabase : public FakeDomStorageDatabase {
+ public:
+  using FakeDomStorageDatabase::FakeDomStorageDatabase;
+
+  StatusOr<std::map<DomStorageDatabase::Key, DomStorageDatabase::Value>>
+  ReadMapKeyValues(DomStorageDatabase::MapLocator) override {
+    return base::unexpected(DbStatus::IOError("test read failure"));
+  }
 };
 
 StorageAreaImpl::Options GetDefaultTestingOptions(CacheMode cache_mode) {
@@ -171,6 +216,7 @@ class StorageAreaImplTestBase : public testing::Test,
   };
 
   explicit StorageAreaImplTestBase(bool is_sqlite_enabled) {
+    InitializeMojoCoreForStorageAreaTests();
     // `kDomStorageSqlite` enables SQLite for all databases (on-disk and
     // in-memory). Also explicitly control `kDomStorageSqliteInMemory` so that
     // LevelDB tests don't accidentally use the SQLite in-memory backend.
@@ -354,6 +400,8 @@ class StorageAreaImplTestBase : public testing::Test,
 
   MockDelegate* delegate() { return &delegate_; }
   AsyncDomStorageDatabase* database() { return db_.get(); }
+
+  void RunUntilIdle() { task_environment_.RunUntilIdle(); }
 
   void should_record_send_old_value_observations(bool value) {
     should_record_send_old_value_observations_ = value;
@@ -655,6 +703,525 @@ TEST_P(StorageAreaImplTest, PendingLoadTasks) {
 
   // The `Put()` must be committed.
   EXPECT_FALSE(storage_area_impl()->has_changes_to_commit());
+}
+
+TEST_P(StorageAreaImplTest, ImmediateCommitSnapshotReportsCommittedMapUpdate) {
+  ASSERT_TRUE(PutSync(ToBytes("snapshot-key"), ToBytes("snapshot-value"),
+                      std::nullopt));
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop loop;
+  storage_area_impl()->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+            loop.Quit();
+          }));
+
+  ASSERT_FALSE(result.has_value());
+  loop.Run();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommittedMapUpdate,
+            result->outcome);
+  EXPECT_TRUE(result->status.ok());
+  EXPECT_EQ("snapshot-value",
+            GetDatabaseEntry(*test_map_locator_, "snapshot-key"));
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotDefersForPendingReadWriteLoad) {
+  bool put_succeeded = false;
+  storage_area_impl()->Put(
+      ToBytes("deferred-snapshot-key"), ToBytes("deferred-snapshot-value"),
+      std::nullopt, test::MakeStorageAreaSource(),
+      base::BindLambdaForTesting(
+          [&](bool success) { put_succeeded = success; }));
+  ASSERT_TRUE(storage_area_impl()->has_pending_load_read_write_tasks());
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop loop;
+  storage_area_impl()->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+            loop.Quit();
+          }));
+
+  EXPECT_FALSE(result.has_value());
+  loop.Run();
+
+  EXPECT_TRUE(put_succeeded);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommittedMapUpdate,
+            result->outcome);
+  EXPECT_TRUE(result->status.ok());
+  EXPECT_EQ("deferred-snapshot-value",
+            GetDatabaseEntry(*test_map_locator_, "deferred-snapshot-key"));
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotIncludesEarlierLoadQueueTasks) {
+  bool first_put_succeeded = false;
+  bool second_put_succeeded = false;
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop result_loop;
+
+  storage_area_impl()->Put(
+      ToBytes("first-queued-key"), ToBytes("first-queued-value"),
+      std::nullopt, test::MakeStorageAreaSource(),
+      base::BindLambdaForTesting([&](bool success) {
+        first_put_succeeded = success;
+        storage_area_impl()->RequestImmediateCommitSnapshot(
+            base::BindLambdaForTesting(
+                [&](ImmediateCommitSnapshotResult callback_result) {
+                  result.emplace(std::move(callback_result));
+                  result_loop.Quit();
+                }));
+      }));
+  storage_area_impl()->Put(
+      ToBytes("second-queued-key"), ToBytes("second-queued-value"),
+      std::nullopt, test::MakeStorageAreaSource(),
+      base::BindLambdaForTesting(
+          [&](bool success) { second_put_succeeded = success; }));
+
+  ASSERT_TRUE(storage_area_impl()->has_pending_load_read_write_tasks());
+  result_loop.Run();
+
+  EXPECT_TRUE(first_put_succeeded);
+  EXPECT_TRUE(second_put_succeeded);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommittedMapUpdate,
+            result->outcome);
+  EXPECT_TRUE(result->status.ok());
+  EXPECT_EQ("first-queued-value",
+            GetDatabaseEntry(*test_map_locator_, "first-queued-key"));
+  EXPECT_EQ("second-queued-value",
+            GetDatabaseEntry(*test_map_locator_, "second-queued-key"));
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotSharesActiveMapUpdateOperation) {
+  ASSERT_TRUE(PutSync(ToBytes("shared-operation-key"),
+                      ToBytes("shared-operation-value"), std::nullopt));
+
+  std::array<std::optional<ImmediateCommitSnapshotResult>, 2> results;
+  base::RunLoop result_loop;
+  base::RepeatingClosure quit =
+      base::BarrierClosure(2, result_loop.QuitClosure());
+  for (size_t index = 0; index < results.size(); ++index) {
+    storage_area_impl()->RequestImmediateCommitSnapshot(
+        base::BindLambdaForTesting(
+            [&, index](ImmediateCommitSnapshotResult callback_result) {
+              results[index].emplace(std::move(callback_result));
+              quit.Run();
+            }));
+  }
+
+  EXPECT_FALSE(results[0].has_value());
+  EXPECT_FALSE(results[1].has_value());
+  result_loop.Run();
+
+  for (const auto& result : results) {
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommittedMapUpdate,
+              result->outcome);
+    EXPECT_TRUE(result->status.ok());
+  }
+  EXPECT_EQ(1, delegate()->did_commit_count());
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotWaitsForActiveAndTargetMapUpdates) {
+  ASSERT_TRUE(PutSync(ToBytes("first-operation-key"),
+                      ToBytes("first-operation-value"), std::nullopt));
+  storage_area_impl()->ScheduleImmediateCommit();
+  bool target_put_succeeded = false;
+  storage_area_impl()->Put(
+      ToBytes("target-operation-key"), ToBytes("target-operation-value"),
+      std::nullopt, test::MakeStorageAreaSource(),
+      base::BindLambdaForTesting(
+          [&](bool success) { target_put_succeeded = success; }));
+  ASSERT_TRUE(target_put_succeeded);
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop result_loop;
+  storage_area_impl()->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+            result_loop.Quit();
+          }));
+  result_loop.Run();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommittedMapUpdate,
+            result->outcome);
+  EXPECT_TRUE(result->status.ok());
+  EXPECT_EQ(2, delegate()->did_commit_count());
+  EXPECT_EQ("first-operation-value",
+            GetDatabaseEntry(*test_map_locator_, "first-operation-key"));
+  EXPECT_EQ("target-operation-value",
+            GetDatabaseEntry(*test_map_locator_, "target-operation-key"));
+}
+
+TEST_P(StorageAreaImplTest, ImmediateCommitSnapshotReportsNoPendingMapUpdate) {
+  std::optional<ImmediateCommitSnapshotResult> result;
+  storage_area_impl()->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+          }));
+
+  EXPECT_FALSE(result.has_value());
+  RunUntilIdle();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kNoPendingMapUpdate,
+            result->outcome);
+  EXPECT_FALSE(result->status.ok());
+  EXPECT_TRUE(result->status.IsNotFound());
+}
+
+TEST_P(StorageAreaImplTest, ImmediateCommitSnapshotReportsDatabaseUnavailable) {
+  StorageAreaImpl::Options options =
+      GetDefaultTestingOptions(CacheMode::KEYS_AND_VALUES);
+  auto area = std::make_unique<StorageAreaImpl>(
+      /*database=*/nullptr, GenerateMapLocator(/*map_id=*/99), delegate(),
+      options);
+  area->InitializeAsEmpty();
+
+  bool put_succeeded = false;
+  area->Put(ToBytes("memory-key"), ToBytes("memory-value"), std::nullopt,
+            test::MakeStorageAreaSource(),
+            base::BindLambdaForTesting(
+                [&](bool success) { put_succeeded = success; }));
+  EXPECT_TRUE(put_succeeded);
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  area->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+          }));
+
+  EXPECT_FALSE(result.has_value());
+  RunUntilIdle();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kDatabaseUnavailable,
+            result->outcome);
+  EXPECT_FALSE(result->status.ok());
+}
+
+TEST_P(StorageAreaImplTest, ImmediateCommitSnapshotCancellationFailsOnce) {
+  storage_area_impl()->Put(
+      ToBytes("cancel-key"), ToBytes("cancel-value"), std::nullopt,
+      test::MakeStorageAreaSource(), base::DoNothing());
+  ASSERT_TRUE(storage_area_impl()->has_pending_load_read_write_tasks());
+
+  int callback_count = 0;
+  std::optional<ImmediateCommitSnapshotResult> result;
+  storage_area_impl()->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            ++callback_count;
+            result.emplace(std::move(callback_result));
+          }));
+  storage_area_impl()->CancelAllPendingRequests();
+
+  RunUntilIdle();
+
+  EXPECT_EQ(1, callback_count);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCancelled, result->outcome);
+  EXPECT_FALSE(result->status.ok());
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotCancellationFromEarlierLoadTaskFailsOnce) {
+  storage_area_impl()->Put(
+      ToBytes("cancel-in-load-key"), ToBytes("cancel-in-load-value"),
+      std::nullopt, test::MakeStorageAreaSource(),
+      base::BindLambdaForTesting(
+          [&](bool) { storage_area_impl()->CancelAllPendingRequests(); }));
+
+  int callback_count = 0;
+  std::optional<ImmediateCommitSnapshotResult> result;
+  storage_area_impl()->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            ++callback_count;
+            result.emplace(std::move(callback_result));
+          }));
+
+  RunUntilIdle();
+
+  EXPECT_EQ(1, callback_count);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCancelled, result->outcome);
+  EXPECT_FALSE(result->status.ok());
+}
+
+TEST_P(StorageAreaImplTest, ImmediateCommitSnapshotDestructionFailsOnce) {
+  StorageAreaImpl::Options options =
+      GetDefaultTestingOptions(CacheMode::KEYS_AND_VALUES);
+  auto area = std::make_unique<StorageAreaImpl>(
+      database(), GenerateMapLocator(/*map_id=*/100), delegate(), options);
+  area->InitializeAsEmpty();
+
+  bool put_succeeded = false;
+  area->Put(ToBytes("destroy-key"), ToBytes("destroy-value"), std::nullopt,
+            test::MakeStorageAreaSource(),
+            base::BindLambdaForTesting(
+                [&](bool success) { put_succeeded = success; }));
+  ASSERT_TRUE(put_succeeded);
+
+  int callback_count = 0;
+  std::optional<ImmediateCommitSnapshotResult> result;
+  area->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            ++callback_count;
+            result.emplace(std::move(callback_result));
+          }));
+  area.reset();
+
+  RunUntilIdle();
+
+  EXPECT_EQ(1, callback_count);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCancelled, result->outcome);
+  EXPECT_FALSE(result->status.ok());
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotSurvivesDelegateAreaDestruction) {
+  StorageAreaImpl::Options options =
+      GetDefaultTestingOptions(CacheMode::KEYS_AND_VALUES);
+  std::unique_ptr<StorageAreaImpl> area;
+  DestroyingDelegate destroying_delegate(&area);
+  area = std::make_unique<StorageAreaImpl>(
+      database(), GenerateMapLocator(/*map_id=*/101), &destroying_delegate,
+      options);
+  area->InitializeAsEmpty();
+
+  bool put_succeeded = false;
+  area->Put(ToBytes("delegate-key"), ToBytes("delegate-value"),
+            std::nullopt, test::MakeStorageAreaSource(),
+            base::BindLambdaForTesting(
+                [&](bool success) { put_succeeded = success; }));
+  ASSERT_TRUE(put_succeeded);
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop loop;
+  area->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+            loop.Quit();
+          }));
+  loop.Run();
+
+  EXPECT_FALSE(area);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommittedMapUpdate,
+            result->outcome);
+  EXPECT_TRUE(result->status.ok());
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotRejectsAreaLoadingFromFork) {
+  StorageAreaImpl::Options options =
+      GetDefaultTestingOptions(CacheMode::KEYS_AND_VALUES);
+  auto source = std::make_unique<StorageAreaImpl>(
+      database(), GenerateMapLocator(/*map_id=*/102), delegate(), options);
+  auto forked = source->ForkToNewMap(GenerateMapLocator(/*map_id=*/103),
+                                     delegate(), options);
+  ASSERT_FALSE(forked->initialized());
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  forked->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+          }));
+  EXPECT_FALSE(result.has_value());
+  RunUntilIdle();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kUnsupported, result->outcome);
+  EXPECT_FALSE(result->status.ok());
+}
+
+TEST_P(StorageAreaImplTest,
+       ImmediateCommitSnapshotDoesNotTreatSourceCloneAsMapUpdate) {
+  StorageAreaImpl::Options options =
+      GetDefaultTestingOptions(CacheMode::KEYS_AND_VALUES);
+  auto source = std::make_unique<StorageAreaImpl>(
+      database(), GenerateMapLocator(/*map_id=*/104), delegate(), options);
+  source->InitializeAsEmpty();
+
+  bool put_succeeded = false;
+  source->Put(ToBytes("source-clone-key"), ToBytes("source-clone-value"),
+              std::nullopt, test::MakeStorageAreaSource(),
+              base::BindLambdaForTesting(
+                  [&](bool success) { put_succeeded = success; }));
+  ASSERT_TRUE(put_succeeded);
+
+  std::optional<ImmediateCommitSnapshotResult> baseline_result;
+  base::RunLoop baseline_loop;
+  source->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            baseline_result.emplace(std::move(callback_result));
+            baseline_loop.Quit();
+          }));
+  baseline_loop.Run();
+  ASSERT_TRUE(baseline_result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommittedMapUpdate,
+            baseline_result->outcome);
+  ASSERT_TRUE(baseline_result->status.ok());
+
+  auto forked = source->ForkToNewMap(GenerateMapLocator(/*map_id=*/105),
+                                     delegate(), options);
+  ASSERT_TRUE(forked->initialized());
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop result_loop;
+  source->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+            result_loop.Quit();
+          }));
+  result_loop.Run();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kNoPendingMapUpdate,
+            result->outcome);
+  EXPECT_TRUE(result->status.IsNotFound());
+}
+
+TEST(StorageAreaImplSnapshotTest, ImmediateCommitSnapshotReportsUpdateFailure) {
+  base::test::TaskEnvironment task_environment;
+  ScopedDomStorageDatabaseFactoryForTesting scoped_factory(
+      base::BindLambdaForTesting(
+          [](StorageType,
+             bool,
+             scoped_refptr<base::SequencedTaskRunner> task_runner)
+              -> base::SequenceBound<DomStorageDatabase> {
+            auto database = base::SequenceBound<FakeDomStorageDatabase>(
+                std::move(task_runner), DbStatus::OK());
+            database.AsyncCall(&FakeDomStorageDatabase::SetUpdateMapsStatus)
+                .WithArgs(DbStatus::IOError("test failure"));
+            return database;
+          }));
+
+  std::unique_ptr<AsyncDomStorageDatabase> database;
+  DbStatus open_status = DbStatus::IOError("Open did not complete.");
+  base::RunLoop open_loop;
+  database = AsyncDomStorageDatabase::Open(
+      StorageType::kLocalStorage,
+      /*database_path=*/base::FilePath(),
+      /*memory_dump_id=*/std::nullopt,
+      base::BindLambdaForTesting([&](DbStatus status) {
+        open_status = std::move(status);
+        open_loop.Quit();
+      }));
+  open_loop.Run();
+  ASSERT_TRUE(open_status.ok());
+
+  StorageAreaImpl::Options options =
+      GetDefaultTestingOptions(CacheMode::KEYS_AND_VALUES);
+  MockDelegate delegate;
+  const blink::StorageKey storage_key =
+      blink::StorageKey::CreateFromStringForTesting(kFakeUrlString);
+  auto map_locator =
+      base::MakeRefCounted<DomStorageDatabase::SharedMapLocator>(
+          DomStorageDatabase::MapLocator("snapshot-session", storage_key,
+                                         /*map_id=*/1));
+  auto area = std::make_unique<StorageAreaImpl>(database.get(), map_locator,
+                                                &delegate, options);
+  area->InitializeAsEmpty();
+
+  bool put_succeeded = false;
+  area->Put(ToBytes("failure-key"), ToBytes("failure-value"), std::nullopt,
+            test::MakeStorageAreaSource(),
+            base::BindLambdaForTesting(
+                [&](bool success) { put_succeeded = success; }));
+  ASSERT_TRUE(put_succeeded);
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop result_loop;
+  area->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+            result_loop.Quit();
+          }));
+  result_loop.Run();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kCommitFailed, result->outcome);
+  EXPECT_FALSE(result->status.ok());
+}
+
+TEST(StorageAreaImplSnapshotTest, ImmediateCommitSnapshotReportsMapLoadFailure) {
+  base::test::TaskEnvironment task_environment;
+  ScopedDomStorageDatabaseFactoryForTesting scoped_factory(
+      base::BindLambdaForTesting(
+          [](StorageType,
+             bool,
+             scoped_refptr<base::SequencedTaskRunner> task_runner)
+              -> base::SequenceBound<DomStorageDatabase> {
+            return base::SequenceBound<FailingReadFakeDomStorageDatabase>(
+                std::move(task_runner), DbStatus::OK());
+          }));
+
+  std::unique_ptr<AsyncDomStorageDatabase> database;
+  DbStatus open_status = DbStatus::IOError("Open did not complete.");
+  base::RunLoop open_loop;
+  database = AsyncDomStorageDatabase::Open(
+      StorageType::kLocalStorage,
+      /*database_path=*/base::FilePath(),
+      /*memory_dump_id=*/std::nullopt,
+      base::BindLambdaForTesting([&](DbStatus status) {
+        open_status = std::move(status);
+        open_loop.Quit();
+      }));
+  open_loop.Run();
+  ASSERT_TRUE(open_status.ok());
+
+  StorageAreaImpl::Options options =
+      GetDefaultTestingOptions(CacheMode::KEYS_AND_VALUES);
+  MockDelegate delegate;
+  const blink::StorageKey storage_key =
+      blink::StorageKey::CreateFromStringForTesting(kFakeUrlString);
+  auto map_locator =
+      base::MakeRefCounted<DomStorageDatabase::SharedMapLocator>(
+          DomStorageDatabase::MapLocator("snapshot-session", storage_key,
+                                         /*map_id=*/2));
+  auto area = std::make_unique<StorageAreaImpl>(database.get(), map_locator,
+                                                &delegate, options);
+
+  area->Put(ToBytes("load-failure-key"), ToBytes("load-failure-value"),
+            std::nullopt, test::MakeStorageAreaSource(), base::DoNothing());
+
+  std::optional<ImmediateCommitSnapshotResult> result;
+  base::RunLoop result_loop;
+  area->RequestImmediateCommitSnapshot(
+      base::BindLambdaForTesting(
+          [&](ImmediateCommitSnapshotResult callback_result) {
+            result.emplace(std::move(callback_result));
+            result_loop.Quit();
+          }));
+  result_loop.Run();
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(ImmediateCommitSnapshotOutcome::kDatabaseUnavailable,
+            result->outcome);
+  EXPECT_FALSE(result->status.ok());
 }
 
 TEST_P(StorageAreaImplCacheModeTest, GetAll) {

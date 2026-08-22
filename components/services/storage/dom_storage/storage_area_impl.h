@@ -8,11 +8,13 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "components/services/storage/dom_storage/async_dom_storage_database.h"
@@ -74,6 +76,35 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
     KEYS_AND_VALUES
   };
 
+  // The terminal result of RequestImmediateCommitSnapshot().
+  struct ImmediateCommitSnapshotResult {
+    enum class Outcome {
+      // At least one admitted UpdateMaps operation completed successfully.
+      kCommittedMapUpdate,
+      // No admitted map update was pending. This is intentionally distinct
+      // from kCommittedMapUpdate, has a non-OK DbStatus, and is not a
+      // persistence success signal.
+      kNoPendingMapUpdate,
+      // The area's database was unavailable, including when a map-load needed
+      // to order an admitted read-write operation fails.
+      kDatabaseUnavailable,
+      // An admitted UpdateMaps operation returned a non-OK DbStatus.
+      kCommitFailed,
+      // The request could not complete because the area was cancelled or
+      // destroyed.
+      kCancelled,
+      // A target area still loading through ForkToNewMap() has a separate
+      // clone-complete contract and cannot provide a map-update snapshot yet.
+      kUnsupported,
+    };
+
+    Outcome outcome;
+    DbStatus status;
+  };
+
+  using ImmediateCommitSnapshotCallback = base::OnceCallback<void(
+      ImmediateCommitSnapshotResult)>;
+
   // Options provided to constructor.
   struct Options {
     CacheMode cache_mode = CacheMode::KEYS_AND_VALUES;
@@ -123,7 +154,8 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
   // Cancels all pending load tasks. Useful for emergency destructions. If the
   // area is unloaded (initialized() returns false), this will DROP all
   // pending changes to the database, and any uninitialized areas created
-  // through `ForkToNewMap()` will stay BROKEN and unresponsive.
+  // through `ForkToNewMap()` will stay BROKEN and unresponsive. Outstanding
+  // immediate-commit snapshot requests are resolved as kCancelled.
   void CancelAllPendingRequests();
 
   // The total bytes used by items which counts towards the quota.
@@ -160,9 +192,33 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
   // Commits any uncommitted data to the database as soon as possible. This
   // usually means data will be committed immediately, but if we're currently
   // waiting on the result of initializing our map the commit won't happen
-  // until the load has finished. If provided, |callback| is run only once the
-  // commit is fully completed.
+  // until the load has finished. This is fire-and-forget.
   void ScheduleImmediateCommit();
+
+  // Requests a snapshot of map updates admitted before this call on this
+  // area's sequence. The callback is posted asynchronously while the caller
+  // sequence remains runnable. It waits for any already-active UpdateMaps
+  // operations for this area, plus the immediate UpdateMaps operation induced
+  // by this request, if any. This does not establish a mutation boundary:
+  // later mutations may coalesce into that same UpdateMaps operation.
+  //
+  // An unavailable database, cancellation, or area destruction returns a
+  // non-success Outcome with a non-OK DbStatus. A map-load failure does the
+  // same when this request must wait behind an admitted read-write operation.
+  // This operation is unsupported while an area is loading from
+  // ForkToNewMap(), because that clone has a separate completion contract.
+  //
+  // This never observes CloneMap operations. In particular, a source area may
+  // report kNoPendingMapUpdate while a ForkToNewMap() clone is in flight.
+  //
+  // A successful result is only an area-local DOM Storage UpdateMaps outcome;
+  // it is not a filesystem durability, Local Storage shutdown, profile
+  // quiescence, or OPFS lease signal.
+  //
+  // If the captured caller task runner starts rejecting tasks during shutdown,
+  // callback delivery is no longer guaranteed.
+  void RequestImmediateCommitSnapshot(
+      ImmediateCommitSnapshotCallback callback);
 
   // Clears the in-memory cache if currently no changes are pending. If there
   // are uncommitted changes this method does nothing.
@@ -199,8 +255,6 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
   // Committer:
   std::optional<DomStorageDatabase::MapBatchUpdate> CollectCommit() override;
   base::OnceCallback<void(DbStatus)> GetCommitCompleteCallback() override;
-
-  void OnCommitComplete(DbStatus status);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(StorageAreaImplTest, GetAllAfterSetCacheMode);
@@ -277,6 +331,9 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
     AccessMode mode;
   };
 
+  class CommitOperation;
+  class CommitSnapshotState;
+
   // Changes the cache mode of the area. If applicable, this will change the
   // internal storage type after the next commit. The keys-only mode can only
   // be set only when there is one client binding. It automatically changes to
@@ -303,6 +360,17 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
   base::TimeDelta ComputeCommitDelay() const;
 
   void CommitChanges();
+  void ResumeImmediateCommitSnapshot(
+      scoped_refptr<CommitSnapshotState> snapshot);
+  void BeginImmediateCommitSnapshot(
+      scoped_refptr<CommitSnapshotState> snapshot);
+  void FailPendingImmediateCommitSnapshots(DbStatus status);
+  void PruneResolvedImmediateCommitSnapshots();
+
+  base::OnceCallback<void(DbStatus)> MakeCommitCompleteCallback(
+      scoped_refptr<CommitOperation> operation);
+  void OnCommitComplete(scoped_refptr<CommitOperation> operation,
+                        DbStatus status);
 
   void UnloadMapIfPossible();
 
@@ -347,6 +415,12 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
   // These are always consumed & cleared when the map is loaded.
   std::vector<OnLoadCompleteTask> on_load_complete_tasks_;
 
+  // OnLoadComplete() temporarily moves its task queue into a local vector.
+  // A snapshot requested reentrantly from one of those tasks must wait until
+  // the remaining pre-existing tasks have run before establishing its target
+  // UpdateMaps operation.
+  bool is_running_load_complete_tasks_ = false;
+
   size_t storage_used_;
   size_t max_size_;
   size_t memory_used_;
@@ -357,6 +431,21 @@ class StorageAreaImpl : public blink::mojom::StorageArea,
   int commit_batches_in_flight_ = 0;
   bool has_committed_data_ = false;
   std::unique_ptr<CommitBatch> commit_batch_;
+
+  // UpdateMaps operations which have been collected but whose callback has
+  // not yet run. CloneMap operations intentionally do not appear here: an
+  // immediate-commit snapshot reports only this area's map-update work.
+  std::vector<scoped_refptr<CommitOperation>> active_map_update_operations_;
+
+  // CollectCommit() creates an operation before AsyncDomStorageDatabase asks
+  // for its completion callback. The latter consumes the front entry.
+  std::vector<scoped_refptr<CommitOperation>>
+      pending_map_update_completion_operations_;
+
+  // Strong ownership makes cancellation and destruction terminal for each
+  // request even though load/database callbacks use WeakPtr.
+  std::vector<scoped_refptr<CommitSnapshotState>>
+      pending_immediate_commit_snapshots_;
 
   base::WeakPtrFactory<StorageAreaImpl> weak_ptr_factory_{this};
 

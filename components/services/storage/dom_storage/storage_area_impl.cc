@@ -4,13 +4,17 @@
 
 #include "components/services/storage/dom_storage/storage_area_impl.h"
 
+#include <algorithm>
 #include <memory>
 
+#include "base/auto_reset.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/memory/ref_counted.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/process_memory_dump.h"
@@ -51,6 +55,177 @@ StorageAreaImpl::CommitBatch::CommitBatch() = default;
 
 StorageAreaImpl::CommitBatch::~CommitBatch() = default;
 
+// Owns an immediate-commit callback independently from StorageAreaImpl. Load
+// and database callbacks are weak-bound to the area, so cancellation and
+// destruction must resolve this state explicitly before those callbacks can
+// disappear.
+class StorageAreaImpl::CommitSnapshotState
+    : public base::RefCounted<CommitSnapshotState> {
+ public:
+  explicit CommitSnapshotState(ImmediateCommitSnapshotCallback callback)
+      : callback_(std::move(callback)),
+        callback_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
+  }
+
+  CommitSnapshotState(const CommitSnapshotState&) = delete;
+  CommitSnapshotState& operator=(const CommitSnapshotState&) = delete;
+
+  bool resolved() const { return resolved_; }
+  bool observing_map_updates() const {
+    return !resolved_ && observing_map_updates_;
+  }
+  bool waiting_for_target_map_update() const {
+    return !resolved_ && waiting_for_target_map_update_;
+  }
+
+  void AddMapUpdateOperation() {
+    DCHECK(observing_map_updates());
+    ++pending_map_update_operations_;
+    saw_map_update_ = true;
+  }
+
+  void WaitForTargetMapUpdate() {
+    DCHECK(observing_map_updates());
+    DCHECK(!waiting_for_target_map_update_);
+    waiting_for_target_map_update_ = true;
+  }
+
+  void OnTargetMapUpdateAttached() {
+    DCHECK(waiting_for_target_map_update());
+    waiting_for_target_map_update_ = false;
+    observing_map_updates_ = false;
+    ResolveIfReady();
+  }
+
+  void StopObservingWithoutTarget() {
+    DCHECK(observing_map_updates());
+    DCHECK(!waiting_for_target_map_update_);
+    observing_map_updates_ = false;
+    ResolveIfReady();
+  }
+
+  void OnMapUpdateComplete(DbStatus status) {
+    DCHECK_GT(pending_map_update_operations_, 0u);
+    --pending_map_update_operations_;
+    if (!status.ok()) {
+      Resolve(ImmediateCommitSnapshotResult::Outcome::kCommitFailed,
+              std::move(status));
+      return;
+    }
+    ResolveIfReady();
+  }
+
+  void ResolveDatabaseUnavailable() {
+    Resolve(ImmediateCommitSnapshotResult::Outcome::kDatabaseUnavailable,
+            DbStatus::IOError("Storage area database is unavailable."));
+  }
+
+  void ResolveCancelled(DbStatus status) {
+    Resolve(ImmediateCommitSnapshotResult::Outcome::kCancelled,
+            std::move(status));
+  }
+
+  void ResolveUnsupported() {
+    Resolve(ImmediateCommitSnapshotResult::Outcome::kUnsupported,
+            DbStatus::NotSupported(
+                "Storage area commit snapshot does not support fork loading."));
+  }
+
+ private:
+  friend class base::RefCounted<CommitSnapshotState>;
+  ~CommitSnapshotState() = default;
+
+  void ResolveIfReady() {
+    if (resolved_ || observing_map_updates_ ||
+        waiting_for_target_map_update_ || pending_map_update_operations_) {
+      return;
+    }
+    Resolve(saw_map_update_
+                ? ImmediateCommitSnapshotResult::Outcome::kCommittedMapUpdate
+                : ImmediateCommitSnapshotResult::Outcome::kNoPendingMapUpdate,
+            saw_map_update_
+                ? DbStatus::OK()
+                : DbStatus::NotFound("No pending map update was admitted."));
+  }
+
+  void Resolve(ImmediateCommitSnapshotResult::Outcome outcome,
+               DbStatus status) {
+    if (resolved_) {
+      return;
+    }
+    resolved_ = true;
+    observing_map_updates_ = false;
+    waiting_for_target_map_update_ = false;
+
+    ImmediateCommitSnapshotCallback callback = std::move(callback_);
+    if (!callback) {
+      return;
+    }
+    // Posting keeps user code out of cancellation/destruction and out of the
+    // delegate callback below, either of which may delete StorageAreaImpl.
+    callback_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            std::move(callback),
+            ImmediateCommitSnapshotResult{outcome, std::move(status)}));
+  }
+
+  ImmediateCommitSnapshotCallback callback_;
+  const scoped_refptr<base::SequencedTaskRunner> callback_task_runner_;
+  bool resolved_ = false;
+  bool observing_map_updates_ = true;
+  bool waiting_for_target_map_update_ = false;
+  size_t pending_map_update_operations_ = 0;
+  bool saw_map_update_ = false;
+};
+
+// Represents one asynchronous database operation. Only kUpdateMaps operations
+// participate in an immediate-commit snapshot; CloneMap uses the same legacy
+// completion plumbing but has a separate correctness contract.
+class StorageAreaImpl::CommitOperation
+    : public base::RefCounted<CommitOperation> {
+ public:
+  enum class Kind {
+    kUpdateMaps,
+    kCloneMap,
+  };
+
+  explicit CommitOperation(Kind kind) : kind_(kind) {}
+
+  CommitOperation(const CommitOperation&) = delete;
+  CommitOperation& operator=(const CommitOperation&) = delete;
+
+  Kind kind() const { return kind_; }
+
+  void AddSnapshot(scoped_refptr<CommitSnapshotState> snapshot) {
+    DCHECK_EQ(kind_, Kind::kUpdateMaps);
+    auto found = std::find_if(
+        snapshots_.begin(), snapshots_.end(),
+        [&snapshot](const scoped_refptr<CommitSnapshotState>& candidate) {
+          return candidate.get() == snapshot.get();
+        });
+    if (found != snapshots_.end()) {
+      return;
+    }
+    snapshot->AddMapUpdateOperation();
+    snapshots_.push_back(std::move(snapshot));
+  }
+
+  void Complete(const DbStatus& status) {
+    for (const auto& snapshot : snapshots_) {
+      snapshot->OnMapUpdateComplete(status);
+    }
+    snapshots_.clear();
+  }
+
+ private:
+  friend class base::RefCounted<CommitOperation>;
+  ~CommitOperation() = default;
+
+  const Kind kind_;
+  std::vector<scoped_refptr<CommitSnapshotState>> snapshots_;
+};
+
 StorageAreaImpl::OnLoadCompleteTask::OnLoadCompleteTask(
     base::OnceClosure callback,
     AccessMode mode)
@@ -85,6 +260,8 @@ StorageAreaImpl::StorageAreaImpl(
 }
 
 StorageAreaImpl::~StorageAreaImpl() {
+  FailPendingImmediateCommitSnapshots(
+      DbStatus::IOError("Storage area was destroyed."));
   DCHECK(!has_pending_load_tasks());
   if (commit_batch_)
     CommitChanges();
@@ -140,6 +317,8 @@ std::unique_ptr<StorageAreaImpl> StorageAreaImpl::ForkToNewMap(
 }
 
 void StorageAreaImpl::CancelAllPendingRequests() {
+  FailPendingImmediateCommitSnapshots(
+      DbStatus::IOError("Storage area pending requests were cancelled."));
   on_load_complete_tasks_.clear();
 }
 
@@ -169,6 +348,115 @@ void StorageAreaImpl::ScheduleImmediateCommit() {
     return;
   }
   CommitChanges();
+}
+
+void StorageAreaImpl::RequestImmediateCommitSnapshot(
+    ImmediateCommitSnapshotCallback callback) {
+  auto snapshot =
+      base::MakeRefCounted<CommitSnapshotState>(std::move(callback));
+  pending_immediate_commit_snapshots_.push_back(snapshot);
+
+  if (map_state_ == MapState::LOADING_FROM_FORK) {
+    snapshot->ResolveUnsupported();
+    PruneResolvedImmediateCommitSnapshots();
+    return;
+  }
+
+  // A request begins observing immediately, rather than only in the deferred
+  // load continuation. OnLoadComplete() swaps its queue into a local vector,
+  // so earlier queued work can create a map update before the continuation
+  // runs. CollectCommit() subscribes this state to those updates while this
+  // observation remains open.
+  for (const auto& operation : active_map_update_operations_) {
+    operation->AddSnapshot(snapshot);
+  }
+
+  ResumeImmediateCommitSnapshot(std::move(snapshot));
+}
+
+void StorageAreaImpl::ResumeImmediateCommitSnapshot(
+    scoped_refptr<CommitSnapshotState> snapshot) {
+  if (snapshot->resolved()) {
+    return;
+  }
+
+  if (has_pending_load_read_write_tasks()) {
+    LoadMap(OnLoadCompleteTask(
+        base::BindOnce(&StorageAreaImpl::ResumeImmediateCommitSnapshot,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(snapshot)),
+        AccessMode::ReadWrite));
+    return;
+  }
+
+  if (is_running_load_complete_tasks_) {
+    // OnLoadComplete() runs a moved local queue. Defer until its pre-existing
+    // tasks have run, while keeping the state subscribed to any UpdateMaps
+    // operation they create.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&StorageAreaImpl::ResumeImmediateCommitSnapshot,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(snapshot)));
+    return;
+  }
+
+  BeginImmediateCommitSnapshot(std::move(snapshot));
+}
+
+void StorageAreaImpl::BeginImmediateCommitSnapshot(
+    scoped_refptr<CommitSnapshotState> snapshot) {
+  // Cancellation may have happened while this continuation was in
+  // OnLoadComplete()'s local task vector.
+  if (snapshot->resolved()) {
+    return;
+  }
+
+  if (map_state_ == MapState::LOADING_FROM_FORK) {
+    snapshot->ResolveUnsupported();
+    PruneResolvedImmediateCommitSnapshots();
+    return;
+  }
+
+  if (!database_) {
+    snapshot->ResolveDatabaseUnavailable();
+    PruneResolvedImmediateCommitSnapshots();
+    return;
+  }
+
+  if (!commit_batch_) {
+    snapshot->StopObservingWithoutTarget();
+    PruneResolvedImmediateCommitSnapshots();
+    return;
+  }
+
+  // CollectCommit() runs synchronously inside InitiateCommit(). It attaches
+  // this state to exactly the map update collected for this immediate batch
+  // and closes the observation boundary there.
+  snapshot->WaitForTargetMapUpdate();
+  CommitChanges();
+  if (snapshot->waiting_for_target_map_update()) {
+    snapshot->ResolveDatabaseUnavailable();
+  }
+  PruneResolvedImmediateCommitSnapshots();
+}
+
+void StorageAreaImpl::FailPendingImmediateCommitSnapshots(DbStatus status) {
+  for (const auto& snapshot : pending_immediate_commit_snapshots_) {
+    if (!snapshot->resolved()) {
+      snapshot->ResolveCancelled(status);
+    }
+  }
+  PruneResolvedImmediateCommitSnapshots();
+}
+
+void StorageAreaImpl::PruneResolvedImmediateCommitSnapshots() {
+  auto end = std::remove_if(
+      pending_immediate_commit_snapshots_.begin(),
+      pending_immediate_commit_snapshots_.end(),
+      [](const scoped_refptr<CommitSnapshotState>& snapshot) {
+        return snapshot->resolved();
+      });
+  pending_immediate_commit_snapshots_.erase(
+      end, pending_immediate_commit_snapshots_.end());
 }
 
 void StorageAreaImpl::OnMemoryDump(const std::string& name,
@@ -519,8 +807,12 @@ void StorageAreaImpl::GetAll(
 
 base::OnceCallback<void(DbStatus)>
 StorageAreaImpl::GetCommitCompleteCallback() {
-  return base::BindOnce(&StorageAreaImpl::OnCommitComplete,
-                        weak_ptr_factory_.GetWeakPtr());
+  DCHECK(!pending_map_update_completion_operations_.empty());
+  scoped_refptr<CommitOperation> operation =
+      pending_map_update_completion_operations_.front();
+  pending_map_update_completion_operations_.erase(
+      pending_map_update_completion_operations_.begin());
+  return MakeCommitCompleteCallback(std::move(operation));
 }
 
 void StorageAreaImpl::SetCacheMode(CacheMode cache_mode) {
@@ -629,21 +921,25 @@ void StorageAreaImpl::CalculateStorageAndMemoryUsed() {
 void StorageAreaImpl::OnLoadComplete() {
   DCHECK(IsMapLoaded());
 
-  std::vector<OnLoadCompleteTask> tasks;
-  on_load_complete_tasks_.swap(tasks);
-  for (auto it = tasks.begin(); it != tasks.end(); ++it) {
-    // Some tasks (like GetAll) can require a reload if they need a different
-    // map type. If this happens, stop our task execution. Appending tasks is
-    // required (instead of replacing) because the task that required the
-    // reload-requesting-task put itself on the task queue and it still needs
-    // to be executed before the rest of the tasks.
-    if (!IsMapLoaded()) {
-      on_load_complete_tasks_.reserve(on_load_complete_tasks_.size() +
-                                      (tasks.end() - it));
-      std::move(it, tasks.end(), std::back_inserter(on_load_complete_tasks_));
-      return;
+  {
+    base::AutoReset<bool> running_load_complete_tasks(
+        &is_running_load_complete_tasks_, true);
+    std::vector<OnLoadCompleteTask> tasks;
+    on_load_complete_tasks_.swap(tasks);
+    for (auto it = tasks.begin(); it != tasks.end(); ++it) {
+      // Some tasks (like GetAll) can require a reload if they need a different
+      // map type. If this happens, stop our task execution. Appending tasks is
+      // required (instead of replacing) because the task that required the
+      // reload-requesting-task put itself on the task queue and it still needs
+      // to be executed before the rest of the tasks.
+      if (!IsMapLoaded()) {
+        on_load_complete_tasks_.reserve(on_load_complete_tasks_.size() +
+                                        (tasks.end() - it));
+        std::move(it, tasks.end(), std::back_inserter(on_load_complete_tasks_));
+        return;
+      }
+      std::move(it->callback).Run();
     }
-    std::move(it->callback).Run();
   }
 
   // Call before |OnNoBindings| as delegate can destroy this object.
@@ -758,12 +1054,35 @@ StorageAreaImpl::CollectCommit() {
 
   data_rate_limiter_.add_samples(data_size);
 
+  auto operation =
+      base::MakeRefCounted<CommitOperation>(CommitOperation::Kind::kUpdateMaps);
+  for (const auto& snapshot : pending_immediate_commit_snapshots_) {
+    if (!snapshot->observing_map_updates()) {
+      continue;
+    }
+    operation->AddSnapshot(snapshot);
+    if (snapshot->waiting_for_target_map_update()) {
+      snapshot->OnTargetMapUpdateAttached();
+    }
+  }
+  active_map_update_operations_.push_back(operation);
+  pending_map_update_completion_operations_.push_back(std::move(operation));
+
   ++commit_batches_in_flight_;
   commit_batch_.reset();
   return commit;
 }
 
-void StorageAreaImpl::OnCommitComplete(DbStatus status) {
+base::OnceCallback<void(DbStatus)>
+StorageAreaImpl::MakeCommitCompleteCallback(
+    scoped_refptr<CommitOperation> operation) {
+  return base::BindOnce(&StorageAreaImpl::OnCommitComplete,
+                        weak_ptr_factory_.GetWeakPtr(), std::move(operation));
+}
+
+void StorageAreaImpl::OnCommitComplete(
+    scoped_refptr<CommitOperation> operation,
+    DbStatus status) {
   has_committed_data_ = true;
   --commit_batches_in_flight_;
   StartCommitTimer();
@@ -775,6 +1094,20 @@ void StorageAreaImpl::OnCommitComplete(DbStatus status) {
   // Call before |DidCommit| as delegate can destroy this object.
   UnloadMapIfPossible();
 
+  if (operation->kind() == CommitOperation::Kind::kUpdateMaps) {
+    auto operation_it = std::find_if(
+        active_map_update_operations_.begin(),
+        active_map_update_operations_.end(),
+        [&operation](const scoped_refptr<CommitOperation>& candidate) {
+          return candidate.get() == operation.get();
+        });
+    DCHECK(operation_it != active_map_update_operations_.end());
+    operation->Complete(status);
+    active_map_update_operations_.erase(operation_it);
+    PruneResolvedImmediateCommitSnapshots();
+  }
+
+  // This must remain last: the delegate is permitted to delete this object.
   delegate_->DidCommit(status);
 }
 
@@ -834,7 +1167,9 @@ void StorageAreaImpl::DoForkOperation(
     ++commit_batches_in_flight_;
     database_->CloneMap(/*source=*/map_locator_->Clone(),
                         /*target=*/forked_area->map_locator_->Clone(),
-                        GetCommitCompleteCallback());
+                        MakeCommitCompleteCallback(
+                            base::MakeRefCounted<CommitOperation>(
+                                CommitOperation::Kind::kCloneMap)));
   }
 
   forked_area->OnForkStateLoaded(database_ != nullptr, keys_values_map_,
