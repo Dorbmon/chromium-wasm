@@ -4,11 +4,14 @@
 
 #include "base/test/test_shared_memory_util.h"
 
+#include <algorithm>
+
 #include <gtest/gtest.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "base/logging.h"
+#include "base/memory/shared_memory_mapper.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_POSIX)
@@ -129,6 +132,23 @@ bool CheckReadOnlyPlatformSharedMemoryRegionForTesting(
   return CheckReadOnlySharedMemoryFuchsiaHandle(region.GetPlatformHandle());
 #elif BUILDFLAG(IS_WIN)
   return CheckReadOnlySharedMemoryWindowsHandle(region.GetPlatformHandle());
+#elif BUILDFLAG(IS_WASM)
+  if (!region.IsValid()) {
+    LOG(ERROR) << "Expected a valid read-only shared memory region";
+    return false;
+  }
+
+  const size_t mapping_size = std::min(kDataSize, region.GetSize());
+  SharedMemoryMapper* mapper = SharedMemoryMapper::GetDefaultInstance();
+  std::optional<span<uint8_t>> mapping = mapper->Map(
+      region.GetPlatformHandle(), /*write_allowed=*/true, /*offset=*/0,
+      mapping_size);
+  if (mapping.has_value()) {
+    LOG(ERROR) << "Read-only shared memory mapping unexpectedly allowed writes";
+    mapper->Unmap(*mapping);
+    return false;
+  }
+  return true;
 #elif BUILDFLAG(IS_ANDROID)
   return CheckReadOnlySharedMemoryFdPosix(region.GetPlatformHandle());
 #else

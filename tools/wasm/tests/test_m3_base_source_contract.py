@@ -200,6 +200,21 @@ class M3BaseSourceContractTest(unittest.TestCase):
         )
         self.assertNotIn("NOTIMPLEMENTED", shared_memory)
 
+    def test_wasm_read_only_shared_memory_rejects_writable_mapping(self) -> None:
+        shared_memory_test = source("base/test/test_shared_memory_util.cc")
+        wasm = shared_memory_test.split("#elif BUILDFLAG(IS_WASM)", 1)[1].split(
+            "#elif BUILDFLAG(IS_ANDROID)", 1
+        )[0]
+
+        self.assertIn("if (!region.IsValid())", wasm)
+        self.assertIn("SharedMemoryMapper::GetDefaultInstance()", wasm)
+        self.assertIn(
+            "region.GetPlatformHandle(), /*write_allowed=*/true, /*offset=*/0,",
+            wasm,
+        )
+        self.assertIn("mapper->Unmap(*mapping);", wasm)
+        self.assertNotIn(".fd", wasm)
+
     def test_mojo_transfers_process_local_shared_memory_capabilities(
         self,
     ) -> None:
