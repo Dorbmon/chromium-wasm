@@ -605,7 +605,12 @@ void TestSuite::Initialize() {
   InitAndroidTestMessageLoop();
 #endif  // else BUILDFLAG(IS_ANDROID)
 
+#if !BUILDFLAG(IS_WASM)
   CHECK(debug::EnableInProcessStackDumping());
+#else
+  // Wasm traps are reported by the host harness; there is no native signal
+  // handler on which to install an in-process stack dumper.
+#endif  // !BUILDFLAG(IS_WASM)
 #if BUILDFLAG(IS_WIN)
   RouteStdioToConsole(true);
   // Make sure we run with high resolution timer to minimize differences

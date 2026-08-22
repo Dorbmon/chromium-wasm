@@ -83,6 +83,19 @@ class WasmUnitTestLauncherContractTest(unittest.TestCase):
             trace_processor,
         )
 
+    def test_wasm_test_suite_keeps_stack_dumping_at_the_host_boundary(self) -> None:
+        test_suite = source("base/test/test_suite.cc")
+        stack_trace = source("base/debug/stack_trace_wasm.cc")
+
+        self.assertIn(
+            "#if !BUILDFLAG(IS_WASM)\n"
+            "  CHECK(debug::EnableInProcessStackDumping());\n"
+            "#else\n"
+            "  // Wasm traps are reported by the host harness;",
+            test_suite,
+        )
+        self.assertIn("return false;", stack_trace)
+
 
 if __name__ == "__main__":
     unittest.main()
