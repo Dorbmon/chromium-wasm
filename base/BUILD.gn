@@ -4537,7 +4537,9 @@ test("base_unittests") {
     deps += [ ":stack_canary_linux_unittests" ]
   }
 
-  sources += [ "test/tracing/test_trace_processor_example_unittest.cc" ]
+  if (!is_wasm) {
+    sources += [ "test/tracing/test_trace_processor_example_unittest.cc" ]
+  }
 
   if (is_posix) {
     sources += [

@@ -63,6 +63,26 @@ class WasmUnitTestLauncherContractTest(unittest.TestCase):
             1,
         )
 
+    def test_wasm_omits_the_unsupported_trace_processor_test_api(self) -> None:
+        build = source("base/test/BUILD.gn")
+        base_build = source("base/BUILD.gn")
+        trace_processor = source("base/test/tracing/test_trace_processor.h")
+
+        wasm_guard = build.split("if (!is_cronet_build) {", 1)[1].split(
+            "  if (is_win) {", 1
+        )[0]
+        self.assertIn("if (!is_wasm) {", wasm_guard)
+        self.assertIn('public_deps += [ ":test_trace_processor" ]', wasm_guard)
+        self.assertIn(
+            'sources += [ "test/tracing/test_trace_processor_example_unittest.cc" ]',
+            base_build,
+        )
+        self.assertIn("if (!is_wasm) {", base_build)
+        self.assertIn(
+            "#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_WASM)",
+            trace_processor,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

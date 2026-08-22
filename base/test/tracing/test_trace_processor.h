@@ -21,7 +21,7 @@
 #include "build/build_config.h"
 #include "third_party/perfetto/include/perfetto/tracing/tracing.h"
 
-#if !BUILDFLAG(IS_WIN)
+#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_WASM)
 #define TEST_TRACE_PROCESSOR_ENABLED
 #endif
 
