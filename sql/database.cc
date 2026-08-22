@@ -844,7 +844,7 @@ base::FilePath Database::DbPath() const {
   const std::string_view db_path(path);
 #if BUILDFLAG(IS_WIN)
   return base::FilePath(base::UTF8ToWide(db_path));
-#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WASM)
   return base::FilePath(db_path);
 #else
   NOTREACHED();
