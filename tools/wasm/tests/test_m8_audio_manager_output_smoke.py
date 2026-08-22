@@ -74,6 +74,7 @@ def passing_result() -> dict[str, object]:
             "scope": smoke.SCOPE,
             "status": "pass",
             "failureCode": None,
+            "fixedGainPathProven": True,
             "limitations": list(smoke.LIMITATIONS),
             "artifact": copy.deepcopy(ARTIFACT),
             "captureHarness": copy.deepcopy(CAPTURE_HARNESS),
@@ -177,6 +178,9 @@ def validate(result: dict[str, object]) -> None:
 class M8AudioManagerOutputResultTest(unittest.TestCase):
     def test_accepts_complete_native_output_evidence(self) -> None:
         validate(passing_result())
+        self.assertIn("fixedGainPathProven", smoke.RESULT_FIELDS)
+        self.assertNotIn("rawSamples", smoke.RESULT_FIELDS)
+        self.assertNotIn("samplePointers", smoke.RESULT_FIELDS)
 
     def test_rejects_lifecycle_marker_header_and_nonclaim_mutations(self) -> None:
         mutations = (
@@ -189,6 +193,7 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
             lambda result: result.__setitem__("descriptorGeneration", 0),
             lambda result: result.__setitem__("producedFrames", 11999),
             lambda result: result.__setitem__("hostState", 2),
+            lambda result: result.__setitem__("fixedGainPathProven", False),
             lambda result: result.__setitem__("audioServiceIntegrated", True),
             lambda result: result.__setitem__("normalRuntimeShutdownProven", True),
             lambda result: result["limitations"].pop(),
@@ -436,6 +441,8 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
             TOOLS_DIR / "host" / "m8_audio_manager_output_smoke.js"
         ).as_uri()
         payload = json.dumps(passing_result(), separators=(",", ":"))
+        false_gain_payload = passing_result()
+        false_gain_payload["fixedGainPathProven"] = False
         script = (
             "globalThis.location = {origin: "
             + json.dumps(ORIGIN)
@@ -444,9 +451,20 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
             + ";\nconst result = JSON.parse(process.argv[1]);\n"
             + "if (validateM8AudioManagerOutputResult(result).status !== 'pass') {"
             + " throw new Error('validator rejected result'); }\n"
+            + "let falseGainRejected = false;\n"
+            + "try { validateM8AudioManagerOutputResult(JSON.parse(process.argv[2])); }"
+            + " catch (_error) { falseGainRejected = true; }\n"
+            + "if (!falseGainRejected) { throw new Error('validator accepted false gain'); }\n"
         )
         completed = subprocess.run(
-            ["node", "--input-type=module", "--eval", script, payload],
+            [
+                "node",
+                "--input-type=module",
+                "--eval",
+                script,
+                payload,
+                json.dumps(false_gain_payload, separators=(",", ":")),
+            ],
             capture_output=True,
             check=False,
             cwd=TOOLS_DIR.parents[1],
@@ -694,6 +712,24 @@ class M8AudioManagerOutputSourceContractTest(unittest.TestCase):
         self.assertIn("this.cleanupComplete", self.host)
         self.assertIn("does_not_prove_start_stop_start_or_stream_reuse", self.host)
         self.assertIn("does_not_prove_start_stop_start_or_stream_reuse", self.runner)
+        self.assertIn("proves_only_fixed_0_5_per_stream_gain_for_this_smoke", self.host)
+        self.assertIn("proves_only_fixed_0_5_per_stream_gain_for_this_smoke", self.runner)
+        self.assertIn(
+            "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
+            self.host,
+        )
+        self.assertIn(
+            "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
+            self.runner,
+        )
+        self.assertIn(
+            "does_not_claim_m8_2_audio_gate_or_m8_complete_or_normal_outer_browser_shutdown",
+            self.host,
+        )
+        self.assertIn(
+            "does_not_claim_m8_2_audio_gate_or_m8_complete_or_normal_outer_browser_shutdown",
+            self.runner,
+        )
         self.assertIn("normalModuleExitObserved", self.runner)
         self.assertIn("validate_failed_host_result_summary", self.runner)
 
@@ -731,6 +767,123 @@ class M8AudioManagerOutputSourceContractTest(unittest.TestCase):
             self.native.index('EmitMarker("CLOSED")'), self.native.rindex("return 0;")
         )
         self.assertIn("this.markerIndex === 5 && !this.unregisterObserved", self.host)
+
+    def test_fixed_stream_gain_is_checked_on_audio_sequence_and_at_worklet(self) -> None:
+        post_start = self.native.split("OperationResult PostStart(", 1)[1].split(
+            "OperationResult PostStopAndClose(", 1
+        )[0]
+        self.assertIn("constexpr double kFixedStreamGain = 0.5", self.native)
+        set_volume = post_start.index("state->stream->SetVolume(kFixedStreamGain);")
+        get_volume = post_start.index("state->stream->GetVolume(&observed_stream_gain);")
+        start = post_start.index("state->stream->Start(source.get());")
+        self.assertLess(set_volume, get_volume)
+        self.assertLess(get_volume, start)
+        self.assertIn("std::abs(observed_stream_gain - kFixedStreamGain)", post_start)
+        self.assertIn("const SOURCE_AMPLITUDE = 0.20", self.worklet)
+        self.assertIn("const FIXED_STREAM_GAIN = 0.5", self.worklet)
+        self.assertIn(
+            "const EXPECTED_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * FIXED_STREAM_GAIN",
+            self.worklet,
+        )
+        self.assertIn("hasExpectedFixedGain(left, right)", self.worklet)
+        self.assertIn("this.fixedGainFrames === TOTAL_FRAMES", self.worklet)
+        self.assertIn('this.fail("fixed-gain-invalid")', self.worklet)
+        self.assertIn("fixedGainPathProven", self.host)
+        self.assertIn("fixedGainPathProven", self.runner)
+
+    def test_worklet_accepts_only_fixed_stereo_gain_frames(self) -> None:
+        worklet_uri = (
+            TOOLS_DIR / "host" / "m8_audio_manager_output_worklet.js"
+        ).as_uri()
+        script = """
+let Processor = null;
+class FakeAudioWorkletProcessor {
+  constructor() {
+    const messages = [];
+    this.port = {
+      messages,
+      onmessage: null,
+      postMessage(message) { messages.push(message); },
+    };
+  }
+}
+globalThis.AudioWorkletProcessor = FakeAudioWorkletProcessor;
+globalThis.registerProcessor = (name, constructor) => {
+  if (name !== "chromium-wasm-m8-audio-manager-output" || Processor !== null) {
+    throw new Error("register-processor");
+  }
+  Processor = constructor;
+};
+await import(%s);
+if (typeof Processor !== "function") {
+  throw new Error("missing-processor");
+}
+
+const makeProcessor = () => {
+  const ringBuffer = new SharedArrayBuffer(64 + 4096 * 2 * Float32Array.BYTES_PER_ELEMENT);
+  const header = new Uint32Array(ringBuffer, 0, 16);
+  header.set([1, 4096, 2, 48000, 480, 7, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
+  const samples = new Float32Array(ringBuffer, 64, 4096 * 2);
+  const processor = new Processor({processorOptions: {
+    generation: 7,
+    headerByteOffset: 0,
+    protocol: 1,
+    ringBuffer,
+    samplesByteOffset: 64,
+  }});
+  return {header, processor, samples};
+};
+
+const appendFrames = (header, samples, firstFrame, count, left, right) => {
+  const write = Atomics.load(header, 7);
+  for (let frame = 0; frame !== count; ++frame) {
+    const slot = (write + frame) & (4096 - 1);
+    const source = ((firstFrame + frame) / 32 & 1) === 0 ? left : -left;
+    samples[slot * 2] = source;
+    samples[slot * 2 + 1] = right === null ? -source : right;
+  }
+  Atomics.store(header, 7, write + count);
+  Atomics.store(header, 9, write + count);
+};
+
+const valid = makeProcessor();
+for (let frame = 0; frame !== 12000; frame += 480) {
+  appendFrames(valid.header, valid.samples, frame, 480, 0.10, null);
+  if (valid.processor.process([], [[new Float32Array(480), new Float32Array(480)]]) !== true) {
+    throw new Error("valid-fixed-gain-rejected");
+  }
+}
+const drained = valid.processor.port.messages.find((message) => message.type === "drained");
+if (drained === undefined || drained.fixedGainPathProven !== true ||
+    Object.keys(drained).some((key) => /sample|pointer/i.test(key))) {
+  throw new Error("fixed-gain-proof");
+}
+
+const checkRejected = (name, left, right, expectedCode) => {
+  const run = makeProcessor();
+  appendFrames(run.header, run.samples, 0, 1, left, right);
+  if (run.processor.process([], [[new Float32Array(1), new Float32Array(1)]]) !== false) {
+    throw new Error(name + "-accepted");
+  }
+  const error = run.processor.port.messages.find((message) => message.type === "error");
+  if (error === undefined || error.code !== expectedCode ||
+      Object.keys(error).some((key) => /sample|pointer/i.test(key))) {
+    throw new Error(name + "-error");
+  }
+};
+checkRejected("unscaled", 0.20, null, "fixed-gain-invalid");
+checkRejected("silent", 0.0, null, "fixed-gain-invalid");
+checkRejected("nonfinite", Number.NaN, null, "processor-error");
+checkRejected("wrong-stereo", 0.10, 0.10, "fixed-gain-invalid");
+""" % json.dumps(worklet_uri)
+        completed = subprocess.run(
+            ["node", "--input-type=module", "--eval", script],
+            capture_output=True,
+            check=False,
+            cwd=TOOLS_DIR.parents[1],
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_native_timeout_ownership_keeps_queued_audio_tasks_alive(self) -> None:
         self.assertIn(

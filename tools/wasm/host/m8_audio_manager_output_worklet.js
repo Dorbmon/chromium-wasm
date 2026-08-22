@@ -14,6 +14,10 @@ const CHANNELS = 2;
 const SAMPLE_RATE = 48000;
 const FRAMES_PER_BUFFER = 480;
 const TOTAL_FRAMES = 12000;
+const SOURCE_AMPLITUDE = 0.20;
+const FIXED_STREAM_GAIN = 0.5;
+const EXPECTED_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * FIXED_STREAM_GAIN;
+const AMPLITUDE_TOLERANCE = 0.00001;
 const PRODUCER_IDLE = 0;
 const PRODUCER_STARTED = 1;
 const PRODUCER_STOPPED = 2;
@@ -49,6 +53,8 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
     this.processCalls = 0;
     this.framesRead = 0;
     this.nonSilentFrames = 0;
+    this.fixedGainFrames = 0;
+    this.fixedGainPathProven = false;
     this.header = null;
     this.samples = null;
     this.generation = 0;
@@ -166,6 +172,7 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
       writeIndex: Atomics.load(header, 7),
     };
     if (type === "drained") {
+      message.fixedGainPathProven = this.fixedGainPathProven === true;
       message.producedFrames = Atomics.load(header, 9);
     }
     this.port.postMessage(message);
@@ -175,6 +182,14 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
     for (const channel of output) {
       channel.fill(0, 0, frames);
     }
+  }
+
+  hasExpectedFixedGain(left, right) {
+    return Math.abs(Math.abs(left) - EXPECTED_CHANNEL_AMPLITUDE) <=
+               AMPLITUDE_TOLERANCE &&
+        Math.abs(Math.abs(right) - EXPECTED_CHANNEL_AMPLITUDE) <=
+               AMPLITUDE_TOLERANCE &&
+        Math.abs(left + right) <= AMPLITUDE_TOLERANCE;
   }
 
   process(_inputs, outputs) {
@@ -225,11 +240,20 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
           this.fail("processor-error");
           return false;
         }
+        // The smoke's source is fixed at stereo +/-0.20. Its sole stream sets
+        // 0.5 immediately before Start(), so each consumed frame must be the
+        // bounded +/-0.10 stereo pair. This remains local to the worklet:
+        // only a fixed success bit may leave this processor.
+        if (!this.hasExpectedFixedGain(left, right)) {
+          this.fail("fixed-gain-invalid");
+          return false;
+        }
         output[0][frame] = left;
         output[1][frame] = right;
         if (left !== 0 || right !== 0) {
           this.nonSilentFrames = (this.nonSilentFrames + 1) >>> 0;
         }
+        this.fixedGainFrames = (this.fixedGainFrames + 1) >>> 0;
         readIndex = (readIndex + 1) >>> 0;
         available -= 1;
         consumedThisCall += 1;
@@ -247,8 +271,10 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
       if (!this.drained && finalReadIndex === writeIndex &&
           writeIndex === producedFrames && producedFrames >= TOTAL_FRAMES &&
           producedFrames === TOTAL_FRAMES && consumedFrames === TOTAL_FRAMES &&
-          this.framesRead === TOTAL_FRAMES && this.nonSilentFrames === TOTAL_FRAMES) {
+          this.framesRead === TOTAL_FRAMES && this.nonSilentFrames === TOTAL_FRAMES &&
+          this.fixedGainFrames === TOTAL_FRAMES) {
         Atomics.store(header, 13, HOST_STATE_DRAINED);
+        this.fixedGainPathProven = true;
         this.drained = true;
         this.postProgress("drained");
       } else if (!this.drained && this.processCalls % PROGRESS_INTERVAL === 0) {

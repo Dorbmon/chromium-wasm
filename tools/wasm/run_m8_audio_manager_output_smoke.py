@@ -126,12 +126,14 @@ FATAL_TAGS = frozenset(
 )
 LIMITATIONS = (
     "proves_only_one_default_low_latency_media_audiomanager_output_stream",
+    "proves_only_fixed_0_5_per_stream_gain_for_this_smoke",
     "does_not_prove_audio_service_or_audio_input",
     "does_not_prove_device_change_mute_or_tab_switching_policy",
+    "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
     "does_not_prove_browser_media_playback_or_global_scheduling",
     "does_not_prove_start_stop_start_or_stream_reuse",
     "does_not_serialize_raw_native_output_exceptions_or_sab_addresses",
-    "does_not_claim_m8_complete_or_normal_outer_browser_shutdown",
+    "does_not_claim_m8_2_audio_gate_or_m8_complete_or_normal_outer_browser_shutdown",
 )
 ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
@@ -188,6 +190,7 @@ RESULT_FIELDS = frozenset(
         "descriptorValidated",
         "deviceChangePolicyProven",
         "failureCode",
+        "fixedGainPathProven",
         "framesPerBuffer",
         "hostState",
         "inputProven",
@@ -777,6 +780,7 @@ def validate_result(
         "audioContextClosed",
         "cleanupComplete",
         "audioManagerOutputPathProven",
+        "fixedGainPathProven",
     ):
         _require_bool(result, field, True)
     for field in (

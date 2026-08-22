@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -48,6 +49,10 @@ namespace {
 constexpr char kPrefix[] = "CHROMIUM_WASM_M8_AUDIO_MANAGER";
 constexpr uint32_t kTotalFrames = 12000;
 constexpr base::TimeDelta kAudioTimeout = base::Seconds(20);
+// This is a target-local M8.2 preparation check. It exercises one stream's
+// normal volume API without selecting browser, device, mute, or tab policy.
+constexpr double kFixedStreamGain = 0.5;
+constexpr double kFixedStreamGainTolerance = 0.000001;
 
 void EmitMarker(const char* marker) {
   std::fprintf(stderr, "%s:%s\n", kPrefix, marker);
@@ -214,8 +219,18 @@ OperationResult PostStart(media::AudioManager* manager,
                  scoped_refptr<StreamState> state,
                  scoped_refptr<OperationCompletion> completion) {
                 if (state->stream && state->wasm_stream) {
-                  state->stream->Start(source.get());
-                  state->started = true;
+                  // Keep the complete SetVolume/GetVolume/Start transaction on
+                  // AudioManager's sequence. The fixed source writes +/-0.20,
+                  // so the worklet can later prove the expected +/-0.10 stereo
+                  // samples without exporting any samples from the host.
+                  state->stream->SetVolume(kFixedStreamGain);
+                  double observed_stream_gain = 0.0;
+                  state->stream->GetVolume(&observed_stream_gain);
+                  if (std::abs(observed_stream_gain - kFixedStreamGain) <=
+                      kFixedStreamGainTolerance) {
+                    state->stream->Start(source.get());
+                    state->started = true;
+                  }
                 }
                 completion->Signal();
               },

@@ -174,6 +174,7 @@ const SUCCESS_FIELDS = Object.freeze([
   "descriptorValidated",
   "deviceChangePolicyProven",
   "failureCode",
+  "fixedGainPathProven",
   "framesPerBuffer",
   "hostState",
   "inputProven",
@@ -244,12 +245,14 @@ const FAILURE_LIFECYCLE_FIELDS = Object.freeze([
 ]);
 const LIMITATIONS = Object.freeze([
   "proves_only_one_default_low_latency_media_audiomanager_output_stream",
+  "proves_only_fixed_0_5_per_stream_gain_for_this_smoke",
   "does_not_prove_audio_service_or_audio_input",
   "does_not_prove_device_change_mute_or_tab_switching_policy",
+  "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
   "does_not_prove_browser_media_playback_or_global_scheduling",
   "does_not_prove_start_stop_start_or_stream_reuse",
   "does_not_serialize_raw_native_output_exceptions_or_sab_addresses",
-  "does_not_claim_m8_complete_or_normal_outer_browser_shutdown",
+  "does_not_claim_m8_2_audio_gate_or_m8_complete_or_normal_outer_browser_shutdown",
 ]);
 
 class AudioOutputHostError extends Error {
@@ -543,8 +546,8 @@ function exactWorkletError(message) {
   return hasExactKeys(message, ["code", "protocol", "type"]) &&
       message.protocol === DESCRIPTOR_PROTOCOL && message.type === "error" &&
       new Set([
-        "header-invalid", "output-invalid", "producer-error", "processor-error",
-        "worklet-message-invalid",
+        "fixed-gain-invalid", "header-invalid", "output-invalid", "producer-error",
+        "processor-error", "worklet-message-invalid",
       ]).has(message.code);
 }
 
@@ -560,14 +563,14 @@ function validWorkletProgress(message) {
 
 function validWorkletDrained(message) {
   return hasExactKeys(message, [
-    "consumedFrames", "framesRead", "nonSilentFrames", "processCalls",
-    "producedFrames", "protocol", "readIndex", "type", "underrunFrames",
-    "writeIndex",
+    "consumedFrames", "fixedGainPathProven", "framesRead", "nonSilentFrames",
+    "processCalls", "producedFrames", "protocol", "readIndex", "type",
+    "underrunFrames", "writeIndex",
   ]) && message.protocol === DESCRIPTOR_PROTOCOL && message.type === "drained" &&
       ["consumedFrames", "framesRead", "nonSilentFrames", "producedFrames",
        "readIndex", "underrunFrames", "writeIndex"].every(
           (field) => isUint32(message[field])) &&
-      isBoundedCount(message.processCalls);
+      isBoundedCount(message.processCalls) && message.fixedGainPathProven === true;
 }
 
 function isExactNormalEmscriptenExitStatus(value) {
@@ -676,6 +679,7 @@ export class M8AudioManagerOutputSmoke {
     this.workletDrained = false;
     this.workletFramesRead = 0;
     this.workletNonSilentFrames = 0;
+    this.fixedGainPathProven = false;
     this.workletUnderrunFrames = 0;
     this.outputArmed = false;
     this.startObserved = false;
@@ -1076,13 +1080,15 @@ export class M8AudioManagerOutputSmoke {
           message.consumedFrames !== message.producedFrames ||
           message.producedFrames !== TOTAL_FRAMES ||
           message.framesRead !== TOTAL_FRAMES ||
-          message.nonSilentFrames !== TOTAL_FRAMES) {
+          message.nonSilentFrames !== TOTAL_FRAMES ||
+          message.fixedGainPathProven !== true) {
         this.setFailure("worklet-drain-invalid");
         return;
       }
       this.workletDrained = true;
       this.workletFramesRead = message.framesRead;
       this.workletNonSilentFrames = message.nonSilentFrames;
+      this.fixedGainPathProven = message.fixedGainPathProven;
       this.workletUnderrunFrames = message.underrunFrames;
       this.maybeCompleteNativeLifecycle();
       return;
@@ -1358,7 +1364,8 @@ export class M8AudioManagerOutputSmoke {
         this.trustedGesture && this.resumeRequestedInTrustedGesture &&
         this.audioContextRunning && this.workletReady && this.workletProgressObserved &&
         this.workletDrained && this.outputArmed && this.startObserved &&
-        this.stopObserved && this.memoryIdentityStable && this.memoryIdentityChecks > 0 &&
+        this.stopObserved && this.fixedGainPathProven && this.memoryIdentityStable &&
+        this.memoryIdentityChecks > 0 &&
         Array.isArray(header) && header.length === HEADER_WORDS &&
         header[6] === PRODUCER_STOPPED && header[7] === TOTAL_FRAMES &&
         header[8] === TOTAL_FRAMES && header[9] === TOTAL_FRAMES &&
@@ -1376,6 +1383,7 @@ export class M8AudioManagerOutputSmoke {
       scope: SCOPE,
       status: "pass",
       failureCode: null,
+      fixedGainPathProven: true,
       limitations: [...LIMITATIONS],
       artifact: this.context.artifact,
       captureHarness: this.context.captureHarness,
@@ -1534,7 +1542,7 @@ export function validateM8AudioManagerOutputResult(value) {
     "workletProgressObserved", "workletDrained", "outputArmed", "startObserved",
     "stopObserved", "unregisterObserved", "workletStopRequested",
     "workletDisconnected", "audioContextClosed", "cleanupComplete",
-    "audioManagerOutputPathProven",
+    "audioManagerOutputPathProven", "fixedGainPathProven",
   ]) {
     if (result[field] !== true) {
       throw new Error("invalid M8 audio output success flags");
