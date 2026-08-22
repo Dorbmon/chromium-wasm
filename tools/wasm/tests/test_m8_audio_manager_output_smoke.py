@@ -75,6 +75,7 @@ def passing_result() -> dict[str, object]:
             "status": "pass",
             "failureCode": None,
             "fixedGainPathProven": True,
+            "dynamicGainPathProven": True,
             "limitations": list(smoke.LIMITATIONS),
             "artifact": copy.deepcopy(ARTIFACT),
             "captureHarness": copy.deepcopy(CAPTURE_HARNESS),
@@ -179,6 +180,7 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
     def test_accepts_complete_native_output_evidence(self) -> None:
         validate(passing_result())
         self.assertIn("fixedGainPathProven", smoke.RESULT_FIELDS)
+        self.assertIn("dynamicGainPathProven", smoke.RESULT_FIELDS)
         self.assertNotIn("rawSamples", smoke.RESULT_FIELDS)
         self.assertNotIn("samplePointers", smoke.RESULT_FIELDS)
 
@@ -194,6 +196,7 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
             lambda result: result.__setitem__("producedFrames", 11999),
             lambda result: result.__setitem__("hostState", 2),
             lambda result: result.__setitem__("fixedGainPathProven", False),
+            lambda result: result.__setitem__("dynamicGainPathProven", False),
             lambda result: result.__setitem__("audioServiceIntegrated", True),
             lambda result: result.__setitem__("normalRuntimeShutdownProven", True),
             lambda result: result["limitations"].pop(),
@@ -212,7 +215,7 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
         for mutation in (
             lambda result: result.__setitem__("nativeFailureStage", "raw-data"),
             lambda result: result["lifecycle"].__setitem__("raw", "not-allowed"),
-            lambda result: result["lifecycle"].__setitem__("markerCount", 7),
+            lambda result: result["lifecycle"].__setitem__("markerCount", 8),
             lambda result: result.__setitem__("untrusted", "not-allowed"),
         ):
             with self.subTest(mutation=mutation):
@@ -443,6 +446,8 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
         payload = json.dumps(passing_result(), separators=(",", ":"))
         false_gain_payload = passing_result()
         false_gain_payload["fixedGainPathProven"] = False
+        false_dynamic_gain_payload = passing_result()
+        false_dynamic_gain_payload["dynamicGainPathProven"] = False
         script = (
             "globalThis.location = {origin: "
             + json.dumps(ORIGIN)
@@ -455,6 +460,11 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
             + "try { validateM8AudioManagerOutputResult(JSON.parse(process.argv[2])); }"
             + " catch (_error) { falseGainRejected = true; }\n"
             + "if (!falseGainRejected) { throw new Error('validator accepted false gain'); }\n"
+            + "let falseDynamicGainRejected = false;\n"
+            + "try { validateM8AudioManagerOutputResult(JSON.parse(process.argv[3])); }"
+            + " catch (_error) { falseDynamicGainRejected = true; }\n"
+            + "if (!falseDynamicGainRejected) {"
+            + " throw new Error('validator accepted false dynamic gain'); }\n"
         )
         completed = subprocess.run(
             [
@@ -464,6 +474,7 @@ class M8AudioManagerOutputResultTest(unittest.TestCase):
                 script,
                 payload,
                 json.dumps(false_gain_payload, separators=(",", ":")),
+                json.dumps(false_dynamic_gain_payload, separators=(",", ":")),
             ],
             capture_output=True,
             check=False,
@@ -699,12 +710,20 @@ class M8AudioManagerOutputSourceContractTest(unittest.TestCase):
     def test_requires_strict_marker_exit_and_cleanup_lifecycle(self) -> None:
         self.assertIn('const MARKER_PREFIX = "CHROMIUM_WASM_M8_AUDIO_MANAGER:"',
                       self.host)
-        for suffix in ("READY", "OPENED", "STARTED", "DRAINED", "STOPPED", "CLOSED"):
+        for suffix in (
+            "READY",
+            "OPENED",
+            "STARTED",
+            "GAIN_CHANGED",
+            "DRAINED",
+            "STOPPED",
+            "CLOSED",
+        ):
             self.assertIn(f"${{MARKER_PREFIX}}{suffix}", self.host)
         self.assertIn("destination !== \"stderr\"", self.host)
-        self.assertIn("this.markerIndex !== 4", self.host)
-        self.assertNotIn("this.markerIndex < 5", self.host)
-        self.assertIn("this.markerIndex < 4 || !this.unregisterObserved", self.host)
+        self.assertIn("this.markerIndex !== 5", self.host)
+        self.assertNotIn("this.markerIndex < 6", self.host)
+        self.assertIn("this.markerIndex < 5 || !this.unregisterObserved", self.host)
         self.assertIn("this.onExitCount !== 1 || code !== 0", self.host)
         self.assertIn("!this.unregisterObserved", self.host)
         self.assertIn("this.audioContextClosed", self.host)
@@ -712,14 +731,20 @@ class M8AudioManagerOutputSourceContractTest(unittest.TestCase):
         self.assertIn("this.cleanupComplete", self.host)
         self.assertIn("does_not_prove_start_stop_start_or_stream_reuse", self.host)
         self.assertIn("does_not_prove_start_stop_start_or_stream_reuse", self.runner)
-        self.assertIn("proves_only_fixed_0_5_per_stream_gain_for_this_smoke", self.host)
-        self.assertIn("proves_only_fixed_0_5_per_stream_gain_for_this_smoke", self.runner)
         self.assertIn(
-            "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
+            "proves_only_one_ordered_0_5_to_0_25_per_stream_gain_transition_for_this_smoke",
             self.host,
         )
         self.assertIn(
-            "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
+            "proves_only_one_ordered_0_5_to_0_25_per_stream_gain_transition_for_this_smoke",
+            self.runner,
+        )
+        self.assertIn(
+            "does_not_prove_arbitrary_volume_policy_or_multi_stream_gain_mixing",
+            self.host,
+        )
+        self.assertIn(
+            "does_not_prove_arbitrary_volume_policy_or_multi_stream_gain_mixing",
             self.runner,
         )
         self.assertIn(
@@ -741,10 +766,18 @@ class M8AudioManagerOutputSourceContractTest(unittest.TestCase):
             self.assertIn(f'"{stage}"', self.runner)
 
     def test_cross_layer_marker_arm_and_unregister_order_match_native(self) -> None:
-        native_markers = re.findall(r'EmitMarker\("([A-Z]+)"\)', self.native)
+        native_markers = re.findall(r'EmitMarker\("([A-Z_]+)"\)', self.native)
         self.assertEqual(
             native_markers,
-            ["READY", "OPENED", "STARTED", "DRAINED", "STOPPED", "CLOSED"],
+            [
+                "READY",
+                "OPENED",
+                "STARTED",
+                "GAIN_CHANGED",
+                "DRAINED",
+                "STOPPED",
+                "CLOSED",
+            ],
         )
         wait_for_host_start = self.native.index(
             "if (!WaitForHostStart(state->wasm_stream)"
@@ -758,6 +791,14 @@ class M8AudioManagerOutputSourceContractTest(unittest.TestCase):
             wait_for_host_start,
         )
         self.assertLess(wait_for_host_start, post_start)
+        gain_change = self.native.index(
+            "PostDynamicGainChange(manager.get(), source, state)"
+        )
+        self.assertLess(post_start, gain_change)
+        self.assertLess(
+            gain_change,
+            self.native.index('EmitMarker("GAIN_CHANGED")'),
+        )
         self.assertLess(
             self.native.index('EmitMarker("DRAINED")'),
             stop_and_close,
@@ -766,32 +807,67 @@ class M8AudioManagerOutputSourceContractTest(unittest.TestCase):
         self.assertLess(
             self.native.index('EmitMarker("CLOSED")'), self.native.rindex("return 0;")
         )
-        self.assertIn("this.markerIndex === 5 && !this.unregisterObserved", self.host)
+        self.assertIn("this.markerIndex === 6 && !this.unregisterObserved", self.host)
 
-    def test_fixed_stream_gain_is_checked_on_audio_sequence_and_at_worklet(self) -> None:
+    def test_ordered_stream_gain_transition_is_checked_on_audio_sequence_and_at_worklet(self) -> None:
         post_start = self.native.split("OperationResult PostStart(", 1)[1].split(
-            "OperationResult PostStopAndClose(", 1
+            "OperationResult PostDynamicGainChange(", 1
         )[0]
-        self.assertIn("constexpr double kFixedStreamGain = 0.5", self.native)
-        set_volume = post_start.index("state->stream->SetVolume(kFixedStreamGain);")
+        post_gain_change = self.native.split(
+            "OperationResult PostDynamicGainChange(", 1
+        )[1].split("OperationResult PostStopAndClose(", 1)[0]
+        self.assertIn("constexpr double kInitialStreamGain = 0.5", self.native)
+        self.assertIn("constexpr double kDynamicStreamGain = 0.25", self.native)
+        self.assertIn("constexpr uint32_t kInitialGainFrames", self.native)
+        set_volume = post_start.index("state->stream->SetVolume(kInitialStreamGain);")
         get_volume = post_start.index("state->stream->GetVolume(&observed_stream_gain);")
         start = post_start.index("state->stream->Start(source.get());")
         self.assertLess(set_volume, get_volume)
         self.assertLess(get_volume, start)
-        self.assertIn("std::abs(observed_stream_gain - kFixedStreamGain)", post_start)
-        self.assertIn("const SOURCE_AMPLITUDE = 0.20", self.worklet)
-        self.assertIn("const FIXED_STREAM_GAIN = 0.5", self.worklet)
+        self.assertIn("std::abs(observed_stream_gain - kInitialStreamGain)", post_start)
+        dynamic_set_volume = post_gain_change.index(
+            "state->stream->SetVolume(kDynamicStreamGain);"
+        )
+        dynamic_get_volume = post_gain_change.index(
+            "state->stream->GetVolume(&observed_stream_gain);"
+        )
+        enable_dynamic_frames = post_gain_change.index(
+            "source->EnableDynamicGainFrames();"
+        )
+        self.assertLess(dynamic_set_volume, dynamic_get_volume)
+        self.assertLess(dynamic_get_volume, enable_dynamic_frames)
         self.assertIn(
-            "const EXPECTED_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * FIXED_STREAM_GAIN",
+            "WaitForInitialGainCompletion(kAudioTimeout)", self.native
+        )
+        initial_phase_pause = self.native.split(
+            "if (already_produced >= kInitialGainFrames", 1
+        )[1].split("const uint32_t remaining_in_phase", 1)[0]
+        self.assertIn("initial_gain_completed_.Signal();", initial_phase_pause)
+        self.assertNotIn("if (total == kInitialGainFrames)", self.native)
+        self.assertIn("const SOURCE_AMPLITUDE = 0.20", self.worklet)
+        self.assertIn("const INITIAL_STREAM_GAIN = 0.5", self.worklet)
+        self.assertIn("const DYNAMIC_STREAM_GAIN = 0.25", self.worklet)
+        self.assertIn(
+            "const INITIAL_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * INITIAL_STREAM_GAIN",
             self.worklet,
         )
-        self.assertIn("hasExpectedFixedGain(left, right)", self.worklet)
-        self.assertIn("this.fixedGainFrames === TOTAL_FRAMES", self.worklet)
+        self.assertIn(
+            "const DYNAMIC_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * DYNAMIC_STREAM_GAIN",
+            self.worklet,
+        )
+        self.assertIn(
+            "hasExpectedGain(left, right, expectedAmplitude, frameIndex)",
+            self.worklet,
+        )
+        self.assertIn("this.fixedGainFrames === INITIAL_GAIN_FRAMES", self.worklet)
+        self.assertIn("this.dynamicGainFrames === DYNAMIC_GAIN_FRAMES", self.worklet)
         self.assertIn('this.fail("fixed-gain-invalid")', self.worklet)
         self.assertIn("fixedGainPathProven", self.host)
         self.assertIn("fixedGainPathProven", self.runner)
+        self.assertIn("dynamicGainPathProven", self.host)
+        self.assertIn("dynamicGainPathProven", self.runner)
 
-    def test_worklet_accepts_only_fixed_stereo_gain_frames(self) -> None:
+    def test_worklet_accepts_only_ordered_stereo_gain_frames(self) -> None:
         worklet_uri = (
             TOOLS_DIR / "host" / "m8_audio_manager_output_worklet.js"
         ).as_uri()
@@ -846,17 +922,26 @@ const appendFrames = (header, samples, firstFrame, count, left, right) => {
   Atomics.store(header, 9, write + count);
 };
 
-const valid = makeProcessor();
-for (let frame = 0; frame !== 12000; frame += 480) {
-  appendFrames(valid.header, valid.samples, frame, 480, 0.10, null);
-  if (valid.processor.process([], [[new Float32Array(480), new Float32Array(480)]]) !== true) {
-    throw new Error("valid-fixed-gain-rejected");
+const consumePhase = (run, firstFrame, count, amplitude) => {
+  for (let offset = 0; offset !== count;) {
+    const frames = Math.min(480, count - offset);
+    appendFrames(run.header, run.samples, firstFrame + offset, frames, amplitude, null);
+    if (run.processor.process([], [[new Float32Array(frames), new Float32Array(frames)]]) !== true) {
+      throw new Error("valid-gain-phase-rejected");
+    }
+    offset += frames;
   }
-}
+};
+
+const valid = makeProcessor();
+consumePhase(valid, 0, 6000, 0.10);
+consumePhase(valid, 6000, 6000, 0.05);
 const drained = valid.processor.port.messages.find((message) => message.type === "drained");
 if (drained === undefined || drained.fixedGainPathProven !== true ||
+    drained.dynamicGainPathProven !== true || drained.fixedGainFrames !== 6000 ||
+    drained.dynamicGainFrames !== 6000 ||
     Object.keys(drained).some((key) => /sample|pointer/i.test(key))) {
-  throw new Error("fixed-gain-proof");
+  throw new Error("ordered-gain-proof");
 }
 
 const checkRejected = (name, left, right, expectedCode) => {
@@ -875,6 +960,20 @@ checkRejected("unscaled", 0.20, null, "fixed-gain-invalid");
 checkRejected("silent", 0.0, null, "fixed-gain-invalid");
 checkRejected("nonfinite", Number.NaN, null, "processor-error");
 checkRejected("wrong-stereo", 0.10, 0.10, "fixed-gain-invalid");
+checkRejected("early-dynamic", 0.05, null, "fixed-gain-invalid");
+
+const lateInitial = makeProcessor();
+consumePhase(lateInitial, 0, 6000, 0.10);
+appendFrames(lateInitial.header, lateInitial.samples, 6000, 1, 0.10, null);
+if (lateInitial.processor.process([], [[new Float32Array(1), new Float32Array(1)]]) !== false) {
+  throw new Error("late-initial-accepted");
+}
+const lateInitialError = lateInitial.processor.port.messages.find(
+    (message) => message.type === "error");
+if (lateInitialError === undefined || lateInitialError.code !== "fixed-gain-invalid" ||
+    Object.keys(lateInitialError).some((key) => /sample|pointer/i.test(key))) {
+  throw new Error("late-initial-error");
+}
 """ % json.dumps(worklet_uri)
         completed = subprocess.run(
             ["node", "--input-type=module", "--eval", script],
@@ -955,35 +1054,35 @@ if (M8AudioManagerOutputSmoke.prototype.registerOutputRing.call(preClick, descri
   throw new Error("pre-click-register");
 }
 header[6] = 2;
-const beforeDrained = makeFake(3);
+const beforeDrained = makeFake(4);
 beforeDrained.descriptor = {generation: 7, header};
 beforeDrained.descriptorRegistered = true;
 if (M8AudioManagerOutputSmoke.prototype.unregisterOutputRing.call(beforeDrained, 7) !== false ||
     beforeDrained.failureCode !== "descriptor-unregister-invalid") {
   throw new Error("unregister-before-drained");
 }
-const afterDrained = makeFake(4);
+const afterDrained = makeFake(5);
 afterDrained.descriptor = {generation: 7, header};
 afterDrained.descriptorRegistered = true;
 if (M8AudioManagerOutputSmoke.prototype.unregisterOutputRing.call(afterDrained, 7) !== true ||
     afterDrained.failureCode !== null || afterDrained.unregisterObserved !== true) {
   throw new Error("unregister-after-drained");
 }
-const afterStopped = makeFake(5);
+const afterStopped = makeFake(6);
 afterStopped.descriptor = {generation: 7, header};
 afterStopped.descriptorRegistered = true;
 if (M8AudioManagerOutputSmoke.prototype.unregisterOutputRing.call(afterStopped, 7) !== false ||
     afterStopped.failureCode !== "descriptor-unregister-invalid") {
   throw new Error("unregister-after-stopped");
 }
-const delayedStderr = makeFake(4);
+const delayedStderr = makeFake(5);
 delayedStderr.unregisterObserved = true;
 M8AudioManagerOutputSmoke.prototype.onExit.call(delayedStderr, 0);
 if (delayedStderr.failureCode !== null || delayedStderr.normalModuleExitObserved !== true ||
     delayedStderr.runtimeExitCode !== 0) {
   throw new Error("exit-before-forwarded-stopped-closed");
 }
-const earlyExit = makeFake(3);
+const earlyExit = makeFake(4);
 earlyExit.unregisterObserved = true;
 M8AudioManagerOutputSmoke.prototype.onExit.call(earlyExit, 0);
 if (earlyExit.failureCode !== "native-runtime-exit-invalid") {

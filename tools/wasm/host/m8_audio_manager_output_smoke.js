@@ -21,6 +21,8 @@ export const CHANNELS = 2;
 export const SAMPLE_RATE = 48000;
 export const FRAMES_PER_BUFFER = 480;
 export const TOTAL_FRAMES = 12000;
+export const INITIAL_GAIN_FRAMES = TOTAL_FRAMES / 2;
+export const DYNAMIC_GAIN_FRAMES = TOTAL_FRAMES - INITIAL_GAIN_FRAMES;
 export const START_BUTTON_X = 120;
 export const START_BUTTON_Y = 48;
 
@@ -30,6 +32,7 @@ const EXPECTED_MARKERS = Object.freeze([
   `${MARKER_PREFIX}READY`,
   `${MARKER_PREFIX}OPENED`,
   `${MARKER_PREFIX}STARTED`,
+  `${MARKER_PREFIX}GAIN_CHANGED`,
   `${MARKER_PREFIX}DRAINED`,
   `${MARKER_PREFIX}STOPPED`,
   `${MARKER_PREFIX}CLOSED`,
@@ -40,6 +43,7 @@ const FAILURE_STAGES = new Set([
   "open",
   "start",
   "drain",
+  "gain",
   "stop",
   "shutdown",
 ]);
@@ -173,6 +177,7 @@ const SUCCESS_FIELDS = Object.freeze([
   "descriptorRegistrationCount",
   "descriptorValidated",
   "deviceChangePolicyProven",
+  "dynamicGainPathProven",
   "failureCode",
   "fixedGainPathProven",
   "framesPerBuffer",
@@ -245,10 +250,10 @@ const FAILURE_LIFECYCLE_FIELDS = Object.freeze([
 ]);
 const LIMITATIONS = Object.freeze([
   "proves_only_one_default_low_latency_media_audiomanager_output_stream",
-  "proves_only_fixed_0_5_per_stream_gain_for_this_smoke",
+  "proves_only_one_ordered_0_5_to_0_25_per_stream_gain_transition_for_this_smoke",
   "does_not_prove_audio_service_or_audio_input",
   "does_not_prove_device_change_mute_or_tab_switching_policy",
-  "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
+  "does_not_prove_arbitrary_volume_policy_or_multi_stream_gain_mixing",
   "does_not_prove_browser_media_playback_or_global_scheduling",
   "does_not_prove_start_stop_start_or_stream_reuse",
   "does_not_serialize_raw_native_output_exceptions_or_sab_addresses",
@@ -563,14 +568,18 @@ function validWorkletProgress(message) {
 
 function validWorkletDrained(message) {
   return hasExactKeys(message, [
-    "consumedFrames", "fixedGainPathProven", "framesRead", "nonSilentFrames",
-    "processCalls", "producedFrames", "protocol", "readIndex", "type",
-    "underrunFrames", "writeIndex",
+    "consumedFrames", "dynamicGainFrames", "dynamicGainPathProven",
+    "fixedGainFrames", "fixedGainPathProven", "framesRead",
+    "nonSilentFrames", "processCalls", "producedFrames", "protocol",
+    "readIndex", "type", "underrunFrames", "writeIndex",
   ]) && message.protocol === DESCRIPTOR_PROTOCOL && message.type === "drained" &&
-      ["consumedFrames", "framesRead", "nonSilentFrames", "producedFrames",
-       "readIndex", "underrunFrames", "writeIndex"].every(
+      ["consumedFrames", "dynamicGainFrames", "fixedGainFrames", "framesRead",
+       "nonSilentFrames", "producedFrames", "readIndex", "underrunFrames",
+       "writeIndex"].every(
           (field) => isUint32(message[field])) &&
-      isBoundedCount(message.processCalls) && message.fixedGainPathProven === true;
+      isBoundedCount(message.processCalls) &&
+      message.fixedGainPathProven === true &&
+      message.dynamicGainPathProven === true;
 }
 
 function isExactNormalEmscriptenExitStatus(value) {
@@ -680,6 +689,7 @@ export class M8AudioManagerOutputSmoke {
     this.workletFramesRead = 0;
     this.workletNonSilentFrames = 0;
     this.fixedGainPathProven = false;
+    this.dynamicGainPathProven = false;
     this.workletUnderrunFrames = 0;
     this.outputArmed = false;
     this.startObserved = false;
@@ -810,7 +820,7 @@ export class M8AudioManagerOutputSmoke {
         this.descriptor === null || generation !== this.descriptor.generation ||
         // Native Stop has changed the unsigned producer state, but the
         // protocol's STOPPED marker follows this unregister callback.
-        this.markerIndex !== 4) {
+        this.markerIndex !== 5) {
       this.setFailure("descriptor-unregister-invalid");
       return false;
     }
@@ -864,15 +874,15 @@ export class M8AudioManagerOutputSmoke {
       this.setFailure("marker-before-arm");
       return;
     }
-    if (this.markerIndex === 3 && !this.hasDrainedHeader()) {
+    if (this.markerIndex === 4 && !this.hasDrainedHeader()) {
       this.setFailure("worklet-drain-invalid");
       return;
     }
-    if (this.markerIndex === 4 && !this.hasStoppedHeader()) {
+    if (this.markerIndex === 5 && !this.hasStoppedHeader()) {
       this.setFailure("worklet-drain-invalid");
       return;
     }
-    if (this.markerIndex === 5 && !this.unregisterObserved) {
+    if (this.markerIndex === 6 && !this.unregisterObserved) {
       this.setFailure("descriptor-unregister-invalid");
       return;
     }
@@ -907,7 +917,7 @@ export class M8AudioManagerOutputSmoke {
     this.noteCallback();
     this.onExitCount += 1;
     if (!Number.isInteger(code) || this.onExitCount !== 1 || code !== 0 ||
-        this.markerIndex < 4 || !this.unregisterObserved ||
+        this.markerIndex < 5 || !this.unregisterObserved ||
         !this.hasStoppedHeader()) {
       this.setFailure("native-runtime-exit-invalid");
       return;
@@ -1081,7 +1091,10 @@ export class M8AudioManagerOutputSmoke {
           message.producedFrames !== TOTAL_FRAMES ||
           message.framesRead !== TOTAL_FRAMES ||
           message.nonSilentFrames !== TOTAL_FRAMES ||
-          message.fixedGainPathProven !== true) {
+          message.fixedGainFrames !== INITIAL_GAIN_FRAMES ||
+          message.dynamicGainFrames !== DYNAMIC_GAIN_FRAMES ||
+          message.fixedGainPathProven !== true ||
+          message.dynamicGainPathProven !== true) {
         this.setFailure("worklet-drain-invalid");
         return;
       }
@@ -1089,6 +1102,7 @@ export class M8AudioManagerOutputSmoke {
       this.workletFramesRead = message.framesRead;
       this.workletNonSilentFrames = message.nonSilentFrames;
       this.fixedGainPathProven = message.fixedGainPathProven;
+      this.dynamicGainPathProven = message.dynamicGainPathProven;
       this.workletUnderrunFrames = message.underrunFrames;
       this.maybeCompleteNativeLifecycle();
       return;
@@ -1364,7 +1378,8 @@ export class M8AudioManagerOutputSmoke {
         this.trustedGesture && this.resumeRequestedInTrustedGesture &&
         this.audioContextRunning && this.workletReady && this.workletProgressObserved &&
         this.workletDrained && this.outputArmed && this.startObserved &&
-        this.stopObserved && this.fixedGainPathProven && this.memoryIdentityStable &&
+        this.stopObserved && this.fixedGainPathProven && this.dynamicGainPathProven &&
+        this.memoryIdentityStable &&
         this.memoryIdentityChecks > 0 &&
         Array.isArray(header) && header.length === HEADER_WORDS &&
         header[6] === PRODUCER_STOPPED && header[7] === TOTAL_FRAMES &&
@@ -1384,6 +1399,7 @@ export class M8AudioManagerOutputSmoke {
       status: "pass",
       failureCode: null,
       fixedGainPathProven: true,
+      dynamicGainPathProven: true,
       limitations: [...LIMITATIONS],
       artifact: this.context.artifact,
       captureHarness: this.context.captureHarness,
@@ -1543,6 +1559,7 @@ export function validateM8AudioManagerOutputResult(value) {
     "stopObserved", "unregisterObserved", "workletStopRequested",
     "workletDisconnected", "audioContextClosed", "cleanupComplete",
     "audioManagerOutputPathProven", "fixedGainPathProven",
+    "dynamicGainPathProven",
   ]) {
     if (result[field] !== true) {
       throw new Error("invalid M8 audio output success flags");

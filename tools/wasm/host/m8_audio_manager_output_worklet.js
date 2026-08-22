@@ -14,9 +14,13 @@ const CHANNELS = 2;
 const SAMPLE_RATE = 48000;
 const FRAMES_PER_BUFFER = 480;
 const TOTAL_FRAMES = 12000;
+const INITIAL_GAIN_FRAMES = TOTAL_FRAMES / 2;
+const DYNAMIC_GAIN_FRAMES = TOTAL_FRAMES - INITIAL_GAIN_FRAMES;
 const SOURCE_AMPLITUDE = 0.20;
-const FIXED_STREAM_GAIN = 0.5;
-const EXPECTED_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * FIXED_STREAM_GAIN;
+const INITIAL_STREAM_GAIN = 0.5;
+const DYNAMIC_STREAM_GAIN = 0.25;
+const INITIAL_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * INITIAL_STREAM_GAIN;
+const DYNAMIC_CHANNEL_AMPLITUDE = SOURCE_AMPLITUDE * DYNAMIC_STREAM_GAIN;
 const AMPLITUDE_TOLERANCE = 0.00001;
 const PRODUCER_IDLE = 0;
 const PRODUCER_STARTED = 1;
@@ -54,7 +58,9 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
     this.framesRead = 0;
     this.nonSilentFrames = 0;
     this.fixedGainFrames = 0;
+    this.dynamicGainFrames = 0;
     this.fixedGainPathProven = false;
+    this.dynamicGainPathProven = false;
     this.header = null;
     this.samples = null;
     this.generation = 0;
@@ -172,6 +178,9 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
       writeIndex: Atomics.load(header, 7),
     };
     if (type === "drained") {
+      message.dynamicGainFrames = this.dynamicGainFrames >>> 0;
+      message.dynamicGainPathProven = this.dynamicGainPathProven === true;
+      message.fixedGainFrames = this.fixedGainFrames >>> 0;
       message.fixedGainPathProven = this.fixedGainPathProven === true;
       message.producedFrames = Atomics.load(header, 9);
     }
@@ -184,12 +193,11 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
     }
   }
 
-  hasExpectedFixedGain(left, right) {
-    return Math.abs(Math.abs(left) - EXPECTED_CHANNEL_AMPLITUDE) <=
-               AMPLITUDE_TOLERANCE &&
-        Math.abs(Math.abs(right) - EXPECTED_CHANNEL_AMPLITUDE) <=
-               AMPLITUDE_TOLERANCE &&
-        Math.abs(left + right) <= AMPLITUDE_TOLERANCE;
+  hasExpectedGain(left, right, expectedAmplitude, frameIndex) {
+    const expectedLeft = ((frameIndex / 32) & 1) === 0 ?
+        expectedAmplitude : -expectedAmplitude;
+    return Math.abs(left - expectedLeft) <= AMPLITUDE_TOLERANCE &&
+        Math.abs(right + expectedLeft) <= AMPLITUDE_TOLERANCE;
   }
 
   process(_inputs, outputs) {
@@ -240,11 +248,17 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
           this.fail("processor-error");
           return false;
         }
-        // The smoke's source is fixed at stereo +/-0.20. Its sole stream sets
-        // 0.5 immediately before Start(), so each consumed frame must be the
-        // bounded +/-0.10 stereo pair. This remains local to the worklet:
-        // only a fixed success bit may leave this processor.
-        if (!this.hasExpectedFixedGain(left, right)) {
+        // The smoke's source is fixed at stereo +/-0.20. Its sole stream first
+        // sets 0.5 before Start(), then pauses at a source-frame boundary until
+        // its real AudioOutputStream reports a 0.25 SetVolume/GetVolume
+        // transition. Every consumed frame must therefore be the ordered
+        // +/-0.10 then +/-0.05 stereo waveform. This remains local to the
+        // worklet: only fixed booleans and bounded counters leave it.
+        const frameIndex = this.framesRead + consumedThisCall;
+        const isInitialGainPhase = frameIndex < INITIAL_GAIN_FRAMES;
+        const expectedAmplitude = isInitialGainPhase ?
+            INITIAL_CHANNEL_AMPLITUDE : DYNAMIC_CHANNEL_AMPLITUDE;
+        if (!this.hasExpectedGain(left, right, expectedAmplitude, frameIndex)) {
           this.fail("fixed-gain-invalid");
           return false;
         }
@@ -253,7 +267,11 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
         if (left !== 0 || right !== 0) {
           this.nonSilentFrames = (this.nonSilentFrames + 1) >>> 0;
         }
-        this.fixedGainFrames = (this.fixedGainFrames + 1) >>> 0;
+        if (isInitialGainPhase) {
+          this.fixedGainFrames = (this.fixedGainFrames + 1) >>> 0;
+        } else {
+          this.dynamicGainFrames = (this.dynamicGainFrames + 1) >>> 0;
+        }
         readIndex = (readIndex + 1) >>> 0;
         available -= 1;
         consumedThisCall += 1;
@@ -272,9 +290,11 @@ class ChromiumWasmM8AudioManagerOutputProcessor extends AudioWorkletProcessor {
           writeIndex === producedFrames && producedFrames >= TOTAL_FRAMES &&
           producedFrames === TOTAL_FRAMES && consumedFrames === TOTAL_FRAMES &&
           this.framesRead === TOTAL_FRAMES && this.nonSilentFrames === TOTAL_FRAMES &&
-          this.fixedGainFrames === TOTAL_FRAMES) {
+          this.fixedGainFrames === INITIAL_GAIN_FRAMES &&
+          this.dynamicGainFrames === DYNAMIC_GAIN_FRAMES) {
         Atomics.store(header, 13, HOST_STATE_DRAINED);
         this.fixedGainPathProven = true;
+        this.dynamicGainPathProven = true;
         this.drained = true;
         this.postProgress("drained");
       } else if (!this.drained && this.processCalls % PROGRESS_INTERVAL === 0) {

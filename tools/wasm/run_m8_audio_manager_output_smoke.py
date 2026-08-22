@@ -56,6 +56,8 @@ CHANNELS = 2
 SAMPLE_RATE = 48000
 FRAMES_PER_BUFFER = 480
 TOTAL_FRAMES = 12000
+INITIAL_GAIN_FRAMES = TOTAL_FRAMES // 2
+DYNAMIC_GAIN_FRAMES = TOTAL_FRAMES - INITIAL_GAIN_FRAMES
 START_BUTTON_X = 120.0
 START_BUTTON_Y = 48.0
 MAX_RESULT_BYTES = 128 * 1024
@@ -72,6 +74,7 @@ EXPECTED_MARKERS = (
     "CHROMIUM_WASM_M8_AUDIO_MANAGER:READY",
     "CHROMIUM_WASM_M8_AUDIO_MANAGER:OPENED",
     "CHROMIUM_WASM_M8_AUDIO_MANAGER:STARTED",
+    "CHROMIUM_WASM_M8_AUDIO_MANAGER:GAIN_CHANGED",
     "CHROMIUM_WASM_M8_AUDIO_MANAGER:DRAINED",
     "CHROMIUM_WASM_M8_AUDIO_MANAGER:STOPPED",
     "CHROMIUM_WASM_M8_AUDIO_MANAGER:CLOSED",
@@ -83,6 +86,7 @@ FAILURE_STAGES = frozenset(
         "open",
         "start",
         "drain",
+        "gain",
         "stop",
         "shutdown",
     }
@@ -126,10 +130,10 @@ FATAL_TAGS = frozenset(
 )
 LIMITATIONS = (
     "proves_only_one_default_low_latency_media_audiomanager_output_stream",
-    "proves_only_fixed_0_5_per_stream_gain_for_this_smoke",
+    "proves_only_one_ordered_0_5_to_0_25_per_stream_gain_transition_for_this_smoke",
     "does_not_prove_audio_service_or_audio_input",
     "does_not_prove_device_change_mute_or_tab_switching_policy",
-    "does_not_prove_dynamic_volume_changes_or_multi_stream_gain_mixing",
+    "does_not_prove_arbitrary_volume_policy_or_multi_stream_gain_mixing",
     "does_not_prove_browser_media_playback_or_global_scheduling",
     "does_not_prove_start_stop_start_or_stream_reuse",
     "does_not_serialize_raw_native_output_exceptions_or_sab_addresses",
@@ -189,6 +193,7 @@ RESULT_FIELDS = frozenset(
         "descriptorRegistrationCount",
         "descriptorValidated",
         "deviceChangePolicyProven",
+        "dynamicGainPathProven",
         "failureCode",
         "fixedGainPathProven",
         "framesPerBuffer",
@@ -781,6 +786,7 @@ def validate_result(
         "cleanupComplete",
         "audioManagerOutputPathProven",
         "fixedGainPathProven",
+        "dynamicGainPathProven",
     ):
         _require_bool(result, field, True)
     for field in (

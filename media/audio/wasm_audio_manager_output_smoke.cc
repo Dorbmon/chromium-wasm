@@ -48,11 +48,17 @@ namespace {
 
 constexpr char kPrefix[] = "CHROMIUM_WASM_M8_AUDIO_MANAGER";
 constexpr uint32_t kTotalFrames = 12000;
+constexpr uint32_t kInitialGainFrames = kTotalFrames / 2;
+constexpr uint32_t kDynamicGainFrames = kTotalFrames - kInitialGainFrames;
 constexpr base::TimeDelta kAudioTimeout = base::Seconds(20);
 // This is a target-local M8.2 preparation check. It exercises one stream's
-// normal volume API without selecting browser, device, mute, or tab policy.
-constexpr double kFixedStreamGain = 0.5;
-constexpr double kFixedStreamGainTolerance = 0.000001;
+// ordered volume API without selecting browser, device, mute, or tab policy.
+constexpr double kInitialStreamGain = 0.5;
+constexpr double kDynamicStreamGain = 0.25;
+constexpr double kStreamGainTolerance = 0.000001;
+
+static_assert(kInitialGainFrames > 0);
+static_assert(kDynamicGainFrames > 0);
 
 void EmitMarker(const char* marker) {
   std::fprintf(stderr, "%s:%s\n", kPrefix, marker);
@@ -78,13 +84,30 @@ class FiniteSource final : public media::AudioOutputStream::AudioSourceCallback,
                  base::TimeTicks /*delay_timestamp*/,
                  const media::AudioGlitchInfo& /*glitch_info*/,
                  media::AudioBus* dest) override {
-    const uint32_t already_produced = produced_frames_.load(std::memory_order_relaxed);
+    const uint32_t already_produced =
+        produced_frames_.load(std::memory_order_relaxed);
     if (already_produced >= kTotalFrames) {
       return 0;
     }
 
+    // This callback can only run after the preceding PumpSamples() invocation
+    // has returned and published its entire buffer. The main sequence changes
+    // the real stream volume only after that publication boundary. Returning
+    // zero here deliberately leaves the audio worker alive without publishing
+    // any later samples, so the worklet can prove that its ordered second
+    // phase used the new gain.
+    if (already_produced >= kInitialGainFrames &&
+        !second_gain_enabled_.load(std::memory_order_acquire)) {
+      initial_gain_completed_.Signal();
+      return 0;
+    }
+
+    const uint32_t remaining_in_phase =
+        already_produced < kInitialGainFrames
+            ? kInitialGainFrames - already_produced
+            : kTotalFrames - already_produced;
     const uint32_t frames = std::min<uint32_t>(
-        static_cast<uint32_t>(dest->frames()), kTotalFrames - already_produced);
+        static_cast<uint32_t>(dest->frames()), remaining_in_phase);
     for (int channel = 0; channel < dest->channels(); ++channel) {
       for (uint32_t frame = 0; frame < frames; ++frame) {
         const uint32_t absolute = already_produced + frame;
@@ -101,9 +124,21 @@ class FiniteSource final : public media::AudioOutputStream::AudioSourceCallback,
     return static_cast<int>(frames);
   }
 
-  void OnError(ErrorType type) override {
+  void OnError(ErrorType /*type*/) override {
     error_.store(true, std::memory_order_release);
+    initial_gain_completed_.Signal();
     completed_.Signal();
+  }
+
+  bool WaitForInitialGainCompletion(base::TimeDelta timeout) {
+    return initial_gain_completed_.TimedWait(timeout) &&
+           !error_.load(std::memory_order_acquire) &&
+           produced_frames_.load(std::memory_order_acquire) ==
+               kInitialGainFrames;
+  }
+
+  void EnableDynamicGainFrames() {
+    second_gain_enabled_.store(true, std::memory_order_release);
   }
 
   bool WaitForCompletion(base::TimeDelta timeout) {
@@ -119,6 +154,8 @@ class FiniteSource final : public media::AudioOutputStream::AudioSourceCallback,
 
   std::atomic<uint32_t> produced_frames_{0};
   std::atomic<bool> error_{false};
+  std::atomic<bool> second_gain_enabled_{false};
+  base::WaitableEvent initial_gain_completed_;
   base::WaitableEvent completed_;
 };
 
@@ -128,6 +165,7 @@ class StreamState final : public base::RefCountedThreadSafe<StreamState> {
   media::AudioOutputStreamWasm* wasm_stream = nullptr;
   bool opened = false;
   bool started = false;
+  bool dynamic_gain_changed = false;
 
  private:
   friend class base::RefCountedThreadSafe<StreamState>;
@@ -221,13 +259,14 @@ OperationResult PostStart(media::AudioManager* manager,
                 if (state->stream && state->wasm_stream) {
                   // Keep the complete SetVolume/GetVolume/Start transaction on
                   // AudioManager's sequence. The fixed source writes +/-0.20,
-                  // so the worklet can later prove the expected +/-0.10 stereo
-                  // samples without exporting any samples from the host.
-                  state->stream->SetVolume(kFixedStreamGain);
+                  // so the worklet can later prove the ordered +/-0.10 then
+                  // +/-0.05 stereo samples without exporting them from the
+                  // host.
+                  state->stream->SetVolume(kInitialStreamGain);
                   double observed_stream_gain = 0.0;
                   state->stream->GetVolume(&observed_stream_gain);
-                  if (std::abs(observed_stream_gain - kFixedStreamGain) <=
-                      kFixedStreamGainTolerance) {
+                  if (std::abs(observed_stream_gain - kInitialStreamGain) <=
+                      kStreamGainTolerance) {
                     state->stream->Start(source.get());
                     state->started = true;
                   }
@@ -242,6 +281,42 @@ OperationResult PostStart(media::AudioManager* manager,
   }
   return state->started ? OperationResult::kSuccess
                         : OperationResult::kCompletedFailure;
+}
+
+OperationResult PostDynamicGainChange(media::AudioManager* manager,
+                                      scoped_refptr<FiniteSource> source,
+                                      scoped_refptr<StreamState> state) {
+  scoped_refptr<OperationCompletion> completion =
+      base::MakeRefCounted<OperationCompletion>();
+  if (!manager->GetTaskRunner()->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](scoped_refptr<FiniteSource> source,
+                 scoped_refptr<StreamState> state,
+                 scoped_refptr<OperationCompletion> completion) {
+                if (state->stream && state->wasm_stream && state->started) {
+                  // The source is still paused at its phase boundary. Publish
+                  // its later frames only after the real AudioOutputStream has
+                  // observed the second SetVolume/GetVolume transaction.
+                  state->stream->SetVolume(kDynamicStreamGain);
+                  double observed_stream_gain = 0.0;
+                  state->stream->GetVolume(&observed_stream_gain);
+                  if (std::abs(observed_stream_gain - kDynamicStreamGain) <=
+                      kStreamGainTolerance) {
+                    source->EnableDynamicGainFrames();
+                    state->dynamic_gain_changed = true;
+                  }
+                }
+                completion->Signal();
+              },
+              source, state, completion))) {
+    return OperationResult::kPostRejected;
+  }
+  if (!completion->TimedWait(kAudioTimeout)) {
+    return OperationResult::kTimedOut;
+  }
+  return state->dynamic_gain_changed ? OperationResult::kSuccess
+                                     : OperationResult::kCompletedFailure;
 }
 
 OperationResult PostStopAndClose(media::AudioManager* manager,
@@ -474,6 +549,37 @@ int main(int argc, char** argv) {
     return Fail("start");
   }
   EmitMarker("STARTED");
+
+  if (!source->WaitForInitialGainCompletion(kAudioTimeout)) {
+    // The paused source may still be called by FakeAudioWorker. Retain the
+    // complete run on this terminal path instead of destroying its callback
+    // or manager while the worker can still access them.
+    RetainTerminalAudioRun(&thread_pool, &manager, &log_factory, &source,
+                           &state);
+    return Fail("gain");
+  }
+
+  const OperationResult gain_change_result =
+      PostDynamicGainChange(manager.get(), source, state);
+  if (gain_change_result != OperationResult::kSuccess) {
+    if (RequiresTerminalTombstone(gain_change_result)) {
+      RetainTerminalAudioRun(&thread_pool, &manager, &log_factory, &source,
+                             &state);
+      return Fail("gain");
+    }
+    const OperationResult stop_result = PostStopAndClose(manager.get(), state);
+    if (RequiresTerminalTombstone(stop_result)) {
+      RetainTerminalAudioRun(&thread_pool, &manager, &log_factory, &source,
+                             &state);
+      return Fail("gain");
+    }
+    if (!ShutdownAudioManagerForSmoke(&thread_pool, &manager, &log_factory,
+                                      &source, &state)) {
+      return Fail("shutdown");
+    }
+    return Fail("gain");
+  }
+  EmitMarker("GAIN_CHANGED");
 
   if (!source->WaitForCompletion(kAudioTimeout) || !state->wasm_stream ||
       !WaitForDrained(state->wasm_stream)) {
