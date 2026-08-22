@@ -25,16 +25,14 @@
 #include "components/services/storage/dom_storage/db_status.h"
 #include "components/services/storage/dom_storage/dom_storage_database.h"
 #include "components/services/storage/dom_storage/dom_storage_histogram_helper.h"
+#include "components/services/storage/dom_storage/storage_area_impl.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
 #include "components/services/storage/public/mojom/storage_policy_update.mojom.h"
 #include "components/services/storage/public/mojom/storage_usage_info.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/dom_storage/storage_area.mojom.h"
-
-namespace blink {
-class StorageKey;
-}  // namespace blink
 
 namespace storage {
 
@@ -48,6 +46,43 @@ class LocalStorageImpl : public base::trace_event::MemoryDumpProvider,
  public:
   using DestructLocalStorageCallback =
       base::OnceCallback<void(LocalStorageImpl*)>;
+
+  // A terminal report for the StorageAreaImpl holders that existed at this
+  // request's admission point. No ScopeOutcome is a Flush, shutdown,
+  // durability, profile-quiescence, or OPFS-lease success signal.
+  struct ImmediateCommitSnapshotResult {
+    enum class ScopeOutcome {
+      // Every captured holder supplied a terminal area result. Callers must
+      // inspect each result rather than treating this as a persistence success.
+      kAllAreasReported,
+      // No holder was materialized at admission. This says nothing about
+      // unmaterialized or on-disk Local Storage areas.
+      kNoMaterializedAreas,
+      // The database connection had not finished at admission.
+      kConnectionNotReady,
+    };
+
+    // This describes the selected backing store at admission. kOnDisk is not
+    // a durability signal.
+    enum class BackingStore {
+      kOnDisk,
+      kInMemory,
+      kUnavailable,
+    };
+
+    struct AreaResult {
+      blink::StorageKey storage_key;
+      StorageAreaImpl::ImmediateCommitSnapshotResult result;
+    };
+
+    ScopeOutcome scope_outcome;
+    BackingStore backing_store;
+    std::vector<AreaResult> area_results;
+  };
+
+  using ImmediateCommitSnapshotCallback =
+      base::OnceCallback<void(ImmediateCommitSnapshotResult)>;
+
   // Constructs a Local Storage implementation which will create its root
   // "Local Storage" directory in `storage_partition_directory` if non-empty.If
   // valid, |receiver| will be bound to this object to allow for remote control
@@ -62,6 +97,22 @@ class LocalStorageImpl : public base::trace_event::MemoryDumpProvider,
                           const std::vector<uint8_t>& key,
                           const std::vector<uint8_t>& value,
                           base::OnceCallback<void(bool)> callback);
+
+  // Requests a terminal report for the currently materialized storage-area
+  // holders. Each child result preserves StorageAreaImpl's admitted UpdateMaps
+  // outcome verbatim. This is not a mutation boundary: later writes may join a
+  // captured area operation, and later-created or unmaterialized areas are not
+  // included.
+  //
+  // This request does not initiate a database connection. It reports
+  // kConnectionNotReady before a connection finishes. A finished failed
+  // connection instead reports captured holders with kUnavailable backing and
+  // their individual terminal results. This does not invoke Flush() and never
+  // observes CloneMap, metadata writes, deletion/cleanup, database close,
+  // filesystem flush, shutdown, recovery, profile quiescence, or OPFS lease
+  // state. The callback is posted asynchronously while its captured task
+  // runner remains runnable.
+  void RequestImmediateCommitSnapshot(ImmediateCommitSnapshotCallback callback);
 
   // Used by content settings to alter the behavior around
   // what data to keep and what data to discard at shutdown.
@@ -109,6 +160,7 @@ class LocalStorageImpl : public base::trace_event::MemoryDumpProvider,
   friend class DOMStorageBrowserTest;
 
   class StorageAreaHolder;
+  class CommitSnapshotState;
 
   // Constructs an absolute path to the database using
   // `storage_partition_directory_`.

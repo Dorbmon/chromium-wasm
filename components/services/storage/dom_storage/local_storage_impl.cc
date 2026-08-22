@@ -16,10 +16,12 @@
 #include "base/byte_size.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "build/build_config.h"
@@ -76,6 +78,117 @@ StorageAreaImpl::Options createOptions() {
     return options;
 }
 }  // namespace
+
+// Owns the aggregate callback independently from LocalStorageImpl. Each
+// StorageAreaImpl owns the child completion until it has a terminal result, so
+// LocalStorageImpl recovery or destruction must not make this callback vanish.
+class LocalStorageImpl::CommitSnapshotState
+    : public base::RefCounted<CommitSnapshotState> {
+ public:
+  explicit CommitSnapshotState(ImmediateCommitSnapshotCallback callback)
+      : callback_(std::move(callback)),
+        callback_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
+  }
+
+  CommitSnapshotState(const CommitSnapshotState&) = delete;
+  CommitSnapshotState& operator=(const CommitSnapshotState&) = delete;
+
+  void ResolveConnectionNotReady() {
+    Resolve({ImmediateCommitSnapshotResult::ScopeOutcome::kConnectionNotReady,
+             ImmediateCommitSnapshotResult::BackingStore::kUnavailable, {}});
+  }
+
+  void ResolveNoMaterializedAreas(
+      ImmediateCommitSnapshotResult::BackingStore backing) {
+    Resolve({
+        ImmediateCommitSnapshotResult::ScopeOutcome::kNoMaterializedAreas,
+        backing,
+        {},
+    });
+  }
+
+  void Initialize(std::vector<blink::StorageKey> storage_keys,
+                  ImmediateCommitSnapshotResult::BackingStore backing) {
+    DCHECK(!initialized_);
+    DCHECK(!storage_keys.empty());
+    initialized_ = true;
+    backing_store_ = backing;
+    storage_keys_ = std::move(storage_keys);
+    area_results_.resize(storage_keys_.size());
+    remaining_results_ = storage_keys_.size();
+  }
+
+  size_t size() const {
+    DCHECK(initialized_);
+    return storage_keys_.size();
+  }
+
+  const blink::StorageKey& storage_key(size_t index) const {
+    DCHECK(initialized_);
+    DCHECK_LT(index, storage_keys_.size());
+    return storage_keys_[index];
+  }
+
+  void OnAreaResult(
+      size_t index,
+      StorageAreaImpl::ImmediateCommitSnapshotResult result) {
+    DCHECK(initialized_);
+    DCHECK_LT(index, area_results_.size());
+    if (resolved_ || area_results_[index].has_value()) {
+      return;
+    }
+
+    area_results_[index] = std::move(result);
+    DCHECK_GT(remaining_results_, 0u);
+    --remaining_results_;
+    if (remaining_results_ != 0) {
+      return;
+    }
+
+    std::vector<ImmediateCommitSnapshotResult::AreaResult> results;
+    results.reserve(storage_keys_.size());
+    for (size_t result_index = 0; result_index < storage_keys_.size();
+         ++result_index) {
+      DCHECK(area_results_[result_index].has_value());
+      results.push_back(
+          {std::move(storage_keys_[result_index]),
+           std::move(*area_results_[result_index])});
+    }
+    Resolve({ImmediateCommitSnapshotResult::ScopeOutcome::kAllAreasReported,
+             backing_store_, std::move(results)});
+  }
+
+ private:
+  friend class base::RefCounted<CommitSnapshotState>;
+  ~CommitSnapshotState() = default;
+
+  void Resolve(ImmediateCommitSnapshotResult result) {
+    if (resolved_) {
+      return;
+    }
+    resolved_ = true;
+
+    ImmediateCommitSnapshotCallback callback = std::move(callback_);
+    if (!callback) {
+      return;
+    }
+    callback_task_runner_->PostTask(FROM_HERE,
+                                    base::BindOnce(std::move(callback),
+                                                   std::move(result)));
+  }
+
+  ImmediateCommitSnapshotCallback callback_;
+  const scoped_refptr<base::SequencedTaskRunner> callback_task_runner_;
+  bool initialized_ = false;
+  bool resolved_ = false;
+  ImmediateCommitSnapshotResult::BackingStore backing_store_ =
+      ImmediateCommitSnapshotResult::BackingStore::kUnavailable;
+  std::vector<blink::StorageKey> storage_keys_;
+  std::vector<
+      std::optional<StorageAreaImpl::ImmediateCommitSnapshotResult>>
+      area_results_;
+  size_t remaining_results_ = 0;
+};
 
 class LocalStorageImpl::StorageAreaHolder final
     : public StorageAreaImpl::Delegate {
@@ -306,6 +419,51 @@ void LocalStorageImpl::PutValueForTesting(
 
   it->second->storage_area()->Put(key, value, /*client_old_value=*/std::nullopt,
                                   /*source=*/nullptr, std::move(callback));
+}
+
+void LocalStorageImpl::RequestImmediateCommitSnapshot(
+    ImmediateCommitSnapshotCallback callback) {
+  auto snapshot =
+      base::MakeRefCounted<CommitSnapshotState>(std::move(callback));
+  if (connection_state_ != CONNECTION_FINISHED) {
+    // Do not call RunWhenConnected(): queued callbacks are weak-bound to this
+    // object and can otherwise disappear during connection failure or teardown.
+    snapshot->ResolveConnectionNotReady();
+    return;
+  }
+
+  const ImmediateCommitSnapshotResult::BackingStore backing_store =
+      !database_ ? ImmediateCommitSnapshotResult::BackingStore::kUnavailable
+      : in_memory_ ? ImmediateCommitSnapshotResult::BackingStore::kInMemory
+                   : ImmediateCommitSnapshotResult::BackingStore::kOnDisk;
+
+  std::vector<blink::StorageKey> storage_keys;
+  storage_keys.reserve(areas_.size());
+  for (const auto& area : areas_) {
+    storage_keys.push_back(area.first);
+  }
+  if (storage_keys.empty()) {
+    snapshot->ResolveNoMaterializedAreas(backing_store);
+    return;
+  }
+
+  // Initialize every result slot before asking an area to start work. The
+  // state has no LocalStorageImpl or holder reference, so it survives recovery
+  // and destruction until every captured area has a terminal result.
+  snapshot->Initialize(std::move(storage_keys), backing_store);
+  for (size_t index = 0; index < snapshot->size(); ++index) {
+    auto area_it = areas_.find(snapshot->storage_key(index));
+    if (area_it == areas_.end()) {
+      snapshot->OnAreaResult(
+          index,
+          {StorageAreaImpl::ImmediateCommitSnapshotResult::Outcome::kCancelled,
+           DbStatus::IOError("Storage area was removed before snapshot "
+                             "admission.")});
+      continue;
+    }
+    area_it->second->storage_area()->RequestImmediateCommitSnapshot(
+        base::BindOnce(&CommitSnapshotState::OnAreaResult, snapshot, index));
+  }
 }
 
 base::FilePath LocalStorageImpl::GetDatabasePath() const {

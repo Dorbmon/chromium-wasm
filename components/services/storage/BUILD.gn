@@ -301,6 +301,31 @@ test("storage_area_impl_unittests") {
   ]
 }
 
+# Keep the LocalStorageImpl snapshot-contract tests independently runnable on
+# Wasm. They use only the component's in-memory SQLite and LevelDB fixtures;
+# they do not establish file-backed storage durability.
+test("local_storage_impl_snapshot_unittests") {
+  sources = [ "dom_storage/local_storage_impl_snapshot_unittest.cc" ]
+
+  deps = [
+    ":storage",
+    ":storage_area_test_support",
+    ":storage_features",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//components/services/storage/public/cpp",
+    "//components/services/storage/public/mojom",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
+    "//mojo/public/cpp/test_support:test_utils",
+    "//net",
+    "//testing/gmock",
+    "//testing/gtest",
+  ]
+}
+
 # Keep StorageAreaImpl's database fakes separate from the broad storage test
 # support bundle, which intentionally depends on desktop Content test support.
 source_set("storage_area_test_support") {
