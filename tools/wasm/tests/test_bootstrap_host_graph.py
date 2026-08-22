@@ -91,6 +91,7 @@ class HostGraphManifestTest(unittest.TestCase):
             "flatbuffers",
             "fp16",
             "freetype",
+            "google_benchmark",
             "harfbuzz",
             "highway",
             "leveldb",
@@ -138,6 +139,10 @@ class HostGraphManifestTest(unittest.TestCase):
             set(dependencies),
         )
         expected_new_pins = {
+            "google_benchmark": (
+                "third_party/google_benchmark/src",
+                "8abf1e701fbd88c8170f48fe0558247e2e5f8e7d",
+            ),
             "quic_trace": (
                 "third_party/quic_trace/src",
                 "352288a06d2c83ae68b5a402b2219f4678be9f39",

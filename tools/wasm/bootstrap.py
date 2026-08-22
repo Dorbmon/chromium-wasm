@@ -71,6 +71,7 @@ M3_ADDITIONAL_SUBMODULES = (
     "flatbuffers",
     "fp16",
     "freetype",
+    "google_benchmark",
     "harfbuzz",
     "highway",
     "leveldb",

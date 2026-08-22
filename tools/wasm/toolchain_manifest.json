@@ -223,6 +223,10 @@
     "googletest": {
       "path": "third_party/googletest/src",
       "revision": "4fe3307fb2d9f86d19777c7eb0e4809e9694dde7"
+    },
+    "google_benchmark": {
+      "path": "third_party/google_benchmark/src",
+      "revision": "8abf1e701fbd88c8170f48fe0558247e2e5f8e7d"
     }
   },
   "nested_git_dependencies": {
