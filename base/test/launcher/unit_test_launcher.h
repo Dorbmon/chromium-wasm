@@ -18,7 +18,7 @@
 #include "build/blink_buildflags.h"
 #include "build/build_config.h"
 
-#if BUILDFLAG(USE_BLINK)
+#if BUILDFLAG(USE_BLINK) && !BUILDFLAG(IS_WASM)
 #include "base/test/launcher/test_launcher.h"
 #endif
 
@@ -40,7 +40,7 @@ int LaunchUnitTestsSerially(int argc,
 
 // The following is not supported in unit_test_launcher_ios.cc, which is used on
 // iOS unless Blink is enabled.
-#if BUILDFLAG(USE_BLINK)
+#if BUILDFLAG(USE_BLINK) && !BUILDFLAG(IS_WASM)
 
 // Launches unit tests in given test suite. Returns exit code.
 // |parallel_jobs| is the number of parallel test jobs.
@@ -196,7 +196,7 @@ class MergeTestFilterSwitchHandler : public DuplicateSwitchHandler {
                         CommandLine::StringType& out_value) override;
 };
 
-#endif  // BUILDFLAG(USE_BLINK)
+#endif  // BUILDFLAG(USE_BLINK) && !BUILDFLAG(IS_WASM)
 
 }  // namespace base
 

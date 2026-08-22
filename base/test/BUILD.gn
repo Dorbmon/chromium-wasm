@@ -401,16 +401,25 @@ static_library("test_support") {
 
   if (use_blink) {
     sources += [
-      "launcher/test_launcher.cc",
       "launcher/test_launcher.h",
       "launcher/test_launcher_test_utils.cc",
       "launcher/test_launcher_test_utils.h",
       "launcher/test_launcher_tracer.cc",
       "launcher/test_launcher_tracer.h",
       "launcher/test_results_tracker.cc",
-      "launcher/unit_test_launcher.cc",
       "multiprocess_test.cc",
     ]
+
+    if (is_wasm) {
+      # A Wasm module has no child-process launcher. Run each unit-test binary
+      # in its one process instead of attempting to batch subprocesses.
+      sources += [ "launcher/unit_test_launcher_wasm.cc" ]
+    } else {
+      sources += [
+        "launcher/test_launcher.cc",
+        "launcher/unit_test_launcher.cc",
+      ]
+    }
   }
 
   sources += [

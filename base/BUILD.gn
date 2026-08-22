@@ -4287,6 +4287,12 @@ test("base_unittests") {
     sources += [ "time/time_wasm_unittest.cc" ]
   }
 
+  if (is_wasm) {
+    # The Wasm test launcher runs a test binary in-process; its subprocess
+    # batching unit tests are intentionally unavailable on this platform.
+    sources -= [ "test/launcher/test_launcher_unittest.cc" ]
+  }
+
   if (!is_cronet_build) {
     # location_unittest.cc fails gn check for tracing-shimmed Cronet builds.
     # Cronet buildbot do not run base_unittests, so exclusing this test
