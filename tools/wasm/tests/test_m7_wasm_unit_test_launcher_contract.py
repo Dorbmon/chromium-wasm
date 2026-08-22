@@ -96,6 +96,22 @@ class WasmUnitTestLauncherContractTest(unittest.TestCase):
         )
         self.assertIn("return false;", stack_trace)
 
+    def test_wasm_test_support_embeds_real_icu_data(self) -> None:
+        build = source("base/test/BUILD.gn")
+
+        self.assertIn('config("wasm_test_icu_data")', build)
+        self.assertIn(
+            '"--embed-file=" + rebase_path("$root_out_dir/icudtl.dat", root_build_dir) +\n'
+            '          "@/assets/icudtl.dat",',
+            build,
+        )
+        test_support = build.split('static_library("test_support") {', 1)[1].split(
+            "  # Cronet doesn't need", 1
+        )[0]
+        self.assertIn('inputs = [ "$root_out_dir/icudtl.dat" ]', test_support)
+        self.assertIn('public_configs = [ ":wasm_test_icu_data" ]', test_support)
+        self.assertIn('public_deps += [ "//third_party/icu:icudata" ]', test_support)
+
 
 if __name__ == "__main__":
     unittest.main()

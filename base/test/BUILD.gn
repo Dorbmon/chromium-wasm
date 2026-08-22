@@ -21,6 +21,17 @@ if (is_ios) {
 
 import("//third_party/perfetto/gn/perfetto_cc_proto_descriptor.gni")
 
+if (is_wasm) {
+  # TestSuite initializes ICU from DIR_ASSETS. Put the real data file in the
+  # virtual filesystem rather than relying on the host-side output directory.
+  config("wasm_test_icu_data") {
+    ldflags = [
+      "--embed-file=" + rebase_path("$root_out_dir/icudtl.dat", root_build_dir) +
+          "@/assets/icudtl.dat",
+    ]
+  }
+}
+
 static_library("test_config") {
   testonly = true
   sources = [
@@ -263,6 +274,13 @@ static_library("test_support") {
     "//third_party/libxml:libxml_utils",
     "//third_party/libxml:xml_reader",
   ]
+
+  if (is_wasm) {
+    # Track the input separately so an ICU data update rebuilds test targets.
+    inputs = [ "$root_out_dir/icudtl.dat" ]
+    public_configs = [ ":wasm_test_icu_data" ]
+    public_deps += [ "//third_party/icu:icudata" ]
+  }
 
   # Cronet doesn't need the Perfetto test support stuff. This dependency is
   # problematic for Cronet because of targets like
