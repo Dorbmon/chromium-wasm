@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+"""Node contracts for the M7 two-outer-document Preferences witness host."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import unittest
+
+
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+HOST_PATH = (
+    TOOLS_DIR / "host" / "chrome_wasm_profile_preferences_outer_reload_smoke.js"
+)
+HOST_URI = HOST_PATH.as_uri()
+
+
+def fake_host_script() -> str:
+    loader_source = r'''
+export default async function(options) {
+  const tokenA = options.arguments.find((argument) =>
+      argument.startsWith("--wasm-profile-preferences-token-a=")).split("=")[1];
+  const tokenBArgument = options.arguments.find((argument) =>
+      argument.startsWith("--wasm-profile-preferences-token-b="));
+  const tokenB = tokenBArgument ? tokenBArgument.split("=")[1] : null;
+  if (globalThis.__scenario === "leak") {
+    options.print(tokenA.slice(0, 31));
+    options.printErr(tokenA.slice(31));
+    return {};
+  }
+  const digest = async (token) => Array.from(new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))),
+      (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const digestA = await digest(tokenA);
+  const digestB = tokenB === null ? null : await digest(tokenB);
+  const marker = "CHROMIUM_WASM_M7_PREFS:";
+  const module = {};
+  options.onRuntimeInitialized.call(module);
+  // Model the real pthread bridge's possible synchronous-exit / queued-output
+  // ordering, which means marker delivery need not precede process exit.
+  globalThis.__chromiumWasmHostBridgeV1.reportProcessExit({protocol: 1, exitCode: 0});
+  options.onExit(0);
+  options.printErr(marker + "READY");
+  if (tokenB === null) {
+    options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestA);
+    options.printErr(marker + "FENCE_OK sha256=" + digestA);
+  } else {
+    options.printErr(marker + "READ_A_OK sha256=" + digestA);
+    options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestB);
+    options.printErr(marker + "FENCE_OK sha256=" + digestB);
+  }
+  options.printErr(marker + "LEASE_RELEASED");
+  return module;
+}
+'''
+    return (
+        "import {runChromeWasmProfilePreferencesOuterReloadFromQuery} from "
+        + json.dumps(HOST_URI)
+        + ";\nconst loaderSource = "
+        + json.dumps(loader_source)
+        + ";\n"
+        + r'''
+if (!globalThis.crypto || !globalThis.crypto.subtle) {
+  const {webcrypto} = await import("node:crypto");
+  globalThis.crypto = webcrypto;
+}
+const ordinal = Number(process.argv[1]);
+const scenario = process.argv[2];
+if ((ordinal !== 1 && ordinal !== 2) ||
+    (scenario !== "pass" && scenario !== "leak")) {
+  throw new Error("test input is invalid");
+}
+globalThis.__scenario = scenario;
+let tick = 0;
+Object.defineProperty(globalThis, "performance", {
+  configurable: true,
+  value: {
+    timeOrigin: 1700000000000 + ordinal,
+    now() { return ++tick; },
+    getEntriesByType(name) {
+      return name === "navigation" ? [{type: ordinal === 1 ? "navigate" : "reload"}] : [];
+    },
+  },
+});
+class FakeElement {
+  constructor() { this.dataset = {}; this.textContent = ""; }
+  append() {}
+  replaceChildren() {}
+}
+class FakeCanvas extends FakeElement {
+  focus() { document.activeElement = this; }
+}
+globalThis.HTMLElement = FakeElement;
+globalThis.HTMLCanvasElement = FakeCanvas;
+const root = new FakeElement();
+const canvas = new FakeCanvas();
+const status = new FakeElement();
+const versionsElement = new FakeElement();
+globalThis.document = {
+  activeElement: null,
+  createElement() { return new FakeElement(); },
+  querySelector(selector) {
+    return new Map([
+      ["#m7-profile-preferences-outer-reload-root", root],
+      ["#m7-profile-preferences-outer-reload-canvas", canvas],
+      ["#m7-profile-preferences-outer-reload-status", status],
+      ["#m7-profile-preferences-outer-reload-versions", versionsElement],
+    ]).get(selector) ?? null;
+  },
+};
+const listeners = new Map();
+globalThis.addEventListener = (name, callback) => {
+  const callbacks = listeners.get(name) ?? [];
+  callbacks.push(callback);
+  listeners.set(name, callbacks);
+};
+globalThis.removeEventListener = (name, callback) => listeners.set(
+    name, (listeners.get(name) ?? []).filter((candidate) => candidate !== callback));
+const rawA = "a".repeat(64);
+const rawB = "b".repeat(64);
+async function digest(bytes) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+      (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+const loaderBytes = new TextEncoder().encode(loaderSource);
+const wasmBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+const artifact = {
+  artifact_delivery: "immutable-in-memory-server-snapshot",
+  artifact_source_provenance: "unverified",
+  build_config: {bytes: 1, sha256: "c".repeat(64)},
+  build_config_provenance: "selected-out-dir-args-gn-immutable-snapshot",
+  loader: {bytes: loaderBytes.byteLength, sha256: await digest(loaderBytes)},
+  module_name: "chrome_wasm_m7_profile_preferences_test",
+  wasm: {bytes: wasmBytes.byteLength, sha256: await digest(wasmBytes)},
+};
+const captureHarness = {
+  host_html: {bytes: 1, sha256: "d".repeat(64)},
+  host_js: {bytes: 1, sha256: "e".repeat(64)},
+  runner_source: {bytes: 1, sha256: "f".repeat(64)},
+  source_snapshot_provenance:
+      "on-disk-byte-snapshots-at-server-startup-not-commit-provenance",
+  version_provenance:
+      "toolchain-manifest-metadata-only-not-artifact-or-harness-source-provenance",
+};
+const query = new URLSearchParams({
+  resultToken: "fake-outer-reload-result-capability-123456",
+  session: "fake-outer-reload-session-capability-123456",
+  module: artifact.module_name,
+  timeoutMs: "2000",
+  versions: JSON.stringify({
+    chromium: "0".repeat(40), v8: "1".repeat(40), emscripten: "2".repeat(40),
+  }),
+  artifact: JSON.stringify(artifact),
+  captureHarness: JSON.stringify(captureHarness),
+});
+globalThis.location = new URL(
+    "https://m7.test/__m7_chrome_profile_preferences_outer_reload__/?" + query);
+if (location.href.includes(rawA) || location.href.includes(rawB)) {
+  throw new Error("raw preference token escaped into URL");
+}
+const NativeURL = URL;
+globalThis.URL = class extends NativeURL {};
+URL.createObjectURL = () =>
+    "data:text/javascript;base64," + Buffer.from(loaderSource).toString("base64");
+URL.revokeObjectURL = () => {};
+function headers(contentType = null) {
+  const values = {
+    "Cache-Control": "no-store",
+    "Cross-Origin-Embedder-Policy": "require-corp",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (contentType !== null) values["Content-Type"] = contentType;
+  return new Headers(values);
+}
+const bootstrap = {
+  protocol: 1,
+  case: "chrome_profile_preferences_outer_document_reload_m7",
+  scope:
+      "same-origin-two-outer-documents-chrome-wasm-m7-profile-preferences-test-modules-orderly-reload-only",
+  ordinal,
+  mode: ordinal === 1 ? "write" : "verify-and-write",
+  tokenA: rawA,
+  tokenB: ordinal === 1 ? null : rawB,
+  tokenADigest: await digest(new TextEncoder().encode(rawA)),
+  tokenBDigest: ordinal === 1 ? null : await digest(new TextEncoder().encode(rawB)),
+};
+let bootstrapPosts = 0;
+let bootstrapGets = 0;
+let result = null;
+let ready = null;
+globalThis.fetch = async (url, options = {}) => {
+  const href = String(url);
+  if (href.includes("/bootstrap/")) {
+    if (options.method === "POST") {
+      const evidence = JSON.parse(options.body);
+      const expectedType = ordinal === 1 ? "navigate" : "reload";
+      if (JSON.stringify(Object.keys(evidence).sort()) !== JSON.stringify(
+          ["case", "navigationType", "protocol", "scope", "timeOrigin"]) ||
+          evidence.protocol !== 1 || evidence.case !== bootstrap.case ||
+          evidence.scope !== bootstrap.scope || evidence.navigationType !== expectedType ||
+          evidence.timeOrigin !== 1700000000000 + ordinal) {
+        throw new Error("document evidence invalid");
+      }
+      ++bootstrapPosts;
+      return {status: 204, url: href, headers: headers()};
+    }
+    if (options.method !== undefined || bootstrapPosts !== 1) {
+      throw new Error("bootstrap request order invalid");
+    }
+    ++bootstrapGets;
+    return {status: 200, url: href, headers: headers("application/json"),
+      async json() { return bootstrap; }};
+  }
+  if (href.endsWith(".js")) {
+    return {ok: true, url: href, headers: headers("text/javascript"),
+      async arrayBuffer() { return loaderBytes.buffer.slice(
+          loaderBytes.byteOffset, loaderBytes.byteOffset + loaderBytes.byteLength); }};
+  }
+  if (href.endsWith(".wasm")) {
+    return {ok: true, url: href, headers: headers("application/wasm"),
+      async arrayBuffer() { return wasmBytes.buffer.slice(
+          wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength); }};
+  }
+  if (options.method === "POST" && href.includes("/result/")) {
+    result = JSON.parse(options.body);
+    return {status: 204, url: href, headers: headers()};
+  }
+  if (options.method === "POST" && href.includes("/ready/")) {
+    ready = JSON.parse(options.body);
+    return {status: 204, url: href, headers: headers()};
+  }
+  throw new Error("unexpected fetch");
+};
+globalThis.crossOriginIsolated = true;
+const completed = await runChromeWasmProfilePreferencesOuterReloadFromQuery();
+if (scenario === "pass") {
+  if (bootstrapPosts !== 1 || bootstrapGets !== 1 || result === null || ready === null ||
+      completed.status !== "pass" || result.status !== "pass" ||
+      result.tokenEvidence.rawTokenLeakDetected !== false ||
+      JSON.stringify(result).includes(rawA) || JSON.stringify(result).includes(rawB)) {
+    throw new Error("passing host evidence is invalid");
+  }
+  process.stdout.write("pass\n");
+} else {
+  throw new Error("raw preference token leak was not rejected");
+}
+'''
+    )
+
+
+class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
+    def run_fake_host(self, ordinal: int, scenario: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["node", "--input-type=module", "--eval", fake_host_script(),
+             str(ordinal), scenario],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_accepts_write_document(self) -> None:
+        completed = self.run_fake_host(1, "pass")
+        self.assertTrue(completed.returncode == 0, "write fake host failed")
+        self.assertEqual(completed.stdout, "pass\n")
+
+    def test_accepts_verify_and_write_document(self) -> None:
+        completed = self.run_fake_host(2, "pass")
+        self.assertTrue(completed.returncode == 0, "verify fake host failed")
+        self.assertEqual(completed.stdout, "pass\n")
+
+    def test_rejects_cross_callback_raw_preference_leak_without_echo(self) -> None:
+        completed = self.run_fake_host(1, "leak")
+        self.assertNotEqual(completed.returncode, 0)
+        opaque = "a" * 64
+        self.assertFalse(opaque in completed.stdout, "raw token reached stdout")
+        self.assertFalse(opaque in completed.stderr, "raw token reached stderr")
+
+    def test_host_neither_uses_outer_storage_nor_self_navigates(self) -> None:
+        source = HOST_PATH.read_text(encoding="utf-8")
+        for forbidden in (
+            "sessionStorage.",
+            "localStorage.",
+            "indexedDB.",
+            "document.cookie",
+            "window.name",
+            "location.reload(",
+            "location.replace(",
+            "location.assign(",
+            "Page.reload",
+            "Page.navigate",
+            "Runtime.evaluate",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertTrue(forbidden not in source, "forbidden host API found")
+        self.assertIn("postBootstrapDocumentEvidence", source)
+        self.assertIn("await fetchBootstrap(context)", source)
+        self.assertIn("--wasm-profile-preferences-smoke=write", source)
+        self.assertIn("--wasm-profile-preferences-smoke=verify-and-write", source)
+        self.assertIn("<suppressed-native-output>", source)
+
+
+if __name__ == "__main__":
+    unittest.main()
