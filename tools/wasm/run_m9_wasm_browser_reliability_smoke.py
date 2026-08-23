@@ -40,10 +40,12 @@ from typing import Any, Iterator, Sequence
 from m0_common import (
     M0Error,
     REPO_ROOT,
+    checked_output,
     load_manifest,
     parse_timeout,
     print_context,
 )
+from run_content_shell_smoke import manifest_versions
 import run_m6_wasm_browser_continuous_flow_dom_smoke as continuous_flow
 import run_m6_wasm_browser_normal_lifecycle_smoke as normal_lifecycle
 
@@ -72,6 +74,7 @@ MAX_FAILURE_MESSAGE_CHARS = 2048
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT = "the M9 parent preflight snapshot"
+PARENT_RUN_VERSION_SNAPSHOT_CONTEXT = "the frozen M9 parent run version snapshot"
 CONTROLLED_FLOW_HOST_FIXTURE_DELIVERY = "private-m9-temporary-directory-snapshot"
 CONTROLLED_FLOW_HOST_FIXTURE_SOURCE_PROVENANCE = "unverified"
 NORMAL_RESULT_PREFIX = f"{normal_lifecycle.SENTINEL}:NODE_RESULT "
@@ -134,6 +137,7 @@ _SCREENSHOT_CONTRACT_FIELDS = frozenset(
         "comparison",
     )
 )
+_VERSION_IDENTITY_FIELDS = frozenset(("chromium", "v8", "emscripten", "port"))
 
 LIMITATIONS = (
     "does_not_measure_same_instance_tab_or_navigation_churn",
@@ -286,6 +290,35 @@ def _require_artifacts(out_dir: Path, module_name: str, description: str) -> Non
     for suffix in (".js", ".wasm"):
         if not (out_dir / f"{module_name}{suffix}").is_file():
             raise M0Error(f"{description} artifact is missing")
+
+
+def _validate_version_identity(value: object, description: str) -> dict[str, str]:
+    """Require the exact four identifiers reported by an M6 flow child."""
+
+    if not isinstance(value, dict) or set(value) != _VERSION_IDENTITY_FIELDS:
+        raise M0Error(f"{description} has invalid version identifiers")
+    if not all(type(revision) is str and revision for revision in value.values()):
+        raise M0Error(f"{description} has invalid version identifiers")
+    return {name: value[name] for name in sorted(_VERSION_IDENTITY_FIELDS)}
+
+
+def snapshot_parent_run_version_identity(manifest: object) -> dict[str, str]:
+    """Freeze one parent-run version observation before any child starts.
+
+    This combines the locally loaded toolchain manifest with the current port
+    checkout once.  It is a run-local expected-value snapshot only: it does
+    not attest to artifact bytes or establish source provenance.
+    """
+
+    try:
+        versions = manifest_versions(
+            manifest, checked_output(["git", "rev-parse", "HEAD"])
+        )
+        return _validate_version_identity(
+            versions, "M9 parent run version snapshot"
+        )
+    except M0Error as error:
+        raise M0Error("M9 parent run version snapshot is invalid") from error
 
 
 def _snapshot_normal_lifecycle_preflight_artifact_identity(
@@ -1066,14 +1099,9 @@ def validate_normal_lifecycle_execution(
 
 
 def _versions_from_flow_result(result: dict[str, Any]) -> dict[str, str]:
-    versions = result.get("versions")
-    if not isinstance(versions, dict):
-        raise M0Error("controlled flow result has invalid version identifiers")
-    if set(versions) != {"chromium", "v8", "emscripten", "port"}:
-        raise M0Error("controlled flow result has invalid version identifiers")
-    if not all(isinstance(value, str) and value for value in versions.values()):
-        raise M0Error("controlled flow result has invalid version identifiers")
-    return dict(versions)
+    return _validate_version_identity(
+        result.get("versions"), "controlled flow result"
+    )
 
 
 def _artifact_identity_from_flow_result(result: dict[str, Any]) -> dict[str, object]:
@@ -1100,6 +1128,7 @@ def validate_controlled_flow_execution(
     expected_host_resource_identity: dict[str, object],
     expected_artifact_identity: dict[str, object] | None = None,
     expected_artifact_identity_context: str = "a prior cycle",
+    expected_run_version_snapshot: dict[str, str] | None = None,
     screenshot_contract: dict[str, Any] | None = None,
     screenshot_baseline_png: bytes | None = None,
     expected_screenshot_policy_identity: dict[str, object] | None = None,
@@ -1146,8 +1175,24 @@ def validate_controlled_flow_execution(
                 "with the frozen M9 fixture snapshot"
             ) from error
     versions = _versions_from_flow_result(flow_result)
-    if restart_result.get("versions") != versions:
+    if not _exact_json_value_equal(restart_result.get("versions"), versions):
         raise M0Error("controlled flow and restart version identifiers disagree")
+    validation_versions = versions
+    if expected_run_version_snapshot is not None:
+        try:
+            validation_versions = _validate_version_identity(
+                expected_run_version_snapshot,
+                "controlled-flow expected M9 parent run snapshot",
+            )
+        except M0Error as error:
+            raise M0Error(
+                "controlled-flow expected M9 parent run snapshot is invalid"
+            ) from error
+        if not _exact_json_value_equal(versions, validation_versions):
+            raise M0Error(
+                "controlled-flow child version identifiers disagree with "
+                + PARENT_RUN_VERSION_SNAPSHOT_CONTEXT
+            )
     artifact = _artifact_identity_from_flow_result(flow_result)
     if artifact.get("module_name") != expected_module_name:
         raise M0Error(
@@ -1215,14 +1260,14 @@ def validate_controlled_flow_execution(
 
     actual_png = continuous_flow.validate_flow_result(
         flow_result,
-        expected_versions=versions,
+        expected_versions=validation_versions,
         expected_artifact_identity=validation_artifact_identity,
         expected_host_resource_identity=expected_host_resources,
         screenshot_contract=screenshot_contract,
     )
     continuous_flow.validate_restart_result(
         restart_result,
-        expected_versions=versions,
+        expected_versions=validation_versions,
         expected_artifact_identity=validation_artifact_identity,
         expected_host_resource_identity=expected_host_resources,
     )
@@ -1625,12 +1670,22 @@ def run_reliability(
     node: Path | None,
     relay_script: Path | None,
     no_sandbox: bool,
+    parent_run_version_snapshot: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Run independent fresh-lifecycle cycles and summarize their evidence."""
     _require_iteration_count(normal_lifecycle_iterations, "normal lifecycle count")
     _require_iteration_count(controlled_flow_iterations, "controlled flow count")
     _require_timeout(normal_timeout, "normal lifecycle timeout")
     _require_timeout(controlled_flow_timeout, "controlled flow timeout")
+    if parent_run_version_snapshot is None:
+        parent_versions = snapshot_parent_run_version_identity(load_manifest())
+    else:
+        try:
+            parent_versions = _validate_version_identity(
+                parent_run_version_snapshot, "M9 parent run version snapshot"
+            )
+        except M0Error as error:
+            raise M0Error("M9 parent run version snapshot is invalid") from error
     _require_artifacts(out_dir, normal_module_name, "normal lifecycle")
     _require_artifacts(out_dir, controlled_flow_module_name, "controlled flow")
 
@@ -1730,6 +1785,7 @@ def run_reliability(
                     controlled_flow_preflight_artifact_identity
                 ),
                 expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
+                expected_run_version_snapshot=copy.deepcopy(parent_versions),
                 screenshot_contract=flow_screenshot_contract,
                 screenshot_baseline_png=flow_screenshot_baseline_png,
                 expected_screenshot_policy_identity=flow_screenshot_policy_identity,
@@ -1767,6 +1823,9 @@ def run_reliability(
             "kind": "fresh-real-host-browser-profile-and-outer-restart",
             "requestedCycles": controlled_flow_iterations,
             "controlledHttpsNavigation": True,
+            # This is one parent-run observation retained before any child
+            # starts. It is neither an artifact identity nor source provenance.
+            "runVersionSnapshot": parent_versions,
             # This identity names only the M9 parent-held four-file fixture
             # copy. It deliberately leaves source provenance unverified.
             "hostFixture": flow_host_fixture_identity,
@@ -1864,6 +1923,8 @@ def main() -> int:
 
         stage = "load_manifest"
         manifest = load_manifest()
+        stage = "snapshot_parent_run_versions"
+        parent_run_version_snapshot = snapshot_parent_run_version_identity(manifest)
         print_context(
             "run_m9_wasm_browser_reliability_smoke.py",
             manifest,
@@ -1879,6 +1940,7 @@ def main() -> int:
             out_dir=out_dir,
             normal_module_name=args.normal_module_name,
             controlled_flow_module_name=args.controlled_flow_module_name,
+            parent_run_version_snapshot=parent_run_version_snapshot,
             normal_lifecycle_iterations=args.normal_lifecycle_iterations,
             controlled_flow_iterations=args.controlled_flow_iterations,
             normal_timeout=args.normal_timeout,

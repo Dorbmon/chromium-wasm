@@ -134,6 +134,7 @@ def valid_screenshot_comparison() -> dict[str, object]:
 def flow_execution(
     cycle: int = 1,
     *,
+    flow_versions: object = VERSIONS,
     restart_versions: object = VERSIONS,
     flow_artifact: object = ARTIFACT_IDENTITY,
     restart_artifact: object = ARTIFACT_IDENTITY,
@@ -145,7 +146,7 @@ def flow_execution(
     if screenshot_comparison is None:
         screenshot_comparison = valid_screenshot_comparison()
     flow = {
-        "versions": VERSIONS,
+        "versions": flow_versions,
         "artifact": copy.deepcopy(flow_artifact),
         "hostResources": copy.deepcopy(flow_host_resources),
         "frameReports": [{"id": 1}],
@@ -179,7 +180,48 @@ def flow_execution(
     )
 
 
+class M9WasmBrowserReliabilityVersionSnapshotTest(unittest.TestCase):
+    def test_parent_version_snapshot_uses_one_manifest_and_head_observation(
+        self,
+    ) -> None:
+        manifest = {"manifest": "test"}
+        with (
+            mock.patch.object(
+                runner, "checked_output", return_value="p" * 40
+            ) as checked,
+            mock.patch.object(
+                runner, "manifest_versions", return_value=copy.deepcopy(VERSIONS)
+            ) as versions,
+        ):
+            snapshot = runner.snapshot_parent_run_version_identity(manifest)
+
+        self.assertEqual(VERSIONS, snapshot)
+        checked.assert_called_once_with(["git", "rev-parse", "HEAD"])
+        versions.assert_called_once_with(manifest, "p" * 40)
+
+    def test_parent_version_snapshot_rejects_malformed_identity(self) -> None:
+        with (
+            mock.patch.object(runner, "checked_output", return_value="p" * 40),
+            mock.patch.object(
+                runner,
+                "manifest_versions",
+                return_value={"chromium": "chromium-only"},
+            ),
+            self.assertRaisesRegex(M0Error, "parent run version snapshot is invalid"),
+        ):
+            runner.snapshot_parent_run_version_identity({"manifest": "test"})
+
+
 class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        parent_snapshot = mock.patch.object(
+            runner,
+            "snapshot_parent_run_version_identity",
+            return_value=copy.deepcopy(VERSIONS),
+        )
+        self.parent_snapshot = parent_snapshot.start()
+        self.addCleanup(parent_snapshot.stop)
+
     def _make_out_dir(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temporary = tempfile.TemporaryDirectory()
         out_dir = Path(temporary.name) / "out"
@@ -1183,6 +1225,34 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
             )
 
+    def test_controlled_flow_rejects_matching_child_versions_outside_parent_snapshot(
+        self,
+    ) -> None:
+        drifted = dict(VERSIONS)
+        drifted["port"] = "later-port-revision"
+        with (
+            mock.patch.object(
+                runner.continuous_flow, "validate_flow_result"
+            ) as validate_flow,
+            mock.patch.object(
+                runner.continuous_flow, "validate_restart_result"
+            ) as validate_restart,
+            self.assertRaisesRegex(
+                M0Error, "frozen M9 parent run version snapshot"
+            ),
+        ):
+            runner.validate_controlled_flow_execution(
+                flow_execution(
+                    flow_versions=drifted,
+                    restart_versions=drifted,
+                ),
+                expected_module_name=runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+                expected_host_resource_identity=HOST_RESOURCE_IDENTITY,
+                expected_run_version_snapshot=VERSIONS,
+            )
+        validate_flow.assert_not_called()
+        validate_restart.assert_not_called()
+
     def test_controlled_flow_rejects_restart_artifact_substitution_and_aliases(
         self,
     ) -> None:
@@ -1248,8 +1318,9 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         executions: list[tuple[str, int, list[str], float]] = []
         normal_validation_inputs: list[tuple[str, object, str]] = []
         controlled_flow_validation_inputs: list[
-            tuple[str, object, str, object, object, object, object]
+            tuple[str, object, str, object, object, object, object, object]
         ] = []
+        controlled_flow_version_snapshots: list[dict[str, str] | None] = []
 
         def fake_run_child(
             name: str, cycle: int, command: list[str], timeout: float
@@ -1288,6 +1359,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             expected_host_resource_identity: dict[str, object],
             expected_artifact_identity: dict[str, object] | None,
             expected_artifact_identity_context: str,
+            expected_run_version_snapshot: dict[str, str] | None,
             screenshot_contract: dict[str, object],
             screenshot_baseline_png: bytes,
             expected_screenshot_policy_identity: dict[str, object],
@@ -1295,11 +1367,13 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             self.assertEqual(
                 runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME, expected_module_name
             )
+            controlled_flow_version_snapshots.append(expected_run_version_snapshot)
             controlled_flow_validation_inputs.append(
                 (
                     expected_module_name,
                     copy.deepcopy(expected_artifact_identity),
                     expected_artifact_identity_context,
+                    copy.deepcopy(expected_run_version_snapshot),
                     copy.deepcopy(expected_host_resource_identity),
                     screenshot_contract,
                     screenshot_baseline_png,
@@ -1310,6 +1384,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 "cycle": execution.cycle,
                 "artifact": copy.deepcopy(ARTIFACT_IDENTITY),
                 "hostResources": copy.deepcopy(expected_host_resource_identity),
+                "versions": copy.deepcopy(expected_run_version_snapshot),
                 "elapsedMs": 10.0 * execution.cycle,
                 "screenshotPolicy": copy.deepcopy(expected_screenshot_policy_identity),
             }
@@ -1366,6 +1441,12 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             "fresh-real-host-browser-profile-and-outer-restart",
             result["controlledFlow"]["kind"],
         )
+        self.assertEqual(
+            VERSIONS, result["controlledFlow"]["runVersionSnapshot"]
+        )
+        self.assertNotIn(
+            "source_provenance", result["controlledFlow"]["runVersionSnapshot"]
+        )
         host_fixture = runner.validate_controlled_flow_host_fixture_identity(
             result["controlledFlow"]["hostFixture"]
         )
@@ -1401,33 +1482,35 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                     runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
                     controlled_flow_preflight,
                     "the M9 parent preflight snapshot",
-                    controlled_flow_validation_inputs[0][3],
+                    VERSIONS,
                     controlled_flow_validation_inputs[0][4],
                     controlled_flow_validation_inputs[0][5],
                     controlled_flow_validation_inputs[0][6],
+                    controlled_flow_validation_inputs[0][7],
                 ),
                 (
                     runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
                     controlled_flow_preflight,
                     "the M9 parent preflight snapshot",
-                    controlled_flow_validation_inputs[0][3],
+                    VERSIONS,
                     controlled_flow_validation_inputs[0][4],
                     controlled_flow_validation_inputs[0][5],
                     controlled_flow_validation_inputs[0][6],
+                    controlled_flow_validation_inputs[0][7],
                 ),
             ],
             controlled_flow_validation_inputs,
         )
         self.assertIs(
-            controlled_flow_validation_inputs[0][4],
-            controlled_flow_validation_inputs[1][4],
-        )
-        self.assertIs(
             controlled_flow_validation_inputs[0][5],
             controlled_flow_validation_inputs[1][5],
         )
-        self.assertEqual(
+        self.assertIs(
             controlled_flow_validation_inputs[0][6],
+            controlled_flow_validation_inputs[1][6],
+        )
+        self.assertEqual(
+            controlled_flow_validation_inputs[0][7],
             result["controlledFlow"]["screenshotPolicy"],
         )
         self.assertEqual(
@@ -1435,8 +1518,14 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 name: host_fixture[name]
                 for name in continuous_flow.HOST_RESOURCE_FILES
             },
-            controlled_flow_validation_inputs[0][3],
+            controlled_flow_validation_inputs[0][4],
         )
+        self.assertEqual([VERSIONS, VERSIONS], controlled_flow_version_snapshots)
+        self.assertIsNot(
+            controlled_flow_version_snapshots[0],
+            controlled_flow_version_snapshots[1],
+        )
+        self.parent_snapshot.assert_called_once()
         load_contract.assert_called_once_with()
         normal_commands = [record[2] for record in executions[:3]]
         self.assertTrue(
@@ -1784,6 +1873,87 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             child_names,
         )
         snapshot_policy.assert_called_once_with()
+        validate_flow.assert_called_once()
+        validate_restart.assert_called_once()
+
+    def test_run_rejects_later_controlled_flow_version_drift(self) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, controlled_flow_preflight = (
+            self._preflight_artifact_identities(out_dir)
+        )
+        screenshot_contract, baseline_png, screenshot_policy = (
+            self._retained_screenshot_policy()
+        )
+        drifted_versions = dict(VERSIONS)
+        drifted_versions["port"] = "later-port-revision"
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del command, timeout
+            child_names.append((name, cycle))
+            if name == "normal lifecycle":
+                return normal_execution(cycle, artifact=normal_preflight)
+            child_versions = VERSIONS if cycle == 1 else drifted_versions
+            return flow_execution(
+                cycle,
+                flow_versions=child_versions,
+                restart_versions=child_versions,
+                flow_artifact=controlled_flow_preflight,
+                restart_artifact=controlled_flow_preflight,
+            )
+
+        with (
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            mock.patch.object(
+                runner,
+                "_snapshot_controlled_screenshot_policy",
+                return_value=(
+                    screenshot_contract,
+                    baseline_png,
+                    screenshot_policy,
+                ),
+            ),
+            mock.patch.object(
+                runner.continuous_flow,
+                "validate_flow_result",
+                return_value=baseline_png,
+            ) as validate_flow,
+            mock.patch.object(
+                runner.continuous_flow, "validate_restart_result"
+            ) as validate_restart,
+            self.assertRaisesRegex(
+                M0Error, "frozen M9 parent run version snapshot"
+            ),
+        ):
+            runner.run_reliability(
+                out_dir=out_dir,
+                normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                controlled_flow_module_name=(
+                    runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                ),
+                normal_lifecycle_iterations=1,
+                controlled_flow_iterations=3,
+                normal_timeout=7.0,
+                controlled_flow_timeout=11.0,
+                diagnostics_dir=out_dir / "diagnostics",
+                browser=None,
+                node=None,
+                relay_script=None,
+                no_sandbox=False,
+            )
+
+        self.assertEqual(
+            [
+                ("normal lifecycle", 1),
+                ("controlled flow", 1),
+                ("controlled flow", 2),
+            ],
+            child_names,
+        )
+        self.parent_snapshot.assert_called_once()
         validate_flow.assert_called_once()
         validate_restart.assert_called_once()
 
