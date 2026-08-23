@@ -698,6 +698,63 @@ class M9PackageTest(unittest.TestCase):
         with self.assertRaisesRegex(package.PackageError, "hash mismatch"):
             package.verify_release_snapshot(artifacts)
 
+    def test_verification_rejects_self_consistent_toolchain_version_substitution(
+        self,
+    ) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        toolchain_path = dist_dir / package.TOOLCHAIN_MANIFEST_PACKAGE_PATH
+        toolchain = json.loads(toolchain_path.read_text("utf-8"))
+        toolchain["chromium"]["revision"] = "b" * 40
+        toolchain_bytes = package._canonical_json(toolchain)
+        toolchain_path.write_bytes(toolchain_bytes)
+        toolchain_sha256 = hashlib.sha256(toolchain_bytes).hexdigest()
+        version["toolchain_manifest"]["sha256"] = toolchain_sha256
+        toolchain_record = next(
+            record
+            for record in version["artifacts"]
+            if record["path"] == package.TOOLCHAIN_MANIFEST_PACKAGE_PATH
+        )
+        toolchain_record["sha256"] = toolchain_sha256
+        toolchain_record["size_bytes"] = len(toolchain_bytes)
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(
+            package.PackageError,
+            "bundled toolchain manifest versions do not match VERSION.json",
+        ):
+            package.verify_release_tree(dist_dir)
+
+    def test_captured_bytes_verifier_rejects_self_consistent_toolchain_version_substitution(
+        self,
+    ) -> None:
+        snapshot = snapshot_package_tree(self._stage())
+        artifacts = dict(snapshot.artifacts)
+        version = json.loads(artifacts["VERSION.json"].decode("utf-8"))
+        toolchain = json.loads(
+            artifacts[package.TOOLCHAIN_MANIFEST_PACKAGE_PATH].decode("utf-8")
+        )
+        toolchain["git_dependencies"]["v8"]["revision"] = "b" * 40
+        toolchain_bytes = package._canonical_json(toolchain)
+        toolchain_sha256 = hashlib.sha256(toolchain_bytes).hexdigest()
+        artifacts[package.TOOLCHAIN_MANIFEST_PACKAGE_PATH] = toolchain_bytes
+        version["toolchain_manifest"]["sha256"] = toolchain_sha256
+        toolchain_record = next(
+            record
+            for record in version["artifacts"]
+            if record["path"] == package.TOOLCHAIN_MANIFEST_PACKAGE_PATH
+        )
+        toolchain_record["sha256"] = toolchain_sha256
+        toolchain_record["size_bytes"] = len(toolchain_bytes)
+        artifacts["VERSION.json"] = package._canonical_json(version)
+
+        with self.assertRaisesRegex(
+            package.PackageError,
+            "bundled toolchain manifest versions do not match VERSION.json",
+        ):
+            package.verify_release_snapshot(artifacts)
+
     def test_verification_rejects_unknown_artifact_source_provenance(self) -> None:
         dist_dir = self._stage()
         version_path = dist_dir / "VERSION.json"

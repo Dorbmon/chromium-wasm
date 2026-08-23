@@ -63,6 +63,7 @@ GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CLEAN_BUILD_ATTESTATION_BYTES = 1024 * 1024
 MAX_TARGET_NOTICE_BYTES = 64 * 1024 * 1024
+MAX_TOOLCHAIN_MANIFEST_BYTES = 1024 * 1024
 LICENSES_SCRIPT = REPO_ROOT / "tools/licenses/licenses.py"
 TARGET_THIRD_PARTY_NOTICES_PATH = "LICENSES/THIRD_PARTY_NOTICES.txt"
 TARGET_THIRD_PARTY_NOTICES_MARKER = b"License notice for The Chromium Project"
@@ -980,6 +981,40 @@ def _load_version(path: Path) -> dict[str, Any]:
     return _load_version_bytes(path.read_bytes())
 
 
+def _load_toolchain_manifest_bytes(contents: bytes) -> dict[str, Any]:
+    """Parse bounded bundled manifest bytes without trusting their metadata."""
+
+    if type(contents) is not bytes or not contents:
+        raise PackageError("bundled toolchain manifest must contain non-empty bytes")
+    if len(contents) > MAX_TOOLCHAIN_MANIFEST_BYTES:
+        raise PackageError("bundled toolchain manifest has an invalid size")
+    try:
+        value = json.loads(
+            contents.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {constant}")
+            ),
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise PackageError(f"bundled toolchain manifest is invalid: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PackageError("bundled toolchain manifest must contain an object")
+    return value
+
+
+def _validate_bundled_toolchain_manifest(
+    version: dict[str, Any], contents: bytes
+) -> None:
+    """Bind package version metadata to the exact bundled dependency record."""
+
+    bundled_versions = _manifest_versions(_load_toolchain_manifest_bytes(contents))
+    if bundled_versions != version["versions"]:
+        raise PackageError(
+            "bundled toolchain manifest versions do not match VERSION.json"
+        )
+
+
 def _validate_gate_state(gate_state: object) -> None:
     """Require the exact false-only milestone declaration for this package."""
 
@@ -1137,6 +1172,10 @@ def _validate_version(version: dict[str, Any], root: Path) -> None:
             candidate
         ) != artifact["sha256"]:
             raise PackageError(f"staged package artifact hash mismatch: {relative}")
+    _validate_bundled_toolchain_manifest(
+        version,
+        (root / TOOLCHAIN_MANIFEST_PACKAGE_PATH).read_bytes(),
+    )
 
 
 def verify_release_snapshot(artifacts: Mapping[str, bytes]) -> dict[str, object]:
@@ -1191,6 +1230,10 @@ def verify_release_snapshot(artifacts: Mapping[str, bytes]) -> dict[str, object]
             or _sha256_bytes(contents) != artifact["sha256"]
         ):
             raise PackageError(f"staged package artifact hash mismatch: {relative}")
+    _validate_bundled_toolchain_manifest(
+        version,
+        captured[TOOLCHAIN_MANIFEST_PACKAGE_PATH],
+    )
     return {
         "artifact_count": len(version["artifacts"]),
         "artifact_source_provenance": version["build"][
