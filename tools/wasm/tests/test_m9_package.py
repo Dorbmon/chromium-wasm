@@ -156,6 +156,7 @@ class M9PackageTest(unittest.TestCase):
                 "LICENSES/PRE_RELEASE_NOTICE.txt",
                 "LICENSES/THIRD_PARTY_NOTICES.txt",
                 "README.txt",
+                "TOOLCHAIN.json",
                 "VERSION.json",
                 "chromium-wasm-clipboard-input.js",
                 "chromium-wasm-host.js",
@@ -171,8 +172,8 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual("pre_m7_m8_not_releasable", result["release_status"])
 
         version = json.loads((dist_dir / "VERSION.json").read_text("utf-8"))
-        self.assertEqual(3, package.PACKAGE_SCHEMA_VERSION)
-        self.assertEqual(3, version["schema_version"])
+        self.assertEqual(4, package.PACKAGE_SCHEMA_VERSION)
+        self.assertEqual(4, version["schema_version"])
         self.assertEqual(package.RELEASE_STATUS, version["release_status"])
         self.assertEqual(package.EXPECTED_GATE_STATE, version["gate_state"])
         self.assertNotIn("port", version["versions"])
@@ -189,6 +190,24 @@ class M9PackageTest(unittest.TestCase):
         self.assertNotIn("VERSION.json", [
             record["path"] for record in version["artifacts"]
         ])
+        toolchain_path = dist_dir / package.TOOLCHAIN_MANIFEST_PACKAGE_PATH
+        self.assertEqual(
+            (REPO_ROOT / "tools/wasm/toolchain_manifest.json").read_bytes(),
+            toolchain_path.read_bytes(),
+        )
+        self.assertEqual(
+            package.sha256_file(toolchain_path),
+            version["toolchain_manifest"]["sha256"],
+        )
+        toolchain_record = next(
+            record
+            for record in version["artifacts"]
+            if record["path"] == package.TOOLCHAIN_MANIFEST_PACKAGE_PATH
+        )
+        self.assertEqual(
+            version["toolchain_manifest"]["sha256"], toolchain_record["sha256"]
+        )
+        self.assertEqual(toolchain_path.stat().st_size, toolchain_record["size_bytes"])
         notice_path = dist_dir / package.TARGET_THIRD_PARTY_NOTICES_PATH
         notice_record = next(
             record
@@ -654,6 +673,31 @@ class M9PackageTest(unittest.TestCase):
         with self.assertRaisesRegex(package.PackageError, "hash mismatch"):
             package.verify_release_tree(dist_dir)
 
+    def test_verification_rejects_unbound_toolchain_manifest_artifact(self) -> None:
+        dist_dir = self._stage()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text("utf-8"))
+        toolchain_record = next(
+            record
+            for record in version["artifacts"]
+            if record["path"] == package.TOOLCHAIN_MANIFEST_PACKAGE_PATH
+        )
+        toolchain_record["sha256"] = "0" * 64
+        version_path.write_bytes(package._canonical_json(version))
+
+        with self.assertRaisesRegex(
+            package.PackageError, "toolchain manifest artifact identity"
+        ):
+            package.verify_release_tree(dist_dir)
+
+    def test_captured_bytes_verifier_rejects_toolchain_manifest_tampering(self) -> None:
+        snapshot = snapshot_package_tree(self._stage())
+        artifacts = dict(snapshot.artifacts)
+        artifacts[package.TOOLCHAIN_MANIFEST_PACKAGE_PATH] += b"tamper"
+
+        with self.assertRaisesRegex(package.PackageError, "hash mismatch"):
+            package.verify_release_snapshot(artifacts)
+
     def test_verification_rejects_unknown_artifact_source_provenance(self) -> None:
         dist_dir = self._stage()
         version_path = dist_dir / "VERSION.json"
@@ -751,6 +795,7 @@ class M9PackageTest(unittest.TestCase):
             "/": "text/html; charset=utf-8",
             "/chromium-wasm.js": "text/javascript; charset=utf-8",
             "/chromium-wasm.wasm": "application/wasm",
+            "/TOOLCHAIN.json": "application/json; charset=utf-8",
             "/VERSION.json": "application/json; charset=utf-8",
             "/LICENSES/THIRD_PARTY_NOTICES.txt": "text/plain; charset=utf-8",
         }.items():
@@ -1043,6 +1088,7 @@ class M9PackageTest(unittest.TestCase):
             "text/javascript",
             "application/wasm",
             "application/json",
+            "application/json",
         ):
             response = mock.MagicMock()
             response.__enter__.return_value = response
@@ -1092,6 +1138,7 @@ class M9PackageTest(unittest.TestCase):
             "text/html",
             "text/javascript",
             "application/wasm",
+            "application/json",
             "application/json",
         ):
             response = mock.MagicMock()
@@ -1163,6 +1210,7 @@ class M9PackageTest(unittest.TestCase):
             "text/html",
             "text/javascript",
             "application/wasm",
+            "application/json",
             "application/json",
         ):
             response = mock.MagicMock()
@@ -1375,6 +1423,10 @@ class M9PackageTest(unittest.TestCase):
         self.assertEqual(
             "application/wasm", endpoints["/chromium-wasm.wasm"]["content_type"]
         )
+        self.assertEqual(
+            "application/json; charset=utf-8",
+            endpoints["/TOOLCHAIN.json"]["content_type"],
+        )
 
     def test_release_host_is_not_an_m6_test_route(self) -> None:
         host = (REPO_ROOT / "tools/wasm/host/release_host.js").read_text(
@@ -1402,7 +1454,9 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn("staging checkout", host)
         self.assertIn("artifact source provenance", host)
         self.assertIn("EXPECTED_GATE_STATE", host)
-        self.assertIn("PACKAGE_SCHEMA_VERSION = 3", host)
+        self.assertIn("PACKAGE_SCHEMA_VERSION = 4", host)
+        self.assertIn('"TOOLCHAIN.json"', host)
+        self.assertIn("toolchain manifest artifact identity", host)
         self.assertIn(
             "version?.schema_version !== PACKAGE_SCHEMA_VERSION", host
         )

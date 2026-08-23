@@ -18,7 +18,7 @@ const MAX_LOG_LINES = 32;
 const MAX_LOG_LINE_CHARS = 512;
 const MAX_STATUS_BYTES = 64 * 1024;
 const MAX_VERSION_JSON_BYTES = 64 * 1024;
-const PACKAGE_SCHEMA_VERSION = 3;
+const PACKAGE_SCHEMA_VERSION = 4;
 const PACKAGE_METADATA_PROTOCOL = 1;
 const PRODUCT_NAME = "chromium-wasm";
 const PACKAGE_INPUT_MODULE_NAME = "chrome_wasm";
@@ -82,6 +82,7 @@ const EXPECTED_PACKAGE_ARTIFACT_PATHS = Object.freeze([
   "LICENSES/PRE_RELEASE_NOTICE.txt",
   "LICENSES/THIRD_PARTY_NOTICES.txt",
   "README.txt",
+  "TOOLCHAIN.json",
   "chromium-wasm-clipboard-input.js",
   "chromium-wasm-host.js",
   "chromium-wasm-pointer-input.js",
@@ -340,7 +341,7 @@ function validateVersionMetadata(version) {
   const manifest = requireExactKeys(
       report.toolchain_manifest, EXPECTED_TOOLCHAIN_MANIFEST_KEYS,
       "VERSION.json toolchain manifest");
-  if (manifest.path !== "tools/wasm/toolchain_manifest.json") {
+  if (manifest.path !== "TOOLCHAIN.json") {
     throw new Error("VERSION.json toolchain manifest identity is invalid");
   }
   asSha256(manifest.sha256, "VERSION.json toolchain manifest");
@@ -367,6 +368,12 @@ function validateVersionMetadata(version) {
     if (!Number.isSafeInteger(artifact.size_bytes) || artifact.size_bytes <= 0) {
       throw new Error("VERSION.json artifact size is invalid");
     }
+  }
+  const toolchainManifestArtifact = report.artifacts.find(
+      (artifact) => artifact.path === manifest.path);
+  if (!toolchainManifestArtifact ||
+      toolchainManifestArtifact.sha256 !== manifest.sha256) {
+    throw new Error("VERSION.json toolchain manifest artifact identity is invalid");
   }
   return {build, gateState, versions};
 }

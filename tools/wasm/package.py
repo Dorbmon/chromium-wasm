@@ -51,13 +51,14 @@ else:
 
 
 SENTINEL = "CHROMIUM_WASM_M9_PACKAGE"
-PACKAGE_SCHEMA_VERSION = 3
+PACKAGE_SCHEMA_VERSION = 4
 HOST_PROTOCOL_VERSION = 1
 PACKAGE_RUNTIME_STATUS_PROTOCOL = 1
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
 PRODUCT_NAME = "chromium-wasm"
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 PACKAGE_INPUT_MODULE_NAME = "chrome_wasm"
+TOOLCHAIN_MANIFEST_PACKAGE_PATH = "TOOLCHAIN.json"
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CLEAN_BUILD_ATTESTATION_BYTES = 1024 * 1024
@@ -124,6 +125,7 @@ STATIC_PACKAGE_PATHS = tuple(destination for _, destination in HOST_ASSETS) + (
 )
 PACKAGE_PATHS = frozenset(
     (
+        TOOLCHAIN_MANIFEST_PACKAGE_PATH,
         "VERSION.json",
         "chromium-wasm.js",
         "chromium-wasm.wasm",
@@ -152,6 +154,11 @@ The build.staging_checkout value records only the Git checkout that ran this
 staging tool. The copied build artifacts have
 build.artifact_source_provenance = \"unverified\"; staging does not assert that
 they were built from that checkout.
+
+TOOLCHAIN.json is an exact copy of the checked-out toolchain manifest and its
+SHA-256 is bound by VERSION.json. It records configured dependency references,
+but does not make a mutable or otherwise unapproved dependency reference an
+authorized immutable pin.
 
 Serve this directory from one HTTPS or localhost origin. Every response,
 including JavaScript workers and the Wasm binary, must carry:
@@ -707,13 +714,16 @@ def _version_manifest(
             "THIRD_PARTY_NOTICES.txt covers Chromium GN target dependencies only; "
             "Emscripten toolchain/runtime and system-library attribution closure "
             "remains incomplete.",
+            "Bundled TOOLCHAIN.json records configured dependency references but "
+            "does not make a mutable or otherwise unapproved dependency reference "
+            "an authorized immutable pin.",
             source_identity_limitation,
         ],
         "product": PRODUCT_NAME,
         "release_status": RELEASE_STATUS,
         "schema_version": PACKAGE_SCHEMA_VERSION,
         "toolchain_manifest": {
-            "path": "tools/wasm/toolchain_manifest.json",
+            "path": TOOLCHAIN_MANIFEST_PACKAGE_PATH,
             "sha256": manifest_sha256,
         },
         "versions": _manifest_versions(manifest),
@@ -844,14 +854,15 @@ def package_release(
     gn_args_sha256, gn_args = _read_gn_args(resolved_out_dir / "args.gn")
     manifest_path = Path(__file__).with_name("toolchain_manifest.json")
     try:
-        on_disk_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        on_disk_manifest = json.loads(manifest_bytes.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PackageError("toolchain manifest cannot be read for packaging") from exc
     if manifest != on_disk_manifest:
         raise PackageError(
             "package manifest must be the checked-out toolchain manifest"
         )
-    manifest_sha256 = sha256_file(manifest_path)
+    manifest_sha256 = _sha256_bytes(manifest_bytes)
     _manifest_versions(manifest)
 
     artifact_source_provenance = ARTIFACT_SOURCE_PROVENANCE_UNVERIFIED
@@ -881,6 +892,10 @@ def package_release(
             host_dir=resolved_host_dir,
         ).items():
             _copy_file(source, staging / destination)
+        # Stage the exact bytes that were parsed and hashed above. Reopening the
+        # source manifest here would let a concurrent change make VERSION.json
+        # describe different bytes from the bundled dependency record.
+        _write_file(staging / TOOLCHAIN_MANIFEST_PACKAGE_PATH, manifest_bytes)
         notice_path = staging / TARGET_THIRD_PARTY_NOTICES_PATH
         _generate_target_third_party_notices(
             out_dir=resolved_out_dir,
@@ -1061,7 +1076,7 @@ def _validate_version_metadata(version: dict[str, Any]) -> list[dict[str, object
     manifest = version["toolchain_manifest"]
     if not isinstance(manifest, dict) or set(manifest) != {"path", "sha256"}:
         raise PackageError("VERSION.json toolchain manifest metadata is invalid")
-    if manifest["path"] != "tools/wasm/toolchain_manifest.json" or not isinstance(
+    if manifest["path"] != TOOLCHAIN_MANIFEST_PACKAGE_PATH or not isinstance(
         manifest["sha256"], str
     ) or not re.fullmatch(r"[0-9a-f]{64}", manifest["sha256"]):
         raise PackageError("VERSION.json toolchain manifest identity is invalid")
@@ -1077,6 +1092,7 @@ def _validate_version_metadata(version: dict[str, Any]) -> list[dict[str, object
         raise PackageError("VERSION.json artifact list is invalid")
     expected_artifact_paths = sorted(PACKAGE_PATHS - {"VERSION.json"})
     observed_paths: list[str] = []
+    toolchain_manifest_artifact: dict[str, object] | None = None
     for artifact in artifacts:
         if not isinstance(artifact, dict) or set(artifact) != {
             "path",
@@ -1096,8 +1112,17 @@ def _validate_version_metadata(version: dict[str, Any]) -> list[dict[str, object
         if type(artifact["size_bytes"]) is not int or artifact["size_bytes"] <= 0:
             raise PackageError("VERSION.json artifact size is invalid")
         observed_paths.append(relative)
+        if relative == TOOLCHAIN_MANIFEST_PACKAGE_PATH:
+            toolchain_manifest_artifact = artifact
     if observed_paths != expected_artifact_paths:
         raise PackageError("VERSION.json artifacts are not complete and ordered")
+    if (
+        toolchain_manifest_artifact is None
+        or toolchain_manifest_artifact["sha256"] != manifest["sha256"]
+    ):
+        raise PackageError(
+            "VERSION.json toolchain manifest artifact identity is invalid"
+        )
     return artifacts
 
 

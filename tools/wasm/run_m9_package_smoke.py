@@ -450,6 +450,7 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
             "/": "text/html; charset=utf-8",
             "/chromium-wasm.js": "text/javascript; charset=utf-8",
             "/chromium-wasm.wasm": "application/wasm",
+            "/TOOLCHAIN.json": "application/json; charset=utf-8",
             "/VERSION.json": "application/json; charset=utf-8",
         }
         for path, expected_mime in requested.items():
