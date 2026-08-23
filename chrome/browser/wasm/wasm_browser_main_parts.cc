@@ -91,6 +91,8 @@ constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
 constexpr char kWasmBrowserM9WispRecoverySmokeSwitch[] =
     "wasm-browser-m9-wisp-recovery-smoke";
+constexpr char kWasmBrowserM9RepeatingTimerSmokeSwitch[] =
+    "wasm-browser-m9-repeating-timer-smoke";
 constexpr char kWasmBrowserLifecycleSmokeSwitch[] =
     "wasm-browser-lifecycle-smoke";
 constexpr char kWasmBrowserDevToolsProtocolSmokeSwitch[] =
@@ -133,6 +135,23 @@ constexpr char kWasmNormalBrowserPassMarker[] =
     "CHROMIUM_WASM_M6_NORMAL_BROWSER:PASS";
 constexpr base::TimeDelta kWasmBrowserLifecycleSmokeVisibleDuration =
     base::Milliseconds(250);
+constexpr int kWasmBrowserM9RepeatingTimerSmokeTickCount = 3;
+constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeInterval =
+    base::Milliseconds(50);
+constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeQuiescenceDuration =
+    base::Milliseconds(200);
+constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeTimeout =
+    base::Seconds(5);
+constexpr char kWasmBrowserM9RepeatingTimerSmokeReadyMarker[] =
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:READY";
+constexpr char kWasmBrowserM9RepeatingTimerSmokeTickMarker[] =
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:TICK";
+constexpr char kWasmBrowserM9RepeatingTimerSmokeQuiescentMarker[] =
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:QUIESCENT";
+constexpr char kWasmBrowserM9RepeatingTimerSmokePassMarker[] =
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS";
+constexpr char kWasmBrowserM9RepeatingTimerSmokeTimeoutMarker[] =
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:TIMEOUT";
 constexpr char kWasmBrowserWindowViewSmokeSwitch[] =
     "wasm-browser-window-view-smoke";
 constexpr char kWasmBrowserWindowLifecycleSmokeSwitch[] =
@@ -438,6 +457,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_lifecycle_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserLifecycleSmokeSwitch);
+  const bool browser_m9_repeating_timer_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM9RepeatingTimerSmokeSwitch);
   const bool browser_devtools_protocol_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserDevToolsProtocolSmokeSwitch);
@@ -488,7 +510,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                   "outside its dedicated controlled HTTPS test executable";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
-  if (browser_lifecycle_smoke || browser_devtools_protocol_smoke ||
+  if (browser_lifecycle_smoke || browser_m9_repeating_timer_smoke ||
+      browser_devtools_protocol_smoke ||
       browser_accessibility_snapshot_smoke ||
       browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_clipboard_smoke ||
@@ -501,6 +524,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       browser_host_continuous_flow_smoke ||
       browser_host_continuous_flow_restart_smoke) {
     CHECK_EQ(static_cast<int>(browser_lifecycle_smoke) +
+                 static_cast<int>(browser_m9_repeating_timer_smoke) +
                  static_cast<int>(browser_devtools_protocol_smoke) +
                  static_cast<int>(browser_accessibility_snapshot_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
@@ -520,6 +544,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     CHECK(!browser_lifecycle_smoke_requested_);
     CHECK(!browser_window_lifecycle_);
     browser_lifecycle_smoke_requested_ = true;
+    m9_repeating_timer_smoke_requested_ = browser_m9_repeating_timer_smoke;
     browser_lifecycle_ = std::make_unique<chrome::WasmBrowserLifecycle>(
         profile_.get(),
         base::BindOnce(&WasmBrowserMainParts::OnBrowserLifecycleShutdownComplete,
@@ -639,6 +664,7 @@ void WasmBrowserMainParts::WillRunMainMessageLoop(
 }
 
 void WasmBrowserMainParts::PostMainMessageLoopRun() {
+  StopM9RepeatingTimerSmoke();
   // Shut down the lifecycle request ABI first: it owns a callback into these
   // main-parts and must become inert before the profile/Ozone teardown path.
   chrome::ShutdownWasmBrowserHostLifecycle();
@@ -680,6 +706,7 @@ void WasmBrowserMainParts::RequestShutdown() {
   if (shutdown_requested_) {
     return;
   }
+  StopM9RepeatingTimerSmoke();
   shutdown_requested_ = true;
   // Creation status uses BrowserProcess shutdown state. Set it as soon as
   // shutdown is requested so no bounded Browser can be admitted while a
@@ -745,6 +772,10 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
 
   CHECK(browser_lifecycle_smoke_requested_);
   CHECK(browser_lifecycle_->IsVisible());
+  if (m9_repeating_timer_smoke_requested_) {
+    StartM9RepeatingTimerSmoke();
+    return;
+  }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserDevToolsProtocolSmokeSwitch)) {
     browser_lifecycle_->StartDevToolsProtocolSmoke();
@@ -818,10 +849,126 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   RequestShutdown();
 }
 
+void WasmBrowserMainParts::StartM9RepeatingTimerSmoke() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK(browser_lifecycle_smoke_requested_);
+  CHECK(m9_repeating_timer_smoke_requested_);
+  CHECK(!m9_repeating_timer_smoke_started_);
+  CHECK(!shutdown_requested_);
+  CHECK(browser_lifecycle_);
+  CHECK(browser_lifecycle_->IsVisible());
+  CHECK(!m9_repeating_timer_smoke_timer_.IsRunning());
+  CHECK(!m9_repeating_timer_smoke_timeout_timer_.IsRunning());
+
+  m9_repeating_timer_smoke_started_ = true;
+  m9_repeating_timer_smoke_observed_ticks_ = 0;
+  m9_repeating_timer_smoke_timer_.Start(
+      FROM_HERE, kWasmBrowserM9RepeatingTimerSmokeInterval,
+      base::BindRepeating(&WasmBrowserMainParts::OnM9RepeatingTimerSmokeTick,
+                          weak_ptr_factory_.GetWeakPtr()));
+  m9_repeating_timer_smoke_timeout_timer_.Start(
+      FROM_HERE, kWasmBrowserM9RepeatingTimerSmokeTimeout,
+      base::BindOnce(&WasmBrowserMainParts::OnM9RepeatingTimerSmokeTimeout,
+                     weak_ptr_factory_.GetWeakPtr()));
+  std::fprintf(stderr, "%s ticks=%d interval_ms=%d\n",
+               kWasmBrowserM9RepeatingTimerSmokeReadyMarker,
+               kWasmBrowserM9RepeatingTimerSmokeTickCount,
+               static_cast<int>(
+                   kWasmBrowserM9RepeatingTimerSmokeInterval.InMilliseconds()));
+  std::fflush(stderr);
+}
+
+void WasmBrowserMainParts::OnM9RepeatingTimerSmokeTick() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!m9_repeating_timer_smoke_started_ || shutdown_requested_ ||
+      !browser_lifecycle_ || browser_lifecycle_->IsShutdownStarted()) {
+    return;
+  }
+
+  CHECK_LT(m9_repeating_timer_smoke_observed_ticks_,
+           kWasmBrowserM9RepeatingTimerSmokeTickCount);
+  CHECK(browser_lifecycle_->IsVisible());
+  ++m9_repeating_timer_smoke_observed_ticks_;
+  std::fprintf(stderr, "%s ordinal=%d\n",
+               kWasmBrowserM9RepeatingTimerSmokeTickMarker,
+               m9_repeating_timer_smoke_observed_ticks_);
+  std::fflush(stderr);
+  if (m9_repeating_timer_smoke_observed_ticks_ <
+      kWasmBrowserM9RepeatingTimerSmokeTickCount) {
+    return;
+  }
+
+  // Keep the real Browser alive after stopping its timer. The delayed UI
+  // continuation is intentionally separate from teardown: it proves this
+  // timer remains quiescent while its owner is still visible, rather than
+  // merely disappearing because BrowserMain started to exit.
+  m9_repeating_timer_smoke_timer_.Stop();
+  CHECK(m9_repeating_timer_smoke_timeout_timer_.IsRunning());
+  content::GetUIThreadTaskRunner({content::BrowserTaskType::kUserInput})
+      ->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](base::WeakPtr<WasmBrowserMainParts> main_parts) {
+                if (!main_parts || main_parts->shutdown_requested_) {
+                  return;
+                }
+
+                CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+                CHECK(main_parts->m9_repeating_timer_smoke_started_);
+                CHECK(main_parts->m9_repeating_timer_smoke_requested_);
+                CHECK_EQ(main_parts->m9_repeating_timer_smoke_observed_ticks_,
+                         kWasmBrowserM9RepeatingTimerSmokeTickCount);
+                CHECK(!main_parts->m9_repeating_timer_smoke_timer_.IsRunning());
+                CHECK(main_parts->m9_repeating_timer_smoke_timeout_timer_
+                          .IsRunning());
+                CHECK(main_parts->browser_lifecycle_);
+                CHECK(!main_parts->browser_lifecycle_->IsShutdownStarted());
+                CHECK(main_parts->browser_lifecycle_->IsVisible());
+
+                main_parts->m9_repeating_timer_smoke_timeout_timer_.Stop();
+                std::fprintf(
+                    stderr, "%s ticks=%d duration_ms=%d\n",
+                    kWasmBrowserM9RepeatingTimerSmokeQuiescentMarker,
+                    kWasmBrowserM9RepeatingTimerSmokeTickCount,
+                    static_cast<int>(
+                        kWasmBrowserM9RepeatingTimerSmokeQuiescenceDuration
+                            .InMilliseconds()));
+                std::fflush(stderr);
+                std::fprintf(stderr, "%s ticks=%d\n",
+                             kWasmBrowserM9RepeatingTimerSmokePassMarker,
+                             kWasmBrowserM9RepeatingTimerSmokeTickCount);
+                std::fflush(stderr);
+                main_parts->RequestShutdown();
+              },
+              weak_ptr_factory_.GetWeakPtr()),
+          kWasmBrowserM9RepeatingTimerSmokeQuiescenceDuration);
+}
+
+void WasmBrowserMainParts::OnM9RepeatingTimerSmokeTimeout() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!m9_repeating_timer_smoke_started_ || shutdown_requested_) {
+    return;
+  }
+
+  StopM9RepeatingTimerSmoke();
+  std::fprintf(stderr, "%s observed=%d\n",
+               kWasmBrowserM9RepeatingTimerSmokeTimeoutMarker,
+               m9_repeating_timer_smoke_observed_ticks_);
+  std::fflush(stderr);
+  LOG(ERROR) << "chrome_wasm M9 repeating timer smoke timed out";
+  RequestShutdown();
+}
+
+void WasmBrowserMainParts::StopM9RepeatingTimerSmoke() {
+  m9_repeating_timer_smoke_timer_.Stop();
+  m9_repeating_timer_smoke_timeout_timer_.Stop();
+}
+
 void WasmBrowserMainParts::OnBrowserLifecycleShutdownComplete() {
   CHECK(browser_lifecycle_);
   CHECK(browser_lifecycle_->IsShutdownComplete());
   browser_lifecycle_smoke_shutdown_timer_.Stop();
+  StopM9RepeatingTimerSmoke();
   const bool lifecycle_smoke = browser_lifecycle_smoke_requested_;
   std::fprintf(stderr, "%s\n",
                lifecycle_smoke ? kWasmBrowserLifecycleSmokePassMarker
@@ -985,6 +1132,7 @@ void WasmBrowserMainParts::ShutdownFoundation() {
   foundation_shutdown_ = true;
   browser_lifecycle_smoke_shutdown_timer_.Stop();
   browser_window_lifecycle_smoke_shutdown_timer_.Stop();
+  StopM9RepeatingTimerSmoke();
 
   // Profile's interlocked keyed-service shutdown includes BrowserManagerService.
   // Never let it be the mechanism that destroys a Core still bound to the

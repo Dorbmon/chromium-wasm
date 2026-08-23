@@ -60,6 +60,10 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   void MaybeStartShutdown();
   void StartBrowserLifecycleSmokeShutdownTimer();
   void OnBrowserLifecycleSmokeShutdownTimer();
+  void StartM9RepeatingTimerSmoke();
+  void OnM9RepeatingTimerSmokeTick();
+  void OnM9RepeatingTimerSmokeTimeout();
+  void StopM9RepeatingTimerSmoke();
   void OnBrowserLifecycleShutdownComplete();
   void StartBrowserWindowLifecycleSmokeShutdownTimer();
   void OnBrowserWindowLifecycleSmokeShutdownTimer();
@@ -72,6 +76,9 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   bool shutdown_requested_ = false;
   bool browser_shutdown_started_ = false;
   bool browser_lifecycle_smoke_requested_ = false;
+  bool m9_repeating_timer_smoke_requested_ = false;
+  bool m9_repeating_timer_smoke_started_ = false;
+  int m9_repeating_timer_smoke_observed_ticks_ = 0;
   bool browser_window_shutdown_started_ = false;
   bool browser_window_lifecycle_smoke_requested_ = false;
   bool foundation_shutdown_ = false;
@@ -102,6 +109,8 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   // before requesting their bounded shutdown sequence.
   base::OneShotTimer browser_lifecycle_smoke_shutdown_timer_;
   base::OneShotTimer browser_window_lifecycle_smoke_shutdown_timer_;
+  base::RepeatingTimer m9_repeating_timer_smoke_timer_;
+  base::OneShotTimer m9_repeating_timer_smoke_timeout_timer_;
 
   // Ozone retains the shutdown callback it receives at main-loop creation.
   // Keep this last so callbacks become inert before other state is destroyed.
