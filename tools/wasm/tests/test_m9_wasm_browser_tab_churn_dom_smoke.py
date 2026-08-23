@@ -283,6 +283,7 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
             '"new-tab", "select-first", "select-second", "close-second"',
             "chromium_wasm_browser_host_tab_churn_check",
             "chromium_wasm_browser_host_tab_churn_presented",
+            "awaiting-initial-backing-store-copy",
             "awaiting-trusted-dom-action",
             "setTimeout(() =>",
             "passObserved",
@@ -385,25 +386,59 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
         self.assertIn("cannot satisfy pass", set_module)
         self.assertNotIn("runPointerAbiRejections(", set_module)
         self.assertNotIn("new ChromiumWasmTrustedPointerInput", set_module)
-        native_ready_attach = host[
-            host.index("  #attachPointerInputAfterNativeReady() {") : host.index(
+        initial_copy_attach = host[
+            host.index(
+                "  #attachPointerInputAfterInitialBackingStoreCopy() {"
+            ) : host.index(
                 "  #recordOutput(value) {"
             )
         ]
         self.assertLess(
-            native_ready_attach.index("runPointerAbiRejections("),
-            native_ready_attach.index("new ChromiumWasmTrustedPointerInput"),
+            initial_copy_attach.index("runPointerAbiRejections("),
+            initial_copy_attach.index("new ChromiumWasmTrustedPointerInput"),
+        )
+        initial_activation = host[
+            host.index(
+                "  #activateInitialStageAfterFirstBackingStoreCopy() {"
+            ) : host.index(
+                "  #attachPointerInputAfterInitialBackingStoreCopy() {"
+            )
+        ]
+        self.assertIn("!this.#module", initial_activation)
+        self.assertIn("this.#frameReports.at(0)", initial_activation)
+        self.assertLess(
+            initial_activation.index("active.readyFrameId = firstFrame.id"),
+            initial_activation.index(
+                "this.#attachPointerInputAfterInitialBackingStoreCopy()"
+            ),
+        )
+        report_frame = host[
+            host.index("  #reportFrame(value) {") : host.index(
+                "  #reportReadiness(value) {"
+            )
+        ]
+        self.assertLess(
+            report_frame.index("appendBounded(this.#frameReports"),
+            report_frame.index("#activateInitialStageAfterFirstBackingStoreCopy"),
         )
         record_output = host[
             host.index("  #recordOutput(value) {") : host.index("  #setModule(module) {")
         ]
         self.assertLess(
             record_output.index("this.#stages.push({"),
-            record_output.index("if (targetMarker.info.stage === 1)"),
+            record_output.index("if (initialStage)"),
         )
         self.assertLess(
-            record_output.index("if (targetMarker.info.stage === 1)"),
-            record_output.index("this.#attachPointerInputAfterNativeReady();"),
+            record_output.index("if (initialStage)"),
+            record_output.index("this.#activateInitialStageAfterFirstBackingStoreCopy();"),
+        )
+        self.assertLess(
+            set_module.index("this.#module = module;"),
+            set_module.index("this.#activateInitialStageAfterFirstBackingStoreCopy();"),
+        )
+        self.assertLess(
+            set_module.index("this.#activateInitialStageAfterFirstBackingStoreCopy();"),
+            set_module.index("this.#updateState();"),
         )
         queue_verifier = host[
             host.index("  #queueVerifier(") : host.index("  #maybeQueueCheck() {")
@@ -467,6 +502,61 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
         self.assertIn("wasm-browser-host-tab-churn-smoke", main_parts)
         self.assertIn('source_set("wasm_browser_tab_churn_smoke")', build)
         self.assertIn('source_set("wasm_browser_host_tab_churn_smoke")', build)
+
+    def test_single_process_renderer_releases_before_profile_teardown(self) -> None:
+        profile = source("chrome/browser/wasm/wasm_profile.cc")
+        main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
+        shutdown = profile[
+            profile.index("void WasmProfile::Shutdown()") : profile.index(
+                "void WasmProfile::BeginPersistentPrefsShutdownFence"
+            )
+        ]
+        finish_shutdown = main_parts[
+            main_parts.index(
+                "void WasmBrowserMainParts::FinishShutdown()"
+            ) : main_parts.index(
+                "void WasmBrowserMainParts::ShutdownFoundation()"
+            )
+        ]
+
+        self.assertIn(
+            '#include "content/public/browser/render_process_host.h"', profile
+        )
+        self.assertIn("CHECK(!browser_lifecycle_);", finish_shutdown)
+        self.assertIn("CHECK(!browser_window_lifecycle_);", finish_shutdown)
+        self.assertIn("MaybeSendDestroyedNotification();", shutdown)
+        self.assertIn(
+            "content::RenderProcessHost::run_renderer_in_process()", shutdown
+        )
+        self.assertIn(
+            "content::RenderProcessHost::ShutDownInProcessRenderer()", shutdown
+        )
+        self.assertIn(
+            "DependencyManager::PerformInterlockedTwoPhaseShutdown", shutdown
+        )
+        self.assertIn("ShutdownStoragePartitions();", shutdown)
+        self.assertLess(
+            shutdown.index("MaybeSendDestroyedNotification();"),
+            shutdown.index(
+                "content::RenderProcessHost::ShutDownInProcessRenderer()"
+            ),
+        )
+        self.assertLess(
+            shutdown.index(
+                "content::RenderProcessHost::ShutDownInProcessRenderer()"
+            ),
+            shutdown.index("DependencyManager::PerformInterlockedTwoPhaseShutdown"),
+        )
+        self.assertLess(
+            shutdown.index(
+                "content::RenderProcessHost::ShutDownInProcessRenderer()"
+            ),
+            shutdown.index("ShutdownStoragePartitions();"),
+        )
+        self.assertLess(
+            finish_shutdown.index("profile_->Shutdown();"),
+            finish_shutdown.index("profile_.reset();"),
+        )
 
     def test_accepts_complete_three_cycle_evidence(self) -> None:
         result = successful_result()

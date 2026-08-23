@@ -676,6 +676,7 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
         height: report.height,
         timestampMs: report.timestampMs,
       });
+      this.#activateInitialStageAfterFirstBackingStoreCopy();
       this.#maybeQueueBackingStoreCopy();
       this.#updateState();
     } catch (error) {
@@ -819,12 +820,19 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
       this.#publishState("awaiting-runtime");
       return;
     }
-    if (this.#pointerInput?.attached !== true) {
-      this.#publishState("awaiting-native-pointer-ready");
-      return;
-    }
     if (!active) {
       this.#publishState("awaiting-native-target");
+      return;
+    }
+    // The native coordinator can publish its first target before the
+    // asynchronously copied initial software frame reaches this host. Keep
+    // the trusted pointer adapter detached until one validated copy exists.
+    if (active.stage === 1 && active.readyFrameId === null) {
+      this.#publishState("awaiting-initial-backing-store-copy");
+      return;
+    }
+    if (this.#pointerInput?.attached !== true) {
+      this.#publishState("awaiting-native-pointer-ready");
       return;
     }
     if (!active.checkQueued) {
@@ -935,18 +943,39 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
     this.#updateState();
   }
 
-  #attachPointerInputAfterNativeReady() {
+  #activateInitialStageAfterFirstBackingStoreCopy() {
+    const active = this.#activeStage();
+    if (!this.#module || !active || active.stage !== 1 ||
+        active.readyFrameId !== null || this.#pointerInput !== null ||
+        this.#fatalErrors.length !== 0) {
+      return;
+    }
+    // reportFrame() appends only a syntactically valid, canvas-matching copy.
+    // Selecting its first accepted entry makes the stage-one READY/frame
+    // relation explicit even when native READY arrived earlier.
+    const firstFrame = this.#frameReports.at(0);
+    if (!firstFrame) {
+      return;
+    }
+    active.readyFrameId = firstFrame.id;
+    this.#attachPointerInputAfterInitialBackingStoreCopy();
+  }
+
+  #attachPointerInputAfterInitialBackingStoreCopy() {
     if (this.#pointerInput !== null || !this.#module) {
-      this.#recordFatal("tab-churn native READY cannot install pointer input");
+      this.#recordFatal(
+          "tab-churn initial backing-store copy cannot install pointer input");
       return;
     }
     try {
       // onRuntimeInitialized precedes Chrome's C++ main and therefore cannot
       // prove that the Ozone pointer bridge is active. The first native READY
-      // marker is emitted only after the browser tab-churn coordinator is
-      // live. Run the fixed rejection corpus here, before trusted DOM input
-      // is attached, so every zero is an active-bridge validation/state
-      // rejection rather than a pre-initialization false pass.
+      // marker proves the browser tab-churn coordinator is live, and the
+      // first accepted backing-store copy proves its initial software frame
+      // reached this host. Run the fixed rejection corpus only after both,
+      // before trusted DOM input is attached, so every zero is an
+      // active-bridge validation/state rejection rather than a
+      // pre-initialization false pass.
       this.#pointerAbiRejections = runPointerAbiRejections(
           this.#module, this.#pointerAbiRejectionSeedEnabled);
       this.#pointerInput = new ChromiumWasmTrustedPointerInput(this.#canvas, {
@@ -981,8 +1010,9 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
         }
         const target = this.#targetForClientPoint(targetMarker);
         if (!target) throw new Error("tab-churn target cannot map to canvas");
-        const readyFrameId = this.#currentFrameId();
-        if (readyFrameId < 1) {
+        const initialStage = targetMarker.info.stage === 1;
+        const readyFrameId = initialStage ? null : this.#currentFrameId();
+        if (!initialStage && readyFrameId < 1) {
           throw new Error("tab-churn READY marker has no backing-store copy");
         }
         this.#stages.push({
@@ -996,8 +1026,8 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
           backingStoreCopyQueued: false,
           passObserved: false,
         });
-        if (targetMarker.info.stage === 1) {
-          this.#attachPointerInputAfterNativeReady();
+        if (initialStage) {
+          this.#activateInitialStageAfterFirstBackingStoreCopy();
         }
       }
       const verifiedMarker = parseVerifiedMarker(line);
@@ -1052,6 +1082,10 @@ class ChromiumWasmBrowserTabChurnSmokeHost {
       return;
     }
     this.#runtimeInitialized = true;
+    // READY and a valid copy can both arrive before Emscripten invokes this
+    // callback. Recheck that pending stage only after the module is available;
+    // its pointer ABI must never be called merely because a frame arrived.
+    this.#activateInitialStageAfterFirstBackingStoreCopy();
     this.#updateState();
   }
 

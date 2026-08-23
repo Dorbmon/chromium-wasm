@@ -39,6 +39,7 @@
 #include "components/prefs/pref_service_factory.h"
 #include "components/profile_metrics/browser_profile_type.h"
 #include "components/user_prefs/user_prefs.h"
+#include "content/public/browser/render_process_host.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -180,6 +181,14 @@ void WasmProfile::Shutdown() {
   // establishes the same ordering required by BrowserContext and avoids
   // allowing late profile callbacks to manufacture a new storage partition.
   MaybeSendDestroyedNotification();
+
+  // Single-process render hosts intentionally survive ordinary ref-count
+  // cleanup until process shutdown. Browser/Core destruction has completed
+  // before this terminal profile shutdown, so release the host before tearing
+  // down the profile services and storage it still references.
+  if (content::RenderProcessHost::run_renderer_in_process()) {
+    content::RenderProcessHost::ShutDownInProcessRenderer();
+  }
 
   // Profile and ProfileKey respectively mark the BrowserContext and simple
   // keyed-service contexts live during construction. Their shutdown must stay
