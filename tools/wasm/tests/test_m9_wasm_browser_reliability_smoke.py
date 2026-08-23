@@ -30,6 +30,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 from m0_common import M0Error
 import run_m6_wasm_browser_continuous_flow_dom_smoke as continuous_flow
 import run_m6_wasm_browser_normal_lifecycle_smoke as normal_lifecycle
+import run_m9_measurement_baseline as measurement_baseline
 import run_m9_wasm_browser_reliability_smoke as runner
 
 
@@ -52,6 +53,16 @@ NORMAL_ARTIFACT_IDENTITY = {
     "loader": {"bytes": 10, "sha256": "d" * 64},
     "module_name": runner.DEFAULT_NORMAL_MODULE_NAME,
     "wasm": {"bytes": 20, "sha256": "e" * 64},
+}
+BROWSER_NORMAL_ARTIFACT_IDENTITY = {
+    "artifact_delivery": measurement_baseline.ARTIFACT_DELIVERY,
+    "artifact_source_provenance": measurement_baseline.ARTIFACT_SOURCE_PROVENANCE,
+    "loader": {"bytes": 10, "sha256": "f" * 64},
+    "module_name": runner.DEFAULT_NORMAL_MODULE_NAME,
+    "wasm": {"bytes": 20, "sha256": "0" * 64},
+}
+BROWSER_NORMAL_VERSIONS = {
+    name: VERSIONS[name] for name in ("chromium", "emscripten", "v8")
 }
 HOST_RESOURCE_SNAPSHOTS = continuous_flow.snapshot_host_resources()
 HOST_RESOURCE_IDENTITY = continuous_flow.host_resource_snapshot_identity(
@@ -116,6 +127,51 @@ def normal_execution(
             )
         )
         + "\n",
+    )
+
+
+def browser_normal_execution(
+    cycle: int = 1,
+    *,
+    artifact: object = BROWSER_NORMAL_ARTIFACT_IDENTITY,
+    versions: object = BROWSER_NORMAL_VERSIONS,
+    stdout_prefix: str = "CHROMIUM_WASM_M0:CONFIG {}\n",
+    stderr: str = "",
+) -> runner.ChildExecution:
+    """Return the focused glue contract around a separately tested baseline."""
+
+    projected_artifact = copy.deepcopy(artifact)
+    assert isinstance(projected_artifact, dict)
+    baseline_artifact = {
+        "args_gn": {"bytes": 5, "sha256": "a" * 64},
+        "artifact_source_provenance": projected_artifact[
+            "artifact_source_provenance"
+        ],
+        "loader": projected_artifact["loader"],
+        "module_name": projected_artifact["module_name"],
+        "wasm": projected_artifact["wasm"],
+    }
+    result = {
+        "artifact": baseline_artifact,
+        "capture_harness": {
+            "artifact_delivery": projected_artifact["artifact_delivery"],
+        },
+        "m9_gate_complete": False,
+        "release_status": measurement_baseline.RELEASE_STATUS,
+        "versions": copy.deepcopy(versions),
+    }
+    return runner.ChildExecution(
+        name="browser normal lifecycle",
+        cycle=cycle,
+        elapsed_ms=23.5,
+        returncode=0,
+        stdout=(
+            stdout_prefix
+            + runner.BROWSER_NORMAL_RESULT_PREFIX
+            + json.dumps(result, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ),
+        stderr=stderr,
     )
 
 
@@ -403,6 +459,169 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                         malformed,
                         expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
                     )
+
+    def test_browser_normal_child_projects_a_validated_baseline_record(self) -> None:
+        execution = browser_normal_execution()
+        with mock.patch.object(
+            runner.measurement_baseline, "validate_baseline_result"
+        ) as validate_baseline:
+            result = runner.validate_browser_normal_lifecycle_execution(
+                execution,
+                expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                expected_artifact_identity=BROWSER_NORMAL_ARTIFACT_IDENTITY,
+                expected_run_version_snapshot=VERSIONS,
+            )
+
+        captured = next(
+            line
+            for line in execution.stdout.splitlines()
+            if line.startswith(runner.BROWSER_NORMAL_RESULT_PREFIX)
+        )
+        validate_baseline.assert_called_once_with(
+            json.loads(captured[len(runner.BROWSER_NORMAL_RESULT_PREFIX) :])
+        )
+        self.assertEqual(BROWSER_NORMAL_ARTIFACT_IDENTITY, result["artifact"])
+        self.assertEqual(BROWSER_NORMAL_VERSIONS, result["versions"])
+        self.assertFalse(result["m9GateComplete"])
+        self.assertEqual(
+            measurement_baseline.RELEASE_STATUS, result["releaseStatus"]
+        )
+        self.assertEqual(
+            {
+                "name": "browser normal lifecycle",
+                "cycle": 1,
+                "returncode": 0,
+                "elapsedMs": 23.5,
+                "stdoutBytes": len(execution.stdout.encode("utf-8")),
+                "stderrBytes": 0,
+                "stdoutSha256": hashlib.sha256(
+                    execution.stdout.encode("utf-8")
+                ).hexdigest(),
+                "stderrSha256": hashlib.sha256(b"").hexdigest(),
+                "terminalMarkers": {"baselineCapture": 1},
+            },
+            result["child"],
+        )
+
+    def test_browser_normal_child_rejects_terminal_spoofing(self) -> None:
+        valid = browser_normal_execution()
+        record = next(
+            line
+            for line in valid.stdout.splitlines()
+            if line.startswith(runner.BROWSER_NORMAL_RESULT_PREFIX)
+        )
+        cases = (
+            (
+                "failure marker on stderr",
+                self._replace_child_execution(
+                    valid,
+                    stderr=(
+                        f"{measurement_baseline.SENTINEL}:CAPTURE_FAILED "
+                        "reason=expected\n"
+                    ),
+                ),
+                "failure marker",
+            ),
+            (
+                "success record on stderr",
+                self._replace_child_execution(
+                    valid,
+                    stderr=record + "\n",
+                ),
+                "on stderr",
+            ),
+            (
+                "duplicate stdout record",
+                self._replace_child_execution(
+                    valid,
+                    stdout=valid.stdout + record + "\n",
+                ),
+                "exactly one",
+            ),
+            (
+                "duplicate JSON key",
+                self._replace_child_execution(
+                    valid,
+                    stdout=valid.stdout.replace(
+                        '"m9_gate_complete":false',
+                        '"m9_gate_complete":false,"m9_gate_complete":false',
+                        1,
+                    ),
+                ),
+                "malformed JSON",
+            ),
+            (
+                "nonzero child",
+                runner.ChildExecution(
+                    **{**valid.__dict__, "returncode": 1}
+                ),
+                "exited with status 1",
+            ),
+        )
+        for name, execution, error in cases:
+            with self.subTest(case=name), mock.patch.object(
+                runner.measurement_baseline, "validate_baseline_result"
+            ) as validate_baseline:
+                with self.assertRaisesRegex(M0Error, error):
+                    runner.validate_browser_normal_lifecycle_execution(
+                        execution,
+                        expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    )
+                validate_baseline.assert_not_called()
+
+    def test_browser_normal_child_rejects_version_drift_and_invalid_baseline(
+        self,
+    ) -> None:
+        wrong_versions = copy.deepcopy(BROWSER_NORMAL_VERSIONS)
+        wrong_versions["v8"] = "wrong-v8-revision"
+        with mock.patch.object(
+            runner.measurement_baseline, "validate_baseline_result"
+        ):
+            with self.assertRaisesRegex(M0Error, "frozen M9 parent run version"):
+                runner.validate_browser_normal_lifecycle_execution(
+                    browser_normal_execution(versions=wrong_versions),
+                    expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                    expected_run_version_snapshot=VERSIONS,
+                )
+
+        with mock.patch.object(
+            runner.measurement_baseline,
+            "validate_baseline_result",
+            side_effect=M0Error("invalid sample"),
+        ):
+            with self.assertRaisesRegex(M0Error, "measurement contract"):
+                runner.validate_browser_normal_lifecycle_execution(
+                    browser_normal_execution(),
+                    expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                )
+
+    def test_browser_normal_command_propagates_only_browser_options(self) -> None:
+        command = runner.browser_normal_lifecycle_command(
+            out_dir=Path("/out"),
+            module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+            timeout=17.5,
+            browser=Path("/browser"),
+            no_sandbox=True,
+        )
+        self.assertEqual(sys.executable, command[0])
+        self.assertEqual(
+            str(runner.REPO_ROOT / "tools/wasm/run_m9_measurement_baseline.py"),
+            command[1],
+        )
+        self.assertEqual(
+            [
+                "--out-dir",
+                "/out",
+                "--module-name",
+                runner.DEFAULT_NORMAL_MODULE_NAME,
+                "--timeout",
+                "17.5",
+                "--browser",
+                "/browser",
+                "--no-sandbox",
+            ],
+            command[2:],
+        )
 
     def test_normal_child_requires_real_split_stream_terminal_transcript(self) -> None:
         def summary_line(execution: runner.ChildExecution) -> str:
@@ -2773,6 +2992,45 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             with self.subTest(timeout=timeout):
                 with self.assertRaisesRegex(M0Error, "normal lifecycle timeout"):
                     runner._require_timeout(timeout, "normal lifecycle timeout")
+
+        self.assertEqual(
+            runner.NORMAL_LIFECYCLE_HOST_BROWSER,
+            runner.DEFAULT_NORMAL_LIFECYCLE_HOST,
+        )
+        for host in ("", "not-a-host", True):
+            with self.subTest(host=host):
+                with self.assertRaisesRegex(M0Error, "host is unsupported"):
+                    runner._require_normal_lifecycle_host(host)  # type: ignore[arg-type]
+
+    def test_browser_normal_mode_rejects_incompatible_setup_before_children(
+        self,
+    ) -> None:
+        common = {
+            "out_dir": Path("/missing"),
+            "normal_module_name": runner.DEFAULT_NORMAL_MODULE_NAME,
+            "controlled_flow_module_name": runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME,
+            "normal_lifecycle_iterations": 1,
+            "controlled_flow_iterations": 1,
+            "controlled_flow_timeout": 11.0,
+            "diagnostics_dir": Path("/diagnostics"),
+            "browser": None,
+            "node": None,
+            "relay_script": None,
+            "no_sandbox": False,
+            "normal_lifecycle_host": runner.NORMAL_LIFECYCLE_HOST_BROWSER,
+        }
+        with mock.patch.object(runner, "run_child") as run_child:
+            with self.assertRaisesRegex(M0Error, "must allow one cold"):
+                runner.run_reliability(normal_timeout=9.9, **common)
+            with self.assertRaisesRegex(M0Error, "requires the chrome_wasm module"):
+                runner.run_reliability(
+                    normal_timeout=10.0,
+                    **{
+                        **common,
+                        "normal_module_name": "alternate_module",
+                    },
+                )
+        run_child.assert_not_called()
 
     def test_default_child_commands_propagate_exact_defaults(self) -> None:
         normal = runner.normal_lifecycle_command(

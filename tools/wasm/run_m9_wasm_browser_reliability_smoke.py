@@ -6,11 +6,13 @@
 """Exercise repeatable fresh Chrome Wasm lifecycle and controlled-flow runs.
 
 This M9 preparation runner deliberately composes existing, independently
-validated M6 runners rather than adding a second lifecycle implementation.  A
-normal-lifecycle cycle creates a fresh Node process and runs ordinary
-no-switch Browser startup plus its owned host-shutdown path.  A controlled-flow
-cycle creates a fresh real host-browser profile, drives the existing bounded
-HTTPS/tab/menu/reload flow, then observes its fresh outer-document restart.
+validated M6/M9 runners rather than adding a second lifecycle implementation.
+The default normal-lifecycle cycle creates a fresh real host-browser profile
+and runs ordinary no-switch Browser startup plus its owned host-shutdown path.
+The legacy Node host remains opt-in for the pre-OPFS structural runner only.
+A controlled-flow cycle creates a fresh real host-browser profile, drives the
+existing bounded HTTPS/tab/menu/reload flow, then observes its fresh
+outer-document restart.
 
 It is not a same-instance long-run/churn test.  In particular, it does not
 measure Wasm memory growth, exhaust the pthread pool, prove WISP reconnects,
@@ -48,6 +50,7 @@ from m0_common import (
 from run_content_shell_smoke import manifest_versions
 import run_m6_wasm_browser_continuous_flow_dom_smoke as continuous_flow
 import run_m6_wasm_browser_normal_lifecycle_smoke as normal_lifecycle
+import run_m9_measurement_baseline as measurement_baseline
 
 
 SENTINEL = "CHROMIUM_WASM_M9_RELIABILITY"
@@ -63,6 +66,9 @@ DEFAULT_NORMAL_LIFECYCLE_ITERATIONS = 3
 DEFAULT_CONTROLLED_FLOW_ITERATIONS = 1
 DEFAULT_NORMAL_TIMEOUT = 30.0
 DEFAULT_CONTROLLED_FLOW_TIMEOUT = 120.0
+NORMAL_LIFECYCLE_HOST_BROWSER = "browser"
+NORMAL_LIFECYCLE_HOST_NODE = "node"
+DEFAULT_NORMAL_LIFECYCLE_HOST = NORMAL_LIFECYCLE_HOST_BROWSER
 MAX_ITERATIONS = 10
 CHILD_PROCESS_GRACE_SECONDS = 20.0
 COOPERATIVE_STOP_GRACE_SECONDS = 5.0
@@ -86,6 +92,10 @@ _NORMAL_LIFECYCLE_NATIVE_SUCCESS_MARKERS = (
     normal_lifecycle.PASS_MARKER,
 )
 _NORMAL_LIFECYCLE_WRAPPER_SUCCESS_MARKERS = (normal_lifecycle.NODE_PASS_MARKER,)
+BROWSER_NORMAL_RESULT_PREFIX = f"{measurement_baseline.SENTINEL}:CAPTURED "
+_BROWSER_NORMAL_FAILURE_MARKERS = (
+    f"{measurement_baseline.SENTINEL}:CAPTURE_FAILED",
+)
 CONTROLLED_FLOW_SCREENSHOT_PREFIX = f"{continuous_flow.SENTINEL}:SCREENSHOT "
 CONTROLLED_FLOW_RESULT_PREFIX = f"{continuous_flow.SENTINEL}:FLOW_RESULT "
 CONTROLLED_FLOW_RESTART_RESULT_PREFIX = f"{continuous_flow.SENTINEL}:RESTART_RESULT "
@@ -405,6 +415,64 @@ def _require_normal_lifecycle_preflight_artifact_identity(
         ) from error
 
 
+def _snapshot_browser_normal_lifecycle_preflight_artifact_identity(
+    out_dir: Path, module_name: str
+) -> dict[str, object]:
+    """Return the browser measurement lane's executable-byte identity.
+
+    The legacy M6 Node runner labels its independently copied inputs
+    differently. Reuse its descriptor-pinned capture but project the browser
+    measurement server's in-memory delivery semantics so this record cannot
+    accidentally describe a Node execution. It deliberately binds only the
+    loader and Wasm bytes served to the browser; the baseline's separately
+    captured ``args.gn`` remains schema-validated child metadata, not an
+    executable artifact identity.
+    """
+
+    node_identity = _snapshot_normal_lifecycle_preflight_artifact_identity(
+        out_dir, module_name
+    )
+    try:
+        loader = node_identity["loader"]
+        wasm = node_identity["wasm"]
+        captured_module_name = node_identity["module_name"]
+    except KeyError as error:
+        raise M0Error(
+            "browser normal lifecycle preflight identity is invalid"
+        ) from error
+    identity = {
+        "artifact_delivery": measurement_baseline.ARTIFACT_DELIVERY,
+        "artifact_source_provenance": measurement_baseline.ARTIFACT_SOURCE_PROVENANCE,
+        "loader": loader,
+        "module_name": captured_module_name,
+        "wasm": wasm,
+    }
+    if (
+        captured_module_name != module_name
+        or not _exact_json_value_equal(loader, node_identity["loader"])
+        or not _exact_json_value_equal(wasm, node_identity["wasm"])
+    ):
+        raise M0Error("browser normal lifecycle preflight identity is invalid")
+    return identity
+
+
+def _require_browser_normal_lifecycle_preflight_artifact_identity(
+    out_dir: Path,
+    module_name: str,
+    expected_artifact_identity: dict[str, object],
+) -> None:
+    """Reject an artifact mutation around one browser-backed child run."""
+
+    observed = _snapshot_browser_normal_lifecycle_preflight_artifact_identity(
+        out_dir, module_name
+    )
+    if not _exact_json_value_equal(observed, expected_artifact_identity):
+        raise M0Error(
+            "browser normal lifecycle artifact identity changed since the M9 "
+            "parent preflight snapshot"
+        )
+
+
 def _require_controlled_flow_preflight_artifact_identity(
     out_dir: Path,
     module_name: str,
@@ -434,6 +502,14 @@ def _require_iteration_count(value: int, description: str) -> None:
 def _require_timeout(value: float, description: str) -> None:
     if not math.isfinite(value) or value <= 0:
         raise M0Error(f"{description} must be positive and finite")
+
+
+def _require_normal_lifecycle_host(value: str) -> None:
+    if value not in {
+        NORMAL_LIFECYCLE_HOST_BROWSER,
+        NORMAL_LIFECYCLE_HOST_NODE,
+    }:
+        raise M0Error("normal lifecycle host is unsupported")
 
 
 def _exact_line_count(output: str, marker: str) -> int:
@@ -1124,6 +1200,182 @@ def validate_normal_lifecycle_execution(
     }
 
 
+def _validate_browser_normal_lifecycle_terminal_records(
+    execution: ChildExecution,
+) -> dict[str, Any]:
+    """Require one measurement-baseline record from the browser-only child.
+
+    The baseline runner owns its browser profile, server, and clean host
+    shutdown before it emits the record.  Its terminal JSON is therefore the
+    sole success record.  As with the M6 flow runner, keep success on stdout
+    and diagnostics on stderr so a failure cannot be hidden by a later record.
+    """
+
+    description = f"browser normal lifecycle cycle {execution.cycle}"
+    output = f"{execution.stdout}\n{execution.stderr}"
+    for line in output.splitlines():
+        for marker in _BROWSER_NORMAL_FAILURE_MARKERS:
+            if _is_terminal_failure_marker(line, marker):
+                raise M0Error(f"{description} emitted child failure marker {marker}")
+
+    stderr_lines = execution.stderr.splitlines()
+    if any(line.startswith(BROWSER_NORMAL_RESULT_PREFIX) for line in stderr_lines):
+        raise M0Error(
+            f"{description} emitted a success terminal record on stderr"
+        )
+
+    stdout_lines = execution.stdout.splitlines()
+    result_indices = [
+        index
+        for index, line in enumerate(stdout_lines)
+        if line.startswith(BROWSER_NORMAL_RESULT_PREFIX)
+    ]
+    if len(result_indices) != 1:
+        raise M0Error(
+            f"{description} did not emit exactly one stdout "
+            f"{BROWSER_NORMAL_RESULT_PREFIX} record"
+        )
+    return _parse_strict_json_object_line(
+        stdout_lines[result_indices[0]], BROWSER_NORMAL_RESULT_PREFIX, description
+    )
+
+
+def _browser_normal_artifact_identity_from_baseline_result(
+    result: dict[str, Any], *, expected_module_name: str
+) -> dict[str, object]:
+    """Project a validated baseline result into M9's retained byte identity."""
+
+    artifact = result.get("artifact")
+    capture_harness = result.get("capture_harness")
+    if not isinstance(artifact, dict) or not isinstance(capture_harness, dict):
+        raise M0Error("browser normal lifecycle result has invalid artifact identity")
+    try:
+        module_name = artifact["module_name"]
+        source_provenance = artifact["artifact_source_provenance"]
+        delivery = capture_harness["artifact_delivery"]
+        loader = artifact["loader"]
+        wasm = artifact["wasm"]
+    except KeyError as error:
+        raise M0Error(
+            "browser normal lifecycle result has invalid artifact identity"
+        ) from error
+    if (
+        module_name != expected_module_name
+        or source_provenance != measurement_baseline.ARTIFACT_SOURCE_PROVENANCE
+        or delivery != measurement_baseline.ARTIFACT_DELIVERY
+    ):
+        raise M0Error("browser normal lifecycle result has invalid artifact identity")
+    for name, blob in (("loader", loader), ("wasm", wasm)):
+        if (
+            not isinstance(blob, dict)
+            or set(blob) != _SNAPSHOT_BYTE_IDENTITY_FIELDS
+            or type(blob.get("bytes")) is not int
+            or blob["bytes"] < 1
+            or not isinstance(blob.get("sha256"), str)
+            or not SHA256_RE.fullmatch(blob["sha256"])
+        ):
+            raise M0Error(
+                "browser normal lifecycle result has invalid "
+                f"{name} artifact identity"
+            )
+    return {
+        "artifact_delivery": delivery,
+        "artifact_source_provenance": source_provenance,
+        "loader": loader,
+        "module_name": module_name,
+        "wasm": wasm,
+    }
+
+
+def _browser_normal_versions_from_baseline_result(
+    result: dict[str, Any],
+) -> dict[str, str]:
+    """Return the three manifest identifiers the baseline runner reports."""
+
+    versions = result.get("versions")
+    expected_fields = frozenset(("chromium", "emscripten", "v8"))
+    if not isinstance(versions, dict) or set(versions) != expected_fields:
+        raise M0Error("browser normal lifecycle result has invalid version identifiers")
+    if not all(type(value) is str and value for value in versions.values()):
+        raise M0Error("browser normal lifecycle result has invalid version identifiers")
+    return {name: versions[name] for name in sorted(expected_fields)}
+
+
+def validate_browser_normal_lifecycle_execution(
+    execution: ChildExecution,
+    *,
+    expected_module_name: str,
+    expected_artifact_identity: dict[str, object] | None = None,
+    expected_artifact_identity_context: str = "a prior cycle",
+    expected_run_version_snapshot: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Validate a fresh browser/OPFS normal-lifecycle observation.
+
+    This intentionally reuses the dedicated M9 measurement host, whose full
+    schema checks prove ordinary startup, a frame, and its owned shutdown. It
+    remains pre-release evidence: the nested result must continue to state
+    that M7/M8 and the M9 gate are incomplete.
+    """
+
+    _require_module_name(expected_module_name, "browser normal lifecycle module name")
+    if expected_module_name != measurement_baseline.PRODUCT_MODULE_NAME:
+        raise M0Error("browser normal lifecycle requires the chrome_wasm module")
+    _validated_child_output(execution)
+    result = _validate_browser_normal_lifecycle_terminal_records(execution)
+    try:
+        measurement_baseline.validate_baseline_result(result)
+    except M0Error as error:
+        raise M0Error(
+            "browser normal lifecycle result violates the M9 measurement contract"
+        ) from error
+    artifact = _browser_normal_artifact_identity_from_baseline_result(
+        result, expected_module_name=expected_module_name
+    )
+    if expected_artifact_identity is not None and not _exact_json_value_equal(
+        artifact, expected_artifact_identity
+    ):
+        raise M0Error(
+            "browser normal lifecycle artifact identity disagrees with "
+            f"{expected_artifact_identity_context}"
+        )
+    versions = _browser_normal_versions_from_baseline_result(result)
+    if expected_run_version_snapshot is not None:
+        try:
+            parent_versions = _validate_version_identity(
+                expected_run_version_snapshot,
+                "browser-normal-lifecycle expected M9 parent run snapshot",
+            )
+        except M0Error as error:
+            raise M0Error(
+                "browser-normal-lifecycle expected M9 parent run snapshot is invalid"
+            ) from error
+        expected_child_versions = {
+            name: parent_versions[name] for name in sorted(versions)
+        }
+        if not _exact_json_value_equal(versions, expected_child_versions):
+            raise M0Error(
+                "browser normal lifecycle child version identifiers disagree with "
+                + PARENT_RUN_VERSION_SNAPSHOT_CONTEXT
+            )
+    return {
+        "cycle": execution.cycle,
+        "child": _child_evidence(
+            execution,
+            terminal_markers={
+                "baselineCapture": sum(
+                    line.startswith(BROWSER_NORMAL_RESULT_PREFIX)
+                    for line in execution.stdout.splitlines()
+                ),
+            },
+        ),
+        "artifact": artifact,
+        "versions": versions,
+        "m9GateComplete": result.get("m9_gate_complete"),
+        "releaseStatus": result.get("release_status"),
+        "elapsedMs": execution.elapsed_ms,
+    }
+
+
 def _versions_from_flow_result(result: dict[str, Any]) -> dict[str, str]:
     return _validate_version_identity(
         result.get("versions"), "controlled flow result"
@@ -1375,6 +1627,33 @@ def normal_lifecycle_command(
         "--timeout",
         f"{timeout:g}",
     ]
+
+
+def browser_normal_lifecycle_command(
+    *,
+    out_dir: Path,
+    module_name: str,
+    timeout: float,
+    browser: Path | None,
+    no_sandbox: bool,
+) -> list[str]:
+    """Build the fresh real-browser command for the normal lifecycle lane."""
+
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "tools/wasm/run_m9_measurement_baseline.py"),
+        "--out-dir",
+        str(out_dir),
+        "--module-name",
+        module_name,
+        "--timeout",
+        f"{timeout:g}",
+    ]
+    if browser is not None:
+        command.extend(("--browser", str(browser)))
+    if no_sandbox:
+        command.append("--no-sandbox")
+    return command
 
 
 def controlled_flow_command(
@@ -1696,6 +1975,7 @@ def run_reliability(
     node: Path | None,
     relay_script: Path | None,
     no_sandbox: bool,
+    normal_lifecycle_host: str = NORMAL_LIFECYCLE_HOST_NODE,
     parent_run_version_snapshot: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Run independent fresh-lifecycle cycles and summarize their evidence."""
@@ -1703,6 +1983,20 @@ def run_reliability(
     _require_iteration_count(controlled_flow_iterations, "controlled flow count")
     _require_timeout(normal_timeout, "normal lifecycle timeout")
     _require_timeout(controlled_flow_timeout, "controlled flow timeout")
+    _require_normal_lifecycle_host(normal_lifecycle_host)
+    if (
+        normal_lifecycle_host == NORMAL_LIFECYCLE_HOST_BROWSER
+        and normal_timeout < 10.0
+    ):
+        raise M0Error(
+            "browser normal lifecycle timeout must allow one cold Chrome Wasm "
+            "host launch"
+        )
+    if (
+        normal_lifecycle_host == NORMAL_LIFECYCLE_HOST_BROWSER
+        and normal_module_name != measurement_baseline.PRODUCT_MODULE_NAME
+    ):
+        raise M0Error("browser normal lifecycle requires the chrome_wasm module")
     if parent_run_version_snapshot is None:
         parent_versions = snapshot_parent_run_version_identity(load_manifest())
     else:
@@ -1718,11 +2012,18 @@ def run_reliability(
     # Freeze both configured module identities before any child can snapshot
     # them. The constants in these records describe the child delivery paths;
     # provenance remains explicitly unverified.
-    normal_preflight_artifact_identity = (
-        _snapshot_normal_lifecycle_preflight_artifact_identity(
-            out_dir, normal_module_name
+    if normal_lifecycle_host == NORMAL_LIFECYCLE_HOST_BROWSER:
+        normal_preflight_artifact_identity = (
+            _snapshot_browser_normal_lifecycle_preflight_artifact_identity(
+                out_dir, normal_module_name
+            )
         )
-    )
+    else:
+        normal_preflight_artifact_identity = (
+            _snapshot_normal_lifecycle_preflight_artifact_identity(
+                out_dir, normal_module_name
+            )
+        )
     controlled_flow_preflight_artifact_identity = (
         _snapshot_controlled_flow_preflight_artifact_identity(
             out_dir, controlled_flow_module_name
@@ -1731,35 +2032,68 @@ def run_reliability(
 
     normal_cycles: list[dict[str, object]] = []
     for cycle in range(1, normal_lifecycle_iterations + 1):
-        _require_normal_lifecycle_preflight_artifact_identity(
-            out_dir,
-            normal_module_name,
-            normal_preflight_artifact_identity,
-        )
-        execution = run_child(
-            "normal lifecycle",
-            cycle,
-            normal_lifecycle_command(
+        if normal_lifecycle_host == NORMAL_LIFECYCLE_HOST_BROWSER:
+            _require_browser_normal_lifecycle_preflight_artifact_identity(
                 out_dir=out_dir,
                 module_name=normal_module_name,
-                timeout=normal_timeout,
-            ),
-            normal_timeout,
-        )
-        normal_cycle = validate_normal_lifecycle_execution(
-            execution,
-            expected_module_name=normal_module_name,
-            expected_artifact_identity=copy.deepcopy(
-                normal_preflight_artifact_identity
-            ),
-            expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
-            expected_run_version_snapshot=copy.deepcopy(parent_versions),
-        )
-        _require_normal_lifecycle_preflight_artifact_identity(
-            out_dir,
-            normal_module_name,
-            normal_preflight_artifact_identity,
-        )
+                expected_artifact_identity=normal_preflight_artifact_identity,
+            )
+            execution = run_child(
+                "browser normal lifecycle",
+                cycle,
+                browser_normal_lifecycle_command(
+                    out_dir=out_dir,
+                    module_name=normal_module_name,
+                    timeout=normal_timeout,
+                    browser=browser,
+                    no_sandbox=no_sandbox,
+                ),
+                normal_timeout,
+            )
+            normal_cycle = validate_browser_normal_lifecycle_execution(
+                execution,
+                expected_module_name=normal_module_name,
+                expected_artifact_identity=copy.deepcopy(
+                    normal_preflight_artifact_identity
+                ),
+                expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
+                expected_run_version_snapshot=copy.deepcopy(parent_versions),
+            )
+            _require_browser_normal_lifecycle_preflight_artifact_identity(
+                out_dir=out_dir,
+                module_name=normal_module_name,
+                expected_artifact_identity=normal_preflight_artifact_identity,
+            )
+        else:
+            _require_normal_lifecycle_preflight_artifact_identity(
+                out_dir,
+                normal_module_name,
+                normal_preflight_artifact_identity,
+            )
+            execution = run_child(
+                "normal lifecycle",
+                cycle,
+                normal_lifecycle_command(
+                    out_dir=out_dir,
+                    module_name=normal_module_name,
+                    timeout=normal_timeout,
+                ),
+                normal_timeout,
+            )
+            normal_cycle = validate_normal_lifecycle_execution(
+                execution,
+                expected_module_name=normal_module_name,
+                expected_artifact_identity=copy.deepcopy(
+                    normal_preflight_artifact_identity
+                ),
+                expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
+                expected_run_version_snapshot=copy.deepcopy(parent_versions),
+            )
+            _require_normal_lifecycle_preflight_artifact_identity(
+                out_dir,
+                normal_module_name,
+                normal_preflight_artifact_identity,
+            )
         normal_cycles.append(normal_cycle)
 
     # Freeze every controlled-flow input before its first child starts. Every
@@ -1838,7 +2172,11 @@ def run_reliability(
     normal_summary.update(
         {
             "artifact": normal_preflight_artifact_identity,
-            "kind": "fresh-node-module-process",
+            "kind": (
+                "fresh-real-host-browser-profile"
+                if normal_lifecycle_host == NORMAL_LIFECYCLE_HOST_BROWSER
+                else "fresh-node-module-process"
+            ),
             "requestedCycles": normal_lifecycle_iterations,
             "ownedHostShutdown": True,
             # This is one parent-run observation retained before any child
@@ -1846,6 +2184,15 @@ def run_reliability(
             "runVersionSnapshot": parent_versions,
         }
     )
+    if normal_lifecycle_host == NORMAL_LIFECYCLE_HOST_BROWSER:
+        # The baseline runner reports only toolchain manifest metadata. The
+        # fourth port revision remains a parent-only frozen observation.
+        normal_summary["normalLifecycleHost"] = normal_lifecycle_host
+        normal_summary["childVersionFields"] = [
+            "chromium",
+            "emscripten",
+            "v8",
+        ]
     flow_summary = _aggregate_cycles(flow_cycles)
     flow_summary.update(
         {
@@ -1931,6 +2278,15 @@ def main() -> int:
         "--normal-timeout", type=parse_timeout, default=DEFAULT_NORMAL_TIMEOUT
     )
     parser.add_argument(
+        "--normal-lifecycle-host",
+        choices=(NORMAL_LIFECYCLE_HOST_BROWSER, NORMAL_LIFECYCLE_HOST_NODE),
+        default=DEFAULT_NORMAL_LIFECYCLE_HOST,
+        help=(
+            "host for normal lifecycle cycles; browser is the real OPFS-backed "
+            "default, while node retains the legacy structural runner"
+        ),
+    )
+    parser.add_argument(
         "--controlled-flow-timeout",
         type=parse_timeout,
         default=DEFAULT_CONTROLLED_FLOW_TIMEOUT,
@@ -1961,6 +2317,7 @@ def main() -> int:
             case=CASE,
             scope=SCOPE,
             normal_lifecycle_iterations=args.normal_lifecycle_iterations,
+            normal_lifecycle_host=args.normal_lifecycle_host,
             controlled_flow_iterations=args.controlled_flow_iterations,
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
             limitations=list(LIMITATIONS),
@@ -1980,6 +2337,7 @@ def main() -> int:
             node=args.node,
             relay_script=args.relay_script,
             no_sandbox=args.no_sandbox,
+            normal_lifecycle_host=args.normal_lifecycle_host,
         )
         print(
             RESULT_PREFIX + json.dumps(result, sort_keys=True, separators=(",", ":")),
