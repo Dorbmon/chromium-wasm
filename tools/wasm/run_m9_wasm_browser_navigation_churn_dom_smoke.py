@@ -86,6 +86,10 @@ FRAME_TRANSITION_POLICY = (
     "previous-backing-store-copy-may-share-next-navigation-marker-frame"
 )
 WASM_PAGE_SIZE_BYTES = 64 * 1024
+# This is a bounded wasm32 safety floor for every native checkpoint in this
+# smoke. It does not characterize committed memory, allocations, residency,
+# leaks, or out-of-memory behavior outside those observations.
+MINIMUM_WASM_LINEAR_MEMORY_HEADROOM_BYTES = 1024 * 1024 * 1024
 WASM_HEAP_BUFFER_CAPACITY_SAMPLE_COUNT = STAGE_COUNT + 2
 WASM_HEAP_BUFFER_CAPACITY_DEFINITION = (
     "Module.HEAPU8.buffer.byteLength capacity observed at runtime initialization, "
@@ -875,6 +879,14 @@ def _validate_native_memory_snapshot(
         ):
             raise M0Error(
                 f"navigation-churn native memory sample {index} headroom is inconsistent"
+            )
+        if (
+            values["wasmLinearMemoryHeadroomBytes"]
+            < MINIMUM_WASM_LINEAR_MEMORY_HEADROOM_BYTES
+        ):
+            raise M0Error(
+                f"navigation-churn native memory sample {index} headroom is below "
+                "the required 1 GiB safety floor"
             )
         capacities.append(values["wasmLinearMemoryCapacityBytes"])
 

@@ -313,6 +313,20 @@ class M9WasmBrowserNavigationChurnDomSmokeTest(unittest.TestCase):
         )
         validate(result)
 
+    def test_rejects_native_memory_headroom_below_safety_floor(self) -> None:
+        result = successful_result()
+        sample = result["nativeMemorySnapshot"]["samples"][0]
+        sample["wasmLinearMemoryMaximumBytes"] = (
+            smoke.MINIMUM_WASM_LINEAR_MEMORY_HEADROOM_BYTES
+        )
+        sample["wasmLinearMemoryHeadroomBytes"] = (
+            smoke.MINIMUM_WASM_LINEAR_MEMORY_HEADROOM_BYTES
+            - sample["wasmLinearMemoryCapacityBytes"]
+        )
+
+        with self.assertRaisesRegex(M0Error, "required 1 GiB safety floor"):
+            validate(result)
+
     def test_rejects_invalid_native_memory_evidence(self) -> None:
         page = smoke.WASM_PAGE_SIZE_BYTES
         unsafe_aligned = ((smoke.MAX_SAFE_INTEGER // page) + 1) * page
@@ -1413,6 +1427,7 @@ process.stdout.write(JSON.stringify({{calls, valid, missing, throwing, noCcall, 
             "_validate_native_memory_snapshot",
             "NATIVE_MEMORY_SAMPLE_COUNT",
             "NATIVE_MEMORY_SNAPSHOT_DEFINITION",
+            "MINIMUM_WASM_LINEAR_MEMORY_HEADROOM_BYTES",
             "nativeMemorySnapshot",
             "_chromium_wasm_browser_host_memory_linear_capacity_bytes",
             "_chromium_wasm_browser_host_memory_linear_maximum_bytes",
