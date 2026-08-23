@@ -3,12 +3,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run the Blob-backed M8 worker messaging baseline through Content Shell.
+"""Run the Blob-backed M8 nested-worker baseline through Content Shell.
 
 This uses a data: page and Blob worker deliberately. It proves the bounded
-startup, transfer, heartbeat, termination, and shell-shutdown path only; it
-does not cover worker script fetch, CSP/CORS, origin policy, or scheduling
-fairness under Chromium's pthread load.
+startup, outer-to-nested transfer, heartbeat, nested teardown, page progress,
+and shell-shutdown path only; it does not cover worker script fetch, CSP/CORS,
+origin policy, or scheduling fairness under Chromium's pthread load.
 """
 
 from __future__ import annotations
@@ -102,11 +102,19 @@ def validate_result(
         raise M0Error("M8 worker result lacks its page probe")
     expected_probe = {
         "protocol": 1,
-        "fixture": "chromium-wasm-m8-dedicated-worker-v1",
+        "fixture": "chromium-wasm-m8-dedicated-worker-v2",
         "workerSource": "blob-data-url",
         "ready": True,
         "workerCreated": True,
         "mainTransferDetached": True,
+        "nestedWorkerCreated": True,
+        "nestedTransferDetached": True,
+        "nestedReceivedByteLength": 2,
+        "nestedReceivedBytes": [8, 11],
+        "nestedWorkerBusyStarted": True,
+        "nestedTerminationRequested": True,
+        "nestedPostTerminationHeartbeatCount": 0,
+        "nestedWorkerTerminated": True,
         "receivedSequence": 37,
         "receivedPayload": "worker-message:reply",
         "receivedByteLength": 4,
@@ -130,6 +138,12 @@ def validate_result(
         "mainTimerTicksDuringBusy",
         "heartbeatsAtTermination",
         "workerBusyIterations",
+        "nestedWorkerTimerTicks",
+        "nestedWorkerHeartbeatCount",
+        "nestedWorkerHeartbeatsBeforeBusy",
+        "nestedWorkerBusyIterations",
+        "mainTimerTicksDuringNestedBusy",
+        "nestedHeartbeatsAtTermination",
     ):
         value = probe.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -157,6 +171,27 @@ def validate_result(
         raise M0Error("M8 worker termination was not requested")
     if probe.get("postTerminationHeartbeatCount") != 0:
         raise M0Error("M8 worker emitted a heartbeat after termination")
+    if probe["nestedWorkerTimerTicks"] < 2:
+        raise M0Error("M8 nested worker did not establish two heartbeats")
+    if probe["nestedWorkerHeartbeatCount"] < 2:
+        raise M0Error("M8 nested worker heartbeat count is incomplete")
+    if probe["nestedWorkerHeartbeatsBeforeBusy"] < 2:
+        raise M0Error("M8 nested worker began CPU work before its heartbeats")
+    if probe["mainTimerTicksDuringNestedBusy"] < 1:
+        raise M0Error("M8 page timer did not run during nested worker CPU work")
+    if probe["nestedHeartbeatsAtTermination"] < 2:
+        raise M0Error("M8 nested worker terminated before its heartbeats")
+    nested_busy_duration = probe.get("nestedWorkerBusyDurationMs")
+    if (
+        not isinstance(nested_busy_duration, (int, float))
+        or isinstance(nested_busy_duration, bool)
+        or nested_busy_duration < 65
+    ):
+        raise M0Error("M8 nested worker did not report bounded CPU work")
+    if probe.get("nestedTerminationRequested") is not True:
+        raise M0Error("M8 nested worker termination was not requested")
+    if probe.get("nestedPostTerminationHeartbeatCount") != 0:
+        raise M0Error("M8 nested worker emitted a heartbeat after termination")
 
     shutdown = result.get("shutdown")
     if not isinstance(shutdown, dict):
@@ -353,6 +388,8 @@ def main() -> int:
             + json.dumps(
                 {
                     "main_timer_ticks": probe["mainTimerTicks"],
+                    "nested_timer_ticks": probe["nestedWorkerTimerTicks"],
+                    "nested_transferred_bytes": probe["nestedReceivedBytes"],
                     "worker_timer_ticks": probe["workerTimerTicks"],
                     "transferred_bytes": probe["receivedBytes"],
                 },

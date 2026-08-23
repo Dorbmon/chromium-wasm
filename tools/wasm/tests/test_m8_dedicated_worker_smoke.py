@@ -43,11 +43,26 @@ def passing_result() -> dict[str, object]:
             "navigationCommitted": True,
             "pageProbe": {
                 "protocol": 1,
-                "fixture": "chromium-wasm-m8-dedicated-worker-v1",
+                "fixture": "chromium-wasm-m8-dedicated-worker-v2",
                 "workerSource": "blob-data-url",
                 "ready": True,
                 "workerCreated": True,
                 "mainTransferDetached": True,
+                "nestedWorkerCreated": True,
+                "nestedTransferDetached": True,
+                "nestedReceivedByteLength": 2,
+                "nestedReceivedBytes": [8, 11],
+                "nestedWorkerTimerTicks": 2,
+                "nestedWorkerHeartbeatCount": 2,
+                "nestedWorkerHeartbeatsBeforeBusy": 2,
+                "nestedWorkerBusyStarted": True,
+                "nestedWorkerBusyDurationMs": 75.0,
+                "nestedWorkerBusyIterations": 100,
+                "mainTimerTicksDuringNestedBusy": 5,
+                "nestedTerminationRequested": True,
+                "nestedHeartbeatsAtTermination": 2,
+                "nestedPostTerminationHeartbeatCount": 0,
+                "nestedWorkerTerminated": True,
                 "receivedSequence": 37,
                 "receivedPayload": "worker-message:reply",
                 "receivedByteLength": 4,
@@ -129,6 +144,41 @@ class M8DedicatedWorkerResultTest(unittest.TestCase):
         ):
             run_m8_dedicated_worker_smoke.validate_result(result, versions())
 
+    def test_missing_nested_transfer_detach_is_rejected(self) -> None:
+        result = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        probe = readiness["pageProbe"]
+        assert isinstance(probe, dict)
+        probe["nestedTransferDetached"] = False
+
+        with self.assertRaisesRegex(M0Error, "nestedTransferDetached"):
+            run_m8_dedicated_worker_smoke.validate_result(result, versions())
+
+    def test_page_timer_stall_during_nested_cpu_work_is_rejected(self) -> None:
+        result = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        probe = readiness["pageProbe"]
+        assert isinstance(probe, dict)
+        probe["mainTimerTicksDuringNestedBusy"] = 0
+
+        with self.assertRaisesRegex(M0Error, "mainTimerTicksDuringNestedBusy"):
+            run_m8_dedicated_worker_smoke.validate_result(result, versions())
+
+    def test_nested_post_termination_heartbeat_is_rejected(self) -> None:
+        result = passing_result()
+        readiness = result["readiness"]
+        assert isinstance(readiness, dict)
+        probe = readiness["pageProbe"]
+        assert isinstance(probe, dict)
+        probe["nestedPostTerminationHeartbeatCount"] = 1
+
+        with self.assertRaisesRegex(
+            M0Error, "nestedPostTerminationHeartbeatCount"
+        ):
+            run_m8_dedicated_worker_smoke.validate_result(result, versions())
+
 
 class M8DedicatedWorkerRoutingTest(unittest.TestCase):
     def test_smoke_url_selects_the_worker_fixture(self) -> None:
@@ -166,6 +216,11 @@ class M8DedicatedWorkerRoutingTest(unittest.TestCase):
         self.assertIn("new Worker(workerUrl)", fixture)
         self.assertIn("worker.postMessage", fixture)
         self.assertIn("workerBusyDurationMs", fixture)
+        self.assertIn("new Worker(nestedWorkerUrl)", fixture)
+        self.assertIn("nested-worker-created", fixture)
+        self.assertIn("nestedTransferDetached", fixture)
+        self.assertIn("nestedWorkerTerminated", fixture)
+        self.assertIn("mainTimerTicksDuringNestedBusy", fixture)
         self.assertIn("postTerminationHeartbeatCount", fixture)
         self.assertIn("mainTransferDetached", fixture)
         self.assertIn("worker.terminate()", fixture)

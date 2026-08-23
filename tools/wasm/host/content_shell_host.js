@@ -45,7 +45,7 @@ const M4_FOCUS_RETENTION_FIXTURE =
   "chromium-wasm-m4-ozone-focus-retention-v1";
 const M4_IME_BRIDGE_FIXTURE = "chromium-wasm-m4-ozone-ime-bridge-v1";
 const M8_DEDICATED_WORKER_FIXTURE =
-  "chromium-wasm-m8-dedicated-worker-v1";
+  "chromium-wasm-m8-dedicated-worker-v2";
 const M5_NETWORK_FIXTURE = "chromium-wasm-m5-network-v1";
 const M5_CONTROLLED_PREFLIGHT_FIXTURE =
   "chromium-wasm-m5-controlled-preflight-v1";
@@ -6155,6 +6155,31 @@ function hasM8DedicatedWorkerProbe(probe) {
     probe?.ready === true &&
     probe?.workerCreated === true &&
     probe?.mainTransferDetached === true &&
+    probe?.nestedWorkerCreated === true &&
+    probe?.nestedTransferDetached === true &&
+    probe?.nestedReceivedByteLength === 2 &&
+    Array.isArray(probe?.nestedReceivedBytes) &&
+    probe.nestedReceivedBytes.length === 2 &&
+    probe.nestedReceivedBytes[0] === 8 &&
+    probe.nestedReceivedBytes[1] === 11 &&
+    Number.isInteger(probe?.nestedWorkerTimerTicks) &&
+    probe.nestedWorkerTimerTicks >= 2 &&
+    Number.isInteger(probe?.nestedWorkerHeartbeatCount) &&
+    probe.nestedWorkerHeartbeatCount >= 2 &&
+    Number.isInteger(probe?.nestedWorkerHeartbeatsBeforeBusy) &&
+    probe.nestedWorkerHeartbeatsBeforeBusy >= 2 &&
+    probe?.nestedWorkerBusyStarted === true &&
+    Number.isFinite(probe?.nestedWorkerBusyDurationMs) &&
+    probe.nestedWorkerBusyDurationMs >= 65 &&
+    Number.isInteger(probe?.nestedWorkerBusyIterations) &&
+    probe.nestedWorkerBusyIterations >= 1 &&
+    Number.isInteger(probe?.mainTimerTicksDuringNestedBusy) &&
+    probe.mainTimerTicksDuringNestedBusy >= 1 &&
+    probe?.nestedTerminationRequested === true &&
+    Number.isInteger(probe?.nestedHeartbeatsAtTermination) &&
+    probe.nestedHeartbeatsAtTermination >= 2 &&
+    probe?.nestedPostTerminationHeartbeatCount === 0 &&
+    probe?.nestedWorkerTerminated === true &&
     probe?.receivedSequence === 37 &&
     probe?.receivedPayload === "worker-message:reply" &&
     probe?.receivedByteLength === 4 &&

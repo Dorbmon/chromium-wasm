@@ -36,15 +36,20 @@
   "use strict";
 
   const protocol = 1;
-  const fixture = "chromium-wasm-m8-dedicated-worker-v1";
+  const fixture = "chromium-wasm-m8-dedicated-worker-v2";
   const expectedSequence = 37;
   const expectedPayload = "worker-message";
   const expectedBytes = [4, 8, 15, 16];
   const workerHeartbeatIntervalMs = 5;
   const workerBusyDurationMs = 75;
   const workerTerminationQuietPeriodMs = 75;
-  // This is deliberately a Blob-backed worker baseline. Script fetch, CSP,
-  // CORS, and origin-policy coverage require a separate controlled URL case.
+  const nestedExpectedBytes = [7, 11];
+  const nestedWorkerHeartbeatIntervalMs = 5;
+  const nestedWorkerBusyDurationMs = 75;
+  const nestedWorkerTerminationQuietPeriodMs = 75;
+  // This is deliberately a Blob-backed nested-worker baseline. Script fetch,
+  // CSP, CORS, and origin-policy coverage require a separate controlled URL
+  // case.
   const status = document.querySelector("#status");
   const state = {
     protocol,
@@ -65,6 +70,21 @@
     workerBusyDurationMs: null,
     workerBusyIterations: null,
     mainTimerTicksDuringBusy: null,
+    nestedWorkerCreated: false,
+    nestedTransferDetached: false,
+    nestedReceivedByteLength: null,
+    nestedReceivedBytes: null,
+    nestedWorkerTimerTicks: null,
+    nestedWorkerHeartbeatCount: 0,
+    nestedWorkerHeartbeatsBeforeBusy: null,
+    nestedWorkerBusyStarted: false,
+    nestedWorkerBusyDurationMs: null,
+    nestedWorkerBusyIterations: null,
+    mainTimerTicksDuringNestedBusy: null,
+    nestedTerminationRequested: false,
+    nestedHeartbeatsAtTermination: null,
+    nestedPostTerminationHeartbeatCount: 0,
+    nestedWorkerTerminated: false,
     terminationRequested: false,
     heartbeatsAtTermination: null,
     postTerminationHeartbeatCount: 0,
@@ -76,10 +96,10 @@
     ++state.mainTimerTicks;
   }, 5);
 
-  const workerSource = `
+  const nestedWorkerSource = `
     "use strict";
-    const heartbeatIntervalMs = ${workerHeartbeatIntervalMs};
-    const busyDurationMs = ${workerBusyDurationMs};
+    const heartbeatIntervalMs = ${nestedWorkerHeartbeatIntervalMs};
+    const busyDurationMs = ${nestedWorkerBusyDurationMs};
     let heartbeatCount = 0;
     setInterval(() => {
       ++heartbeatCount;
@@ -87,6 +107,68 @@
     }, heartbeatIntervalMs);
     self.onmessage = ({data}) => {
       if (!data || data.type !== "start") return;
+      if (!(data.buffer instanceof ArrayBuffer)) {
+        self.postMessage({type: "failure", message: "nested worker has no buffer"});
+        return;
+      }
+      const bytes = new Uint8Array(data.buffer);
+      if (bytes.length !== 2 || bytes[0] !== 7 || bytes[1] !== 11) {
+        self.postMessage({type: "failure", message: "nested worker transfer mismatch"});
+        return;
+      }
+      bytes[0] += 1;
+      self.postMessage({type: "busy-start", heartbeatCount});
+      const startedAt = performance.now();
+      let busyIterations = 0;
+      while (performance.now() - startedAt < busyDurationMs) {
+        ++busyIterations;
+      }
+      self.postMessage({
+        type: "reply",
+        heartbeatCount,
+        workerBusyDurationMs: performance.now() - startedAt,
+        busyIterations,
+        buffer: bytes.buffer,
+      }, [bytes.buffer]);
+    };
+  `;
+
+  const workerSource = `
+    "use strict";
+    const heartbeatIntervalMs = ${workerHeartbeatIntervalMs};
+    const busyDurationMs = ${workerBusyDurationMs};
+    const nestedTerminationQuietPeriodMs = ${nestedWorkerTerminationQuietPeriodMs};
+    const nestedWorkerSource = ${JSON.stringify(nestedWorkerSource)};
+    let heartbeatCount = 0;
+    let pendingStart = null;
+    let nestedWorker = null;
+    let nestedWorkerUrl = null;
+    let nestedWorkerHeartbeatCount = 0;
+    let nestedWorkerHeartbeatsBeforeBusy = null;
+    let nestedWorkerBusyStarted = false;
+    let nestedTerminationRequested = false;
+    let nestedHeartbeatsAtTermination = null;
+    let nestedPostTerminationHeartbeatCount = 0;
+    let nestedWorkerTerminated = false;
+    let nestedStartMessageSent = false;
+    let nestedTransferDetached = false;
+    setInterval(() => {
+      ++heartbeatCount;
+      self.postMessage({type: "heartbeat", heartbeatCount});
+    }, heartbeatIntervalMs);
+
+    function nestedFailure(message) {
+      if (nestedWorker) {
+        nestedWorker.terminate();
+      }
+      if (nestedWorkerUrl) {
+        URL.revokeObjectURL(nestedWorkerUrl);
+        nestedWorkerUrl = null;
+      }
+      self.postMessage({type: "nested-failure", message});
+    }
+
+    function finishOuterWork(data) {
       const bytes = new Uint8Array(data.buffer);
       bytes[0] += 1;
       self.postMessage({type: "busy-start", heartbeatCount});
@@ -105,6 +187,149 @@
         busyIterations,
         buffer: bytes.buffer,
       }, [bytes.buffer]);
+    }
+
+    function completeNestedWorker(reply) {
+      if (nestedTerminationRequested) {
+        nestedFailure("nested worker termination was already requested");
+        return;
+      }
+      nestedTerminationRequested = true;
+      nestedHeartbeatsAtTermination = nestedWorkerHeartbeatCount;
+      nestedWorker.terminate();
+      URL.revokeObjectURL(nestedWorkerUrl);
+      nestedWorkerUrl = null;
+      setTimeout(() => {
+        if (nestedPostTerminationHeartbeatCount !== 0 ||
+            nestedWorkerHeartbeatCount !== nestedHeartbeatsAtTermination) {
+          nestedFailure("nested worker emitted a heartbeat after termination");
+          return;
+        }
+        nestedWorkerTerminated = true;
+        self.postMessage({
+          type: "nested-complete",
+          nestedTransferDetached,
+          nestedReceivedByteLength: reply.receivedByteLength,
+          nestedReceivedBytes: reply.receivedBytes,
+          nestedWorkerTimerTicks: reply.heartbeatCount,
+          nestedWorkerHeartbeatCount,
+          nestedWorkerHeartbeatsBeforeBusy,
+          nestedWorkerBusyDurationMs: reply.workerBusyDurationMs,
+          nestedWorkerBusyIterations: reply.busyIterations,
+          nestedTerminationRequested,
+          nestedHeartbeatsAtTermination,
+          nestedPostTerminationHeartbeatCount,
+          nestedWorkerTerminated,
+        });
+        finishOuterWork(pendingStart);
+      }, nestedTerminationQuietPeriodMs);
+    }
+
+    function startNestedWorker(data) {
+      pendingStart = data;
+      nestedWorkerUrl = URL.createObjectURL(
+          new Blob([nestedWorkerSource], {type: "text/javascript"}));
+      nestedWorker = new Worker(nestedWorkerUrl);
+      self.postMessage({type: "nested-worker-created"});
+      nestedWorker.onerror = (event) => {
+        nestedFailure(event.message || "nested worker error");
+      };
+      nestedWorker.onmessageerror = () => {
+        nestedFailure("nested worker message error");
+      };
+      nestedWorker.onmessage = ({data: nestedData}) => {
+        if (!nestedData || typeof nestedData.type !== "string") {
+          nestedFailure("nested worker message has no type");
+          return;
+        }
+        if (nestedData.type === "failure") {
+          nestedFailure(nestedData.message || "nested worker failure");
+          return;
+        }
+        if (nestedData.type === "heartbeat") {
+          if (!Number.isInteger(nestedData.heartbeatCount) ||
+              nestedData.heartbeatCount <= nestedWorkerHeartbeatCount) {
+            nestedFailure("nested worker heartbeat sequence mismatch");
+            return;
+          }
+          if (nestedTerminationRequested) {
+            ++nestedPostTerminationHeartbeatCount;
+            self.postMessage({
+              type: "nested-post-termination-heartbeat",
+              heartbeatCount: nestedData.heartbeatCount,
+            });
+            return;
+          }
+          nestedWorkerHeartbeatCount = nestedData.heartbeatCount;
+          self.postMessage({
+            type: "nested-heartbeat",
+            heartbeatCount: nestedWorkerHeartbeatCount,
+          });
+          if (nestedWorkerHeartbeatCount >= 2 && !nestedStartMessageSent) {
+            nestedStartMessageSent = true;
+            const transferred = new Uint8Array(${JSON.stringify(nestedExpectedBytes)}).buffer;
+            nestedWorker.postMessage({type: "start", buffer: transferred},
+                                     [transferred]);
+            nestedTransferDetached = transferred.byteLength === 0;
+            if (!nestedTransferDetached) {
+              nestedFailure("outer-to-nested transfer did not detach the buffer");
+            }
+          }
+          return;
+        }
+        if (nestedData.type === "busy-start") {
+          if (!nestedStartMessageSent || nestedWorkerBusyStarted ||
+              !Number.isInteger(nestedData.heartbeatCount) ||
+              nestedData.heartbeatCount < 2) {
+            nestedFailure("nested worker busy-start protocol mismatch");
+            return;
+          }
+          nestedWorkerBusyStarted = true;
+          nestedWorkerHeartbeatsBeforeBusy = nestedData.heartbeatCount;
+          self.postMessage({
+            type: "nested-busy-start",
+            heartbeatCount: nestedData.heartbeatCount,
+          });
+          return;
+        }
+        if (nestedData.type !== "reply" || !nestedWorkerBusyStarted ||
+            !Number.isInteger(nestedData.heartbeatCount) ||
+            nestedData.heartbeatCount < 2 ||
+            !Number.isFinite(nestedData.workerBusyDurationMs) ||
+            nestedData.workerBusyDurationMs < busyDurationMs - 10 ||
+            !Number.isInteger(nestedData.busyIterations) ||
+            nestedData.busyIterations < 1 ||
+            !(nestedData.buffer instanceof ArrayBuffer)) {
+          nestedFailure("nested worker reply protocol mismatch");
+          return;
+        }
+        const returned = new Uint8Array(nestedData.buffer);
+        if (returned.byteLength !== 2 || returned[0] !== 8 ||
+            returned[1] !== 11) {
+          nestedFailure("nested worker transfer payload mismatch");
+          return;
+        }
+        completeNestedWorker({
+          heartbeatCount: nestedData.heartbeatCount,
+          workerBusyDurationMs: nestedData.workerBusyDurationMs,
+          busyIterations: nestedData.busyIterations,
+          receivedByteLength: returned.byteLength,
+          receivedBytes: Array.from(returned),
+        });
+      };
+    }
+
+    self.onmessage = ({data}) => {
+      if (!data || data.type !== "start") return;
+      if (pendingStart !== null) {
+        nestedFailure("outer worker received a duplicate start message");
+        return;
+      }
+      if (!(data.buffer instanceof ArrayBuffer)) {
+        nestedFailure("outer worker has no transferred buffer");
+        return;
+      }
+      startNestedWorker(data);
     };
   `;
 
@@ -172,6 +397,93 @@
         if (!data || typeof data.type !== "string") {
           throw new Error("worker message has no type");
         }
+        if (data.type === "nested-failure") {
+          throw new Error(data.message || "nested worker failed");
+        }
+        if (data.type === "nested-worker-created") {
+          if (!startMessageSent || state.nestedWorkerCreated) {
+            throw new Error("nested worker creation protocol mismatch");
+          }
+          state.nestedWorkerCreated = true;
+          return;
+        }
+        if (data.type === "nested-heartbeat") {
+          if (!state.nestedWorkerCreated ||
+              !Number.isInteger(data.heartbeatCount) ||
+              data.heartbeatCount <= state.nestedWorkerHeartbeatCount) {
+            throw new Error("nested worker heartbeat sequence mismatch");
+          }
+          if (state.nestedTerminationRequested) {
+            ++state.nestedPostTerminationHeartbeatCount;
+            return;
+          }
+          state.nestedWorkerHeartbeatCount = data.heartbeatCount;
+          return;
+        }
+        if (data.type === "nested-post-termination-heartbeat") {
+          ++state.nestedPostTerminationHeartbeatCount;
+          return;
+        }
+        if (data.type === "nested-busy-start") {
+          if (!state.nestedWorkerCreated || state.nestedWorkerBusyStarted ||
+              !Number.isInteger(data.heartbeatCount) ||
+              data.heartbeatCount < 2) {
+            throw new Error("nested worker busy-start protocol mismatch");
+          }
+          state.nestedWorkerBusyStarted = true;
+          state.nestedWorkerHeartbeatsBeforeBusy = data.heartbeatCount;
+          state.mainTimerTicksDuringNestedBusy = -state.mainTimerTicks;
+          return;
+        }
+        if (data.type === "nested-complete") {
+          if (!state.nestedWorkerCreated || !state.nestedWorkerBusyStarted ||
+              data.nestedTransferDetached !== true ||
+              data.nestedReceivedByteLength !== 2 ||
+              !Array.isArray(data.nestedReceivedBytes) ||
+              data.nestedReceivedBytes.length !== 2 ||
+              data.nestedReceivedBytes[0] !== 8 ||
+              data.nestedReceivedBytes[1] !== 11 ||
+              !Number.isInteger(data.nestedWorkerTimerTicks) ||
+              data.nestedWorkerTimerTicks < 2 ||
+              !Number.isInteger(data.nestedWorkerHeartbeatCount) ||
+              data.nestedWorkerHeartbeatCount <
+                  state.nestedWorkerHeartbeatCount ||
+              !Number.isInteger(data.nestedWorkerHeartbeatsBeforeBusy) ||
+              data.nestedWorkerHeartbeatsBeforeBusy < 2 ||
+              !Number.isFinite(data.nestedWorkerBusyDurationMs) ||
+              data.nestedWorkerBusyDurationMs < nestedWorkerBusyDurationMs - 10 ||
+              !Number.isInteger(data.nestedWorkerBusyIterations) ||
+              data.nestedWorkerBusyIterations < 1 ||
+              data.nestedTerminationRequested !== true ||
+              !Number.isInteger(data.nestedHeartbeatsAtTermination) ||
+              data.nestedHeartbeatsAtTermination < 2 ||
+              data.nestedPostTerminationHeartbeatCount !== 0 ||
+              state.nestedPostTerminationHeartbeatCount !== 0 ||
+              data.nestedWorkerTerminated !== true ||
+              state.mainTimerTicksDuringNestedBusy === null) {
+            throw new Error("nested worker completion protocol mismatch");
+          }
+          state.nestedTransferDetached = data.nestedTransferDetached;
+          state.nestedReceivedByteLength = data.nestedReceivedByteLength;
+          state.nestedReceivedBytes = data.nestedReceivedBytes;
+          state.nestedWorkerTimerTicks = data.nestedWorkerTimerTicks;
+          state.nestedWorkerHeartbeatCount = data.nestedWorkerHeartbeatCount;
+          state.nestedWorkerHeartbeatsBeforeBusy =
+              data.nestedWorkerHeartbeatsBeforeBusy;
+          state.nestedWorkerBusyDurationMs = data.nestedWorkerBusyDurationMs;
+          state.nestedWorkerBusyIterations = data.nestedWorkerBusyIterations;
+          state.nestedTerminationRequested = data.nestedTerminationRequested;
+          state.nestedHeartbeatsAtTermination = data.nestedHeartbeatsAtTermination;
+          state.nestedPostTerminationHeartbeatCount =
+              data.nestedPostTerminationHeartbeatCount;
+          state.nestedWorkerTerminated = data.nestedWorkerTerminated;
+          state.mainTimerTicksDuringNestedBusy += state.mainTimerTicks;
+          if (state.mainTimerTicksDuringNestedBusy < 1) {
+            throw new Error(
+                "main page timer did not run during nested worker CPU work");
+          }
+          return;
+        }
         if (data.type === "heartbeat") {
           if (!Number.isInteger(data.heartbeatCount) ||
               data.heartbeatCount <= state.workerHeartbeatCount) {
@@ -212,6 +524,9 @@
           return;
         }
         if (data.type !== "reply" || !state.workerBusyStarted ||
+            !state.nestedWorkerTerminated || !state.nestedTransferDetached ||
+            state.mainTimerTicksDuringNestedBusy === null ||
+            state.mainTimerTicksDuringNestedBusy < 1 ||
             data.protocol !== protocol || data.sequence !== expectedSequence ||
             data.payload !== expectedPayload + ":reply" ||
             !Number.isInteger(data.heartbeatCount) || data.heartbeatCount < 2 ||
