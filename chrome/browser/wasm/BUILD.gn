@@ -1911,6 +1911,13 @@ if (enable_chromium_wasm_m7_profile_database_test) {
   }
 }
 
+# This owns only the pure, fail-closed classification for the result of a
+# scoped storage drain. It has no OPFS/WasmFS implementation dependency, so
+# its test can prove result handling without activating a profile backend.
+source_set("wasm_profile_storage_drain_result") {
+  public = [ "wasm_profile_storage_drain_result.h" ]
+}
+
 # This owns the one leased OPFS mount used by the Chrome profile path. It is
 # intentionally separate from WasmProfile: JsonPrefStore owns only the
 # profile's Preferences file, while other Chrome-owned stores migrate only
@@ -1922,7 +1929,24 @@ source_set("wasm_profile_storage") {
 
   sources = [ "wasm_profile_storage.cc" ]
 
+  public_deps = [ ":wasm_profile_storage_drain_result" ]
+
   deps = [ "//base" ]
+}
+
+# This exercises only the fail-closed classification of a completed scoped
+# storage drain. It does not link the OPFS/WasmFS implementation or activate a
+# profile backend.
+test("wasm_profile_storage_drain_result_unittests") {
+  sources = [ "wasm_profile_storage_drain_result_unittest.cc" ]
+
+  deps = [
+    ":wasm_profile_storage_drain_result",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//testing/gtest",
+  ]
 }
 
 # This control-plane primitive is deliberately separate from WasmProfile.

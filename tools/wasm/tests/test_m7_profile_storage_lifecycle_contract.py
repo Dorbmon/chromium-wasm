@@ -36,6 +36,9 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.storage_header = source(
             "chrome/browser/wasm/wasm_profile_storage.h"
         )
+        self.storage_result_header = source(
+            "chrome/browser/wasm/wasm_profile_storage_drain_result.h"
+        )
         self.storage = source("chrome/browser/wasm/wasm_profile_storage.cc")
         self.chrome_main = source("chrome/app/chrome_main_wasm.cc")
         self.main_parts = source(
@@ -110,23 +113,48 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "result.lease_released = wasmfs_result.lease_released != 0;",
             "result.backend_retired = wasmfs_result.backend_retired != 0;",
             "result.error = -EIO;",
-            "return error == 0 && libc_flush_failed == 0 &&",
-            "backend_retire_failures == 0",
-            "backend_sealed && lease_released && backend_retired;",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.storage)
 
         self.assertNotIn("wasmfs_terminal_drain(", self.storage)
-        self.assertIn("uint32_t backend_retire_failures = 0;", self.storage_header)
-        self.assertIn("bool backend_retired = false;", self.storage_header)
+        self.assertIn(
+            "uint32_t backend_retire_failures = 0;", self.storage_result_header
+        )
+        self.assertIn("bool backend_retired = false;", self.storage_result_header)
+        for token in (
+            "bool Succeeded() const {",
+            "return error == 0 && libc_flush_failed == 0 &&",
+            "backend_retire_failures == 0",
+            "backend_sealed && lease_released && backend_retired;",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.storage_result_header)
+        self.assertNotIn(
+            "bool WasmProfileStorageDrainResult::Succeeded() const", self.storage
+        )
+        self.assertIn(
+            '#include "chrome/browser/wasm/wasm_profile_storage_drain_result.h"',
+            self.storage_header,
+        )
+        for forbidden in (
+            "wasmfs_",
+            "<emscripten/",
+            '"/profile"',
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.storage_result_header)
         self.assertLess(
-            self.storage_header.index("uint32_t lease_release_failures = 0;"),
-            self.storage_header.index("uint32_t backend_retire_failures = 0;"),
+            self.storage_result_header.index(
+                "uint32_t lease_release_failures = 0;"
+            ),
+            self.storage_result_header.index(
+                "uint32_t backend_retire_failures = 0;"
+            ),
         )
         self.assertLess(
-            self.storage_header.index("bool lease_released = false;"),
-            self.storage_header.index("bool backend_retired = false;"),
+            self.storage_result_header.index("bool lease_released = false;"),
+            self.storage_result_header.index("bool backend_retired = false;"),
         )
         self.assertIn("result.backend_retire_failures != 0", self.storage)
         self.assertIn("!result.backend_retired", self.storage)
@@ -275,10 +303,63 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             'source_set("wasm_profile_storage")',
             'public = [ "wasm_profile_storage.h" ]',
             'sources = [ "wasm_profile_storage.cc" ]',
+            'public_deps = [ ":wasm_profile_storage_drain_result" ]',
             '":wasm_profile_storage",',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.wasm_browser_build)
+
+        result_source_set_start = self.wasm_browser_build.index(
+            'source_set("wasm_profile_storage_drain_result")'
+        )
+        result_source_set_opening_brace = self.wasm_browser_build.index(
+            "{", result_source_set_start
+        )
+        result_source_set_end = _matching_closing_brace(
+            self.wasm_browser_build,
+            result_source_set_opening_brace,
+            "wasm_profile_storage_drain_result",
+        )
+        result_source_set = self.wasm_browser_build[
+            result_source_set_opening_brace + 1 : result_source_set_end
+        ]
+        self.assertIn(
+            'public = [ "wasm_profile_storage_drain_result.h" ]',
+            result_source_set,
+        )
+        for forbidden in ("wasmfs", "emscripten", "deps"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, result_source_set)
+
+        result_test_start = self.wasm_browser_build.index(
+            'test("wasm_profile_storage_drain_result_unittests")'
+        )
+        result_test_opening_brace = self.wasm_browser_build.index(
+            "{", result_test_start
+        )
+        result_test_end = _matching_closing_brace(
+            self.wasm_browser_build,
+            result_test_opening_brace,
+            "wasm_profile_storage_drain_result_unittests",
+        )
+        result_test = self.wasm_browser_build[
+            result_test_opening_brace + 1 : result_test_end
+        ]
+        for token in (
+            'sources = [ "wasm_profile_storage_drain_result_unittest.cc" ]',
+            '":wasm_profile_storage_drain_result",',
+            '"//base/test:run_all_unittests",',
+            '"//testing/gtest",',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, result_test)
+        for forbidden in (
+            '":wasm_profile_storage",',
+            "wasmfs",
+            "emscripten",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, result_test)
 
 
 if __name__ == "__main__":

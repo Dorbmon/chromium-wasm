@@ -233,13 +233,6 @@ WasmProfileStorageState& GetWasmProfileStorageState() {
 
 }  // namespace
 
-bool WasmProfileStorageDrainResult::Succeeded() const {
-  return error == 0 && libc_flush_failed == 0 && data_flush_failures == 0 &&
-         data_close_failures == 0 && prior_close_failures == 0 &&
-         lease_release_failures == 0 && backend_retire_failures == 0 &&
-         backend_sealed && lease_released && backend_retired;
-}
-
 bool InitializeWasmProfileStorage() {
   return GetWasmProfileStorageState().Initialize();
 }
