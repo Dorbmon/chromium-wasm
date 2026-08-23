@@ -12,6 +12,25 @@ import unittest
 from tools.wasm.tests.m3_source_contract_test_support import source
 
 
+def _matching_closing_brace(
+    text: str, opening_brace: int, description: str
+) -> int:
+    """Returns the matching C++ closing brace for a known opening brace."""
+
+    if opening_brace < 0:
+        raise AssertionError(f"missing opening brace for {description}")
+
+    depth = 0
+    for index in range(opening_brace, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise AssertionError(f"missing closing brace for {description}")
+
+
 class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.storage_header = source(
@@ -141,7 +160,17 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "chrome::InitializeWasmProfileStorage()"
         )
         content_main = self.chrome_main.index("content::ContentMain(std::move(params))")
-        scope_end = self.chrome_main.index("  // BrowserMainParts records")
+        delegate_scope_start = self.chrome_main.index(
+            "{\n    WasmChromeMainDelegate chrome_main_delegate;"
+        )
+        delegate_scope_end = _matching_closing_brace(
+            self.chrome_main,
+            delegate_scope_start,
+            "ChromeMain ContentMain delegate scope",
+        )
+        delegate_scope = self.chrome_main[
+            delegate_scope_start + 1 : delegate_scope_end
+        ]
         needs_drain = self.chrome_main.index(
             "chrome::NeedsWasmProfileStorageBackendDrain()"
         )
@@ -150,8 +179,22 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
 
         self.assertLess(initialize, content_main)
-        self.assertLess(content_main, scope_end)
-        self.assertLess(scope_end, needs_drain)
+        self.assertIn(
+            "WasmChromeMainDelegate chrome_main_delegate;", delegate_scope
+        )
+        self.assertIn(
+            "content::ContentMainParams params(&chrome_main_delegate);",
+            delegate_scope,
+        )
+        self.assertIn("content::ContentMain(std::move(params))", delegate_scope)
+        self.assertLess(content_main, delegate_scope_end)
+        self.assertNotIn(
+            "chrome::NeedsWasmProfileStorageBackendDrain()", delegate_scope
+        )
+        self.assertNotIn(
+            "chrome::DrainAndReleaseWasmProfileStorageBackend()", delegate_scope
+        )
+        self.assertLess(delegate_scope_end, needs_drain)
         self.assertLess(needs_drain, drain)
         drain_marker = self.chrome_main.index(
             "chrome::NotifyWasmProfilePreferencesSmokeBackendDrain("
