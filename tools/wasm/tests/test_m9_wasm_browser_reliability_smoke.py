@@ -82,7 +82,10 @@ def _solid_rgba_png(width: int, height: int, pixel: bytes) -> bytes:
 
 
 def normal_execution(
-    cycle: int = 1, *, artifact: object = NORMAL_ARTIFACT_IDENTITY
+    cycle: int = 1,
+    *,
+    artifact: object = NORMAL_ARTIFACT_IDENTITY,
+    versions: object = VERSIONS,
 ) -> runner.ChildExecution:
     summary = {
         "artifact": copy.deepcopy(artifact),
@@ -91,6 +94,7 @@ def normal_execution(
         "frameReports": 3,
         "readinessReports": 1,
         "startupMs": 12.5,
+        "versions": copy.deepcopy(versions),
     }
     return runner.ChildExecution(
         name="normal lifecycle",
@@ -321,6 +325,7 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             result["child"],
         )
         self.assertEqual(NORMAL_ARTIFACT_IDENTITY, result["artifact"])
+        self.assertEqual(VERSIONS, result["versions"])
 
         duplicate = normal_execution()
         duplicate = runner.ChildExecution(
@@ -571,6 +576,38 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                 expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
                 expected_artifact_identity=NORMAL_ARTIFACT_IDENTITY,
             )
+
+    def test_normal_child_requires_exact_parent_run_version_snapshot(self) -> None:
+        drifted = dict(VERSIONS)
+        drifted["port"] = "later-port-revision"
+        with self.assertRaisesRegex(
+            M0Error, "frozen M9 parent run version snapshot"
+        ):
+            runner.validate_normal_lifecycle_execution(
+                normal_execution(versions=drifted),
+                expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                expected_run_version_snapshot=VERSIONS,
+            )
+
+        for name, versions in (
+            ("missing identifier", {"chromium": "chromium-revision"}),
+            (
+                "non-string identifier",
+                {
+                    "chromium": "chromium-revision",
+                    "v8": "v8-revision",
+                    "emscripten": "emscripten-revision",
+                    "port": True,
+                },
+            ),
+        ):
+            with self.subTest(case=name), self.assertRaisesRegex(
+                M0Error, "normal lifecycle result has invalid version identifiers"
+            ):
+                runner.validate_normal_lifecycle_execution(
+                    normal_execution(versions=versions),
+                    expected_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                )
 
     def test_parent_preflight_artifact_identities_are_exact_and_type_safe(
         self,
@@ -1316,7 +1353,8 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             )
         )
         executions: list[tuple[str, int, list[str], float]] = []
-        normal_validation_inputs: list[tuple[str, object, str]] = []
+        normal_validation_inputs: list[tuple[str, object, str, object]] = []
+        normal_version_snapshots: list[dict[str, str] | None] = []
         controlled_flow_validation_inputs: list[
             tuple[str, object, str, object, object, object, object, object]
         ] = []
@@ -1338,17 +1376,21 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
             expected_module_name: str,
             expected_artifact_identity: dict[str, object] | None,
             expected_artifact_identity_context: str,
+            expected_run_version_snapshot: dict[str, str] | None,
         ) -> dict[str, object]:
+            normal_version_snapshots.append(expected_run_version_snapshot)
             normal_validation_inputs.append(
                 (
                     expected_module_name,
                     copy.deepcopy(expected_artifact_identity),
                     expected_artifact_identity_context,
+                    copy.deepcopy(expected_run_version_snapshot),
                 )
             )
             return {
                 "cycle": execution.cycle,
                 "artifact": copy.deepcopy(NORMAL_ARTIFACT_IDENTITY),
+                "versions": copy.deepcopy(expected_run_version_snapshot),
                 "elapsedMs": float(execution.cycle),
             }
 
@@ -1437,6 +1479,10 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.assertEqual(
             "fresh-node-module-process", result["normalLifecycle"]["kind"]
         )
+        self.assertEqual(VERSIONS, result["normalLifecycle"]["runVersionSnapshot"])
+        self.assertNotIn(
+            "source_provenance", result["normalLifecycle"]["runVersionSnapshot"]
+        )
         self.assertEqual(
             "fresh-real-host-browser-profile-and-outer-restart",
             result["controlledFlow"]["kind"],
@@ -1462,16 +1508,19 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
                     runner.DEFAULT_NORMAL_MODULE_NAME,
                     normal_preflight,
                     "the M9 parent preflight snapshot",
+                    VERSIONS,
                 ),
                 (
                     runner.DEFAULT_NORMAL_MODULE_NAME,
                     normal_preflight,
                     "the M9 parent preflight snapshot",
+                    VERSIONS,
                 ),
                 (
                     runner.DEFAULT_NORMAL_MODULE_NAME,
                     normal_preflight,
                     "the M9 parent preflight snapshot",
+                    VERSIONS,
                 ),
             ],
             normal_validation_inputs,
@@ -1524,6 +1573,13 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.assertIsNot(
             controlled_flow_version_snapshots[0],
             controlled_flow_version_snapshots[1],
+        )
+        self.assertEqual([VERSIONS, VERSIONS, VERSIONS], normal_version_snapshots)
+        self.assertIsNot(
+            normal_version_snapshots[0], normal_version_snapshots[1]
+        )
+        self.assertIsNot(
+            normal_version_snapshots[1], normal_version_snapshots[2]
         )
         self.parent_snapshot.assert_called_once()
         load_contract.assert_called_once_with()
@@ -1956,6 +2012,56 @@ class M9WasmBrowserReliabilitySmokeTest(unittest.TestCase):
         self.parent_snapshot.assert_called_once()
         validate_flow.assert_called_once()
         validate_restart.assert_called_once()
+
+    def test_run_rejects_later_normal_lifecycle_version_drift(self) -> None:
+        temporary, out_dir = self._make_out_dir()
+        self.addCleanup(temporary.cleanup)
+        normal_preflight, _ = self._preflight_artifact_identities(out_dir)
+        drifted_versions = dict(VERSIONS)
+        drifted_versions["port"] = "later-port-revision"
+        child_names: list[tuple[str, int]] = []
+
+        def fake_run_child(
+            name: str, cycle: int, command: list[str], timeout: float
+        ) -> runner.ChildExecution:
+            del command, timeout
+            child_names.append((name, cycle))
+            if name != "normal lifecycle":
+                self.fail("controlled flow must not start after normal version drift")
+            child_versions = VERSIONS if cycle == 1 else drifted_versions
+            return normal_execution(
+                cycle,
+                artifact=normal_preflight,
+                versions=child_versions,
+            )
+
+        with (
+            mock.patch.object(runner, "run_child", side_effect=fake_run_child),
+            self.assertRaisesRegex(
+                M0Error, "frozen M9 parent run version snapshot"
+            ),
+        ):
+            runner.run_reliability(
+                out_dir=out_dir,
+                normal_module_name=runner.DEFAULT_NORMAL_MODULE_NAME,
+                controlled_flow_module_name=(
+                    runner.DEFAULT_CONTROLLED_FLOW_MODULE_NAME
+                ),
+                normal_lifecycle_iterations=3,
+                controlled_flow_iterations=1,
+                normal_timeout=7.0,
+                controlled_flow_timeout=11.0,
+                diagnostics_dir=out_dir / "diagnostics",
+                browser=None,
+                node=None,
+                relay_script=None,
+                no_sandbox=False,
+            )
+
+        self.assertEqual(
+            [("normal lifecycle", 1), ("normal lifecycle", 2)], child_names
+        )
+        self.parent_snapshot.assert_called_once()
 
     def test_normal_first_child_artifact_substitution_stops_later_launches(self) -> None:
         temporary, out_dir = self._make_out_dir()

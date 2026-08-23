@@ -1028,8 +1028,14 @@ def validate_normal_lifecycle_execution(
     expected_module_name: str,
     expected_artifact_identity: dict[str, object] | None = None,
     expected_artifact_identity_context: str = "a prior cycle",
+    expected_run_version_snapshot: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    """Validate one independent no-switch lifecycle child result."""
+    """Validate one independent no-switch lifecycle child result.
+
+    Version identifiers are a child-run-local observation. When supplied, the
+    M9 parent snapshot only binds those observations within this invocation;
+    it does not establish source or artifact provenance.
+    """
     _require_module_name(expected_module_name, "normal lifecycle module name")
     output = _validated_child_output(execution)
     result = _validate_normal_lifecycle_terminal_records(execution)
@@ -1040,9 +1046,28 @@ def validate_normal_lifecycle_execution(
         "frameReports",
         "readinessReports",
         "startupMs",
+        "versions",
     }
     if set(result) != expected_fields:
         raise M0Error("normal lifecycle result has an invalid schema")
+    versions = _validate_version_identity(
+        result.get("versions"), "normal lifecycle result"
+    )
+    if expected_run_version_snapshot is not None:
+        try:
+            expected_versions = _validate_version_identity(
+                expected_run_version_snapshot,
+                "normal-lifecycle expected M9 parent run snapshot",
+            )
+        except M0Error as error:
+            raise M0Error(
+                "normal-lifecycle expected M9 parent run snapshot is invalid"
+            ) from error
+        if not _exact_json_value_equal(versions, expected_versions):
+            raise M0Error(
+                "normal lifecycle child version identifiers disagree with "
+                + PARENT_RUN_VERSION_SNAPSHOT_CONTEXT
+            )
     try:
         artifact = normal_lifecycle.validate_artifact_identity(
             result.get("artifact"),
@@ -1079,6 +1104,7 @@ def validate_normal_lifecycle_execution(
             },
         ),
         "artifact": artifact,
+        "versions": versions,
         "canvasCopies": _require_positive_int(
             result.get("canvasCopies"), "normal lifecycle canvas copies"
         ),
@@ -1727,6 +1753,7 @@ def run_reliability(
                 normal_preflight_artifact_identity
             ),
             expected_artifact_identity_context=PREFLIGHT_ARTIFACT_IDENTITY_CONTEXT,
+            expected_run_version_snapshot=copy.deepcopy(parent_versions),
         )
         _require_normal_lifecycle_preflight_artifact_identity(
             out_dir,
@@ -1814,6 +1841,9 @@ def run_reliability(
             "kind": "fresh-node-module-process",
             "requestedCycles": normal_lifecycle_iterations,
             "ownedHostShutdown": True,
+            # This is one parent-run observation retained before any child
+            # starts. It is neither an artifact identity nor source provenance.
+            "runVersionSnapshot": parent_versions,
         }
     )
     flow_summary = _aggregate_cycles(flow_cycles)

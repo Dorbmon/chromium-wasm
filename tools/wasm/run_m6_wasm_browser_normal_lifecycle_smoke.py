@@ -24,11 +24,13 @@ from check_m6_chrome_boundary import check_boundary
 from m0_common import (
     M0Error,
     REPO_ROOT,
+    checked_output,
     load_manifest,
     parse_timeout,
     print_context,
 )
 from m9_descriptor_snapshot import snapshot_regular_files
+from run_content_shell_smoke import manifest_versions
 from run_node_smoke import node_executable
 import run_m6_wasm_browser_smoke as browser_smoke
 
@@ -52,6 +54,7 @@ _ARTIFACT_IDENTITY_FIELDS = frozenset(
         "wasm",
     )
 )
+_VERSION_IDENTITY_FIELDS = frozenset(("chromium", "v8", "emscripten", "port"))
 # The ordinary Node runner imports its loader and starts pthread workers from
 # this directory. It is a private temporary copy of captured bytes, not a
 # source-provenance assertion about the selected output directory.
@@ -66,6 +69,30 @@ class ArtifactSnapshot:
     module_name: str
     loader: bytes
     wasm: bytes
+
+
+def snapshot_run_version_identity(manifest: object) -> dict[str, str]:
+    """Capture one normal-run version observation before Node starts.
+
+    This is deliberately a run-local observation. It does not identify the
+    captured executable bytes or establish source/artifact provenance.
+    """
+
+    try:
+        versions = manifest_versions(
+            manifest, checked_output(["git", "rev-parse", "HEAD"])
+        )
+    except M0Error as error:
+        raise M0Error("ordinary Browser run version identity is invalid") from error
+    if (
+        not isinstance(versions, dict)
+        or set(versions) != _VERSION_IDENTITY_FIELDS
+        or not all(
+            type(revision) is str and revision for revision in versions.values()
+        )
+    ):
+        raise M0Error("ordinary Browser run version identity is invalid")
+    return {name: versions[name] for name in sorted(_VERSION_IDENTITY_FIELDS)}
 
 
 def _require_module_name(value: object, description: str) -> str:
@@ -444,6 +471,7 @@ def main() -> int:
         snapshot = capture_artifact_snapshot(out_dir, args.module_name)
         artifact = artifact_identity(snapshot)
         manifest = load_manifest()
+        versions = snapshot_run_version_identity(manifest)
         node = node_executable(manifest)
         if not node.is_file():
             raise M0Error("the pinned Node executable is not installed")
@@ -482,6 +510,9 @@ def main() -> int:
                     "frameReports": len(result["frameReports"]),
                     "readinessReports": len(result["readinessReports"]),
                     "startupMs": elapsed_ms,
+                    # This is only the child runner's local manifest/checkout
+                    # observation, never executable or source provenance.
+                    "versions": versions,
                 },
                 sort_keys=True,
                 separators=(",", ":"),

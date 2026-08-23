@@ -7,8 +7,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -47,6 +50,114 @@ def _passing_result() -> dict[str, object]:
 
 
 class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
+    def test_snapshot_run_version_identity_uses_one_manifest_and_head_observation(
+        self,
+    ) -> None:
+        manifest = {"manifest": "test"}
+        versions = {
+            "chromium": "chromium-revision",
+            "v8": "v8-revision",
+            "emscripten": "emscripten-revision",
+            "port": "port-revision",
+        }
+        with (
+            mock.patch.object(
+                runner, "checked_output", return_value="p" * 40
+            ) as checked,
+            mock.patch.object(
+                runner, "manifest_versions", return_value=copy.deepcopy(versions)
+            ) as manifest_versions,
+        ):
+            identity = runner.snapshot_run_version_identity(manifest)
+
+        self.assertEqual(versions, identity)
+        self.assertNotIn("source_provenance", identity)
+        checked.assert_called_once_with(["git", "rev-parse", "HEAD"])
+        manifest_versions.assert_called_once_with(manifest, "p" * 40)
+
+    def test_snapshot_run_version_identity_rejects_nonexact_fields(self) -> None:
+        invalid_versions = {
+            "chromium": "chromium-revision",
+            "v8": "v8-revision",
+            "emscripten": "emscripten-revision",
+            "port": "port-revision",
+            "source_provenance": "unverified",
+        }
+        with (
+            mock.patch.object(runner, "checked_output", return_value="p" * 40),
+            mock.patch.object(
+                runner, "manifest_versions", return_value=invalid_versions
+            ),
+            self.assertRaisesRegex(M0Error, "run version identity is invalid"),
+        ):
+            runner.snapshot_run_version_identity({"manifest": "test"})
+
+    def test_main_reports_one_run_local_version_identity(self) -> None:
+        manifest = {"emscripten": {"node_version": "test-node"}}
+        versions = {
+            "chromium": "chromium-revision",
+            "v8": "v8-revision",
+            "emscripten": "emscripten-revision",
+            "port": "port-revision",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            out_dir = Path(temporary) / "out"
+            out_dir.mkdir()
+            (out_dir / "chrome_wasm.js").write_bytes(b"loader")
+            (out_dir / "chrome_wasm.wasm").write_bytes(b"wasm")
+            node = Path(temporary) / "node"
+            node.write_text("node", encoding="utf-8")
+            completed = subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=(
+                    runner.RESULT_PREFIX
+                    + json.dumps(_passing_result(), sort_keys=True)
+                    + "\n"
+                ),
+                stderr=f"{runner.READY_MARKER}\n{runner.PASS_MARKER}\n",
+            )
+            stdout = io.StringIO()
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "run_m6_wasm_browser_normal_lifecycle_smoke.py",
+                        "--out-dir",
+                        str(out_dir),
+                    ],
+                ),
+                mock.patch.object(runner, "check_boundary"),
+                mock.patch.object(
+                    runner, "load_manifest", return_value=manifest
+                ) as load_manifest,
+                mock.patch.object(
+                    runner, "snapshot_run_version_identity", return_value=versions
+                ) as snapshot_versions,
+                mock.patch.object(runner, "node_executable", return_value=node),
+                mock.patch.object(runner, "print_context"),
+                mock.patch.object(
+                    runner, "run_smoke", return_value=completed
+                ) as run_smoke,
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(0, runner.main())
+
+        load_manifest.assert_called_once_with()
+        snapshot_versions.assert_called_once_with(manifest)
+        run_smoke.assert_called_once()
+        result_lines = [
+            line
+            for line in stdout.getvalue().splitlines()
+            if line.startswith(f"{runner.SENTINEL}:NODE_RESULT ")
+        ]
+        self.assertEqual(1, len(result_lines))
+        result = json.loads(result_lines[0].split(" ", 1)[1])
+        self.assertEqual(versions, result["versions"])
+        self.assertNotIn("source_provenance", result["versions"])
+
     def test_runner_is_no_switch_and_uses_only_the_shutdown_abi_after_ready(self) -> None:
         source = runner.runner_source("file:///tmp/chrome_wasm.js", 30000)
         self.assertIn("arguments: []", source)
