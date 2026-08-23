@@ -80,6 +80,10 @@ FRAME_TRANSITION_POLICY = (
     "previous-backing-store-copy-may-share-next-ready-frame"
 )
 WASM_PAGE_SIZE_BYTES = 64 * 1024
+# This is a bounded wasm32 safety floor for every native checkpoint in this
+# smoke. It does not characterize committed memory, allocations, residency,
+# leaks, or out-of-memory behavior outside those observations.
+MINIMUM_WASM_LINEAR_MEMORY_HEADROOM_BYTES = 1024 * 1024 * 1024
 NATIVE_MEMORY_SAMPLE_COUNT = STAGE_COUNT + 1
 NATIVE_MEMORY_SNAPSHOT_DEFINITION = (
     "read-only native Emscripten current linear-memory capacity, configured "
@@ -865,6 +869,14 @@ def _validate_native_memory_snapshot(
         ):
             raise M0Error(
                 f"tab-churn native memory sample {index} headroom is inconsistent"
+            )
+        if (
+            values["wasmLinearMemoryHeadroomBytes"]
+            < MINIMUM_WASM_LINEAR_MEMORY_HEADROOM_BYTES
+        ):
+            raise M0Error(
+                f"tab-churn native memory sample {index} headroom is below the "
+                "required 1 GiB safety floor"
             )
         capacities.append(values["wasmLinearMemoryCapacityBytes"])
 
