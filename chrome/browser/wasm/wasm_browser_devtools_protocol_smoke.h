@@ -11,6 +11,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/values.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "url/gurl.h"
 
@@ -23,12 +24,14 @@ class WebContents;
 namespace chrome {
 
 // A switch-gated, direct DevToolsAgentHost client used only to prove that the
-// active Wasm Browser tab can accept two fixed protocol requests: Network.enable
-// followed by one literal Runtime.evaluate expression. It is deliberately not a
-// DevTools frontend or a protocol transport: it accepts only the two fixed
-// successful responses and forwards no protocol traffic to JavaScript or
-// another process. The expression exercises ordinary page JavaScript only; it
-// does not enable or exercise page WebAssembly.
+// active Wasm Browser tab can accept three fixed protocol requests:
+// Network.enable, Runtime.enable, and one literal Runtime.evaluate expression.
+// It also accepts one exact console event produced by that expression. This is
+// deliberately not a DevTools frontend or a protocol transport: it accepts
+// only those fixed successful responses and the one event and forwards no
+// protocol traffic to JavaScript or another process. The expression exercises
+// ordinary page JavaScript only; it does not enable or exercise page
+// WebAssembly.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:
@@ -40,9 +43,10 @@ class WasmBrowserDevToolsProtocolSmoke final
   ~WasmBrowserDevToolsProtocolSmoke() override;
 
   // Attaches only when |web_contents|' current primary main frame has committed
-  // the fixed DevTools smoke data URL, sends the literal Network.enable then
-  // Runtime.evaluate commands, and runs |success_callback| only after
-  // detaching from the agent host.
+  // the fixed DevTools smoke data URL, sends the literal Network.enable,
+  // Runtime.enable, and Runtime.evaluate commands, and runs |success_callback|
+  // only after receiving the matching console event and detaching from the
+  // agent host.
   void Start(content::WebContents* web_contents);
 
   bool IsDetached() const;
@@ -51,6 +55,7 @@ class WasmBrowserDevToolsProtocolSmoke final
   enum class State {
     kCreated,
     kEnablingNetwork,
+    kEnablingRuntime,
     kEvaluatingRuntime,
     kDetached,
     kFailed,
@@ -70,6 +75,8 @@ class WasmBrowserDevToolsProtocolSmoke final
   bool AllowUnsafeOperations() override;
 
   void CompleteNetworkEnable();
+  void CompleteRuntimeEnable();
+  void CompleteRuntimeConsoleApiCalled(const base::DictValue& notification);
   void CompleteRuntimeEvaluate();
   [[noreturn]] void Fail(std::string_view reason);
   void Detach();
@@ -78,6 +85,8 @@ class WasmBrowserDevToolsProtocolSmoke final
   scoped_refptr<content::DevToolsAgentHost> agent_host_;
   raw_ptr<content::RenderFrameHost> primary_main_frame_ = nullptr;
   GURL permitted_url_;
+  bool runtime_evaluate_response_received_ = false;
+  bool runtime_console_api_called_received_ = false;
   base::OnceClosure success_callback_;
 };
 

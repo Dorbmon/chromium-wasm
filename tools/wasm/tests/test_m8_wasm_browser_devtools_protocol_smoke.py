@@ -55,7 +55,9 @@ def complete_output() -> str:
     return "\n".join(
         (
             smoke.NETWORK_ENABLE_MARKER,
+            smoke.RUNTIME_ENABLE_MARKER,
             smoke.RUNTIME_EVALUATE_MARKER,
+            smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
             smoke.DETACHED_MARKER,
             smoke.LIFECYCLE_PASS_MARKER,
         )
@@ -105,8 +107,10 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
 
         for expected in (
             'R"({"id":1,"method":"Network.enable"})"',
+            'R"({"id":2,"method":"Runtime.enable"})"',
             '"method":"Runtime.evaluate"',
-            '"String(6 * 7)","returnByValue":true,"silent":true',
+            "console.log('chromium-wasm-m8-devtools-console')",
+            '"returnByValue":true,',
             '"allowUnsafeEvalBlockedByCSP":false',
             "kFixedDevToolsProtocolSmokeUrl",
             "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke",
@@ -117,13 +121,20 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             "agent_host_->AttachClient(this)",
             "agent_host->DetachClient(this)",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK",
+            "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK",
+            "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED",
             "base::JSON_PARSE_RFC",
             "response.FindDict(\"result\")",
             "result->FindDict(\"result\")",
             "result->Find(\"exceptionDetails\")",
             "kRuntimeEvaluateExpectedValue",
+            "Runtime.consoleAPICalled",
+            "CompleteRuntimeEnable",
+            "CompleteRuntimeConsoleApiCalled",
+            "runtime_evaluate_response_received_",
+            "runtime_console_api_called_received_",
             "not a page WebAssembly probe or enablement path",
             "return !is_webui && permitted_url_.is_valid() && url == permitted_url_;",
             "return render_frame_host == primary_main_frame_;",
@@ -168,12 +179,14 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         ]
         self.assertLess(
             complete.index("kNetworkEnableSuccessMarker"),
-            complete.index("kRuntimeEvaluateSuccessMarker"),
+            complete.index("kRuntimeEnableSuccessMarker"),
         )
         self.assertLess(
-            complete.index("kRuntimeEvaluateSuccessMarker"),
-            complete.index("Detach();"),
+            complete.index("kRuntimeEnableSuccessMarker"),
+            complete.index("kRuntimeEvaluateCommand"),
         )
+        self.assertIn("kRuntimeEvaluateSuccessMarker", protocol)
+        self.assertIn("kRuntimeConsoleApiCalledSuccessMarker", protocol)
         self.assertLess(
             complete.index("Detach();"), complete.index("kDetachedMarker")
         )
@@ -207,15 +220,32 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, runner)
 
-    def test_accepts_network_enable_runtime_evaluate_detach_then_normal_close(self) -> None:
+    def test_accepts_fixed_enable_response_console_and_detach_evidence(self) -> None:
         smoke.validate_result(successful_result(), complete_output())
+
+    def test_accepts_console_event_before_fixed_evaluate_response(self) -> None:
+        smoke.validate_result(
+            successful_result(),
+            "\n".join(
+                (
+                    smoke.NETWORK_ENABLE_MARKER,
+                    smoke.RUNTIME_ENABLE_MARKER,
+                    smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
+                    smoke.RUNTIME_EVALUATE_MARKER,
+                    smoke.DETACHED_MARKER,
+                    smoke.LIFECYCLE_PASS_MARKER,
+                )
+            ),
+        )
 
     def test_rejects_missing_repeated_or_misordered_native_markers(self) -> None:
         repeated_network_enable = "\n".join(
             (
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_ENABLE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                 smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
@@ -223,6 +253,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         missing_runtime_evaluate = "\n".join(
             (
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_ENABLE_MARKER,
                 smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
@@ -230,8 +261,10 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         repeated_success = "\n".join(
             (
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_ENABLE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                 smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
@@ -239,24 +272,48 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         missing_detach = "\n".join(
             (
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_ENABLE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
         )
         repeated_detach = "\n".join(
             (
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_ENABLE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                 smoke.DETACHED_MARKER,
+                smoke.DETACHED_MARKER,
+                smoke.LIFECYCLE_PASS_MARKER,
+            )
+        )
+        missing_runtime_enable = "\n".join(
+            (
+                smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
+                smoke.DETACHED_MARKER,
+                smoke.LIFECYCLE_PASS_MARKER,
+            )
+        )
+        missing_console_api_called = "\n".join(
+            (
+                smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_ENABLE_MARKER,
+                smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
         )
         wrong_order = "\n".join(
             (
-                smoke.DETACHED_MARKER,
+                smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                 smoke.NETWORK_ENABLE_MARKER,
+                smoke.RUNTIME_ENABLE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
+                smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
         )
@@ -266,6 +323,8 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (repeated_success, "2 Runtime.evaluate success"),
             (missing_detach, "0 DevTools detach"),
             (repeated_detach, "2 DevTools detach"),
+            (missing_runtime_enable, "0 Runtime.enable success"),
+            (missing_console_api_called, "0 Runtime.consoleAPICalled success"),
             (wrong_order, "not ordered"),
         ):
             with self.subTest(expression=expression):
@@ -289,6 +348,13 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(M0Error, "Runtime.evaluate success"):
             smoke.validate_result(successful_result(), missing_runtime_evaluate)
+
+        missing_console_api_called = complete_output().replace(
+            smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
+            "not-a-runtime-console-api-called-marker",
+        )
+        with self.assertRaisesRegex(M0Error, "Runtime.consoleAPICalled success"):
+            smoke.validate_result(successful_result(), missing_console_api_called)
 
     def test_runner_explicitly_limits_the_native_witness(self) -> None:
         runner_program = source(

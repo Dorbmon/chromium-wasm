@@ -28,24 +28,36 @@ namespace {
 
 constexpr char kNetworkEnableCommand[] =
     R"({"id":1,"method":"Network.enable"})";
+constexpr char kRuntimeEnableCommand[] =
+    R"({"id":2,"method":"Runtime.enable"})";
 constexpr char kRuntimeEvaluateCommand[] =
-    R"json({"id":2,"method":"Runtime.evaluate","params":{"expression":)json"
-    R"json("String(6 * 7)","returnByValue":true,"silent":true,)json"
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(console.log('chromium-wasm-m8-devtools-console'),)json"
+    R"json( String(6 * 7))","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kFixedDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
 constexpr char kNetworkEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
+constexpr char kRuntimeEnableSuccessMarker[] =
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK";
 constexpr char kRuntimeEvaluateSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
+constexpr char kRuntimeConsoleApiCalledSuccessMarker[] =
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 constexpr char kDetachedMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
 constexpr char kFailureMarker[] = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:FAIL";
 constexpr int kNetworkEnableCommandId = 1;
-constexpr int kRuntimeEvaluateCommandId = 2;
-constexpr size_t kMaximumProtocolResponseBytes = 1024;
+constexpr int kRuntimeEnableCommandId = 2;
+constexpr int kRuntimeEvaluateCommandId = 3;
+constexpr size_t kMaximumProtocolResponseBytes = 4 * 1024;
 constexpr char kRuntimeEvaluateExpectedType[] = "string";
 constexpr char kRuntimeEvaluateExpectedValue[] = "42";
+constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
+constexpr char kRuntimeConsoleApiCalledExpectedType[] = "log";
+constexpr char kRuntimeConsoleApiCalledExpectedValue[] =
+    "chromium-wasm-m8-devtools-console";
 
 }  // namespace
 
@@ -87,8 +99,8 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   }
 
   state_ = State::kEnablingNetwork;
-  // These two literal commands are the only protocol messages this client can
-  // emit. There is no frontend, pipe, socket, host ABI, or caller-provided
+  // These three literal commands are the only protocol messages this client
+  // can emit. There is no frontend, pipe, socket, host ABI, or caller-provided
   // command surface. Runtime.evaluate runs one ordinary JavaScript expression
   // only; it is not a page WebAssembly probe or enablement path.
   agent_host_->DispatchProtocolMessage(
@@ -104,6 +116,7 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
     base::span<const uint8_t> message) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if ((state_ != State::kEnablingNetwork &&
+       state_ != State::kEnablingRuntime &&
        state_ != State::kEvaluatingRuntime) ||
       agent_host != agent_host_.get()) {
     return;
@@ -117,13 +130,20 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   std::optional<base::Value> value =
       base::JSONReader::Read(message_text, base::JSON_PARSE_RFC);
   if (!value || !value->is_dict()) {
-    // Network events are not part of this smoke. Ignore any frame that cannot
-    // be the one fixed command response rather than becoming a generic
-    // protocol consumer.
+    // Ignore malformed or unrelated protocol frames; this smoke is not a
+    // generic protocol consumer.
     return;
   }
 
   const base::DictValue& response = value->GetDict();
+  const std::string* method = response.FindString("method");
+  if (method) {
+    if (*method == kRuntimeConsoleApiCalledMethod &&
+        state_ == State::kEvaluatingRuntime) {
+      CompleteRuntimeConsoleApiCalled(response);
+    }
+    return;
+  }
   const std::optional<int> id = response.FindInt("id");
   if (!id) {
     return;
@@ -138,6 +158,18 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
       Fail("Network.enable did not return its fixed empty result");
     }
     CompleteNetworkEnable();
+    return;
+  }
+
+  if (state_ == State::kEnablingRuntime) {
+    if (*id != kRuntimeEnableCommandId) {
+      return;
+    }
+    const base::DictValue* result = response.FindDict("result");
+    if (response.Find("error") || !result || !result->empty()) {
+      Fail("Runtime.enable did not return its fixed empty result");
+    }
+    CompleteRuntimeEnable();
     return;
   }
 
@@ -158,6 +190,12 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
       !result_value || *result_value != kRuntimeEvaluateExpectedValue) {
     Fail("Runtime.evaluate did not return the fixed string result");
   }
+  if (runtime_evaluate_response_received_) {
+    Fail("Runtime.evaluate returned more than one fixed response");
+  }
+  runtime_evaluate_response_received_ = true;
+  std::fprintf(stderr, "%s\n", kRuntimeEvaluateSuccessMarker);
+  std::fflush(stderr);
   CompleteRuntimeEvaluate();
 }
 
@@ -212,23 +250,70 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteNetworkEnable() {
   CHECK(agent_host_);
 
   // Advance before dispatch because a DevTools agent may synchronously deliver
-  // the fixed Runtime.evaluate response while handling this call.
-  state_ = State::kEvaluatingRuntime;
+  // the fixed Runtime.enable response while handling this call.
+  state_ = State::kEnablingRuntime;
   std::fprintf(stderr, "%s\n", kNetworkEnableSuccessMarker);
+  std::fflush(stderr);
+  agent_host_->DispatchProtocolMessage(
+      this, base::byte_span_from_cstring(kRuntimeEnableCommand));
+}
+
+void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
+  CHECK_EQ(state_, State::kEnablingRuntime);
+  CHECK(agent_host_);
+
+  // Runtime.enable must complete before the one expression can generate the
+  // exact console event. Set the state before dispatch because either the
+  // notification or the response can be delivered synchronously, in either
+  // order, while this call is active.
+  state_ = State::kEvaluatingRuntime;
+  std::fprintf(stderr, "%s\n", kRuntimeEnableSuccessMarker);
   std::fflush(stderr);
   agent_host_->DispatchProtocolMessage(
       this, base::byte_span_from_cstring(kRuntimeEvaluateCommand));
 }
 
+void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
+    const base::DictValue& notification) {
+  CHECK_EQ(state_, State::kEvaluatingRuntime);
+  const base::DictValue* params = notification.FindDict("params");
+  const std::string* type = params ? params->FindString("type") : nullptr;
+  const base::ListValue* arguments =
+      params ? params->FindList("args") : nullptr;
+  const base::DictValue* argument =
+      arguments && arguments->size() == 1 ? (*arguments)[0].GetIfDict()
+                                          : nullptr;
+  const std::string* argument_type =
+      argument ? argument->FindString("type") : nullptr;
+  const std::string* argument_value =
+      argument ? argument->FindString("value") : nullptr;
+  if (!type || *type != kRuntimeConsoleApiCalledExpectedType ||
+      !argument_type ||
+      *argument_type != kRuntimeEvaluateExpectedType || !argument_value ||
+      *argument_value != kRuntimeConsoleApiCalledExpectedValue) {
+    Fail("Runtime.consoleAPICalled did not contain the fixed log argument");
+  }
+  if (runtime_console_api_called_received_) {
+    Fail("Runtime.consoleAPICalled was delivered more than once");
+  }
+  runtime_console_api_called_received_ = true;
+  std::fprintf(stderr, "%s\n", kRuntimeConsoleApiCalledSuccessMarker);
+  std::fflush(stderr);
+  CompleteRuntimeEvaluate();
+}
+
 void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEvaluate() {
   CHECK_EQ(state_, State::kEvaluatingRuntime);
+  if (!runtime_evaluate_response_received_ ||
+      !runtime_console_api_called_received_) {
+    return;
+  }
   CHECK(success_callback_);
 
-  // Keep both fixed response witnesses before detachment, then make
-  // detachment an independently observable barrier before the lifecycle is
-  // allowed to close its Browser and destroy the sole WebContents.
-  std::fprintf(stderr, "%s\n", kRuntimeEvaluateSuccessMarker);
-  std::fflush(stderr);
+  // Keep both the fixed result and exact console-event witnesses before
+  // detachment, then make detachment an independently observable barrier
+  // before the lifecycle is allowed to close its Browser and destroy the sole
+  // WebContents.
   Detach();
   state_ = State::kDetached;
   CHECK(IsDetached());
