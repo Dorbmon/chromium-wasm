@@ -17,6 +17,10 @@ import("//build/private_code_test/private_code_test.gni")
 import("//build/toolchain/toolchain.gni")
 import("//chrome/browser/buildflags.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+assert(!enable_chromium_wasm_m7_profile_database_test ||
+           !enable_chromium_wasm_m7_profile_preferences_test,
+       "M7 database and Preferences acceptances require separate fresh output configurations")
 import("//chrome/chrome_paks.gni")
 import("//chrome/common/features.gni")
 import("//chrome/process_version_rc_template.gni")
@@ -516,6 +520,19 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ldflags = [ "-sWASMFS=1" ]
   }
 
+  # The M7 abort-PC probe is strictly a failure diagnostic. It is applied only
+  # to the distinct M7 diagnostic artifact below, never to Chrome or the
+  # ordinary M7 profile-database smoke artifact.
+  config("chrome_wasm_m7_profile_database_abort_pc_diagnostic") {
+    ldflags = [
+      "--emit-symbol-map",
+      "--js-library=" +
+          rebase_path(
+              "browser/wasm/wasm_profile_database_abort_pc_diagnostic.js",
+              root_build_dir),
+    ]
+  }
+
   # The source PEM also contains a test private key. This action deliberately
   # extracts only the CERTIFICATE block into a generated C++ include for the
   # dedicated M6 controlled-HTTPS executable; it is never an embedded runtime
@@ -555,6 +572,27 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       output_name = "chrome_wasm_m7_profile_preferences_test"
       defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     }
+    if (enable_chromium_wasm_m7_profile_database_test) {
+      # This independent capability exists only in its own fresh M7 output
+      # configuration. It shares Chrome's production startup and OPFS storage
+      # path without admitting the Preferences test helper or M6 test trust.
+      output_name = "chrome_wasm_m7_profile_database_test"
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
+      if (enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic) {
+        # Keep an abort-only linker diagnostic in a different artifact. The
+        # matching GN assertion requires its own fresh output directory.
+        output_name = "chrome_wasm_m7_profile_database_abort_pc_diagnostic"
+        inputs += [ "browser/wasm/wasm_profile_database_abort_pc_diagnostic.js" ]
+        configs += [ ":chrome_wasm_m7_profile_database_abort_pc_diagnostic" ]
+      } else if (enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic) {
+        # This native controlled write-interruption diagnostic deliberately
+        # has no linker override. Its source-selected wrapper is confined to a
+        # third fresh artifact, separate from normal and abort-PC database
+        # smokes.
+        output_name =
+            "chrome_wasm_m7_profile_database_write_interruption_diagnostic"
+      }
+    }
     deps = [
       ":wasm_packed_resources",
       "//chrome/app:generated_resources",
@@ -570,6 +608,9 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ]
     if (enable_chromium_wasm_m7_profile_preferences_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_preferences_smoke" ]
+    }
+    if (enable_chromium_wasm_m7_profile_database_test) {
+      deps += [ "//chrome/browser/wasm:wasm_profile_database_smoke" ]
     }
   }
 

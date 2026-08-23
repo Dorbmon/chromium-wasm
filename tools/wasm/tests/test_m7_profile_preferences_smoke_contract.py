@@ -326,10 +326,38 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "WasmProfilePreferencesSmokeFailureStage::kContent", content_failure
         )
 
-        # The same predicate must both convert drain failures after a regular
-        # ContentMain success into a nonzero result and preserve non-normal
-        # ContentMain values at the host process-exit bridge.
-        self.assertEqual(self.chrome_main.count("IsNormalChromeMainResult(result)"), 4)
+        # The database acceptance target shares ChromeMain and has independent
+        # normal-result checks. Verify the three decisions that affect the
+        # Preferences target instead of constraining a file-wide occurrence
+        # count owned by unrelated acceptance helpers.
+        shared_drain_failure = _body_after_signature(
+            self.chrome_main, "if (!drain_result.Succeeded())"
+        )
+        shared_drain_normal_result = _body_after_signature(
+            shared_drain_failure, "if (IsNormalChromeMainResult(result))"
+        )
+        self.assertIn(
+            "result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;",
+            shared_drain_normal_result,
+        )
+
+        preferences_missing_drain = _body_after_signature(
+            self.chrome_main, "} else if (preferences_smoke_enabled)"
+        )
+        self.assertIn(
+            "chrome::NotifyWasmProfilePreferencesSmokeBackendDrain(false);",
+            preferences_missing_drain,
+        )
+        preferences_missing_drain_normal_result = _body_after_signature(
+            preferences_missing_drain, "if (IsNormalChromeMainResult(result))"
+        )
+        self.assertIn(
+            "result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;",
+            preferences_missing_drain_normal_result,
+        )
+
+        # Keep the final process-exit bridge responsible for preserving
+        # non-normal ContentMain values after either Preferences drain path.
         final_exit = self.chrome_main[self.chrome_main.index("const int exit_code =") :]
         self.assertIn(
             "const int exit_code = IsNormalChromeMainResult(result)\n"

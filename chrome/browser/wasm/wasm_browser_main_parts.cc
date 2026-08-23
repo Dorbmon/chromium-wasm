@@ -40,6 +40,10 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_database_smoke.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_storage.h"
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_core_smoke.h"
@@ -299,6 +303,22 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
     RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  // The M7 three-fresh-module SQLite/LevelDB acceptance stops after profile
+  // admission, before host input, Browser, WebContents, or BrowserWindow
+  // setup. Its completion requests ordinary asynchronous profile shutdown only
+  // after the single database runner has closed and destroyed both engines.
+  if (chrome::IsWasmProfileDatabaseSmokeEnabled()) {
+    if (!chrome::StartWasmProfileDatabaseSmoke(
+            profile_->GetPath(),
+            base::BindOnce(&WasmBrowserMainParts::RequestShutdown,
+                           weak_ptr_factory_.GetWeakPtr()))) {
+      RequestShutdown();
+    }
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 #endif
@@ -883,10 +903,16 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
                 chrome::NotifyWasmProfilePreferencesSmokeFenceResult(false);
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+                chrome::NotifyWasmProfileDatabaseSmokeFenceResult(false);
+#endif
                 return;
               }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
               chrome::NotifyWasmProfilePreferencesSmokeFenceResult(success);
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+              chrome::NotifyWasmProfileDatabaseSmokeFenceResult(success);
 #endif
               if (!success) {
                 LOG(ERROR) << "chrome_wasm Preferences persistence fence "
@@ -914,11 +940,25 @@ void WasmBrowserMainParts::FinishShutdown() {
       // this Profile or acknowledges its storage lifecycle: ContentMain's
       // outer scoped drain follows that hook and needs this ordering.
       profile_.reset();
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+      if (chrome::IsWasmProfileDatabaseSmokeEnabled() &&
+          !chrome::DidWasmProfileDatabaseSmokeSucceed()) {
+        // A database task failure has already requested normal shutdown, but
+        // must not turn into a storage handoff. Retain the created-but-not-
+        // shutdown lifecycle state so ChromeMain's scoped drain fails closed,
+        // converts the otherwise normal result, and emits no LEASE_RELEASED.
+        chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(false);
+      } else {
+#endif
       const bool storage_lifecycle_notified =
           chrome::NotifyWasmProfileStorageProfileShutdown();
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
       chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(
           storage_lifecycle_notified);
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+        chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(
+            storage_lifecycle_notified);
 #endif
       if (!storage_lifecycle_notified) {
         // Do not synthesize a clean handoff. The outer scoped drain observes
@@ -927,6 +967,9 @@ void WasmBrowserMainParts::FinishShutdown() {
         LOG(ERROR) << "chrome_wasm could not complete its profile storage "
                       "lifecycle";
       }
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+      }
+#endif
     }
   }
 

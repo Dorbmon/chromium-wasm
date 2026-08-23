@@ -1325,10 +1325,15 @@ bool DBTracker::IsTrackedDB(const leveldb::DB* db) const {
   return false;
 }
 
-leveldb::Status DBTracker::OpenDatabase(const leveldb_env::Options& options,
-                                        const std::string& name,
-                                        TrackedDB** dbptr) {
+leveldb::Status DBTracker::OpenDatabase(
+    const leveldb_env::Options& options,
+    const std::string& name,
+    TrackedDB** dbptr,
+    void (*before_dbimpl_construction)()) {
   leveldb::DB* db = nullptr;
+  if (before_dbimpl_construction) {
+    before_dbimpl_construction();
+  }
   auto status = leveldb::DB::Open(options, name, &db);
   // Enforce expectations: either we succeed, and get a valid object in |db|,
   // or we fail, and |db| is still NULL.
@@ -1361,6 +1366,13 @@ void DBTracker::DatabaseDestroyed(TrackedDBImpl* database) {
 leveldb::Status OpenDB(const leveldb_env::Options& options,
                        const std::string& name,
                        std::unique_ptr<leveldb::DB>* dbptr) {
+  return OpenDB(options, name, dbptr, nullptr);
+}
+
+leveldb::Status OpenDB(const leveldb_env::Options& options,
+                       const std::string& name,
+                       std::unique_ptr<leveldb::DB>* dbptr,
+                       void (*before_dbimpl_construction)()) {
   if (!GetDBFactoryOverride().is_null()) {
     return GetDBFactoryOverride().Run(options, name, dbptr);
   }
@@ -1378,7 +1390,8 @@ leveldb::Status OpenDB(const leveldb_env::Options& options,
     // All data is stored in memory so there's no cost to holding a "file" open.
     mem_options.max_open_files = std::numeric_limits<int>::max();
     mem_options.create_if_missing = true;
-    s = DBTracker::GetInstance()->OpenDatabase(mem_options, name, &tracked_db);
+    s = DBTracker::GetInstance()->OpenDatabase(
+        mem_options, name, &tracked_db, before_dbimpl_construction);
   } else {
     std::string tmp_name = DatabaseNameForRewriteDB(name);
     // If Chrome crashes during rewrite, there might be a temporary db but
@@ -1392,7 +1405,8 @@ leveldb::Status OpenDB(const leveldb_env::Options& options,
       if (!s.ok())
         return s;
     }
-    s = DBTracker::GetInstance()->OpenDatabase(options, name, &tracked_db);
+    s = DBTracker::GetInstance()->OpenDatabase(
+        options, name, &tracked_db, before_dbimpl_construction);
     // It is possible that the database was partially deleted during a
     // rewrite and can't be opened anymore.
     if (!s.ok() && options.env->FileExists(tmp_name)) {
@@ -1402,7 +1416,8 @@ leveldb::Status OpenDB(const leveldb_env::Options& options,
       s = options.env->RenameFile(tmp_name, name);
       if (!s.ok())
         return s;
-      s = DBTracker::GetInstance()->OpenDatabase(options, name, &tracked_db);
+      s = DBTracker::GetInstance()->OpenDatabase(
+          options, name, &tracked_db, nullptr);
     }
     // There might be a temporary database that needs to be cleaned up.
     if (options.env->FileExists(tmp_name)) {

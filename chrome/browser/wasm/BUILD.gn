@@ -10,6 +10,10 @@
 
 import("//chrome/common/features.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+assert(!enable_chromium_wasm_m7_profile_database_test ||
+           !enable_chromium_wasm_m7_profile_preferences_test,
+       "M7 database and Preferences acceptances require separate fresh output configurations")
 import("//tools/grit/grit_rule.gni")
 import("//testing/test.gni")
 
@@ -1874,6 +1878,39 @@ if (enable_chromium_wasm_m7_profile_preferences_test) {
   }
 }
 
+# The test-only M7 database protocol is linked into the source-selected M7
+# database artifact only. The normal chrome_wasm configuration neither compiles
+# this target nor recognizes its runtime switches.
+if (enable_chromium_wasm_m7_profile_database_test) {
+  source_set("wasm_profile_database_smoke") {
+    public = [ "wasm_profile_database_smoke.h" ]
+
+    sources = [ "wasm_profile_database_smoke.cc" ]
+
+    if (enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic) {
+      # This is confined to the distinct abort-PC diagnostic artifact. The
+      # source observer preserves fatal logging and crash behavior while it
+      # emits a fixed, redacted source-family checkpoint.
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_ABORT_PC_DIAGNOSTIC=1" ]
+    }
+
+    if (enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic) {
+      # This source-only interruption wrapper forwards a real .log Sync and
+      # intentionally aborts only in the dedicated fresh diagnostic artifact.
+      # The gni assertions keep this mutually exclusive with the abort-PC
+      # build so neither diagnostic can affect the other source closure.
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC=1" ]
+    }
+
+    deps = [
+      "//base",
+      "//crypto",
+      "//sql",
+      "//third_party/leveldatabase",
+    ]
+  }
+}
+
 # This owns the one leased OPFS mount used by the Chrome profile path. It is
 # intentionally separate from WasmProfile: JsonPrefStore owns only the
 # profile's Preferences file, while other Chrome-owned stores migrate only
@@ -2017,6 +2054,10 @@ source_set("wasm_browser_main_parts") {
   if (enable_chromium_wasm_m7_profile_preferences_test) {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     deps += [ ":wasm_profile_preferences_smoke" ]
+  }
+  if (enable_chromium_wasm_m7_profile_database_test) {
+    defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
+    deps += [ ":wasm_profile_database_smoke" ]
   }
 }
 

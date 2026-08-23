@@ -1,0 +1,55 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# This is a build-time capability, not a production runtime feature. Its
+# importing BUILD.gn files enforce mutual exclusion with the separate M7
+# Preferences capability in their shared GN scope.
+declare_args() {
+  enable_chromium_wasm_m7_profile_database_test = false
+
+  # This failure-only diagnostic keeps a native abort's first Wasm program
+  # counter without admitting its linker settings to the normal M7 artifact.
+  enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic = false
+
+  # This independent controlled write-interruption diagnostic intentionally
+  # interrupts the first real LevelDB .log Sync after a fresh post-seed
+  # OpenDB. It proves neither crash recovery, persistence, directory
+  # durability, outer reload, nor M7 completion. It has no linker override
+  # and must remain a different artifact from normal and abort-PC database
+  # smokes.
+  enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic = false
+}
+
+assert(!enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic ||
+           enable_chromium_wasm_m7_profile_database_test,
+       "M7 abort-PC diagnostic requires the M7 database smoke configuration")
+assert(
+    !enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic ||
+        enable_chromium_wasm_m7_profile_database_test,
+    "M7 write-interruption diagnostic requires the M7 database smoke configuration")
+assert(
+    !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic && enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic),
+    "M7 database diagnostics require separate fresh output configurations")
+
+assert(!enable_chromium_wasm_m7_profile_database_test ||
+           (is_wasm && enable_chromium_wasm_chrome),
+       "M7 database smoke requires the Wasm Chrome source graph")
+if (enable_chromium_wasm_m7_profile_database_test) {
+  _m7_database_output_dir = "wasm-chrome-m7-profile-database"
+  _m7_database_output_message =
+      "M7 database smoke must use out/wasm-chrome-m7-profile-database"
+  if (enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic) {
+    _m7_database_output_dir = "wasm-chrome-m7-profile-database-abort-pc"
+    _m7_database_output_message = "M7 abort-PC diagnostic must use " +
+                                  "out/wasm-chrome-m7-profile-database-abort-pc"
+  } else if (enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic) {
+    _m7_database_output_dir =
+        "wasm-chrome-m7-profile-database-write-interruption"
+    _m7_database_output_message =
+        "M7 write-interruption diagnostic must use " +
+        "out/wasm-chrome-m7-profile-database-write-interruption"
+  }
+  assert(get_path_info(root_out_dir, "name") == _m7_database_output_dir,
+         _m7_database_output_message)
+}

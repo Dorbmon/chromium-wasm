@@ -1317,6 +1317,7 @@ component("base") {
       "files/file_util_wasm.cc",
       "files/file_wasm.cc",
       "files/memory_mapped_file_posix.cc",
+      "logging_wasm.h",
       "memory/page_size_wasm.cc",
       "memory/platform_shared_memory_mapper_wasm.cc",
       "memory/platform_shared_memory_region_wasm.cc",

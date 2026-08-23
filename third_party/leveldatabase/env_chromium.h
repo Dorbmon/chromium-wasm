@@ -243,9 +243,13 @@ class LEVELDB_EXPORT DBTracker {
   // memory-infra and is enumerated by VisitDatabases() method.
   // This function is an implementation detail of leveldb_env::OpenDB(), and
   // has similar guarantees regarding |dbptr| argument.
+  // |before_dbimpl_construction| is called, if non-null, directly before the
+  // underlying leveldb::DB::Open call. It is used only by OpenDB's
+  // testing-only overload.
   leveldb::Status OpenDatabase(const leveldb_env::Options& options,
                                const std::string& name,
-                               TrackedDB** dbptr);
+                               TrackedDB** dbptr,
+                               void (*before_dbimpl_construction)() = nullptr);
 
  private:
   class MemoryDumpProvider;
@@ -293,6 +297,18 @@ class LEVELDB_EXPORT DBTracker {
 LEVELDB_EXPORT leveldb::Status OpenDB(const leveldb_env::Options& options,
                                       const std::string& name,
                                       std::unique_ptr<leveldb::DB>* dbptr);
+
+// Testing-only overload that invokes |before_dbimpl_construction| once,
+// directly before the first real leveldb::DB::Open reached by this invocation.
+// It is not called when a DBFactory override handles the open. A preflight
+// failure may therefore return without calling it. If OpenDB retries a raw
+// open, the callback is not called again. The callback is a no-capture function
+// pointer so this diagnostic boundary does not allocate before it is emitted.
+LEVELDB_EXPORT leveldb::Status OpenDB(
+    const leveldb_env::Options& options,
+    const std::string& name,
+    std::unique_ptr<leveldb::DB>* dbptr,
+    void (*before_dbimpl_construction)());
 
 // Overrides OpenDB with the given closure.
 using DBFactoryMethod =

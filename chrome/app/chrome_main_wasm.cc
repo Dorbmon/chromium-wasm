@@ -17,6 +17,12 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// The dedicated M7 database GN configuration alone supplies this header and
+// target. GN's include checker does not evaluate this target-specific
+// definition.
+#include "chrome/browser/wasm/wasm_profile_database_smoke.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_storage.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "content/public/app/content_main.h"
@@ -73,6 +79,9 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
   bool preferences_smoke_enabled = false;
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  bool database_smoke_enabled = false;
+#endif
   {
     WasmChromeMainDelegate chrome_main_delegate;
     content::ContentMainParams params(&chrome_main_delegate);
@@ -91,6 +100,17 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     if (preferences_smoke_requested) {
       preferences_smoke_enabled =
           chrome::EnableWasmProfilePreferencesSmokeTestMode();
+    }
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    // The M7 three-module database acceptance is compiled only into its
+    // dedicated GN configuration. Primary chrome_wasm neither parses these
+    // private switches nor links the helper that owns their raw tokens.
+    const bool database_smoke_requested =
+        chrome::HasWasmProfileDatabaseSmokeArguments();
+    if (database_smoke_requested) {
+      database_smoke_enabled =
+          chrome::EnableWasmProfileDatabaseSmokeTestMode();
     }
 #endif
 
@@ -131,6 +151,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       // emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     } else if (!(profile_storage_initialized =
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    if (database_smoke_requested && !database_smoke_enabled) {
+      // Invalid test input stops before the profile mount. The helper already
+      // emitted its fixed redacted failure marker.
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    } else if (!(profile_storage_initialized =
 #else
     if (!(profile_storage_initialized =
 #endif
@@ -138,6 +164,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
       chrome::ReportWasmProfilePreferencesSmokeFailure(
           chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+      if (database_smoke_requested) {
+        chrome::ReportWasmProfileDatabaseSmokeFailure(
+            chrome::WasmProfileDatabaseSmokeFailureStage::kStorage);
+      }
 #endif
       // A failed mount can still have acquired a lease. Its scoped cleanup
       // runs after this delegate scope, while the non-normal result reaches
@@ -160,6 +192,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
         chrome::WasmProfilePreferencesSmokeFailureStage::kContent);
   }
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  if (database_smoke_enabled && !IsNormalChromeMainResult(result)) {
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kContent);
+  }
+#endif
 
   // BrowserMainParts records the profile-service shutdown boundary. Seal and
   // drain the exact leased OPFS backend only after ContentMain and its
@@ -171,6 +209,10 @@ extern "C" int ChromeMain(int argc, const char** argv) {
         chrome::DrainAndReleaseWasmProfileStorageBackend();
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
     chrome::NotifyWasmProfilePreferencesSmokeBackendDrain(
+        drain_result.Succeeded());
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    chrome::NotifyWasmProfileDatabaseSmokeBackendDrain(
         drain_result.Succeeded());
 #endif
     if (!drain_result.Succeeded()) {
@@ -186,6 +228,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
   } else if (preferences_smoke_enabled) {
     chrome::NotifyWasmProfilePreferencesSmokeBackendDrain(false);
+    if (IsNormalChromeMainResult(result)) {
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  } else if (database_smoke_enabled) {
+    chrome::NotifyWasmProfileDatabaseSmokeBackendDrain(false);
     if (IsNormalChromeMainResult(result)) {
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }

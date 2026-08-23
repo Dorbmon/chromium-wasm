@@ -4,6 +4,10 @@
 
 #include "base/logging.h"
 
+#if BUILDFLAG(IS_WASM)
+#include "base/logging_wasm.h"
+#endif  // BUILDFLAG(IS_WASM)
+
 #include <limits.h>
 #include <stdint.h>
 
@@ -250,7 +254,16 @@ base::stack<LogAssertHandlerFunction>& GetLogAssertHandlerStack() {
 }
 
 // A log message handler that gets notified of every log message we process.
+//
+// Emscripten pthreads can log concurrently with a caller that updates this
+// observer, so publish and snapshot the function pointer atomically on Wasm.
+// The handler's own lifetime remains the caller's responsibility, as on every
+// other platform.
+#if BUILDFLAG(IS_WASM)
+std::atomic<LogMessageHandlerFunction> g_log_message_handler = nullptr;
+#else
 LogMessageHandlerFunction g_log_message_handler = nullptr;
+#endif
 
 uint64_t TickCount() {
 #if BUILDFLAG(IS_WIN)
@@ -561,7 +574,7 @@ bool ShouldCreateLogMessage(int severity) {
   }
 
   // Return true here unless we know ~LogMessage won't do anything.
-  return g_logging_destination != LOG_NONE || g_log_message_handler ||
+  return g_logging_destination != LOG_NONE || GetLogMessageHandler() ||
          severity >= kAlwaysPrintErrorLevel;
 }
 
@@ -654,12 +667,36 @@ ScopedLogAssertHandler::~ScopedLogAssertHandler() {
 }
 
 void SetLogMessageHandler(LogMessageHandlerFunction handler) {
+#if BUILDFLAG(IS_WASM)
+  g_log_message_handler.store(handler, std::memory_order_release);
+#else
   g_log_message_handler = handler;
+#endif
 }
 
 LogMessageHandlerFunction GetLogMessageHandler() {
+#if BUILDFLAG(IS_WASM)
+  return g_log_message_handler.load(std::memory_order_acquire);
+#else
   return g_log_message_handler;
+#endif
 }
+
+#if BUILDFLAG(IS_WASM)
+bool TrySetLogMessageHandlerIfNone(LogMessageHandlerFunction handler) {
+  DCHECK(handler);
+  LogMessageHandlerFunction expected = nullptr;
+  return g_log_message_handler.compare_exchange_strong(
+      expected, handler, std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
+bool ClearLogMessageHandlerIfEqual(LogMessageHandlerFunction handler) {
+  DCHECK(handler);
+  LogMessageHandlerFunction expected = handler;
+  return g_log_message_handler.compare_exchange_strong(
+      expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+}
+#endif  // BUILDFLAG(IS_WASM)
 
 #if !defined(NDEBUG)
 // Displays a message box to the user with the error message in it.
@@ -750,9 +787,9 @@ void LogMessage::Flush() {
   }
 
   // Give any log message handler first dibs on the message.
-  if (g_log_message_handler &&
-      g_log_message_handler(severity_, file_, line_, message_start_,
-                            str_newline)) {
+  const LogMessageHandlerFunction message_handler = GetLogMessageHandler();
+  if (message_handler &&
+      message_handler(severity_, file_, line_, message_start_, str_newline)) {
     // The handler took care of it, no further processing.
     return;
   }
@@ -1211,7 +1248,7 @@ ScopedLoggingSettings::ScopedLoggingSettings()
       enable_timestamp_(g_log_timestamp),
       enable_tickcount_(g_log_tickcount),
       log_prefix_(g_log_prefix),
-      message_handler_(g_log_message_handler) {
+      message_handler_(GetLogMessageHandler()) {
   if (g_log_file_name) {
     log_file_name_ = *g_log_file_name;
   }
