@@ -10,11 +10,11 @@
 // or infer worker utilization, saturation, or long-run behavior.
 
 const HOST_PROTOCOL = 1;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const CASE = "chrome_wasm_m9_measurement_baseline";
 const PRODUCT_MODULE_NAME = "chrome_wasm";
 const SCOPE = "one-fresh-host-run-cold-loader-runtime-frame-wasm-buffer-capacity-" +
-    "native-memory-snapshot-worker-observation";
+    "native-memory-snapshot-first-pthread-worker-bootstrap-event-delivery";
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
 const MAX_TIMEOUT_MS = 120000;
 const MIN_TIMEOUT_MS = 10000;
@@ -33,8 +33,10 @@ const NATIVE_MEMORY_SNAPSHOT_DEFINITION =
     "mappings across clients may be uncommitted; none is RSS, committed-memory, " +
     "allocation, or leak evidence";
 const WORKER_OBSERVATION_DEFINITION =
-    "host Worker construction and loader loaded-control messages only; " +
-    "not worker utilization or saturation";
+    "host Worker construction and loader loaded-control messages plus one first " +
+    "matched pthread Worker main-thread observed construction-to-loaded-control-" +
+    "message bootstrap/event-delivery latency; not worker CPU utilization, " +
+    "saturation, drain, or internal execution";
 const MEASUREMENT_LIMITS = Object.freeze([
   "observational pre-release baseline only; not a performance gate",
   "one sample only; no cross-run performance inference or benchmark claim",
@@ -48,7 +50,10 @@ const MEASUREMENT_LIMITS = Object.freeze([
   "terminal 25 ms grace observes queued host errors only; it does not " +
       "prove worker drain, utilization, or saturation",
   "worker evidence counts host Worker construction and loader " +
-      "loaded-control messages only; it does not measure utilization or saturation",
+      "loaded-control messages and records only the first matched pthread " +
+      "Worker main-thread construction-to-loaded-control-message bootstrap/event-" +
+      "delivery latency; it does not measure CPU utilization, saturation, drain, " +
+      "or internal execution",
   "does not measure V8, layout, raster, network, OPFS, persistence, or " +
       "long-run reliability",
 ]);
@@ -188,6 +193,7 @@ class WorkerObservation {
   #errorEvents = 0;
   #messageErrorEvents = 0;
   #loadedWorkers = new WeakSet();
+  #firstMatchedPthreadWorkerStartup = null;
   #nativeWorker = null;
   #wrappedWorker = null;
 
@@ -203,13 +209,37 @@ class WorkerObservation {
         // Preserve the platform Worker constructor exactly. The observer adds
         // passive event listeners only; it neither owns nor intercepts the
         // Emscripten worker's onmessage handler.
+        //
+        // This is a main-thread timestamp immediately before constructor
+        // entry, not a worker CPU, scheduling, or internal-execution measure.
+        const constructionTimeMs = performance.now();
         const worker = Reflect.construct(target, argumentsList);
         observation.#workersConstructed += 1;
         worker.addEventListener("message", (event) => {
           if (event?.data?.cmd === "loaded" &&
               !observation.#loadedWorkers.has(worker)) {
+            // Emscripten's pthread loader emits this control message. Record
+            // only the first matching arrival, passively, on the host main
+            // thread. This neither sends to nor controls the worker.
+            const loadedControlMessageArrivalTimeMs = performance.now();
             observation.#loadedWorkers.add(worker);
             observation.#loadedMessages += 1;
+            if (observation.#firstMatchedPthreadWorkerStartup === null) {
+              const durationMs = loadedControlMessageArrivalTimeMs -
+                  constructionTimeMs;
+              if (!finiteTimestamp(constructionTimeMs) ||
+                  !finiteTimestamp(loadedControlMessageArrivalTimeMs) ||
+                  !Number.isFinite(durationMs) || durationMs < 0) {
+                throw new Error("invalid pthread Worker bootstrap observation");
+              }
+              observation.#firstMatchedPthreadWorkerStartup = Object.freeze({
+                construction_time_ms: constructionTimeMs,
+                loaded_control_message_arrival_time_ms:
+                    loadedControlMessageArrivalTimeMs,
+                construction_to_loaded_control_message_arrival_ms:
+                    Number(durationMs.toFixed(3)),
+              });
+            }
           }
         });
         worker.addEventListener("error", () => {
@@ -242,6 +272,10 @@ class WorkerObservation {
       message_error_events: this.#messageErrorEvents,
       workers_constructed: this.#workersConstructed,
     });
+  }
+
+  firstMatchedPthreadWorkerStartup() {
+    return this.#firstMatchedPthreadWorkerStartup;
   }
 }
 
@@ -532,6 +566,7 @@ class ChromiumWasmM9MeasurementHost {
         this.#nativeMemoryAtRuntimeInitialized === null ||
         this.#nativeMemoryAtFirstFrame === null ||
         this.#workersAtFirstFrame === null ||
+        this.#workerObservation.firstMatchedPthreadWorkerStartup() === null ||
         this.#workersAtFirstFrame.workers_constructed < 1 ||
         this.#workersAtFirstFrame.loaded_control_messages < 1 ||
         this.#workersAtFirstFrame.error_events !== 0 ||
@@ -802,6 +837,8 @@ class ChromiumWasmM9MeasurementHost {
         at_runtime_initialized: this.#workersAtRuntimeInitialized,
         at_runtime_exit: this.#workersAtRuntimeExit,
         definition: WORKER_OBSERVATION_DEFINITION,
+        first_matched_pthread_worker_startup:
+            this.#workerObservation.firstMatchedPthreadWorkerStartup(),
       },
       failure: this.#failure,
     };

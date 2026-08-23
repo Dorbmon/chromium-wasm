@@ -91,11 +91,11 @@ else:
 
 
 SENTINEL = "CHROMIUM_WASM_M9_BASELINE"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CASE = "chrome_wasm_m9_measurement_baseline"
 SCOPE = (
     "one-fresh-host-run-cold-loader-runtime-frame-wasm-buffer-capacity-"
-    "native-memory-snapshot-worker-observation"
+    "native-memory-snapshot-first-pthread-worker-bootstrap-event-delivery"
 )
 BASELINE_KIND = "pre-release-m9-measurement-baseline"
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
@@ -133,8 +133,10 @@ NATIVE_MEMORY_SNAPSHOT_DEFINITION = (
     "allocation, or leak evidence"
 )
 WORKER_OBSERVATION_DEFINITION = (
-    "host Worker construction and loader loaded-control messages only; "
-    "not worker utilization or saturation"
+    "host Worker construction and loader loaded-control messages plus one first "
+    "matched pthread Worker main-thread observed construction-to-loaded-control-"
+    "message bootstrap/event-delivery latency; not worker CPU utilization, "
+    "saturation, drain, or internal execution"
 )
 SAMPLE_MEASUREMENT_LIMITS = (
     "observational pre-release baseline only; not a performance gate",
@@ -158,7 +160,10 @@ SAMPLE_MEASUREMENT_LIMITS = (
     ),
     (
         "worker evidence counts host Worker construction and loader "
-        "loaded-control messages only; it does not measure utilization or saturation"
+        "loaded-control messages and records only the first matched pthread "
+        "Worker main-thread construction-to-loaded-control-message bootstrap/event-"
+        "delivery latency; it does not measure CPU utilization, saturation, drain, "
+        "or internal execution"
     ),
     (
         "does not measure V8, layout, raster, network, OPFS, persistence, "
@@ -297,7 +302,13 @@ _FRAME_FIELDS = frozenset(
     )
 )
 _WORKER_OBSERVATION_FIELDS = frozenset(
-    ("at_first_frame", "at_runtime_initialized", "at_runtime_exit", "definition")
+    (
+        "at_first_frame",
+        "at_runtime_initialized",
+        "at_runtime_exit",
+        "definition",
+        "first_matched_pthread_worker_startup",
+    )
 )
 _WORKER_SNAPSHOT_FIELDS = frozenset(
     (
@@ -306,6 +317,13 @@ _WORKER_SNAPSHOT_FIELDS = frozenset(
         "loaded_control_messages",
         "message_error_events",
         "workers_constructed",
+    )
+)
+_FIRST_MATCHED_PTHREAD_WORKER_STARTUP_FIELDS = frozenset(
+    (
+        "construction_time_ms",
+        "loaded_control_message_arrival_time_ms",
+        "construction_to_loaded_control_message_arrival_ms",
     )
 )
 _ARTIFACT_FIELDS = frozenset(
@@ -737,6 +755,44 @@ def _validate_nondecreasing_worker_snapshots(
             )
 
 
+def _validate_first_matched_pthread_worker_startup(
+    value: object,
+) -> dict[str, float]:
+    value = _require_exact_fields(
+        value,
+        _FIRST_MATCHED_PTHREAD_WORKER_STARTUP_FIELDS,
+        "first matched pthread Worker startup",
+    )
+    construction_time = _require_finite_number(
+        value.get("construction_time_ms"),
+        "first matched pthread Worker construction time",
+    )
+    loaded_arrival_time = _require_finite_number(
+        value.get("loaded_control_message_arrival_time_ms"),
+        "first matched pthread Worker loaded control-message arrival time",
+    )
+    duration = _require_finite_number(
+        value.get("construction_to_loaded_control_message_arrival_ms"),
+        "first matched pthread Worker bootstrap duration",
+    )
+    if loaded_arrival_time < construction_time:
+        raise M0Error(
+            "M9 measurement first matched pthread Worker loaded control-message "
+            "arrival precedes construction"
+        )
+    expected_duration = round(loaded_arrival_time - construction_time, 3)
+    if not math.isclose(duration, expected_duration, rel_tol=0.0, abs_tol=0.0005):
+        raise M0Error(
+            "M9 measurement first matched pthread Worker bootstrap duration "
+            "disagrees with its timestamps"
+        )
+    return {
+        "construction_time_ms": construction_time,
+        "loaded_control_message_arrival_time_ms": loaded_arrival_time,
+        "construction_to_loaded_control_message_arrival_ms": duration,
+    }
+
+
 def validate_measurement_snapshot(snapshot: dict[str, Any]) -> None:
     """Rejects a misleading or incomplete one-run M9 measurement observation."""
 
@@ -959,6 +1015,9 @@ def validate_measurement_snapshot(snapshot: dict[str, Any]) -> None:
     )
     if workers.get("definition") != WORKER_OBSERVATION_DEFINITION:
         raise M0Error("M9 measurement worker-observation definition is missing")
+    _validate_first_matched_pthread_worker_startup(
+        workers.get("first_matched_pthread_worker_startup")
+    )
     runtime_workers = _validate_worker_snapshot(
         workers.get("at_runtime_initialized"), "runtime workers"
     )

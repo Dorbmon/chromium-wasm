@@ -58,6 +58,18 @@ def worker_snapshot(
     }
 
 
+def first_matched_pthread_worker_startup(
+    *, construction_time_ms: float = 3.25, loaded_arrival_time_ms: float = 4.75
+) -> dict[str, float]:
+    return {
+        "construction_time_ms": construction_time_ms,
+        "loaded_control_message_arrival_time_ms": loaded_arrival_time_ms,
+        "construction_to_loaded_control_message_arrival_ms": round(
+            loaded_arrival_time_ms - construction_time_ms, 3
+        ),
+    }
+
+
 def passing_snapshot() -> dict[str, object]:
     timing = {
         "host_module_evaluated": 1.0,
@@ -152,6 +164,9 @@ def passing_snapshot() -> dict[str, object]:
             "at_runtime_initialized": worker_snapshot(),
             "at_runtime_exit": worker_snapshot(),
             "definition": baseline.WORKER_OBSERVATION_DEFINITION,
+            "first_matched_pthread_worker_startup": (
+                first_matched_pthread_worker_startup()
+            ),
         },
     }
 
@@ -868,6 +883,7 @@ class M9MeasurementValidationTest(unittest.TestCase):
             ("native_memory_snapshot", "at_pre_shutdown"),
             ("wasm_heap_buffer_capacity", "at_runtime_exit"),
             ("worker_observation", "at_runtime_exit"),
+            ("worker_observation", "first_matched_pthread_worker_startup"),
         )
         for container, field in cases:
             with self.subTest(container=container, field=field):
@@ -1078,6 +1094,44 @@ class M9MeasurementValidationTest(unittest.TestCase):
         ] = 1
         with self.assertRaisesRegex(M0Error, "error_events regressed"):
             baseline.validate_measurement_snapshot(sample)
+
+    def test_rejects_invalid_first_matched_pthread_worker_startup(self) -> None:
+        startup = "first_matched_pthread_worker_startup"
+
+        sample = passing_snapshot()
+        sample["worker_observation"][startup][  # type: ignore[index]
+            "loaded_control_message_arrival_time_ms"
+        ] = 3.0
+        with self.assertRaisesRegex(M0Error, "arrival precedes construction"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample["worker_observation"][startup][  # type: ignore[index]
+            "construction_to_loaded_control_message_arrival_ms"
+        ] = 1.0
+        with self.assertRaisesRegex(M0Error, "duration disagrees"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample["worker_observation"][startup][  # type: ignore[index]
+            "construction_to_loaded_control_message_arrival_ms"
+        ] = -1.0
+        with self.assertRaisesRegex(M0Error, "bootstrap duration is invalid"):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample["worker_observation"][startup]["unexpected"] = 1  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "schema mismatch"):
+            baseline.validate_measurement_snapshot(sample)
+
+    def test_accepts_zero_duration_first_matched_pthread_worker_startup(self) -> None:
+        sample = passing_snapshot()
+        sample["worker_observation"][  # type: ignore[index]
+            "first_matched_pthread_worker_startup"
+        ] = first_matched_pthread_worker_startup(
+            construction_time_ms=4.0, loaded_arrival_time_ms=4.0
+        )
+        baseline.validate_measurement_snapshot(sample)
 
     def test_result_wraps_one_sample_without_inventing_a_benchmark(self) -> None:
         artifact = {
@@ -1565,6 +1619,9 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
             "SharedArrayBuffer",
             "new Proxy(nativeWorker",
             'event?.data?.cmd === "loaded"',
+            "first_matched_pthread_worker_startup",
+            "main-thread observed construction-to-loaded-control-",
+            "bootstrap/event-delivery latency; not worker CPU utilization",
             "m9_gate_complete: false",
             "performance_gate: false",
             "status_sequence",
@@ -1574,7 +1631,7 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
             "query must select the chrome_wasm product module",
             "HEAPU8.buffer.byteLength capacity; not allocated or resident memory usage",
             "not raster, compositor, or vsync presentation timing",
-            "not worker utilization or saturation",
+            "saturation, drain, or internal execution",
             "recordStartupFailure",
             "one outer-page navigation in a fresh host-browser profile",
         ):
@@ -1587,6 +1644,7 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
             "create_measurement_server",
             "validate_measurement_snapshot",
             "validate_baseline_result",
+            "_FIRST_MATCHED_PTHREAD_WORKER_STARTUP_FIELDS",
             "artifact_source_provenance",
             "capture_harness_identity",
             "runner_source",
