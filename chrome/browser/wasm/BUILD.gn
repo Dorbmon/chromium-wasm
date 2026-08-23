@@ -1936,6 +1936,30 @@ source_set("wasm_profile_shutdown_coordinator") {
   deps = [ "//base" ]
 }
 
+# This preparatory epoch owns only registered-I/O admission ordering and a
+# one-shot post-ContentMain handoff permit. It does not invoke storage and is
+# not wired to Chrome teardown until every profile I/O owner can participate
+# and the OPFS backend is remotely pinned.
+source_set("wasm_profile_ordered_drain_lifecycle") {
+  public = [ "wasm_profile_ordered_drain_lifecycle.h" ]
+
+  sources = [ "wasm_profile_ordered_drain_lifecycle.cc" ]
+
+  deps = [ "//base" ]
+}
+
+test("wasm_profile_ordered_drain_lifecycle_unittests") {
+  sources = [ "wasm_profile_ordered_drain_lifecycle_unittest.cc" ]
+
+  deps = [
+    ":wasm_profile_ordered_drain_lifecycle",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//testing/gtest",
+  ]
+}
+
 # A single explicitly admitted Preferences fence can report its terminal
 # result through the coordinator without yet changing WasmProfile shutdown or
 # profile-storage ownership.
