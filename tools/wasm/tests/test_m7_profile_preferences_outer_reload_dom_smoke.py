@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Focused contracts for the M7 Preferences two-outer-document runner."""
+"""Focused contracts for the M7 Preferences three-outer-document runner."""
 
 from __future__ import annotations
 
@@ -75,8 +75,8 @@ def passing_run(ordinal: int, escrow: smoke.TokenEscrow) -> dict[str, object]:
         "markerSequenceAccepted": True,
         "markerSource": "stderr-only",
         "markers": markers,
-        "mode": "write" if ordinal == 1 else "verify-and-write",
-        "moduleIdentity": ("4" if ordinal == 1 else "5") * 32,
+        "mode": smoke._phase_mode(ordinal),
+        "moduleIdentity": str(ordinal + 3) * 32,
         "onExitCount": 1,
         "ordinal": ordinal,
         "postLifecycleTimerObserved": True,
@@ -125,7 +125,7 @@ def passing_result(
         "scope": smoke.SCOPE,
         "status": "pass",
         "ordinal": ordinal,
-        "mode": "write" if ordinal == 1 else "verify-and-write",
+        "mode": smoke._phase_mode(ordinal),
         "origin": ORIGIN,
         "crossOriginIsolated": True,
         "sharedArrayBuffer": True,
@@ -138,9 +138,9 @@ def passing_result(
         "versions": copy.deepcopy(VERSIONS),
         "tokenEvidence": {
             "algorithm": "SHA-256",
-            "tokenA": escrow.token_a_digest,
+            "tokenA": None if ordinal == 3 else escrow.token_a_digest,
             "tokenB": None if ordinal == 1 else escrow.token_b_digest,
-            "distinct": None if ordinal == 1 else True,
+            "distinct": True if ordinal == 2 else None,
             "rawTokensExcluded": True,
             "rawTokenLeakDetected": False,
             "rawTokenRedactionCount": 0,
@@ -294,7 +294,8 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
 
     def test_validates_each_preferences_phase_without_raw_values(self) -> None:
         escrow = smoke.new_token_escrow()
-        for ordinal, time_origin in ((1, 100.0), (2, 101.0)):
+        phases = []
+        for ordinal, time_origin in ((1, 100.0), (2, 101.0), (3, 102.0)):
             with self.subTest(ordinal=ordinal):
                 receipt = passing_result(ordinal, escrow, time_origin)
                 phase = smoke.validate_phase_result(
@@ -311,6 +312,7 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                     result_token=RESULT_CAPABILITY,
                     session=SESSION_CAPABILITY,
                 )
+                phases.append(phase)
                 self.assertEqual(phase.ordinal, ordinal)
                 self.assert_token_matches_digest(
                     escrow.token_a, escrow.token_a_digest, "token A"
@@ -318,6 +320,7 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                 self.assert_token_matches_digest(
                     escrow.token_b, escrow.token_b_digest, "token B"
                 )
+        smoke.validate_outer_document_transitions(*phases)
 
     def test_rejects_boolean_redaction_count_and_open_output_grammar(self) -> None:
         escrow = smoke.new_token_escrow()
@@ -352,7 +355,7 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                 session=SESSION_CAPABILITY,
             )
 
-    def test_post_evidence_then_get_bootstrap_and_phase_two_gates(self) -> None:
+    def test_post_evidence_then_get_bootstrap_and_later_phase_gates(self) -> None:
         with temporary_server() as (server, escrow):
             bootstrap_path = f"{smoke.HOST_ROOT}/bootstrap/{SESSION_CAPABILITY}"
             status, headers, _body = request(
@@ -470,6 +473,55 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
             self.assertEqual(second["mode"], "verify-and-write")
             self.assert_token_matches_digest(second["tokenA"], escrow.token_a_digest, "phase two A")
             self.assert_token_matches_digest(second["tokenB"], escrow.token_b_digest, "phase two B")
+
+            result = passing_result(2, escrow, 101.0)
+            status, _headers, _body = request(
+                server,
+                "POST",
+                f"{smoke.HOST_ROOT}/result/{RESULT_CAPABILITY}/2",
+                json.dumps(result, separators=(",", ":")).encode("utf-8"),
+            )
+            self.assertEqual(status, 204)
+            status, _headers, _body = request(
+                server,
+                "POST",
+                f"{smoke.HOST_ROOT}/ready/{RESULT_CAPABILITY}/2",
+                json.dumps(ready_receipt(2, 101.0), separators=(",", ":")).encode("utf-8"),
+            )
+            self.assertEqual(status, 204)
+            server.session.arm_phase_three(101.0)
+
+            # A third document cannot reuse the second phase's bootstrap and
+            # still requires a new top-level reload plus newer evidence.
+            status, _headers, _body = request(server, "GET", bootstrap_path)
+            self.assertEqual(status, 409)
+            status, _headers, _body = request(
+                server, "POST", bootstrap_path, document_receipt("reload", 102.0)
+            )
+            self.assertEqual(status, 409)
+            status, _headers, _body = request(
+                server,
+                "GET",
+                root,
+                headers={"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"},
+            )
+            self.assertEqual(status, 200)
+            status, _headers, _body = request(
+                server, "POST", bootstrap_path, document_receipt("reload", 101.0)
+            )
+            self.assertEqual(status, 409)
+            status, _headers, _body = request(
+                server, "POST", bootstrap_path, document_receipt("reload", 102.0)
+            )
+            self.assertEqual(status, 204)
+            status, _headers, body = request(server, "GET", bootstrap_path)
+            self.assertEqual(status, 200)
+            third = json.loads(body)
+            self.assertEqual(third["ordinal"], 3)
+            self.assertEqual(third["mode"], "verify-b")
+            self.assertIsNone(third["tokenA"], "phase three exposed token A")
+            self.assertIsNone(third["tokenADigest"], "phase three exposed token A digest")
+            self.assert_token_matches_digest(third["tokenB"], escrow.token_b_digest, "phase three B")
 
     def test_bootstrap_get_waits_for_flushed_document_acknowledgement(self) -> None:
         with temporary_server() as (server, escrow):
@@ -605,6 +657,8 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                         "id": "root", "loaderId": "old-loader", "url": "http://x/"}}},
                     {"method": "Page.frameNavigated", "params": {"frame": {
                         "id": "root", "loaderId": "new-loader", "url": "http://x/"}}},
+                    {"method": "Page.frameNavigated", "params": {"frame": {
+                        "id": "root", "loaderId": "third-loader", "url": "http://x/"}}},
                 ]
 
             def call(self, method: str, parameters: object = None) -> object:
@@ -632,11 +686,21 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
             time.monotonic() + 1,
         )
         self.assertEqual(replacement.loader_id, "new-loader")
+        third = smoke.reload_outer_document(
+            client,
+            RunningBrowser(),
+            deque(),
+            replacement,
+            "http://x/",
+            time.monotonic() + 1,
+        )
+        self.assertEqual(third.loader_id, "third-loader")
         self.assertEqual(
             client.calls,
             [
                 ("Page.enable", None),
                 ("Page.getFrameTree", None),
+                ("Page.reload", {"ignoreCache": True}),
                 ("Page.reload", {"ignoreCache": True}),
             ],
         )

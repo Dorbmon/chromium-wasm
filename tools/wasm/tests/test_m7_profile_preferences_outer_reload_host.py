@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Node contracts for the M7 two-outer-document Preferences witness host."""
+"""Node contracts for the M7 three-outer-document Preferences witness host."""
 
 from __future__ import annotations
 
@@ -23,20 +23,21 @@ HOST_URI = HOST_PATH.as_uri()
 def fake_host_script() -> str:
     loader_source = r'''
 export default async function(options) {
-  const tokenA = options.arguments.find((argument) =>
-      argument.startsWith("--wasm-profile-preferences-token-a=")).split("=")[1];
+  const tokenAArgument = options.arguments.find((argument) =>
+      argument.startsWith("--wasm-profile-preferences-token-a="));
+  const tokenA = tokenAArgument ? tokenAArgument.split("=")[1] : null;
   const tokenBArgument = options.arguments.find((argument) =>
       argument.startsWith("--wasm-profile-preferences-token-b="));
   const tokenB = tokenBArgument ? tokenBArgument.split("=")[1] : null;
   if (globalThis.__scenario === "leak") {
-    options.print(tokenA.slice(0, 31));
-    options.printErr(tokenA.slice(31));
+    options.print((tokenA ?? tokenB).slice(0, 31));
+    options.printErr((tokenA ?? tokenB).slice(31));
     return {};
   }
   const digest = async (token) => Array.from(new Uint8Array(
       await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))),
       (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const digestA = await digest(tokenA);
+  const digestA = tokenA === null ? null : await digest(tokenA);
   const digestB = tokenB === null ? null : await digest(tokenB);
   const marker = "CHROMIUM_WASM_M7_PREFS:";
   const module = {};
@@ -46,12 +47,15 @@ export default async function(options) {
   globalThis.__chromiumWasmHostBridgeV1.reportProcessExit({protocol: 1, exitCode: 0});
   options.onExit(0);
   options.printErr(marker + "READY");
-  if (tokenB === null) {
+  if (globalThis.__ordinal === 1) {
     options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestA);
     options.printErr(marker + "FENCE_OK sha256=" + digestA);
-  } else {
+  } else if (globalThis.__ordinal === 2) {
     options.printErr(marker + "READ_A_OK sha256=" + digestA);
     options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestB);
+    options.printErr(marker + "FENCE_OK sha256=" + digestB);
+  } else {
+    options.printErr(marker + "READ_B_OK sha256=" + digestB);
     options.printErr(marker + "FENCE_OK sha256=" + digestB);
   }
   options.printErr(marker + "LEASE_RELEASED");
@@ -71,11 +75,12 @@ if (!globalThis.crypto || !globalThis.crypto.subtle) {
 }
 const ordinal = Number(process.argv[1]);
 const scenario = process.argv[2];
-if ((ordinal !== 1 && ordinal !== 2) ||
+if ((ordinal !== 1 && ordinal !== 2 && ordinal !== 3) ||
     (scenario !== "pass" && scenario !== "leak")) {
   throw new Error("test input is invalid");
 }
 globalThis.__scenario = scenario;
+globalThis.__ordinal = ordinal;
 let tick = 0;
 Object.defineProperty(globalThis, "performance", {
   configurable: true,
@@ -182,14 +187,14 @@ function headers(contentType = null) {
 }
 const bootstrap = {
   protocol: 1,
-  case: "chrome_profile_preferences_outer_document_reload_m7",
+  case: "chrome_profile_preferences_three_outer_document_reload_m7",
   scope:
-      "same-origin-two-outer-documents-chrome-wasm-m7-profile-preferences-test-modules-orderly-reload-only",
+      "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-test-modules-orderly-reload-only",
   ordinal,
-  mode: ordinal === 1 ? "write" : "verify-and-write",
-  tokenA: rawA,
+  mode: ordinal === 1 ? "write" : ordinal === 2 ? "verify-and-write" : "verify-b",
+  tokenA: ordinal === 3 ? null : rawA,
   tokenB: ordinal === 1 ? null : rawB,
-  tokenADigest: await digest(new TextEncoder().encode(rawA)),
+  tokenADigest: ordinal === 3 ? null : await digest(new TextEncoder().encode(rawA)),
   tokenBDigest: ordinal === 1 ? null : await digest(new TextEncoder().encode(rawB)),
 };
 let bootstrapPosts = 0;
@@ -277,6 +282,11 @@ class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
         self.assertTrue(completed.returncode == 0, "verify fake host failed")
         self.assertEqual(completed.stdout, "pass\n")
 
+    def test_accepts_verify_b_document(self) -> None:
+        completed = self.run_fake_host(3, "pass")
+        self.assertTrue(completed.returncode == 0, "verify-B fake host failed")
+        self.assertEqual(completed.stdout, "pass\n")
+
     def test_rejects_cross_callback_raw_preference_leak_without_echo(self) -> None:
         completed = self.run_fake_host(1, "leak")
         self.assertNotEqual(completed.returncode, 0)
@@ -305,6 +315,8 @@ class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
         self.assertIn("await fetchBootstrap(context)", source)
         self.assertIn("--wasm-profile-preferences-smoke=write", source)
         self.assertIn("--wasm-profile-preferences-smoke=verify-and-write", source)
+        self.assertIn("--wasm-profile-preferences-smoke=verify-b", source)
+        self.assertIn("READ_B_OK", source)
         self.assertIn("<suppressed-native-output>", source)
 
 

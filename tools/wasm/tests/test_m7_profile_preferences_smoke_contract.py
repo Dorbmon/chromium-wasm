@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Source contracts for the M7 two-module Preferences acceptance helper."""
+"""Source contracts for the M7 three-module Preferences acceptance helper."""
 
 from __future__ import annotations
 
@@ -96,6 +96,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             'constexpr char kTokenBSwitch[] = "wasm-profile-preferences-token-b";',
             'constexpr char kWriteMode[] = "write";',
             'constexpr char kVerifyAndWriteMode[] = "verify-and-write";',
+            'constexpr char kVerifyBMode[] = "verify-b";',
             "constexpr size_t kOpaqueTokenLength = 64;",
             "value.size() != kOpaqueTokenLength",
             "character >= '0' && character <= '9'",
@@ -112,8 +113,10 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertIn(
             "--wasm-profile-preferences-smoke=verify-and-write", self.header
         )
+        self.assertIn("--wasm-profile-preferences-smoke=verify-b", self.header)
         self.assertIn("token_b_ == token_a_", self.smoke)
         self.assertIn("token B must differ from token A", self.header)
+        self.assertIn("if (has_token_a || !has_token_b)", self.smoke)
         self.assertIn("where |digest| is exactly 64 lowercase hexadecimal", self.header)
         self.assertIn("arguments, capability, storage, profile, read, fence", self.header)
 
@@ -122,6 +125,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             'constexpr char kMarkerPrefix[] = "CHROMIUM_WASM_M7_PREFS:";',
             'EmitMarker("READY")',
             'EmitDigestMarker("READ_A_OK", token_a_digest_)',
+            'EmitDigestMarker("READ_B_OK", token_b_digest_)',
             'EmitDigestMarker("WRITE_ACCEPTED", token_b_digest_)',
             'EmitDigestMarker("WRITE_ACCEPTED", token_a_digest_)',
             'EmitDigestMarker("FENCE_OK", expected_fence_digest_)',
@@ -175,10 +179,11 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertIn("token_a_.clear();", clear_raw_tokens)
         self.assertIn("token_b_.clear();", clear_raw_tokens)
 
-    def test_profile_action_reads_a_before_writing_b_and_clears_raw_state(self) -> None:
+    def test_profile_action_writes_a_then_reads_a_writes_b_then_reads_b(self) -> None:
         start = _body_after_signature(self.smoke, "bool Start(PrefService* prefs)")
         ready = start.index('EmitMarker("READY");')
         verify = start.index("if (mode_ == SmokeMode::kVerifyAndWrite)")
+        verify_b = start.index("else if (mode_ == SmokeMode::kVerifyB)")
         read = start.index("prefs->GetString(kSmokePref) != token_a_")
         read_marker = start.index('EmitDigestMarker("READ_A_OK", token_a_digest_);')
         write_b = start.index("prefs->SetString(kSmokePref, token_b_);")
@@ -189,6 +194,8 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         write_a_marker = start.index(
             'EmitDigestMarker("WRITE_ACCEPTED", token_a_digest_);'
         )
+        read_b = start.index("prefs->GetString(kSmokePref) != token_b_")
+        read_b_marker = start.index('EmitDigestMarker("READ_B_OK", token_b_digest_);')
         clear = start.index("ClearRawTokens();")
 
         self.assertLess(ready, verify)
@@ -199,6 +206,9 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertLess(write_a, write_a_marker)
         self.assertLess(write_b_marker, clear)
         self.assertLess(write_a_marker, clear)
+        self.assertLess(verify_b, read_b)
+        self.assertLess(read_b, read_b_marker)
+        self.assertLess(read_b_marker, clear)
         self.assertNotIn("FENCE_OK", start)
 
         storage_lifecycle = _body_after_signature(

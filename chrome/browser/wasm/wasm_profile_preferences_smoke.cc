@@ -29,6 +29,7 @@ constexpr char kTokenASwitch[] = "wasm-profile-preferences-token-a";
 constexpr char kTokenBSwitch[] = "wasm-profile-preferences-token-b";
 constexpr char kWriteMode[] = "write";
 constexpr char kVerifyAndWriteMode[] = "verify-and-write";
+constexpr char kVerifyBMode[] = "verify-b";
 constexpr char kSmokePref[] = "wasm.profile.m7_preferences_smoke_token";
 constexpr size_t kOpaqueTokenLength = 64;
 
@@ -38,6 +39,7 @@ enum class SmokeMode {
   kNone,
   kWrite,
   kVerifyAndWrite,
+  kVerifyB,
 };
 
 class WasmProfilePreferencesSmokeState {
@@ -60,42 +62,58 @@ class WasmProfilePreferencesSmokeState {
     const bool has_mode = command_line->HasSwitch(kSmokeSwitch);
     const bool has_token_a = command_line->HasSwitch(kTokenASwitch);
     const bool has_token_b = command_line->HasSwitch(kTokenBSwitch);
-    if (!has_mode || !has_token_a) {
+    if (!has_mode) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
     }
 
     const std::string mode = command_line->GetSwitchValueASCII(kSmokeSwitch);
-    token_a_ = command_line->GetSwitchValueASCII(kTokenASwitch);
-    if (!IsOpaqueToken(token_a_)) {
-      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
-      return false;
-    }
-
     if (mode == kWriteMode) {
-      if (has_token_b) {
+      if (!has_token_a || has_token_b) {
+        ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+        return false;
+      }
+      token_a_ = command_line->GetSwitchValueASCII(kTokenASwitch);
+      if (!IsOpaqueToken(token_a_)) {
         ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
         return false;
       }
       mode_ = SmokeMode::kWrite;
     } else if (mode == kVerifyAndWriteMode) {
-      if (!has_token_b) {
+      if (!has_token_a || !has_token_b) {
         ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
         return false;
       }
+      token_a_ = command_line->GetSwitchValueASCII(kTokenASwitch);
       token_b_ = command_line->GetSwitchValueASCII(kTokenBSwitch);
-      if (!IsOpaqueToken(token_b_) || token_b_ == token_a_) {
+      if (!IsOpaqueToken(token_a_) || !IsOpaqueToken(token_b_) ||
+          token_b_ == token_a_) {
         ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
         return false;
       }
       mode_ = SmokeMode::kVerifyAndWrite;
+    } else if (mode == kVerifyBMode) {
+      if (has_token_a || !has_token_b) {
+        ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+        return false;
+      }
+      token_b_ = command_line->GetSwitchValueASCII(kTokenBSwitch);
+      if (!IsOpaqueToken(token_b_)) {
+        ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+        return false;
+      }
+      mode_ = SmokeMode::kVerifyB;
     } else {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
     }
 
-    token_a_digest_ = DigestToken(token_a_);
-    token_b_digest_ = DigestToken(token_b_);
+    if (!token_a_.empty()) {
+      token_a_digest_ = DigestToken(token_a_);
+    }
+    if (!token_b_.empty()) {
+      token_b_digest_ = DigestToken(token_b_);
+    }
     enabled_ = true;
     return true;
   }
@@ -121,6 +139,15 @@ class WasmProfilePreferencesSmokeState {
       prefs->SetString(kSmokePref, token_b_);
       expected_fence_digest_ = token_b_digest_;
       EmitDigestMarker("WRITE_ACCEPTED", token_b_digest_);
+    } else if (mode_ == SmokeMode::kVerifyB) {
+      // The second module persisted raw token B through JsonPrefStore.
+      // Compare only inside the application and expose only its digest.
+      if (prefs->GetString(kSmokePref) != token_b_) {
+        ReportFailure(WasmProfilePreferencesSmokeFailureStage::kRead);
+        return false;
+      }
+      expected_fence_digest_ = token_b_digest_;
+      EmitDigestMarker("READ_B_OK", token_b_digest_);
     } else if (mode_ == SmokeMode::kWrite) {
       prefs->SetString(kSmokePref, token_a_);
       expected_fence_digest_ = token_a_digest_;

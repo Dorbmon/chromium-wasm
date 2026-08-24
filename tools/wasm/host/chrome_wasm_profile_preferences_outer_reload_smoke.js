@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Two-outer-document Preferences handoff witness. Chromium owns the profile,
+// Three-outer-document Preferences handoff witness. Chromium owns the profile,
 // registered preference, lifecycle fence, backend drain, and cooperative
 // lease. The host receives one runner-escrowed argument bundle per document;
 // it neither opens profile storage nor retains raw preference values in a
@@ -10,9 +10,9 @@
 // recovery claim.
 
 const HOST_PROTOCOL = 1;
-const CASE = "chrome_profile_preferences_outer_document_reload_m7";
+const CASE = "chrome_profile_preferences_three_outer_document_reload_m7";
 const SCOPE =
-    "same-origin-two-outer-documents-chrome-wasm-m7-profile-preferences-test-" +
+    "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-test-" +
     "modules-orderly-reload-only";
 const PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_preferences_test";
 const M7_MARKER_PREFIX = "CHROMIUM_WASM_M7_PREFS:";
@@ -336,6 +336,14 @@ function expectedMarkers(ordinal, tokenEvidence) {
       `${M7_MARKER_PREFIX}LEASE_RELEASED`,
     ]);
   }
+  if (ordinal === 3) {
+    return Object.freeze([
+      `${M7_MARKER_PREFIX}READY`,
+      `${M7_MARKER_PREFIX}READ_B_OK sha256=${tokenEvidence.tokenB}`,
+      `${M7_MARKER_PREFIX}FENCE_OK sha256=${tokenEvidence.tokenB}`,
+      `${M7_MARKER_PREFIX}LEASE_RELEASED`,
+    ]);
+  }
   throw new Error("outer-reload ordinal is invalid");
 }
 
@@ -420,27 +428,32 @@ async function fetchBootstrap(context) {
   const bootstrap = requireExactFields(value, BOOTSTRAP_FIELDS,
                                        "outer-reload bootstrap");
   const first = bootstrap.ordinal === 1;
+  const second = bootstrap.ordinal === 2;
+  const third = bootstrap.ordinal === 3;
   if (bootstrap.protocol !== HOST_PROTOCOL || bootstrap.case !== CASE ||
       bootstrap.scope !== SCOPE ||
       !((first && bootstrap.mode === "write") ||
-        (bootstrap.ordinal === 2 && bootstrap.mode === "verify-and-write")) ||
-      typeof bootstrap.tokenA !== "string" || !SHA256_RE.test(bootstrap.tokenA) ||
-      typeof bootstrap.tokenADigest !== "string" ||
-      !SHA256_RE.test(bootstrap.tokenADigest) ||
+        (second && bootstrap.mode === "verify-and-write") ||
+        (third && bootstrap.mode === "verify-b")) ||
+      ((!third && (typeof bootstrap.tokenA !== "string" ||
+                   !SHA256_RE.test(bootstrap.tokenA) ||
+                   typeof bootstrap.tokenADigest !== "string" ||
+                   !SHA256_RE.test(bootstrap.tokenADigest))) ||
+       (third && (bootstrap.tokenA !== null || bootstrap.tokenADigest !== null))) ||
       (first && (bootstrap.tokenB !== null || bootstrap.tokenBDigest !== null)) ||
       (!first && (typeof bootstrap.tokenB !== "string" ||
                   !SHA256_RE.test(bootstrap.tokenB) ||
                   typeof bootstrap.tokenBDigest !== "string" ||
                   !SHA256_RE.test(bootstrap.tokenBDigest) ||
-                  bootstrap.tokenA === bootstrap.tokenB))) {
+                  (second && bootstrap.tokenA === bootstrap.tokenB)))) {
     throw new Error("outer-reload bootstrap is invalid");
   }
   const encoder = new TextEncoder();
-  const tokenA = await sha256Hex(encoder.encode(bootstrap.tokenA),
-                                 "outer-reload token A");
+  const tokenA = third ? null : await sha256Hex(encoder.encode(bootstrap.tokenA),
+                                                "outer-reload token A");
   const tokenB = first ? null : await sha256Hex(encoder.encode(bootstrap.tokenB),
                                                 "outer-reload token B");
-  if (tokenA !== bootstrap.tokenADigest ||
+  if ((!third && tokenA !== bootstrap.tokenADigest) ||
       (!first && tokenB !== bootstrap.tokenBDigest)) {
     throw new Error("outer-reload bootstrap token identity is invalid");
   }
@@ -452,7 +465,7 @@ async function fetchBootstrap(context) {
       algorithm: "SHA-256",
       tokenA,
       tokenB,
-      distinct: first ? null : true,
+      distinct: second ? true : null,
       rawTokensExcluded: true,
       rawTokenLeakDetected: false,
       rawTokenRedactionCount: 0,
@@ -984,14 +997,27 @@ class PreferencesOuterReloadHost {
     const run = this.newRun();
     this.run = run;
     this.activeRun = run;
-    const moduleArguments = run.ordinal === 1 ? [
-      "--wasm-profile-preferences-smoke=write",
-      `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
-    ] : [
-      "--wasm-profile-preferences-smoke=verify-and-write",
-      `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
-      `--wasm-profile-preferences-token-b=${this.rawTokens.tokenB}`,
-    ];
+    let moduleArguments;
+    if (run.ordinal === 1) {
+      moduleArguments = [
+        "--wasm-profile-preferences-smoke=write",
+        `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
+      ];
+    } else if (run.ordinal === 2) {
+      moduleArguments = [
+        "--wasm-profile-preferences-smoke=verify-and-write",
+        `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
+        `--wasm-profile-preferences-token-b=${this.rawTokens.tokenB}`,
+      ];
+    } else if (run.ordinal === 3) {
+      moduleArguments = [
+        "--wasm-profile-preferences-smoke=verify-b",
+        `--wasm-profile-preferences-token-b=${this.rawTokens.tokenB}`,
+      ];
+    } else {
+      this.recordFatal("run-ordinal-invalid");
+      return;
+    }
     const host = this;
     this.bridgeInstalledBeforeModuleFactory = this.bridgeInstalled;
     try {
@@ -1255,7 +1281,7 @@ class PreferencesOuterReloadHost {
       }
       if ((this.bootstrap.ordinal === 1 &&
            this.document.navigationType !== "navigate") ||
-          (this.bootstrap.ordinal === 2 &&
+          (this.bootstrap.ordinal !== 1 &&
            this.document.navigationType !== "reload")) {
         throw new Error("outer-reload document navigation is invalid");
       }
@@ -1386,8 +1412,9 @@ export async function runChromeWasmProfilePreferencesOuterReloadFromQuery() {
     }, "outer-reload ready");
     return result;
   } finally {
-    // Keep phase one alive until the runner performs its single real reload.
-    if (result === undefined || result.status !== "pass" || result.ordinal === 2) {
+    // Keep the first two phases alive until the runner performs each real
+    // reload. The final phase has no successor document to retain it for.
+    if (result === undefined || result.status !== "pass" || result.ordinal === 3) {
       host.dispose();
     }
   }

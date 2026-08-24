@@ -13,7 +13,7 @@ class PrefService;
 
 namespace chrome {
 
-// Fixed, test-only protocol for the two-fresh-module Preferences acceptance.
+// Fixed, test-only protocol for the three-fresh-module Preferences acceptance.
 //
 // Only chrome_wasm_m7_profile_preferences_test enables this capability. Its
 // host supplies one of these complete argument sets:
@@ -23,6 +23,9 @@ namespace chrome {
 //
 //   --wasm-profile-preferences-smoke=verify-and-write
 //   --wasm-profile-preferences-token-a=<64 lowercase hex>
+//   --wasm-profile-preferences-token-b=<64 lowercase hex>
+//
+//   --wasm-profile-preferences-smoke=verify-b
 //   --wasm-profile-preferences-token-b=<64 lowercase hex>
 //
 // In verify-and-write mode token B must differ from token A.
@@ -35,6 +38,7 @@ namespace chrome {
 //
 //   CHROMIUM_WASM_M7_PREFS:READY
 //   CHROMIUM_WASM_M7_PREFS:READ_A_OK sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:READ_B_OK sha256=<64 lowercase hex>
 //   CHROMIUM_WASM_M7_PREFS:WRITE_ACCEPTED sha256=<64 lowercase hex>
 //   CHROMIUM_WASM_M7_PREFS:FENCE_OK sha256=<64 lowercase hex>
 //   CHROMIUM_WASM_M7_PREFS:LEASE_RELEASED
@@ -42,8 +46,9 @@ namespace chrome {
 //
 // The |write| mode emits READY, WRITE_ACCEPTED(A), FENCE_OK(A), and
 // LEASE_RELEASED. The |verify-and-write| mode emits READY, READ_A_OK(A),
-// WRITE_ACCEPTED(B), FENCE_OK(B), and LEASE_RELEASED. A failure emits at most
-// one fixed FAIL line and no raw preference/token content.
+// WRITE_ACCEPTED(B), FENCE_OK(B), and LEASE_RELEASED. The |verify-b| mode
+// emits READY, READ_B_OK(B), FENCE_OK(B), and LEASE_RELEASED. A failure emits
+// at most one fixed FAIL line and no raw preference/token content.
 
 // True when any switch in the test-only Preferences protocol is present. This
 // includes orphaned token switches so ChromeMain can fail them before startup
@@ -64,9 +69,9 @@ void RegisterWasmProfilePreferencesSmokePref(
     user_prefs::PrefRegistrySyncable* registry);
 
 // Starts the profile-side acceptance action after the profile storage lifecycle
-// admitted the profile. It verifies token A before writing B in the second
-// module, and otherwise writes token A. Returns false after emitting a
-// redacted failure marker.
+// admitted the profile. It writes token A in the first module, verifies A
+// before writing B in the second, and verifies B in the third. Returns false
+// after emitting a redacted failure marker.
 bool StartWasmProfilePreferencesSmoke(PrefService* prefs);
 
 // These result-bearing lifecycle notifications complete the fixed marker
