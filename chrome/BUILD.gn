@@ -18,6 +18,7 @@ import("//build/toolchain/toolchain.gni")
 import("//chrome/browser/buildflags.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
 assert(!enable_chromium_wasm_m7_profile_database_test ||
            !enable_chromium_wasm_m7_profile_preferences_test,
        "M7 database and Preferences acceptances require separate fresh output configurations")
@@ -570,6 +571,13 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       # experimental OPFS startup remains isolated from normal Chrome.
       output_name = "chrome_wasm_m7_profile_preferences_test"
       defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
+    }
+    if (enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic) {
+      # This diagnostic is a normal volatile-profile artifact. It forces a
+      # failure only after a real Preferences readback succeeded, proving the
+      # existing process-result latch fails closed without selecting M7
+      # profile storage.
+      output_name = "chrome_wasm_m7_normal_profile_fence_failure_diagnostic"
     }
     if (enable_chromium_wasm_m7_profile_database_test) {
       # This independent capability exists only in its own fresh M7 output

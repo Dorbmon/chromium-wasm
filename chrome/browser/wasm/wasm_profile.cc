@@ -5,6 +5,7 @@
 #include "chrome/browser/wasm/wasm_profile.h"
 
 #include <cstddef>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <utility>
@@ -90,9 +91,25 @@ void VerifyPersistentPrefsAndReplyOnFileSequence(
   // JsonPrefStore invokes CommitPendingWrite's synchronous callback on its
   // file runner after all already-queued writes. Keep the bounded readback on
   // that same sequence; neither operation blocks Chrome's UI sequence.
-  const bool success =
+  const bool readback_succeeded =
       VerifyPersistentPrefsOnFileSequence(preferences_path, expected_values);
-  std::move(reply).Run(success);
+#if defined(CHROME_WASM_M7_NORMAL_PROFILE_FENCE_FAILURE_DIAGNOSTIC)
+  if (readback_succeeded) {
+    // This distinct test artifact reaches this point only after the bounded
+    // JSON readback matched JsonPrefStore's expected dictionary. Convert that
+    // successful result into a failed fence to prove the normal volatile
+    // profile's result latch cannot report a clean process exit. A natural
+    // write/readback failure emits no marker and remains a test failure.
+    std::fputs(
+        "CHROMIUM_WASM_M7_NORMAL_PROFILE_FENCE_DIAGNOSTIC:"
+        "READBACK_OK_FORCED_FAILURE\n",
+        stderr);
+    std::fflush(stderr);
+    std::move(reply).Run(false);
+    return;
+  }
+#endif
+  std::move(reply).Run(readback_succeeded);
 }
 
 }  // namespace

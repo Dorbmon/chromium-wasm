@@ -1,0 +1,30 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# This build-time diagnostic deliberately converts an already-successful
+# normal-profile Preferences readback into a failed shutdown fence. It proves
+# the normal volatile-profile result path fails closed without selecting
+# WasmFS, OPFS, or either experimental M7 profile-storage acceptance.
+import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
+
+declare_args() {
+  enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic = false
+}
+
+assert(!enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic ||
+           (is_wasm && enable_chromium_wasm_chrome),
+       "M7 normal-profile fence diagnostic requires the Wasm Chrome source graph")
+assert(!enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic ||
+           (!enable_chromium_wasm_m7_profile_preferences_test &&
+            !enable_chromium_wasm_m7_profile_database_test),
+       "M7 normal-profile fence diagnostic requires its own fresh output configuration")
+
+if (enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic) {
+  assert(
+      get_path_info(root_out_dir, "name") ==
+          "wasm-chrome-m7-normal-profile-fence-failure",
+      "M7 normal-profile fence diagnostic must use " +
+          "out/wasm-chrome-m7-normal-profile-fence-failure")
+}
