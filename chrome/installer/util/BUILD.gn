@@ -211,7 +211,10 @@ static_library("with_no_strings") {
       "initial_preferences.h",
     ]
 
-    deps += [ "//components/crash/core/app" ]
+    # Crashpad requires a native helper process, which Wasm does not have.
+    if (!is_wasm) {
+      deps += [ "//components/crash/core/app" ]
+    }
   }
 }
 

@@ -24,7 +24,7 @@
 #include "content/public/common/content_switches.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "components/crash/core/app/crash_switches.h"
+#include "components/crash/core/app/crash_switches.h"  // nogncheck
 #include "gpu/command_buffer/service/gpu_switches.h"
 #include "ui/gl/gl_switches.h"
 #endif
@@ -51,13 +51,36 @@ class CrashKeyWithName {
   ~CrashKeyWithName() = delete;
 
   std::string_view Name() const { return name_; }
-  std::string_view Value() const { return crash_key_.value(); }
-  void Clear() { crash_key_.Clear(); }
-  void Set(std::string_view value) { crash_key_.Set(value); }
+  std::string_view Value() const {
+#if BUILDFLAG(USE_CRASH_KEY_STUBS)
+    return value_;
+#else
+    return crash_key_.value();
+#endif
+  }
+
+  void Clear() {
+    crash_key_.Clear();
+#if BUILDFLAG(USE_CRASH_KEY_STUBS)
+    value_.clear();
+#endif
+  }
+
+  void Set(std::string_view value) {
+    crash_key_.Set(value);
+#if BUILDFLAG(USE_CRASH_KEY_STUBS)
+    value_ = value;
+#endif
+  }
 
  private:
   std::string name_;
   crash_reporter::CrashKeyString<64> crash_key_;
+#if BUILDFLAG(USE_CRASH_KEY_STUBS)
+  // This key is serialized into a browser-to-child command-line switch even
+  // when the crash-reporting backend is intentionally disabled.
+  std::string value_;
+#endif
 };
 
 void SplitAndPopulateCrashKeys(std::deque<CrashKeyWithName>& crash_keys,

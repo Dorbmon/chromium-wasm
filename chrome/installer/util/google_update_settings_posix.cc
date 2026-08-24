@@ -7,7 +7,9 @@
 #include "base/task/lazy_thread_pool_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/installer/util/client_id_backup_file_manager.h"
-#include "components/crash/core/app/crashpad.h"
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "components/crash/core/app/crashpad.h"  // nogncheck
+#endif
 
 namespace {
 
