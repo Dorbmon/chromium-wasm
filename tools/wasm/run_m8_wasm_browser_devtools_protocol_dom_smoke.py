@@ -175,6 +175,21 @@ PAGE_WEBASSEMBLY_WASM_THROW_SCOPE = (
 PAGE_WEBASSEMBLY_WASM_THROW_SWITCH = (
     "--wasm-browser-m8-page-webassembly-wasm-throw-smoke"
 )
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SENTINEL = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_DOM"
+)
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MODE = "page-webassembly-wasm-throw-payload"
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_CASE = (
+    "browser_page_webassembly_wasm_throw_payload_m8"
+)
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-webassembly-exception-import-i32-tag-"
+    "wasm-throw-js-catch-payload-42-console-event-detach-close"
+)
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SWITCH = (
+    "--wasm-browser-m8-page-webassembly-wasm-throw-payload-smoke"
+)
 NETWORK_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK"
 RUNTIME_EVALUATE_MARKER = (
@@ -222,6 +237,10 @@ PAGE_WEBASSEMBLY_WASM_TABLE_GROW_OPCODE_MARKER = (
 PAGE_WEBASSEMBLY_WASM_THROW_MARKER = (
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "EXCEPTION_IMPORTED_TAG_WASM_THROW_JS_CATCH_OK"
+)
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "EXCEPTION_IMPORTED_I32_TAG_WASM_THROW_JS_CATCH_PAYLOAD_42_OK"
 )
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
@@ -339,6 +358,19 @@ PAGE_WEBASSEMBLY_WASM_TABLE_GROW_OPCODE_LIMITATIONS = (
 PAGE_WEBASSEMBLY_WASM_THROW_LIMITATIONS = (
     "only_exercises_one_fixed_page_webassembly_imported_zero_payload_tag_wasm_throw_javascript_catch_path",
     "does_not_exercise_exception_payloads",
+    "does_not_exercise_wasm_internal_catch_rethrow_or_catch_all",
+    "does_not_exercise_throw_ref_or_exception_stack_semantics",
+    "does_not_exercise_page_webassembly_add42",
+    "does_not_exercise_page_webassembly_tables",
+    "does_not_exercise_page_webassembly_memories",
+    "does_not_exercise_page_webassembly_memory_growth",
+    "does_not_exercise_page_webassembly_threads",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_claim_m8_compatibility_completion",
+)
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_LIMITATIONS = (
+    "only_exercises_one_fixed_page_webassembly_imported_i32_tag_wasm_throw_javascript_catch_payload_42_path",
+    "does_not_exercise_other_payload_types_or_coercions",
     "does_not_exercise_wasm_internal_catch_rethrow_or_catch_all",
     "does_not_exercise_throw_ref_or_exception_stack_semantics",
     "does_not_exercise_page_webassembly_add42",
@@ -759,6 +791,65 @@ PAGE_WEBASSEMBLY_WASM_THROW_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     limitations=PAGE_WEBASSEMBLY_WASM_THROW_LIMITATIONS,
 )
 
+PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id=PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MODE,
+    query_mode=PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MODE,
+    sentinel=PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SENTINEL,
+    case=PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_CASE,
+    scope=PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SCOPE,
+    runtime_arguments=(PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(
+        ("pageWebAssemblyUnavailableObserved", False),
+        ("pageWebAssemblyAdd42Observed", False),
+        ("pageWebAssemblyTablesObserved", False),
+        (
+            "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
+            False,
+        ),
+        (
+            "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved",
+            False,
+        ),
+        ("pageWebAssemblyTableGrowthObserved", False),
+        (
+            "pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved",
+            False,
+        ),
+        ("pageWebAssemblyMemoriesObserved", False),
+        ("pageWebAssemblyMemoryConstructedImportedReadWriteObserved", False),
+        (
+            "pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved",
+            False,
+        ),
+        ("pageWebAssemblyExceptionsObserved", True),
+        (
+            "pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved",
+            False,
+        ),
+        ("pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved", False),
+        (
+            "pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved",
+            True,
+        ),
+        ("pageWebAssemblyMemoryGrowthObserved", False),
+        (
+            "pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved",
+            False,
+        ),
+        ("pageWebAssemblyThreadsObserved", False),
+    ),
+    limitations=PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_LIMITATIONS,
+)
+
 
 def smoke_config_for_page_webassembly(
     page_webassembly: bool,
@@ -853,6 +944,16 @@ def smoke_config_for_page_webassembly_wasm_throw(
     )
 
 
+def smoke_config_for_page_webassembly_wasm_throw_payload(
+    page_webassembly_wasm_throw_payload: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG
+        if page_webassembly_wasm_throw_payload
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
 def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> None:
     if smoke_config not in (
         DEFAULT_SMOKE_CONFIG,
@@ -865,6 +966,7 @@ def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> No
         PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_WASM_TABLE_GROW_OPCODE_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_WASM_THROW_SMOKE_CONFIG,
+        PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG,
     ):
         raise M0Error("DevTools protocol smoke configuration is not fixed")
 
@@ -1162,6 +1264,8 @@ def _require_unique_ordered_markers(
         page_webassembly_marker = PAGE_WEBASSEMBLY_WASM_TABLE_GROW_OPCODE_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_WASM_THROW_SMOKE_CONFIG:
         page_webassembly_marker = PAGE_WEBASSEMBLY_WASM_THROW_MARKER
+    elif smoke_config == PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG:
+        page_webassembly_marker = PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER
     else:
         page_webassembly_marker = PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER
     if not (
@@ -1371,6 +1475,14 @@ def main() -> int:
             "JavaScript-catch DevTools smoke"
         ),
     )
+    parser.add_argument(
+        "--page-webassembly-wasm-throw-payload",
+        action="store_true",
+        help=(
+            "run the fixed native page-WebAssembly imported-i32-tag Wasm "
+            "throw/JavaScript-catch-payload DevTools smoke"
+        ),
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
     if args.timeout < 2.0:
@@ -1387,6 +1499,7 @@ def main() -> int:
         + int(args.page_webassembly_wasm_memory_grow_opcode)
         + int(args.page_webassembly_wasm_table_grow_opcode)
         + int(args.page_webassembly_wasm_throw)
+        + int(args.page_webassembly_wasm_throw_payload)
         > 1
     ):
         parser.error(
@@ -1394,32 +1507,38 @@ def main() -> int:
             "--page-webassembly-table, --page-webassembly-memory-growth, and "
             "--page-webassembly-table-growth, --page-webassembly-exceptions, "
             "--page-webassembly-wasm-memory-grow-opcode, and "
-            "--page-webassembly-wasm-table-grow-opcode are mutually exclusive"
+            "--page-webassembly-wasm-table-grow-opcode, --page-webassembly-"
+            "wasm-throw, and --page-webassembly-wasm-throw-payload are mutually "
+            "exclusive"
         )
     smoke_config = (
-        smoke_config_for_page_webassembly_wasm_throw(True)
-        if args.page_webassembly_wasm_throw
+        smoke_config_for_page_webassembly_wasm_throw_payload(True)
+        if args.page_webassembly_wasm_throw_payload
         else (
-            smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
-            if args.page_webassembly_wasm_memory_grow_opcode
+            smoke_config_for_page_webassembly_wasm_throw(True)
+            if args.page_webassembly_wasm_throw
             else (
-                smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
-                if args.page_webassembly_wasm_table_grow_opcode
+                smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
+                if args.page_webassembly_wasm_memory_grow_opcode
                 else (
-                    smoke_config_for_page_webassembly_exceptions(True)
-                    if args.page_webassembly_exceptions
+                    smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
+                    if args.page_webassembly_wasm_table_grow_opcode
                     else (
-                        smoke_config_for_page_webassembly_table_growth(True)
-                        if args.page_webassembly_table_growth
+                        smoke_config_for_page_webassembly_exceptions(True)
+                        if args.page_webassembly_exceptions
                         else (
-                            smoke_config_for_page_webassembly_memory_growth(True)
-                            if args.page_webassembly_memory_growth
+                            smoke_config_for_page_webassembly_table_growth(True)
+                            if args.page_webassembly_table_growth
                             else (
-                                smoke_config_for_page_webassembly_table(True)
-                                if args.page_webassembly_table
-                                else smoke_config_for_page_webassembly(
-                                    args.page_webassembly,
-                                    args.page_webassembly_memory,
+                                smoke_config_for_page_webassembly_memory_growth(True)
+                                if args.page_webassembly_memory_growth
+                                else (
+                                    smoke_config_for_page_webassembly_table(True)
+                                    if args.page_webassembly_table
+                                    else smoke_config_for_page_webassembly(
+                                        args.page_webassembly,
+                                        args.page_webassembly_memory,
+                                    )
                                 )
                             )
                         )

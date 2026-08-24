@@ -186,6 +186,13 @@ class WasmBrowserLifecycle final {
   // catches, rethrow, catch-all, throw_ref, tables, memories, or threads.
   void StartPageWebAssemblyWasmThrowDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that imports one i32-payload
+  // tag, executes Wasm throw with payload 42, and validates JavaScript tag
+  // identity and payload extraction. It does not exercise other payload types,
+  // coercions, Wasm-internal catches, rethrow, catch-all, throw_ref, exception
+  // stacks, tables, memories, or threads.
+  void StartPageWebAssemblyWasmThrowPayloadDevToolsProtocolSmoke();
+
   // Starts the test-only fixed WebContents AX snapshot proof. It takes one
   // snapshot and permits only its fixed static semantic text into the passive
   // host mirror; it is not an interactive accessibility bridge.

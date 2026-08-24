@@ -1267,6 +1267,13 @@ void WasmBrowserLifecycle::
       WasmBrowserDevToolsProtocolSmokeMode::kWasmThrowImportedTagJsCatch);
 }
 
+void WasmBrowserLifecycle::
+    StartPageWebAssemblyWasmThrowPayloadDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kWasmThrowImportedI32TagJsCatchPayload);
+}
+
 void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
     WasmBrowserDevToolsProtocolSmokeMode mode) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
