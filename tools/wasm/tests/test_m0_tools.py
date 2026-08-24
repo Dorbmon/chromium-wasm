@@ -297,6 +297,41 @@ class ManifestTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, arguments)
 
+    def test_manifest_has_separate_experimental_m8_chrome_codegen_args(
+        self,
+    ) -> None:
+        manifest = load_manifest()
+        m6_arguments = manifest["m6_chrome_gn_args"]
+        m8_arguments = manifest["m8_chrome_codegen_experiment_gn_args"]
+        self.assertIsInstance(m6_arguments, list)
+        self.assertIsInstance(m8_arguments, list)
+
+        def assignments(arguments: list[object]) -> dict[str, str]:
+            parsed: dict[str, str] = {}
+            for argument in arguments:
+                self.assertIsInstance(argument, str)
+                name, value = argument.split(" = ", 1)
+                self.assertNotIn(name, parsed)
+                parsed[name] = value
+            return parsed
+
+        m6_assignments = assignments(m6_arguments)
+        m8_assignments = assignments(m8_arguments)
+        self.assertEqual(m6_assignments.keys(), m8_assignments.keys())
+        self.assertEqual(
+            {
+                name: value
+                for name, value in m8_assignments.items()
+                if value != m6_assignments[name]
+            },
+            {
+                "v8_jitless": "false",
+                "v8_enable_webassembly": "true",
+                "v8_enable_turbofan": "true",
+            },
+        )
+        self.assertNotIn("v8_enable_wasm_arm32_codegen_smoke", m8_assignments)
+
     def test_m3_safe_browsing_stops_before_platform_resource_generation(
         self,
     ) -> None:
@@ -738,6 +773,15 @@ cache.mkdir(parents=True, exist_ok=True)
                     encoding="utf-8"
                 ),
                 gn_args_text(manifest, "m6_chrome_gn_args"),
+            )
+            self.assertEqual(
+                (
+                    generated_root
+                    / "out/wasm-chrome-m8-codegen-experiment/args.gn"
+                ).read_text(encoding="utf-8"),
+                gn_args_text(
+                    manifest, "m8_chrome_codegen_experiment_gn_args"
+                ),
             )
             self.assertIn(
                 "build_with_chromium = !enable_chromium_wasm_port || "

@@ -3265,6 +3265,12 @@ def ensure_generated_configuration(
             REPO_ROOT / "out/wasm-chrome-m6/args.gn",
             gn_args_text(manifest, "m6_chrome_gn_args"),
         ),
+        (
+            "generated experimental M8 Chrome codegen GN args "
+            "(not an M8 gate or V8 provenance pin)",
+            REPO_ROOT / "out/wasm-chrome-m8-codegen-experiment/args.gn",
+            gn_args_text(manifest, "m8_chrome_codegen_experiment_gn_args"),
+        ),
     )
 
     if install:
