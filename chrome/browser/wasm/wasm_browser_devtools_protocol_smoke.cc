@@ -30,8 +30,10 @@ constexpr char kNetworkEnableCommand[] =
     R"({"id":1,"method":"Network.enable"})";
 constexpr char kRuntimeEnableCommand[] =
     R"({"id":2,"method":"Runtime.enable"})";
+constexpr char kDomGetDocumentCommand[] =
+    R"({"id":3,"method":"DOM.getDocument","params":{"depth":0,"pierce":false}})";
 constexpr char kRuntimeEvaluateCommand[] =
-    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json({"id":4,"method":"Runtime.evaluate","params":{"expression":)json"
     R"json("(console.log('chromium-wasm-m8-devtools-console'),)json"
     R"json( typeof WebAssembly)","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
@@ -232,6 +234,8 @@ constexpr char kNetworkEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 constexpr char kRuntimeEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK";
+constexpr char kDomGetDocumentSuccessMarker[] =
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DOM_GET_DOCUMENT_OK";
 constexpr char kRuntimeEvaluateSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
 constexpr char kPageWebAssemblyUnavailableSuccessMarker[] =
@@ -278,7 +282,9 @@ constexpr char kDetachedMarker[] =
 constexpr char kFailureMarker[] = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:FAIL";
 constexpr int kNetworkEnableCommandId = 1;
 constexpr int kRuntimeEnableCommandId = 2;
-constexpr int kRuntimeEvaluateCommandId = 3;
+constexpr int kDomGetDocumentCommandId = 3;
+constexpr int kRuntimeEvaluateCommandId = 4;
+constexpr int kPageWebAssemblyRuntimeEvaluateCommandId = 3;
 constexpr size_t kMaximumProtocolResponseBytes = 4 * 1024;
 constexpr char kRuntimeEvaluateExpectedType[] = "string";
 constexpr char kRuntimeEvaluateExpectedValue[] = "undefined";
@@ -454,13 +460,13 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   }
 
   state_ = State::kEnablingNetwork;
-  // These three literal commands are the only protocol messages this client
-  // can emit. There is no frontend, pipe, socket, host ABI, or caller-provided
-  // command surface. The default Runtime.evaluate expression reads only
-  // |typeof WebAssembly| to make the current disabled page-WebAssembly
-  // boundary observable; it neither constructs nor compiles a page module and
-  // does not enable page WebAssembly. The closed alternate expressions use
-  // only literal module bytes and fixed add, memory import/read-write, table
+  // These literal commands are the only protocol messages this client can
+  // emit. The default unavailable-boundary mode additionally gets the
+  // lifecycle-owned page root through DOM.getDocument before it evaluates
+  // |typeof WebAssembly|. That expression does not enable page WebAssembly.
+  // There is no frontend, pipe, socket, host ABI, or caller-provided command
+  // surface. The closed alternate expressions use only literal module bytes
+  // and fixed add, memory import/read-write, table
   // import/indirect-call, table-growth, memory-growth, exception, or
   // memory.grow-opcode, table.grow-opcode, zero-payload Wasm-throw, or typed
   // Wasm-throw-payload witnesses.
@@ -478,6 +484,7 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if ((state_ != State::kEnablingNetwork &&
        state_ != State::kEnablingRuntime &&
+       state_ != State::kGettingDomDocument &&
        state_ != State::kEvaluatingRuntime) ||
       agent_host != agent_host_.get()) {
     return;
@@ -534,8 +541,34 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
     return;
   }
 
+  if (state_ == State::kGettingDomDocument) {
+    if (*id != kDomGetDocumentCommandId) {
+      return;
+    }
+    const base::DictValue* result = response.FindDict("result");
+    const base::DictValue* root = result ? result->FindDict("root") : nullptr;
+    const std::optional<int> node_id = root ? root->FindInt("nodeId")
+                                             : std::nullopt;
+    const std::optional<int> node_type = root ? root->FindInt("nodeType")
+                                               : std::nullopt;
+    const std::string* node_name = root ? root->FindString("nodeName")
+                                        : nullptr;
+    if (response.Find("error") || !root || !node_id || *node_id <= 0 ||
+        !node_type || *node_type != 9 || !node_name ||
+        *node_name != "#document") {
+      Fail("DOM.getDocument did not return the fixed document root");
+    }
+    CompleteDomGetDocument();
+    return;
+  }
+
   CHECK_EQ(state_, State::kEvaluatingRuntime);
-  if (*id != kRuntimeEvaluateCommandId) {
+  const int expected_runtime_evaluate_command_id =
+      mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                   kPageWebAssemblyUnavailable
+          ? kRuntimeEvaluateCommandId
+          : kPageWebAssemblyRuntimeEvaluateCommandId;
+  if (*id != expected_runtime_evaluate_command_id) {
     return;
   }
   const base::DictValue* result = response.FindDict("result");
@@ -781,19 +814,20 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
   CHECK_EQ(state_, State::kEnablingRuntime);
   CHECK(agent_host_);
 
-  // Runtime.enable must complete before the one expression can generate the
-  // exact console event. Set the state before dispatch because either the
-  // notification or the response can be delivered synchronously, in either
-  // order, while this call is active.
-  state_ = State::kEvaluatingRuntime;
+  // Runtime.enable must complete before the default DOM snapshot or any
+  // expression can generate its exact event. Set the state before dispatch
+  // because the DevTools agent may synchronously deliver a response while this
+  // call is active.
   std::fprintf(stderr, "%s\n", kRuntimeEnableSuccessMarker);
   std::fflush(stderr);
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
+    state_ = State::kGettingDomDocument;
     agent_host_->DispatchProtocolMessage(
-        this, base::byte_span_from_cstring(kRuntimeEvaluateCommand));
+        this, base::byte_span_from_cstring(kDomGetDocumentCommand));
     return;
   }
+  state_ = State::kEvaluatingRuntime;
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42) {
     agent_host_->DispatchProtocolMessage(
@@ -887,6 +921,17 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
       this,
       base::byte_span_from_cstring(
           kPageWebAssemblyInstantiateStreamingRuntimeEvaluateCommand));
+}
+
+void WasmBrowserDevToolsProtocolSmoke::CompleteDomGetDocument() {
+  CHECK_EQ(state_, State::kGettingDomDocument);
+  CHECK(agent_host_);
+
+  std::fprintf(stderr, "%s\n", kDomGetDocumentSuccessMarker);
+  std::fflush(stderr);
+  state_ = State::kEvaluatingRuntime;
+  agent_host_->DispatchProtocolMessage(
+      this, base::byte_span_from_cstring(kRuntimeEvaluateCommand));
 }
 
 void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(

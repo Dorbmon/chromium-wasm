@@ -48,6 +48,7 @@ def successful_result() -> dict[str, object]:
         "canvasFocusAccepted": True,
         "networkEnableObserved": True,
         "runtimeEnableObserved": True,
+        "domGetDocumentObserved": True,
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": True,
         "runtimeConsoleApiCalledObserved": True,
@@ -67,6 +68,7 @@ def successful_result() -> dict[str, object]:
         "stderr": [
             smoke.NETWORK_ENABLE_MARKER,
             smoke.RUNTIME_ENABLE_MARKER,
+            smoke.DOM_GET_DOCUMENT_MARKER,
             smoke.RUNTIME_EVALUATE_MARKER,
             smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
             smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
@@ -182,6 +184,7 @@ class M8WasmBrowserDevToolsProtocolDomSmokeTest(unittest.TestCase):
         result["stderr"] = [
             smoke.NETWORK_ENABLE_MARKER,
             smoke.RUNTIME_ENABLE_MARKER,
+            smoke.DOM_GET_DOCUMENT_MARKER,
             smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
             smoke.RUNTIME_EVALUATE_MARKER,
             smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
@@ -198,6 +201,7 @@ class M8WasmBrowserDevToolsProtocolDomSmokeTest(unittest.TestCase):
                     [
                         smoke.NETWORK_ENABLE_MARKER,
                         smoke.RUNTIME_ENABLE_MARKER,
+                        smoke.DOM_GET_DOCUMENT_MARKER,
                         smoke.RUNTIME_EVALUATE_MARKER,
                         smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                         smoke.DETACHED_MARKER,
@@ -213,6 +217,7 @@ class M8WasmBrowserDevToolsProtocolDomSmokeTest(unittest.TestCase):
                         smoke.NETWORK_ENABLE_MARKER,
                         smoke.RUNTIME_ENABLE_MARKER,
                         smoke.RUNTIME_EVALUATE_MARKER,
+                        smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                         smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                         smoke.DETACHED_MARKER,
                         smoke.LIFECYCLE_PASS_MARKER,
@@ -226,6 +231,22 @@ class M8WasmBrowserDevToolsProtocolDomSmokeTest(unittest.TestCase):
                     [
                         smoke.NETWORK_ENABLE_MARKER,
                         smoke.RUNTIME_ENABLE_MARKER,
+                        smoke.DOM_GET_DOCUMENT_MARKER,
+                        smoke.RUNTIME_EVALUATE_MARKER,
+                        smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
+                        smoke.DETACHED_MARKER,
+                        smoke.LIFECYCLE_PASS_MARKER,
+                    ],
+                ),
+                "marker count is 0",
+            ),
+            (
+                lambda result: result.__setitem__(
+                    "stderr",
+                    [
+                        smoke.NETWORK_ENABLE_MARKER,
+                        smoke.RUNTIME_ENABLE_MARKER,
+                        smoke.DOM_GET_DOCUMENT_MARKER,
                         smoke.RUNTIME_EVALUATE_MARKER,
                         smoke.RUNTIME_EVALUATE_MARKER,
                         smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
@@ -243,6 +264,7 @@ class M8WasmBrowserDevToolsProtocolDomSmokeTest(unittest.TestCase):
                         smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                         smoke.NETWORK_ENABLE_MARKER,
                         smoke.RUNTIME_ENABLE_MARKER,
+                        smoke.DOM_GET_DOCUMENT_MARKER,
                         smoke.RUNTIME_EVALUATE_MARKER,
                         smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                         smoke.DETACHED_MARKER,
@@ -378,6 +400,7 @@ class M8WasmBrowserDevToolsProtocolDomSmokeTest(unittest.TestCase):
             "immutable-in-memory-server-snapshot",
             "requestOuterOriginStorageEstimate(_report) { return false; }",
             "reportOzoneBrowserClipboardPasteDelivery(_report) {}",
+            "DOM_GET_DOCUMENT_MARKER",
             "PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER",
             "RUNTIME_CONSOLE_API_CALLED_MARKER",
             "LIFECYCLE_PASS_MARKER",

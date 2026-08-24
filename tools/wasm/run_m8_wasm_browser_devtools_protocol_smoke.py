@@ -7,11 +7,11 @@
 
 This is intentionally not a DevTools frontend or remote-debugging harness. It
 starts one lifecycle-owned Browser tab, navigates it to one fixed data URL,
-waits for native code to issue literal Network.enable, Runtime.enable, and
-ordinary-JavaScript Runtime.evaluate requests through DevToolsAgentHost, then
-requires the exact Console API event, detach marker, and normal lifecycle
-teardown. It does not enable or exercise page WebAssembly, and does not claim
-M8 completion.
+waits for native code to issue literal Network.enable, Runtime.enable,
+DOM.getDocument, and ordinary-JavaScript Runtime.evaluate requests through
+DevToolsAgentHost, then requires the exact Console API event, detach marker,
+and normal lifecycle teardown. It does not enable or exercise page WebAssembly,
+and does not claim M8 completion.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ import run_m6_wasm_browser_lifecycle_smoke as lifecycle_smoke
 SENTINEL = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL"
 NETWORK_ENABLE_MARKER = f"{SENTINEL}:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = f"{SENTINEL}:RUNTIME_ENABLE_OK"
+DOM_GET_DOCUMENT_MARKER = f"{SENTINEL}:DOM_GET_DOCUMENT_OK"
 RUNTIME_EVALUATE_MARKER = f"{SENTINEL}:RUNTIME_EVALUATE_OK"
 PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER = f"{SENTINEL}:PAGE_WEBASSEMBLY_UNAVAILABLE"
 RUNTIME_CONSOLE_API_CALLED_MARKER = f"{SENTINEL}:RUNTIME_CONSOLE_API_CALLED_OK"
@@ -54,6 +55,7 @@ _MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 LIMITATIONS = (
     "does_not_enable_or_exercise_page_webassembly",
     "only_observes_the_disabled_page_webassembly_global_not_api_semantics",
+    "only_observes_one_fixed_dom_document_root_not_elements_frontend_interaction",
     "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
     "does_not_claim_m8_compatibility_completion",
 )
@@ -63,7 +65,7 @@ def runner_source(module_url: str, timeout_ms: int) -> str:
     """Returns the existing strict canvas host with M8 protocol identities."""
     # The Node bridge is only presentation/lifecycle plumbing. No DevTools
     # command, protocol result, frontend asset, socket, or pipe passes through
-    # it: the three fixed commands, responses, and console event remain
+    # it: the fixed commands, responses, and console event remain
     # entirely inside the switch-gated native client.
     return (
         lifecycle_smoke.runner_source(module_url, timeout_ms)
@@ -90,6 +92,7 @@ def _require_unique_ordered_markers(output: str) -> None:
     markers = (
         (NETWORK_ENABLE_MARKER, "Network.enable success"),
         (RUNTIME_ENABLE_MARKER, "Runtime.enable success"),
+        (DOM_GET_DOCUMENT_MARKER, "DOM.getDocument success"),
         (RUNTIME_EVALUATE_MARKER, "Runtime.evaluate success"),
         (PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER, "Page WebAssembly unavailable"),
         (RUNTIME_CONSOLE_API_CALLED_MARKER, "Runtime.consoleAPICalled success"),
@@ -105,7 +108,9 @@ def _require_unique_ordered_markers(output: str) -> None:
             )
         positions[marker] = output.index(marker)
     if not (
-        positions[NETWORK_ENABLE_MARKER] < positions[RUNTIME_ENABLE_MARKER]
+        positions[NETWORK_ENABLE_MARKER]
+        < positions[RUNTIME_ENABLE_MARKER]
+        < positions[DOM_GET_DOCUMENT_MARKER]
         < positions[RUNTIME_EVALUATE_MARKER]
         < positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER]
         < positions[DETACHED_MARKER]
@@ -125,9 +130,9 @@ def validate_result(result: dict[str, Any], output: str) -> None:
     # compositor frame, normal process exit, and no host fatal error. Substitute
     # only its ready marker with the native Network.enable completion marker.
     # The ordered marker check below separately requires the native
-    # Runtime.enable, Runtime.evaluate, explicit page-WebAssembly-unavailable,
-    # and Console API witnesses before detach and close. The result/event can
-    # arrive in either order.
+    # Runtime.enable, DOM.getDocument, Runtime.evaluate, explicit
+    # page-WebAssembly-unavailable, and Console API witnesses before detach and
+    # close. The result/event can arrive in either order.
     lifecycle_smoke.validate_result(
         result,
         output.replace(NETWORK_ENABLE_MARKER, lifecycle_smoke.READY_MARKER),
@@ -190,12 +195,12 @@ def main() -> int:
             manifest,
             case=(
                 "fixed_in_process_devtools_network_enable_runtime_enable_"
-                "runtime_evaluate_console_event_m8"
+                "dom_get_document_runtime_evaluate_console_event_m8"
             ),
             scope=(
                 "fixed-data-url-primary-webcontents-native-devtools-client-"
-                "network-enable-runtime-enable-runtime-evaluate-console-event-"
-                "detach-close"
+                "network-enable-runtime-enable-dom-get-document-runtime-"
+                "evaluate-console-event-detach-close"
             ),
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
             limitations=list(LIMITATIONS),
@@ -222,6 +227,7 @@ def main() -> int:
                 {
                     "artifact": relative_to_repo(module),
                     "canvasCopies": result["canvasCopies"],
+                    "domGetDocument": True,
                     "frameReports": len(result["frameReports"]),
                     "networkEnable": True,
                     "pageWebAssemblyExercised": False,

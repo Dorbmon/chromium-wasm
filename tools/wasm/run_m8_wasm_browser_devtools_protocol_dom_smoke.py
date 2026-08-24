@@ -8,9 +8,9 @@
 The real browser supplies the cross-origin-isolated worker environment needed
 by the threaded Wasm Chrome host. This runner serves immutable snapshots of
 one built loader and Wasm module, then requires the native fixed
-Network.enable, Runtime.enable, Runtime.evaluate, Console API event, detach,
-and lifecycle-close markers.  It is neither a DevTools frontend nor a remote
-debugging/protocol transport, and it does not claim M8 completion.
+Network.enable, Runtime.enable, DOM.getDocument, Runtime.evaluate, Console API
+event, detach, and lifecycle-close markers. It is neither a DevTools frontend
+nor a remote debugging/protocol transport, and it does not claim M8 completion.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ SENTINEL = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL_DOM"
 CASE = "browser_devtools_protocol_m8"
 SCOPE = (
     "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
-    "runtime-enable-runtime-evaluate-console-event-detach-close"
+    "runtime-enable-dom-get-document-runtime-evaluate-console-event-detach-close"
 )
 SWITCH = "--wasm-browser-devtools-protocol-smoke"
 PAGE_WEBASSEMBLY_SENTINEL = "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_DOM"
@@ -224,6 +224,9 @@ PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SWITCH = (
 )
 NETWORK_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK"
+DOM_GET_DOCUMENT_MARKER = (
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DOM_GET_DOCUMENT_OK"
+)
 RUNTIME_EVALUATE_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK"
 )
@@ -297,6 +300,7 @@ ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
 LIMITATIONS = (
     "does_not_enable_or_exercise_page_webassembly",
     "only_observes_the_disabled_page_webassembly_global_not_api_semantics",
+    "only_observes_one_fixed_dom_document_root_not_elements_frontend_interaction",
     "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
     "does_not_claim_m8_compatibility_completion",
 )
@@ -581,6 +585,7 @@ DEFAULT_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     native_markers=(
         NETWORK_ENABLE_MARKER,
         RUNTIME_ENABLE_MARKER,
+        DOM_GET_DOCUMENT_MARKER,
         RUNTIME_EVALUATE_MARKER,
         PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
         RUNTIME_CONSOLE_API_CALLED_MARKER,
@@ -1592,8 +1597,17 @@ def _require_unique_ordered_markers(
         page_webassembly_marker = PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER
     else:
         page_webassembly_marker = PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER
+    dom_get_document_ordered = (
+        smoke_config != DEFAULT_SMOKE_CONFIG
+        or (
+            positions[RUNTIME_ENABLE_MARKER]
+            < positions[DOM_GET_DOCUMENT_MARKER]
+            < positions[RUNTIME_EVALUATE_MARKER]
+        )
+    )
     if not (
-        positions[NETWORK_ENABLE_MARKER] < positions[RUNTIME_ENABLE_MARKER]
+        positions[NETWORK_ENABLE_MARKER]
+        < positions[RUNTIME_ENABLE_MARKER]
         < positions[RUNTIME_EVALUATE_MARKER]
         < positions[page_webassembly_marker]
         < positions[DETACHED_MARKER]
@@ -1601,6 +1615,7 @@ def _require_unique_ordered_markers(
         and positions[RUNTIME_ENABLE_MARKER]
         < positions[RUNTIME_CONSOLE_API_CALLED_MARKER]
         < positions[DETACHED_MARKER]
+        and dom_get_document_ordered
     ):
         raise M0Error("DevTools protocol native markers are not ordered")
 
@@ -1634,6 +1649,8 @@ def validate_result(
         "error": None,
     }
     expected_fields.update(smoke_config.page_webassembly_expectations)
+    if smoke_config == DEFAULT_SMOKE_CONFIG:
+        expected_fields["domGetDocumentObserved"] = True
     for field, expected in expected_fields.items():
         _require_equal(result, field, expected)
     process_exit_code = result.get("processExitCode")

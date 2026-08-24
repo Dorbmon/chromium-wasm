@@ -9,7 +9,7 @@ const HOST_PROTOCOL = 1;
 const CASE = "browser_devtools_protocol_m8";
 const SCOPE =
     "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
-    "runtime-enable-runtime-evaluate-console-event-detach-close";
+    "runtime-enable-dom-get-document-runtime-evaluate-console-event-detach-close";
 const SWITCH = "--wasm-browser-devtools-protocol-smoke";
 const PAGE_WEBASSEMBLY_MODE = "page-webassembly";
 const PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8";
@@ -129,6 +129,8 @@ const NETWORK_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 const RUNTIME_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK";
+const DOM_GET_DOCUMENT_MARKER =
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DOM_GET_DOCUMENT_OK";
 const RUNTIME_EVALUATE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
 const PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER =
@@ -195,6 +197,7 @@ const DEFAULT_SMOKE_MODE = Object.freeze({
   nativeMarkers: Object.freeze([
     NETWORK_ENABLE_MARKER,
     RUNTIME_ENABLE_MARKER,
+    DOM_GET_DOCUMENT_MARKER,
     RUNTIME_EVALUATE_MARKER,
     PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
@@ -732,6 +735,10 @@ function validateResult(result, smokeMode) {
       "Network.enable marker was not observed");
   require(result.runtimeEnableObserved === true,
       "Runtime.enable marker was not observed");
+  if (smokeMode === DEFAULT_SMOKE_MODE) {
+    require(result.domGetDocumentObserved === true,
+        "DOM.getDocument marker was not observed");
+  }
   require(result.runtimeEvaluateObserved === true,
       "Runtime.evaluate marker was not observed");
   for (const [field, expected] of Object.entries(
@@ -793,6 +800,9 @@ function validateResult(result, smokeMode) {
       smokeMode === PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER :
       PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
+  const domGetDocumentOrdered = smokeMode !== DEFAULT_SMOKE_MODE ||
+      (positions[RUNTIME_ENABLE_MARKER] < positions[DOM_GET_DOCUMENT_MARKER] &&
+       positions[DOM_GET_DOCUMENT_MARKER] < positions[RUNTIME_EVALUATE_MARKER]);
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
@@ -812,7 +822,8 @@ function validateResult(result, smokeMode) {
                   positions[DETACHED_MARKER] &&
               positions[RUNTIME_CONSOLE_API_CALLED_MARKER] <
                   positions[DETACHED_MARKER] &&
-              positions[DETACHED_MARKER] < positions[LIFECYCLE_PASS_MARKER],
+              positions[DETACHED_MARKER] < positions[LIFECYCLE_PASS_MARKER] &&
+              domGetDocumentOrdered,
           "native DevTools protocol markers are not ordered");
 
   if (failures.length !== 0) {
@@ -844,6 +855,7 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #canvasFocusAccepted = false;
   #networkEnableObserved = false;
   #runtimeEnableObserved = false;
+  #domGetDocumentObserved = false;
   #runtimeEvaluateObserved = false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
@@ -922,6 +934,9 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #recordOutput(text) {
     if (text.includes(NETWORK_ENABLE_MARKER)) this.#networkEnableObserved = true;
     if (text.includes(RUNTIME_ENABLE_MARKER)) this.#runtimeEnableObserved = true;
+    if (text.includes(DOM_GET_DOCUMENT_MARKER)) {
+      this.#domGetDocumentObserved = true;
+    }
     if (text.includes(RUNTIME_EVALUATE_MARKER)) {
       this.#runtimeEvaluateObserved = true;
     }
@@ -1144,6 +1159,7 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       canvasFocusAccepted: this.#canvasFocusAccepted,
       networkEnableObserved: this.#networkEnableObserved,
       runtimeEnableObserved: this.#runtimeEnableObserved,
+      domGetDocumentObserved: this.#domGetDocumentObserved,
       runtimeEvaluateObserved: this.#runtimeEvaluateObserved,
       ...pageWebAssemblyResult,
       runtimeConsoleApiCalledObserved: this.#runtimeConsoleApiCalledObserved,

@@ -56,6 +56,7 @@ def complete_output() -> str:
         (
             smoke.NETWORK_ENABLE_MARKER,
             smoke.RUNTIME_ENABLE_MARKER,
+            smoke.DOM_GET_DOCUMENT_MARKER,
             smoke.RUNTIME_EVALUATE_MARKER,
             smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
             smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
@@ -109,6 +110,8 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         for expected in (
             'R"({"id":1,"method":"Network.enable"})"',
             'R"({"id":2,"method":"Runtime.enable"})"',
+            '"method":"DOM.getDocument"',
+            '"params":{"depth":0,"pierce":false}',
             '"method":"Runtime.evaluate"',
             "console.log('chromium-wasm-m8-devtools-console')",
             "typeof WebAssembly",
@@ -125,17 +128,24 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             "agent_host->DetachClient(this)",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK",
+            "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DOM_GET_DOCUMENT_OK",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK",
             "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED",
             "base::JSON_PARSE_RFC",
             "response.FindDict(\"result\")",
+            "result ? result->FindDict(\"root\") : nullptr",
+            "root->FindInt(\"nodeId\")",
+            "root->FindInt(\"nodeType\")",
+            "root->FindString(\"nodeName\")",
+            "*node_name != \"#document\"",
             "result->FindDict(\"result\")",
             "result->Find(\"exceptionDetails\")",
             "kRuntimeEvaluateExpectedValue",
             "Runtime.consoleAPICalled",
             "CompleteRuntimeEnable",
+            "CompleteDomGetDocument",
             "CompleteRuntimeConsoleApiCalled",
             "runtime_evaluate_response_received_",
             "runtime_console_api_called_received_",
@@ -187,6 +197,10 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
         )
         self.assertLess(
             complete.index("kRuntimeEnableSuccessMarker"),
+            complete.index("kDomGetDocumentCommand"),
+        )
+        self.assertLess(
+            complete.index("kDomGetDocumentSuccessMarker"),
             complete.index("kRuntimeEvaluateCommand"),
         )
         self.assertIn("kRuntimeEvaluateSuccessMarker", protocol)
@@ -246,6 +260,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
                 (
                     smoke.NETWORK_ENABLE_MARKER,
                     smoke.RUNTIME_ENABLE_MARKER,
+                    smoke.DOM_GET_DOCUMENT_MARKER,
                     smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                     smoke.RUNTIME_EVALUATE_MARKER,
                     smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
@@ -261,6 +276,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
+                smoke.DOM_GET_DOCUMENT_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                 smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
@@ -272,6 +288,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
+                smoke.DOM_GET_DOCUMENT_MARKER,
                 smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             )
@@ -280,6 +297,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
+                smoke.DOM_GET_DOCUMENT_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
@@ -292,6 +310,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
+                smoke.DOM_GET_DOCUMENT_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                 smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
@@ -302,6 +321,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
+                smoke.DOM_GET_DOCUMENT_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                 smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
@@ -323,6 +343,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
+                smoke.DOM_GET_DOCUMENT_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                 smoke.DETACHED_MARKER,
@@ -334,6 +355,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
                 smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
+                smoke.DOM_GET_DOCUMENT_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
                 smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
                 smoke.DETACHED_MARKER,
@@ -347,6 +369,13 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (missing_detach, "0 DevTools detach"),
             (repeated_detach, "2 DevTools detach"),
             (missing_runtime_enable, "0 Runtime.enable success"),
+            (
+                complete_output().replace(
+                    smoke.DOM_GET_DOCUMENT_MARKER,
+                    "not-a-dom-get-document-marker",
+                ),
+                "0 DOM.getDocument success",
+            ),
             (
                 complete_output().replace(
                     smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
@@ -394,6 +423,7 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             (
                 "does_not_enable_or_exercise_page_webassembly",
                 "only_observes_the_disabled_page_webassembly_global_not_api_semantics",
+                "only_observes_one_fixed_dom_document_root_not_elements_frontend_interaction",
                 "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
                 "does_not_claim_m8_compatibility_completion",
             ),

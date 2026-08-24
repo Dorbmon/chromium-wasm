@@ -50,8 +50,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
     WasmBrowserDevToolsProtocolSmokeMode mode);
 
 // A switch-gated, direct DevToolsAgentHost client used only to prove that the
-// active Wasm Browser tab can accept three fixed protocol requests:
-// Network.enable, Runtime.enable, and one literal Runtime.evaluate expression.
+// active Wasm Browser tab can accept fixed protocol requests. The unavailable
+// page-WebAssembly boundary additionally obtains the root DOM document through
+// DOM.getDocument before it evaluates its one literal expression. Alternate
+// page-WebAssembly modes retain their narrower Network.enable, Runtime.enable,
+// and Runtime.evaluate exchange.
 // It also accepts one exact console event produced by that expression. This is
 // deliberately not a DevTools frontend or a protocol transport: it accepts
 // only those fixed successful responses and the one event and forwards no
@@ -121,9 +124,9 @@ class WasmBrowserDevToolsProtocolSmoke final
 
   // Attaches only when |web_contents|' current primary main frame has committed
   // the fixed DevTools smoke data URL, sends the literal Network.enable,
-  // Runtime.enable, and Runtime.evaluate commands, and runs |success_callback|
-  // only after receiving the matching console event and detaching from the
-  // agent host.
+  // Runtime.enable, DOM.getDocument when applicable, and Runtime.evaluate
+  // commands, and runs |success_callback| only after receiving the matching
+  // console event and detaching from the agent host.
   void Start(content::WebContents* web_contents);
 
   bool IsDetached() const;
@@ -133,6 +136,7 @@ class WasmBrowserDevToolsProtocolSmoke final
     kCreated,
     kEnablingNetwork,
     kEnablingRuntime,
+    kGettingDomDocument,
     kEvaluatingRuntime,
     kDetached,
     kFailed,
@@ -153,6 +157,7 @@ class WasmBrowserDevToolsProtocolSmoke final
 
   void CompleteNetworkEnable();
   void CompleteRuntimeEnable();
+  void CompleteDomGetDocument();
   void CompleteRuntimeConsoleApiCalled(const base::DictValue& notification);
   void CompleteRuntimeEvaluate();
   [[noreturn]] void Fail(std::string_view reason);
