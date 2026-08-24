@@ -60,6 +60,15 @@ class WasmBrowserProcessContractTest(unittest.TestCase):
         self.assertIn("CreateInMemoryLocalState", source)
         self.assertIn("base::MakeRefCounted<PrefRegistrySimple>()", source)
         self.assertIn("base::MakeRefCounted<InMemoryPrefStore>()", source)
+        # Browser-process Local State must remain deliberately volatile. The
+        # profile's separately owned preferences are not part of this check.
+        for forbidden in (
+            "JsonPrefStore",
+            "chrome_prefs::CreateLocalState(",
+            "chrome::FILE_LOCAL_STATE",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
         self.assertIn("DeviceParentalControlsNoOpImpl", source)
         self.assertIn("CHECK(!g_browser_process)", source)
         self.assertIn("g_browser_process = this", source)
