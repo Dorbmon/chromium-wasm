@@ -3256,6 +3256,12 @@ def ensure_generated_configuration(
             gn_args_text(manifest, "m2_v8_gn_args"),
         ),
         (
+            "generated standalone M8 V8 ARM32 codegen smoke GN args "
+            "(not an M8 gate or V8 provenance pin)",
+            REPO_ROOT / "out/wasm-v8-m8-codegen-smoke/args.gn",
+            gn_args_text(manifest, "m8_v8_arm32_codegen_smoke_gn_args"),
+        ),
+        (
             "generated M3 Content GN args",
             REPO_ROOT / "out/wasm-content-m3/args.gn",
             gn_args_text(manifest, "m3_content_gn_args"),

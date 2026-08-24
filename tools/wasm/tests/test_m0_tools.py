@@ -215,6 +215,34 @@ class ManifestTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, arguments)
 
+    def test_manifest_has_separate_standalone_m8_v8_codegen_args(self) -> None:
+        manifest = load_manifest()
+        arguments = gn_args_text(
+            manifest, "m8_v8_arm32_codegen_smoke_gn_args"
+        )
+        for expected in (
+            "enable_chromium_wasm_v8 = true\n",
+            "enable_chromium_wasm_content = false\n",
+            "enable_chromium_wasm_chrome = false\n",
+            "is_debug = false\n",
+            "dcheck_always_on = false\n",
+            "v8_enable_debugging_features = false\n",
+            "v8_enable_verification_features = false\n",
+            'v8_target_cpu = "arm"\n',
+            "v8_target_is_simulator = true\n",
+            "v8_jitless = false\n",
+            "v8_enable_webassembly = true\n",
+            "v8_enable_turbofan = true\n",
+            "v8_enable_drumbrake = false\n",
+            "v8_enable_sparkplug = false\n",
+            "v8_enable_maglev = false\n",
+            "v8_enable_wasm_arm32_codegen_smoke = true\n",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, arguments)
+        self.assertNotIn("enable_chromium_wasm_content = true", arguments)
+        self.assertNotIn("enable_chromium_wasm_chrome = true", arguments)
+
     def test_manifest_has_reproducible_m3_content_args(self) -> None:
         manifest = load_manifest()
         arguments = gn_args_text(manifest, "m3_content_gn_args")
@@ -761,6 +789,13 @@ cache.mkdir(parents=True, exist_ok=True)
                     encoding="utf-8"
                 ),
                 gn_args_text(manifest, "m2_v8_gn_args"),
+            )
+            self.assertEqual(
+                (
+                    generated_root
+                    / "out/wasm-v8-m8-codegen-smoke/args.gn"
+                ).read_text(encoding="utf-8"),
+                gn_args_text(manifest, "m8_v8_arm32_codegen_smoke_gn_args"),
             )
             self.assertEqual(
                 (generated_root / "out/wasm-content-m3/args.gn").read_text(
