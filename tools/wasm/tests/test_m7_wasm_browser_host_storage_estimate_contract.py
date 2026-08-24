@@ -222,6 +222,34 @@ class M7WasmBrowserHostStorageEstimateContractTest(unittest.TestCase):
         self.assertIn("State::kUnavailable", self.settings)
         self.assertIn("State::kError", self.settings)
 
+    def test_settings_warns_only_when_host_reports_zero_remaining_capacity(
+        self,
+    ) -> None:
+        available = section(
+            self.settings,
+            "case WasmBrowserHostStorageEstimateSnapshot::State::kAvailable: {",
+            "case WasmBrowserHostStorageEstimateSnapshot::State::kUnavailable:",
+        )
+        warning_id = 'id="wasm-settings-storage-estimate-zero-remaining-warning"'
+        condition = "if (remaining_bytes == 0)"
+
+        self.assertIn(
+            "snapshot.quota_bytes() - snapshot.usage_bytes()", available
+        )
+        self.assertIn(condition, available)
+        self.assertIn(warning_id, available)
+        self.assertLess(available.index(condition), available.index(warning_id))
+        self.assertEqual(self.settings.count(warning_id), 1)
+
+        warning = available[available.index(warning_id) :].split("</p>)HTML", 1)[0]
+        for marker in (
+            "host reported 0 bytes of remaining aggregate origin capacity",
+            "not Chromium Wasm profile quota",
+            "an enforcement limit",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, warning)
+
     def test_dedicated_smoke_owns_only_fixed_ordinals_and_native_settings_proof(self) -> None:
         for marker in (
             "chromium_wasm_browser_host_storage_estimate_check",

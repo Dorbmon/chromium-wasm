@@ -4,6 +4,8 @@
 
 #include "chrome/browser/wasm/wasm_settings_ui.h"
 
+#include <stdint.h>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -50,6 +52,7 @@ std::string BytesForWasmSettings(uint64_t bytes) {
 std::string BuildWasmSettingsStorageEstimateHtml(
     const WasmBrowserHostStorageEstimateSnapshot& snapshot) {
   std::string details;
+  std::string zero_remaining_warning;
   switch (snapshot.state()) {
     case WasmBrowserHostStorageEstimateSnapshot::State::kPending:
       details = R"HTML(
@@ -57,6 +60,8 @@ std::string BuildWasmSettingsStorageEstimateHtml(
         outer-origin estimate from the host browser.</dd>)HTML";
       break;
     case WasmBrowserHostStorageEstimateSnapshot::State::kAvailable: {
+      const uint64_t remaining_bytes =
+          snapshot.quota_bytes() - snapshot.usage_bytes();
       details = base::StrCat(
           {R"HTML(
         <dd id="wasm-settings-storage-estimate-state">Available from the
@@ -73,9 +78,17 @@ std::string BuildWasmSettingsStorageEstimateHtml(
           {std::move(details), R"HTML(
         <dt>Estimated remaining capacity</dt>
         <dd id="wasm-settings-storage-estimate-remaining">)HTML",
-           BytesForWasmSettings(snapshot.quota_bytes() -
-                                snapshot.usage_bytes()),
+           BytesForWasmSettings(remaining_bytes),
            R"HTML(</dd>)HTML"});
+      if (remaining_bytes == 0) {
+        zero_remaining_warning = R"HTML(
+      <p id="wasm-settings-storage-estimate-zero-remaining-warning"
+          class="notice" role="status"><strong>Capacity warning:</strong>
+      the host reported 0 bytes of remaining aggregate origin capacity. This
+      is not Chromium Wasm profile quota, an OPFS reservation, a persistence
+      grant, or an enforcement limit; it does not establish that the volatile
+      profile is full.</p>)HTML";
+      }
       break;
     }
     case WasmBrowserHostStorageEstimateSnapshot::State::kUnavailable:
@@ -102,7 +115,8 @@ std::string BuildWasmSettingsStorageEstimateHtml(
       <dl id="wasm-settings-storage-estimate">
         <dt>Estimate status</dt>)HTML",
        std::move(details), R"HTML(
-      </dl>
+      </dl>)HTML",
+       std::move(zero_remaining_warning), R"HTML(
       <p>This read-only diagnostic is captured during Chrome startup. It does
       not request persistent storage, create files, or enable durable profile
       data.</p>
