@@ -196,7 +196,6 @@ static_library("common_lib") {
     "//components/actor/core:task_id",
     "//components/client_hints/common",
     "//components/cloud_devices/common",
-    "//components/component_updater",
     "//components/content_settings/core/common",
     "//components/crash/core/common",
     "//components/device_signals/core/common:features",
@@ -256,6 +255,12 @@ static_library("common_lib") {
     "//ui/resources",
     "//url",
   ]
+
+  # Component updates require a native signed-package installation path, which
+  # is intentionally unavailable until the Wasm updater boundary is ported.
+  if (!is_wasm) {
+    public_deps += [ "//components/component_updater" ]
+  }
 
   deps = [
     "//components/cdm/common:buildflags",
