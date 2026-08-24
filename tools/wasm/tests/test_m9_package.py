@@ -3283,6 +3283,7 @@ process.stdout.write(JSON.stringify(results));
             no_sandbox=False,
             timeout=120.0,
             outer_document_restart=False,
+            outer_document_restart_count=0,
             release_wisp_endpoint=None,
             emit_package_observation=True,
         )
@@ -3574,6 +3575,34 @@ process.stdout.write(JSON.stringify(results));
             expected_metadata, second_shutdown_kwargs["expected_package_metadata"]
         )
         self.assertEqual(1001.0, second_shutdown_kwargs["expected_time_origin"])
+
+    def test_package_browser_rejects_invalid_outer_document_restart_count(self) -> None:
+        with mock.patch.object(package_browser_smoke, "find_browser") as find_browser:
+            for value in (True, -1, package_browser_smoke.MAX_OUTER_DOCUMENT_RESTARTS + 1):
+                with self.subTest(value=value), self.assertRaisesRegex(
+                    M0Error, "restart count is invalid"
+                ):
+                    package_browser_smoke.run_package_browser_smoke(
+                        dist_dir=Path("/fake/dist"),
+                        browser_argument=None,
+                        no_sandbox=False,
+                        timeout=120.0,
+                        outer_document_restart_count=value,
+                    )
+        find_browser.assert_not_called()
+
+    def test_package_browser_rejects_conflicting_outer_restart_selection(self) -> None:
+        with mock.patch.object(package_browser_smoke, "find_browser") as find_browser:
+            with self.assertRaisesRegex(M0Error, "selection and count disagree"):
+                package_browser_smoke.run_package_browser_smoke(
+                    dist_dir=Path("/fake/dist"),
+                    browser_argument=None,
+                    no_sandbox=False,
+                    timeout=120.0,
+                    outer_document_restart=True,
+                    outer_document_restart_count=2,
+                )
+        find_browser.assert_not_called()
 
 
 if __name__ == "__main__":

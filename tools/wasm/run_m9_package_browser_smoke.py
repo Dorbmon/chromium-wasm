@@ -71,6 +71,24 @@ OUTER_DOCUMENT_RESTART_SCOPE = (
     "real-browser-package-two-outer-document-epochs-loader-pthread-bootstrap-"
     "and-host-shutdown-only"
 )
+OUTER_DOCUMENT_RELOAD_STRESS_EPOCH_COUNT = 3
+OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT = (
+    OUTER_DOCUMENT_RELOAD_STRESS_EPOCH_COUNT - 1
+)
+# This is deliberately a fixed, small reliability probe rather than an
+# unbounded command-line stress loop.  The M9 runner below accepts at most the
+# two restarts needed by the separate three-epoch package-reload observation.
+MAX_OUTER_DOCUMENT_RESTARTS = OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
+OUTER_DOCUMENT_RELOAD_STRESS_SCOPE = (
+    "real-browser-package-three-outer-document-epochs-loader-pthread-bootstrap-"
+    "and-host-shutdown-only"
+)
+OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS = (
+    "fixed-three-epoch-outer-document-reload-observation-only",
+    "does_not_establish_long_run_reliability_or_resource_leak_freedom",
+    "does_not_measure_memory_worker_exhaustion_or_out_of_memory_behavior",
+    "does_not_establish_m7_persistence_m8_compatibility_or_m9_release_completion",
+)
 RELEASE_STATUS = package_tool.RELEASE_STATUS
 EPOCH_QUERY_KEY = "m9_package_epoch"
 MAX_SAFE_INTEGER = (1 << 53) - 1
@@ -801,6 +819,7 @@ def run_package_browser_smoke(
     no_sandbox: bool,
     timeout: float,
     outer_document_restart: bool = False,
+    outer_document_restart_count: int = 0,
     release_wisp_endpoint: str | None = None,
     emit_package_observation: bool = False,
 ) -> dict[str, object]:
@@ -814,6 +833,18 @@ def run_package_browser_smoke(
     profile: tempfile.TemporaryDirectory[str] | None = None
     primary_error: BaseException | None = None
     try:
+        if type(outer_document_restart) is not bool:
+            raise M0Error("package outer-document restart selection is invalid")
+        if (
+            type(outer_document_restart_count) is not int
+            or not 0 <= outer_document_restart_count <= MAX_OUTER_DOCUMENT_RESTARTS
+        ):
+            raise M0Error("package outer-document restart count is invalid")
+        if outer_document_restart and outer_document_restart_count not in (0, 1):
+            raise M0Error(
+                "package outer-document restart selection and count disagree"
+            )
+        restart_count = 1 if outer_document_restart else outer_document_restart_count
         if type(emit_package_observation) is not bool:
             raise M0Error("package observation selection is invalid")
         if emit_package_observation and release_wisp_endpoint is not None:
@@ -909,7 +940,7 @@ def run_package_browser_smoke(
             description="waiting for the first clean fixed package-host shutdown",
         )
         first_result = _epoch_result(first_ready, first_shutdown)
-        if not outer_document_restart:
+        if restart_count == 0:
             result = {
                 "browser_version": browser_version,
                 "frames_presented": first_result["frames_presented"],
@@ -929,48 +960,90 @@ def run_package_browser_smoke(
                 result["release_wisp_pre_navigation_configured"] = True
             return result
 
-        second_epoch = secrets.token_urlsafe(18)
-        if second_epoch == first_epoch:
-            raise M0Error("package restart document epoch was reused")
-        second_url = _make_epoch_url(package_url, second_epoch)
-        client = _restart_after_clean_shutdown(
-            client=client,
-            clean_shutdown=first_shutdown,
-            restart_url=second_url,
-            debug_port=debug_port,
-            deadline=deadline,
-            release_wisp_endpoint=release_wisp_endpoint,
-        )
-        second_ready, second_time_origin = _wait_for_ready_package_document(
-            client=client,
-            browser=browser,
-            browser_stderr=browser_stderr,
-            deadline=deadline,
-            expected_url=second_url,
-            expected_epoch=second_epoch,
-            expected_package_metadata=expected_package_metadata,
-            prior_time_origin=first_time_origin,
-            expected_wisp_configured=release_wisp_endpoint is not None,
-            description="waiting for the fresh outer-document package frame",
-        )
-        second_shutdown = _request_clean_shutdown(
-            client=client,
-            browser=browser,
-            browser_stderr=browser_stderr,
-            deadline=deadline,
-            expected_url=second_url,
-            expected_epoch=second_epoch,
-            expected_package_metadata=expected_package_metadata,
-            expected_time_origin=second_time_origin,
-            description="waiting for the second clean fixed package-host shutdown",
-        )
-        second_result = _epoch_result(second_ready, second_shutdown)
+        epoch_results = [first_result]
+        seen_epochs = {first_epoch}
+        seen_time_origins = {first_time_origin}
+        prior_shutdown = first_shutdown
+        prior_time_origin = first_time_origin
+        for restart_index in range(1, restart_count + 1):
+            epoch = secrets.token_urlsafe(18)
+            if epoch in seen_epochs:
+                raise M0Error("package restart document epoch was reused")
+            seen_epochs.add(epoch)
+            restart_url = _make_epoch_url(package_url, epoch)
+            client = _restart_after_clean_shutdown(
+                client=client,
+                clean_shutdown=prior_shutdown,
+                restart_url=restart_url,
+                debug_port=debug_port,
+                deadline=deadline,
+                release_wisp_endpoint=release_wisp_endpoint,
+            )
+            ready, time_origin = _wait_for_ready_package_document(
+                client=client,
+                browser=browser,
+                browser_stderr=browser_stderr,
+                deadline=deadline,
+                expected_url=restart_url,
+                expected_epoch=epoch,
+                expected_package_metadata=expected_package_metadata,
+                prior_time_origin=prior_time_origin,
+                expected_wisp_configured=release_wisp_endpoint is not None,
+                description=(
+                    "waiting for fresh outer-document package frame "
+                    f"{restart_index + 1}"
+                ),
+            )
+            if time_origin in seen_time_origins:
+                raise M0Error("package restart document time origin was reused")
+            seen_time_origins.add(time_origin)
+            shutdown = _request_clean_shutdown(
+                client=client,
+                browser=browser,
+                browser_stderr=browser_stderr,
+                deadline=deadline,
+                expected_url=restart_url,
+                expected_epoch=epoch,
+                expected_package_metadata=expected_package_metadata,
+                expected_time_origin=time_origin,
+                description=(
+                    "waiting for clean fixed package-host shutdown "
+                    f"{restart_index + 1}"
+                ),
+            )
+            epoch_results.append(_epoch_result(ready, shutdown))
+            prior_shutdown = shutdown
+            prior_time_origin = time_origin
+
+        if restart_count == 1:
+            result = {
+                "browser_version": browser_version,
+                "epochs": epoch_results,
+                "outer_document_restart": True,
+                "release_status": first_ready["releaseStatus"],
+                "scope": OUTER_DOCUMENT_RESTART_SCOPE,
+                "served_version_json_sha256": expected_package_metadata[
+                    "versionJsonSha256"
+                ],
+            }
+            if package_observation is not None:
+                result["package_observation"] = package_observation
+            if release_wisp_endpoint is not None:
+                result["release_wisp_pre_navigation_configured"] = True
+            return result
+
         result = {
             "browser_version": browser_version,
-            "epochs": [first_result, second_result],
-            "outer_document_restart": True,
+            "distinct_document_epoch_count": len(seen_epochs),
+            "distinct_document_time_origin_count": len(seen_time_origins),
+            "epochs": epoch_results,
+            "limitations": list(OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS),
+            "m9_gate_complete": False,
+            "outer_document_epoch_count": len(epoch_results),
+            "outer_document_restarts": restart_count,
+            "performance_gate": False,
             "release_status": first_ready["releaseStatus"],
-            "scope": OUTER_DOCUMENT_RESTART_SCOPE,
+            "scope": OUTER_DOCUMENT_RELOAD_STRESS_SCOPE,
             "served_version_json_sha256": expected_package_metadata[
                 "versionJsonSha256"
             ],
@@ -1070,6 +1143,7 @@ def main() -> int:
             no_sandbox=args.no_sandbox,
             timeout=args.timeout,
             outer_document_restart=args.outer_document_restart,
+            outer_document_restart_count=0,
             release_wisp_endpoint=args.release_wisp_endpoint,
             emit_package_observation=args.emit_package_observation,
         )
