@@ -12,6 +12,12 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_main.h"
 #include "chrome/browser/wasm/wasm_chrome_main_delegate.h"
+#if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// The normal source-selected configuration alone supplies this target. GN's
+// include checker does not evaluate target-specific definitions.
+#include "chrome/browser/wasm/wasm_profile_shutdown_failure_latch.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // The dedicated M7 GN configuration alone supplies this header and target.
 // GN's include checker does not evaluate this target-specific definition.
@@ -93,6 +99,13 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     params.argv = argv;
 
     base::CommandLine::Init(params.argc, params.argv);
+
+#if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    // Browser-main parts may be destroyed before ContentMain returns. Reset
+    // its per-run failure receipt before that lifecycle begins.
+    chrome::ResetWasmProfileShutdownFailureLatch();
+#endif
 
     // The M7 two-module Preferences acceptance is compiled only into its
     // dedicated GN configuration. The primary chrome_wasm build neither
@@ -254,6 +267,16 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
 #endif
+  }
+#endif
+
+#if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  if (chrome::WasmProfileShutdownFailureWasRecorded() &&
+      IsNormalChromeMainResult(result)) {
+    // A failed volatile Preferences fence is not durable-storage evidence,
+    // but it must not be reported as a normal process exit.
+    result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
 #endif
 

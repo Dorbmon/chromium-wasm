@@ -1909,6 +1909,29 @@ source_set("wasm_profile_prefs_fence_controller") {
   deps = [ "//base" ]
 }
 
+# A small process-result latch makes a failed normal volatile Preferences
+# shutdown fence visible after ContentMain has destroyed browser-main parts.
+# It does not select a storage backend or establish profile persistence.
+source_set("wasm_profile_shutdown_failure_latch") {
+  public = [ "wasm_profile_shutdown_failure_latch.h" ]
+
+  sources = [ "wasm_profile_shutdown_failure_latch.cc" ]
+
+  deps = [ "//base" ]
+}
+
+test("wasm_profile_shutdown_failure_latch_unittests") {
+  sources = [ "wasm_profile_shutdown_failure_latch_unittest.cc" ]
+
+  deps = [
+    ":wasm_profile_shutdown_failure_latch",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//testing/gtest",
+  ]
+}
+
 test("wasm_profile_prefs_fence_controller_unittests") {
   sources = [ "wasm_profile_prefs_fence_controller_unittest.cc" ]
 
@@ -2206,6 +2229,8 @@ source_set("wasm_browser_main_parts") {
   if (enable_chromium_wasm_m7_profile_preferences_test ||
       enable_chromium_wasm_m7_profile_database_test) {
     deps += [ ":wasm_profile_storage" ]
+  } else {
+    deps += [ ":wasm_profile_shutdown_failure_latch" ]
   }
 }
 

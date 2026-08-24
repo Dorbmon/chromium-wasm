@@ -617,6 +617,8 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_storage" ]
+    } else {
+      deps += [ "//chrome/browser/wasm:wasm_profile_shutdown_failure_latch" ]
     }
   }
 
@@ -653,6 +655,7 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "//chrome/browser/wasm:wasm_chrome_main_delegate",
       "//chrome/browser/wasm:wasm_chrome_result_codes",
       "//chrome/browser/wasm:wasm_m6_controlled_https_test_mode",
+      "//chrome/browser/wasm:wasm_profile_shutdown_failure_latch",
       "//chrome/common:buildflags",
       "//content/public/app",
       "//content/public/common",

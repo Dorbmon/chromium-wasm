@@ -37,6 +37,12 @@
 #include "chrome/browser/wasm/wasm_settings_ui.h"
 #include "chrome/browser/wasm/wasm_version_ui.h"
 #include "chrome/browser/wasm/wasm_profile.h"
+#if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// The normal source-selected configuration alone supplies this target. GN's
+// include checker does not evaluate target-specific definitions.
+#include "chrome/browser/wasm/wasm_profile_shutdown_failure_latch.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
@@ -1406,6 +1412,9 @@ void WasmBrowserMainParts::FinishShutdown() {
 #else
     // Normal Chrome's profile path is volatile. The completed fence verifies
     // orderly write/readback shutdown but does not establish reload durability.
+    if (!prefs_shutdown_fence_succeeded) {
+      chrome::RecordWasmProfileShutdownFailure();
+    }
     profile_.reset();
 #endif
   }
@@ -1444,8 +1453,9 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     LOG(ERROR) << "chrome_wasm retains its OPFS profile lease because "
                   "Preferences did not pass their shutdown fence";
 #else
+    chrome::RecordWasmProfileShutdownFailure();
     LOG(ERROR) << "chrome_wasm releases its incomplete volatile profile "
-                  "after a Preferences shutdown write/readback fence failure";
+                  "after an incomplete Preferences shutdown fence";
     profile_.reset();
 #endif
   }
