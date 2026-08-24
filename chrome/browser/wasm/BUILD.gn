@@ -656,6 +656,7 @@ source_set("wasm_downloads_ui") {
 # static chrome://theme source serves only VersionUI's bundled product logos.
 source_set("wasm_version_ui") {
   visibility = [
+    ":wasm_browser_continuous_flow",
     ":wasm_browser_main_parts",
     ":wasm_browser_smoke",
   ]
@@ -1445,10 +1446,12 @@ source_set("wasm_browser_continuous_flow") {
     ":wasm_browser",
     ":wasm_browser_host_continuous_flow_smoke",
     ":wasm_browser_menu",
+    ":wasm_browser_view",
     ":wasm_m6_controlled_https_test_mode",
     ":wasm_settings_ui",
     ":wasm_tab_strip",
     ":wasm_top_controls",
+    ":wasm_version_ui",
     "//content/public/browser",
     "//net",
     "//ui/gfx/geometry",
