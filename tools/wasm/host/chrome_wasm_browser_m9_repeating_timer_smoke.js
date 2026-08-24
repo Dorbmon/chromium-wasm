@@ -32,7 +32,18 @@ const STRESS_100_TICKS_READY_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:READY ti
 const STRESS_100_TICKS_QUIESCENT_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:QUIESCENT ticks=100 duration_ms=200";
 const STRESS_100_TICKS_PASS_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS ticks=100";
 const STRESS_100_TICK_COUNT = 100;
-const MAX_RECORD_HISTORY = 512;
+const STRESS_1000_TICKS_MODE = "stress-1000-ticks";
+const STRESS_1000_TICKS_CASE = "browser_repeating_timer_m9_stress_1000_ticks";
+const STRESS_1000_TICKS_SCOPE = "fixed-one-thousand-native-ui-repeating-timer-ticks-with-pre-shutdown-quiescence-and-post-shutdown-quiet-observation";
+const STRESS_1000_TICKS_SWITCH = "--wasm-browser-m9-repeating-timer-smoke-ticks=1000";
+const STRESS_1000_TICKS_READY_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:READY ticks=1000 interval_ms=50";
+const STRESS_1000_TICKS_QUIESCENT_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:QUIESCENT ticks=1000 duration_ms=200";
+const STRESS_1000_TICKS_PASS_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS ticks=1000";
+const STRESS_1000_TICK_COUNT = 1000;
+// The largest closed mode needs its 1,000 tick records plus READY,
+// QUIESCENT, PASS, and lifecycle markers. Keep the complete witness bounded
+// while leaving room for ordinary runtime output.
+const MAX_RECORD_HISTORY = 2048;
 const MAX_FRAME_DIMENSION = 16384;
 
 const DEFAULT_TIMER_SMOKE_CONFIG = Object.freeze({
@@ -55,8 +66,19 @@ const STRESS_100_TICKS_TIMER_SMOKE_CONFIG = Object.freeze({
   passMarker: STRESS_100_TICKS_PASS_MARKER,
   tickCount: STRESS_100_TICK_COUNT,
 });
+const STRESS_1000_TICKS_TIMER_SMOKE_CONFIG = Object.freeze({
+  mode: STRESS_1000_TICKS_MODE,
+  case: STRESS_1000_TICKS_CASE,
+  scope: STRESS_1000_TICKS_SCOPE,
+  switch: STRESS_1000_TICKS_SWITCH,
+  readyMarker: STRESS_1000_TICKS_READY_MARKER,
+  quiescentMarker: STRESS_1000_TICKS_QUIESCENT_MARKER,
+  passMarker: STRESS_1000_TICKS_PASS_MARKER,
+  tickCount: STRESS_1000_TICK_COUNT,
+});
 const TIMER_SMOKE_CONFIGS_BY_MODE = Object.freeze({
   [STRESS_100_TICKS_MODE]: STRESS_100_TICKS_TIMER_SMOKE_CONFIG,
+  [STRESS_1000_TICKS_MODE]: STRESS_1000_TICKS_TIMER_SMOKE_CONFIG,
 });
 
 function delay(milliseconds) {
@@ -762,6 +784,14 @@ export const chromeWasmBrowserM9RepeatingTimerSmokeContract = Object.freeze({
   STRESS_100_TICKS_SCOPE,
   STRESS_100_TICKS_SWITCH,
   STRESS_100_TICK_COUNT,
+  STRESS_1000_TICKS_CASE,
+  STRESS_1000_TICKS_MODE,
+  STRESS_1000_TICKS_PASS_MARKER,
+  STRESS_1000_TICKS_QUIESCENT_MARKER,
+  STRESS_1000_TICKS_READY_MARKER,
+  STRESS_1000_TICKS_SCOPE,
+  STRESS_1000_TICKS_SWITCH,
+  STRESS_1000_TICK_COUNT,
   SWITCH,
   TICK_COUNT,
 });

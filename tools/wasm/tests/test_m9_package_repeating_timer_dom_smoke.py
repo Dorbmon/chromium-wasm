@@ -417,6 +417,48 @@ class M9PackageRepeatingTimerDomSmokeTest(unittest.TestCase):
                     config=config,
                 )
 
+    def test_long_stress_wrapper_retains_package_bytes_and_fixed_child_mode(
+        self,
+    ) -> None:
+        snapshot = self._snapshot()
+        alias_identity = self._alias_identity(snapshot)
+        harness = self._capture_harness_identity()
+        config = repeating_timer.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG
+        child = {"opaque": "one-thousand-fixed-timer-result"}
+        result = runner.package_repeating_timer_result(
+            child, snapshot, config=config
+        )
+        self.assertEqual(runner.STRESS_1000_TICKS_SCOPE, result["scope"])
+        self.assertFalse(result["m9GateComplete"])
+        self.assertEqual(snapshot.artifact_identity, result["packageArtifact"])
+
+        with mock.patch.object(
+            runner.repeating_timer, "validate_result"
+        ) as validate_child:
+            self.assertEqual(
+                result,
+                runner.validate_package_repeating_timer_result(
+                    result,
+                    expected_snapshot=snapshot,
+                    expected_alias_identity=alias_identity,
+                    expected_capture_harness_identity=harness,
+                    config=config,
+                ),
+            )
+        self.assertEqual(config, validate_child.call_args.kwargs["config"])
+        self.assertEqual(child, validate_child.call_args.args[0])
+
+        result["scope"] = runner.STRESS_100_TICKS_SCOPE
+        with mock.patch.object(runner.repeating_timer, "validate_result"):
+            with self.assertRaisesRegex(M0Error, "result scope"):
+                runner.validate_package_repeating_timer_result(
+                    result,
+                    expected_snapshot=snapshot,
+                    expected_alias_identity=alias_identity,
+                    expected_capture_harness_identity=harness,
+                    config=config,
+                )
+
     def test_wrapper_retains_timer_and_pre_release_limitations(self) -> None:
         runner_source = source(
             "tools/wasm/run_m9_package_repeating_timer_dom_smoke.py"
@@ -437,7 +479,9 @@ class M9PackageRepeatingTimerDomSmokeTest(unittest.TestCase):
             "m9GateComplete\": False",
             "--stress-100-ticks",
             "STRESS_100_TICKS_SCOPE",
-            "STRESS_100_MINIMUM_TIMEOUT_SECONDS",
+            "--stress-1000-ticks",
+            "STRESS_1000_TICKS_SCOPE",
+            "timer_config.minimum_timeout_seconds",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, runner_source)
@@ -536,6 +580,39 @@ class M9PackageRepeatingTimerDomSmokeTest(unittest.TestCase):
             stderr.seek(0)
             self.assertIn(
                 "--stress-100-ticks requires --timeout of at least 30 seconds",
+                stderr.read(),
+            )
+        finally:
+            stderr.close()
+
+    def test_main_requires_ninety_seconds_for_package_long_stress_mode(self) -> None:
+        stderr = tempfile.SpooledTemporaryFile(mode="w+t")
+        try:
+            with (
+                mock.patch.object(
+                    runner, "capture_package_repeating_timer_snapshot"
+                ) as capture,
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "package-repeating-timer",
+                        "--dist-dir",
+                        str(self.dist_dir),
+                        "--stress-1000-ticks",
+                        "--timeout",
+                        "89",
+                    ],
+                ),
+                mock.patch.object(runner.sys, "stderr", stderr),
+                self.assertRaises(SystemExit) as failure,
+            ):
+                runner.main()
+            self.assertEqual(2, failure.exception.code)
+            capture.assert_not_called()
+            stderr.seek(0)
+            self.assertIn(
+                "--stress-1000-ticks requires --timeout of at least 90 seconds",
                 stderr.read(),
             )
         finally:

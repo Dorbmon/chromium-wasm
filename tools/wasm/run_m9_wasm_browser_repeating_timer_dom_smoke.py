@@ -6,14 +6,14 @@
 """Run the bounded native Chromium UI-sequence repeating-timer smoke.
 
 This is M9 preparation evidence, not an M9 release gate. It proves only that
-one visible single-process Browser executes either three default or one hundred
-explicit stress ``base::RepeatingTimer`` callbacks while the outer host event
-loop remains responsive, then reaches the ordinary Browser destruction barrier
-without later timer output. It does not measure long-run timer reliability,
-worker drain, memory leaks, performance, persistence, networking, a visually
-non-empty Chrome shell, or M8 feature compatibility. The canvas must be
-surface-ready, but this smoke does not claim the shell or first visually
-non-empty paint readiness reports.
+one visible single-process Browser executes either three default, one hundred
+stress, or one thousand bounded-endurance ``base::RepeatingTimer`` callbacks
+while the outer host event loop remains responsive, then reaches the ordinary
+Browser destruction barrier without later timer output. It does not measure
+long-run timer reliability, worker drain, memory leaks, performance,
+persistence, networking, a visually non-empty Chrome shell, or M8 feature
+compatibility. The canvas must be surface-ready, but this smoke does not claim
+the shell or first visually non-empty paint readiness reports.
 """
 
 from __future__ import annotations
@@ -93,6 +93,24 @@ STRESS_100_TICKS_QUIESCENT_MARKER = (
 STRESS_100_TICKS_PASS_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS ticks=100"
 STRESS_100_TICK_COUNT = 100
 STRESS_100_MINIMUM_TIMEOUT_SECONDS = 30.0
+STRESS_1000_TICKS_MODE = "stress-1000-ticks"
+STRESS_1000_TICKS_CASE = "browser_repeating_timer_m9_stress_1000_ticks"
+STRESS_1000_TICKS_SCOPE = (
+    "fixed-one-thousand-native-ui-repeating-timer-ticks-with-pre-shutdown-"
+    "quiescence-and-post-shutdown-quiet-observation"
+)
+STRESS_1000_TICKS_SWITCH = "--wasm-browser-m9-repeating-timer-smoke-ticks=1000"
+STRESS_1000_TICKS_READY_MARKER = (
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:READY ticks=1000 interval_ms=50"
+)
+STRESS_1000_TICKS_QUIESCENT_MARKER = (
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:QUIESCENT ticks=1000 duration_ms=200"
+)
+STRESS_1000_TICKS_PASS_MARKER = (
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS ticks=1000"
+)
+STRESS_1000_TICK_COUNT = 1000
+STRESS_1000_MINIMUM_TIMEOUT_SECONDS = 90.0
 HOST_ROOT = "/__m9_repeating_timer__"
 PRODUCT_MODULE_NAME = "chrome_wasm"
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -169,11 +187,28 @@ STRESS_100_TICKS_TIMER_SMOKE_CONFIG = TimerSmokeConfig(
     tick_count=STRESS_100_TICK_COUNT,
     minimum_timeout_seconds=STRESS_100_MINIMUM_TIMEOUT_SECONDS,
 )
+STRESS_1000_TICKS_TIMER_SMOKE_CONFIG = TimerSmokeConfig(
+    mode=STRESS_1000_TICKS_MODE,
+    case=STRESS_1000_TICKS_CASE,
+    scope=STRESS_1000_TICKS_SCOPE,
+    switch=STRESS_1000_TICKS_SWITCH,
+    ready_marker=STRESS_1000_TICKS_READY_MARKER,
+    quiescent_marker=STRESS_1000_TICKS_QUIESCENT_MARKER,
+    pass_marker=STRESS_1000_TICKS_PASS_MARKER,
+    tick_count=STRESS_1000_TICK_COUNT,
+    minimum_timeout_seconds=STRESS_1000_MINIMUM_TIMEOUT_SECONDS,
+)
 
 
-def select_timer_smoke_config(*, stress_100_ticks: bool) -> TimerSmokeConfig:
+def select_timer_smoke_config(
+    *, stress_100_ticks: bool, stress_1000_ticks: bool = False
+) -> TimerSmokeConfig:
     """Select one of the fixed timer contracts; arbitrary tick counts are invalid."""
 
+    if stress_100_ticks and stress_1000_ticks:
+        raise M0Error("repeating-timer stress modes are mutually exclusive")
+    if stress_1000_ticks:
+        return STRESS_1000_TICKS_TIMER_SMOKE_CONFIG
     if stress_100_ticks:
         return STRESS_100_TICKS_TIMER_SMOKE_CONFIG
     return DEFAULT_TIMER_SMOKE_CONFIG
@@ -184,6 +219,8 @@ def _require_timer_smoke_config(config: object) -> TimerSmokeConfig:
         return DEFAULT_TIMER_SMOKE_CONFIG
     if config is STRESS_100_TICKS_TIMER_SMOKE_CONFIG:
         return STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+    if config is STRESS_1000_TICKS_TIMER_SMOKE_CONFIG:
+        return STRESS_1000_TICKS_TIMER_SMOKE_CONFIG
     raise M0Error("repeating-timer configuration is not a closed supported mode")
 
 
@@ -985,15 +1022,22 @@ def main() -> int:
     parser.add_argument("--module-name", default=PRODUCT_MODULE_NAME)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
-    parser.add_argument("--stress-100-ticks", action="store_true")
+    stress_group = parser.add_mutually_exclusive_group()
+    stress_group.add_argument("--stress-100-ticks", action="store_true")
+    stress_group.add_argument("--stress-1000-ticks", action="store_true")
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
     timer_config = select_timer_smoke_config(
-        stress_100_ticks=args.stress_100_ticks
+        stress_100_ticks=args.stress_100_ticks,
+        stress_1000_ticks=args.stress_1000_ticks,
     )
     if args.timeout < timer_config.minimum_timeout_seconds:
         if timer_config is STRESS_100_TICKS_TIMER_SMOKE_CONFIG:
             parser.error("--stress-100-ticks requires --timeout of at least 30 seconds")
+        if timer_config is STRESS_1000_TICKS_TIMER_SMOKE_CONFIG:
+            parser.error(
+                "--stress-1000-ticks requires --timeout of at least 90 seconds"
+            )
         parser.error("--timeout must be at least two seconds")
     if not MODULE_NAME_RE.fullmatch(args.module_name):
         parser.error("--module-name must contain only ASCII letters, digits, or _")

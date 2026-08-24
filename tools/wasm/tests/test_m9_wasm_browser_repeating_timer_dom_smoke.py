@@ -191,6 +191,20 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "native markers"):
             validate(result, config)
 
+    def test_accepts_only_the_fixed_one_thousand_tick_stress_contract(self) -> None:
+        config = smoke.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG
+        result = successful_result(config)
+        validate(result, config)
+        self.assertEqual(
+            smoke.STRESS_1000_TICKS_SWITCH, config.runtime_arguments[0]
+        )
+        self.assertEqual(1000, len(result["ticks"]))
+        self.assertEqual(1003, result["postExitObservation"]["before"]["timerMarkers"])
+
+        result["stderr"][-2] = smoke.STRESS_100_TICKS_PASS_MARKER
+        with self.assertRaisesRegex(M0Error, "native markers"):
+            validate(result, config)
+
     def test_closed_stress_config_rejects_arbitrary_timer_contracts(self) -> None:
         invalid = smoke.TimerSmokeConfig(
             mode="stress-101-ticks",
@@ -210,6 +224,18 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
                 expected_artifact_identity=ARTIFACT_IDENTITY,
                 expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
                 config=invalid,
+            )
+
+    def test_closed_stress_config_selects_one_thousand_ticks_only(self) -> None:
+        self.assertIs(
+            smoke.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG,
+            smoke.select_timer_smoke_config(
+                stress_100_ticks=False, stress_1000_ticks=True
+            ),
+        )
+        with self.assertRaisesRegex(M0Error, "mutually exclusive"):
+            smoke.select_timer_smoke_config(
+                stress_100_ticks=True, stress_1000_ticks=True
             )
 
     def test_rejects_watchdog_extra_tick_unresponsive_host_or_post_exit_output(self) -> None:
@@ -372,6 +398,20 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             smoke.parse_result_payload(json.dumps(result).encode(), config=config)
         )
 
+    def test_long_stress_result_parser_is_bound_to_its_fixed_case_and_scope(
+        self,
+    ) -> None:
+        config = smoke.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG
+        result = successful_result(config)
+        payload = json.dumps(result, separators=(",", ":")).encode()
+        self.assertEqual(smoke.parse_result_payload(payload, config=config), result)
+        self.assertIsNone(smoke.parse_result_payload(payload))
+
+        result["scope"] = smoke.STRESS_100_TICKS_SCOPE
+        self.assertIsNone(
+            smoke.parse_result_payload(json.dumps(result).encode(), config=config)
+        )
+
     def test_stress_url_is_mode_bound_while_default_url_omits_mode(self) -> None:
         server = mock.Mock()
         server.module_name = smoke.PRODUCT_MODULE_NAME
@@ -400,10 +440,25 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             [smoke.STRESS_100_TICKS_MODE],
             parse_qs(urlsplit(stress_url).query)["mode"],
         )
+        long_stress_url = smoke.smoke_url(
+            server,
+            "test-token",
+            VERSIONS,
+            artifact=ARTIFACT_IDENTITY,
+            capture_harness=CAPTURE_HARNESS_IDENTITY,
+            module_name=smoke.PRODUCT_MODULE_NAME,
+            timeout_seconds=90.0,
+            config=smoke.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG,
+        )
+        self.assertEqual(
+            [smoke.STRESS_1000_TICKS_MODE],
+            parse_qs(urlsplit(long_stress_url).query)["mode"],
+        )
 
     def test_server_mode_binding_rejects_injected_missing_and_repeated_modes(self) -> None:
         default = smoke.DEFAULT_TIMER_SMOKE_CONFIG
         stress = smoke.STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+        long_stress = smoke.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG
         self.assertTrue(smoke._query_matches_timer_smoke_config("token=a", default))
         self.assertFalse(
             smoke._query_matches_timer_smoke_config(
@@ -415,6 +470,11 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
                 "token=a&mode=stress-100-ticks", stress
             )
         )
+        self.assertTrue(
+            smoke._query_matches_timer_smoke_config(
+                "token=a&mode=stress-1000-ticks", long_stress
+            )
+        )
         for query in (
             "token=a",
             "token=a&mode=stress-101-ticks",
@@ -422,6 +482,16 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
         ):
             with self.subTest(query=query):
                 self.assertFalse(smoke._query_matches_timer_smoke_config(query, stress))
+        for query in (
+            "token=a",
+            "token=a&mode=stress-100-ticks",
+            "token=a&mode=stress-1001-ticks",
+            "token=a&mode=stress-1000-ticks&mode=stress-1000-ticks",
+        ):
+            with self.subTest(query=query):
+                self.assertFalse(
+                    smoke._query_matches_timer_smoke_config(query, long_stress)
+                )
 
     def test_stress_server_rejects_tampered_mode_before_serving_the_host(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -482,11 +552,14 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             "wasm-browser-m9-repeating-timer-smoke-ticks",
             "kWasmBrowserM9RepeatingTimerSmokeTickCount = 3",
             "kWasmBrowserM9RepeatingTimerSmokeStressTickCount = 100",
+            "kWasmBrowserM9RepeatingTimerSmokeLongStressTickCount = 1000",
             "kWasmBrowserM9RepeatingTimerSmokeInterval",
             "kWasmBrowserM9RepeatingTimerSmokeQuiescenceDuration",
             "kWasmBrowserM9RepeatingTimerSmokeTimeout",
             "kWasmBrowserM9RepeatingTimerSmokeStressTimeout",
+            "kWasmBrowserM9RepeatingTimerSmokeLongStressTimeout",
             "base::Seconds(12)",
+            "base::Seconds(75)",
             "StartM9RepeatingTimerSmoke",
             "OnM9RepeatingTimerSmokeTick",
             "OnM9RepeatingTimerSmokeTimeout",
@@ -534,9 +607,9 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
         self.assertIn("CHECK(!main_parts->m9_repeating_timer_smoke_timer_.IsRunning())", tick)
         self.assertIn("CHECK(main_parts->browser_lifecycle_->IsVisible())", tick)
         self.assertIn("StopM9RepeatingTimerSmoke();", timeout)
+        self.assertIn("kWasmBrowserM9RepeatingTimerSmokeStressTickCount", main_parts)
         self.assertIn(
-            "parsed_stress_ticks != kWasmBrowserM9RepeatingTimerSmokeStressTickCount",
-            main_parts,
+            "kWasmBrowserM9RepeatingTimerSmokeLongStressTickCount", main_parts
         )
         self.assertIn(
             "browser_m9_repeating_timer_default_smoke &&",
@@ -578,7 +651,9 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             "POST_EXIT_GRACE_MS = 100",
             "STRESS_100_TICKS_MODE = \"stress-100-ticks\"",
             "STRESS_100_TICKS_SWITCH = \"--wasm-browser-m9-repeating-timer-smoke-ticks=100\"",
-            "MAX_RECORD_HISTORY = 512",
+            "STRESS_1000_TICKS_MODE = \"stress-1000-ticks\"",
+            "STRESS_1000_TICKS_SWITCH = \"--wasm-browser-m9-repeating-timer-smoke-ticks=1000\"",
+            "MAX_RECORD_HISTORY = 2048",
             "timerSmokeConfigFromQuery",
             "query.getAll(\"mode\")",
             "timerMarkersQuiet",
@@ -622,6 +697,8 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             "_validate_native_markers",
             "--stress-100-ticks",
             "STRESS_100_MINIMUM_TIMEOUT_SECONDS = 30.0",
+            "--stress-1000-ticks",
+            "STRESS_1000_MINIMUM_TIMEOUT_SECONDS = 90.0",
             "config=timer_config",
             "wait_for_normal_close_result",
         ):
@@ -798,6 +875,33 @@ process.stdout.write(JSON.stringify({{error, fetchCalls}}));
 
         self.assertIn(
             "--stress-100-ticks requires --timeout of at least 30 seconds",
+            stderr.getvalue(),
+        )
+        check_boundary.assert_not_called()
+        create_server.assert_not_called()
+
+    def test_main_requires_a_ninety_second_timeout_for_long_stress_mode(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(smoke, "check_boundary") as check_boundary,
+            mock.patch.object(smoke, "create_server") as create_server,
+            mock.patch.object(
+                smoke.sys,
+                "argv",
+                [
+                    "repeating-timer-runner",
+                    "--stress-1000-ticks",
+                    "--timeout",
+                    "89",
+                ],
+            ),
+            mock.patch.object(smoke.sys, "stderr", stderr),
+            self.assertRaisesRegex(SystemExit, "^2$"),
+        ):
+            smoke.main()
+
+        self.assertIn(
+            "--stress-1000-ticks requires --timeout of at least 90 seconds",
             stderr.getvalue(),
         )
         check_boundary.assert_not_called()

@@ -169,6 +169,7 @@ constexpr base::TimeDelta kWasmBrowserLifecycleSmokeVisibleDuration =
     base::Milliseconds(250);
 constexpr int kWasmBrowserM9RepeatingTimerSmokeTickCount = 3;
 constexpr int kWasmBrowserM9RepeatingTimerSmokeStressTickCount = 100;
+constexpr int kWasmBrowserM9RepeatingTimerSmokeLongStressTickCount = 1000;
 constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeInterval =
     base::Milliseconds(50);
 constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeQuiescenceDuration =
@@ -177,6 +178,8 @@ constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeTimeout =
     base::Seconds(5);
 constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeStressTimeout =
     base::Seconds(12);
+constexpr base::TimeDelta kWasmBrowserM9RepeatingTimerSmokeLongStressTimeout =
+    base::Seconds(75);
 constexpr char kWasmBrowserM9RepeatingTimerSmokeReadyMarker[] =
     "CHROMIUM_WASM_M9_REPEATING_TIMER:READY";
 constexpr char kWasmBrowserM9RepeatingTimerSmokeTickMarker[] =
@@ -512,7 +515,10 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
             kWasmBrowserM9RepeatingTimerSmokeTicksSwitch);
     int parsed_stress_ticks = 0;
     if (!base::StringToInt(stress_ticks, &parsed_stress_ticks) ||
-        parsed_stress_ticks != kWasmBrowserM9RepeatingTimerSmokeStressTickCount ||
+        (parsed_stress_ticks !=
+             kWasmBrowserM9RepeatingTimerSmokeStressTickCount &&
+         parsed_stress_ticks !=
+             kWasmBrowserM9RepeatingTimerSmokeLongStressTickCount) ||
         stress_ticks != base::NumberToString(parsed_stress_ticks)) {
       LOG(ERROR) << "chrome_wasm rejects an unsupported M9 repeating timer "
                     "stress tick count";
@@ -1065,7 +1071,9 @@ void WasmBrowserMainParts::StartM9RepeatingTimerSmoke() {
   CHECK(m9_repeating_timer_smoke_expected_ticks_ ==
             kWasmBrowserM9RepeatingTimerSmokeTickCount ||
         m9_repeating_timer_smoke_expected_ticks_ ==
-            kWasmBrowserM9RepeatingTimerSmokeStressTickCount);
+            kWasmBrowserM9RepeatingTimerSmokeStressTickCount ||
+        m9_repeating_timer_smoke_expected_ticks_ ==
+            kWasmBrowserM9RepeatingTimerSmokeLongStressTickCount);
 
   m9_repeating_timer_smoke_started_ = true;
   m9_repeating_timer_smoke_observed_ticks_ = 0;
@@ -1076,9 +1084,12 @@ void WasmBrowserMainParts::StartM9RepeatingTimerSmoke() {
   m9_repeating_timer_smoke_timeout_timer_.Start(
       FROM_HERE,
       m9_repeating_timer_smoke_expected_ticks_ ==
+              kWasmBrowserM9RepeatingTimerSmokeLongStressTickCount
+          ? kWasmBrowserM9RepeatingTimerSmokeLongStressTimeout
+          : m9_repeating_timer_smoke_expected_ticks_ ==
               kWasmBrowserM9RepeatingTimerSmokeStressTickCount
-          ? kWasmBrowserM9RepeatingTimerSmokeStressTimeout
-          : kWasmBrowserM9RepeatingTimerSmokeTimeout,
+              ? kWasmBrowserM9RepeatingTimerSmokeStressTimeout
+              : kWasmBrowserM9RepeatingTimerSmokeTimeout,
       base::BindOnce(&WasmBrowserMainParts::OnM9RepeatingTimerSmokeTimeout,
                      weak_ptr_factory_.GetWeakPtr()));
   std::fprintf(stderr, "%s ticks=%d interval_ms=%d\n",

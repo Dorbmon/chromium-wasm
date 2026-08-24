@@ -74,6 +74,10 @@ STRESS_100_TICKS_SCOPE = (
     "verified-package-module-bytes-private-in-memory-alias-fixed-one-hundred-"
     "native-ui-repeating-timer-ticks-with-pre-shutdown-quiescence-only"
 )
+STRESS_1000_TICKS_SCOPE = (
+    "verified-package-module-bytes-private-in-memory-alias-fixed-one-thousand-"
+    "native-ui-repeating-timer-ticks-with-pre-shutdown-quiescence-only"
+)
 PUBLIC_MODULE_NAME = "chromium-wasm"
 PRIVATE_MODULE_NAME = timer.PRODUCT_MODULE_NAME
 PACKAGE_ARTIFACT_DELIVERY = "verified-package-snapshot-private-in-memory-alias"
@@ -158,6 +162,8 @@ def _package_scope(config: object) -> str:
         return SCOPE
     if config is timer.STRESS_100_TICKS_TIMER_SMOKE_CONFIG:
         return STRESS_100_TICKS_SCOPE
+    if config is timer.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG:
+        return STRESS_1000_TICKS_SCOPE
     raise M0Error("package repeating-timer configuration is not supported")
 
 
@@ -600,17 +606,24 @@ def main() -> int:
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
-    parser.add_argument("--stress-100-ticks", action="store_true")
+    stress_group = parser.add_mutually_exclusive_group()
+    stress_group.add_argument("--stress-100-ticks", action="store_true")
+    stress_group.add_argument("--stress-1000-ticks", action="store_true")
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
     timer_config = timer.select_timer_smoke_config(
-        stress_100_ticks=args.stress_100_ticks
+        stress_100_ticks=args.stress_100_ticks,
+        stress_1000_ticks=args.stress_1000_ticks,
     )
-    if (
-        timer_config is timer.STRESS_100_TICKS_TIMER_SMOKE_CONFIG
-        and args.timeout < timer.STRESS_100_MINIMUM_TIMEOUT_SECONDS
-    ):
-        parser.error("--stress-100-ticks requires --timeout of at least 30 seconds")
+    if args.timeout < timer_config.minimum_timeout_seconds:
+        if timer_config is timer.STRESS_100_TICKS_TIMER_SMOKE_CONFIG:
+            parser.error(
+                "--stress-100-ticks requires --timeout of at least 30 seconds"
+            )
+        if timer_config is timer.STRESS_1000_TICKS_TIMER_SMOKE_CONFIG:
+            parser.error(
+                "--stress-1000-ticks requires --timeout of at least 90 seconds"
+            )
     if args.timeout < 3.0:
         parser.error("--timeout must be at least three seconds")
 
