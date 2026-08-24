@@ -81,6 +81,14 @@ NETWORK_CHANGE_NOTIFIER_NOT_IMPLEMENTED_DIAGNOSTICS = (
     "NetworkChangeNotifier::CreateIfNeeded",
 )
 
+# The supported no-switch Browser window is explicitly modeless on Wasm. Keep
+# this lifecycle lane fail-closed if it regresses to the generic desktop-host
+# modal stub, without rejecting other deliberately unsupported diagnostics.
+BROWSER_DESKTOP_WINDOW_TREE_HOST_MODAL_NOT_IMPLEMENTED_DIAGNOSTICS = (
+    "Not implemented reached in",
+    "DesktopWindowTreeHostPlatform::InitModalType",
+)
+
 
 @dataclass(frozen=True)
 class ArtifactSnapshot:
@@ -442,6 +450,17 @@ def validate_result(result: dict[str, Any], output: str) -> None:
     ):
         raise M0Error(
             "ordinary Browser reached the Wasm NetworkChangeNotifier "
+            "NOTIMPLEMENTED path"
+        )
+
+    if all(
+        diagnostic in output
+        for diagnostic in (
+            BROWSER_DESKTOP_WINDOW_TREE_HOST_MODAL_NOT_IMPLEMENTED_DIAGNOSTICS
+        )
+    ):
+        raise M0Error(
+            "ordinary Browser reached the Wasm modeless-window "
             "NOTIMPLEMENTED path"
         )
 

@@ -36,6 +36,9 @@ class BrowserDesktopWindowTreeHostWasm
   // BrowserDesktopWindowTreeHost:
   views::DesktopWindowTreeHost* AsDesktopWindowTreeHost() override;
   bool UsesNativeSystemMenu() const override;
+
+  // DesktopWindowTreeHost:
+  void InitModalType(ui::mojom::ModalType modal_type) override;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_DESKTOP_WINDOW_TREE_HOST_WASM_H_

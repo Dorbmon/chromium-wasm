@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/frame/browser_desktop_window_tree_host_wasm.h"
 
+#include "base/check.h"
 #include "build/build_config.h"
 #include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 
@@ -29,6 +30,15 @@ bool BrowserDesktopWindowTreeHostWasm::UsesNativeSystemMenu() const {
   // There is no host-OS menu. BrowserWidget owns any menu presentation that
   // the Wasm Ozone surface supports.
   return false;
+}
+
+void BrowserDesktopWindowTreeHostWasm::InitModalType(
+    ui::mojom::ModalType modal_type) {
+  // This host is selected only for the supported top-level Browser widget.
+  // Aura's default kNone modality already represents that modeless window;
+  // it requires no PlatformWindow or host-page action. Do not turn an
+  // unexpected modal request into a modeless browser or imply dialog support.
+  CHECK_EQ(modal_type, ui::mojom::ModalType::kNone);
 }
 
 BrowserDesktopWindowTreeHost*

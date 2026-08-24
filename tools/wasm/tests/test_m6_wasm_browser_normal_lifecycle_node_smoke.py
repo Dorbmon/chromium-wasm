@@ -213,6 +213,17 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "NetworkChangeNotifier"):
             runner.validate_result(result, output)
 
+    def test_validate_result_rejects_browser_modeless_host_stub(self) -> None:
+        result = _passing_result()
+        output = (
+            f"{runner.READY_MARKER}\n{runner.PASS_MARKER}\n"
+            "Not implemented reached in virtual void "
+            "views::DesktopWindowTreeHostPlatform::InitModalType("
+            "ui::mojom::ModalType)."
+        )
+        with self.assertRaisesRegex(M0Error, "modeless-window"):
+            runner.validate_result(result, output)
+
     def test_snapshot_materializes_captured_bytes_after_source_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             out_dir = Path(temporary) / "out"
