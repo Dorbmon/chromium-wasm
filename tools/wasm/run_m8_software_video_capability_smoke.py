@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+"""Run the bounded M8.3 Wasm software-video capability witness under Node.
+
+This runner checks only the Chromium media capability answer compiled into its
+standalone target. It does not launch a browser or establish media playback.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+from m0_common import M0Error, REPO_ROOT, load_manifest, parse_timeout
+from run_node_smoke import node_executable, runner_source
+
+
+PREFIX = "CHROMIUM_WASM_M8_SOFTWARE_VIDEO"
+MODULE_NAME = "wasm_software_video_capability_smoke.js"
+DEFAULT_OUT_DIR = Path("out/wasm-chrome-m6")
+EXPECTED_RESULT = (
+    f"{PREFIX}:RESULT libvpx=disabled ffmpeg_video=disabled "
+    "av1_decoder=disabled vp8=not_supported vp9=not_supported "
+    "av1=not_supported browser_playback=not_proven webcodecs=not_proven"
+)
+EXPECTED_MARKERS = (
+    f"{PREFIX}:RUNTIME_START",
+    f"{PREFIX}:PHASE name=software_decoder_buildflags status=disabled",
+    f"{PREFIX}:PHASE name=video_mime_capabilities status=not_supported",
+    EXPECTED_RESULT,
+    f"{PREFIX}:RUNTIME_END",
+    f"{PREFIX}:PASS",
+)
+
+
+def resolve_module(out_dir: Path) -> Path:
+    resolved_out_dir = out_dir.resolve()
+    module = (resolved_out_dir / MODULE_NAME).resolve()
+    if module.parent != resolved_out_dir:
+        raise M0Error("resolved module escapes the selected output directory")
+    if module.suffix != ".js" or not module.is_file():
+        raise M0Error("the generated software-video module does not exist")
+    if not module.with_suffix(".wasm").is_file():
+        raise M0Error("the generated software-video Wasm sidecar does not exist")
+    return module
+
+
+def validate_streams(stdout: str, stderr: str) -> None:
+    if f"{PREFIX}:FAIL" in stdout or f"{PREFIX}:FAIL" in stderr:
+        raise M0Error("native software-video smoke emitted a failure marker")
+    if stdout.count(f"{PREFIX}:NODE_EXIT {{\"exitCode\":0}}") != 1:
+        raise M0Error("Node did not observe exactly one zero native exit")
+
+    previous = -1
+    for marker in EXPECTED_MARKERS:
+        if stdout.count(marker) != 1:
+            raise M0Error(f"stdout must contain exactly one {marker}")
+        position = stdout.index(marker)
+        if position <= previous:
+            raise M0Error("native software-video markers are out of order")
+        previous = position
+
+    exit_marker = f"{PREFIX}:NODE_EXIT {{\"exitCode\":0}}"
+    if stdout.index(exit_marker) <= previous:
+        raise M0Error("Node exit marker preceded native capability completion")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run the M8 Wasm software-video capability smoke under Node."
+    )
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--timeout", type=parse_timeout, default=30.0)
+    args = parser.parse_args()
+
+    try:
+        manifest = load_manifest()
+        module = resolve_module(args.out_dir)
+        node = node_executable(manifest)
+        if not node.is_file():
+            raise M0Error("the pinned Node executable is not installed")
+
+        source = runner_source(
+            module.as_uri(), max(1, int(args.timeout * 1000)), PREFIX
+        )
+        started = time.perf_counter()
+        try:
+            completed = subprocess.run(
+                [
+                    str(node),
+                    "--experimental-default-type=module",
+                    "--eval",
+                    source,
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=args.timeout + 5.0,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise M0Error("Node process timeout") from exc
+
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        if completed.returncode != 0:
+            raise M0Error(f"Node exited with status {completed.returncode}")
+        validate_streams(completed.stdout, completed.stderr)
+
+        wasm = module.with_suffix(".wasm")
+        result = {
+            "artifact": str(module.relative_to(REPO_ROOT)),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+            "m8GateComplete": False,
+            "scope": "compiled-media-mime-capability-only",
+            "status": "pass",
+            "wasm_bytes": wasm.stat().st_size,
+        }
+        print(
+            f"{PREFIX}:NODE_RESULT "
+            + json.dumps(result, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+        print(f"{PREFIX}_NODE:PASS", flush=True)
+        return 0
+    except (M0Error, OSError, ValueError) as exc:
+        print(f"{PREFIX}:FAIL reason={exc}", file=sys.stderr, flush=True)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

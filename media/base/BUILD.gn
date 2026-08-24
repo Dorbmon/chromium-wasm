@@ -21,6 +21,12 @@ source_set("base") {
   visibility = media_subcomponent_deps
   visibility += [ "//media" ]
 
+  # This bounded target asks only this roll-up's own MIME capability API which
+  # is the implementation under test. It remains unavailable to other targets.
+  if (is_wasm) {
+    visibility += [ ":wasm_software_video_capability_smoke" ]
+  }
+
   if (!enable_library_cdms) {
     # cdm_type_conversion is not part of media_subcomponent_deps.
     visibility += [ "//media/cdm:cdm_type_conversion" ]
@@ -774,4 +780,19 @@ fuzzer_test("media_container_names_fuzzer") {
     "//base",
     "//media:test_support",
   ]
+}
+
+if (is_wasm) {
+  # This target exercises the actual media MIME capability decisions selected
+  # for the Wasm build. It is deliberately standalone: it does not imply that
+  # a browser WebContents can fetch, demux, decode, render, or schedule video.
+  executable("wasm_software_video_capability_smoke") {
+    testonly = true
+    sources = [ "wasm_software_video_capability_smoke.cc" ]
+    deps = [
+      ":base",
+      "//base",
+      "//media:media_buildflags",
+    ]
+  }
 }
