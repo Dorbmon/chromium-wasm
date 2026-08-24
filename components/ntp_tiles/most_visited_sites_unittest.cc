@@ -50,7 +50,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
-#include "components/supervised_user/core/browser/supervised_user_preferences.h"
+// GN does not understand conditional includes, so this needs nogncheck.
+#include "components/supervised_user/core/browser/supervised_user_preferences.h"  // nogncheck
 #endif
 
 namespace ntp_tiles {

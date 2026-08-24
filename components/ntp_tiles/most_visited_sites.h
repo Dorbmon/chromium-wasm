@@ -38,8 +38,9 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
-#include "components/supervised_user/core/browser/supervised_user_service_observer.h"
-#include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
+// GN does not understand conditional includes, so this needs nogncheck.
+#include "components/supervised_user/core/browser/supervised_user_service_observer.h"  // nogncheck
+#include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"  // nogncheck
 #endif
 
 namespace signin {

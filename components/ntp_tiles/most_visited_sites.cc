@@ -37,9 +37,10 @@
 #include "third_party/re2/src/re2/re2.h"
 
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
-#include "components/supervised_user/core/browser/family_link_user_capabilities.h"
-#include "components/supervised_user/core/browser/supervised_user_service.h"
-#include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
+// GN does not understand conditional includes, so this needs nogncheck.
+#include "components/supervised_user/core/browser/family_link_user_capabilities.h"  // nogncheck
+#include "components/supervised_user/core/browser/supervised_user_service.h"  // nogncheck
+#include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"  // nogncheck
 #include "components/supervised_user/core/common/features.h"
 #endif
 
