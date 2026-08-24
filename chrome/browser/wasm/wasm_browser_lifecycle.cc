@@ -1241,6 +1241,13 @@ void WasmBrowserLifecycle::
       WasmBrowserDevToolsProtocolSmokeMode::kTableGrowImportIndirectCall);
 }
 
+void WasmBrowserLifecycle::
+    StartPageWebAssemblyExceptionDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kExceptionImportedTagJsThrowWasmCatch);
+}
+
 void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
     WasmBrowserDevToolsProtocolSmokeMode mode) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);

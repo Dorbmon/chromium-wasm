@@ -160,6 +160,12 @@ class WasmBrowserLifecycle final {
   // table.grow opcode, broader reference types, exceptions, or threads.
   void StartPageWebAssemblyTableGrowthDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that constructs a JavaScript
+  // WebAssembly.Exception for one imported tag, throws it through one imported
+  // JavaScript function, and catches it in Wasm. It does not exercise Wasm
+  // throw, payload, rethrow, catch-all, Wasm-to-JavaScript escape, or threads.
+  void StartPageWebAssemblyExceptionDevToolsProtocolSmoke();
+
   // Starts the test-only fixed WebContents AX snapshot proof. It takes one
   // snapshot and permits only its fixed static semantic text into the passive
   // host mirror; it is not an interactive accessibility bridge.

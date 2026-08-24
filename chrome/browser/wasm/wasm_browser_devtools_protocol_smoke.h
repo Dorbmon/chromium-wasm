@@ -34,6 +34,7 @@ enum class WasmBrowserDevToolsProtocolSmokeMode {
   kTableImportIndirectCall,
   kMemoryGrowImportReadWrite,
   kTableGrowImportIndirectCall,
+  kExceptionImportedTagJsThrowWasmCatch,
 };
 
 // Returns the one literal data: URL associated with |mode|. This is used by
@@ -67,7 +68,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // page-WebAssembly mode grows a fixed imported table from one entry to two
 // through JavaScript, initializes the new entry, and calls it indirectly from
 // Wasm. It does not exercise Wasm's table.grow opcode, broader reference
-// types, exceptions, or threads.
+// types, exceptions, or threads. A sixth closed page-WebAssembly mode creates
+// a JavaScript exception with a fixed imported Wasm tag, throws it from an
+// imported JavaScript function, and catches it in Wasm. It does not exercise
+// Wasm throw, payload, rethrow, catch-all, Wasm-to-JavaScript escape, or
+// thread semantics.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:
