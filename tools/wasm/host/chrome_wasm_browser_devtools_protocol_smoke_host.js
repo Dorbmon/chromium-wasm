@@ -26,6 +26,14 @@ const PAGE_WEBASSEMBLY_MEMORY_SCOPE =
     "js-write-wasm-read-wasm-write-js-read-console-event-detach-close";
 const PAGE_WEBASSEMBLY_MEMORY_SWITCH =
     "--wasm-browser-m8-page-webassembly-memory-smoke";
+const PAGE_WEBASSEMBLY_TABLE_MODE = "page-webassembly-table";
+const PAGE_WEBASSEMBLY_TABLE_CASE = "browser_page_webassembly_table_m8";
+const PAGE_WEBASSEMBLY_TABLE_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-webassembly-table-construct-import-" +
+    "element-initialize-indirect-call-console-event-detach-close";
+const PAGE_WEBASSEMBLY_TABLE_SWITCH =
+    "--wasm-browser-m8-page-webassembly-table-smoke";
 const NETWORK_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 const RUNTIME_ENABLE_MARKER =
@@ -40,6 +48,9 @@ const PAGE_WEBASSEMBLY_ADD42_MARKER =
 const PAGE_WEBASSEMBLY_MEMORY_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "MEMORY_CONSTRUCTED_IMPORTED_JS_WRITE_WASM_READ_WASM_WRITE_JS_READ_OK";
+const PAGE_WEBASSEMBLY_TABLE_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
+    "TABLE_CONSTRUCTED_IMPORTED_ELEMENT_INITIALIZED_INDIRECT_CALL_42_OK";
 const RUNTIME_CONSOLE_API_CALLED_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 const DETACHED_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
@@ -117,6 +128,34 @@ const PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE = Object.freeze({
     RUNTIME_ENABLE_MARKER,
     RUNTIME_EVALUATE_MARKER,
     PAGE_WEBASSEMBLY_MEMORY_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE = Object.freeze({
+  id: PAGE_WEBASSEMBLY_TABLE_MODE,
+  queryMode: PAGE_WEBASSEMBLY_TABLE_MODE,
+  case: PAGE_WEBASSEMBLY_TABLE_CASE,
+  scope: PAGE_WEBASSEMBLY_TABLE_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_WEBASSEMBLY_TABLE_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({
+    pageWebAssemblyUnavailableObserved: false,
+    pageWebAssemblyAdd42Observed: false,
+    pageWebAssemblyTablesObserved: true,
+    pageWebAssemblyTableConstructedImportedIndirectCallObserved: true,
+    pageWebAssemblyTableGrowthObserved: false,
+    pageWebAssemblyMemoriesObserved: false,
+    pageWebAssemblyExceptionsObserved: false,
+    pageWebAssemblyMemoryGrowthObserved: false,
+    pageWebAssemblyThreadsObserved: false,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_TABLE_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
@@ -209,7 +248,8 @@ function markerIndex(records, marker) {
 function isKnownSmokeMode(smokeMode) {
   return smokeMode === DEFAULT_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ||
-      smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE;
+      smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ||
+      smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE;
 }
 
 function validateResult(result, smokeMode) {
@@ -274,7 +314,9 @@ function validateResult(result, smokeMode) {
   const pageWebAssemblyMarker = smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_ADD42_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ?
-      PAGE_WEBASSEMBLY_MEMORY_MARKER : PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
+      PAGE_WEBASSEMBLY_MEMORY_MARKER :
+      smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ?
+      PAGE_WEBASSEMBLY_TABLE_MARKER : PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
@@ -329,6 +371,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #runtimeEvaluateObserved = false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
+  #pageWebAssemblyTablesObserved = false;
+  #pageWebAssemblyTableConstructedImportedIndirectCallObserved = false;
   #pageWebAssemblyMemoriesObserved = false;
   #pageWebAssemblyMemoryConstructedImportedReadWriteObserved = false;
   #runtimeConsoleApiCalledObserved = false;
@@ -391,6 +435,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     }
     if (text.includes(PAGE_WEBASSEMBLY_ADD42_MARKER)) {
       this.#pageWebAssemblyAdd42Observed = true;
+    }
+    if (text.includes(PAGE_WEBASSEMBLY_TABLE_MARKER)) {
+      this.#pageWebAssemblyTablesObserved = true;
+      this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved = true;
     }
     if (text.includes(PAGE_WEBASSEMBLY_MEMORY_MARKER)) {
       this.#pageWebAssemblyMemoriesObserved = true;
@@ -506,7 +554,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       pageWebAssemblyUnavailableObserved:
           this.#pageWebAssemblyUnavailableObserved,
       pageWebAssemblyAdd42Observed: this.#pageWebAssemblyAdd42Observed,
-      pageWebAssemblyTablesObserved: false,
+      pageWebAssemblyTablesObserved: this.#pageWebAssemblyTablesObserved,
+      pageWebAssemblyTableConstructedImportedIndirectCallObserved:
+          this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved,
+      pageWebAssemblyTableGrowthObserved: false,
       pageWebAssemblyMemoriesObserved: this.#pageWebAssemblyMemoriesObserved,
       pageWebAssemblyMemoryConstructedImportedReadWriteObserved:
           this.#pageWebAssemblyMemoryConstructedImportedReadWriteObserved,
@@ -665,6 +716,8 @@ export function parseDevToolsProtocolSmokeQuery(query) {
     smokeMode = PAGE_WEBASSEMBLY_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MEMORY_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE;
+  } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_TABLE_MODE) {
+    smokeMode = PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE;
   } else {
     throw new Error("DevTools protocol query has an invalid mode");
   }
@@ -690,7 +743,8 @@ async function fetchExpectedSmokeMode(token) {
       !Object.hasOwn(binding, "mode") || Object.keys(binding).length !== 2 ||
       (binding.mode !== DEFAULT_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id &&
-       binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id)) {
+       binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id &&
+       binding.mode !== PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE.id)) {
     throw new Error("DevTools protocol mode binding is invalid");
   }
   return binding.mode;

@@ -31,6 +31,7 @@ enum class WasmBrowserDevToolsProtocolSmokeMode {
   kPageWebAssemblyUnavailable,
   kValidateModuleInstanceAdd42,
   kMemoryImportReadWrite,
+  kTableImportIndirectCall,
 };
 
 // Returns the one literal data: URL associated with |mode|. This is used by
@@ -52,7 +53,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // mode is limited to one literal 41-byte module and its fixed add(20, 22)
 // result. A second closed page-WebAssembly mode imports one fixed one-page
 // memory and witnesses JavaScript-to-Wasm and Wasm-to-JavaScript reads and
-// writes without exercising growth, tables, exceptions, or threads.
+// writes without exercising growth, tables, exceptions, or threads. A third
+// closed page-WebAssembly mode imports one fixed, non-growable table,
+// initializes its sole entry through an active element segment, and calls it
+// indirectly. It does not exercise table mutation/growth, reference types
+// beyond funcref, memories, exceptions, or threads.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:

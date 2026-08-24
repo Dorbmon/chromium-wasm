@@ -76,6 +76,15 @@ PAGE_WEBASSEMBLY_MEMORY_SCOPE = (
 PAGE_WEBASSEMBLY_MEMORY_SWITCH = (
     "--wasm-browser-m8-page-webassembly-memory-smoke"
 )
+PAGE_WEBASSEMBLY_TABLE_SENTINEL = "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_TABLE_DOM"
+PAGE_WEBASSEMBLY_TABLE_MODE = "page-webassembly-table"
+PAGE_WEBASSEMBLY_TABLE_CASE = "browser_page_webassembly_table_m8"
+PAGE_WEBASSEMBLY_TABLE_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-webassembly-table-construct-import-"
+    "element-initialize-indirect-call-console-event-detach-close"
+)
+PAGE_WEBASSEMBLY_TABLE_SWITCH = "--wasm-browser-m8-page-webassembly-table-smoke"
 NETWORK_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK"
 RUNTIME_EVALUATE_MARKER = (
@@ -91,6 +100,10 @@ PAGE_WEBASSEMBLY_ADD42_MARKER = (
 PAGE_WEBASSEMBLY_MEMORY_MARKER = (
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "MEMORY_CONSTRUCTED_IMPORTED_JS_WRITE_WASM_READ_WASM_WRITE_JS_READ_OK"
+)
+PAGE_WEBASSEMBLY_TABLE_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "TABLE_CONSTRUCTED_IMPORTED_ELEMENT_INITIALIZED_INDIRECT_CALL_42_OK"
 )
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
@@ -123,6 +136,18 @@ PAGE_WEBASSEMBLY_MEMORY_LIMITATIONS = (
     "only_exercises_one_fixed_page_webassembly_memory_construct_import_read_write_path",
     "does_not_exercise_page_webassembly_add42",
     "does_not_exercise_page_webassembly_tables",
+    "does_not_exercise_page_webassembly_exceptions",
+    "does_not_exercise_page_webassembly_memory_growth",
+    "does_not_exercise_page_webassembly_threads",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_claim_m8_compatibility_completion",
+)
+PAGE_WEBASSEMBLY_TABLE_LIMITATIONS = (
+    "only_exercises_one_fixed_page_webassembly_table_construct_import_element_initialize_indirect_call_path",
+    "does_not_exercise_page_webassembly_add42",
+    "does_not_exercise_page_webassembly_table_mutation",
+    "does_not_exercise_page_webassembly_table_growth",
+    "does_not_exercise_page_webassembly_memories",
     "does_not_exercise_page_webassembly_exceptions",
     "does_not_exercise_page_webassembly_memory_growth",
     "does_not_exercise_page_webassembly_threads",
@@ -233,6 +258,39 @@ PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     limitations=PAGE_WEBASSEMBLY_MEMORY_LIMITATIONS,
 )
 
+PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id=PAGE_WEBASSEMBLY_TABLE_MODE,
+    query_mode=PAGE_WEBASSEMBLY_TABLE_MODE,
+    sentinel=PAGE_WEBASSEMBLY_TABLE_SENTINEL,
+    case=PAGE_WEBASSEMBLY_TABLE_CASE,
+    scope=PAGE_WEBASSEMBLY_TABLE_SCOPE,
+    runtime_arguments=(PAGE_WEBASSEMBLY_TABLE_SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_WEBASSEMBLY_TABLE_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(
+        ("pageWebAssemblyUnavailableObserved", False),
+        ("pageWebAssemblyAdd42Observed", False),
+        ("pageWebAssemblyTablesObserved", True),
+        (
+            "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
+            True,
+        ),
+        ("pageWebAssemblyTableGrowthObserved", False),
+        ("pageWebAssemblyMemoriesObserved", False),
+        ("pageWebAssemblyExceptionsObserved", False),
+        ("pageWebAssemblyMemoryGrowthObserved", False),
+        ("pageWebAssemblyThreadsObserved", False),
+    ),
+    limitations=PAGE_WEBASSEMBLY_TABLE_LIMITATIONS,
+)
+
 
 def smoke_config_for_page_webassembly(
     page_webassembly: bool,
@@ -257,11 +315,22 @@ def smoke_config_for_page_webassembly_memory(
     )
 
 
+def smoke_config_for_page_webassembly_table(
+    page_webassembly_table: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG
+        if page_webassembly_table
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
 def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> None:
     if smoke_config not in (
         DEFAULT_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
+        PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG,
     ):
         raise M0Error("DevTools protocol smoke configuration is not fixed")
 
@@ -545,6 +614,8 @@ def _require_unique_ordered_markers(
         page_webassembly_marker = PAGE_WEBASSEMBLY_ADD42_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG:
         page_webassembly_marker = PAGE_WEBASSEMBLY_MEMORY_MARKER
+    elif smoke_config == PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG:
+        page_webassembly_marker = PAGE_WEBASSEMBLY_TABLE_MARKER
     else:
         page_webassembly_marker = PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER
     if not (
@@ -698,18 +769,36 @@ def main() -> int:
             "read-write DevTools smoke"
         ),
     )
+    parser.add_argument(
+        "--page-webassembly-table",
+        action="store_true",
+        help=(
+            "run the fixed native page-WebAssembly table construct/import/"
+            "element-initialize/indirect-call DevTools smoke"
+        ),
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
     if args.timeout < 2.0:
         parser.error("--timeout must be at least two seconds")
     if not MODULE_NAME_RE.fullmatch(args.module_name):
         parser.error("--module-name must contain only ASCII letters, digits, or _")
-    if args.page_webassembly and args.page_webassembly_memory:
+    if (
+        int(args.page_webassembly)
+        + int(args.page_webassembly_memory)
+        + int(args.page_webassembly_table)
+        > 1
+    ):
         parser.error(
-            "--page-webassembly and --page-webassembly-memory are mutually exclusive"
+            "--page-webassembly, --page-webassembly-memory, and "
+            "--page-webassembly-table are mutually exclusive"
         )
-    smoke_config = smoke_config_for_page_webassembly(
-        args.page_webassembly, args.page_webassembly_memory
+    smoke_config = (
+        smoke_config_for_page_webassembly_table(True)
+        if args.page_webassembly_table
+        else smoke_config_for_page_webassembly(
+            args.page_webassembly, args.page_webassembly_memory
+        )
     )
 
     out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
