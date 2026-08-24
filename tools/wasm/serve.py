@@ -260,8 +260,8 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
         "d3b1cfad143ac76b5a3d8942aa354ce0"
     ),
     "test262_pack_sha256": (
-        "46aefd8dd8d3c8f833ecb5203e3e707d"
-        "c3a4c6aa2d3e489bcd3f99776ff9b625"
+        "88307827030bcefa6aabb5bfb6011906"
+        "5b5c23800db471e8c8fa8c8a9bffbecf"
     ),
     "startup_snapshot": "runtime_generated",
     "external_startup_data": "off",
@@ -451,6 +451,30 @@ V8_SNAPSHOTLESS_TEST262_CASES = (
         ("sloppy", "strict"),
     ),
     (
+        "test/language/expressions/template-literal/evaluation-order.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Array/prototype/flat/positive-infinity.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Array/prototype/flatMap/depth-always-one.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Reflect/construct/return-with-newtarget-argument.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/WeakMap/prototype/get/returns-value-with-object-key.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/JSON/stringify/value-string-escape-unicode.js",
+        ("sloppy", "strict"),
+    ),
+    (
         "test/built-ins/Proxy/ownKeys/"
         "not-extensible-missing-keys-throws.js",
         ("sloppy", "strict"),
@@ -488,7 +512,7 @@ V8_SNAPSHOTLESS_TEST262_CASE_LINES = tuple(
 )
 V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE = (
     "CHROMIUM_WASM_M2_V8_JS:TEST262_SUMMARY "
-    "cases=27 executions=51 passed=51 failed=0 status=ok"
+    "cases=33 executions=63 passed=63 failed=0 status=ok"
 )
 
 SHARED_MEMORY_RESULT_VALUES = {
@@ -987,15 +1011,15 @@ def _validate_v8_snapshotless_result(
     expected_test262_values = {
         "test262_license_bytes": 2213,
         "test262_license_fnv1a": 1790394517849644,
-        "test262_embedded_source_bytes": 72134,
-        "test262_cases": 27,
-        "test262_executions": 51,
-        "test262_passed": 51,
+        "test262_embedded_source_bytes": 77567,
+        "test262_cases": 33,
+        "test262_executions": 63,
+        "test262_passed": 63,
         "test262_failed": 0,
-        "test262_scripts": 48,
+        "test262_scripts": 60,
         "test262_modules": 3,
-        "test262_strict": 27,
-        "test262_sloppy": 24,
+        "test262_strict": 33,
+        "test262_sloppy": 30,
         "test262_async": 10,
         "test262_negative_parse": 2,
         "test262_negative_runtime": 2,

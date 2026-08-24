@@ -149,7 +149,7 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
     def test_nested_v8_commit_is_fixed_to_the_full_receipt_source(self) -> None:
         self.assertEqual(
             smoke.EXPECTED_NESTED_V8_COMMIT,
-            "78fdd99b2b233919eed917e3c82a7de4aac5295f",
+            "d1a3c6fb2bc383e080f41fac348542f0b0d5138b",
         )
         with mock.patch.object(
             smoke,
@@ -191,10 +191,10 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         receipt = smoke.validate_runtime_output(
             successful_runtime_output(module, wasm), "", module, wasm
         )
-        self.assertEqual(receipt["stdoutLines"], 75)
+        self.assertEqual(receipt["stdoutLines"], 87)
         self.assertEqual(receipt["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE)
-        self.assertEqual(receipt["test262Cases"], 27)
-        self.assertEqual(receipt["test262Executions"], 51)
+        self.assertEqual(receipt["test262Cases"], 33)
+        self.assertEqual(receipt["test262Executions"], 63)
         self.assertEqual(receipt["test262Profile"], smoke.EXPECTED_TEST262_PROFILE)
 
         malformed = successful_runtime_output(module, wasm).replace(
@@ -273,8 +273,8 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         self.assertEqual(
             result["runtime"]["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE
         )
-        self.assertEqual(result["runtime"]["test262Cases"], 27)
-        self.assertEqual(result["runtime"]["test262Executions"], 51)
+        self.assertEqual(result["runtime"]["test262Cases"], 33)
+        self.assertEqual(result["runtime"]["test262Executions"], 63)
         self.assertEqual(
             result["runtime"]["test262Profile"], smoke.EXPECTED_TEST262_PROFILE
         )

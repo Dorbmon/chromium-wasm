@@ -43,14 +43,14 @@ V8_RUNTIME_RUNNER = (
     REPO_ROOT / "v8/tools/wasm/run-arm32-wasm-codegen-smoke.mjs"
 )
 V8_SOURCE_DIR = REPO_ROOT / "v8"
-EXPECTED_NESTED_V8_COMMIT = "78fdd99b2b233919eed917e3c82a7de4aac5295f"
+EXPECTED_NESTED_V8_COMMIT = "d1a3c6fb2bc383e080f41fac348542f0b0d5138b"
 NODE_PASS_PREFIX = f"{SENTINEL}_NODE:PASS "
 NODE_FAIL_PREFIX = f"{SENTINEL}_NODE:FAIL "
 MAX_NODE_FAILURE_RECEIPT_BYTES = 1024
 EXPECTED_SEMANTIC_SUITE = (
     "closures_classes_exceptions_proxy_typedarray_bigint_promises_microtasks"
 )
-EXPECTED_TEST262_PROFILE = "pinned_27_case_51_execution_profile"
+EXPECTED_TEST262_PROFILE = "pinned_33_case_63_execution_profile"
 GN_ASSIGNMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*) = (?P<value>.+)$"
 )
@@ -82,10 +82,10 @@ EXPECTED_NODE_RESULT = {
     "semanticSuite": EXPECTED_SEMANTIC_SUITE,
     "status": "pass",
     "stderrLines": 0,
-    "test262Cases": 27,
-    "test262Executions": 51,
+    "test262Cases": 33,
+    "test262Executions": 63,
     "test262Profile": EXPECTED_TEST262_PROFILE,
-    "stdoutLines": 75,
+    "stdoutLines": 87,
 }
 NODE_FAILURE_REQUIRED_KEYS = frozenset(
     {
