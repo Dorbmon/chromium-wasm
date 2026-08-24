@@ -173,6 +173,13 @@ class WasmBrowserLifecycle final {
   // exceptions, or threads.
   void StartPageWebAssemblyWasmMemoryGrowOpcodeDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that imports one bounded
+  // WebAssembly.Table, grows it once through Wasm's table.grow opcode, and
+  // makes an indirect call through the grown entry. It does not exercise
+  // failed growth, multiple tables, table copy/fill/init, typed function
+  // references, GC references, memories, exceptions, or threads.
+  void StartPageWebAssemblyWasmTableGrowOpcodeDevToolsProtocolSmoke();
+
   // Starts the separate, test-only fixed proof that imports one zero-payload
   // tag, executes Wasm throw, and validates the escaping exception in
   // JavaScript against that tag. It does not exercise payloads, Wasm-internal

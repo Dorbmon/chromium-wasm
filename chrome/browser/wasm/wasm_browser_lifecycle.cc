@@ -1255,6 +1255,13 @@ void WasmBrowserLifecycle::
 }
 
 void WasmBrowserLifecycle::
+    StartPageWebAssemblyWasmTableGrowOpcodeDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kWasmTableGrowOpcodeImportIndirectCall);
+}
+
+void WasmBrowserLifecycle::
     StartPageWebAssemblyWasmThrowDevToolsProtocolSmoke() {
   StartDevToolsProtocolSmokeInternal(
       WasmBrowserDevToolsProtocolSmokeMode::kWasmThrowImportedTagJsCatch);

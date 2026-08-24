@@ -141,6 +141,23 @@ constexpr char kPageWebAssemblyWasmMemoryGrowOpcodeRuntimeEvaluateCommand[] =
     R"json(console.log('chromium-wasm-m8-page-webassembly-wasm-memory-grow-opcode-import-one-to-two-pages');)json"
     R"json(return 'wasm-memory-grow-opcode-import-one-to-two-pages';})()","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kPageWebAssemblyWasmTableGrowOpcodeRuntimeEvaluateCommand[] =
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(()=>{const b=new Uint8Array([)json"
+    R"json(0,97,115,109,1,0,0,0,1,16,3,96,1,127,1,127,96,2,127,127,1,127,96,0,1,127,2,16,1,3,101,110,118,5,116,97,98,108,101,1,112,1,1,2,)json"
+    R"json(3,4,3,0,1,2,7,22,3,4,97,100,100,49,0,0,4,99,97,108,108,0,1,4,103,114,111,119,0,2,9,7,1,0,65,0,11,1,0,)json"
+    R"json(10,29,3,7,0,32,0,65,1,106,11,9,0,32,0,32,1,17,0,0,11,9,0,210,0,65,1,252,15,0,11]);)json"
+    R"json(if(!WebAssembly.validate(b))throw new Error('wasm table grow opcode validation failed');)json"
+    R"json(const table=new WebAssembly.Table({initial:1,maximum:2,element:'anyfunc'});)json"
+    R"json(const m=new WebAssembly.Module(b);const i=new WebAssembly.Instance(m,{env:{table}});)json"
+    R"json(if(i.exports.call(41,0)!==42)throw new Error('wasm table grow opcode initial indirect call result was not 42');)json"
+    R"json(if(i.exports.grow()!==1)throw new Error('wasm table grow opcode did not return 1');)json"
+    R"json(if(table.length!==2)throw new Error('wasm table grow opcode size was not 2');)json"
+    R"json(if(table.get(1)!==i.exports.add1)throw new Error('wasm table grow opcode did not initialize grown entry');)json"
+    R"json(if(i.exports.call(41,1)!==42)throw new Error('wasm table grow opcode grown indirect call result was not 42');)json"
+    R"json(console.log('chromium-wasm-m8-page-webassembly-wasm-table-grow-opcode-import-one-to-two-entries-indirect-call');)json"
+    R"json(return 'wasm-table-grow-opcode-import-one-to-two-entries-indirect-call';})()","returnByValue":true,)json"
+    R"json("allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kPageWebAssemblyWasmThrowRuntimeEvaluateCommand[] =
     R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
     R"json("(()=>{const b=new Uint8Array([)json"
@@ -169,6 +186,8 @@ constexpr char kFixedPageWebAssemblyExceptionDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20exception%20smoke";
 constexpr char kFixedPageWebAssemblyWasmMemoryGrowOpcodeDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20Wasm%20memory%20grow%20opcode%20smoke";
+constexpr char kFixedPageWebAssemblyWasmTableGrowOpcodeDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20Wasm%20table%20grow%20opcode%20smoke";
 constexpr char kFixedPageWebAssemblyWasmThrowDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20Wasm%20throw%20smoke";
 constexpr char kNetworkEnableSuccessMarker[] =
@@ -199,6 +218,9 @@ constexpr char kPageWebAssemblyExceptionSuccessMarker[] =
 constexpr char kPageWebAssemblyWasmMemoryGrowOpcodeSuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "MEMORY_CONSTRUCTED_IMPORTED_WASM_MEMORY_GROW_OPCODE_GROWN_1_TO_2_PAGES_BUFFER_REPLACED_OK";
+constexpr char kPageWebAssemblyWasmTableGrowOpcodeSuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "TABLE_CONSTRUCTED_IMPORTED_WASM_TABLE_GROW_OPCODE_GROWN_1_TO_2_ENTRIES_INITIALIZED_INDIRECT_CALL_42_OK";
 constexpr char kPageWebAssemblyWasmThrowSuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "EXCEPTION_IMPORTED_TAG_WASM_THROW_JS_CATCH_OK";
@@ -227,6 +249,8 @@ constexpr char kPageWebAssemblyExceptionRuntimeEvaluateExpectedValue[] =
     "wasm-exception-imported-tag-js-throw-wasm-catch";
 constexpr char kPageWebAssemblyWasmMemoryGrowOpcodeRuntimeEvaluateExpectedValue[] =
     "wasm-memory-grow-opcode-import-one-to-two-pages";
+constexpr char kPageWebAssemblyWasmTableGrowOpcodeRuntimeEvaluateExpectedValue[] =
+    "wasm-table-grow-opcode-import-one-to-two-entries-indirect-call";
 constexpr char kPageWebAssemblyWasmThrowRuntimeEvaluateExpectedValue[] =
     "wasm-throw-imported-tag-js-catch";
 constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
@@ -254,6 +278,10 @@ constexpr char
     kPageWebAssemblyWasmMemoryGrowOpcodeRuntimeConsoleApiCalledExpectedValue[] =
         "chromium-wasm-m8-page-webassembly-wasm-memory-grow-opcode-import-"
         "one-to-two-pages";
+constexpr char
+    kPageWebAssemblyWasmTableGrowOpcodeRuntimeConsoleApiCalledExpectedValue[] =
+        "chromium-wasm-m8-page-webassembly-wasm-table-grow-opcode-import-"
+        "one-to-two-entries-indirect-call";
 constexpr char kPageWebAssemblyWasmThrowRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-page-webassembly-wasm-throw-imported-tag-js-catch";
 
@@ -293,6 +321,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
       WasmBrowserDevToolsProtocolSmokeMode::kWasmMemoryGrowOpcodeImport) {
     return GURL(
         kFixedPageWebAssemblyWasmMemoryGrowOpcodeDevToolsProtocolSmokeUrl);
+  }
+  if (mode == WasmBrowserDevToolsProtocolSmokeMode::
+                   kWasmTableGrowOpcodeImportIndirectCall) {
+    return GURL(
+        kFixedPageWebAssemblyWasmTableGrowOpcodeDevToolsProtocolSmokeUrl);
   }
   CHECK_EQ(
       mode,
@@ -354,7 +387,7 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   // does not enable page WebAssembly. The closed alternate expressions use
   // only literal module bytes and fixed add, memory import/read-write, table
   // import/indirect-call, table-growth, memory-growth, exception, or
-  // memory.grow-opcode, or Wasm-throw witnesses.
+  // memory.grow-opcode, table.grow-opcode, or Wasm-throw witnesses.
   agent_host_->DispatchProtocolMessage(
       this, base::byte_span_from_cstring(kNetworkEnableCommand));
 }
@@ -465,6 +498,10 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
              WasmBrowserDevToolsProtocolSmokeMode::kWasmMemoryGrowOpcodeImport) {
     expected_value =
         kPageWebAssemblyWasmMemoryGrowOpcodeRuntimeEvaluateExpectedValue;
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kWasmTableGrowOpcodeImportIndirectCall) {
+    expected_value =
+        kPageWebAssemblyWasmTableGrowOpcodeRuntimeEvaluateExpectedValue;
   } else {
     CHECK_EQ(
         mode_,
@@ -511,6 +548,12 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
            "Wasm memory.grow opcode import one-to-two-pages result");
     }
     if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                     kWasmTableGrowOpcodeImportIndirectCall) {
+      Fail("Runtime.evaluate did not return the fixed page-WebAssembly "
+           "Wasm table.grow opcode import one-to-two-entries indirect-call "
+           "result");
+    }
+    if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
                      kWasmThrowImportedTagJsCatch) {
       Fail("Runtime.evaluate did not return the fixed page-WebAssembly "
            "Wasm-throw imported-tag JavaScript-catch result");
@@ -550,6 +593,10 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
              WasmBrowserDevToolsProtocolSmokeMode::kWasmMemoryGrowOpcodeImport) {
     std::fprintf(stderr, "%s\n",
                  kPageWebAssemblyWasmMemoryGrowOpcodeSuccessMarker);
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kWasmTableGrowOpcodeImportIndirectCall) {
+    std::fprintf(stderr, "%s\n",
+                 kPageWebAssemblyWasmTableGrowOpcodeSuccessMarker);
   } else {
     CHECK_EQ(
         mode_,
@@ -692,6 +739,14 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
             kPageWebAssemblyWasmMemoryGrowOpcodeRuntimeEvaluateCommand));
     return;
   }
+  if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                   kWasmTableGrowOpcodeImportIndirectCall) {
+    agent_host_->DispatchProtocolMessage(
+        this,
+        base::byte_span_from_cstring(
+            kPageWebAssemblyWasmTableGrowOpcodeRuntimeEvaluateCommand));
+    return;
+  }
   CHECK_EQ(
       mode_,
       WasmBrowserDevToolsProtocolSmokeMode::
@@ -747,6 +802,10 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
              WasmBrowserDevToolsProtocolSmokeMode::kWasmMemoryGrowOpcodeImport) {
     expected_value =
         kPageWebAssemblyWasmMemoryGrowOpcodeRuntimeConsoleApiCalledExpectedValue;
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kWasmTableGrowOpcodeImportIndirectCall) {
+    expected_value =
+        kPageWebAssemblyWasmTableGrowOpcodeRuntimeConsoleApiCalledExpectedValue;
   } else {
     CHECK_EQ(
         mode_,

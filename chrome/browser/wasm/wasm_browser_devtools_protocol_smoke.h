@@ -36,6 +36,7 @@ enum class WasmBrowserDevToolsProtocolSmokeMode {
   kTableGrowImportIndirectCall,
   kExceptionImportedTagJsThrowWasmCatch,
   kWasmMemoryGrowOpcodeImport,
+  kWasmTableGrowOpcodeImportIndirectCall,
   kWasmThrowImportedTagJsCatch,
 };
 
@@ -79,10 +80,15 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // page count, non-shared buffer replacement, and final size. It does not
 // exercise shared or multiple memories, post-growth data exchange, tables,
 // exceptions, or threads. An eighth closed page-WebAssembly mode imports one
-// zero-payload tag, executes the Wasm throw opcode, and validates in
-// JavaScript that the escaping WebAssembly.Exception matches that tag. It does
-// not exercise payloads, Wasm-internal catches, rethrow, catch-all, throw_ref,
-// tables, memories, or threads.
+// bounded table, invokes Wasm's table.grow opcode to grow it from one entry to
+// two, and makes a fixed indirect call through the grown entry. It does not
+// exercise failed growth, table copy/fill/init, multiple tables, typed
+// function references, GC references, exceptions, memories, or threads. A
+// ninth closed page-WebAssembly mode imports one zero-payload tag, executes
+// the Wasm throw opcode, and validates in JavaScript that the escaping
+// WebAssembly.Exception matches that tag. It does not exercise payloads,
+// Wasm-internal catches, rethrow, catch-all, throw_ref, tables, memories, or
+// threads.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:
