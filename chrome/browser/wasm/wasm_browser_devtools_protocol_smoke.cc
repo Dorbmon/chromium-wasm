@@ -75,6 +75,23 @@ constexpr char kPageWebAssemblyTableRuntimeEvaluateCommand[] =
     R"json(console.log('chromium-wasm-m8-page-webassembly-table-import-indirect-call');)json"
     R"json(return 'wasm-table-import-indirect-call';})()","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kPageWebAssemblyTableGrowthRuntimeEvaluateCommand[] =
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(()=>{const b=new Uint8Array([)json"
+    R"json(0,97,115,109,1,0,0,0,1,12,2,96,1,127,1,127,96,2,127,127,1,127,2,16,1,3,101,110,118,5,116,97,98,108,101,1,112,1,1,2,)json"
+    R"json(3,3,2,0,1,7,15,2,4,97,100,100,49,0,0,4,99,97,108,108,0,1,9,7,1,0,65,0,11,1,0,10,19,2,7,0,32,0,65,1,106,11,9,0,32,0,32,1,17,0,0,11]);)json"
+    R"json(if(!WebAssembly.validate(b))throw new Error('wasm table growth validation failed');)json"
+    R"json(const table=new WebAssembly.Table({initial:1,maximum:2,element:'anyfunc'});)json"
+    R"json(if(table.length!==1)throw new Error('wasm table initial size was not 1');)json"
+    R"json(const m=new WebAssembly.Module(b);const i=new WebAssembly.Instance(m,{env:{table}});)json"
+    R"json(if(i.exports.call(41,0)!==42)throw new Error('wasm initial indirect call result was not 42');)json"
+    R"json(if(table.grow(1,i.exports.add1)!==1)throw new Error('wasm table grow did not return 1');)json"
+    R"json(if(table.length!==2)throw new Error('wasm table grown size was not 2');)json"
+    R"json(if(table.get(1)!==i.exports.add1)throw new Error('wasm table grow did not initialize grown entry');)json"
+    R"json(if(i.exports.call(41,1)!==42)throw new Error('wasm grown indirect call result was not 42');)json"
+    R"json(console.log('chromium-wasm-m8-page-webassembly-table-growth-import-grown-indirect-call');)json"
+    R"json(return 'wasm-table-growth-import-grown-indirect-call';})()","returnByValue":true,)json"
+    R"json("allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kPageWebAssemblyMemoryGrowthRuntimeEvaluateCommand[] =
     R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
     R"json("(()=>{const b=new Uint8Array([)json"
@@ -103,6 +120,8 @@ constexpr char kFixedPageWebAssemblyMemoryDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20memory%20smoke";
 constexpr char kFixedPageWebAssemblyTableDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20table%20smoke";
+constexpr char kFixedPageWebAssemblyTableGrowthDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20table%20growth%20smoke";
 constexpr char kFixedPageWebAssemblyMemoryGrowthDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20memory%20growth%20smoke";
 constexpr char kNetworkEnableSuccessMarker[] =
@@ -121,6 +140,9 @@ constexpr char kPageWebAssemblyMemorySuccessMarker[] =
 constexpr char kPageWebAssemblyTableSuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "TABLE_CONSTRUCTED_IMPORTED_ELEMENT_INITIALIZED_INDIRECT_CALL_42_OK";
+constexpr char kPageWebAssemblyTableGrowthSuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "TABLE_CONSTRUCTED_IMPORTED_GROWN_1_TO_2_ENTRIES_INITIALIZED_INDIRECT_CALL_42_OK";
 constexpr char kPageWebAssemblyMemoryGrowthSuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "MEMORY_CONSTRUCTED_IMPORTED_GROWN_1_TO_2_PAGES_POST_GROWTH_JS_WRITE_WASM_READ_WASM_WRITE_JS_READ_OK";
@@ -141,6 +163,8 @@ constexpr char kPageWebAssemblyMemoryRuntimeEvaluateExpectedValue[] =
     "wasm-memory-import-read-write";
 constexpr char kPageWebAssemblyTableRuntimeEvaluateExpectedValue[] =
     "wasm-table-import-indirect-call";
+constexpr char kPageWebAssemblyTableGrowthRuntimeEvaluateExpectedValue[] =
+    "wasm-table-growth-import-grown-indirect-call";
 constexpr char kPageWebAssemblyMemoryGrowthRuntimeEvaluateExpectedValue[] =
     "wasm-memory-growth-import-post-growth-read-write";
 constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
@@ -153,6 +177,10 @@ constexpr char kPageWebAssemblyMemoryRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-page-webassembly-memory-import-read-write";
 constexpr char kPageWebAssemblyTableRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-page-webassembly-table-import-indirect-call";
+constexpr char
+    kPageWebAssemblyTableGrowthRuntimeConsoleApiCalledExpectedValue[] =
+        "chromium-wasm-m8-page-webassembly-table-growth-import-grown-"
+        "indirect-call";
 constexpr char
     kPageWebAssemblyMemoryGrowthRuntimeConsoleApiCalledExpectedValue[] =
         "chromium-wasm-m8-page-webassembly-memory-growth-import-post-growth-"
@@ -177,6 +205,10 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
   if (mode ==
       WasmBrowserDevToolsProtocolSmokeMode::kTableImportIndirectCall) {
     return GURL(kFixedPageWebAssemblyTableDevToolsProtocolSmokeUrl);
+  }
+  if (mode ==
+      WasmBrowserDevToolsProtocolSmokeMode::kTableGrowImportIndirectCall) {
+    return GURL(kFixedPageWebAssemblyTableGrowthDevToolsProtocolSmokeUrl);
   }
   CHECK_EQ(
       mode,
@@ -236,7 +268,7 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   // boundary observable; it neither constructs nor compiles a page module and
   // does not enable page WebAssembly. The closed alternate expressions use
   // only literal module bytes and fixed add, memory import/read-write, table
-  // import/indirect-call, or memory-growth witnesses.
+  // import/indirect-call, table-growth, or memory-growth witnesses.
   agent_host_->DispatchProtocolMessage(
       this, base::byte_span_from_cstring(kNetworkEnableCommand));
 }
@@ -334,6 +366,9 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::kTableImportIndirectCall) {
     expected_value = kPageWebAssemblyTableRuntimeEvaluateExpectedValue;
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kTableGrowImportIndirectCall) {
+    expected_value = kPageWebAssemblyTableGrowthRuntimeEvaluateExpectedValue;
   } else {
     CHECK_EQ(
         mode_,
@@ -356,6 +391,11 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
         WasmBrowserDevToolsProtocolSmokeMode::kTableImportIndirectCall) {
       Fail("Runtime.evaluate did not return the fixed page-WebAssembly "
            "table import/indirect-call result");
+    }
+    if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                     kTableGrowImportIndirectCall) {
+      Fail("Runtime.evaluate did not return the fixed page-WebAssembly "
+           "table growth import/indirect-call result");
     }
     if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
                      kMemoryGrowImportReadWrite) {
@@ -384,6 +424,9 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::kTableImportIndirectCall) {
     std::fprintf(stderr, "%s\n", kPageWebAssemblyTableSuccessMarker);
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kTableGrowImportIndirectCall) {
+    std::fprintf(stderr, "%s\n", kPageWebAssemblyTableGrowthSuccessMarker);
   } else {
     CHECK_EQ(
         mode_,
@@ -493,6 +536,14 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
             kPageWebAssemblyTableRuntimeEvaluateCommand));
     return;
   }
+  if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::kTableGrowImportIndirectCall) {
+    agent_host_->DispatchProtocolMessage(
+        this,
+        base::byte_span_from_cstring(
+            kPageWebAssemblyTableGrowthRuntimeEvaluateCommand));
+    return;
+  }
   CHECK_EQ(
       mode_,
       WasmBrowserDevToolsProtocolSmokeMode::kMemoryGrowImportReadWrite);
@@ -531,6 +582,10 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::kTableImportIndirectCall) {
     expected_value = kPageWebAssemblyTableRuntimeConsoleApiCalledExpectedValue;
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kTableGrowImportIndirectCall) {
+    expected_value =
+        kPageWebAssemblyTableGrowthRuntimeConsoleApiCalledExpectedValue;
   } else {
     CHECK_EQ(
         mode_,

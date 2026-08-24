@@ -34,6 +34,16 @@ const PAGE_WEBASSEMBLY_TABLE_SCOPE =
     "element-initialize-indirect-call-console-event-detach-close";
 const PAGE_WEBASSEMBLY_TABLE_SWITCH =
     "--wasm-browser-m8-page-webassembly-table-smoke";
+const PAGE_WEBASSEMBLY_TABLE_GROWTH_MODE = "page-webassembly-table-growth";
+const PAGE_WEBASSEMBLY_TABLE_GROWTH_CASE =
+    "browser_page_webassembly_table_growth_m8";
+const PAGE_WEBASSEMBLY_TABLE_GROWTH_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-webassembly-table-construct-import-" +
+    "grow-one-to-two-entries-initialize-grown-entry-indirect-call-console-event-" +
+    "detach-close";
+const PAGE_WEBASSEMBLY_TABLE_GROWTH_SWITCH =
+    "--wasm-browser-m8-page-webassembly-table-growth-smoke";
 const PAGE_WEBASSEMBLY_MEMORY_GROWTH_MODE = "page-webassembly-memory-growth";
 const PAGE_WEBASSEMBLY_MEMORY_GROWTH_CASE =
     "browser_page_webassembly_memory_growth_m8";
@@ -61,6 +71,10 @@ const PAGE_WEBASSEMBLY_MEMORY_MARKER =
 const PAGE_WEBASSEMBLY_TABLE_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "TABLE_CONSTRUCTED_IMPORTED_ELEMENT_INITIALIZED_INDIRECT_CALL_42_OK";
+const PAGE_WEBASSEMBLY_TABLE_GROWTH_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
+    "TABLE_CONSTRUCTED_IMPORTED_GROWN_1_TO_2_ENTRIES_INITIALIZED_" +
+    "INDIRECT_CALL_42_OK";
 const PAGE_WEBASSEMBLY_MEMORY_GROWTH_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "MEMORY_CONSTRUCTED_IMPORTED_GROWN_1_TO_2_PAGES_POST_GROWTH_JS_WRITE_" +
@@ -170,6 +184,35 @@ const PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE = Object.freeze({
     RUNTIME_ENABLE_MARKER,
     RUNTIME_EVALUATE_MARKER,
     PAGE_WEBASSEMBLY_TABLE_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_MODE = Object.freeze({
+  id: PAGE_WEBASSEMBLY_TABLE_GROWTH_MODE,
+  queryMode: PAGE_WEBASSEMBLY_TABLE_GROWTH_MODE,
+  case: PAGE_WEBASSEMBLY_TABLE_GROWTH_CASE,
+  scope: PAGE_WEBASSEMBLY_TABLE_GROWTH_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_WEBASSEMBLY_TABLE_GROWTH_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({
+    pageWebAssemblyUnavailableObserved: false,
+    pageWebAssemblyAdd42Observed: false,
+    pageWebAssemblyTablesObserved: true,
+    pageWebAssemblyTableConstructedImportedIndirectCallObserved: true,
+    pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved: true,
+    pageWebAssemblyTableGrowthObserved: true,
+    pageWebAssemblyMemoriesObserved: false,
+    pageWebAssemblyExceptionsObserved: false,
+    pageWebAssemblyMemoryGrowthObserved: false,
+    pageWebAssemblyThreadsObserved: false,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_TABLE_GROWTH_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
@@ -294,6 +337,7 @@ function isKnownSmokeMode(smokeMode) {
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ||
+      smokeMode === PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_GROWTH_SMOKE_MODE;
 }
 
@@ -362,6 +406,8 @@ function validateResult(result, smokeMode) {
       PAGE_WEBASSEMBLY_MEMORY_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_TABLE_MARKER :
+      smokeMode === PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_MODE ?
+      PAGE_WEBASSEMBLY_TABLE_GROWTH_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_GROWTH_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_MEMORY_GROWTH_MARKER :
       PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
@@ -421,6 +467,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #pageWebAssemblyAdd42Observed = false;
   #pageWebAssemblyTablesObserved = false;
   #pageWebAssemblyTableConstructedImportedIndirectCallObserved = false;
+  #pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved = false;
+  #pageWebAssemblyTableGrowthObserved = false;
   #pageWebAssemblyMemoriesObserved = false;
   #pageWebAssemblyMemoryConstructedImportedReadWriteObserved = false;
   #pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved =
@@ -490,6 +538,13 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     if (text.includes(PAGE_WEBASSEMBLY_TABLE_MARKER)) {
       this.#pageWebAssemblyTablesObserved = true;
       this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved = true;
+    }
+    if (text.includes(PAGE_WEBASSEMBLY_TABLE_GROWTH_MARKER)) {
+      this.#pageWebAssemblyTablesObserved = true;
+      this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved = true;
+      this.#pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved =
+          true;
+      this.#pageWebAssemblyTableGrowthObserved = true;
     }
     if (text.includes(PAGE_WEBASSEMBLY_MEMORY_MARKER)) {
       this.#pageWebAssemblyMemoriesObserved = true;
@@ -615,7 +670,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       pageWebAssemblyTablesObserved: this.#pageWebAssemblyTablesObserved,
       pageWebAssemblyTableConstructedImportedIndirectCallObserved:
           this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved,
-      pageWebAssemblyTableGrowthObserved: false,
+      pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved:
+          this.#pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved,
+      pageWebAssemblyTableGrowthObserved:
+          this.#pageWebAssemblyTableGrowthObserved,
       pageWebAssemblyMemoriesObserved: this.#pageWebAssemblyMemoriesObserved,
       pageWebAssemblyMemoryConstructedImportedReadWriteObserved:
           this.#pageWebAssemblyMemoryConstructedImportedReadWriteObserved,
@@ -780,6 +838,9 @@ export function parseDevToolsProtocolSmokeQuery(query) {
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_TABLE_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE;
   } else if (modes.length === 1 &&
+             modes[0] === PAGE_WEBASSEMBLY_TABLE_GROWTH_MODE) {
+    smokeMode = PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_MODE;
+  } else if (modes.length === 1 &&
              modes[0] === PAGE_WEBASSEMBLY_MEMORY_GROWTH_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_MEMORY_GROWTH_SMOKE_MODE;
   } else {
@@ -809,6 +870,7 @@ async function fetchExpectedSmokeMode(token) {
        binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE.id &&
+       binding.mode !== PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_MEMORY_GROWTH_SMOKE_MODE.id)) {
     throw new Error("DevTools protocol mode binding is invalid");
   }

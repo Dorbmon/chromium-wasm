@@ -33,6 +33,7 @@ enum class WasmBrowserDevToolsProtocolSmokeMode {
   kMemoryImportReadWrite,
   kTableImportIndirectCall,
   kMemoryGrowImportReadWrite,
+  kTableGrowImportIndirectCall,
 };
 
 // Returns the one literal data: URL associated with |mode|. This is used by
@@ -62,7 +63,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // page-WebAssembly mode grows a fixed imported memory from one page to two,
 // verifies the non-shared buffer replacement, and witnesses Wasm/JavaScript
 // reads and writes in the newly added page. It does not exercise Wasm's
-// memory.grow opcode, tables, exceptions, or threads.
+// memory.grow opcode, tables, exceptions, or threads. A fifth closed
+// page-WebAssembly mode grows a fixed imported table from one entry to two
+// through JavaScript, initializes the new entry, and calls it indirectly from
+// Wasm. It does not exercise Wasm's table.grow opcode, broader reference
+// types, exceptions, or threads.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:

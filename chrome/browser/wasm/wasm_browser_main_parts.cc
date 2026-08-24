@@ -113,6 +113,8 @@ constexpr char kWasmBrowserM8PageWebAssemblyTableSmokeSwitch[] =
     "wasm-browser-m8-page-webassembly-table-smoke";
 constexpr char kWasmBrowserM8PageWebAssemblyMemoryGrowthSmokeSwitch[] =
     "wasm-browser-m8-page-webassembly-memory-growth-smoke";
+constexpr char kWasmBrowserM8PageWebAssemblyTableGrowthSmokeSwitch[] =
+    "wasm-browser-m8-page-webassembly-table-growth-smoke";
 constexpr char kWasmBrowserAccessibilitySnapshotSmokeSwitch[] =
     "wasm-browser-accessibility-snapshot-smoke";
 constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
@@ -528,6 +530,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_m8_page_webassembly_memory_growth_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserM8PageWebAssemblyMemoryGrowthSmokeSwitch);
+  const bool browser_m8_page_webassembly_table_growth_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM8PageWebAssemblyTableGrowthSmokeSwitch);
   const bool browser_accessibility_snapshot_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserAccessibilitySnapshotSmokeSwitch);
@@ -580,6 +585,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       browser_m8_page_webassembly_memory_smoke ||
       browser_m8_page_webassembly_table_smoke ||
       browser_m8_page_webassembly_memory_growth_smoke ||
+      browser_m8_page_webassembly_table_growth_smoke ||
       browser_accessibility_snapshot_smoke ||
       browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_clipboard_smoke ||
@@ -599,6 +605,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                  static_cast<int>(browser_m8_page_webassembly_table_smoke) +
                  static_cast<int>(
                      browser_m8_page_webassembly_memory_growth_smoke) +
+                 static_cast<int>(
+                     browser_m8_page_webassembly_table_growth_smoke) +
                  static_cast<int>(browser_accessibility_snapshot_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
@@ -874,6 +882,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserM8PageWebAssemblyMemoryGrowthSmokeSwitch)) {
     browser_lifecycle_->StartPageWebAssemblyMemoryGrowthDevToolsProtocolSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM8PageWebAssemblyTableGrowthSmokeSwitch)) {
+    browser_lifecycle_->StartPageWebAssemblyTableGrowthDevToolsProtocolSmoke();
     return;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
