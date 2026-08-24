@@ -51,6 +51,26 @@ def successful_runtime_output(module: Path, wasm: Path) -> str:
     return smoke.NODE_PASS_PREFIX + json.dumps(receipt, sort_keys=True) + "\n"
 
 
+def failed_runtime_output(detail: str = "runtime aborted") -> str:
+    receipt = {
+        "factoryCalls": 1,
+        "onAbortCount": 1,
+        "onExitCount": 0,
+        "reason": "runtime_aborted",
+        "detail": detail,
+        "status": "fail",
+        "stderrLines": 2,
+        "stdoutLines": 5,
+    }
+    return (
+        smoke.NODE_FAIL_PREFIX
+        + json.dumps(
+            receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        + "\n"
+    )
+
+
 class M8V8Arm32CodegenProfileTest(unittest.TestCase):
     def test_manifest_profile_is_explicitly_standalone_and_non_debug(self) -> None:
         profile = smoke.validate_profile(manifest())
@@ -162,6 +182,24 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
                 successful_runtime_output(module, wasm), "unexpected", module, wasm
             )
 
+    def test_bounded_failure_receipt_preserves_only_valid_node_detail(self) -> None:
+        expected = failed_runtime_output("unreachable").strip().removeprefix(
+            smoke.NODE_FAIL_PREFIX
+        )
+        self.assertEqual(
+            smoke.bounded_node_failure_receipt(failed_runtime_output("unreachable")),
+            expected,
+        )
+        self.assertIsNone(
+            smoke.bounded_node_failure_receipt(
+                failed_runtime_output("x" * (smoke.MAX_NODE_FAILURE_RECEIPT_BYTES + 1))
+            )
+        )
+        unicode_receipt = smoke.bounded_node_failure_receipt(
+            failed_runtime_output("🦀" * 180)
+        )
+        self.assertIsNone(unicode_receipt)
+
     def test_run_smoke_binds_configuration_before_running_fixed_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
@@ -193,6 +231,31 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
             "120000",
         ])
         self.assertEqual(command[-1], str(module.resolve()))
+
+    def test_run_smoke_reports_a_bounded_nested_node_failure_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            data = manifest()
+            out_dir, _, _ = create_bound_output(temporary, data)
+            node = temporary / "node"
+            node.write_bytes(b"node")
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=failed_runtime_output("unreachable"),
+                stderr="untrusted process stderr",
+            )
+            with (
+                mock.patch.object(smoke, "node_executable", return_value=node),
+                mock.patch.object(smoke.subprocess, "run", return_value=completed),
+            ):
+                with self.assertRaisesRegex(
+                    M0Error,
+                    r'nested Node failure receipt=.*"reason":"runtime_aborted"',
+                ) as raised:
+                    smoke.run_smoke(out_dir, 120.0)
+
+        self.assertNotIn("untrusted process stderr", str(raised.exception))
 
 
 if __name__ == "__main__":

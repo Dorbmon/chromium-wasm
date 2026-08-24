@@ -42,6 +42,8 @@ V8_RUNTIME_RUNNER = (
     REPO_ROOT / "v8/tools/wasm/run-arm32-wasm-codegen-smoke.mjs"
 )
 NODE_PASS_PREFIX = f"{SENTINEL}_NODE:PASS "
+NODE_FAIL_PREFIX = f"{SENTINEL}_NODE:FAIL "
+MAX_NODE_FAILURE_RECEIPT_BYTES = 1024
 GN_ASSIGNMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*) = (?P<value>.+)$"
 )
@@ -74,6 +76,25 @@ EXPECTED_NODE_RESULT = {
     "stderrLines": 0,
     "stdoutLines": 20,
 }
+NODE_FAILURE_REQUIRED_KEYS = frozenset(
+    {
+        "factoryCalls",
+        "onAbortCount",
+        "onExitCount",
+        "reason",
+        "status",
+        "stderrLines",
+        "stdoutLines",
+    }
+)
+NODE_FAILURE_ALLOWED_KEYS = NODE_FAILURE_REQUIRED_KEYS | {"detail"}
+NODE_FAILURE_COUNT_KEYS = (
+    "factoryCalls",
+    "onAbortCount",
+    "onExitCount",
+    "stderrLines",
+    "stdoutLines",
+)
 
 
 def parse_gn_assignments(lines: object) -> dict[str, str]:
@@ -187,6 +208,49 @@ def validate_runtime_output(
     return receipt
 
 
+def bounded_node_failure_receipt(stdout: str) -> str | None:
+    """Return one schema-checked, bounded nested failure receipt if available."""
+
+    receipts = [
+        line[len(NODE_FAIL_PREFIX) :]
+        for line in stdout.splitlines()
+        if line.startswith(NODE_FAIL_PREFIX)
+    ]
+    if len(receipts) != 1:
+        return None
+    encoded = receipts[0].encode("utf-8", errors="replace")
+    if len(encoded) > MAX_NODE_FAILURE_RECEIPT_BYTES:
+        return None
+    try:
+        receipt: Any = json.loads(receipts[0])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    if not NODE_FAILURE_REQUIRED_KEYS.issubset(receipt):
+        return None
+    if not set(receipt).issubset(NODE_FAILURE_ALLOWED_KEYS):
+        return None
+    if receipt["status"] != "fail" or not isinstance(receipt["reason"], str):
+        return None
+    if len(receipt["reason"]) > 240:
+        return None
+    if "detail" in receipt and (
+        not isinstance(receipt["detail"], str) or len(receipt["detail"]) > 240
+    ):
+        return None
+    for name in NODE_FAILURE_COUNT_KEYS:
+        value = receipt[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+    normalized = json.dumps(
+        receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    if len(normalized.encode("utf-8")) > MAX_NODE_FAILURE_RECEIPT_BYTES:
+        return None
+    return normalized
+
+
 def run_smoke(out_dir: Path, timeout_seconds: float) -> dict[str, object]:
     """Verify configuration first, then execute the bounded V8 evidence."""
 
@@ -212,9 +276,13 @@ def run_smoke(out_dir: Path, timeout_seconds: float) -> dict[str, object]:
     except subprocess.TimeoutExpired as error:
         raise M0Error("standalone V8 codegen Node process timed out") from error
     if completed.returncode != 0:
+        receipt = bounded_node_failure_receipt(completed.stdout)
+        detail = (
+            f"; nested Node failure receipt={receipt}" if receipt is not None else ""
+        )
         raise M0Error(
             "standalone V8 codegen runtime contract exited with status "
-            f"{completed.returncode}"
+            f"{completed.returncode}{detail}"
         )
     receipt = validate_runtime_output(completed.stdout, completed.stderr, module, wasm)
     return {
