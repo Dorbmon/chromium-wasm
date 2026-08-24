@@ -127,6 +127,8 @@ constexpr char kWasmBrowserM8PageWebAssemblyWasmThrowPayloadSmokeSwitch[] =
     "wasm-browser-m8-page-webassembly-wasm-throw-payload-smoke";
 constexpr char kWasmBrowserM8PageWebAssemblyJsThrowPayloadSmokeSwitch[] =
     "wasm-browser-m8-page-webassembly-js-throw-payload-smoke";
+constexpr char kWasmBrowserM8PageWebAssemblyInstantiateStreamingSmokeSwitch[] =
+    "wasm-browser-m8-page-webassembly-instantiate-streaming-smoke";
 constexpr char kWasmBrowserAccessibilitySnapshotSmokeSwitch[] =
     "wasm-browser-accessibility-snapshot-smoke";
 constexpr char kWasmBrowserHostAcceleratorSmokeSwitch[] =
@@ -563,6 +565,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_m8_page_webassembly_js_throw_payload_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserM8PageWebAssemblyJsThrowPayloadSmokeSwitch);
+  const bool browser_m8_page_webassembly_instantiate_streaming_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM8PageWebAssemblyInstantiateStreamingSmokeSwitch);
   const bool browser_accessibility_snapshot_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserAccessibilitySnapshotSmokeSwitch);
@@ -622,6 +627,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       browser_m8_page_webassembly_wasm_throw_smoke ||
       browser_m8_page_webassembly_wasm_throw_payload_smoke ||
       browser_m8_page_webassembly_js_throw_payload_smoke ||
+      browser_m8_page_webassembly_instantiate_streaming_smoke ||
       browser_accessibility_snapshot_smoke ||
       browser_host_accelerator_smoke ||
       browser_host_text_smoke || browser_host_clipboard_smoke ||
@@ -654,6 +660,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                     browser_m8_page_webassembly_wasm_throw_payload_smoke) +
                 static_cast<int>(
                     browser_m8_page_webassembly_js_throw_payload_smoke) +
+                static_cast<int>(
+                    browser_m8_page_webassembly_instantiate_streaming_smoke) +
                  static_cast<int>(browser_accessibility_snapshot_smoke) +
                  static_cast<int>(browser_host_accelerator_smoke) +
                  static_cast<int>(browser_host_text_smoke) +
@@ -968,6 +976,12 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
           kWasmBrowserM8PageWebAssemblyJsThrowPayloadSmokeSwitch)) {
     browser_lifecycle_
         ->StartPageWebAssemblyJsThrowPayloadDevToolsProtocolSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM8PageWebAssemblyInstantiateStreamingSmokeSwitch)) {
+    browser_lifecycle_
+        ->StartPageWebAssemblyInstantiateStreamingDevToolsProtocolSmoke();
     return;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(

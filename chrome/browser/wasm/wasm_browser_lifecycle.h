@@ -200,6 +200,13 @@ class WasmBrowserLifecycle final {
   // tables, memories, or threads.
   void StartPageWebAssemblyJsThrowPayloadDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that awaits
+  // WebAssembly.instantiateStreaming for one data:application/wasm URL,
+  // checks its Module/Instance pair, and calls add(20, 22). It does not
+  // exercise HTTP/WISP streaming, arbitrary fetch sources, imports,
+  // cancellation, errors, tables, memories, exceptions, or threads.
+  void StartPageWebAssemblyInstantiateStreamingDevToolsProtocolSmoke();
+
   // Starts the test-only fixed WebContents AX snapshot proof. It takes one
   // snapshot and permits only its fixed static semantic text into the passive
   // host mirror; it is not an interactive accessibility bridge.

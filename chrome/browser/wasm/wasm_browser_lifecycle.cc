@@ -1281,6 +1281,13 @@ void WasmBrowserLifecycle::
           kExceptionImportedI32TagJsThrowWasmCatchPayload);
 }
 
+void WasmBrowserLifecycle::
+    StartPageWebAssemblyInstantiateStreamingDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kInstantiateStreamingDataUrlModuleAdd42);
+}
+
 void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
     WasmBrowserDevToolsProtocolSmokeMode mode) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);

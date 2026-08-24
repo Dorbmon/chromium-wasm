@@ -205,6 +205,22 @@ PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SCOPE = (
 PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SWITCH = (
     "--wasm-browser-m8-page-webassembly-js-throw-payload-smoke"
 )
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SENTINEL = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_DOM"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE = "page-webassembly-instantiate-streaming"
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_CASE = (
+    "browser_page_webassembly_instantiate_streaming_m8"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-webassembly-instantiate-streaming-"
+    "fetch-data-application-wasm-module-instance-add42-console-event-detach-"
+    "close"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SWITCH = (
+    "--wasm-browser-m8-page-webassembly-instantiate-streaming-smoke"
+)
 NETWORK_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK"
 RUNTIME_EVALUATE_MARKER = (
@@ -260,6 +276,10 @@ PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER = (
 PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER = (
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "EXCEPTION_IMPORTED_I32_TAG_JS_THROW_WASM_CATCH_PAYLOAD_42_OK"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "INSTANTIATE_STREAMING_DATA_URL_APPLICATION_WASM_MODULE_INSTANCE_ADD_42_OK"
 )
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
@@ -408,6 +428,19 @@ PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_LIMITATIONS = (
     "does_not_exercise_page_webassembly_add42",
     "does_not_exercise_page_webassembly_tables",
     "does_not_exercise_page_webassembly_memories",
+    "does_not_exercise_page_webassembly_memory_growth",
+    "does_not_exercise_page_webassembly_threads",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_claim_m8_compatibility_completion",
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_LIMITATIONS = (
+    "only_exercises_one_fixed_page_webassembly_instantiate_streaming_data_application_wasm_module_instance_add42_path",
+    "does_not_exercise_http_wisp_or_chunked_streaming",
+    "does_not_exercise_arbitrary_fetch_sources_cors_cache_or_service_workers",
+    "does_not_exercise_imports_cancellation_or_streaming_errors",
+    "does_not_exercise_page_webassembly_tables",
+    "does_not_exercise_page_webassembly_memories",
+    "does_not_exercise_page_webassembly_exceptions",
     "does_not_exercise_page_webassembly_memory_growth",
     "does_not_exercise_page_webassembly_threads",
     "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
@@ -945,6 +978,73 @@ PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     limitations=PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_LIMITATIONS,
 )
 
+PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id=PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE,
+    query_mode=PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE,
+    sentinel=PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SENTINEL,
+    case=PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_CASE,
+    scope=PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SCOPE,
+    runtime_arguments=(PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(
+        ("pageWebAssemblyUnavailableObserved", False),
+        ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed",
+            True,
+        ),
+        ("pageWebAssemblyTablesObserved", False),
+        (
+            "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
+            False,
+        ),
+        (
+            "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved",
+            False,
+        ),
+        ("pageWebAssemblyTableGrowthObserved", False),
+        (
+            "pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved",
+            False,
+        ),
+        ("pageWebAssemblyMemoriesObserved", False),
+        ("pageWebAssemblyMemoryConstructedImportedReadWriteObserved", False),
+        (
+            "pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved",
+            False,
+        ),
+        ("pageWebAssemblyExceptionsObserved", False),
+        (
+            "pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved",
+            False,
+        ),
+        ("pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved", False),
+        (
+            "pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved",
+            False,
+        ),
+        (
+            "pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved",
+            False,
+        ),
+        ("pageWebAssemblyMemoryGrowthObserved", False),
+        (
+            "pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved",
+            False,
+        ),
+        ("pageWebAssemblyThreadsObserved", False),
+    ),
+    limitations=PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_LIMITATIONS,
+)
+
 
 def smoke_config_for_page_webassembly(
     page_webassembly: bool,
@@ -1059,6 +1159,16 @@ def smoke_config_for_page_webassembly_js_throw_payload(
     )
 
 
+def smoke_config_for_page_webassembly_instantiate_streaming(
+    page_webassembly_instantiate_streaming: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG
+        if page_webassembly_instantiate_streaming
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
 def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> None:
     if smoke_config not in (
         DEFAULT_SMOKE_CONFIG,
@@ -1073,6 +1183,7 @@ def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> No
         PAGE_WEBASSEMBLY_WASM_THROW_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG,
+        PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG,
     ):
         raise M0Error("DevTools protocol smoke configuration is not fixed")
 
@@ -1374,6 +1485,8 @@ def _require_unique_ordered_markers(
         page_webassembly_marker = PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG:
         page_webassembly_marker = PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER
+    elif smoke_config == PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG:
+        page_webassembly_marker = PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER
     else:
         page_webassembly_marker = PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER
     if not (
@@ -1599,6 +1712,14 @@ def main() -> int:
             "throw/Wasm-catch-payload DevTools smoke"
         ),
     )
+    parser.add_argument(
+        "--page-webassembly-instantiate-streaming",
+        action="store_true",
+        help=(
+            "run the fixed native page-WebAssembly instantiateStreaming "
+            "data:application/wasm module/instance/add42 DevTools smoke"
+        ),
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
     if args.timeout < 2.0:
@@ -1617,6 +1738,7 @@ def main() -> int:
         + int(args.page_webassembly_wasm_throw)
         + int(args.page_webassembly_wasm_throw_payload)
         + int(args.page_webassembly_js_throw_payload)
+        + int(args.page_webassembly_instantiate_streaming)
         > 1
     ):
         parser.error(
@@ -1626,38 +1748,43 @@ def main() -> int:
             "--page-webassembly-wasm-memory-grow-opcode, and "
             "--page-webassembly-wasm-table-grow-opcode, --page-webassembly-"
             "wasm-throw, --page-webassembly-wasm-throw-payload, and "
-            "--page-webassembly-js-throw-payload are mutually exclusive"
+            "--page-webassembly-js-throw-payload, and "
+            "--page-webassembly-instantiate-streaming are mutually exclusive"
         )
     smoke_config = (
-        smoke_config_for_page_webassembly_js_throw_payload(True)
-        if args.page_webassembly_js_throw_payload
+        smoke_config_for_page_webassembly_instantiate_streaming(True)
+        if args.page_webassembly_instantiate_streaming
         else (
-            smoke_config_for_page_webassembly_wasm_throw_payload(True)
-            if args.page_webassembly_wasm_throw_payload
+            smoke_config_for_page_webassembly_js_throw_payload(True)
+            if args.page_webassembly_js_throw_payload
             else (
-                smoke_config_for_page_webassembly_wasm_throw(True)
-                if args.page_webassembly_wasm_throw
+                smoke_config_for_page_webassembly_wasm_throw_payload(True)
+                if args.page_webassembly_wasm_throw_payload
                 else (
-                    smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
-                    if args.page_webassembly_wasm_memory_grow_opcode
+                    smoke_config_for_page_webassembly_wasm_throw(True)
+                    if args.page_webassembly_wasm_throw
                     else (
-                        smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
-                        if args.page_webassembly_wasm_table_grow_opcode
+                        smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
+                        if args.page_webassembly_wasm_memory_grow_opcode
                         else (
-                            smoke_config_for_page_webassembly_exceptions(True)
-                            if args.page_webassembly_exceptions
+                            smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
+                            if args.page_webassembly_wasm_table_grow_opcode
                             else (
-                                smoke_config_for_page_webassembly_table_growth(True)
-                                if args.page_webassembly_table_growth
+                                smoke_config_for_page_webassembly_exceptions(True)
+                                if args.page_webassembly_exceptions
                                 else (
-                                    smoke_config_for_page_webassembly_memory_growth(True)
-                                    if args.page_webassembly_memory_growth
+                                    smoke_config_for_page_webassembly_table_growth(True)
+                                    if args.page_webassembly_table_growth
                                     else (
-                                        smoke_config_for_page_webassembly_table(True)
-                                        if args.page_webassembly_table
-                                        else smoke_config_for_page_webassembly(
-                                            args.page_webassembly,
-                                            args.page_webassembly_memory,
+                                        smoke_config_for_page_webassembly_memory_growth(True)
+                                        if args.page_webassembly_memory_growth
+                                        else (
+                                            smoke_config_for_page_webassembly_table(True)
+                                            if args.page_webassembly_table
+                                            else smoke_config_for_page_webassembly(
+                                                args.page_webassembly,
+                                                args.page_webassembly_memory,
+                                            )
                                         )
                                     )
                                 )

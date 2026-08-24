@@ -114,6 +114,17 @@ const PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SCOPE =
     "js-throw-wasm-catch-payload-42-console-event-detach-close";
 const PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SWITCH =
     "--wasm-browser-m8-page-webassembly-js-throw-payload-smoke";
+const PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE =
+    "page-webassembly-instantiate-streaming";
+const PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_CASE =
+    "browser_page_webassembly_instantiate_streaming_m8";
+const PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-webassembly-instantiate-streaming-" +
+    "fetch-data-application-wasm-module-instance-add42-console-event-detach-" +
+    "close";
+const PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SWITCH =
+    "--wasm-browser-m8-page-webassembly-instantiate-streaming-smoke";
 const NETWORK_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 const RUNTIME_ENABLE_MARKER =
@@ -159,6 +170,9 @@ const PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER =
 const PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "EXCEPTION_IMPORTED_I32_TAG_JS_THROW_WASM_CATCH_PAYLOAD_42_OK";
+const PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
+    "INSTANTIATE_STREAMING_DATA_URL_APPLICATION_WASM_MODULE_INSTANCE_ADD_42_OK";
 const RUNTIME_CONSOLE_API_CALLED_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 const DETACHED_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
@@ -551,6 +565,51 @@ const PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE = Object.freeze({
   ]),
 });
 
+const PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_MODE = Object.freeze({
+  id: PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE,
+  queryMode: PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE,
+  case: PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_CASE,
+  scope: PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SCOPE,
+  runtimeArguments: Object.freeze([
+    PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SWITCH,
+  ]),
+  pageWebAssemblyExpectations: Object.freeze({
+    pageWebAssemblyUnavailableObserved: false,
+    pageWebAssemblyAdd42Observed: false,
+    pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed:
+        true,
+    pageWebAssemblyTablesObserved: false,
+    pageWebAssemblyTableConstructedImportedIndirectCallObserved: false,
+    pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved: false,
+    pageWebAssemblyTableGrowthObserved: false,
+    pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved:
+        false,
+    pageWebAssemblyMemoriesObserved: false,
+    pageWebAssemblyMemoryConstructedImportedReadWriteObserved: false,
+    pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved: false,
+    pageWebAssemblyExceptionsObserved: false,
+    pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved: false,
+    pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved: false,
+    pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved:
+        false,
+    pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved:
+        false,
+    pageWebAssemblyMemoryGrowthObserved: false,
+    pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved:
+        false,
+    pageWebAssemblyThreadsObserved: false,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -646,7 +705,8 @@ function isKnownSmokeMode(smokeMode) {
       smokeMode === PAGE_WEBASSEMBLY_WASM_TABLE_GROW_OPCODE_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_WASM_THROW_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_MODE ||
-      smokeMode === PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE;
+      smokeMode === PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE ||
+      smokeMode === PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_MODE;
 }
 
 function validateResult(result, smokeMode) {
@@ -730,6 +790,8 @@ function validateResult(result, smokeMode) {
       PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER :
+      smokeMode === PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_MODE ?
+      PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER :
       PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
@@ -785,6 +847,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #runtimeEvaluateObserved = false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
+  #pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed =
+      false;
   #pageWebAssemblyTablesObserved = false;
   #pageWebAssemblyTableConstructedImportedIndirectCallObserved = false;
   #pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved = false;
@@ -866,6 +930,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     }
     if (text.includes(PAGE_WEBASSEMBLY_ADD42_MARKER)) {
       this.#pageWebAssemblyAdd42Observed = true;
+    }
+    if (text.includes(PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER)) {
+      this.#pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed =
+          true;
     }
     if (text.includes(PAGE_WEBASSEMBLY_TABLE_MARKER)) {
       this.#pageWebAssemblyTablesObserved = true;
@@ -1030,6 +1098,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       pageWebAssemblyUnavailableObserved:
           this.#pageWebAssemblyUnavailableObserved,
       pageWebAssemblyAdd42Observed: this.#pageWebAssemblyAdd42Observed,
+      pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed:
+          this.#pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed,
       pageWebAssemblyTablesObserved: this.#pageWebAssemblyTablesObserved,
       pageWebAssemblyTableConstructedImportedIndirectCallObserved:
           this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved,
@@ -1237,6 +1307,9 @@ export function parseDevToolsProtocolSmokeQuery(query) {
   } else if (modes.length === 1 &&
              modes[0] === PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE;
+  } else if (modes.length === 1 &&
+             modes[0] === PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE) {
+    smokeMode = PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_MODE;
   } else {
     throw new Error("DevTools protocol query has an invalid mode");
   }
@@ -1271,7 +1344,8 @@ async function fetchExpectedSmokeMode(token) {
        binding.mode !== PAGE_WEBASSEMBLY_WASM_TABLE_GROW_OPCODE_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_WASM_THROW_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_MODE.id &&
-       binding.mode !== PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE.id)) {
+       binding.mode !== PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE.id &&
+       binding.mode !== PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_MODE.id)) {
     throw new Error("DevTools protocol mode binding is invalid");
   }
   return binding.mode;

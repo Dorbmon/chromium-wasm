@@ -40,6 +40,7 @@ enum class WasmBrowserDevToolsProtocolSmokeMode {
   kWasmThrowImportedTagJsCatch,
   kWasmThrowImportedI32TagJsCatchPayload,
   kExceptionImportedI32TagJsThrowWasmCatchPayload,
+  kInstantiateStreamingDataUrlModuleAdd42,
 };
 
 // Returns the one literal data: URL associated with |mode|. This is used by
@@ -99,7 +100,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // fixed WebAssembly.Exception(tag, [42]); Wasm catches that tag and returns
 // its payload. It does not exercise other payload types, coercions, Wasm
 // throw, rethrow, catch-all, throw_ref, exception stacks, tables, memories,
-// or threads.
+// or threads. A twelfth closed page-WebAssembly mode awaits
+// instantiateStreaming of one fixed data:application/wasm URL, checks its
+// Module/Instance result, and invokes its fixed add(20, 22) export. It does
+// not exercise HTTP/WISP streaming, arbitrary fetch sources, imports,
+// cancellation, errors, tables, memories, exceptions, or threads.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:
