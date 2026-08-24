@@ -5,6 +5,7 @@
 #include "content/browser/dom_storage/dom_storage_context_wrapper.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,20 @@
 namespace content {
 
 namespace {
+
+std::optional<base::FilePath> GetDOMStoragePath(
+    StoragePartitionImpl* partition) {
+#if BUILDFLAG(IS_WASM)
+  // The regular Wasm profile has no durable StoragePartition lifecycle yet.
+  // Bind both DOM-storage implementations without a path so their real
+  // in-memory backends remain available, rather than creating LevelDB stores
+  // which cannot report a terminal, result-bearing drain to WasmProfile.
+  static_cast<void>(partition);
+  return std::nullopt;
+#else
+  return partition->GetStoragePartitionPath();
+#endif
+}
 
 void AdaptSessionStorageUsageInfo(
     DOMStorageContextWrapper::GetSessionStorageUsageCallback callback,
@@ -114,10 +129,11 @@ DOMStorageContextWrapper::DOMStorageContextWrapper(
   MaybeBindLocalStorageControl();
 
   // Report on disk LocalStorage db size.
-  if (partition_->GetStoragePartitionPath()) {
+  if (const std::optional<base::FilePath> dom_storage_path =
+          GetDOMStoragePath(partition_)) {
     // Path to the LocalStorage leveldb directory.
     base::FilePath db_path = storage::GetLocalStorageDatabasePath(
-        *partition_->GetStoragePartitionPath());
+        *dom_storage_path);
 
     // Offload the blocking file operation and report the result.
     base::ThreadPool::PostTaskAndReplyWithResult(
@@ -377,7 +393,7 @@ void DOMStorageContextWrapper::MaybeBindSessionStorageControl(
     return;
   session_storage_control_.reset();
   partition_->GetStorageService()->BindSessionStorageControl(
-      partition_->GetStoragePartitionPath(), clear_on_open,
+      GetDOMStoragePath(partition_), clear_on_open,
       session_storage_control_.BindNewPipeAndPassReceiver());
   session_storage_control_.set_disconnect_handler(
       base::BindOnce(&DOMStorageContextWrapper::OnSessionStorageDisconnected,
@@ -397,7 +413,7 @@ void DOMStorageContextWrapper::MaybeBindLocalStorageControl() {
   }
   local_storage_control_.reset();
   partition_->GetStorageService()->BindLocalStorageControl(
-      partition_->GetStoragePartitionPath(),
+      GetDOMStoragePath(partition_),
       local_storage_control_.BindNewPipeAndPassReceiver());
   local_storage_control_.set_disconnect_handler(
       base::BindOnce(&DOMStorageContextWrapper::OnLocalStorageDisconnected,

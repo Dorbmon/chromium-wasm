@@ -18,6 +18,7 @@
 #include "base/task/task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/uuid.h"
+#include "build/build_config.h"
 #include "components/file_access/scoped_file_access_delegate.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/public/browser/blob_handle.h"
@@ -46,6 +47,7 @@ namespace {
 const FilePath::CharType kBlobStorageParentDirectory[] =
     FILE_PATH_LITERAL("blob_storage");
 
+#if !BUILDFLAG(IS_WASM)
 // Removes all folders in the parent directory except for the
 // |current_run_dir| folder. If this path is empty, then we delete all folders.
 void RemoveOldBlobStorageDirectories(FilePath blob_storage_parent,
@@ -62,6 +64,7 @@ void RemoveOldBlobStorageDirectories(FilePath blob_storage_parent,
       base::DeletePathRecursively(name);
   }
 }
+#endif
 
 class BlobHandleImpl : public BlobHandle {
  public:
@@ -125,6 +128,9 @@ ChromeBlobStorageContext* ChromeBlobStorageContext::GetFor(
 
     // If we're not incognito mode, schedule all of our file tasks to enable
     // disk on the storage context.
+    // A Wasm profile deliberately keeps the null file task runner. Blob data
+    // remains in memory until profile-backed paging has a terminal drain.
+#if !BUILDFLAG(IS_WASM)
     if (!context->IsOffTheRecord() && io_thread_valid) {
       file_task_runner = base::ThreadPool::CreateTaskRunner(
           {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
@@ -135,6 +141,7 @@ ChromeBlobStorageContext* ChromeBlobStorageContext::GetFor(
           base::BindOnce(&RemoveOldBlobStorageDirectories,
                          std::move(blob_storage_parent), blob_storage_dir));
     }
+#endif
 
     if (io_thread_valid) {
       GetIOThreadTaskRunner({})->PostTask(
@@ -174,8 +181,18 @@ void ChromeBlobStorageContext::InitializeOnIOThread(
     const FilePath& blob_storage_dir,
     scoped_refptr<base::TaskRunner> file_task_runner) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+#if BUILDFLAG(IS_WASM)
+  // The regular Wasm profile has no durable blob-file paging lifecycle yet.
+  // Keep blob data in the real in-memory storage implementation until OPFS
+  // ownership can report a terminal, result-bearing drain at shutdown.
+  static_cast<void>(profile_dir);
+  static_cast<void>(blob_storage_dir);
+  static_cast<void>(file_task_runner);
+  context_ = std::make_unique<BlobStorageContext>();
+#else
   context_ = std::make_unique<BlobStorageContext>(profile_dir, blob_storage_dir,
                                                   std::move(file_task_runner));
+#endif
   // Signal the BlobMemoryController when it's appropriate to calculate its
   // storage limits.
   content::GetIOThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
