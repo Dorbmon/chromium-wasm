@@ -2019,6 +2019,13 @@ source_set("wasm_profile_storage") {
   public_deps = [ ":wasm_profile_storage_drain_result" ]
 
   deps = [ "//base" ]
+
+  # The scoped Default mount is physically absent from the database and normal
+  # Chrome source graphs. Only the dedicated Preferences artifact can name its
+  # initializer in the public storage header.
+  if (enable_chromium_wasm_m7_profile_preferences_test) {
+    defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
+  }
 }
 
 # This exercises only the fail-closed classification of a completed scoped

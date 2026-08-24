@@ -147,9 +147,10 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     }
 
     // The experimental M7 profile-storage backend must mount before Content's
-    // delegate can register or resolve /profile. Normal Chrome deliberately
-    // uses the volatile configured profile path until that backend is pinned
-    // and its durability lifecycle is proven.
+    // delegate can register or resolve /profile. The dedicated Preferences
+    // artifact scopes its leased backend to /profile/Default; normal Chrome
+    // deliberately uses the volatile configured profile path until the full
+    // backend is pinned and its durability lifecycle is proven.
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
@@ -163,7 +164,11 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       // emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
 #endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
+#else
     } else if (!chrome::InitializeWasmProfileStorage()) {
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
       chrome::ReportWasmProfilePreferencesSmokeFailure(
           chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);

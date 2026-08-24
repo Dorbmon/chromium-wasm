@@ -9,10 +9,18 @@
 
 namespace chrome {
 
-// Mounts the one supported Chrome profile root on the leased OPFS WasmFS
-// backend. This must run on Chromium's application pthread before ContentMain
-// can register or resolve DIR_USER_DATA.
+// Mounts the database acceptance probe's profile root on the leased OPFS
+// WasmFS backend. This must run on Chromium's application pthread before
+// ContentMain can register or resolve DIR_USER_DATA.
 bool InitializeWasmProfileStorage();
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// Mounts the Preferences acceptance probe's leased OPFS backend only at
+// /profile/Default. Its /profile parent remains on WasmFS's default memory
+// backend, which the initializer validates before and after the child mount.
+// This is available only in the dedicated Preferences test artifact.
+bool InitializeWasmProfilePreferencesStorage();
+#endif
 
 // Returns true only while the exact leased OPFS mount remains available.
 bool IsWasmProfileStorageMounted();

@@ -10,6 +10,7 @@
 
 #include <cerrno>
 
+#include "base/check.h"
 #include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "build/build_config.h"
@@ -22,12 +23,24 @@ namespace chrome {
 
 namespace {
 
-constexpr char kProfileMountPath[] = "/profile";
+constexpr char kProfileRootPath[] = "/profile";
 constexpr char kProfileLeaseName[] = "chromium-wasm-profile-v1";
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+constexpr char kWasmFsRootPath[] = "/";
+constexpr char kProfileDefaultPath[] = "/profile/Default";
+#endif
 
 int NegativeErrnoOrEio() {
   return errno == 0 ? -EIO : -errno;
 }
+
+enum class ProfileStorageMount {
+  kProfileRoot,
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  kDefaultProfile,
+#endif
+};
 
 class WasmProfileStorageState {
  public:
@@ -36,10 +49,10 @@ class WasmProfileStorageState {
   WasmProfileStorageState& operator=(const WasmProfileStorageState&) = delete;
   ~WasmProfileStorageState() = default;
 
-  bool Initialize() {
+  bool Initialize(ProfileStorageMount mount) {
     base::AutoLock lock(lock_);
     if (state_ != State::kUninitialized) {
-      return state_ == State::kMounted;
+      return state_ == State::kMounted && mount_ == mount;
     }
 
     // Leased OPFS backend construction cannot run on the browser main thread,
@@ -52,6 +65,21 @@ class WasmProfileStorageState {
       state_ = State::kMountFailed;
       return false;
     }
+
+    const char* mount_path = kProfileRootPath;
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    backend_t profile_root_backend = nullptr;
+    if (mount == ProfileStorageMount::kDefaultProfile) {
+      const int profile_root_result =
+          PrepareVolatileProfileRoot(&profile_root_backend);
+      if (profile_root_result != 0) {
+        initialization_error_ = profile_root_result;
+        state_ = State::kMountFailed;
+        return false;
+      }
+      mount_path = kProfileDefaultPath;
+    }
+#endif
 
     errno = 0;
     backend_t backend =
@@ -69,19 +97,28 @@ class WasmProfileStorageState {
     backend_ = backend;
 
     const int mount_result =
-        wasmfs_create_directory(kProfileMountPath, /*mode=*/0700, backend);
+        wasmfs_create_directory(mount_path, /*mode=*/0700, backend);
     if (mount_result != 0) {
       initialization_error_ = mount_result < 0 ? mount_result : -EIO;
       state_ = State::kMountFailed;
       return false;
     }
 
-    if (wasmfs_get_backend_by_path(kProfileMountPath) != backend) {
+    bool has_expected_mount_identity =
+        HasExpectedProfileRootMountIdentity(backend);
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    if (mount == ProfileStorageMount::kDefaultProfile) {
+      has_expected_mount_identity =
+          HasExpectedDefaultProfileMountIdentity(profile_root_backend, backend);
+    }
+#endif
+    if (!has_expected_mount_identity) {
       initialization_error_ = -EIO;
       state_ = State::kMountFailed;
       return false;
     }
 
+    mount_ = mount;
     state_ = State::kMounted;
     return true;
   }
@@ -178,6 +215,62 @@ class WasmProfileStorageState {
     kDrainFailed,
   };
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  static int PrepareVolatileProfileRoot(backend_t* profile_root_backend) {
+    CHECK(profile_root_backend);
+
+    errno = 0;
+    const backend_t wasmfs_root_backend =
+        wasmfs_get_backend_by_path(kWasmFsRootPath);
+    if (!wasmfs_root_backend) {
+      return NegativeErrnoOrEio();
+    }
+
+    // The dedicated Preferences probe stores only Default/Preferences. Keep
+    // its containing user-data directory on WasmFS's default memory backend
+    // rather than creating /profile from the leased OPFS backend. EEXIST is
+    // acceptable only after the identity check below; it is never a fallback
+    // to an unknown existing mount.
+    const int create_profile_root_result = wasmfs_create_directory(
+        kProfileRootPath, /*mode=*/0700, wasmfs_root_backend);
+    if (create_profile_root_result != 0 &&
+        create_profile_root_result != -EEXIST) {
+      return create_profile_root_result < 0 ? create_profile_root_result
+                                            : -EIO;
+    }
+
+    const backend_t parent_backend =
+        wasmfs_get_backend_by_path(kProfileRootPath);
+    if (!parent_backend || parent_backend != wasmfs_root_backend) {
+      return -EIO;
+    }
+
+    *profile_root_backend = parent_backend;
+    return 0;
+  }
+#endif
+
+  static bool HasExpectedProfileRootMountIdentity(backend_t leased_backend) {
+    return wasmfs_get_backend_by_path(kProfileRootPath) == leased_backend;
+  }
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  static bool HasExpectedDefaultProfileMountIdentity(
+      backend_t profile_root_backend,
+      backend_t leased_backend) {
+    // Verify the parent again after mounting Default: the parent must remain
+    // on the WasmFS memory root and must never be the leased OPFS backend,
+    // while Default must resolve to the exact backend whose lease we drain.
+    const backend_t parent_backend =
+        wasmfs_get_backend_by_path(kProfileRootPath);
+    const backend_t default_backend =
+        wasmfs_get_backend_by_path(kProfileDefaultPath);
+    return parent_backend == profile_root_backend &&
+           parent_backend != leased_backend &&
+           default_backend == leased_backend;
+  }
+#endif
+
   static int NormalizeError(int error) { return error < 0 ? error : -EIO; }
 
   static WasmProfileStorageDrainResult DrainBackend(backend_t backend) {
@@ -218,6 +311,8 @@ class WasmProfileStorageState {
 
   base::Lock lock_;
   State state_ GUARDED_BY(lock_) = State::kUninitialized;
+  ProfileStorageMount mount_ GUARDED_BY(lock_) =
+      ProfileStorageMount::kProfileRoot;
   int initialization_error_ GUARDED_BY(lock_) = 0;
   backend_t backend_ GUARDED_BY(lock_) = nullptr;
   bool profile_created_ GUARDED_BY(lock_) = false;
@@ -234,8 +329,16 @@ WasmProfileStorageState& GetWasmProfileStorageState() {
 }  // namespace
 
 bool InitializeWasmProfileStorage() {
-  return GetWasmProfileStorageState().Initialize();
+  return GetWasmProfileStorageState().Initialize(
+      ProfileStorageMount::kProfileRoot);
 }
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+bool InitializeWasmProfilePreferencesStorage() {
+  return GetWasmProfileStorageState().Initialize(
+      ProfileStorageMount::kDefaultProfile);
+}
+#endif
 
 bool IsWasmProfileStorageMounted() {
   return GetWasmProfileStorageState().IsMounted();

@@ -148,6 +148,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 (
                     '#include "chrome/browser/wasm/wasm_profile_storage.h"',
                     "chrome::InitializeWasmProfileStorage()",
+                    "chrome::InitializeWasmProfilePreferencesStorage()",
                     "chrome::NeedsWasmProfileStorageBackendDrain()",
                     "chrome::DrainAndReleaseWasmProfileStorageBackend()",
                 ),
@@ -165,16 +166,20 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             for token in tokens:
                 _assert_only_in_m7_storage_blocks(self, text, token)
 
-    def test_storage_mounts_only_the_leased_backend_at_the_profile_root(self) -> None:
+    def test_preferences_storage_keeps_profile_parent_volatile_and_scopes_lease(
+        self,
+    ) -> None:
         for token in (
             '#include <emscripten/threading.h>',
             '#include <emscripten/wasmfs.h>',
             '#include <emscripten/wasmfs_opfs_profile_drain.h>',
-            'constexpr char kProfileMountPath[] = "/profile";',
+            'constexpr char kWasmFsRootPath[] = "/";',
+            'constexpr char kProfileRootPath[] = "/profile";',
+            'constexpr char kProfileDefaultPath[] = "/profile/Default";',
             'constexpr char kProfileLeaseName[] = "chromium-wasm-profile-v1";',
             "wasmfs_create_opfs_backend_with_profile_lease(kProfileLeaseName)",
-            "wasmfs_create_directory(kProfileMountPath, /*mode=*/0700, backend)",
-            "wasmfs_get_backend_by_path(kProfileMountPath) != backend",
+            "bool InitializeWasmProfilePreferencesStorage()",
+            "ProfileStorageMount::kDefaultProfile",
             "emscripten_is_main_browser_thread()",
             "emscripten_is_main_runtime_thread()",
             "initialization_error_ = -EAGAIN;",
@@ -186,27 +191,74 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertNotIn("wasmfs_unmount(", self.storage)
         self.assertNotIn("wasmfs_terminal_drain(", self.storage)
 
+        prepare_parent = _body_after_signature(
+            self.storage,
+            "static int PrepareVolatileProfileRoot(backend_t* profile_root_backend)",
+        )
+        for token in (
+            "wasmfs_get_backend_by_path(kWasmFsRootPath)",
+            "wasmfs_create_directory(\n        kProfileRootPath, /*mode=*/0700, wasmfs_root_backend)",
+            "create_profile_root_result != -EEXIST",
+            "wasmfs_get_backend_by_path(kProfileRootPath)",
+            "parent_backend != wasmfs_root_backend",
+            "it is never a fallback\n    // to an unknown existing mount.",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, prepare_parent)
+
+        mount_identity = _body_after_signature(
+            self.storage,
+            "static bool HasExpectedDefaultProfileMountIdentity(",
+        )
+        for token in (
+            "wasmfs_get_backend_by_path(kProfileDefaultPath)",
+            "parent_backend == profile_root_backend",
+            "parent_backend != leased_backend",
+            "default_backend == leased_backend",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, mount_identity)
+
+        self.assertIn(
+            "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)\n"
+            "// Mounts the Preferences acceptance probe's leased OPFS backend only at",
+            self.storage_header,
+        )
+        self.assertIn(
+            "bool InitializeWasmProfilePreferencesStorage();", self.storage_header
+        )
+
+        self.assertIn(
+            "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)\n"
+            "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
+            "#else\n"
+            "    } else if (!chrome::InitializeWasmProfileStorage()) {\n"
+            "#endif",
+            self.chrome_main,
+        )
+
     def test_mount_failure_defers_an_already_acquired_lease_until_post_scope(
         self,
     ) -> None:
         mount_failure = self.storage.index("if (mount_result != 0)")
         backend_identity_failure = self.storage.index(
-            "wasmfs_get_backend_by_path(kProfileMountPath) != backend"
+            "if (!has_expected_mount_identity)"
+        )
+        initialize_start = self.storage.index(
+            "  bool Initialize(ProfileStorageMount mount) {"
         )
         initialize = self.storage[
-            self.storage.index("  bool Initialize() {") : self.storage.index(
-                "  bool IsMounted() {"
-            )
+            initialize_start : self.storage.index("  bool IsMounted() {")
         ]
         self.assertIn("backend_ = backend;", initialize)
         self.assertNotIn("DrainBackend(backend);", initialize)
         self.assertLess(
             initialize.index("backend_ = backend;"),
-            mount_failure - self.storage.index("  bool Initialize() {"),
+            mount_failure - initialize_start,
         )
         self.assertLess(
             initialize.index("backend_ = backend;"),
-            backend_identity_failure - self.storage.index("  bool Initialize() {"),
+            backend_identity_failure - initialize_start,
         )
         self.assertIn("bool NeedsWasmProfileStorageBackendDrain()", self.storage)
         self.assertIn("backend_ != nullptr", self.storage)
@@ -303,7 +355,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self,
     ) -> None:
         initialize = self.chrome_main.index(
-            "chrome::InitializeWasmProfileStorage()"
+            "chrome::InitializeWasmProfilePreferencesStorage()"
         )
         content_main = self.chrome_main.index("content::ContentMain(std::move(params))")
         needs_drain = self.chrome_main.index(
@@ -429,6 +481,18 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.wasm_browser_build)
+
+        storage_source_set = _body_after_signature(
+            self.wasm_browser_build, 'source_set("wasm_profile_storage")'
+        )
+        self.assertIn(
+            "if (enable_chromium_wasm_m7_profile_preferences_test)",
+            storage_source_set,
+        )
+        self.assertIn(
+            'defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]',
+            storage_source_set,
+        )
 
         result_source_set_start = self.wasm_browser_build.index(
             'source_set("wasm_profile_storage_drain_result")'
