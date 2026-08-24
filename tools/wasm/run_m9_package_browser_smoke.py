@@ -75,6 +75,11 @@ OUTER_DOCUMENT_RELOAD_STRESS_EPOCH_COUNT = 3
 OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT = (
     OUTER_DOCUMENT_RELOAD_STRESS_EPOCH_COUNT - 1
 )
+# This deliberately observes only a short fixed host-side interval after an
+# acknowledged native/runtime exit. It catches a late canvas presentation
+# callback before the next outer-document navigation without claiming that all
+# native, worker, or JavaScript resources have been reclaimed.
+POST_EXIT_FRAME_QUIESCENCE_SECONDS = 0.1
 # This is deliberately a fixed, small reliability probe rather than an
 # unbounded command-line stress loop.  The M9 runner below accepts at most the
 # two restarts needed by the separate three-epoch package-reload observation.
@@ -85,8 +90,10 @@ OUTER_DOCUMENT_RELOAD_STRESS_SCOPE = (
 )
 OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS = (
     "fixed-three-epoch-outer-document-reload-observation-only",
+    "fixed-100ms-post-exit-host-frame-quiescence-only",
     "does_not_establish_long_run_reliability_or_resource_leak_freedom",
     "does_not_measure_memory_worker_exhaustion_or_out_of_memory_behavior",
+    "does_not_measure_live_transport_or_resource_teardown",
     "does_not_establish_m7_persistence_m8_compatibility_or_m9_release_completion",
 )
 RELEASE_STATUS = package_tool.RELEASE_STATUS
@@ -599,6 +606,84 @@ def _require_clean_shutdown(status: dict[str, Any], description: str) -> None:
         )
 
 
+def _require_post_exit_frame_quiescence_sample(
+    status: dict[str, Any], expected_frame_count: int
+) -> None:
+    """Require that one cleanly exited host presents no later canvas frame."""
+
+    if type(expected_frame_count) is not int or expected_frame_count < 1:
+        raise M0Error("expected post-exit package frame count is invalid")
+    _require_clean_shutdown(status, "post-exit package-host frame quiescence")
+    observed_frame_count = status.get("framesPresented")
+    if type(observed_frame_count) is not int or observed_frame_count < 1:
+        raise M0Error("post-exit package-host frame count is invalid")
+    if observed_frame_count != expected_frame_count:
+        raise M0Error("package host presented a frame after clean shutdown")
+
+
+def _observe_post_exit_frame_quiescence(
+    *,
+    client: Any,
+    browser: subprocess.Popen[str],
+    browser_stderr: deque[str],
+    deadline: float,
+    clean_shutdown: dict[str, Any],
+    expected_url: str,
+    expected_epoch: str,
+    expected_package_metadata: dict[str, object],
+    expected_time_origin: float,
+    expected_wisp_configured: bool,
+    description: str,
+) -> None:
+    """Observe a fixed, same-document post-exit canvas quiet interval.
+
+    The checked host status is deliberately limited to the existing
+    frame-presentation counter and verified terminal lifecycle signals. It is
+    not a descriptor drain, worker census, transport teardown, or leak check.
+    """
+
+    expected_frame_count = clean_shutdown.get("framesPresented")
+    if type(expected_frame_count) is not int or expected_frame_count < 1:
+        raise M0Error("post-exit package-host frame count is invalid")
+    _require_post_exit_frame_quiescence_sample(clean_shutdown, expected_frame_count)
+    _require_terminal_package_document(
+        clean_shutdown,
+        expected_url=expected_url,
+        expected_epoch=expected_epoch,
+        expected_package_metadata=expected_package_metadata,
+        expected_time_origin=expected_time_origin,
+    )
+    _require_release_wisp_configuration(clean_shutdown, expected_wisp_configured)
+
+    quiescence_deadline = time.monotonic() + POST_EXIT_FRAME_QUIESCENCE_SECONDS
+    if quiescence_deadline >= deadline:
+        raise M0Error("package post-exit frame quiescence does not fit before timeout")
+
+    def is_quiescent(status: dict[str, Any]) -> bool:
+        _require_post_exit_frame_quiescence_sample(status, expected_frame_count)
+        _require_terminal_package_document(
+            status,
+            expected_url=expected_url,
+            expected_epoch=expected_epoch,
+            expected_package_metadata=expected_package_metadata,
+            expected_time_origin=expected_time_origin,
+        )
+        _require_release_wisp_configuration(status, expected_wisp_configured)
+        return time.monotonic() >= quiescence_deadline
+
+    # The shared status poll sleeps for at most 50 ms between samples. Permit
+    # one extra interval to evaluate the predicate at or after the exact
+    # 100 ms boundary rather than mistaking scheduler jitter for a timeout.
+    _wait_for_status(
+        client=client,
+        browser=browser,
+        browser_stderr=browser_stderr,
+        deadline=min(deadline, quiescence_deadline + 0.05),
+        predicate=is_quiescent,
+        description=description,
+    )
+
+
 def _restart_after_clean_shutdown(
     *,
     client: Any,
@@ -779,16 +864,22 @@ def _request_clean_shutdown(
 
 
 def _epoch_result(
-    ready: dict[str, Any], clean_shutdown: dict[str, Any]
+    ready: dict[str, Any],
+    clean_shutdown: dict[str, Any],
+    *,
+    post_exit_frame_quiescent: bool = False,
 ) -> dict[str, object]:
     _require_clean_shutdown(clean_shutdown, "package-host shutdown")
-    return {
+    result: dict[str, object] = {
         "frames_presented": ready["framesPresented"],
         "runtime_exit_code": clean_shutdown["runtimeExitCode"],
         "process_exit_code": clean_shutdown["processExitCode"],
         "shutdown_disabled": clean_shutdown["shutdownDisabled"],
         "shutdown_requested": clean_shutdown["shutdownRequested"],
     }
+    if post_exit_frame_quiescent:
+        result["post_exit_frame_quiescent"] = True
+    return result
 
 
 def _run_cleanup_action(
@@ -939,7 +1030,31 @@ def run_package_browser_smoke(
             expected_time_origin=first_time_origin,
             description="waiting for the first clean fixed package-host shutdown",
         )
-        first_result = _epoch_result(first_ready, first_shutdown)
+        observe_post_exit_frame_quiescence = (
+            restart_count == OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
+        )
+        if observe_post_exit_frame_quiescence:
+            _observe_post_exit_frame_quiescence(
+                client=client,
+                browser=browser,
+                browser_stderr=browser_stderr,
+                deadline=deadline,
+                clean_shutdown=first_shutdown,
+                expected_url=first_url,
+                expected_epoch=first_epoch,
+                expected_package_metadata=expected_package_metadata,
+                expected_time_origin=first_time_origin,
+                expected_wisp_configured=release_wisp_endpoint is not None,
+                description=(
+                    "observing post-exit package-host frame quiescence "
+                    "for fixed outer-document lifetime 1"
+                ),
+            )
+        first_result = _epoch_result(
+            first_ready,
+            first_shutdown,
+            post_exit_frame_quiescent=observe_post_exit_frame_quiescence,
+        )
         if restart_count == 0:
             result = {
                 "browser_version": browser_version,
@@ -1011,7 +1126,30 @@ def run_package_browser_smoke(
                     f"{restart_index + 1}"
                 ),
             )
-            epoch_results.append(_epoch_result(ready, shutdown))
+            if observe_post_exit_frame_quiescence:
+                _observe_post_exit_frame_quiescence(
+                    client=client,
+                    browser=browser,
+                    browser_stderr=browser_stderr,
+                    deadline=deadline,
+                    clean_shutdown=shutdown,
+                    expected_url=restart_url,
+                    expected_epoch=epoch,
+                    expected_package_metadata=expected_package_metadata,
+                    expected_time_origin=time_origin,
+                    expected_wisp_configured=release_wisp_endpoint is not None,
+                    description=(
+                        "observing post-exit package-host frame quiescence "
+                        f"for fixed outer-document lifetime {restart_index + 1}"
+                    ),
+                )
+            epoch_results.append(
+                _epoch_result(
+                    ready,
+                    shutdown,
+                    post_exit_frame_quiescent=observe_post_exit_frame_quiescence,
+                )
+            )
             prior_shutdown = shutdown
             prior_time_origin = time_origin
 

@@ -27,6 +27,7 @@ from m0_common import M0Error
 def _epoch(frame_count: int) -> dict[str, object]:
     return {
         "frames_presented": frame_count,
+        "post_exit_frame_quiescent": True,
         "process_exit_code": 0,
         "runtime_exit_code": 0,
         "shutdown_disabled": True,
@@ -52,6 +53,36 @@ def _passing_result() -> dict[str, object]:
 
 
 class M9PackageOuterDocumentReloadStressTest(unittest.TestCase):
+    def test_post_exit_frame_quiescence_rejects_a_late_canvas_presentation(
+        self,
+    ) -> None:
+        status = {
+            "fatalCount": 0,
+            "framesPresented": 7,
+            "processExitCode": 0,
+            "runtimeExitCode": 0,
+            "shutdownDisabled": True,
+            "shutdownRequested": True,
+        }
+
+        self.assertIsNone(
+            runner.package_browser_smoke._require_post_exit_frame_quiescence_sample(
+                status, 7
+            )
+        )
+        for name, field, replacement, message in (
+            ("late frame", "framesPresented", 8, "presented a frame"),
+            ("missing frame", "framesPresented", 0, "frame count is invalid"),
+            ("unclean native exit", "processExitCode", 1, "exit codes 0"),
+        ):
+            with self.subTest(name=name):
+                invalid = deepcopy(status)
+                invalid[field] = replacement
+                with self.assertRaisesRegex(M0Error, message):
+                    runner.package_browser_smoke._require_post_exit_frame_quiescence_sample(
+                        invalid, 7
+                    )
+
     def test_result_requires_three_clean_distinct_package_lifetimes(self) -> None:
         result = _passing_result()
 
@@ -95,6 +126,12 @@ class M9PackageOuterDocumentReloadStressTest(unittest.TestCase):
 
         for name, field, replacement, message in (
             ("missing frame", "frames_presented", 0, "lacks a frame"),
+            (
+                "post-exit frame quiescence",
+                "post_exit_frame_quiescent",
+                False,
+                "lacks post-exit frame quiescence",
+            ),
             ("boolean exit", "runtime_exit_code", False, "exit is unclean"),
             ("nonzero exit", "process_exit_code", 1, "exit is unclean"),
             ("not requested", "shutdown_requested", False, "shutdown is invalid"),

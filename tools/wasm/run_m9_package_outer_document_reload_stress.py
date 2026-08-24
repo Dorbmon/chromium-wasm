@@ -45,6 +45,7 @@ LIMITATIONS = package_browser_smoke.OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS
 _EPOCH_FIELDS = frozenset(
     (
         "frames_presented",
+        "post_exit_frame_quiescent",
         "process_exit_code",
         "runtime_exit_code",
         "shutdown_disabled",
@@ -131,6 +132,10 @@ def validate_reload_stress_result(value: object) -> dict[str, object]:
             epoch["frames_presented"], f"epoch {index} frame count"
         ) < 1:
             raise M0Error(f"package reload stress epoch {index} lacks a frame")
+        if epoch["post_exit_frame_quiescent"] is not True:
+            raise M0Error(
+                f"package reload stress epoch {index} lacks post-exit frame quiescence"
+            )
         if (
             type(epoch["runtime_exit_code"]) is not int
             or type(epoch["process_exit_code"]) is not int
