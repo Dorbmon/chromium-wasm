@@ -55,6 +55,7 @@ class M6WasmBrowserWindowFactoryContractTest(unittest.TestCase):
         widget = source("chrome/browser/wasm/wasm_browser_widget.cc")
         factory = source("chrome/browser/wasm/wasm_browser_window_factory.cc")
         build = source("chrome/browser/wasm/BUILD.gn")
+        view_target = _source_set_body(build, "wasm_browser_view")
         target = _source_set_body(build, "wasm_browser_window_factory")
 
         for expected in (
@@ -115,6 +116,9 @@ class M6WasmBrowserWindowFactoryContractTest(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, target)
+
+        self.assertIn('"../ui/browser_window_deleter.h",', view_target)
+        self.assertNotIn('"../ui/browser_window_deleter.h",', target)
 
         for forbidden in (
             '../ui/views/frame/browser_window_factory.cc',

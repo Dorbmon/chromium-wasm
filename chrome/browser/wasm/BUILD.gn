@@ -382,6 +382,7 @@ source_set("wasm_browser_view") {
 
   public = [
     "../ui/browser_window.h",
+    "../ui/browser_window_deleter.h",
     "../ui/views/frame/browser_view.h",
   ]
 
@@ -466,7 +467,6 @@ source_set("wasm_browser_window_factory") {
 
   sources = [
     "../ui/browser_window_deleter.cc",
-    "../ui/browser_window_deleter.h",
     "wasm_browser_window_factory.cc",
   ]
 
