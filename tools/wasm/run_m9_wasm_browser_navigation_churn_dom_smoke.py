@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from collections.abc import Mapping
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -364,10 +365,10 @@ def parse_result_payload(payload: bytes) -> dict[str, Any] | None:
     return result
 
 
-def create_server(
+def create_server_from_artifacts(
     host: str,
     port: int,
-    out_dir: Path,
+    artifacts: Mapping[str, bytes],
     token: str,
     result_queue: queue.Queue[dict[str, Any]],
     *,
@@ -375,13 +376,33 @@ def create_server(
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
 ) -> NavigationChurnSmokeServer:
+    """Create a navigation-churn server from already-captured executable bytes.
+
+    The caller owns the artifact capture policy. This helper never opens an
+    executable path, which lets package-only probes serve verified in-memory
+    package bytes without consulting a raw build-output directory.
+    """
+
     module_name = _require_product_module_name(module_name, "server")
-    artifacts = snapshot_regular_files(
-        out_dir,
-        (f"{module_name}.js", f"{module_name}.wasm"),
-        maximum_bytes=MAX_SNAPSHOT_BYTES,
-        description="navigation-churn artifacts",
-    )
+    loader_name = f"{module_name}.js"
+    wasm_name = f"{module_name}.wasm"
+    expected_artifact_names = {loader_name, wasm_name}
+    if (
+        not isinstance(artifacts, Mapping)
+        or set(artifacts) != expected_artifact_names
+    ):
+        raise M0Error("navigation-churn captured artifact names are invalid")
+    captured_artifacts: dict[str, bytes] = {}
+    for artifact_name in sorted(expected_artifact_names):
+        artifact = artifacts.get(artifact_name)
+        if (
+            type(artifact) is not bytes
+            or not artifact
+            or len(artifact) > MAX_SNAPSHOT_BYTES
+        ):
+            raise M0Error("navigation-churn captured artifact bytes are invalid")
+        captured_artifacts[artifact_name] = artifact
+
     selected_host_dir = host_dir or Path(__file__).with_name("host")
     selected_runner_source = runner_source_path or Path(__file__)
     host_snapshots = snapshot_regular_files(
@@ -402,7 +423,7 @@ def create_server(
         (host, port), NavigationChurnSmokeRequestHandler
     )
     server.module_name = module_name
-    server.artifacts = artifacts
+    server.artifacts = captured_artifacts
     server.result_token = token
     server.result_queue = result_queue
     server.result_lock = threading.Lock()
@@ -415,6 +436,38 @@ def create_server(
     ]
     server.runner_source = runner_source
     return server
+
+
+def create_server(
+    host: str,
+    port: int,
+    out_dir: Path,
+    token: str,
+    result_queue: queue.Queue[dict[str, Any]],
+    *,
+    module_name: str,
+    host_dir: Path | None = None,
+    runner_source_path: Path | None = None,
+) -> NavigationChurnSmokeServer:
+    """Snapshot product artifacts, then create the navigation-churn server."""
+
+    module_name = _require_product_module_name(module_name, "server")
+    artifacts = snapshot_regular_files(
+        out_dir,
+        (f"{module_name}.js", f"{module_name}.wasm"),
+        maximum_bytes=MAX_SNAPSHOT_BYTES,
+        description="navigation-churn artifacts",
+    )
+    return create_server_from_artifacts(
+        host,
+        port,
+        artifacts,
+        token,
+        result_queue,
+        module_name=module_name,
+        host_dir=host_dir,
+        runner_source_path=runner_source_path,
+    )
 
 
 def _byte_identity(contents: bytes) -> dict[str, object]:
