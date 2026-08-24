@@ -284,7 +284,53 @@ def create_server(
 ) -> tuple[RepeatingTimerSmokeServer, dict[str, dict[str, object]]]:
     module_name = _require_product_module_name(module_name, "server")
     artifacts, artifact_identity = _snapshot_artifacts(out_dir, module_name)
-    host_dir = Path(__file__).with_name("host")
+    return (
+        create_server_from_artifacts(
+            host,
+            port,
+            artifacts,
+            result_token,
+            result_queue,
+            module_name=module_name,
+        ),
+        artifact_identity,
+    )
+
+
+def create_server_from_artifacts(
+    host: str,
+    port: int,
+    artifacts: dict[str, bytes],
+    result_token: str,
+    result_queue: queue.Queue[dict[str, Any]],
+    *,
+    module_name: str,
+    host_dir: Path | None = None,
+    runner_source_path: Path | None = None,
+) -> RepeatingTimerSmokeServer:
+    """Serve one already-captured private module without rereading it by path.
+
+    The ordinary runner snapshots the raw build output before entering this
+    helper. Package-bound runners use the same helper with aliases of verified
+    public package bytes. In either case, the server owns only immutable bytes
+    captured before its listening socket is created.
+    """
+
+    module_name = _require_product_module_name(module_name, "server")
+    expected_artifact_names = {f"{module_name}.js", f"{module_name}.wasm"}
+    if (
+        type(artifacts) is not dict
+        or set(artifacts) != expected_artifact_names
+        or any(
+            type(contents) is not bytes or not contents
+            for contents in artifacts.values()
+        )
+    ):
+        raise M0Error("repeating-timer server artifacts are invalid")
+    if not isinstance(result_queue, queue.Queue) or not isinstance(result_token, str):
+        raise M0Error("repeating-timer server result channel is invalid")
+
+    host_dir = host_dir or Path(__file__).with_name("host")
     host_snapshots = snapshot_regular_files(
         host_dir,
         (
@@ -295,7 +341,7 @@ def create_server(
         description="repeating-timer host resources",
     )
     runner_source = snapshot_regular_file(
-        Path(__file__),
+        runner_source_path or Path(__file__),
         maximum_bytes=MAX_ARTIFACT_BYTES,
         description="repeating-timer runner source",
     )
@@ -307,7 +353,7 @@ def create_server(
     server.result_received = False
     server.result_lock = threading.Lock()
     server.module_name = module_name
-    server.artifacts = artifacts
+    server.artifacts = dict(artifacts)
     server.host_html = host_snapshots[
         "chrome_wasm_browser_m9_repeating_timer_smoke.html"
     ]
@@ -315,7 +361,7 @@ def create_server(
         "chrome_wasm_browser_m9_repeating_timer_smoke.js"
     ]
     server.runner_source = runner_source
-    return server, artifact_identity
+    return server
 
 
 def _byte_identity(contents: bytes) -> dict[str, object]:
@@ -323,26 +369,40 @@ def _byte_identity(contents: bytes) -> dict[str, object]:
 
 
 def artifact_identity(
-    server: RepeatingTimerSmokeServer, *, module_name: str
+    server: RepeatingTimerSmokeServer,
+    *,
+    module_name: str,
+    artifact_delivery: str = ARTIFACT_DELIVERY,
+    artifact_source_provenance: str = ARTIFACT_SOURCE_PROVENANCE,
 ) -> dict[str, object]:
     module_name = _require_product_module_name(module_name, "artifact")
     _require_product_module_name(server.module_name, "artifact server")
+    if type(artifact_delivery) is not str or not artifact_delivery:
+        raise M0Error("repeating-timer artifact delivery is invalid")
+    if type(artifact_source_provenance) is not str or not artifact_source_provenance:
+        raise M0Error("repeating-timer artifact source provenance is invalid")
     return {
-        "artifact_delivery": ARTIFACT_DELIVERY,
-        "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
+        "artifact_delivery": artifact_delivery,
+        "artifact_source_provenance": artifact_source_provenance,
         "loader": _byte_identity(server.artifacts[f"{module_name}.js"]),
         "module_name": module_name,
         "wasm": _byte_identity(server.artifacts[f"{module_name}.wasm"]),
     }
 
 
-def capture_harness_identity(server: RepeatingTimerSmokeServer) -> dict[str, object]:
+def capture_harness_identity(
+    server: RepeatingTimerSmokeServer,
+    *,
+    version_provenance: str = VERSION_PROVENANCE,
+) -> dict[str, object]:
+    if type(version_provenance) is not str or not version_provenance:
+        raise M0Error("repeating-timer capture-harness version provenance is invalid")
     return {
         "host_html": _byte_identity(server.host_html),
         "host_js": _byte_identity(server.host_js),
         "runner_source": _byte_identity(server.runner_source),
         "source_snapshot_provenance": SOURCE_SNAPSHOT_PROVENANCE,
-        "version_provenance": VERSION_PROVENANCE,
+        "version_provenance": version_provenance,
     }
 
 
@@ -540,12 +600,19 @@ def _validate_byte_identity(value: object, description: str) -> None:
 
 
 def _validate_artifact_identity(
-    value: object, expected_identity: dict[str, object]
+    value: object,
+    expected_identity: dict[str, object],
+    *,
+    expected_artifact_delivery: str = ARTIFACT_DELIVERY,
+    expected_artifact_source_provenance: str = ARTIFACT_SOURCE_PROVENANCE,
 ) -> None:
     artifact = _require_exact_fields(value, _ARTIFACT_IDENTITY_FIELDS, "artifact")
-    if artifact.get("artifact_delivery") != ARTIFACT_DELIVERY:
+    if artifact.get("artifact_delivery") != expected_artifact_delivery:
         raise M0Error("repeating-timer artifact delivery is invalid")
-    if artifact.get("artifact_source_provenance") != ARTIFACT_SOURCE_PROVENANCE:
+    if (
+        artifact.get("artifact_source_provenance")
+        != expected_artifact_source_provenance
+    ):
         raise M0Error("repeating-timer artifact source provenance is invalid")
     _require_product_module_name(artifact.get("module_name"), "artifact")
     for field in ("loader", "wasm"):
@@ -555,14 +622,17 @@ def _validate_artifact_identity(
 
 
 def _validate_capture_harness_identity(
-    value: object, expected_identity: dict[str, object]
+    value: object,
+    expected_identity: dict[str, object],
+    *,
+    expected_version_provenance: str = VERSION_PROVENANCE,
 ) -> None:
     harness = _require_exact_fields(
         value, _CAPTURE_HARNESS_FIELDS, "capture harness"
     )
     if harness.get("source_snapshot_provenance") != SOURCE_SNAPSHOT_PROVENANCE:
         raise M0Error("repeating-timer capture-harness source provenance is invalid")
-    if harness.get("version_provenance") != VERSION_PROVENANCE:
+    if harness.get("version_provenance") != expected_version_provenance:
         raise M0Error("repeating-timer capture-harness version provenance is invalid")
     for field in ("host_html", "host_js", "runner_source"):
         _validate_byte_identity(harness.get(field), f"capture harness {field}")
@@ -578,6 +648,9 @@ def validate_result(
     expected_versions: dict[str, str],
     expected_artifact_identity: dict[str, object],
     expected_capture_harness_identity: dict[str, object],
+    expected_artifact_delivery: str = ARTIFACT_DELIVERY,
+    expected_artifact_source_provenance: str = ARTIFACT_SOURCE_PROVENANCE,
+    expected_version_provenance: str = VERSION_PROVENANCE,
 ) -> None:
     for field, expected in {
         "protocol": 1,
@@ -606,10 +679,15 @@ def validate_result(
     if result.get("versions") != expected_versions:
         raise M0Error("repeating-timer versions do not match the manifest")
     _validate_artifact_identity(
-        result.get("artifact"), expected_artifact_identity
+        result.get("artifact"),
+        expected_artifact_identity,
+        expected_artifact_delivery=expected_artifact_delivery,
+        expected_artifact_source_provenance=expected_artifact_source_provenance,
     )
     _validate_capture_harness_identity(
-        result.get("captureHarness"), expected_capture_harness_identity
+        result.get("captureHarness"),
+        expected_capture_harness_identity,
+        expected_version_provenance=expected_version_provenance,
     )
     for field in ("fatalErrors", "windowErrors", "unhandledRejections"):
         if not isinstance(result.get(field), list) or result[field]:

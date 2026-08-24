@@ -246,6 +246,42 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, expression):
                     validate(result)
 
+    def test_validates_explicit_package_alias_identity_overrides(self) -> None:
+        artifact = copy.deepcopy(ARTIFACT_IDENTITY)
+        harness = copy.deepcopy(CAPTURE_HARNESS_IDENTITY)
+        artifact["artifact_delivery"] = "verified-package-private-alias"
+        artifact["artifact_source_provenance"] = "local_clean_build_attested"
+        harness["version_provenance"] = "verified-package-metadata-only"
+        result = successful_result()
+        result["artifact"] = copy.deepcopy(artifact)
+        result["captureHarness"] = copy.deepcopy(harness)
+
+        smoke.validate_result(
+            result,
+            expected_versions=VERSIONS,
+            expected_artifact_identity=artifact,
+            expected_capture_harness_identity=harness,
+            expected_artifact_delivery=artifact["artifact_delivery"],
+            expected_artifact_source_provenance=artifact[
+                "artifact_source_provenance"
+            ],
+            expected_version_provenance=harness["version_provenance"],
+        )
+
+        result["artifact"]["artifact_delivery"] = "wrong-delivery"
+        with self.assertRaisesRegex(M0Error, "artifact delivery"):
+            smoke.validate_result(
+                result,
+                expected_versions=VERSIONS,
+                expected_artifact_identity=artifact,
+                expected_capture_harness_identity=harness,
+                expected_artifact_delivery=artifact["artifact_delivery"],
+                expected_artifact_source_provenance=artifact[
+                    "artifact_source_provenance"
+                ],
+                expected_version_provenance=harness["version_provenance"],
+            )
+
     def test_parser_rejects_duplicate_keys_and_wrong_scope(self) -> None:
         result = successful_result()
         payload = json.dumps(result, separators=(",", ":")).encode()
