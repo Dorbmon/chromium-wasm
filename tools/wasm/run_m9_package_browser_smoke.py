@@ -74,6 +74,31 @@ OUTER_DOCUMENT_RESTART_SCOPE = (
 RELEASE_STATUS = package_tool.RELEASE_STATUS
 EPOCH_QUERY_KEY = "m9_package_epoch"
 MAX_SAFE_INTEGER = (1 << 53) - 1
+PACKAGE_OBSERVATION_SCHEMA_VERSION = 1
+PACKAGE_OBSERVATION_SCOPE = (
+    "one-fresh-profile-real-browser-launch-to-first-package-readiness-"
+    "runner-monotonic-observation"
+)
+PACKAGE_OBSERVATION_ARTIFACT_DELIVERY = (
+    "verified-immutable-in-memory-package-server-snapshot-raw-artifact-bytes"
+)
+PACKAGE_OBSERVATION_COMPRESSION = "not-measured"
+PACKAGE_OBSERVATION_LIMITS = (
+    "one fresh browser launch and one runner-ready observation only; not a "
+    "cross-run benchmark or performance gate",
+    "elapsed time begins immediately before the host browser process launch "
+    "and ends when the runner observes the first ready package document; it "
+    "includes browser launch, profile setup, DevTools attachment, server "
+    "scheduling, and runner polling",
+    "raw artifact bytes identify the immutable package snapshot only; they do "
+    "not measure HTTP compression, transfer bytes, network latency, caching, "
+    "or external release-server delivery",
+    "runtime artifact verification and raw artifact bytes do not measure "
+    "physical copies, JavaScript heap, Wasm linear memory, committed or "
+    "resident memory, allocation behavior, or leaks",
+    "this observation does not establish M7 persistence, M8 compatibility, "
+    "or M9 release completion",
+)
 MAX_RELEASE_WISP_ENDPOINT_CHARACTERS = 2048
 RELEASE_WISP_CONFIGURATION_GLOBAL = "__chromiumWasmReleaseWispV1"
 RELEASE_WISP_CONFIGURATION_VERSION = 1
@@ -155,6 +180,91 @@ def _runtime_metadata_from_server_snapshot(server: Any) -> dict[str, object]:
         return package_tool.package_runtime_status_metadata(version_bytes)
     except package_tool.PackageError as exc:
         raise M0Error(f"package server snapshot metadata is invalid: {exc}") from exc
+
+
+def _package_observation_artifact_bytes(server: Any) -> dict[str, int]:
+    """Return raw byte counts from the already-verified server snapshot.
+
+    This deliberately does not re-hash the large Wasm module after server
+    creation. ``create_package_smoke_server`` has already captured and
+    verified these immutable bytes before exposing the snapshot to this
+    runner. The counts describe raw snapshot bytes, not compression, transfer,
+    cache, allocation, or resident-memory measurements.
+    """
+
+    try:
+        artifacts = server.snapshot.artifacts
+        verification = server.snapshot.verification
+        artifact_count = verification["artifact_count"]
+        release_status = verification["release_status"]
+        loader = artifacts["chromium-wasm.js"]
+        wasm = artifacts["chromium-wasm.wasm"]
+        values = artifacts.values()
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise M0Error("package observation server snapshot is invalid") from exc
+    if (
+        type(artifact_count) is not int
+        or artifact_count <= 0
+        # VERSION.json describes the other package files; it cannot include
+        # its own final hash/size record without a circular identity.
+        or artifact_count != len(artifacts) - 1
+        or release_status != RELEASE_STATUS
+        or type(loader) is not bytes
+        or not loader
+        or type(wasm) is not bytes
+        or not wasm
+    ):
+        raise M0Error("package observation server snapshot is invalid")
+    total_bytes = 0
+    for contents in values:
+        if type(contents) is not bytes or not contents:
+            raise M0Error("package observation server snapshot is invalid")
+        total_bytes += len(contents)
+    if total_bytes <= 0:
+        raise M0Error("package observation raw artifact size is invalid")
+    return {
+        "loader_raw_bytes": len(loader),
+        "package_raw_bytes": total_bytes,
+        "snapshot_artifact_count": len(artifacts),
+        "wasm_raw_bytes": len(wasm),
+        "versioned_artifact_count": artifact_count,
+    }
+
+
+def _package_startup_observation(
+    *, server: Any, ready: dict[str, Any], launch_started_at: object
+) -> dict[str, object]:
+    """Build one bounded, explicitly non-gating package startup observation."""
+
+    if ready.get("runtimeArtifactsVerified") is not True:
+        raise M0Error("package observation requires verified runtime artifacts")
+    if (
+        isinstance(launch_started_at, bool)
+        or not isinstance(launch_started_at, (int, float))
+        or not math.isfinite(float(launch_started_at))
+        or float(launch_started_at) < 0
+    ):
+        raise M0Error("package observation launch timestamp is invalid")
+    launch_started = float(launch_started_at)
+    ready_observed_at = time.monotonic()
+    if not math.isfinite(ready_observed_at) or ready_observed_at < launch_started:
+        raise M0Error("package observation ready timestamp is invalid")
+    elapsed_ms = round((ready_observed_at - launch_started) * 1000, 3)
+    if not math.isfinite(elapsed_ms) or elapsed_ms < 0:
+        raise M0Error("package observation startup duration is invalid")
+    return {
+        "artifact_bytes": _package_observation_artifact_bytes(server),
+        "artifact_delivery": PACKAGE_OBSERVATION_ARTIFACT_DELIVERY,
+        "browser_launch_to_ready_observed_ms": elapsed_ms,
+        "compression": PACKAGE_OBSERVATION_COMPRESSION,
+        "m9_gate_complete": False,
+        "measurement_limits": list(PACKAGE_OBSERVATION_LIMITS),
+        "performance_gate": False,
+        "release_status": RELEASE_STATUS,
+        "runtime_artifacts_verified": True,
+        "schema_version": PACKAGE_OBSERVATION_SCHEMA_VERSION,
+        "scope": PACKAGE_OBSERVATION_SCOPE,
+    }
 
 
 def _exact_json_value_equal(actual: object, expected: object) -> bool:
@@ -692,6 +802,7 @@ def run_package_browser_smoke(
     timeout: float,
     outer_document_restart: bool = False,
     release_wisp_endpoint: str | None = None,
+    emit_package_observation: bool = False,
 ) -> dict[str, object]:
     server = None
     server_thread = None
@@ -703,6 +814,12 @@ def run_package_browser_smoke(
     profile: tempfile.TemporaryDirectory[str] | None = None
     primary_error: BaseException | None = None
     try:
+        if type(emit_package_observation) is not bool:
+            raise M0Error("package observation selection is invalid")
+        if emit_package_observation and release_wisp_endpoint is not None:
+            raise M0Error(
+                "package startup observation requires the default WISP-disabled path"
+            )
         if release_wisp_endpoint is not None:
             release_wisp_endpoint = _normalize_release_wisp_endpoint(
                 release_wisp_endpoint
@@ -737,6 +854,7 @@ def run_package_browser_smoke(
             "--remote-debugging-address=127.0.0.1",
             f"--remote-debugging-port={debug_port}",
         ]
+        launch_started_at = time.monotonic() if emit_package_observation else None
         browser = subprocess.Popen(
             command,
             cwd=REPO_ROOT,
@@ -770,6 +888,15 @@ def run_package_browser_smoke(
             expected_wisp_configured=release_wisp_endpoint is not None,
             description="waiting for the first real package frame",
         )
+        package_observation = (
+            _package_startup_observation(
+                server=server,
+                ready=first_ready,
+                launch_started_at=launch_started_at,
+            )
+            if emit_package_observation
+            else None
+        )
         first_shutdown = _request_clean_shutdown(
             client=client,
             browser=browser,
@@ -796,6 +923,8 @@ def run_package_browser_smoke(
                 "shutdown_disabled": first_result["shutdown_disabled"],
                 "shutdown_requested": first_result["shutdown_requested"],
             }
+            if package_observation is not None:
+                result["package_observation"] = package_observation
             if release_wisp_endpoint is not None:
                 result["release_wisp_pre_navigation_configured"] = True
             return result
@@ -846,6 +975,8 @@ def run_package_browser_smoke(
                 "versionJsonSha256"
             ],
         }
+        if package_observation is not None:
+            result["package_observation"] = package_observation
         if release_wisp_endpoint is not None:
             result["release_wisp_pre_navigation_configured"] = True
         return result
@@ -914,12 +1045,24 @@ def main() -> int:
             "to a fresh package epoch and require a second clean lifetime"
         ),
     )
+    parser.add_argument(
+        "--emit-package-observation",
+        action="store_true",
+        help=(
+            "emit one explicitly non-gating fresh-browser package startup and "
+            "raw-snapshot-byte observation; default smoke output is unchanged"
+        ),
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=120.0)
     args = parser.parse_args()
     if args.timeout < 10:
         parser.error("--timeout must allow package startup and shutdown")
     if args.outer_document_restart and args.timeout < 20:
         parser.error("--outer-document-restart requires two package lifetimes")
+    if args.emit_package_observation and args.release_wisp_endpoint is not None:
+        parser.error(
+            "--emit-package-observation requires the default WISP-disabled path"
+        )
     try:
         result = run_package_browser_smoke(
             dist_dir=args.dist_dir,
@@ -928,6 +1071,7 @@ def main() -> int:
             timeout=args.timeout,
             outer_document_restart=args.outer_document_restart,
             release_wisp_endpoint=args.release_wisp_endpoint,
+            emit_package_observation=args.emit_package_observation,
         )
         print(
             f"{SENTINEL}:BROWSER_SMOKE_PASS "

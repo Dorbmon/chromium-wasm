@@ -2917,6 +2917,60 @@ process.stdout.write(JSON.stringify(results));
         self.assertTrue(client.closed)
         wait_for_client.assert_called_once_with(32124, restart_url, 123.0)
 
+    def test_package_startup_observation_reports_raw_snapshot_bytes_only(self) -> None:
+        server = mock.Mock()
+        server.snapshot = snapshot_package_tree(self._stage())
+        artifacts = server.snapshot.artifacts
+        with mock.patch.object(
+            package_browser_smoke.time, "monotonic", return_value=12.5
+        ):
+            result = package_browser_smoke._package_startup_observation(
+                server=server,
+                ready={"runtimeArtifactsVerified": True},
+                launch_started_at=10.0,
+            )
+
+        self.assertEqual(
+            {
+                "artifact_bytes": {
+                    "loader_raw_bytes": len(artifacts["chromium-wasm.js"]),
+                    "package_raw_bytes": sum(
+                        len(value) for value in artifacts.values()
+                    ),
+                    "snapshot_artifact_count": len(artifacts),
+                    "wasm_raw_bytes": len(artifacts["chromium-wasm.wasm"]),
+                    "versioned_artifact_count": len(artifacts) - 1,
+                },
+                "artifact_delivery": (
+                    package_browser_smoke.PACKAGE_OBSERVATION_ARTIFACT_DELIVERY
+                ),
+                "browser_launch_to_ready_observed_ms": 2500.0,
+                "compression": package_browser_smoke.PACKAGE_OBSERVATION_COMPRESSION,
+                "m9_gate_complete": False,
+                "measurement_limits": list(
+                    package_browser_smoke.PACKAGE_OBSERVATION_LIMITS
+                ),
+                "performance_gate": False,
+                "release_status": package.RELEASE_STATUS,
+                "runtime_artifacts_verified": True,
+                "schema_version": (
+                    package_browser_smoke.PACKAGE_OBSERVATION_SCHEMA_VERSION
+                ),
+                "scope": package_browser_smoke.PACKAGE_OBSERVATION_SCOPE,
+            },
+            result,
+        )
+
+    def test_package_startup_observation_rejects_unverified_runtime(self) -> None:
+        with self.assertRaisesRegex(
+            M0Error, "package observation requires verified runtime artifacts"
+        ):
+            package_browser_smoke._package_startup_observation(
+                server=mock.Mock(),
+                ready={"runtimeArtifactsVerified": False},
+                launch_started_at=0.0,
+            )
+
     def test_package_browser_default_result_remains_one_clean_epoch(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
@@ -3058,6 +3112,185 @@ process.stdout.write(JSON.stringify(results));
         )
         restart.assert_not_called()
         stop_browser_group.assert_called_once_with(browser, mock.ANY)
+
+    def test_package_browser_opt_in_adds_only_bounded_observation(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 32123)
+        server.snapshot = snapshot_package_tree(self._stage())
+        expected_metadata = package.package_runtime_status_metadata(
+            server.snapshot.artifacts["VERSION.json"]
+        )
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = False
+        stderr_thread = mock.Mock()
+        browser = mock.Mock()
+        browser.stderr = object()
+        browser.poll.return_value = None
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-package-profile"
+        client = mock.Mock()
+        ready = {
+            "fatalCount": 0,
+            "framesPresented": 7,
+            "releaseStatus": package.RELEASE_STATUS,
+            "runtimeArtifactsVerified": True,
+        }
+        shutdown = {
+            "fatalCount": 0,
+            "shutdownRequested": True,
+            "shutdownDisabled": True,
+            "runtimeExitCode": 0,
+            "processExitCode": 0,
+        }
+        observation = {"bounded": "observation"}
+
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_browser_smoke.threading,
+                "Thread",
+                side_effect=[server_thread, stderr_thread],
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "browser_command",
+                return_value=["/fake/browser", "profile", "url"],
+            ),
+            mock.patch.object(
+                package_browser_smoke.subprocess,
+                "Popen",
+                return_value=browser,
+            ),
+            mock.patch.object(
+                package_browser_smoke.tempfile,
+                "TemporaryDirectory",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                package_browser_smoke, "unused_loopback_port", return_value=32124
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "wait_for_page_client",
+                return_value=client,
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "_wait_for_ready_package_document",
+                return_value=(ready, 1000.0),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "_request_clean_shutdown",
+                return_value=shutdown,
+            ),
+            mock.patch.object(
+                package_browser_smoke.secrets,
+                "token_urlsafe",
+                return_value="first-epoch",
+            ),
+            mock.patch.object(package_browser_smoke, "stop_browser_group"),
+            mock.patch.object(
+                package_browser_smoke,
+                "_package_startup_observation",
+                return_value=observation,
+            ) as package_observation,
+        ):
+            result = package_browser_smoke.run_package_browser_smoke(
+                dist_dir=Path("/fake/dist"),
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+                emit_package_observation=True,
+            )
+
+        self.assertEqual(
+            {
+                "browser_version": "test-browser",
+                "frames_presented": 7,
+                "runtime_exit_code": 0,
+                "process_exit_code": 0,
+                "release_status": package.RELEASE_STATUS,
+                "scope": package_browser_smoke.SCOPE,
+                "served_version_json_sha256": expected_metadata[
+                    "versionJsonSha256"
+                ],
+                "shutdown_disabled": True,
+                "shutdown_requested": True,
+                "package_observation": observation,
+            },
+            result,
+        )
+        package_observation.assert_called_once_with(
+            server=server,
+            ready=ready,
+            launch_started_at=mock.ANY,
+        )
+        self.assertIsInstance(
+            package_observation.call_args.kwargs["launch_started_at"], float
+        )
+
+    def test_package_browser_observation_rejects_wisp_configuration(self) -> None:
+        with mock.patch.object(package_browser_smoke, "find_browser") as find_browser:
+            with self.assertRaisesRegex(
+                M0Error, "requires the default WISP-disabled path"
+            ):
+                package_browser_smoke.run_package_browser_smoke(
+                    dist_dir=Path("/fake/dist"),
+                    browser_argument=None,
+                    no_sandbox=False,
+                    timeout=120.0,
+                    release_wisp_endpoint="wss://carrier.example/",
+                    emit_package_observation=True,
+                )
+        find_browser.assert_not_called()
+
+    def test_package_browser_main_passes_opt_in_observation_flag(self) -> None:
+        stdout = io.StringIO()
+        result = {"bounded": "observation"}
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "run_package_browser_smoke",
+                return_value=result,
+            ) as run_package_browser_smoke,
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "package-browser",
+                    "--dist-dir",
+                    "/fake/dist",
+                    "--emit-package-observation",
+                ],
+            ),
+            mock.patch.object(sys, "stdout", stdout),
+        ):
+            self.assertEqual(0, package_browser_smoke.main())
+
+        run_package_browser_smoke.assert_called_once_with(
+            dist_dir=Path("/fake/dist"),
+            browser_argument=None,
+            no_sandbox=False,
+            timeout=120.0,
+            outer_document_restart=False,
+            release_wisp_endpoint=None,
+            emit_package_observation=True,
+        )
+        self.assertEqual(
+            f"{package_browser_smoke.SENTINEL}:BROWSER_SMOKE_PASS "
+            + '{"bounded":"observation"}\n',
+            stdout.getvalue(),
+        )
 
     def test_package_browser_main_rejects_browser_cleanup_without_pass_marker(self) -> None:
         server = mock.Mock()
