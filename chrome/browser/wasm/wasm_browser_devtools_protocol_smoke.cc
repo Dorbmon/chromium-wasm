@@ -33,7 +33,7 @@ constexpr char kRuntimeEnableCommand[] =
 constexpr char kRuntimeEvaluateCommand[] =
     R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
     R"json("(console.log('chromium-wasm-m8-devtools-console'),)json"
-    R"json( String(6 * 7))","returnByValue":true,)json"
+    R"json( typeof WebAssembly)","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kFixedDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
@@ -43,6 +43,8 @@ constexpr char kRuntimeEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK";
 constexpr char kRuntimeEvaluateSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
+constexpr char kPageWebAssemblyUnavailableSuccessMarker[] =
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE";
 constexpr char kRuntimeConsoleApiCalledSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 constexpr char kDetachedMarker[] =
@@ -53,7 +55,7 @@ constexpr int kRuntimeEnableCommandId = 2;
 constexpr int kRuntimeEvaluateCommandId = 3;
 constexpr size_t kMaximumProtocolResponseBytes = 4 * 1024;
 constexpr char kRuntimeEvaluateExpectedType[] = "string";
-constexpr char kRuntimeEvaluateExpectedValue[] = "42";
+constexpr char kRuntimeEvaluateExpectedValue[] = "undefined";
 constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
 constexpr char kRuntimeConsoleApiCalledExpectedType[] = "log";
 constexpr char kRuntimeConsoleApiCalledExpectedValue[] =
@@ -102,7 +104,9 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   // These three literal commands are the only protocol messages this client
   // can emit. There is no frontend, pipe, socket, host ABI, or caller-provided
   // command surface. Runtime.evaluate runs one ordinary JavaScript expression
-  // only; it is not a page WebAssembly probe or enablement path.
+  // only. It reads only |typeof WebAssembly| to make the current disabled
+  // page-WebAssembly boundary observable; it neither constructs nor compiles
+  // a page module and does not enable page WebAssembly.
   agent_host_->DispatchProtocolMessage(
       this, base::byte_span_from_cstring(kNetworkEnableCommand));
 }
@@ -188,13 +192,16 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
       remote_result ? remote_result->FindString("value") : nullptr;
   if (!result_type || *result_type != kRuntimeEvaluateExpectedType ||
       !result_value || *result_value != kRuntimeEvaluateExpectedValue) {
-    Fail("Runtime.evaluate did not return the fixed string result");
+    Fail("Runtime.evaluate did not return the fixed page-WebAssembly-unavailable "
+         "result");
   }
   if (runtime_evaluate_response_received_) {
     Fail("Runtime.evaluate returned more than one fixed response");
   }
   runtime_evaluate_response_received_ = true;
   std::fprintf(stderr, "%s\n", kRuntimeEvaluateSuccessMarker);
+  std::fflush(stderr);
+  std::fprintf(stderr, "%s\n", kPageWebAssemblyUnavailableSuccessMarker);
   std::fflush(stderr);
   CompleteRuntimeEvaluate();
 }

@@ -30,8 +30,9 @@ namespace chrome {
 // deliberately not a DevTools frontend or a protocol transport: it accepts
 // only those fixed successful responses and the one event and forwards no
 // protocol traffic to JavaScript or another process. The expression exercises
-// ordinary page JavaScript only; it does not enable or exercise page
-// WebAssembly.
+// ordinary page JavaScript and verifies that |typeof WebAssembly| is
+// "undefined" in this disabled configuration; it does not construct, compile,
+// or otherwise exercise page WebAssembly.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:

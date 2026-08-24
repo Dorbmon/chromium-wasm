@@ -42,6 +42,7 @@ SENTINEL = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL"
 NETWORK_ENABLE_MARKER = f"{SENTINEL}:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = f"{SENTINEL}:RUNTIME_ENABLE_OK"
 RUNTIME_EVALUATE_MARKER = f"{SENTINEL}:RUNTIME_EVALUATE_OK"
+PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER = f"{SENTINEL}:PAGE_WEBASSEMBLY_UNAVAILABLE"
 RUNTIME_CONSOLE_API_CALLED_MARKER = f"{SENTINEL}:RUNTIME_CONSOLE_API_CALLED_OK"
 DETACHED_MARKER = f"{SENTINEL}:DETACHED"
 LIFECYCLE_PASS_MARKER = lifecycle_smoke.PASS_MARKER
@@ -52,6 +53,7 @@ DEFAULT_MODULE_NAME = "chrome_wasm"
 _MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 LIMITATIONS = (
     "does_not_enable_or_exercise_page_webassembly",
+    "only_observes_the_disabled_page_webassembly_global_not_api_semantics",
     "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
     "does_not_claim_m8_compatibility_completion",
 )
@@ -89,6 +91,7 @@ def _require_unique_ordered_markers(output: str) -> None:
         (NETWORK_ENABLE_MARKER, "Network.enable success"),
         (RUNTIME_ENABLE_MARKER, "Runtime.enable success"),
         (RUNTIME_EVALUATE_MARKER, "Runtime.evaluate success"),
+        (PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER, "Page WebAssembly unavailable"),
         (RUNTIME_CONSOLE_API_CALLED_MARKER, "Runtime.consoleAPICalled success"),
         (DETACHED_MARKER, "DevTools detach"),
         (LIFECYCLE_PASS_MARKER, "Browser lifecycle teardown"),
@@ -104,6 +107,7 @@ def _require_unique_ordered_markers(output: str) -> None:
     if not (
         positions[NETWORK_ENABLE_MARKER] < positions[RUNTIME_ENABLE_MARKER]
         < positions[RUNTIME_EVALUATE_MARKER]
+        < positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER]
         < positions[DETACHED_MARKER]
         < positions[LIFECYCLE_PASS_MARKER]
         and positions[RUNTIME_ENABLE_MARKER]
@@ -121,8 +125,9 @@ def validate_result(result: dict[str, Any], output: str) -> None:
     # compositor frame, normal process exit, and no host fatal error. Substitute
     # only its ready marker with the native Network.enable completion marker.
     # The ordered marker check below separately requires the native
-    # Runtime.enable, Runtime.evaluate, and Console API witnesses before
-    # detach and close. The result/event can arrive in either order.
+    # Runtime.enable, Runtime.evaluate, explicit page-WebAssembly-unavailable,
+    # and Console API witnesses before detach and close. The result/event can
+    # arrive in either order.
     lifecycle_smoke.validate_result(
         result,
         output.replace(NETWORK_ENABLE_MARKER, lifecycle_smoke.READY_MARKER),
@@ -220,6 +225,7 @@ def main() -> int:
                     "frameReports": len(result["frameReports"]),
                     "networkEnable": True,
                     "pageWebAssemblyExercised": False,
+                    "pageWebAssemblyGlobalType": "undefined",
                     "runtimeConsoleApiCalled": True,
                     "runtimeEnable": True,
                     "runtimeEvaluate": True,

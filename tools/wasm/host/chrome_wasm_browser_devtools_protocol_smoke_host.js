@@ -17,6 +17,8 @@ const RUNTIME_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK";
 const RUNTIME_EVALUATE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
+const PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER =
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE";
 const RUNTIME_CONSOLE_API_CALLED_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 const DETACHED_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
@@ -131,6 +133,8 @@ function validateResult(result) {
       "Runtime.enable marker was not observed");
   require(result.runtimeEvaluateObserved === true,
       "Runtime.evaluate marker was not observed");
+  require(result.pageWebAssemblyUnavailableObserved === true,
+      "page WebAssembly unavailable marker was not observed");
   require(result.runtimeConsoleApiCalledObserved === true,
       "Runtime.consoleAPICalled marker was not observed");
   require(result.detachedObserved === true, "detach marker was not observed");
@@ -151,6 +155,7 @@ function validateResult(result) {
     NETWORK_ENABLE_MARKER,
     RUNTIME_ENABLE_MARKER,
     RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
@@ -170,6 +175,7 @@ function validateResult(result) {
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
+              positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER] >= 0 &&
               positions[RUNTIME_CONSOLE_API_CALLED_MARKER] >= 0 &&
               positions[DETACHED_MARKER] >= 0 &&
               positions[LIFECYCLE_PASS_MARKER] >= 0 &&
@@ -179,7 +185,10 @@ function validateResult(result) {
                   positions[RUNTIME_EVALUATE_MARKER] &&
               positions[RUNTIME_ENABLE_MARKER] <
                   positions[RUNTIME_CONSOLE_API_CALLED_MARKER] &&
-              positions[RUNTIME_EVALUATE_MARKER] < positions[DETACHED_MARKER] &&
+              positions[RUNTIME_EVALUATE_MARKER] <
+                  positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER] &&
+              positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER] <
+                  positions[DETACHED_MARKER] &&
               positions[RUNTIME_CONSOLE_API_CALLED_MARKER] <
                   positions[DETACHED_MARKER] &&
               positions[DETACHED_MARKER] < positions[LIFECYCLE_PASS_MARKER],
@@ -214,6 +223,7 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #networkEnableObserved = false;
   #runtimeEnableObserved = false;
   #runtimeEvaluateObserved = false;
+  #pageWebAssemblyUnavailableObserved = false;
   #runtimeConsoleApiCalledObserved = false;
   #detachedObserved = false;
   #lifecyclePassObserved = false;
@@ -264,6 +274,9 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     if (text.includes(RUNTIME_ENABLE_MARKER)) this.#runtimeEnableObserved = true;
     if (text.includes(RUNTIME_EVALUATE_MARKER)) {
       this.#runtimeEvaluateObserved = true;
+    }
+    if (text.includes(PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER)) {
+      this.#pageWebAssemblyUnavailableObserved = true;
     }
     if (text.includes(RUNTIME_CONSOLE_API_CALLED_MARKER)) {
       this.#runtimeConsoleApiCalledObserved = true;
@@ -383,6 +396,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       networkEnableObserved: this.#networkEnableObserved,
       runtimeEnableObserved: this.#runtimeEnableObserved,
       runtimeEvaluateObserved: this.#runtimeEvaluateObserved,
+      pageWebAssemblyUnavailableObserved:
+          this.#pageWebAssemblyUnavailableObserved,
       runtimeConsoleApiCalledObserved: this.#runtimeConsoleApiCalledObserved,
       detachedObserved: this.#detachedObserved,
       lifecyclePassObserved: this.#lifecyclePassObserved,

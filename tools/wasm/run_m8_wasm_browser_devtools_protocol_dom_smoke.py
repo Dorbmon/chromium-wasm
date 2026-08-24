@@ -60,6 +60,9 @@ RUNTIME_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK"
 RUNTIME_EVALUATE_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK"
 )
+PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER = (
+    "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE"
+)
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
 )
@@ -73,6 +76,7 @@ MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
 LIMITATIONS = (
     "does_not_enable_or_exercise_page_webassembly",
+    "only_observes_the_disabled_page_webassembly_global_not_api_semantics",
     "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
     "does_not_claim_m8_compatibility_completion",
 )
@@ -313,6 +317,7 @@ def _require_unique_ordered_markers(stderr: list[object]) -> None:
         NETWORK_ENABLE_MARKER,
         RUNTIME_ENABLE_MARKER,
         RUNTIME_EVALUATE_MARKER,
+        PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
         RUNTIME_CONSOLE_API_CALLED_MARKER,
         DETACHED_MARKER,
         LIFECYCLE_PASS_MARKER,
@@ -329,7 +334,9 @@ def _require_unique_ordered_markers(stderr: list[object]) -> None:
         raise M0Error("DevTools protocol native smoke emitted a failure marker")
     if not (
         positions[NETWORK_ENABLE_MARKER] < positions[RUNTIME_ENABLE_MARKER]
-        < positions[RUNTIME_EVALUATE_MARKER] < positions[DETACHED_MARKER]
+        < positions[RUNTIME_EVALUATE_MARKER]
+        < positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER]
+        < positions[DETACHED_MARKER]
         < positions[LIFECYCLE_PASS_MARKER]
         and positions[RUNTIME_ENABLE_MARKER]
         < positions[RUNTIME_CONSOLE_API_CALLED_MARKER]
@@ -353,6 +360,7 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
         "networkEnableObserved": True,
         "runtimeEnableObserved": True,
         "runtimeEvaluateObserved": True,
+        "pageWebAssemblyUnavailableObserved": True,
         "runtimeConsoleApiCalledObserved": True,
         "detachedObserved": True,
         "lifecyclePassObserved": True,
