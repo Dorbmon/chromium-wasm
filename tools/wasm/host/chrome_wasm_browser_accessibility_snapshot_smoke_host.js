@@ -3,11 +3,15 @@
 // found in the LICENSE file.
 
 // This host is intentionally a one-shot semantic-DOM witness for one fixed
-// Chromium WebContents AX snapshot. It does not receive updates, accept host
+// Chromium WebContents AX snapshot. It reflects one fixed toggle's role,
+// pressed state, and geometry, but does not receive updates, accept host
 // input, retain arbitrary page text, synchronize focus, or route AX actions.
+// It is not an accessibility implementation or a replacement for page
+// semantics.
 const HOST_PROTOCOL = 1;
 const CASE = "browser_accessibility_snapshot_m8";
-const SCOPE = "fixed-webcontents-ax-snapshot-passive-semantic-dom";
+const SCOPE =
+    "fixed-webcontents-ax-snapshot-passive-semantic-dom-with-toggle-state-and-bounds";
 const SWITCH = "--wasm-browser-accessibility-snapshot-smoke";
 const READY_MARKER = "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:READY";
 const NAVIGATED_MARKER = "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:NAVIGATED";
@@ -19,7 +23,14 @@ const MAX_FRAME_DIMENSION = 16384;
 const MAX_RECORD_HISTORY = 64;
 const EXPECTED_HEADING = "Chromium Wasm AX snapshot";
 const EXPECTED_TEXT = "Static semantic text.";
-const EXPECTED_ROLE_MASK = 0x7;
+const EXPECTED_CONTROL_NAME = "Chromium Wasm AX control";
+const EXPECTED_CONTROL_BOUNDS = Object.freeze({
+  height: 48,
+  left: 64,
+  top: 128,
+  width: 192,
+});
+const EXPECTED_ROLE_MASK = 0xf;
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -52,6 +63,27 @@ function asReport(value, description) {
     throw new Error(`${description} must be an object`);
   }
   return report;
+}
+
+function exactJsonEqual(left, right) {
+  if (typeof left !== typeof right || left === null || right === null) {
+    return left === right;
+  }
+  if (Array.isArray(left)) {
+    return Array.isArray(right) && left.length === right.length &&
+        left.every((value, index) => exactJsonEqual(value, right[index]));
+  }
+  if (typeof left === "object") {
+    if (Array.isArray(right)) {
+      return false;
+    }
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    return leftKeys.length === rightKeys.length &&
+        leftKeys.every((key, index) => key === rightKeys[index] &&
+            exactJsonEqual(left[key], right[key]));
+  }
+  return left === right;
 }
 
 function parseVersions(value) {
@@ -134,6 +166,15 @@ function validateResult(result) {
       "semantic mirror text is not the fixed AX value");
   require(result.semanticMirror?.roleMask === EXPECTED_ROLE_MASK,
       "semantic mirror role mask is invalid");
+  require(result.semanticMirror?.controlName === EXPECTED_CONTROL_NAME,
+      "semantic mirror control name is not the fixed AX value");
+  require(result.semanticMirror?.controlPressed === true,
+      "semantic mirror control pressed state is invalid");
+  require(exactJsonEqual(result.semanticMirror?.controlBounds,
+                         EXPECTED_CONTROL_BOUNDS),
+      "semantic mirror control bounds are invalid");
+  require(result.semanticMirror?.controlGeometryMatchesCanvas === true,
+      "semantic mirror control geometry does not match the canvas");
   require(result.semanticMirror?.connected === true,
       "semantic mirror is not connected outside the canvas");
   require(result.semanticMirror?.passive === true,
@@ -313,8 +354,33 @@ class ChromiumWasmBrowserAccessibilitySnapshotSmokeHost {
       if (this.#semanticMirror !== null || report.protocol !== HOST_PROTOCOL ||
           report.source !== "fixed-webcontents-ax-snapshot" ||
           report.heading !== EXPECTED_HEADING || report.text !== EXPECTED_TEXT ||
-          report.roleMask !== EXPECTED_ROLE_MASK) {
+          report.roleMask !== EXPECTED_ROLE_MASK ||
+          !exactJsonEqual(report.control, {
+            bounds: EXPECTED_CONTROL_BOUNDS,
+            name: EXPECTED_CONTROL_NAME,
+            pressed: true,
+          })) {
         throw new Error("accessibility snapshot report is outside the fixed contract");
+      }
+      const surface = document.querySelector("#browser-surface");
+      if (!(surface instanceof HTMLElement)) {
+        throw new Error("accessibility snapshot surface is missing");
+      }
+      // This is the canvas drawing area, rather than its CSS border box. AX
+      // bounds are in the Chromium surface coordinate system, so the mirror
+      // must agree with this content origin before it can be reported as a
+      // valid host-vs-AX geometry witness.
+      const canvasBounds = this.#canvas.getBoundingClientRect();
+      const canvasContentLeft = canvasBounds.left + this.#canvas.clientLeft;
+      const canvasContentTop = canvasBounds.top + this.#canvas.clientTop;
+      const controlBoundsAreWithinCanvas =
+          report.control.bounds.left >= 0 && report.control.bounds.top >= 0 &&
+          report.control.bounds.left + report.control.bounds.width <=
+              this.#canvas.clientWidth &&
+          report.control.bounds.top + report.control.bounds.height <=
+              this.#canvas.clientHeight;
+      if (!controlBoundsAreWithinCanvas) {
+        throw new Error("validated AX bounds are outside the canvas content box");
       }
       this.#mirrorRoot.replaceChildren();
       const section = document.createElement("section");
@@ -325,20 +391,50 @@ class ChromiumWasmBrowserAccessibilitySnapshotSmokeHost {
       heading.textContent = report.heading;
       const text = document.createElement("p");
       text.textContent = report.text;
-      section.append(heading, text);
+      const control = document.createElement("button");
+      control.id = "chromium-wasm-ax-snapshot-toggle";
+      control.type = "button";
+      control.tabIndex = -1;
+      control.setAttribute("aria-label", report.control.name);
+      control.setAttribute("aria-pressed", "true");
+      control.textContent = report.control.name;
+      Object.assign(control.style, {
+        height: `${report.control.bounds.height}px`,
+        left: `${report.control.bounds.left + this.#canvas.clientLeft}px`,
+        pointerEvents: "none",
+        top: `${report.control.bounds.top + this.#canvas.clientTop}px`,
+        width: `${report.control.bounds.width}px`,
+      });
+      section.append(heading, text, control);
       this.#mirrorRoot.append(section);
+      const controlBounds = control.getBoundingClientRect();
+      const controlGeometryMatchesCanvas =
+          Math.abs(controlBounds.left - canvasContentLeft -
+                   report.control.bounds.left) < 0.01 &&
+          Math.abs(controlBounds.top - canvasContentTop -
+                   report.control.bounds.top) < 0.01 &&
+          Math.abs(controlBounds.width - report.control.bounds.width) < 0.01 &&
+          Math.abs(controlBounds.height - report.control.bounds.height) < 0.01;
       const passive = !section.hasAttribute("tabindex") &&
           !heading.hasAttribute("tabindex") && !text.hasAttribute("tabindex") &&
+          control.tabIndex === -1 && control.style.pointerEvents === "none" &&
+          !control.disabled && control.parentElement === section &&
+          this.#mirrorRoot.parentElement === surface &&
           section.parentElement === this.#mirrorRoot &&
           !this.#canvas.contains(section);
       this.#semanticMirror = {
         heading: heading.textContent,
         text: text.textContent,
         roleMask: report.roleMask,
+        controlName: control.getAttribute("aria-label"),
+        controlPressed: control.getAttribute("aria-pressed") === "true",
+        controlBounds: report.control.bounds,
+        controlGeometryMatchesCanvas,
         connected: section.isConnected,
         passive,
       };
-      if (!this.#semanticMirror.connected || !this.#semanticMirror.passive) {
+      if (!this.#semanticMirror.connected || !this.#semanticMirror.passive ||
+          !this.#semanticMirror.controlGeometryMatchesCanvas) {
         throw new Error("host semantic mirror did not remain passive outside canvas");
       }
       return true;

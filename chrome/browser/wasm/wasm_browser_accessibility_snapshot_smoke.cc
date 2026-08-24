@@ -4,7 +4,9 @@
 
 #include "chrome/browser/wasm/wasm_browser_accessibility_snapshot_smoke.h"
 
+#include <cmath>
 #include <cstdio>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -24,15 +26,21 @@
 #endif
 
 // This synchronous import is provided by ozone_wasm's versioned host bridge.
-// It accepts only this test's fixed UTF-8 text and its fixed semantic-role
-// mask; it is not an arbitrary page-text export or an accessibility action
+// It accepts only this test's fixed UTF-8 semantic values, role mask, and
+// bounds; it is not an arbitrary page-text export or an accessibility action
 // interface.
 extern "C" int chromium_wasm_report_accessibility_snapshot(
     const char* heading,
     int heading_length,
     const char* text,
     int text_length,
-    int role_mask);
+    const char* control_name,
+    int control_name_length,
+    int role_mask,
+    int control_left,
+    int control_top,
+    int control_width,
+    int control_height);
 
 namespace chrome {
 
@@ -40,11 +48,16 @@ namespace {
 
 constexpr char kAccessibilitySnapshotSmokeUrl[] =
     "data:text/html;base64,"
-    "PCFkb2N0eXBlIGh0bWw+PHRpdGxlPkNocm9taXVtIFdhc20gQVggc25hcHNob3Q8L3RpdGxlPjxtYWluIGFyaWEtbGFiZWw9IkNocm9taXVtIFdhc20gQVggc21va2UiPjxoMT5DaHJvbWl1bSBXYXNtIEFYIHNuYXBzaG90PC9oMT48cD5TdGF0aWMgc2VtYW50aWMgdGV4dC48L3A+PC9tYWluPg==";
+    "PCFkb2N0eXBlIGh0bWw+PHRpdGxlPkNocm9taXVtIFdhc20gQVggc25hcHNob3Q8L3RpdGxlPjxzdHlsZT5odG1sLGJvZHl7bWFyZ2luOjB9YnV0dG9ue3Bvc2l0aW9uOmFic29sdXRlO2xlZnQ6NjRweDt0b3A6MTI4cHg7d2lkdGg6MTkycHg7aGVpZ2h0OjQ4cHg7Ym94LXNpemluZzpib3JkZXItYm94O21hcmdpbjowO3BhZGRpbmc6MDtib3JkZXI6MH08L3N0eWxlPjxtYWluIGFyaWEtbGFiZWw9IkNocm9taXVtIFdhc20gQVggc21va2UiPjxoMT5DaHJvbWl1bSBXYXNtIEFYIHNuYXBzaG90PC9oMT48cD5TdGF0aWMgc2VtYW50aWMgdGV4dC48L3A+PGJ1dHRvbiBhcmlhLWxhYmVsPSJDaHJvbWl1bSBXYXNtIEFYIGNvbnRyb2wiIGFyaWEtcHJlc3NlZD0idHJ1ZSI+VG9nZ2xlIHNlbWFudGljIHN0YXRlPC9idXR0b24+PC9tYWluPg==";
 constexpr char kExpectedMainName[] = "Chromium Wasm AX smoke";
 constexpr char kExpectedHeading[] = "Chromium Wasm AX snapshot";
 constexpr char kExpectedStaticText[] = "Static semantic text.";
-constexpr int kSnapshotRoleMask = 0x7;
+constexpr char kExpectedControlName[] = "Chromium Wasm AX control";
+constexpr int kExpectedControlLeft = 64;
+constexpr int kExpectedControlTop = 128;
+constexpr int kExpectedControlWidth = 192;
+constexpr int kExpectedControlHeight = 48;
+constexpr int kSnapshotRoleMask = 0xf;
 constexpr size_t kMaximumSnapshotNodes = 32;
 constexpr base::TimeDelta kSnapshotTimeout = base::Seconds(5);
 constexpr char kSnapshotDeliveredMarker[] =
@@ -52,17 +65,41 @@ constexpr char kSnapshotDeliveredMarker[] =
 constexpr char kSnapshotFailureMarker[] =
     "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:FAIL";
 
-bool HasNamedRole(const ui::AXTreeUpdate& snapshot,
-                  ax::mojom::Role role,
-                  std::string_view expected_name) {
+const ui::AXNodeData* FindNamedRole(const ui::AXTreeUpdate& snapshot,
+                                    ax::mojom::Role role,
+                                    std::string_view expected_name) {
   for (const ui::AXNodeData& node : snapshot.nodes) {
     if (node.role == role &&
         node.GetStringAttribute(ax::mojom::StringAttribute::kName) ==
             expected_name) {
-      return true;
+      return &node;
     }
   }
-  return false;
+  return nullptr;
+}
+
+bool HasNamedRole(const ui::AXTreeUpdate& snapshot,
+                  ax::mojom::Role role,
+                  std::string_view expected_name) {
+  return FindNamedRole(snapshot, role, expected_name) != nullptr;
+}
+
+bool IsExpectedControlBounds(const ui::AXNodeData& control) {
+  const gfx::RectF& bounds = control.relative_bounds.bounds;
+  const auto has_expected_coordinate = [](float actual, int expected) {
+    return std::abs(actual - static_cast<float>(expected)) < 0.01f;
+  };
+  return has_expected_coordinate(bounds.x(), kExpectedControlLeft) &&
+         has_expected_coordinate(bounds.y(), kExpectedControlTop) &&
+         has_expected_coordinate(bounds.width(), kExpectedControlWidth) &&
+         has_expected_coordinate(bounds.height(), kExpectedControlHeight);
+}
+
+bool HasExpectedControl(const ui::AXTreeUpdate& snapshot) {
+  const ui::AXNodeData* const control = FindNamedRole(
+      snapshot, ax::mojom::Role::kToggleButton, kExpectedControlName);
+  return control && control->IsButtonPressed() &&
+         IsExpectedControlBounds(*control);
 }
 
 bool HasRootWebArea(const ui::AXTreeUpdate& snapshot) {
@@ -87,7 +124,8 @@ bool IsExpectedSnapshot(const ui::AXTreeUpdate& snapshot) {
          HasNamedRole(snapshot, ax::mojom::Role::kMain, kExpectedMainName) &&
          HasNamedRole(snapshot, ax::mojom::Role::kHeading, kExpectedHeading) &&
          HasNamedRole(snapshot, ax::mojom::Role::kStaticText,
-                      kExpectedStaticText);
+                      kExpectedStaticText) &&
+         HasExpectedControl(snapshot);
 }
 
 }  // namespace
@@ -144,15 +182,39 @@ void WasmBrowserAccessibilitySnapshotSmoke::OnSnapshot(
     return;
   }
 
-  // Both strings have just been checked against exact constants. The host
-  // bridge separately rejects any different byte sequence or role mask before
-  // it can create semantic DOM, keeping this a fixed smoke rather than a
-  // general text mirror.
+  // Pass values from the validated native AX nodes, not a parallel host-side
+  // description. The bridge separately rejects a different byte sequence,
+  // role mask, or bounds before it can create semantic DOM, keeping this a
+  // fixed smoke rather than a general text or geometry mirror.
+  const ui::AXNodeData* const heading = FindNamedRole(
+      snapshot, ax::mojom::Role::kHeading, kExpectedHeading);
+  const ui::AXNodeData* const static_text = FindNamedRole(
+      snapshot, ax::mojom::Role::kStaticText, kExpectedStaticText);
+  const ui::AXNodeData* const control = FindNamedRole(
+      snapshot, ax::mojom::Role::kToggleButton, kExpectedControlName);
+  if (!heading || !static_text || !control) {
+    Complete(false);
+    return;
+  }
+
+  const std::string& heading_name =
+      heading->GetStringAttribute(ax::mojom::StringAttribute::kName);
+  const std::string& static_text_name =
+      static_text->GetStringAttribute(ax::mojom::StringAttribute::kName);
+  const std::string& control_name =
+      control->GetStringAttribute(ax::mojom::StringAttribute::kName);
+  const gfx::RectF& control_bounds = control->relative_bounds.bounds;
+  const auto rounded_coordinate = [](float coordinate) {
+    return static_cast<int>(std::lround(coordinate));
+  };
   const int delivered = chromium_wasm_report_accessibility_snapshot(
-      kExpectedHeading, static_cast<int>(sizeof(kExpectedHeading) - 1),
-      kExpectedStaticText,
-      static_cast<int>(sizeof(kExpectedStaticText) - 1),
-      kSnapshotRoleMask);
+      heading_name.data(), static_cast<int>(heading_name.size()),
+      static_text_name.data(), static_cast<int>(static_text_name.size()),
+      control_name.data(), static_cast<int>(control_name.size()),
+      kSnapshotRoleMask, rounded_coordinate(control_bounds.x()),
+      rounded_coordinate(control_bounds.y()),
+      rounded_coordinate(control_bounds.width()),
+      rounded_coordinate(control_bounds.height()));
   if (delivered != 1) {
     Complete(false);
     return;

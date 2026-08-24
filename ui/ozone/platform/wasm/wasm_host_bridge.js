@@ -360,19 +360,29 @@ mergeInto(LibraryManager.library, {
   },
 
   // This deliberately admits only the fixed M8 accessibility-snapshot smoke
-  // text after its C++ owner has validated a one-shot WebContents AX tree.
-  // Do not turn this into an arbitrary AX/text export: a production mirror
-  // needs its own privacy, focus, update, bounds, and action protocol.
+  // semantics after its C++ owner has validated a one-shot WebContents AX
+  // tree. Do not turn this into an arbitrary AX/text export or claim it
+  // replaces page semantics: a production mirror needs its own privacy,
+  // focus, update, bounds, and action protocol.
   chromium_wasm_report_accessibility_snapshot__deps: [
     '$ChromiumWasmHostBridge',
     '$UTF8ToString',
   ],
   chromium_wasm_report_accessibility_snapshot__proxy: 'sync',
   chromium_wasm_report_accessibility_snapshot: (
-      heading, headingLength, text, textLength, roleMask) => {
+      heading, headingLength, text, textLength, controlName,
+      controlNameLength, roleMask, controlLeft, controlTop, controlWidth,
+      controlHeight) => {
     const expectedHeading = 'Chromium Wasm AX snapshot';
     const expectedText = 'Static semantic text.';
-    const expectedRoleMask = 0x7;
+    const expectedControlName = 'Chromium Wasm AX control';
+    const expectedRoleMask = 0xf;
+    const expectedControlBounds = Object.freeze({
+      height: 48,
+      left: 64,
+      top: 128,
+      width: 192,
+    });
     const maximumTextBytes = 64;
     const exactText = (pointer, length, expected) => {
       if (!Number.isSafeInteger(pointer) || pointer < 0 ||
@@ -387,12 +397,28 @@ mergeInto(LibraryManager.library, {
       const value = UTF8ToString(pointer, length);
       return value === expected ? value : null;
     };
-    if (!Number.isSafeInteger(roleMask) || roleMask !== expectedRoleMask) {
+    if (!Number.isSafeInteger(roleMask) || roleMask !== expectedRoleMask ||
+        controlLeft !== expectedControlBounds.left ||
+        controlTop !== expectedControlBounds.top ||
+        controlWidth !== expectedControlBounds.width ||
+        controlHeight !== expectedControlBounds.height) {
       return 0;
     }
+    // Keep the delivered object sourced from the C++ arguments, which came
+    // directly from the already validated AX node. The fixed checks above
+    // prevent this test-only path from becoming a general bounds export.
+    const controlBounds = Object.freeze({
+      height: controlHeight,
+      left: controlLeft,
+      top: controlTop,
+      width: controlWidth,
+    });
     const exactHeading = exactText(heading, headingLength, expectedHeading);
     const exactStaticText = exactText(text, textLength, expectedText);
-    if (exactHeading === null || exactStaticText === null) {
+    const exactControlName = exactText(controlName, controlNameLength,
+                                       expectedControlName);
+    if (exactHeading === null || exactStaticText === null ||
+        exactControlName === null) {
       return 0;
     }
     const bridge = ChromiumWasmHostBridge.bridge();
@@ -405,6 +431,11 @@ mergeInto(LibraryManager.library, {
       heading: exactHeading,
       text: exactStaticText,
       roleMask,
+      control: {
+        bounds: controlBounds,
+        name: exactControlName,
+        pressed: true,
+      },
     }) === true ? 1 : 0;
   },
 

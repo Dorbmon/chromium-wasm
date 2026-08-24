@@ -13,6 +13,7 @@
     :root { color-scheme: dark; font: 13px/1.5 ui-monospace, monospace; background: #10141b; color: #dbe7f5; }
     body { margin: 0; padding: 16px; }
     main { display: grid; grid-template-columns: minmax(640px, 1fr) 320px; gap: 16px; align-items: start; }
+    #browser-surface { position: relative; width: 640px; height: 480px; }
     #browser-canvas { display: block; width: 640px; height: 480px; border: 1px solid #53657d; background: #000; outline: none; }
     #browser-canvas:focus { border-color: #72ddf7; }
     aside { min-width: 0; padding: 12px; border: 1px solid #53657d; background: #171e28; }
@@ -24,26 +25,34 @@
     main[data-state="fail"] h1 { color: #ff758f; }
 
     /* This stays outside the canvas and remains exposed to host assistive
-       technology while taking no visual or pointer-input ownership. It is a
-       fixed test-only semantic mirror, not a general accessibility overlay. */
+       technology while taking no visual or pointer-input ownership. The fixed
+       button's geometry is positioned over the canvas only for this test; it
+       is not a general accessibility overlay, page-semantic replacement, or
+       action surface. */
     #accessibility-mirror {
       position: absolute;
-      width: 1px;
-      height: 1px;
-      margin: -1px;
-      overflow: hidden;
-      clip-path: inset(50%);
+      inset: 0;
       pointer-events: none;
-      white-space: nowrap;
+    }
+    #accessibility-mirror button {
+      position: absolute;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      opacity: 0;
+      pointer-events: none;
     }
   </style>
 </head>
 <body>
   <main id="browser-accessibility-snapshot-root" data-state="running">
     <section aria-label="Chromium browser canvas and passive accessibility mirror">
-      <canvas id="browser-canvas" width="640" height="480" tabindex="0"
-          aria-label="Chromium browser accessibility snapshot output"></canvas>
-      <div id="accessibility-mirror"></div>
+      <div id="browser-surface">
+        <canvas id="browser-canvas" width="640" height="480" tabindex="0"
+            aria-label="Chromium browser accessibility snapshot output"></canvas>
+        <div id="accessibility-mirror"></div>
+      </div>
     </section>
     <aside aria-label="Accessibility snapshot smoke diagnostics">
       <h1>Chromium Wasm accessibility snapshot smoke</h1>

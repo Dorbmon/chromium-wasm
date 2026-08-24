@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for the bounded passive M8 Chromium AX snapshot smoke."""
+"""Contracts for the bounded M8 Chromium AX snapshot semantic mirror."""
 
 from __future__ import annotations
 
@@ -53,6 +53,10 @@ def successful_result() -> dict[str, object]:
             "heading": smoke.EXPECTED_HEADING,
             "text": smoke.EXPECTED_TEXT,
             "roleMask": smoke.EXPECTED_ROLE_MASK,
+            "controlName": smoke.EXPECTED_CONTROL_NAME,
+            "controlPressed": True,
+            "controlBounds": smoke.EXPECTED_CONTROL_BOUNDS,
+            "controlGeometryMatchesCanvas": True,
             "connected": True,
             "passive": True,
         },
@@ -83,7 +87,7 @@ class M8WasmBrowserAccessibilitySnapshotDomSmokeTest(unittest.TestCase):
     def test_accepts_one_fixed_passive_semantic_mirror(self) -> None:
         smoke.validate_result(successful_result(), expected_versions=VERSIONS)
 
-    def test_rejects_changed_text_role_mask_interactivity_or_marker_order(self) -> None:
+    def test_rejects_changed_semantics_bounds_interactivity_or_marker_order(self) -> None:
         mutations = (
             (
                 lambda result: result["semanticMirror"].__setitem__(
@@ -94,6 +98,18 @@ class M8WasmBrowserAccessibilitySnapshotDomSmokeTest(unittest.TestCase):
             (
                 lambda result: result["semanticMirror"].__setitem__(
                     "roleMask", 0
+                ),
+                "semantic mirror does not match",
+            ),
+            (
+                lambda result: result["semanticMirror"]["controlBounds"].__setitem__(
+                    "left", 0
+                ),
+                "semantic mirror does not match",
+            ),
+            (
+                lambda result: result["semanticMirror"].__setitem__(
+                    "controlGeometryMatchesCanvas", False
                 ),
                 "semantic mirror does not match",
             ),
@@ -156,8 +172,20 @@ class M8WasmBrowserAccessibilitySnapshotDomSmokeTest(unittest.TestCase):
             "kMain",
             "kHeading",
             "kStaticText",
+            "kToggleButton",
             "kExpectedHeading",
             "kExpectedStaticText",
+            "kExpectedControlName",
+            "kExpectedControlLeft = 64",
+            "kExpectedControlTop = 128",
+            "kExpectedControlWidth = 192",
+            "kExpectedControlHeight = 48",
+            "IsButtonPressed",
+            "IsExpectedControlBounds",
+            "heading_name.data()",
+            "static_text_name.data()",
+            "control_name.data()",
+            "rounded_coordinate(control_bounds.x())",
             "chromium_wasm_report_accessibility_snapshot",
             "weak_ptr_factory_.GetWeakPtr()",
             "weak_ptr_factory_.InvalidateWeakPtrs()",
@@ -207,7 +235,10 @@ class M8WasmBrowserAccessibilitySnapshotDomSmokeTest(unittest.TestCase):
             "__proxy: 'sync'",
             "expectedHeading = 'Chromium Wasm AX snapshot'",
             "expectedText = 'Static semantic text.'",
-            "expectedRoleMask = 0x7",
+            "expectedControlName = 'Chromium Wasm AX control'",
+            "expectedRoleMask = 0xf",
+            "expectedControlBounds = Object.freeze({",
+            "const controlBounds = Object.freeze({",
             "maximumTextBytes = 64",
             "end > HEAPU8.length",
             "bridge.reportAccessibilitySnapshot",
@@ -226,13 +257,22 @@ class M8WasmBrowserAccessibilitySnapshotDomSmokeTest(unittest.TestCase):
             "tools/wasm/host/chrome_wasm_browser_accessibility_snapshot_smoke_host.js"
         )
         self.assertIn('id="accessibility-mirror"', html)
-        self.assertIn("clip-path: inset(50%)", html)
+        self.assertIn('id="browser-surface"', html)
         self.assertIn("pointer-events: none", html)
         for marker in (
             "reportAccessibilitySnapshot(report)",
+            "function exactJsonEqual(left, right)",
             'document.createElement("section")',
             'document.createElement("h1")',
             'document.createElement("p")',
+            'document.createElement("button")',
+            'control.tabIndex = -1',
+            'aria-pressed", "true"',
+            "controlGeometryMatchesCanvas",
+            "EXPECTED_CONTROL_BOUNDS",
+            "canvasContentLeft",
+            "canvasContentTop",
+            "controlBoundsAreWithinCanvas",
             "section.parentElement === this.#mirrorRoot",
             "!this.#canvas.contains(section)",
             "report.source !== \"fixed-webcontents-ax-snapshot\"",
@@ -240,7 +280,7 @@ class M8WasmBrowserAccessibilitySnapshotDomSmokeTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, host)
-        for forbidden in ("ccall(", "addEventListener(\"click\"", "tabIndex ="):
+        for forbidden in ("ccall(", "addEventListener(\"click\""):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, host)
 

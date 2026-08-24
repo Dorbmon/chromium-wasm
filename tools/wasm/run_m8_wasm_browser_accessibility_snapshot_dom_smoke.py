@@ -7,9 +7,10 @@
 
 This runner covers one lifecycle-owned Chrome WebContents that commits a fixed
 static document, produces one Chromium AX snapshot, and asks the outer host to
-create matching fixed semantic DOM outside the canvas. It does not test a
-general accessibility mirror, dynamic updates, focus synchronization, bounds,
-keyboard navigation, or AX actions.
+create a matching fixed semantic-DOM witness outside the canvas. One fixed
+toggle's name, pressed state, and bounds are mirrored. It is not a general
+accessibility implementation or page-semantic replacement, and does not test
+dynamic updates, focus synchronization, keyboard navigation, or AX actions.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ import run_wasm_browser_view_smoke as browser_view_smoke
 
 SENTINEL = "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT_DOM"
 CASE = "browser_accessibility_snapshot_m8"
-SCOPE = "fixed-webcontents-ax-snapshot-passive-semantic-dom"
+SCOPE = "fixed-webcontents-ax-snapshot-passive-semantic-dom-with-toggle-state-and-bounds"
 SWITCH = "--wasm-browser-accessibility-snapshot-smoke"
 READY_MARKER = "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:READY"
 NAVIGATED_MARKER = "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:NAVIGATED"
@@ -56,7 +57,14 @@ PASS_MARKER = "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:PASS"
 LIFECYCLE_PASS_MARKER = "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS"
 EXPECTED_HEADING = "Chromium Wasm AX snapshot"
 EXPECTED_TEXT = "Static semantic text."
-EXPECTED_ROLE_MASK = 0x7
+EXPECTED_CONTROL_NAME = "Chromium Wasm AX control"
+EXPECTED_CONTROL_BOUNDS = {
+    "height": 48,
+    "left": 64,
+    "top": 128,
+    "width": 192,
+}
+EXPECTED_ROLE_MASK = 0xF
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 MAX_RESULT_BYTES = 1024 * 1024
 HOST_ROOT = "/__m8_browser_accessibility_snapshot__"
@@ -297,6 +305,10 @@ def _validate_semantic_mirror(result: dict[str, Any]) -> None:
         "heading",
         "text",
         "roleMask",
+        "controlName",
+        "controlPressed",
+        "controlBounds",
+        "controlGeometryMatchesCanvas",
         "connected",
         "passive",
     }:
@@ -305,6 +317,10 @@ def _validate_semantic_mirror(result: dict[str, Any]) -> None:
         "heading": EXPECTED_HEADING,
         "text": EXPECTED_TEXT,
         "roleMask": EXPECTED_ROLE_MASK,
+        "controlName": EXPECTED_CONTROL_NAME,
+        "controlPressed": True,
+        "controlBounds": EXPECTED_CONTROL_BOUNDS,
+        "controlGeometryMatchesCanvas": True,
         "connected": True,
         "passive": True,
     }:

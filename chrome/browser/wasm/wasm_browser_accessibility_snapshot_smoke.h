@@ -26,9 +26,10 @@ GURL GetWasmBrowserAccessibilitySnapshotSmokeUrl();
 
 // Takes exactly one AX snapshot from the lifecycle-owned WebContents after
 // that fixed document has committed and painted. It validates the expected
-// root/main/heading/static-text semantics before asking the host bridge to
-// create its corresponding fixed semantic DOM. It neither observes updates
-// nor exposes focus, bounds, keyboard, or action routing.
+// root/main/heading/static-text/toggle semantics and the toggle's fixed
+// bounds before asking the host bridge to create a corresponding passive
+// semantic-DOM witness. It is not a page-semantic replacement; it neither
+// observes updates nor exposes focus, keyboard, or action routing.
 class WasmBrowserAccessibilitySnapshotSmoke final {
  public:
   using CompletionCallback = base::OnceCallback<void(bool success)>;
