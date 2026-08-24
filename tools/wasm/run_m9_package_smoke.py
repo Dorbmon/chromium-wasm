@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import http.client
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 import json
@@ -25,7 +26,6 @@ import threading
 from types import MappingProxyType
 from typing import Callable, Mapping
 from urllib.parse import urlsplit
-from urllib.request import urlopen
 
 if __package__:
     from .m0_common import M0Error
@@ -63,6 +63,24 @@ class PackageTreeSnapshot:
 
     artifacts: Mapping[str, bytes]
     verification: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class PackageEndpointResponse:
+    """One fully captured loopback response from the immutable package tree."""
+
+    status: int
+    headers: Mapping[str, str | None]
+    body: bytes
+
+
+NOT_FOUND_PATH = "/__chromium_wasm_package_not_found__"
+NOT_FOUND_CONTENT_TYPE = "text/plain; charset=utf-8"
+NOT_FOUND_BODY = b"not found\n"
+PACKAGE_SMOKE_TIMEOUT_SECONDS = 10.0
+_DELIVERY_HEADER_NAMES = frozenset(
+    (*REQUIRED_HEADERS, "Cache-Control", "Content-Length", "Content-Type")
+)
 
 
 class PackageSmokeServer(M9TrackingThreadingHTTPServer):
@@ -398,10 +416,10 @@ def package_response(
     else:
         artifact = request_path.removeprefix("/")
     if artifact not in PACKAGE_PATHS:
-        return HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n"
+        return HTTPStatus.NOT_FOUND, NOT_FOUND_CONTENT_TYPE, NOT_FOUND_BODY
     contents = artifacts.get(artifact)
     if contents is None:
-        return HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", b"not found\n"
+        return HTTPStatus.NOT_FOUND, NOT_FOUND_CONTENT_TYPE, NOT_FOUND_BODY
     if type(contents) is not bytes or not contents:
         raise M0Error(f"package snapshot artifact is invalid: {artifact}")
     return (
@@ -409,6 +427,204 @@ def package_response(
         REQUIRED_MIME_TYPES.get(Path(artifact).suffix, "text/plain; charset=utf-8"),
         contents,
     )
+
+
+def _package_request_path(artifact: str) -> str:
+    """Map the packaged index to its public root URL exactly once."""
+
+    if artifact == "index.html":
+        return "/"
+    return f"/{artifact}"
+
+
+def _expected_content_type(artifact: str) -> str:
+    return REQUIRED_MIME_TYPES.get(
+        Path(artifact).suffix, "text/plain; charset=utf-8"
+    )
+
+
+def _capture_endpoint_response(
+    response: object, *, status: object
+) -> PackageEndpointResponse:
+    """Copy only the response facts needed for the static-delivery proof."""
+
+    if type(status) is not int:
+        raise M0Error("package endpoint returned an invalid HTTP status")
+    try:
+        response_headers = response.headers  # type: ignore[attr-defined]
+        body = response.read()  # type: ignore[attr-defined]
+    except (AttributeError, OSError) as exc:
+        raise M0Error("package endpoint response could not be captured") from exc
+    if type(body) is not bytes:
+        raise M0Error("package endpoint response body is invalid")
+    try:
+        header_values = {
+            name: response_headers.get_all(name) for name in _DELIVERY_HEADER_NAMES
+        }
+    except (AttributeError, TypeError) as exc:
+        raise M0Error("package endpoint response headers are invalid") from exc
+    headers: dict[str, str | None] = {}
+    for name, values in header_values.items():
+        if values is None:
+            headers[name] = None
+            continue
+        if (
+            type(values) is not list
+            or len(values) != 1
+            or type(values[0]) is not str
+        ):
+            raise M0Error("package endpoint response headers are invalid")
+        headers[name] = values[0]
+    return PackageEndpointResponse(
+        status=status,
+        headers=MappingProxyType(headers),
+        body=body,
+    )
+
+
+def _fetch_package_response(
+    host: str, port: int, request_path: str, method: str
+) -> PackageEndpointResponse:
+    """Issue one direct no-cache GET or HEAD loopback request."""
+
+    if method not in ("GET", "HEAD"):
+        raise ValueError("package endpoint method is invalid")
+    connection = http.client.HTTPConnection(
+        host, port, timeout=PACKAGE_SMOKE_TIMEOUT_SECONDS
+    )
+    try:
+        connection.request(method, request_path, headers={"Cache-Control": "no-store"})
+        response = connection.getresponse()
+        return _capture_endpoint_response(
+            response, status=getattr(response, "status", None)
+        )
+    except (OSError, http.client.HTTPException) as exc:
+        raise M0Error("package endpoint request failed") from exc
+    finally:
+        connection.close()
+
+
+def _require_delivery_headers(
+    response: PackageEndpointResponse,
+    *,
+    request_path: str,
+    content_type: str,
+    content_length: int,
+) -> None:
+    expected_headers = {
+        **REQUIRED_HEADERS,
+        "Cache-Control": "no-store",
+        "Content-Length": str(content_length),
+        "Content-Type": content_type,
+    }
+    for name, expected in expected_headers.items():
+        if response.headers.get(name) != expected:
+            raise M0Error(f"package endpoint header mismatch: {request_path} {name}")
+
+
+def _verify_artifact_delivery_response(
+    response: PackageEndpointResponse,
+    *,
+    artifact: str,
+    request_path: str,
+    method: str,
+    expected_body: bytes,
+) -> None:
+    """Require one canonical response for a captured package artifact."""
+
+    if response.status != HTTPStatus.OK:
+        raise M0Error(f"package endpoint returned {response.status}: {request_path}")
+    _require_delivery_headers(
+        response,
+        request_path=request_path,
+        content_type=_expected_content_type(artifact),
+        content_length=len(expected_body),
+    )
+    if method == "GET":
+        if response.body != expected_body:
+            raise M0Error(f"package endpoint bytes mismatch: {request_path}")
+        return
+    if method == "HEAD":
+        if response.body:
+            raise M0Error(f"package endpoint HEAD body is not empty: {request_path}")
+        return
+    raise ValueError("package endpoint method is invalid")
+
+
+def _verify_not_found_delivery_response(
+    response: PackageEndpointResponse,
+    *,
+    artifacts: Mapping[str, bytes],
+    method: str,
+) -> None:
+    """Require a fixed 404 that cannot echo a staged artifact."""
+
+    if response.status != HTTPStatus.NOT_FOUND:
+        raise M0Error(
+            f"package not-found endpoint returned {response.status}: {NOT_FOUND_PATH}"
+        )
+    _require_delivery_headers(
+        response,
+        request_path=NOT_FOUND_PATH,
+        content_type=NOT_FOUND_CONTENT_TYPE,
+        content_length=len(NOT_FOUND_BODY),
+    )
+    if method == "GET":
+        if any(response.body == artifact for artifact in artifacts.values()):
+            raise M0Error("package not-found endpoint leaked a staged artifact")
+        if response.body != NOT_FOUND_BODY:
+            raise M0Error("package not-found endpoint body is not safe")
+        return
+    if method == "HEAD":
+        if response.body:
+            raise M0Error("package not-found endpoint HEAD body is not empty")
+        return
+    raise ValueError("package endpoint method is invalid")
+
+
+def _verify_static_package_delivery(
+    host: str, port: int, snapshot: PackageTreeSnapshot
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    """Exercise every public package path against its in-memory byte capture."""
+
+    artifacts = snapshot.artifacts
+    if set(artifacts) != PACKAGE_PATHS:
+        raise M0Error("package snapshot artifact set is invalid")
+    observed: dict[str, dict[str, object]] = {}
+    for artifact in sorted(PACKAGE_PATHS, key=_package_request_path):
+        expected_body = artifacts.get(artifact)
+        if type(expected_body) is not bytes or not expected_body:
+            raise M0Error(f"package snapshot artifact is invalid: {artifact}")
+        request_path = _package_request_path(artifact)
+        for method in ("GET", "HEAD"):
+            _verify_artifact_delivery_response(
+                _fetch_package_response(host, port, request_path, method),
+                artifact=artifact,
+                request_path=request_path,
+                method=method,
+                expected_body=expected_body,
+            )
+        observed[request_path] = {
+            "artifact": artifact,
+            "bytes": len(expected_body),
+            "content_type": _expected_content_type(artifact),
+            "methods": ["GET", "HEAD"],
+        }
+
+    if NOT_FOUND_PATH.removeprefix("/") in PACKAGE_PATHS:
+        raise M0Error("package not-found probe collides with a staged artifact")
+    for method in ("GET", "HEAD"):
+        _verify_not_found_delivery_response(
+            _fetch_package_response(host, port, NOT_FOUND_PATH, method),
+            artifacts=artifacts,
+            method=method,
+        )
+    return observed, {
+        "path": NOT_FOUND_PATH,
+        "bytes": len(NOT_FOUND_BODY),
+        "content_type": NOT_FOUND_CONTENT_TYPE,
+        "methods": ["GET", "HEAD"],
+    }
 
 
 def _run_cleanup_action(
@@ -445,42 +661,15 @@ def run_package_smoke(dist_dir: Path) -> dict[str, object]:
         thread.start()
         thread_started = True
         host, port = server.server_address[:2]
-        observed: dict[str, dict[str, object]] = {}
-        requested = {
-            "/": "text/html; charset=utf-8",
-            "/chromium-wasm.js": "text/javascript; charset=utf-8",
-            "/chromium-wasm.wasm": "application/wasm",
-            "/TOOLCHAIN.json": "application/json; charset=utf-8",
-            "/VERSION.json": "application/json; charset=utf-8",
-        }
-        for path, expected_mime in requested.items():
-            with urlopen(f"http://{host}:{port}{path}", timeout=10) as response:
-                body = response.read()
-                if response.status != HTTPStatus.OK:
-                    raise M0Error(
-                        f"package endpoint returned {response.status}: {path}"
-                    )
-                if (
-                    response.headers.get_content_type()
-                    != expected_mime.split(";", 1)[0]
-                ):
-                    raise M0Error(f"package endpoint MIME mismatch: {path}")
-                if not body:
-                    raise M0Error(f"package endpoint is empty: {path}")
-                for header, expected in REQUIRED_HEADERS.items():
-                    if response.headers.get(header) != expected:
-                        raise M0Error(
-                            f"package endpoint header mismatch: {path} {header}"
-                        )
-                observed[path] = {
-                    "bytes": len(body),
-                    "content_type": response.headers.get("Content-Type"),
-                }
+        observed, not_found = _verify_static_package_delivery(
+            host, port, server.snapshot
+        )
         release_status = verification.get("release_status")
         if release_status != "pre_m7_m8_not_releasable":
             raise M0Error("package smoke accepted a non-pre-release status")
         return {
             "endpoints": observed,
+            "not_found": not_found,
             "release_status": release_status,
             "scope": "static-package-headers-mime-and-artifact-integrity-only",
         }

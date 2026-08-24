@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 import hashlib
+from http import HTTPStatus
 import io
 import json
 import os
@@ -160,6 +161,47 @@ class M9PackageTest(unittest.TestCase):
             for path in sorted(root.rglob("*"))
             if path.is_file()
         }
+
+    def _package_delivery_response(
+        self,
+        snapshot: package_smoke.PackageTreeSnapshot,
+        request_path: str,
+        method: str,
+    ) -> package_smoke.PackageEndpointResponse:
+        if request_path == "/":
+            artifact = "index.html"
+        else:
+            artifact = request_path.removeprefix("/")
+        if artifact in snapshot.artifacts:
+            expected_body = snapshot.artifacts[artifact]
+            status = HTTPStatus.OK
+            content_type = package.REQUIRED_MIME_TYPES.get(
+                Path(artifact).suffix, "text/plain; charset=utf-8"
+            )
+        else:
+            expected_body = package_smoke.NOT_FOUND_BODY
+            status = HTTPStatus.NOT_FOUND
+            content_type = package_smoke.NOT_FOUND_CONTENT_TYPE
+        return package_smoke.PackageEndpointResponse(
+            status=status,
+            headers={
+                **package.REQUIRED_HEADERS,
+                "Cache-Control": "no-store",
+                "Content-Length": str(len(expected_body)),
+                "Content-Type": content_type,
+            },
+            body=expected_body if method == "GET" else b"",
+        )
+
+    def _valid_package_delivery(
+        self, snapshot: package_smoke.PackageTreeSnapshot
+    ) -> Callable[[str, int, str, str], package_smoke.PackageEndpointResponse]:
+        def deliver(
+            _host: str, _port: int, request_path: str, method: str
+        ) -> package_smoke.PackageEndpointResponse:
+            return self._package_delivery_response(snapshot, request_path, method)
+
+        return deliver
 
     def _write_fake_target_third_party_notices(
         self, *, out_dir: Path, destination: Path
@@ -1231,26 +1273,6 @@ class M9PackageTest(unittest.TestCase):
         thread = mock.Mock()
         thread.is_alive.return_value = True
 
-        responses = []
-        for content_type in (
-            "text/html",
-            "text/javascript",
-            "application/wasm",
-            "application/json",
-            "application/json",
-        ):
-            response = mock.MagicMock()
-            response.__enter__.return_value = response
-            response.status = 200
-            response.read.return_value = b"package response"
-            response.headers.get_content_type.return_value = content_type
-            response.headers.get.side_effect = lambda name, content_type=content_type: (
-                f"{content_type}; charset=utf-8"
-                if name == "Content-Type"
-                else package.REQUIRED_HEADERS.get(name)
-            )
-            responses.append(response)
-
         with mock.patch.object(
             package_smoke,
             "create_package_smoke_server",
@@ -1261,8 +1283,8 @@ class M9PackageTest(unittest.TestCase):
             return_value=thread,
         ), mock.patch.object(
             package_smoke,
-            "urlopen",
-            side_effect=responses,
+            "_fetch_package_response",
+            side_effect=self._valid_package_delivery(snapshot),
         ), self.assertRaisesRegex(M0Error, "package smoke server did not stop"):
             run_package_smoke(self.root / "ignored")
 
@@ -1282,27 +1304,6 @@ class M9PackageTest(unittest.TestCase):
         server.server_address = ("127.0.0.1", 32123)
         thread = mock.Mock()
         thread.is_alive.return_value = False
-        responses = []
-        for content_type in (
-            "text/html",
-            "text/javascript",
-            "application/wasm",
-            "application/json",
-            "application/json",
-        ):
-            response = mock.MagicMock()
-            response.__enter__.return_value = response
-            response.status = 200
-            response.read.return_value = b"package response"
-            response.headers.get_content_type.return_value = content_type
-            response.headers.get.side_effect = (
-                lambda name, content_type=content_type: (
-                    f"{content_type}; charset=utf-8"
-                    if name == "Content-Type"
-                    else package.REQUIRED_HEADERS.get(name)
-                )
-            )
-            responses.append(response)
         stdout = io.StringIO()
 
         with (
@@ -1316,7 +1317,11 @@ class M9PackageTest(unittest.TestCase):
                 "Thread",
                 return_value=thread,
             ),
-            mock.patch.object(package_smoke, "urlopen", side_effect=responses),
+            mock.patch.object(
+                package_smoke,
+                "_fetch_package_response",
+                side_effect=self._valid_package_delivery(snapshot),
+            ),
             mock.patch.object(
                 package_smoke,
                 "shutdown_server_bounded",
@@ -1354,27 +1359,6 @@ class M9PackageTest(unittest.TestCase):
         )
         thread = mock.Mock()
         thread.is_alive.return_value = False
-        responses = []
-        for content_type in (
-            "text/html",
-            "text/javascript",
-            "application/wasm",
-            "application/json",
-            "application/json",
-        ):
-            response = mock.MagicMock()
-            response.__enter__.return_value = response
-            response.status = 200
-            response.read.return_value = b"package response"
-            response.headers.get_content_type.return_value = content_type
-            response.headers.get.side_effect = (
-                lambda name, content_type=content_type: (
-                    f"{content_type}; charset=utf-8"
-                    if name == "Content-Type"
-                    else package.REQUIRED_HEADERS.get(name)
-                )
-            )
-            responses.append(response)
         stdout = io.StringIO()
 
         with (
@@ -1388,7 +1372,11 @@ class M9PackageTest(unittest.TestCase):
                 "Thread",
                 return_value=thread,
             ),
-            mock.patch.object(package_smoke, "urlopen", side_effect=responses),
+            mock.patch.object(
+                package_smoke,
+                "_fetch_package_response",
+                side_effect=self._valid_package_delivery(snapshot),
+            ),
             mock.patch.object(
                 sys,
                 "argv",
@@ -1417,9 +1405,11 @@ class M9PackageTest(unittest.TestCase):
         server.server_address = ("127.0.0.1", 32123)
         thread = mock.Mock()
         thread.is_alive.return_value = True
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        response.status = 500
+        response = package_smoke.PackageEndpointResponse(
+            status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            headers={},
+            body=b"",
+        )
 
         with mock.patch.object(
             package_smoke,
@@ -1431,7 +1421,7 @@ class M9PackageTest(unittest.TestCase):
             return_value=thread,
         ), mock.patch.object(
             package_smoke,
-            "urlopen",
+            "_fetch_package_response",
             return_value=response,
         ), self.assertRaisesRegex(M0Error, "package endpoint returned 500: /"):
             run_package_smoke(self.root / "ignored")
@@ -1569,13 +1559,137 @@ class M9PackageTest(unittest.TestCase):
             "static-package-headers-mime-and-artifact-integrity-only", result["scope"]
         )
         endpoints = result["endpoints"]
+        expected_paths = {
+            "/" if artifact == "index.html" else f"/{artifact}"
+            for artifact in package.PACKAGE_PATHS
+        }
+        self.assertEqual(expected_paths, set(endpoints))
+        for artifact in package.PACKAGE_PATHS:
+            request_path = "/" if artifact == "index.html" else f"/{artifact}"
+            with self.subTest(artifact=artifact):
+                endpoint = endpoints[request_path]
+                self.assertEqual(artifact, endpoint["artifact"])
+                self.assertEqual(
+                    package.REQUIRED_MIME_TYPES.get(
+                        Path(artifact).suffix, "text/plain; charset=utf-8"
+                    ),
+                    endpoint["content_type"],
+                )
+                self.assertEqual(["GET", "HEAD"], endpoint["methods"])
+                self.assertGreater(endpoint["bytes"], 0)
         self.assertEqual(
-            "application/wasm", endpoints["/chromium-wasm.wasm"]["content_type"]
+            {
+                "path": package_smoke.NOT_FOUND_PATH,
+                "bytes": len(package_smoke.NOT_FOUND_BODY),
+                "content_type": package_smoke.NOT_FOUND_CONTENT_TYPE,
+                "methods": ["GET", "HEAD"],
+            },
+            result["not_found"],
         )
-        self.assertEqual(
-            "application/json; charset=utf-8",
-            endpoints["/TOOLCHAIN.json"]["content_type"],
+
+    def test_static_package_delivery_rejects_substituted_response_facts(
+        self,
+    ) -> None:
+        snapshot = snapshot_package_tree(self._stage())
+
+        def with_body(
+            response: package_smoke.PackageEndpointResponse, body: bytes
+        ) -> package_smoke.PackageEndpointResponse:
+            return package_smoke.PackageEndpointResponse(
+                status=response.status,
+                headers=response.headers,
+                body=body,
+            )
+
+        def with_headers(
+            response: package_smoke.PackageEndpointResponse,
+            headers: dict[str, str | None],
+        ) -> package_smoke.PackageEndpointResponse:
+            return package_smoke.PackageEndpointResponse(
+                status=response.status,
+                headers=headers,
+                body=response.body,
+            )
+
+        leaked_artifacts = dict(snapshot.artifacts)
+        leaked_artifacts["README.txt"] = package_smoke.NOT_FOUND_BODY
+        leaked_snapshot = package_smoke.PackageTreeSnapshot(
+            artifacts=leaked_artifacts,
+            verification=snapshot.verification,
         )
+        cases: tuple[
+            tuple[
+                str,
+                package_smoke.PackageTreeSnapshot,
+                str,
+                str,
+                Callable[
+                    [package_smoke.PackageEndpointResponse],
+                    package_smoke.PackageEndpointResponse,
+                ],
+                str,
+            ],
+            ...,
+        ] = (
+            (
+                "GET artifact bytes",
+                snapshot,
+                "/chromium-wasm.js",
+                "GET",
+                lambda response: with_body(response, b"substituted-package-loader"),
+                "package endpoint bytes mismatch",
+            ),
+            (
+                "canonical content length",
+                snapshot,
+                "/chromium-wasm.wasm",
+                "GET",
+                lambda response: with_headers(
+                    response,
+                    {**response.headers, "Content-Length": "0"},
+                ),
+                "package endpoint header mismatch",
+            ),
+            (
+                "HEAD body",
+                snapshot,
+                "/",
+                "HEAD",
+                lambda response: with_body(response, b"unexpected-head-body"),
+                "package endpoint HEAD body is not empty",
+            ),
+            (
+                "not-found artifact leak",
+                leaked_snapshot,
+                package_smoke.NOT_FOUND_PATH,
+                "GET",
+                lambda response: response,
+                "package not-found endpoint leaked a staged artifact",
+            ),
+        )
+        for name, expected_snapshot, path, method, mutate, error in cases:
+            with self.subTest(name=name):
+                valid_delivery = self._valid_package_delivery(expected_snapshot)
+
+                def deliver(
+                    host: str,
+                    port: int,
+                    request_path: str,
+                    request_method: str,
+                ) -> package_smoke.PackageEndpointResponse:
+                    response = valid_delivery(host, port, request_path, request_method)
+                    if request_path == path and request_method == method:
+                        return mutate(response)
+                    return response
+
+                with mock.patch.object(
+                    package_smoke,
+                    "_fetch_package_response",
+                    side_effect=deliver,
+                ), self.assertRaisesRegex(M0Error, error):
+                    package_smoke._verify_static_package_delivery(
+                        "127.0.0.1", 32123, expected_snapshot
+                    )
 
     def test_release_host_is_not_an_m6_test_route(self) -> None:
         host = (REPO_ROOT / "tools/wasm/host/release_host.js").read_text(
