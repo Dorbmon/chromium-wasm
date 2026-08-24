@@ -44,6 +44,9 @@ V8_RUNTIME_RUNNER = (
 NODE_PASS_PREFIX = f"{SENTINEL}_NODE:PASS "
 NODE_FAIL_PREFIX = f"{SENTINEL}_NODE:FAIL "
 MAX_NODE_FAILURE_RECEIPT_BYTES = 1024
+EXPECTED_SEMANTIC_SUITE = (
+    "closures_classes_exceptions_proxy_typedarray_bigint_promises_microtasks"
+)
 GN_ASSIGNMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*) = (?P<value>.+)$"
 )
@@ -72,9 +75,10 @@ EXPECTED_NODE_RESULT = {
     "factoryCalls": 1,
     "onAbortCount": 0,
     "onExitCount": 1,
+    "semanticSuite": EXPECTED_SEMANTIC_SUITE,
     "status": "pass",
     "stderrLines": 0,
-    "stdoutLines": 20,
+    "stdoutLines": 22,
 }
 NODE_FAILURE_REQUIRED_KEYS = frozenset(
     {
@@ -293,13 +297,17 @@ def run_smoke(out_dir: Path, timeout_seconds: float) -> dict[str, object]:
         "m8GateComplete": False,
         "manifestKey": MANIFEST_KEY,
         "runtime": receipt,
-        "scope": "fixed-standalone-v8-arm32-simulator-liftoff-codegen-only",
+        "scope": (
+            "fixed-standalone-v8-arm32-simulator-liftoff-codegen-and-"
+            "bounded-javascript-semantics"
+        ),
         "status": "pass",
         "v8ProvenanceEstablished": False,
         "wasmBytes": wasm.stat().st_size,
         "limitations": [
             "does_not_run_chrome_or_blink",
             "does_not_run_webassembly_spec_or_js_api_suites",
+            "does_not_establish_broad_javascript_compatibility",
             "does_not_establish_immutable_v8_dependency_provenance",
             "does_not_complete_m8",
         ],

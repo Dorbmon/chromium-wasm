@@ -170,7 +170,8 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         receipt = smoke.validate_runtime_output(
             successful_runtime_output(module, wasm), "", module, wasm
         )
-        self.assertEqual(receipt["stdoutLines"], 20)
+        self.assertEqual(receipt["stdoutLines"], 22)
+        self.assertEqual(receipt["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE)
 
         malformed = successful_runtime_output(module, wasm).replace(
             '"onExitCount": 1', '"onExitCount": 2'
@@ -180,6 +181,13 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         with self.assertRaisesRegex(M0Error, "stderr"):
             smoke.validate_runtime_output(
                 successful_runtime_output(module, wasm), "unexpected", module, wasm
+            )
+        malformed_semantic_suite = successful_runtime_output(module, wasm).replace(
+            smoke.EXPECTED_SEMANTIC_SUITE, "different_semantic_suite"
+        )
+        with self.assertRaisesRegex(M0Error, "disagrees"):
+            smoke.validate_runtime_output(
+                malformed_semantic_suite, "", module, wasm
             )
 
     def test_bounded_failure_receipt_preserves_only_valid_node_detail(self) -> None:
@@ -222,6 +230,9 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertIs(result["m8GateComplete"], False)
         self.assertIs(result["v8ProvenanceEstablished"], False)
+        self.assertEqual(
+            result["runtime"]["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE
+        )
         command = run.call_args.args[0]
         self.assertEqual(command[0], str(node))
         self.assertEqual(command[1:5], [
