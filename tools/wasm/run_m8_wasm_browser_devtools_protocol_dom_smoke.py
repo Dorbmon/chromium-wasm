@@ -70,6 +70,21 @@ PAGE_JAVASCRIPT_SEMANTICS_SCOPE = (
 PAGE_JAVASCRIPT_SEMANTICS_SWITCH = (
     "--wasm-browser-m8-page-javascript-semantics-smoke"
 )
+PAGE_JAVASCRIPT_ASYNC_REJECTION_SENTINEL = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_ASYNC_REJECTION_DOM"
+)
+PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE = "page-javascript-async-rejection"
+PAGE_JAVASCRIPT_ASYNC_REJECTION_CASE = (
+    "browser_page_javascript_async_rejection_m8"
+)
+PAGE_JAVASCRIPT_ASYNC_REJECTION_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-javascript-async-rejection-catch-"
+    "finally-order-console-event-detach-close"
+)
+PAGE_JAVASCRIPT_ASYNC_REJECTION_SWITCH = (
+    "--wasm-browser-m8-page-javascript-async-rejection-smoke"
+)
 PAGE_WEBASSEMBLY_SENTINEL = "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_DOM"
 PAGE_WEBASSEMBLY_MODE = "page-webassembly"
 PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8"
@@ -302,6 +317,10 @@ PAGE_JAVASCRIPT_SEMANTICS_MARKER = (
     "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_SEMANTICS:"
     "CLOSURES_CLASSES_PROMISE_MICROTASKS_BIGINT_TYPED_ARRAYS_OK"
 )
+PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_ASYNC_REJECTION:"
+    "CATCH_FINALLY_ORDER_OK"
+)
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
 )
@@ -479,6 +498,17 @@ PAGE_JAVASCRIPT_SEMANTICS_LIMITATIONS = (
     "does_not_establish_v8_dependency_or_artifact_source_provenance",
     "does_not_claim_m8_compatibility_completion",
 )
+PAGE_JAVASCRIPT_ASYNC_REJECTION_LIMITATIONS = (
+    "only_exercises_one_fixed_page_javascript_async_rejection_catch_finally_"
+    "order_path",
+    "does_not_exercise_page_webassembly_or_browser_web_platform_apis",
+    "does_not_exercise_fulfilled_promise_microtask_chains_or_general_"
+    "rejection_handling",
+    "does_not_exercise_async_i_o_timers_workers_or_modules",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_establish_v8_dependency_or_artifact_source_provenance",
+    "does_not_claim_m8_compatibility_completion",
+)
 
 
 @dataclass(frozen=True)
@@ -551,6 +581,15 @@ def require_build_profile_for_smoke(
     profile: ChromeBuildProfile,
     smoke_config: DevToolsProtocolSmokeConfig,
 ) -> None:
+    if (
+        smoke_config == PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
+        and not profile.allows_page_webassembly_attempt
+    ):
+        raise M0Error(
+            "page-JavaScript async rejection mode requires --build-profile "
+            f"{M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE}; that profile is "
+            "experimental and does not complete M8"
+        )
     if (
         smoke_config == PAGE_JAVASCRIPT_SEMANTICS_SMOKE_CONFIG
         and not profile.allows_page_webassembly_attempt
@@ -660,6 +699,30 @@ PAGE_JAVASCRIPT_SEMANTICS_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
             "TypedArraysObserved",
             True,
         ),
+    ),
+)
+
+PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id=PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE,
+    query_mode=PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE,
+    sentinel=PAGE_JAVASCRIPT_ASYNC_REJECTION_SENTINEL,
+    case=PAGE_JAVASCRIPT_ASYNC_REJECTION_CASE,
+    scope=PAGE_JAVASCRIPT_ASYNC_REJECTION_SCOPE,
+    runtime_arguments=(PAGE_JAVASCRIPT_ASYNC_REJECTION_SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(),
+    limitations=PAGE_JAVASCRIPT_ASYNC_REJECTION_LIMITATIONS,
+    ordinary_javascript_expectations=(
+        ("v8ProvenanceEstablished", False),
+        ("pageJavaScriptAsyncRejectionCatchFinallyOrderObserved", True),
     ),
 )
 
@@ -1242,6 +1305,16 @@ def smoke_config_for_page_javascript_semantics(
     )
 
 
+def smoke_config_for_page_javascript_async_rejection(
+    page_javascript_async_rejection: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
+        if page_javascript_async_rejection
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
 def smoke_config_for_page_webassembly_memory(
     page_webassembly_memory: bool,
 ) -> DevToolsProtocolSmokeConfig:
@@ -1356,6 +1429,7 @@ def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> No
     if smoke_config not in (
         DEFAULT_SMOKE_CONFIG,
         PAGE_JAVASCRIPT_SEMANTICS_SMOKE_CONFIG,
+        PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG,
@@ -1649,6 +1723,8 @@ def _require_unique_ordered_markers(
         raise M0Error("DevTools protocol native smoke emitted a failure marker")
     if smoke_config == PAGE_JAVASCRIPT_SEMANTICS_SMOKE_CONFIG:
         runtime_marker = PAGE_JAVASCRIPT_SEMANTICS_MARKER
+    elif smoke_config == PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG:
+        runtime_marker = PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_SMOKE_CONFIG:
         runtime_marker = PAGE_WEBASSEMBLY_ADD42_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG:
@@ -1841,6 +1917,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--page-javascript-async-rejection",
+        action="store_true",
+        help=(
+            "run the fixed native page-JavaScript async rejection/catch/"
+            "finally ordering DevTools smoke"
+        ),
+    )
+    parser.add_argument(
         "--page-webassembly",
         action="store_true",
         help=(
@@ -1944,6 +2028,7 @@ def main() -> int:
         parser.error("--module-name must contain only ASCII letters, digits, or _")
     if (
         int(args.page_javascript_semantics)
+        + int(args.page_javascript_async_rejection)
         + int(args.page_webassembly)
         + int(args.page_webassembly_memory)
         + int(args.page_webassembly_table)
@@ -1959,7 +2044,8 @@ def main() -> int:
         > 1
     ):
         parser.error(
-            "--page-javascript-semantics, --page-webassembly, "
+            "--page-javascript-semantics, --page-javascript-async-rejection, "
+            "--page-webassembly, "
             "--page-webassembly-memory, "
             "--page-webassembly-table, --page-webassembly-memory-growth, and "
             "--page-webassembly-table-growth, --page-webassembly-exceptions, "
@@ -1970,41 +2056,45 @@ def main() -> int:
             "--page-webassembly-instantiate-streaming are mutually exclusive"
         )
     smoke_config = (
-        smoke_config_for_page_javascript_semantics(True)
-        if args.page_javascript_semantics
+        smoke_config_for_page_javascript_async_rejection(True)
+        if args.page_javascript_async_rejection
         else (
-            smoke_config_for_page_webassembly_instantiate_streaming(True)
-            if args.page_webassembly_instantiate_streaming
+            smoke_config_for_page_javascript_semantics(True)
+            if args.page_javascript_semantics
             else (
-                smoke_config_for_page_webassembly_js_throw_payload(True)
-                if args.page_webassembly_js_throw_payload
+                smoke_config_for_page_webassembly_instantiate_streaming(True)
+                if args.page_webassembly_instantiate_streaming
                 else (
-                    smoke_config_for_page_webassembly_wasm_throw_payload(True)
-                    if args.page_webassembly_wasm_throw_payload
+                    smoke_config_for_page_webassembly_js_throw_payload(True)
+                    if args.page_webassembly_js_throw_payload
                     else (
-                        smoke_config_for_page_webassembly_wasm_throw(True)
-                        if args.page_webassembly_wasm_throw
+                        smoke_config_for_page_webassembly_wasm_throw_payload(True)
+                        if args.page_webassembly_wasm_throw_payload
                         else (
-                            smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
-                            if args.page_webassembly_wasm_memory_grow_opcode
+                            smoke_config_for_page_webassembly_wasm_throw(True)
+                            if args.page_webassembly_wasm_throw
                             else (
-                                smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
-                                if args.page_webassembly_wasm_table_grow_opcode
+                                smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
+                                if args.page_webassembly_wasm_memory_grow_opcode
                                 else (
-                                    smoke_config_for_page_webassembly_exceptions(True)
-                                    if args.page_webassembly_exceptions
+                                    smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
+                                    if args.page_webassembly_wasm_table_grow_opcode
                                     else (
-                                        smoke_config_for_page_webassembly_table_growth(True)
-                                        if args.page_webassembly_table_growth
+                                        smoke_config_for_page_webassembly_exceptions(True)
+                                        if args.page_webassembly_exceptions
                                         else (
-                                            smoke_config_for_page_webassembly_memory_growth(True)
-                                            if args.page_webassembly_memory_growth
+                                            smoke_config_for_page_webassembly_table_growth(True)
+                                            if args.page_webassembly_table_growth
                                             else (
-                                                smoke_config_for_page_webassembly_table(True)
-                                                if args.page_webassembly_table
-                                                else smoke_config_for_page_webassembly(
-                                                    args.page_webassembly,
-                                                    args.page_webassembly_memory,
+                                                smoke_config_for_page_webassembly_memory_growth(True)
+                                                if args.page_webassembly_memory_growth
+                                                else (
+                                                    smoke_config_for_page_webassembly_table(True)
+                                                    if args.page_webassembly_table
+                                                    else smoke_config_for_page_webassembly(
+                                                        args.page_webassembly,
+                                                        args.page_webassembly_memory,
+                                                    )
                                                 )
                                             )
                                         )

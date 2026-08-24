@@ -19,6 +19,15 @@ const PAGE_JAVASCRIPT_SEMANTICS_SCOPE =
     "microtasks-bigint-typed-arrays-console-event-detach-close";
 const PAGE_JAVASCRIPT_SEMANTICS_SWITCH =
     "--wasm-browser-m8-page-javascript-semantics-smoke";
+const PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE = "page-javascript-async-rejection";
+const PAGE_JAVASCRIPT_ASYNC_REJECTION_CASE =
+    "browser_page_javascript_async_rejection_m8";
+const PAGE_JAVASCRIPT_ASYNC_REJECTION_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-javascript-async-rejection-catch-" +
+    "finally-order-console-event-detach-close";
+const PAGE_JAVASCRIPT_ASYNC_REJECTION_SWITCH =
+    "--wasm-browser-m8-page-javascript-async-rejection-smoke";
 const PAGE_WEBASSEMBLY_MODE = "page-webassembly";
 const PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8";
 const PAGE_WEBASSEMBLY_SCOPE =
@@ -146,6 +155,9 @@ const PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER =
 const PAGE_JAVASCRIPT_SEMANTICS_MARKER =
     "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_SEMANTICS:" +
     "CLOSURES_CLASSES_PROMISE_MICROTASKS_BIGINT_TYPED_ARRAYS_OK";
+const PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_ASYNC_REJECTION:" +
+    "CATCH_FINALLY_ORDER_OK";
 const PAGE_WEBASSEMBLY_ADD42_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
@@ -234,6 +246,28 @@ const PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE = Object.freeze({
     RUNTIME_ENABLE_MARKER,
     RUNTIME_EVALUATE_MARKER,
     PAGE_JAVASCRIPT_SEMANTICS_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE = Object.freeze({
+  id: PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE,
+  queryMode: PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE,
+  case: PAGE_JAVASCRIPT_ASYNC_REJECTION_CASE,
+  scope: PAGE_JAVASCRIPT_ASYNC_REJECTION_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_JAVASCRIPT_ASYNC_REJECTION_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({}),
+  ordinaryJavaScriptExpectations: Object.freeze({
+    v8ProvenanceEstablished: false,
+    pageJavaScriptAsyncRejectionCatchFinallyOrderObserved: true,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
@@ -733,6 +767,7 @@ function markerIndex(records, marker) {
 function isKnownSmokeMode(smokeMode) {
   return smokeMode === DEFAULT_SMOKE_MODE ||
       smokeMode === PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE ||
+      smokeMode === PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ||
@@ -817,6 +852,8 @@ function validateResult(result, smokeMode) {
   }
   const runtimeMarker = smokeMode === PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE ?
       PAGE_JAVASCRIPT_SEMANTICS_MARKER :
+      smokeMode === PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE ?
+      PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_ADD42_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ?
@@ -901,6 +938,7 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #runtimeEvaluateObserved = false;
   #pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved =
       false;
+  #pageJavaScriptAsyncRejectionCatchFinallyOrderObserved = false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
   #pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed =
@@ -987,6 +1025,9 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     if (text.includes(PAGE_JAVASCRIPT_SEMANTICS_MARKER)) {
       this.#pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved =
           true;
+    }
+    if (text.includes(PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER)) {
+      this.#pageJavaScriptAsyncRejectionCatchFinallyOrderObserved = true;
     }
     if (text.includes(PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER)) {
       this.#pageWebAssemblyUnavailableObserved = true;
@@ -1165,6 +1206,13 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
         v8ProvenanceEstablished: false,
         pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved:
             this.#pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved,
+      };
+    } else if (this.#smokeMode ===
+               PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE) {
+      pageRuntimeResult = {
+        v8ProvenanceEstablished: false,
+        pageJavaScriptAsyncRejectionCatchFinallyOrderObserved:
+            this.#pageJavaScriptAsyncRejectionCatchFinallyOrderObserved,
       };
     } else {
       pageRuntimeResult = {
@@ -1355,6 +1403,9 @@ export function parseDevToolsProtocolSmokeQuery(query) {
   } else if (modes.length === 1 &&
              modes[0] === PAGE_JAVASCRIPT_SEMANTICS_MODE) {
     smokeMode = PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE;
+  } else if (modes.length === 1 &&
+             modes[0] === PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE) {
+    smokeMode = PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MEMORY_MODE) {
@@ -1413,6 +1464,7 @@ async function fetchExpectedSmokeMode(token) {
       !Object.hasOwn(binding, "mode") || Object.keys(binding).length !== 2 ||
       (binding.mode !== DEFAULT_SMOKE_MODE.id &&
        binding.mode !== PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE.id &&
+       binding.mode !== PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE.id &&

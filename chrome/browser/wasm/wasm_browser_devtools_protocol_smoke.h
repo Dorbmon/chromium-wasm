@@ -30,6 +30,7 @@ namespace chrome {
 enum class WasmBrowserDevToolsProtocolSmokeMode {
   kPageWebAssemblyUnavailable,
   kOrdinaryJavaScriptSemantics,
+  kOrdinaryJavaScriptAsyncRejection,
   kValidateModuleInstanceAdd42,
   kMemoryImportReadWrite,
   kTableImportIndirectCall,

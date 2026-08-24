@@ -107,6 +107,8 @@ constexpr char kWasmBrowserDevToolsProtocolSmokeSwitch[] =
     "wasm-browser-devtools-protocol-smoke";
 constexpr char kWasmBrowserM8PageJavaScriptSemanticsSmokeSwitch[] =
     "wasm-browser-m8-page-javascript-semantics-smoke";
+constexpr char kWasmBrowserM8PageJavaScriptAsyncRejectionSmokeSwitch[] =
+    "wasm-browser-m8-page-javascript-async-rejection-smoke";
 constexpr char kWasmBrowserM8PageWebAssemblySmokeSwitch[] =
     "wasm-browser-m8-page-webassembly-smoke";
 constexpr char kWasmBrowserM8PageWebAssemblyMemorySmokeSwitch[] =
@@ -543,6 +545,9 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   const bool browser_m8_page_javascript_semantics_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserM8PageJavaScriptSemanticsSmokeSwitch);
+  const bool browser_m8_page_javascript_async_rejection_smoke =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM8PageJavaScriptAsyncRejectionSmokeSwitch);
   const bool browser_m8_page_webassembly_smoke =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserM8PageWebAssemblySmokeSwitch);
@@ -629,6 +634,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   if (browser_lifecycle_smoke || browser_m9_repeating_timer_smoke ||
       browser_devtools_protocol_smoke ||
       browser_m8_page_javascript_semantics_smoke ||
+      browser_m8_page_javascript_async_rejection_smoke ||
       browser_m8_page_webassembly_smoke ||
       browser_m8_page_webassembly_memory_smoke ||
       browser_m8_page_webassembly_table_smoke ||
@@ -657,6 +663,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                  static_cast<int>(browser_devtools_protocol_smoke) +
                  static_cast<int>(
                      browser_m8_page_javascript_semantics_smoke) +
+                 static_cast<int>(
+                     browser_m8_page_javascript_async_rejection_smoke) +
                  static_cast<int>(browser_m8_page_webassembly_smoke) +
                  static_cast<int>(browser_m8_page_webassembly_memory_smoke) +
                  static_cast<int>(browser_m8_page_webassembly_table_smoke) +
@@ -937,6 +945,11 @@ void WasmBrowserMainParts::OnBrowserLifecycleSmokeShutdownTimer() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kWasmBrowserM8PageJavaScriptSemanticsSmokeSwitch)) {
     browser_lifecycle_->StartPageJavaScriptSemanticsDevToolsProtocolSmoke();
+    return;
+  }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kWasmBrowserM8PageJavaScriptAsyncRejectionSmokeSwitch)) {
+    browser_lifecycle_->StartPageJavaScriptAsyncRejectionDevToolsProtocolSmoke();
     return;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
