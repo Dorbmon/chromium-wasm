@@ -25,6 +25,7 @@ from typing import Any
 from m0_common import (
     M0Error,
     REPO_ROOT,
+    checked_output,
     gn_args_text,
     load_manifest,
     parse_timeout,
@@ -41,13 +42,15 @@ MODULE_NAME = "wasm_v8_arm32_wasm_codegen_smoke.js"
 V8_RUNTIME_RUNNER = (
     REPO_ROOT / "v8/tools/wasm/run-arm32-wasm-codegen-smoke.mjs"
 )
+V8_SOURCE_DIR = REPO_ROOT / "v8"
+EXPECTED_NESTED_V8_COMMIT = "78fdd99b2b233919eed917e3c82a7de4aac5295f"
 NODE_PASS_PREFIX = f"{SENTINEL}_NODE:PASS "
 NODE_FAIL_PREFIX = f"{SENTINEL}_NODE:FAIL "
 MAX_NODE_FAILURE_RECEIPT_BYTES = 1024
 EXPECTED_SEMANTIC_SUITE = (
     "closures_classes_exceptions_proxy_typedarray_bigint_promises_microtasks"
 )
-EXPECTED_TEST262_PROFILE = "pinned_20_case_37_execution_profile"
+EXPECTED_TEST262_PROFILE = "pinned_27_case_51_execution_profile"
 GN_ASSIGNMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*) = (?P<value>.+)$"
 )
@@ -79,10 +82,10 @@ EXPECTED_NODE_RESULT = {
     "semanticSuite": EXPECTED_SEMANTIC_SUITE,
     "status": "pass",
     "stderrLines": 0,
-    "test262Cases": 20,
-    "test262Executions": 37,
+    "test262Cases": 27,
+    "test262Executions": 51,
     "test262Profile": EXPECTED_TEST262_PROFILE,
-    "stdoutLines": 61,
+    "stdoutLines": 75,
 }
 NODE_FAILURE_REQUIRED_KEYS = frozenset(
     {
@@ -146,6 +149,18 @@ def resolve_out_dir(out_dir: Path) -> Path:
     if not resolved.is_dir():
         raise M0Error("the standalone V8 codegen output directory does not exist")
     return resolved
+
+
+def verify_nested_v8_commit() -> str:
+    """Bind the fixed standalone receipt to the checked-out V8 source commit."""
+
+    commit = checked_output(["git", "rev-parse", "HEAD"], cwd=V8_SOURCE_DIR)
+    if commit != EXPECTED_NESTED_V8_COMMIT:
+        raise M0Error(
+            "standalone V8 codegen checkout does not match the fixed nested "
+            "V8 commit"
+        )
+    return commit
 
 
 def verify_profile_binding(
@@ -264,6 +279,7 @@ def run_smoke(out_dir: Path, timeout_seconds: float) -> dict[str, object]:
 
     manifest = load_manifest()
     module, wasm = verify_profile_binding(manifest, out_dir)
+    nested_v8_commit = verify_nested_v8_commit()
     node = node_executable(manifest)
     if not node.is_file():
         raise M0Error("the pinned Node executable is not installed")
@@ -300,6 +316,7 @@ def run_smoke(out_dir: Path, timeout_seconds: float) -> dict[str, object]:
         "elapsedMs": round((time.perf_counter() - started) * 1000, 3),
         "m8GateComplete": False,
         "manifestKey": MANIFEST_KEY,
+        "nestedV8Commit": nested_v8_commit,
         "runtime": receipt,
         "scope": (
             "fixed-standalone-v8-arm32-simulator-liftoff-codegen-and-"

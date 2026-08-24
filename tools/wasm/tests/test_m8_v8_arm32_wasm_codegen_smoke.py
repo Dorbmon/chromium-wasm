@@ -146,6 +146,27 @@ class M8V8Arm32CodegenProfileTest(unittest.TestCase):
 
 
 class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
+    def test_nested_v8_commit_is_fixed_to_the_full_receipt_source(self) -> None:
+        self.assertEqual(
+            smoke.EXPECTED_NESTED_V8_COMMIT,
+            "78fdd99b2b233919eed917e3c82a7de4aac5295f",
+        )
+        with mock.patch.object(
+            smoke,
+            "checked_output",
+            return_value=smoke.EXPECTED_NESTED_V8_COMMIT,
+        ) as checked_output:
+            self.assertEqual(
+                smoke.verify_nested_v8_commit(),
+                smoke.EXPECTED_NESTED_V8_COMMIT,
+            )
+        checked_output.assert_called_once_with(
+            ["git", "rev-parse", "HEAD"], cwd=smoke.V8_SOURCE_DIR
+        )
+        with mock.patch.object(smoke, "checked_output", return_value="0" * 40):
+            with self.assertRaisesRegex(M0Error, "fixed nested V8 commit"):
+                smoke.verify_nested_v8_commit()
+
     def test_runner_command_is_fixed_to_the_nested_v8_contract(self) -> None:
         command = smoke.runner_command(
             Path("/toolchain/node"), Path("/out/module.js"), 120_000
@@ -170,10 +191,10 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         receipt = smoke.validate_runtime_output(
             successful_runtime_output(module, wasm), "", module, wasm
         )
-        self.assertEqual(receipt["stdoutLines"], 61)
+        self.assertEqual(receipt["stdoutLines"], 75)
         self.assertEqual(receipt["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE)
-        self.assertEqual(receipt["test262Cases"], 20)
-        self.assertEqual(receipt["test262Executions"], 37)
+        self.assertEqual(receipt["test262Cases"], 27)
+        self.assertEqual(receipt["test262Executions"], 51)
         self.assertEqual(receipt["test262Profile"], smoke.EXPECTED_TEST262_PROFILE)
 
         malformed = successful_runtime_output(module, wasm).replace(
@@ -233,6 +254,11 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
             )
             with (
                 mock.patch.object(smoke, "node_executable", return_value=node),
+                mock.patch.object(
+                    smoke,
+                    "verify_nested_v8_commit",
+                    return_value=smoke.EXPECTED_NESTED_V8_COMMIT,
+                ) as verify_nested_v8_commit,
                 mock.patch.object(smoke.subprocess, "run", return_value=completed) as run,
             ):
                 result = smoke.run_smoke(out_dir, 120.0)
@@ -241,10 +267,14 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         self.assertIs(result["m8GateComplete"], False)
         self.assertIs(result["v8ProvenanceEstablished"], False)
         self.assertEqual(
+            result["nestedV8Commit"], smoke.EXPECTED_NESTED_V8_COMMIT
+        )
+        verify_nested_v8_commit.assert_called_once_with()
+        self.assertEqual(
             result["runtime"]["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE
         )
-        self.assertEqual(result["runtime"]["test262Cases"], 20)
-        self.assertEqual(result["runtime"]["test262Executions"], 37)
+        self.assertEqual(result["runtime"]["test262Cases"], 27)
+        self.assertEqual(result["runtime"]["test262Executions"], 51)
         self.assertEqual(
             result["runtime"]["test262Profile"], smoke.EXPECTED_TEST262_PROFILE
         )
@@ -273,6 +303,11 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
             )
             with (
                 mock.patch.object(smoke, "node_executable", return_value=node),
+                mock.patch.object(
+                    smoke,
+                    "verify_nested_v8_commit",
+                    return_value=smoke.EXPECTED_NESTED_V8_COMMIT,
+                ),
                 mock.patch.object(smoke.subprocess, "run", return_value=completed),
             ):
                 with self.assertRaisesRegex(
