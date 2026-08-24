@@ -173,6 +173,12 @@ class WasmBrowserLifecycle final {
   // exceptions, or threads.
   void StartPageWebAssemblyWasmMemoryGrowOpcodeDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that imports one zero-payload
+  // tag, executes Wasm throw, and validates the escaping exception in
+  // JavaScript against that tag. It does not exercise payloads, Wasm-internal
+  // catches, rethrow, catch-all, throw_ref, tables, memories, or threads.
+  void StartPageWebAssemblyWasmThrowDevToolsProtocolSmoke();
+
   // Starts the test-only fixed WebContents AX snapshot proof. It takes one
   // snapshot and permits only its fixed static semantic text into the passive
   // host mirror; it is not an interactive accessibility bridge.
