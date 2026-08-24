@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 
@@ -18,7 +20,7 @@ import unittest
 TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 
-from m0_common import M0Error
+from m0_common import M0Error, gn_args_text
 import run_m8_wasm_browser_devtools_protocol_dom_smoke as smoke
 from tools.wasm.tests.m3_source_contract_test_support import source
 
@@ -77,6 +79,101 @@ def successful_result() -> dict[str, object]:
 
 
 class M8WasmBrowserDevToolsProtocolDomSmokeTest(unittest.TestCase):
+    def test_build_profiles_keep_m6_default_and_make_codegen_opt_in(self) -> None:
+        m6 = smoke.chrome_build_profile(smoke.M6_CHROME_BUILD_PROFILE)
+        codegen = smoke.chrome_build_profile(
+            smoke.M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE
+        )
+
+        self.assertEqual(m6.manifest_key, "m6_chrome_gn_args")
+        self.assertEqual(m6.default_out_dir, Path("out/wasm-chrome-m6"))
+        self.assertFalse(m6.experimental)
+        self.assertFalse(m6.allows_page_webassembly_attempt)
+        self.assertEqual(
+            smoke.resolve_build_out_dir(m6, None),
+            smoke.REPO_ROOT / "out/wasm-chrome-m6",
+        )
+
+        self.assertEqual(
+            codegen.manifest_key, "m8_chrome_codegen_experiment_gn_args"
+        )
+        self.assertEqual(
+            codegen.default_out_dir,
+            Path("out/wasm-chrome-m8-codegen-experiment"),
+        )
+        self.assertTrue(codegen.experimental)
+        self.assertTrue(codegen.allows_page_webassembly_attempt)
+        self.assertEqual(
+            smoke.resolve_build_out_dir(codegen, Path("out/custom")),
+            smoke.REPO_ROOT / "out/custom",
+        )
+        with self.assertRaisesRegex(M0Error, "unknown Chrome build profile"):
+            smoke.chrome_build_profile("unknown")
+
+    def test_page_webassembly_requires_the_experimental_codegen_profile(
+        self,
+    ) -> None:
+        m6 = smoke.chrome_build_profile(smoke.M6_CHROME_BUILD_PROFILE)
+        codegen = smoke.chrome_build_profile(
+            smoke.M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE
+        )
+        smoke.require_build_profile_for_smoke(
+            m6, smoke.DEFAULT_SMOKE_CONFIG
+        )
+        with self.assertRaisesRegex(
+            M0Error,
+            "page-WebAssembly modes require --build-profile "
+            "m8-codegen-experiment",
+        ):
+            smoke.require_build_profile_for_smoke(
+                m6, smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG
+            )
+        smoke.require_build_profile_for_smoke(
+            codegen, smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG
+        )
+
+    def test_build_profile_binds_args_gn_to_the_manifest(self) -> None:
+        manifest = {
+            "m6_chrome_gn_args": ["v8_jitless = true"],
+            "m8_chrome_codegen_experiment_gn_args": [
+                "v8_jitless = false"
+            ],
+        }
+        profile = smoke.chrome_build_profile(
+            smoke.M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE
+        )
+        expected_args = gn_args_text(manifest, profile.manifest_key).encode(
+            "utf-8"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            out_dir = Path(temporary_directory)
+            (out_dir / "args.gn").write_bytes(expected_args)
+            record = smoke.verify_build_profile(out_dir, manifest, profile)
+            self.assertEqual(
+                record,
+                {
+                    "name": "m8-codegen-experiment",
+                    "manifest_key": "m8_chrome_codegen_experiment_gn_args",
+                    "experimental": True,
+                    "allows_page_webassembly_attempt": True,
+                    "m8_gate_complete": False,
+                    "args_gn": {
+                        "bytes": len(expected_args),
+                        "sha256": hashlib.sha256(expected_args).hexdigest(),
+                    },
+                },
+            )
+
+            (out_dir / "args.gn").write_text(
+                gn_args_text(manifest, "m6_chrome_gn_args"), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                M0Error,
+                "selected build args do not exactly match the "
+                "m8_chrome_codegen_experiment_gn_args manifest profile",
+            ):
+                smoke.verify_build_profile(out_dir, manifest, profile)
+
     def test_accepts_fixed_native_devtools_exchange(self) -> None:
         smoke.validate_result(successful_result(), expected_versions=VERSIONS)
 

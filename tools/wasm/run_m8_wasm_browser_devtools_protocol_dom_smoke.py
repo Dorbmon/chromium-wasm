@@ -39,6 +39,7 @@ from m0_common import (
     M0Error,
     REPO_ROOT,
     checked_output,
+    gn_args_text,
     load_manifest,
     parse_timeout,
     print_context,
@@ -291,6 +292,7 @@ HOST_ROOT = "/__m8_browser_devtools_protocol__"
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 MAX_RESULT_BYTES = 1024 * 1024
 MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
+MAX_GN_ARGS_BYTES = 1024 * 1024
 ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
 LIMITATIONS = (
     "does_not_enable_or_exercise_page_webassembly",
@@ -466,6 +468,107 @@ class DevToolsProtocolSmokeConfig:
     native_markers: tuple[str, ...]
     page_webassembly_expectations: tuple[tuple[str, object], ...]
     limitations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ChromeBuildProfile:
+    """One exact Chrome build configuration accepted by this runner."""
+
+    name: str
+    manifest_key: str
+    default_out_dir: Path
+    experimental: bool
+    allows_page_webassembly_attempt: bool
+
+
+M6_CHROME_BUILD_PROFILE = "m6"
+M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE = "m8-codegen-experiment"
+CHROME_BUILD_PROFILES = {
+    M6_CHROME_BUILD_PROFILE: ChromeBuildProfile(
+        name=M6_CHROME_BUILD_PROFILE,
+        manifest_key="m6_chrome_gn_args",
+        default_out_dir=Path("out/wasm-chrome-m6"),
+        experimental=False,
+        allows_page_webassembly_attempt=False,
+    ),
+    M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE: ChromeBuildProfile(
+        name=M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE,
+        manifest_key="m8_chrome_codegen_experiment_gn_args",
+        default_out_dir=Path("out/wasm-chrome-m8-codegen-experiment"),
+        experimental=True,
+        allows_page_webassembly_attempt=True,
+    ),
+}
+
+
+def chrome_build_profile(name: str) -> ChromeBuildProfile:
+    try:
+        return CHROME_BUILD_PROFILES[name]
+    except KeyError as exc:
+        raise M0Error(f"unknown Chrome build profile: {name}") from exc
+
+
+def resolve_build_out_dir(
+    profile: ChromeBuildProfile, requested_out_dir: Path | None
+) -> Path:
+    out_dir = requested_out_dir or profile.default_out_dir
+    return out_dir if out_dir.is_absolute() else REPO_ROOT / out_dir
+
+
+def require_build_profile_for_smoke(
+    profile: ChromeBuildProfile,
+    smoke_config: DevToolsProtocolSmokeConfig,
+) -> None:
+    if (
+        smoke_config.query_mode is not None
+        and not profile.allows_page_webassembly_attempt
+    ):
+        raise M0Error(
+            "page-WebAssembly modes require --build-profile "
+            f"{M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE}; that profile is "
+            "experimental and does not complete M8"
+        )
+
+
+def verify_build_profile(
+    out_dir: Path,
+    manifest: dict[str, Any],
+    profile: ChromeBuildProfile,
+) -> dict[str, object]:
+    """Bind the served Chrome artifacts to one exact manifest GN profile."""
+
+    try:
+        expected_args = gn_args_text(manifest, profile.manifest_key).encode(
+            "utf-8"
+        )
+    except (KeyError, TypeError, ValueError, UnicodeError) as exc:
+        raise M0Error(
+            f"{profile.name} manifest GN arguments are invalid"
+        ) from exc
+    if not expected_args or len(expected_args) > MAX_GN_ARGS_BYTES:
+        raise M0Error(f"{profile.name} manifest GN arguments are invalid")
+
+    actual_args = snapshot_regular_files(
+        out_dir,
+        ("args.gn",),
+        maximum_bytes=MAX_GN_ARGS_BYTES,
+        description="DevTools protocol selected build GN args",
+    )["args.gn"]
+    if actual_args != expected_args:
+        raise M0Error(
+            "selected build args do not exactly match the "
+            f"{profile.manifest_key} manifest profile"
+        )
+    return {
+        "name": profile.name,
+        "manifest_key": profile.manifest_key,
+        "experimental": profile.experimental,
+        "allows_page_webassembly_attempt": (
+            profile.allows_page_webassembly_attempt
+        ),
+        "m8_gate_complete": False,
+        "args_gn": _byte_identity(actual_args),
+    }
 
 
 DEFAULT_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
@@ -1620,7 +1723,16 @@ def main() -> int:
         description="Run the fixed in-process DevTools protocol smoke in a browser."
     )
     parser.add_argument("--browser", type=Path)
-    parser.add_argument("--out-dir", type=Path, default=Path("out/wasm-chrome-m6"))
+    parser.add_argument(
+        "--build-profile",
+        choices=tuple(CHROME_BUILD_PROFILES),
+        default=M6_CHROME_BUILD_PROFILE,
+        help=(
+            "select the exact manifest-backed Chrome build profile; "
+            "m8-codegen-experiment is not an M8 completion gate"
+        ),
+    )
+    parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--module-name", default="chrome_wasm")
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
@@ -1796,7 +1908,13 @@ def main() -> int:
         )
     )
 
-    out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
+    build_profile = chrome_build_profile(args.build_profile)
+    try:
+        require_build_profile_for_smoke(build_profile, smoke_config)
+    except M0Error as exc:
+        parser.error(str(exc))
+
+    out_dir = resolve_build_out_dir(build_profile, args.out_dir)
     diagnostics_dir = args.diagnostics_dir or out_dir / "diagnostics"
     if not diagnostics_dir.is_absolute():
         diagnostics_dir = REPO_ROOT / diagnostics_dir
@@ -1812,10 +1930,14 @@ def main() -> int:
     stage = "check_artifacts"
 
     try:
-        stage = "check_boundary"
-        check_boundary(out_dir)
         stage = "load_manifest"
         manifest = load_manifest()
+        stage = "verify_build_profile"
+        build_profile_record = verify_build_profile(
+            out_dir, manifest, build_profile
+        )
+        stage = "check_boundary"
+        check_boundary(out_dir)
         versions = manifest_versions(
             manifest, checked_output(["git", "rev-parse", "HEAD"])
         )
@@ -1824,7 +1946,8 @@ def main() -> int:
             manifest,
             case=smoke_config.case,
             scope=smoke_config.scope,
-            gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
+            gn_args=manifest[build_profile.manifest_key],
+            build_profile=build_profile_record,
             module_name=args.module_name,
             host_browser_sandbox=not args.no_sandbox,
             artifact_delivery=ARTIFACT_DELIVERY,
