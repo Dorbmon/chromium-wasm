@@ -130,7 +130,11 @@ class M9PackageNormalLifecycleSmokeTest(unittest.TestCase):
                 + json.dumps(result or _passing_child_result(), sort_keys=True)
                 + "\n"
             ),
-            stderr=f"{normal_lifecycle.READY_MARKER}\n{normal_lifecycle.PASS_MARKER}\n",
+            stderr=(
+                f"{normal_lifecycle.DEFAULT_STORAGE_PARTITION_RECEIPT}\n"
+                f"{normal_lifecycle.READY_MARKER}\n"
+                f"{normal_lifecycle.PASS_MARKER}\n"
+            ),
         )
 
     def _result_for(

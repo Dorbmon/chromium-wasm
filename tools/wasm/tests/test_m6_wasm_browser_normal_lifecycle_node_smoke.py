@@ -49,6 +49,16 @@ def _passing_result() -> dict[str, object]:
     }
 
 
+def _passing_lifecycle_output() -> str:
+    return "\n".join(
+        (
+            runner.DEFAULT_STORAGE_PARTITION_RECEIPT,
+            runner.READY_MARKER,
+            runner.PASS_MARKER,
+        )
+    )
+
+
 class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
     def test_snapshot_run_version_identity_uses_one_manifest_and_head_observation(
         self,
@@ -115,7 +125,7 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
                     + json.dumps(_passing_result(), sort_keys=True)
                     + "\n"
                 ),
-                stderr=f"{runner.READY_MARKER}\n{runner.PASS_MARKER}\n",
+                stderr=_passing_lifecycle_output() + "\n",
             )
             stdout = io.StringIO()
             with (
@@ -178,7 +188,7 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
 
     def test_validate_result_requires_visible_lifecycle_and_one_shot_shutdown(self) -> None:
         result = _passing_result()
-        output = f"{runner.READY_MARKER}\n{runner.PASS_MARKER}"
+        output = _passing_lifecycle_output()
         runner.validate_result(result, output)
 
         for key, value, fragment in (
@@ -193,9 +203,43 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, fragment):
                     runner.validate_result(invalid, output)
 
+    def test_validate_result_requires_one_early_default_partition_receipt(
+        self,
+    ) -> None:
+        result = _passing_result()
+        output = _passing_lifecycle_output()
+
+        for name, invalid_output, fragment in (
+            (
+                "missing",
+                output.replace(runner.DEFAULT_STORAGE_PARTITION_RECEIPT + "\n", ""),
+                "receipt is missing or repeated",
+            ),
+            (
+                "repeated",
+                runner.DEFAULT_STORAGE_PARTITION_RECEIPT + "\n" + output,
+                "receipt is missing or repeated",
+            ),
+            (
+                "late",
+                "\n".join(
+                    (
+                        runner.READY_MARKER,
+                        runner.DEFAULT_STORAGE_PARTITION_RECEIPT,
+                        runner.PASS_MARKER,
+                    )
+                ),
+                "before the normal ready marker",
+            ),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                M0Error, fragment
+            ):
+                runner.validate_result(result, invalid_output)
+
     def test_validate_result_rejects_undrained_volatile_profile_stores(self) -> None:
         result = _passing_result()
-        base_output = f"{runner.READY_MARKER}\n{runner.PASS_MARKER}"
+        base_output = _passing_lifecycle_output()
         for diagnostic in runner.UNDRAINED_VOLATILE_PROFILE_DIAGNOSTICS:
             with self.subTest(diagnostic=diagnostic):
                 with self.assertRaisesRegex(
@@ -206,7 +250,7 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
     def test_validate_result_rejects_network_change_notifier_stub(self) -> None:
         result = _passing_result()
         output = (
-            f"{runner.READY_MARKER}\n{runner.PASS_MARKER}\n"
+            f"{_passing_lifecycle_output()}\n"
             "Not implemented reached in std::unique_ptr<net::NetworkChangeNotifier> "
             "net::NetworkChangeNotifier::CreateIfNeeded()."
         )
@@ -216,7 +260,7 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
     def test_validate_result_rejects_browser_modeless_host_stub(self) -> None:
         result = _passing_result()
         output = (
-            f"{runner.READY_MARKER}\n{runner.PASS_MARKER}\n"
+            f"{_passing_lifecycle_output()}\n"
             "Not implemented reached in virtual void "
             "views::DesktopWindowTreeHostPlatform::InitModalType("
             "ui::mojom::ModalType)."

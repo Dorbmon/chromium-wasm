@@ -61,6 +61,14 @@ _VERSION_IDENTITY_FIELDS = frozenset(("chromium", "v8", "emscripten", "port"))
 ARTIFACT_DELIVERY = "private-temporary-file-snapshot"
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
 
+# This fixed, path-free line is a runtime observation of the normal initial
+# StoragePartition only. It does not establish M7 completion, durability, or
+# source/artifact provenance.
+DEFAULT_STORAGE_PARTITION_RECEIPT = (
+    "CHROMIUM_WASM_M7_DEFAULT_STORAGE_PARTITION:RECEIPT "
+    "default_in_memory=1 loaded_persistent_partitions=0"
+)
+
 # The normal Wasm profile is intentionally volatile until OPFS has durable
 # storage and a terminal, result-bearing shutdown lifecycle. These optional
 # services otherwise create profile-local SQLite stores with no such drain
@@ -425,6 +433,30 @@ def _parse_result(stdout: str) -> dict[str, Any]:
     return parsed
 
 
+def _require_default_storage_partition_receipt(output: str) -> None:
+    """Require one launch-time, path-free volatile-partition observation."""
+
+    lines = output.splitlines()
+    receipt_indices = [
+        index
+        for index, line in enumerate(lines)
+        if line == DEFAULT_STORAGE_PARTITION_RECEIPT
+    ]
+    if len(receipt_indices) != 1:
+        raise M0Error(
+            "ordinary Browser default StoragePartition receipt is missing or repeated"
+        )
+
+    ready_indices = [
+        index for index, line in enumerate(lines) if line == READY_MARKER
+    ]
+    if len(ready_indices) == 1 and receipt_indices[0] >= ready_indices[0]:
+        raise M0Error(
+            "ordinary Browser default StoragePartition receipt was not emitted "
+            "before the normal ready marker"
+        )
+
+
 def validate_result(result: dict[str, Any], output: str) -> None:
     if result.get("runtimeExitCode") != 0:
         raise M0Error("ordinary Browser runtime did not exit zero")
@@ -436,6 +468,8 @@ def validate_result(result: dict[str, Any], output: str) -> None:
         raise M0Error("ordinary Browser runtime is missing its pass marker")
     if result.get("hostShutdownRequests") != [1, 0]:
         raise M0Error("ordinary Browser host shutdown ABI was not one-shot")
+
+    _require_default_storage_partition_receipt(output)
 
     for diagnostic in UNDRAINED_VOLATILE_PROFILE_DIAGNOSTICS:
         if diagnostic in output:

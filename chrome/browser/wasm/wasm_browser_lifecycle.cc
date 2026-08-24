@@ -54,6 +54,8 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/storage_partition.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui.h"
@@ -645,6 +647,12 @@ constexpr char16_t kHostHistoryDownloadsHistoryTitle[] =
     u"History \u2014 Chromium Wasm";
 constexpr char16_t kHostHistoryDownloadsDownloadsTitle[] =
     u"Downloads \u2014 Chromium Wasm";
+// This is a bounded launch-time observation, not an M7 completion or profile
+// durability claim. It carries only fixed configuration facts so no profile
+// or partition path leaves the browser process.
+constexpr char kWasmDefaultStoragePartitionReceipt[] =
+    "CHROMIUM_WASM_M7_DEFAULT_STORAGE_PARTITION:RECEIPT "
+    "default_in_memory=1 loaded_persistent_partitions=0";
 constexpr gfx::Rect kBrowserLifecycleSmokeBounds(0, 0, 640, 480);
 constexpr int kMaximumHostPointerCoordinate = 16383;
 constexpr base::TimeDelta kHostSecurityWarningInputProtectionMargin =
@@ -653,6 +661,38 @@ constexpr base::TimeDelta kHostSecurityWarningInputProtectionMargin =
 bool IsWasmBrowserHostClipboardSmoke() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
       "wasm-browser-host-clipboard-smoke");
+}
+
+void VerifyWasmDefaultStoragePartitionReceipt(
+    WasmProfile* profile,
+    content::WebContents* web_contents) {
+  CHECK(profile);
+  CHECK(web_contents);
+  CHECK_EQ(web_contents->GetBrowserContext(), profile);
+
+  content::RenderFrameHost* const primary_main_frame =
+      web_contents->GetPrimaryMainFrame();
+  CHECK(primary_main_frame);
+  content::StoragePartition* const initial_partition =
+      primary_main_frame->GetStoragePartition();
+  CHECK(initial_partition);
+
+  const content::StoragePartitionConfig& config =
+      initial_partition->GetConfig();
+  CHECK(config.is_default());
+  CHECK(config.in_memory());
+
+  bool initial_partition_is_loaded = false;
+  profile->ForEachLoadedStoragePartition(
+      [&](content::StoragePartition* loaded_partition) {
+        CHECK(loaded_partition);
+        CHECK(loaded_partition->GetConfig().in_memory());
+        initial_partition_is_loaded |= loaded_partition == initial_partition;
+      });
+  CHECK(initial_partition_is_loaded);
+
+  std::fprintf(stderr, "%s\n", kWasmDefaultStoragePartitionReceipt);
+  std::fflush(stderr);
 }
 
 gfx::Point GetHostPointerTarget(BrowserView& browser_view, views::View* view) {
@@ -782,6 +822,7 @@ void WasmBrowserLifecycle::Initialize() {
   tab_strip_model->AppendWebContents(std::move(contents), /*foreground=*/true);
   CHECK_EQ(tab_strip_model->count(), 1);
   CHECK_EQ(tab_strip_model->GetActiveWebContents(), raw_contents);
+  VerifyWasmDefaultStoragePartitionReceipt(profile_, raw_contents);
 
   BrowserView& browser_view = raw_browser->GetBrowserView();
   CHECK_EQ(browser_view.browser(), raw_browser);

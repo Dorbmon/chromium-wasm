@@ -46,6 +46,12 @@ class M7VolatileDefaultStoragePartitionContractTest(unittest.TestCase):
         self.wasm_profile_implementation = source(
             "chrome/browser/wasm/wasm_profile.cc"
         )
+        self.lifecycle_implementation = source(
+            "chrome/browser/wasm/wasm_browser_lifecycle.cc"
+        )
+        self.normal_lifecycle_runner = source(
+            "tools/wasm/run_m6_wasm_browser_normal_lifecycle_smoke.py"
+        )
 
     def test_default_policy_is_an_explicit_browser_context_opt_in(self) -> None:
         declaration = "virtual bool ShouldUseInMemoryDefaultStoragePartition();"
@@ -95,6 +101,72 @@ class M7VolatileDefaultStoragePartitionContractTest(unittest.TestCase):
         constructor = self.wasm_profile_implementation[constructor_start:]
         self.assertIn("Profile(/*otr_profile_id=*/nullptr)", constructor)
         self.assertIn("BrowserProfileType::kRegular", constructor)
+
+    def test_first_web_contents_receipt_uses_only_public_partition_apis(self) -> None:
+        for include in (
+            '#include "content/public/browser/storage_partition.h"',
+            '#include "content/public/browser/storage_partition_config.h"',
+        ):
+            with self.subTest(include=include):
+                self.assertIn(include, self.lifecycle_implementation)
+
+        receipt = _body_after_signature(
+            self.lifecycle_implementation,
+            "void VerifyWasmDefaultStoragePartitionReceipt(",
+        )
+        for expected in (
+            "web_contents->GetPrimaryMainFrame()",
+            "primary_main_frame->GetStoragePartition()",
+            "initial_partition->GetConfig()",
+            "CHECK(config.is_default());",
+            "CHECK(config.in_memory());",
+            "profile->ForEachLoadedStoragePartition(",
+            "CHECK(loaded_partition->GetConfig().in_memory());",
+            "CHECK(initial_partition_is_loaded);",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, receipt)
+        for forbidden in (
+            "storage_partition_impl.h",
+            "StoragePartitionImpl",
+            "GetStoragePartitionPath",
+            "GetPath()",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, receipt)
+
+        initialize = _body_after_signature(
+            self.lifecycle_implementation,
+            "void WasmBrowserLifecycle::Initialize()",
+        )
+        self.assertLess(
+            initialize.index("tab_strip_model->AppendWebContents("),
+            initialize.index("VerifyWasmDefaultStoragePartitionReceipt("),
+        )
+        self.assertLess(
+            initialize.index("VerifyWasmDefaultStoragePartitionReceipt("),
+            initialize.index("BrowserView& browser_view"),
+        )
+
+    def test_normal_lifecycle_requires_the_fixed_path_free_receipt(self) -> None:
+        for fragment in (
+            '"CHROMIUM_WASM_M7_DEFAULT_STORAGE_PARTITION:RECEIPT "',
+            '"default_in_memory=1 loaded_persistent_partitions=0"',
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, self.lifecycle_implementation)
+                self.assertIn(fragment, self.normal_lifecycle_runner)
+        self.assertIn(
+            "_require_default_storage_partition_receipt(output)",
+            self.normal_lifecycle_runner,
+        )
+        self.assertIn(
+            "line == DEFAULT_STORAGE_PARTITION_RECEIPT",
+            self.normal_lifecycle_runner,
+        )
+        self.assertIn(
+            "does not establish M7 completion", self.normal_lifecycle_runner
+        )
 
 
 if __name__ == "__main__":
