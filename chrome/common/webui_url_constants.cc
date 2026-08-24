@@ -232,7 +232,7 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #endif
       kChromeUISettingsHost,
       kChromeUISystemInfoHost,
-#if !BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
       kChromeUIWhatsNewHost,
 #endif
 #endif
