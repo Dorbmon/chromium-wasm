@@ -18,6 +18,14 @@ const PAGE_WEBASSEMBLY_SCOPE =
     "runtime-enable-runtime-evaluate-page-webassembly-validate-module-instance-" +
     "add42-console-event-detach-close";
 const PAGE_WEBASSEMBLY_SWITCH = "--wasm-browser-m8-page-webassembly-smoke";
+const PAGE_WEBASSEMBLY_MEMORY_MODE = "page-webassembly-memory";
+const PAGE_WEBASSEMBLY_MEMORY_CASE = "browser_page_webassembly_memory_m8";
+const PAGE_WEBASSEMBLY_MEMORY_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-webassembly-memory-construct-import-" +
+    "js-write-wasm-read-wasm-write-js-read-console-event-detach-close";
+const PAGE_WEBASSEMBLY_MEMORY_SWITCH =
+    "--wasm-browser-m8-page-webassembly-memory-smoke";
 const NETWORK_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 const RUNTIME_ENABLE_MARKER =
@@ -29,6 +37,9 @@ const PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER =
 const PAGE_WEBASSEMBLY_ADD42_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
+const PAGE_WEBASSEMBLY_MEMORY_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
+    "MEMORY_CONSTRUCTED_IMPORTED_JS_WRITE_WASM_READ_WASM_WRITE_JS_READ_OK";
 const RUNTIME_CONSOLE_API_CALLED_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 const DETACHED_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
@@ -79,6 +90,33 @@ const PAGE_WEBASSEMBLY_SMOKE_MODE = Object.freeze({
     RUNTIME_ENABLE_MARKER,
     RUNTIME_EVALUATE_MARKER,
     PAGE_WEBASSEMBLY_ADD42_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE = Object.freeze({
+  id: PAGE_WEBASSEMBLY_MEMORY_MODE,
+  queryMode: PAGE_WEBASSEMBLY_MEMORY_MODE,
+  case: PAGE_WEBASSEMBLY_MEMORY_CASE,
+  scope: PAGE_WEBASSEMBLY_MEMORY_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_WEBASSEMBLY_MEMORY_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({
+    pageWebAssemblyUnavailableObserved: false,
+    pageWebAssemblyAdd42Observed: false,
+    pageWebAssemblyTablesObserved: false,
+    pageWebAssemblyMemoriesObserved: true,
+    pageWebAssemblyMemoryConstructedImportedReadWriteObserved: true,
+    pageWebAssemblyExceptionsObserved: false,
+    pageWebAssemblyMemoryGrowthObserved: false,
+    pageWebAssemblyThreadsObserved: false,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_MEMORY_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
@@ -170,7 +208,8 @@ function markerIndex(records, marker) {
 
 function isKnownSmokeMode(smokeMode) {
   return smokeMode === DEFAULT_SMOKE_MODE ||
-      smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE;
+      smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ||
+      smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE;
 }
 
 function validateResult(result, smokeMode) {
@@ -233,7 +272,9 @@ function validateResult(result, smokeMode) {
     require(false, "native stderr is not a list");
   }
   const pageWebAssemblyMarker = smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
-      PAGE_WEBASSEMBLY_ADD42_MARKER : PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
+      PAGE_WEBASSEMBLY_ADD42_MARKER :
+      smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ?
+      PAGE_WEBASSEMBLY_MEMORY_MARKER : PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
@@ -288,6 +329,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #runtimeEvaluateObserved = false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
+  #pageWebAssemblyMemoriesObserved = false;
+  #pageWebAssemblyMemoryConstructedImportedReadWriteObserved = false;
   #runtimeConsoleApiCalledObserved = false;
   #detachedObserved = false;
   #lifecyclePassObserved = false;
@@ -348,6 +391,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     }
     if (text.includes(PAGE_WEBASSEMBLY_ADD42_MARKER)) {
       this.#pageWebAssemblyAdd42Observed = true;
+    }
+    if (text.includes(PAGE_WEBASSEMBLY_MEMORY_MARKER)) {
+      this.#pageWebAssemblyMemoriesObserved = true;
+      this.#pageWebAssemblyMemoryConstructedImportedReadWriteObserved = true;
     }
     if (text.includes(RUNTIME_CONSOLE_API_CALLED_MARKER)) {
       this.#runtimeConsoleApiCalledObserved = true;
@@ -452,19 +499,20 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   }
 
   #result(status, error) {
-    const pageWebAssemblyResult = this.#smokeMode ===
-        PAGE_WEBASSEMBLY_SMOKE_MODE ? {
+    const pageWebAssemblyResult = this.#smokeMode === DEFAULT_SMOKE_MODE ? {
+      pageWebAssemblyUnavailableObserved:
+          this.#pageWebAssemblyUnavailableObserved,
+    } : {
       pageWebAssemblyUnavailableObserved:
           this.#pageWebAssemblyUnavailableObserved,
       pageWebAssemblyAdd42Observed: this.#pageWebAssemblyAdd42Observed,
       pageWebAssemblyTablesObserved: false,
-      pageWebAssemblyMemoriesObserved: false,
+      pageWebAssemblyMemoriesObserved: this.#pageWebAssemblyMemoriesObserved,
+      pageWebAssemblyMemoryConstructedImportedReadWriteObserved:
+          this.#pageWebAssemblyMemoryConstructedImportedReadWriteObserved,
       pageWebAssemblyExceptionsObserved: false,
       pageWebAssemblyMemoryGrowthObserved: false,
       pageWebAssemblyThreadsObserved: false,
-    } : {
-      pageWebAssemblyUnavailableObserved:
-          this.#pageWebAssemblyUnavailableObserved,
     };
     return {
       protocol: HOST_PROTOCOL,
@@ -535,8 +583,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       }
       const host = this;
       namespace.default({
-        arguments: this.#smokeMode === DEFAULT_SMOKE_MODE ?
-            [SWITCH] : [PAGE_WEBASSEMBLY_SWITCH],
+        // Emscripten owns and may extend its argv array, so copy the one
+        // immutable mode tuple rather than passing the frozen configuration
+        // array itself.
+        arguments: [...this.#smokeMode.runtimeArguments],
         canvas: this.#canvas,
         noExitRuntime: false,
         mainScriptUrlOrBlob,
@@ -613,6 +663,8 @@ export function parseDevToolsProtocolSmokeQuery(query) {
     smokeMode = DEFAULT_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_SMOKE_MODE;
+  } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MEMORY_MODE) {
+    smokeMode = PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE;
   } else {
     throw new Error("DevTools protocol query has an invalid mode");
   }
@@ -637,7 +689,8 @@ async function fetchExpectedSmokeMode(token) {
       binding.protocol !== HOST_PROTOCOL ||
       !Object.hasOwn(binding, "mode") || Object.keys(binding).length !== 2 ||
       (binding.mode !== DEFAULT_SMOKE_MODE.id &&
-       binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id)) {
+       binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id &&
+       binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id)) {
     throw new Error("DevTools protocol mode binding is invalid");
   }
   return binding.mode;

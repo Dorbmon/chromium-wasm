@@ -46,10 +46,28 @@ constexpr char kPageWebAssemblyRuntimeEvaluateCommand[] =
     R"json(console.log('chromium-wasm-m8-page-webassembly-add-42');)json"
     R"json(return 'wasm-add-42';})()","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kPageWebAssemblyMemoryRuntimeEvaluateCommand[] =
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(()=>{const b=new Uint8Array([)json"
+    R"json(0,97,115,109,1,0,0,0,1,11,2,96,1,127,1,127,96,2,127,127,0,2,16,1,3,101,110,118,6,109,101,109,111,114,121,2,1,1,1,)json"
+    R"json(3,3,2,0,1,7,16,2,4,114,101,97,100,0,0,5,119,114,105,116,101,0,1,10,19,2,7,0,32,0,40,2,0,11,9,0,32,0,32,1,54,2,0,11]);)json"
+    R"json(if(!WebAssembly.validate(b))throw new Error('wasm memory validation failed');)json"
+    R"json(const memory=new WebAssembly.Memory({initial:1,maximum:1});)json"
+    R"json(if(memory.buffer.byteLength!==65536)throw new Error('wasm memory initial size was not 65536');)json"
+    R"json(const view=new DataView(memory.buffer);view.setUint32(0,0x12345678,true);)json"
+    R"json(const m=new WebAssembly.Module(b);const i=new WebAssembly.Instance(m,{env:{memory}});)json"
+    R"json(if(i.exports.read(0)!==0x12345678)throw new Error('wasm memory did not read JS write');)json"
+    R"json(i.exports.write(4,0x0badf00d);)json"
+    R"json(if(view.getUint32(4,true)!==0x0badf00d)throw new Error('JS did not read wasm memory write');)json"
+    R"json(console.log('chromium-wasm-m8-page-webassembly-memory-import-read-write');)json"
+    R"json(return 'wasm-memory-import-read-write';})()","returnByValue":true,)json"
+    R"json("allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kFixedDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
 constexpr char kFixedPageWebAssemblyDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20smoke";
+constexpr char kFixedPageWebAssemblyMemoryDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20memory%20smoke";
 constexpr char kNetworkEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 constexpr char kRuntimeEnableSuccessMarker[] =
@@ -60,6 +78,9 @@ constexpr char kPageWebAssemblyUnavailableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE";
 constexpr char kPageWebAssemblySuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
+constexpr char kPageWebAssemblyMemorySuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "MEMORY_CONSTRUCTED_IMPORTED_JS_WRITE_WASM_READ_WASM_WRITE_JS_READ_OK";
 constexpr char kRuntimeConsoleApiCalledSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 constexpr char kDetachedMarker[] =
@@ -73,12 +94,16 @@ constexpr char kRuntimeEvaluateExpectedType[] = "string";
 constexpr char kRuntimeEvaluateExpectedValue[] = "undefined";
 constexpr char kPageWebAssemblyRuntimeEvaluateExpectedValue[] =
     "wasm-add-42";
+constexpr char kPageWebAssemblyMemoryRuntimeEvaluateExpectedValue[] =
+    "wasm-memory-import-read-write";
 constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
 constexpr char kRuntimeConsoleApiCalledExpectedType[] = "log";
 constexpr char kRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-devtools-console";
 constexpr char kPageWebAssemblyRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-page-webassembly-add-42";
+constexpr char kPageWebAssemblyMemoryRuntimeConsoleApiCalledExpectedValue[] =
+    "chromium-wasm-m8-page-webassembly-memory-import-read-write";
 
 }  // namespace
 
@@ -88,9 +113,12 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
     return GURL(kFixedDevToolsProtocolSmokeUrl);
   }
-  CHECK_EQ(mode,
-           WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
-  return GURL(kFixedPageWebAssemblyDevToolsProtocolSmokeUrl);
+  if (mode ==
+      WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42) {
+    return GURL(kFixedPageWebAssemblyDevToolsProtocolSmokeUrl);
+  }
+  CHECK_EQ(mode, WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite);
+  return GURL(kFixedPageWebAssemblyMemoryDevToolsProtocolSmokeUrl);
 }
 
 WasmBrowserDevToolsProtocolSmoke::WasmBrowserDevToolsProtocolSmoke(
@@ -143,8 +171,9 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   // command surface. The default Runtime.evaluate expression reads only
   // |typeof WebAssembly| to make the current disabled page-WebAssembly
   // boundary observable; it neither constructs nor compiles a page module and
-  // does not enable page WebAssembly. The closed alternate expression uses
-  // only its literal module bytes and fixed add(20, 22) witnesses.
+  // does not enable page WebAssembly. The closed alternate expressions use
+  // only literal module bytes and fixed add or memory import/read-write
+  // witnesses.
   agent_host_->DispatchProtocolMessage(
       this, base::byte_span_from_cstring(kNetworkEnableCommand));
 }
@@ -232,11 +261,14 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
     expected_value = kRuntimeEvaluateExpectedValue;
-  } else {
-    CHECK_EQ(
-        mode_,
-        WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
+  } else if (mode_ ==
+             WasmBrowserDevToolsProtocolSmokeMode::
+                 kValidateModuleInstanceAdd42) {
     expected_value = kPageWebAssemblyRuntimeEvaluateExpectedValue;
+  } else {
+    CHECK_EQ(mode_,
+             WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite);
+    expected_value = kPageWebAssemblyMemoryRuntimeEvaluateExpectedValue;
   }
   if (!result_type || *result_type != kRuntimeEvaluateExpectedType ||
       !result_value || *result_value != expected_value) {
@@ -244,6 +276,11 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
         WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
       Fail("Runtime.evaluate did not return the fixed "
            "page-WebAssembly-unavailable result");
+    }
+    if (mode_ ==
+        WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite) {
+      Fail("Runtime.evaluate did not return the fixed page-WebAssembly "
+           "memory import/read-write result");
     }
     Fail("Runtime.evaluate did not return the fixed "
          "page-WebAssembly add(20, 22) result");
@@ -257,8 +294,14 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
     std::fprintf(stderr, "%s\n", kPageWebAssemblyUnavailableSuccessMarker);
-  } else {
+  } else if (mode_ ==
+             WasmBrowserDevToolsProtocolSmokeMode::
+                 kValidateModuleInstanceAdd42) {
     std::fprintf(stderr, "%s\n", kPageWebAssemblySuccessMarker);
+  } else {
+    CHECK_EQ(mode_,
+             WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite);
+    std::fprintf(stderr, "%s\n", kPageWebAssemblyMemorySuccessMarker);
   }
   std::fflush(stderr);
   CompleteRuntimeEvaluate();
@@ -340,11 +383,17 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
         this, base::byte_span_from_cstring(kRuntimeEvaluateCommand));
     return;
   }
-  CHECK_EQ(mode_,
-           WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
+  if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42) {
+    agent_host_->DispatchProtocolMessage(
+        this,
+        base::byte_span_from_cstring(kPageWebAssemblyRuntimeEvaluateCommand));
+    return;
+  }
+  CHECK_EQ(mode_, WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite);
   agent_host_->DispatchProtocolMessage(
       this,
-      base::byte_span_from_cstring(kPageWebAssemblyRuntimeEvaluateCommand));
+      base::byte_span_from_cstring(kPageWebAssemblyMemoryRuntimeEvaluateCommand));
 }
 
 void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
@@ -365,11 +414,15 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
     expected_value = kRuntimeConsoleApiCalledExpectedValue;
-  } else {
-    CHECK_EQ(
-        mode_,
-        WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
+  } else if (mode_ ==
+             WasmBrowserDevToolsProtocolSmokeMode::
+                 kValidateModuleInstanceAdd42) {
     expected_value = kPageWebAssemblyRuntimeConsoleApiCalledExpectedValue;
+  } else {
+    CHECK_EQ(mode_,
+             WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite);
+    expected_value =
+        kPageWebAssemblyMemoryRuntimeConsoleApiCalledExpectedValue;
   }
   if (!type || *type != kRuntimeConsoleApiCalledExpectedType ||
       !argument_type ||

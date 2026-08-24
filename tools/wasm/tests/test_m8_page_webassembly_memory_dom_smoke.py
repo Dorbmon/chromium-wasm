@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for the fixed M8 page-WebAssembly browser-host smoke."""
+"""Contracts for the bounded M8 page-WebAssembly-memory browser-host smoke."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 VERSIONS = {"chromium": "c", "v8": "v", "emscripten": "e", "port": "p"}
 
 
-def successful_page_result() -> dict[str, object]:
+def successful_page_memory_result() -> dict[str, object]:
     readiness = {
         "shellReady": True,
         "surfaceReady": True,
@@ -38,8 +38,8 @@ def successful_page_result() -> dict[str, object]:
     }
     return {
         "protocol": 1,
-        "case": smoke.PAGE_WEBASSEMBLY_CASE,
-        "scope": smoke.PAGE_WEBASSEMBLY_SCOPE,
+        "case": smoke.PAGE_WEBASSEMBLY_MEMORY_CASE,
+        "scope": smoke.PAGE_WEBASSEMBLY_MEMORY_SCOPE,
         "status": "pass",
         "m8GateComplete": False,
         "runtimeExitCode": 0,
@@ -52,9 +52,10 @@ def successful_page_result() -> dict[str, object]:
         "runtimeEnableObserved": True,
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
-        "pageWebAssemblyAdd42Observed": True,
+        "pageWebAssemblyAdd42Observed": False,
         "pageWebAssemblyTablesObserved": False,
-        "pageWebAssemblyMemoriesObserved": False,
+        "pageWebAssemblyMemoriesObserved": True,
+        "pageWebAssemblyMemoryConstructedImportedReadWriteObserved": True,
         "pageWebAssemblyExceptionsObserved": False,
         "pageWebAssemblyMemoryGrowthObserved": False,
         "pageWebAssemblyThreadsObserved": False,
@@ -76,7 +77,7 @@ def successful_page_result() -> dict[str, object]:
             smoke.NETWORK_ENABLE_MARKER,
             smoke.RUNTIME_ENABLE_MARKER,
             smoke.RUNTIME_EVALUATE_MARKER,
-            smoke.PAGE_WEBASSEMBLY_ADD42_MARKER,
+            smoke.PAGE_WEBASSEMBLY_MEMORY_MARKER,
             smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
             smoke.DETACHED_MARKER,
             smoke.LIFECYCLE_PASS_MARKER,
@@ -86,24 +87,30 @@ def successful_page_result() -> dict[str, object]:
     }
 
 
-class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
-    def test_page_mode_is_a_single_fixed_configuration(self) -> None:
-        config = smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG
-        self.assertEqual(config.mode_id, smoke.PAGE_WEBASSEMBLY_MODE)
-        self.assertEqual(config.query_mode, "page-webassembly")
-        self.assertEqual(config.sentinel, smoke.PAGE_WEBASSEMBLY_SENTINEL)
-        self.assertEqual(config.case, "browser_page_webassembly_m8")
+class M8PageWebAssemblyMemoryDomSmokeTest(unittest.TestCase):
+    def test_page_memory_mode_is_a_single_fixed_configuration(self) -> None:
+        config = smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG
+        self.assertEqual(config.mode_id, "page-webassembly-memory")
+        self.assertEqual(config.query_mode, "page-webassembly-memory")
+        self.assertEqual(
+            config.sentinel, "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_MEMORY_DOM"
+        )
+        self.assertEqual(config.case, "browser_page_webassembly_memory_m8")
         self.assertEqual(
             config.runtime_arguments,
-            ("--wasm-browser-m8-page-webassembly-smoke",),
+            ("--wasm-browser-m8-page-webassembly-memory-smoke",),
         )
         self.assertEqual(
             config.page_webassembly_expectations,
             (
                 ("pageWebAssemblyUnavailableObserved", False),
-                ("pageWebAssemblyAdd42Observed", True),
+                ("pageWebAssemblyAdd42Observed", False),
                 ("pageWebAssemblyTablesObserved", False),
-                ("pageWebAssemblyMemoriesObserved", False),
+                ("pageWebAssemblyMemoriesObserved", True),
+                (
+                    "pageWebAssemblyMemoryConstructedImportedReadWriteObserved",
+                    True,
+                ),
                 ("pageWebAssemblyExceptionsObserved", False),
                 ("pageWebAssemblyMemoryGrowthObserved", False),
                 ("pageWebAssemblyThreadsObserved", False),
@@ -115,54 +122,56 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
                 smoke.NETWORK_ENABLE_MARKER,
                 smoke.RUNTIME_ENABLE_MARKER,
                 smoke.RUNTIME_EVALUATE_MARKER,
-                smoke.PAGE_WEBASSEMBLY_ADD42_MARKER,
+                smoke.PAGE_WEBASSEMBLY_MEMORY_MARKER,
                 smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
                 smoke.DETACHED_MARKER,
                 smoke.LIFECYCLE_PASS_MARKER,
             ),
         )
         self.assertIs(
-            smoke.smoke_config_for_page_webassembly(True),
-            smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+            smoke.smoke_config_for_page_webassembly_memory(True), config
         )
         self.assertIs(
-            smoke.smoke_config_for_page_webassembly(False),
+            smoke.smoke_config_for_page_webassembly_memory(False),
             smoke.DEFAULT_SMOKE_CONFIG,
         )
 
-    def test_page_result_requires_only_the_fixed_add42_witness(self) -> None:
+    def test_page_memory_result_requires_only_its_fixed_witness(self) -> None:
         smoke.validate_result(
-            successful_page_result(),
+            successful_page_memory_result(),
             expected_versions=VERSIONS,
-            smoke_config=smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+            smoke_config=smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
         )
         for field, value in (
             ("pageWebAssemblyUnavailableObserved", True),
-            ("pageWebAssemblyAdd42Observed", False),
+            ("pageWebAssemblyAdd42Observed", True),
             ("pageWebAssemblyTablesObserved", True),
-            ("pageWebAssemblyMemoriesObserved", True),
+            ("pageWebAssemblyMemoriesObserved", False),
+            ("pageWebAssemblyMemoryConstructedImportedReadWriteObserved", False),
             ("pageWebAssemblyExceptionsObserved", True),
             ("pageWebAssemblyMemoryGrowthObserved", True),
             ("pageWebAssemblyThreadsObserved", True),
             ("m8GateComplete", True),
         ):
             with self.subTest(field=field):
-                result = copy.deepcopy(successful_page_result())
+                result = copy.deepcopy(successful_page_memory_result())
                 result[field] = value
                 with self.assertRaisesRegex(M0Error, rf"{field} mismatch"):
                     smoke.validate_result(
                         result,
                         expected_versions=VERSIONS,
-                        smoke_config=smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+                        smoke_config=smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
                     )
 
-    def test_page_result_rejects_unavailable_or_repeated_native_markers(self) -> None:
-        result = successful_page_result()
+    def test_page_memory_result_rejects_wrong_or_repeated_native_markers(
+        self,
+    ) -> None:
+        result = successful_page_memory_result()
         result["stderr"] = [
             smoke.NETWORK_ENABLE_MARKER,
             smoke.RUNTIME_ENABLE_MARKER,
             smoke.RUNTIME_EVALUATE_MARKER,
-            smoke.PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
+            smoke.PAGE_WEBASSEMBLY_ADD42_MARKER,
             smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
             smoke.DETACHED_MARKER,
             smoke.LIFECYCLE_PASS_MARKER,
@@ -171,21 +180,21 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             smoke.validate_result(
                 result,
                 expected_versions=VERSIONS,
-                smoke_config=smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+                smoke_config=smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
             )
 
-        result = successful_page_result()
-        result["stderr"] = successful_page_result()["stderr"] + [
-            smoke.PAGE_WEBASSEMBLY_ADD42_MARKER,
+        result = successful_page_memory_result()
+        result["stderr"] = successful_page_memory_result()["stderr"] + [
+            smoke.PAGE_WEBASSEMBLY_MEMORY_MARKER,
         ]
         with self.assertRaisesRegex(M0Error, "marker count is 2"):
             smoke.validate_result(
                 result,
                 expected_versions=VERSIONS,
-                smoke_config=smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+                smoke_config=smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
             )
 
-    def test_url_and_server_payload_bind_the_closed_page_mode(self) -> None:
+    def test_url_and_server_payload_bind_the_closed_page_memory_mode(self) -> None:
         server = SimpleNamespace(server_address=("127.0.0.1", 31337))
         default_url = smoke.smoke_url(
             server,
@@ -194,13 +203,13 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             module_name="chrome_wasm",
             timeout_seconds=30.0,
         )
-        page_url = smoke.smoke_url(
+        memory_url = smoke.smoke_url(
             server,
             "token",
             VERSIONS,
             module_name="chrome_wasm",
             timeout_seconds=30.0,
-            smoke_config=smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+            smoke_config=smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
         )
         self.assertNotIn("mode=", default_url)
         self.assertEqual(
@@ -213,7 +222,7 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            parse_qs(urlsplit(page_url).query, keep_blank_values=True),
+            parse_qs(urlsplit(memory_url).query, keep_blank_values=True),
             {
                 "token": ["token"],
                 "module": ["chrome_wasm"],
@@ -221,37 +230,37 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
                 "versions": [
                     json.dumps(VERSIONS, sort_keys=True, separators=(",", ":"))
                 ],
-                "mode": ["page-webassembly"],
+                "mode": ["page-webassembly-memory"],
             },
         )
 
-        payload = json.dumps(successful_page_result()).encode("utf-8")
+        payload = json.dumps(successful_page_memory_result()).encode("utf-8")
         self.assertEqual(
             smoke.parse_result_payload(
-                payload, smoke_config=smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG
+                payload, smoke_config=smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG
             ),
-            successful_page_result(),
+            successful_page_memory_result(),
         )
         self.assertIsNone(smoke.parse_result_payload(payload))
 
-    def test_server_binds_the_page_mode_to_the_result_token(self) -> None:
+    def test_server_binds_the_page_memory_mode_to_the_result_token(self) -> None:
         server = smoke.DevToolsProtocolSmokeServer(
             ("127.0.0.1", 0), smoke.DevToolsProtocolSmokeRequestHandler
         )
-        server.result_token = "fixed-mode-token"
-        server.smoke_config = smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG
+        server.result_token = "fixed-memory-mode-token"
+        server.smoke_config = smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
         try:
             host, port = server.server_address[:2]
             binding_url = (
-                f"http://{host}:{port}{smoke.HOST_ROOT}/config/fixed-mode-token"
+                f"http://{host}:{port}{smoke.HOST_ROOT}/config/fixed-memory-mode-token"
             )
             with urlopen(binding_url, timeout=5) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(
                     json.loads(response.read()),
-                    {"protocol": 1, "mode": "page-webassembly"},
+                    {"protocol": 1, "mode": "page-webassembly-memory"},
                 )
             with self.assertRaises(HTTPError) as context:
                 urlopen(
@@ -265,7 +274,7 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             server.server_close()
             server_thread.join(timeout=5)
 
-    def test_default_mode_keeps_the_unavailable_boundary_and_fixed_argument(self) -> None:
+    def test_existing_modes_remain_closed_and_distinct(self) -> None:
         self.assertEqual(
             smoke.DEFAULT_SMOKE_CONFIG.runtime_arguments,
             ("--wasm-browser-devtools-protocol-smoke",),
@@ -275,18 +284,29 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             (("pageWebAssemblyUnavailableObserved", True),),
         )
         self.assertIsNone(smoke.DEFAULT_SMOKE_CONFIG.query_mode)
+        self.assertIs(
+            smoke.smoke_config_for_page_webassembly(True),
+            smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+        )
+        self.assertNotEqual(
+            smoke.PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+            smoke.PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
+        )
 
     def test_host_rejects_query_tampering_before_the_module_loader(self) -> None:
         host = source(
             "tools/wasm/host/chrome_wasm_browser_devtools_protocol_smoke_host.js"
         )
         for expected in (
-            'const PAGE_WEBASSEMBLY_MODE = "page-webassembly";',
-            'const PAGE_WEBASSEMBLY_SWITCH = "--wasm-browser-m8-page-webassembly-smoke";',
-            "PAGE_WEBASSEMBLY_ADD42_MARKER",
-            "pageWebAssemblyAdd42Observed: true",
+            'const PAGE_WEBASSEMBLY_MEMORY_MODE = "page-webassembly-memory";',
+            "const PAGE_WEBASSEMBLY_MEMORY_SWITCH =",
+            '"--wasm-browser-m8-page-webassembly-memory-smoke";',
+            "PAGE_WEBASSEMBLY_MEMORY_MARKER",
+            "PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE",
+            "pageWebAssemblyAdd42Observed: false",
             "pageWebAssemblyTablesObserved: false",
-            "pageWebAssemblyMemoriesObserved: false",
+            "pageWebAssemblyMemoriesObserved: true",
+            "pageWebAssemblyMemoryConstructedImportedReadWriteObserved: true",
             "pageWebAssemblyExceptionsObserved: false",
             "pageWebAssemblyMemoryGrowthObserved: false",
             "pageWebAssemblyThreadsObserved: false",
@@ -295,7 +315,8 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             "DevTools protocol query has an unsupported field",
             "fetchExpectedSmokeMode",
             "DevTools protocol query mode does not match its binding",
-            "arguments: [...this.#smokeMode.runtimeArguments]",
+            "PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ?",
+            "[PAGE_WEBASSEMBLY_MEMORY_SWITCH]",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, host)
@@ -313,36 +334,33 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             host.index("const result = validateResult(await host.run("),
         )
 
-    def test_native_route_has_one_literal_module_and_lifecycle_entrypoint(self) -> None:
+    def test_native_route_has_one_literal_memory_import_witness(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
         lifecycle = source("chrome/browser/wasm/wasm_browser_lifecycle.cc")
         protocol = source(
             "chrome/browser/wasm/wasm_browser_devtools_protocol_smoke.cc"
         )
         self.assertIn(
-            '"wasm-browser-m8-page-webassembly-smoke"', main_parts
+            '"wasm-browser-m8-page-webassembly-memory-smoke"', main_parts
         )
         self.assertIn(
-            "browser_lifecycle_->StartPageWebAssemblyDevToolsProtocolSmoke();",
+            "browser_lifecycle_->StartPageWebAssemblyMemoryDevToolsProtocolSmoke();",
             main_parts,
         )
         self.assertIn(
-            "StartDevToolsProtocolSmokeInternal(\n"
-            "      WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);",
-            lifecycle,
+            "StartPageWebAssemblyMemoryDevToolsProtocolSmoke", lifecycle
         )
         for expected in (
-            "WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42",
-            "kPageWebAssemblyRuntimeEvaluateCommand",
-            'R"json("(()=>{const b=new Uint8Array([)json"',
-            "R\"json(0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,7,7,1,3,97,)json\"",
-            "R\"json(100,100,0,0,10,9,1,7,0,32,0,32,1,106,11]);)json\"",
-            "WebAssembly.validate(b)",
-            "new WebAssembly.Module(b)",
-            "new WebAssembly.Instance(m)",
-            "i.exports.add(20,22)",
-            "kPageWebAssemblySuccessMarker",
-            smoke.PAGE_WEBASSEMBLY_ADD42_MARKER,
+            "WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite",
+            "kPageWebAssemblyMemoryRuntimeEvaluateCommand",
+            "new WebAssembly.Memory",
+            "new WebAssembly.Module",
+            "new WebAssembly.Instance",
+            "memory.buffer",
+            "Uint8Array",
+            "kPageWebAssemblyMemorySuccessMarker",
+            "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:",
+            "MEMORY_CONSTRUCTED_IMPORTED_JS_WRITE_WASM_READ_WASM_WRITE_JS_READ_OK",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, protocol)

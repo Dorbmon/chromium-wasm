@@ -95,8 +95,8 @@ class M8WasmBrowserDevToolsProtocolSmokeTest(unittest.TestCase):
             lifecycle,
         )
         for expected in (
-            "kDevToolsProtocolSmokeUrl[]",
-            "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke",
+            "GetWasmBrowserDevToolsProtocolSmokeUrl(mode)",
+            "WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable",
             "WasmBrowserDevToolsProtocolNavigationObserver",
             "OnDevToolsProtocolSmokeNavigationObserved",
             "content::NavigationController::LoadURLParams params(smoke_url)",

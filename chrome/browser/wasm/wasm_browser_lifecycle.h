@@ -14,6 +14,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/wasm/wasm_browser_devtools_protocol_smoke.h"
 
 class Browser;
 class BrowserManagerService;
@@ -33,7 +34,6 @@ class WasmBrowserHostStorageEstimateNavigationObserver;
 class WasmBrowserContinuousFlow;
 class WasmBrowserTabChurnSmoke;
 class WasmBrowserNavigationChurnSmoke;
-class WasmBrowserDevToolsProtocolSmoke;
 class WasmBrowserDevToolsProtocolNavigationObserver;
 class WasmBrowserAccessibilitySnapshotSmoke;
 class WasmBrowserAccessibilitySnapshotNavigationObserver;
@@ -136,6 +136,12 @@ class WasmBrowserLifecycle final {
   // protocol-command surface.
   void StartPageWebAssemblyDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that imports one literal
+  // one-page WebAssembly.Memory and witnesses JavaScript/Wasm reads and
+  // writes. It does not exercise memory growth, tables, exceptions, or
+  // threads and likewise accepts no host-selected source or command.
+  void StartPageWebAssemblyMemoryDevToolsProtocolSmoke();
+
   // Starts the test-only fixed WebContents AX snapshot proof. It takes one
   // snapshot and permits only its fixed static semantic text into the passive
   // host mirror; it is not an interactive accessibility bridge.
@@ -174,7 +180,7 @@ class WasmBrowserLifecycle final {
   bool OnHostStorageEstimateSmokePresented(int stage);
   void OnHostStorageEstimateSettingsNavigationObserved();
   void StartDevToolsProtocolSmokeInternal(
-      bool exercises_page_webassembly);
+      WasmBrowserDevToolsProtocolSmokeMode mode);
   void OnDevToolsProtocolSmokeNavigationObserved();
   void OnDevToolsProtocolSmokeSucceeded();
   void BeginDevToolsProtocolSmokeShutdown();
@@ -255,7 +261,8 @@ class WasmBrowserLifecycle final {
   std::unique_ptr<WasmBrowserNavigationChurnSmoke>
       host_navigation_churn_smoke_;
   bool devtools_protocol_smoke_started_ = false;
-  bool devtools_protocol_smoke_exercises_page_webassembly_ = false;
+  WasmBrowserDevToolsProtocolSmokeMode devtools_protocol_smoke_mode_ =
+      WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable;
   bool devtools_protocol_smoke_succeeded_ = false;
   raw_ptr<content::WebContents> devtools_protocol_smoke_contents_ = nullptr;
   std::unique_ptr<WasmBrowserDevToolsProtocolNavigationObserver>

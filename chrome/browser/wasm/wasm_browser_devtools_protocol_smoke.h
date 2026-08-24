@@ -30,6 +30,7 @@ namespace chrome {
 enum class WasmBrowserDevToolsProtocolSmokeMode {
   kPageWebAssemblyUnavailable,
   kValidateModuleInstanceAdd42,
+  kMemoryImportReadWrite,
 };
 
 // Returns the one literal data: URL associated with |mode|. This is used by
@@ -49,7 +50,9 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // "undefined" in this disabled configuration; it does not construct, compile,
 // or otherwise exercise page WebAssembly. The separate closed page-WebAssembly
 // mode is limited to one literal 41-byte module and its fixed add(20, 22)
-// result.
+// result. A second closed page-WebAssembly mode imports one fixed one-page
+// memory and witnesses JavaScript-to-Wasm and Wasm-to-JavaScript reads and
+// writes without exercising growth, tables, exceptions, or threads.
 class WasmBrowserDevToolsProtocolSmoke final
     : public content::DevToolsAgentHostClient {
  public:

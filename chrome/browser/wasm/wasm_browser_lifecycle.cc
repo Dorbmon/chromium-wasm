@@ -560,8 +560,6 @@ constexpr char kHostStorageEstimateSmokePassMarker[] =
     "CHROMIUM_WASM_M7_HOST_STORAGE_ESTIMATE:PASS";
 constexpr char kHostTextSmokeUrl[] = "chrome://version/";
 constexpr char kHostStorageEstimateSettingsUrl[] = "chrome://settings/";
-constexpr char kDevToolsProtocolSmokeUrl[] =
-    "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
 constexpr char kAccessibilitySnapshotSmokeReadyMarker[] =
     "CHROMIUM_WASM_M8_ACCESSIBILITY_SNAPSHOT:READY";
 constexpr char kAccessibilitySnapshotSmokeNavigatedMarker[] =
@@ -1212,15 +1210,22 @@ void WasmBrowserLifecycle::StartHostStorageEstimateSmoke() {
 }
 
 void WasmBrowserLifecycle::StartDevToolsProtocolSmoke() {
-  StartDevToolsProtocolSmokeInternal(/*exercises_page_webassembly=*/false);
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable);
 }
 
 void WasmBrowserLifecycle::StartPageWebAssemblyDevToolsProtocolSmoke() {
-  StartDevToolsProtocolSmokeInternal(/*exercises_page_webassembly=*/true);
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
+}
+
+void WasmBrowserLifecycle::StartPageWebAssemblyMemoryDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite);
 }
 
 void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
-    bool exercises_page_webassembly) {
+    WasmBrowserDevToolsProtocolSmokeMode mode) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(initialized_);
   CHECK(!shutdown_started_);
@@ -1246,16 +1251,10 @@ void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
   CHECK(contents->GetPrimaryMainFrame());
   CHECK_EQ(browser_->GetBrowserView().GetActiveWebContents(), contents);
 
-  const GURL smoke_url =
-      exercises_page_webassembly
-          ? GetWasmBrowserDevToolsProtocolSmokeUrl(
-                WasmBrowserDevToolsProtocolSmokeMode::
-                    kValidateModuleInstanceAdd42)
-          : GURL(kDevToolsProtocolSmokeUrl);
+  const GURL smoke_url = GetWasmBrowserDevToolsProtocolSmokeUrl(mode);
   CHECK(smoke_url.is_valid());
   devtools_protocol_smoke_started_ = true;
-  devtools_protocol_smoke_exercises_page_webassembly_ =
-      exercises_page_webassembly;
+  devtools_protocol_smoke_mode_ = mode;
   devtools_protocol_smoke_contents_ = contents;
   devtools_protocol_smoke_navigation_observer_ =
       std::make_unique<WasmBrowserDevToolsProtocolNavigationObserver>(
@@ -1291,29 +1290,14 @@ void WasmBrowserLifecycle::OnDevToolsProtocolSmokeNavigationObserved() {
   CHECK(primary_main_frame);
   CHECK(primary_main_frame->IsRenderFrameLive());
   const GURL expected_url =
-      devtools_protocol_smoke_exercises_page_webassembly_
-          ? GetWasmBrowserDevToolsProtocolSmokeUrl(
-                WasmBrowserDevToolsProtocolSmokeMode::
-                    kValidateModuleInstanceAdd42)
-          : GURL(kDevToolsProtocolSmokeUrl);
+      GetWasmBrowserDevToolsProtocolSmokeUrl(devtools_protocol_smoke_mode_);
   CHECK_EQ(contents->GetLastCommittedURL(), expected_url);
 
   devtools_protocol_smoke_navigation_observer_.reset();
-  if (devtools_protocol_smoke_exercises_page_webassembly_) {
-    devtools_protocol_smoke_ =
-        std::make_unique<WasmBrowserDevToolsProtocolSmoke>(
-            WasmBrowserDevToolsProtocolSmokeMode::
-                kValidateModuleInstanceAdd42,
-            base::BindOnce(
-                &WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded,
-                weak_ptr_factory_.GetWeakPtr()));
-  } else {
-    devtools_protocol_smoke_ =
-        std::make_unique<WasmBrowserDevToolsProtocolSmoke>(
-            base::BindOnce(
-                &WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded,
-                weak_ptr_factory_.GetWeakPtr()));
-  }
+  devtools_protocol_smoke_ = std::make_unique<WasmBrowserDevToolsProtocolSmoke>(
+      devtools_protocol_smoke_mode_,
+      base::BindOnce(&WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded,
+                     weak_ptr_factory_.GetWeakPtr()));
   devtools_protocol_smoke_->Start(contents);
 }
 
