@@ -310,12 +310,9 @@ def _navigate_to_package_document(client: Any, package_url: str) -> None:
 
 
 def _require_release_wisp_configuration(
-    status: dict[str, Any], expected: bool | None
+    status: dict[str, Any], expected: bool
 ) -> None:
-    """Bind host status to an optional redacted pre-navigation configuration."""
-
-    if expected is None:
-        return
+    """Bind host status to the redacted pre-navigation configuration state."""
     observed = status.get("wispConfigured")
     if observed is not expected:
         observed_state = (
@@ -596,7 +593,7 @@ def _wait_for_ready_package_document(
     expected_package_metadata: dict[str, object],
     prior_time_origin: float | None,
     description: str,
-    expected_wisp_configured: bool | None = None,
+    expected_wisp_configured: bool = False,
 ) -> tuple[dict[str, Any], float]:
     ready = _wait_for_status(
         client=client,
@@ -768,9 +765,7 @@ def run_package_browser_smoke(
             expected_epoch=first_epoch,
             expected_package_metadata=expected_package_metadata,
             prior_time_origin=None,
-            expected_wisp_configured=(
-                True if release_wisp_endpoint is not None else None
-            ),
+            expected_wisp_configured=release_wisp_endpoint is not None,
             description="waiting for the first real package frame",
         )
         first_shutdown = _request_clean_shutdown(
@@ -824,9 +819,7 @@ def run_package_browser_smoke(
             expected_epoch=second_epoch,
             expected_package_metadata=expected_package_metadata,
             prior_time_origin=first_time_origin,
-            expected_wisp_configured=(
-                True if release_wisp_endpoint is not None else None
-            ),
+            expected_wisp_configured=release_wisp_endpoint is not None,
             description="waiting for the fresh outer-document package frame",
         )
         second_shutdown = _request_clean_shutdown(

@@ -135,6 +135,15 @@ class M9PackageWispPreNavigationTest(unittest.TestCase):
             package_browser_smoke._require_release_wisp_configuration(
                 {"wispConfigured": False}, True
             )
+        package_browser_smoke._require_release_wisp_configuration(
+            {"wispConfigured": False}, False
+        )
+        with self.assertRaisesRegex(
+            M0Error, "package host WISP configuration state is invalid"
+        ):
+            package_browser_smoke._require_release_wisp_configuration(
+                {"wispConfigured": True}, False
+            )
 
 
 if __name__ == "__main__":

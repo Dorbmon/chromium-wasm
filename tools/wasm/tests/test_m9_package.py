@@ -2779,6 +2779,9 @@ process.stdout.write(JSON.stringify(results));
         self.assertEqual(initial_url, wait_for_client.call_args.args[1])
         self.assertEqual(initial_url, wait_for_ready.call_args.kwargs["expected_url"])
         self.assertEqual("first-epoch", wait_for_ready.call_args.kwargs["expected_epoch"])
+        self.assertFalse(
+            wait_for_ready.call_args.kwargs["expected_wisp_configured"]
+        )
         self.assertEqual(
             expected_metadata,
             wait_for_ready.call_args.kwargs["expected_package_metadata"],
@@ -3054,6 +3057,13 @@ process.stdout.write(JSON.stringify(results));
         self.assertEqual(
             expected_metadata,
             wait_for_ready.call_args_list[1].kwargs["expected_package_metadata"],
+        )
+        self.assertEqual(
+            [False, False],
+            [
+                call.kwargs["expected_wisp_configured"]
+                for call in wait_for_ready.call_args_list
+            ],
         )
         first_shutdown_kwargs = request_shutdown.call_args_list[0].kwargs
         self.assertEqual(
