@@ -24,6 +24,7 @@ class GURL;
 class JsonPrefStore;
 class PrefService;
 class ProfileKey;
+class WasmProfilePrefsFenceController;
 class WasmSessionNavigationJournal;
 
 namespace base {
@@ -204,6 +205,7 @@ class WasmProfile final : public Profile {
   void OnPrefsShutdownFenceComplete(
       base::OnceCallback<void(bool success)> completion,
       bool success);
+  bool StartPrefsShutdownFence(base::OnceCallback<void(bool success)> completion);
 
   base::FilePath profile_path_;
   base::FilePath last_selected_directory_;
@@ -232,6 +234,12 @@ class WasmProfile final : public Profile {
   // desktop HistoryService graph and gives profile shutdown one clear place
   // to invalidate every WebContents observer and WebUI data source.
   std::unique_ptr<WasmSessionNavigationJournal> session_navigation_journal_;
+
+  // This owns the one explicitly admitted JsonPrefStore fence. It is not a
+  // profile-wide storage drain or a persistence claim; other profile services
+  // must become result-bearing participants before OPFS can be selected.
+  std::unique_ptr<WasmProfilePrefsFenceController>
+      prefs_shutdown_fence_controller_;
 
   bool shutdown_ = false;
   PrefsShutdownFenceState prefs_shutdown_fence_state_ =

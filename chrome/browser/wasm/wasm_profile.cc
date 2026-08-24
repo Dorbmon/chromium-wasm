@@ -26,6 +26,7 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
+#include "chrome/browser/wasm/wasm_profile_prefs_fence_controller.h"
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
@@ -158,6 +159,9 @@ WasmProfile::WasmProfile(base::FilePath profile_path)
 }
 
 WasmProfile::~WasmProfile() {
+  if (prefs_shutdown_fence_controller_) {
+    prefs_shutdown_fence_controller_->Cancel();
+  }
   Shutdown();
   key_.reset();
 }
@@ -210,21 +214,41 @@ void WasmProfile::BeginPrefsShutdownFence(
   CHECK_EQ(prefs_shutdown_fence_state_, PrefsShutdownFenceState::kNotStarted);
   CHECK(prefs_);
   CHECK(json_pref_store_);
+  CHECK(!prefs_shutdown_fence_controller_);
 
   prefs_shutdown_fence_state_ = PrefsShutdownFenceState::kPending;
-
-  // Bind the result back to the UI sequence before handing it to the
-  // JsonPrefStore file runner. WeakPtr is only dereferenced there; the file
-  // runner merely owns the completion callback while it verifies the file.
-  auto complete_on_ui = base::BindPostTask(
-      base::SequencedTaskRunner::GetCurrentDefault(),
+  prefs_shutdown_fence_controller_ =
+      std::make_unique<WasmProfilePrefsFenceController>(
+          base::SequencedTaskRunner::GetCurrentDefault());
+  prefs_shutdown_fence_controller_->Begin(
+      base::BindOnce(&WasmProfile::StartPrefsShutdownFence,
+                     base::Unretained(this)),
       base::BindOnce(&WasmProfile::OnPrefsShutdownFenceComplete,
                      weak_ptr_factory_.GetWeakPtr(), std::move(completion)));
+}
+
+bool WasmProfile::StartPrefsShutdownFence(
+    base::OnceCallback<void(bool success)> completion) {
+  CHECK(shutdown_);
+  CHECK(completion);
+  CHECK_EQ(prefs_shutdown_fence_state_, PrefsShutdownFenceState::kPending);
+  CHECK(prefs_);
+  CHECK(json_pref_store_);
+
+  // Bind the result back to the UI sequence before handing it to the
+  // JsonPrefStore file runner. The registered participant receives it there
+  // and releases its hold; the controller invokes the profile completion only
+  // after that terminal result has been aggregated. The file runner merely
+  // owns the completion callback while it verifies the file.
+  auto complete_on_ui = base::BindPostTask(
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      std::move(completion));
   prefs_->CommitPendingWrite(
       base::OnceClosure(),
       base::BindOnce(&VerifyPersistentPrefsAndReplyOnFileSequence,
                      profile_path_.Append(chrome::kPreferencesFilename),
                      json_pref_store_->GetValues(), std::move(complete_on_ui)));
+  return true;
 }
 
 bool WasmProfile::IsPrefsShutdownFencePending() const {
@@ -244,6 +268,9 @@ void WasmProfile::OnPrefsShutdownFenceComplete(
     base::OnceCallback<void(bool success)> completion,
     bool success) {
   CHECK_EQ(prefs_shutdown_fence_state_, PrefsShutdownFenceState::kPending);
+  CHECK(prefs_shutdown_fence_controller_);
+  CHECK(prefs_shutdown_fence_controller_->HasCompleted());
+  CHECK_EQ(prefs_shutdown_fence_controller_->DidSucceed(), success);
   prefs_shutdown_fence_state_ = success ? PrefsShutdownFenceState::kSucceeded
                                         : PrefsShutdownFenceState::kFailed;
   std::move(completion).Run(success);

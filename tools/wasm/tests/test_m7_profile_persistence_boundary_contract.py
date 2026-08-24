@@ -526,7 +526,8 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         """A completed write must round-trip on the JsonPrefStore file runner."""
 
         for text in (self.profile_header, self.profile):
-            self.assertNotIn("PersistentPrefsShutdownFence", text)
+            self.assertNotIn("wasm_profile_storage", text)
+            self.assertNotIn("wasmfs_", text)
 
         fence = re.search(
             r"void WasmProfile::BeginPrefsShutdownFence\(\s*"
@@ -543,17 +544,51 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             "CHECK(shutdown_)",
             "PrefsShutdownFenceState::kNotStarted",
             "PrefsShutdownFenceState::kPending",
-            "base::BindPostTask(",
-            "base::SequencedTaskRunner::GetCurrentDefault()",
-            "prefs_->CommitPendingWrite(",
-            "base::OnceClosure()",
-            "json_pref_store_->GetValues()",
+            "WasmProfilePrefsFenceController",
+            "prefs_shutdown_fence_controller_->Begin(",
+            "WasmProfile::StartPrefsShutdownFence",
+            "WasmProfile::OnPrefsShutdownFenceComplete",
+            "base::Unretained(this)",
+            "weak_ptr_factory_.GetWeakPtr()",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, fence_body)
         for forbidden in ("base::RunLoop", "WaitableEvent", ".Wait("):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, fence_body)
+
+        starter = re.search(
+            r"bool WasmProfile::StartPrefsShutdownFence\(\s*"
+            r"base::OnceCallback<void\(bool success\)> completion\)\s*\{",
+            self.profile,
+        )
+        self.assertIsNotNone(starter)
+        starter_body = _balanced_body(
+            self.profile,
+            self.profile.find("{", starter.start()),
+            "WasmProfile::StartPrefsShutdownFence",
+        )
+        for required in (
+            "base::BindPostTask(",
+            "base::SequencedTaskRunner::GetCurrentDefault()",
+            "std::move(completion)",
+            "prefs_->CommitPendingWrite(",
+            "base::OnceClosure()",
+            "json_pref_store_->GetValues()",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, starter_body)
+        self.assertNotIn(
+            "WasmProfile::OnPrefsShutdownFenceComplete", starter_body
+        )
+        for forbidden in ("base::RunLoop", "WaitableEvent", ".Wait("):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, starter_body)
+
+        self.assertLess(
+            self.profile.index("void WasmProfile::BeginPrefsShutdownFence"),
+            self.profile.index("bool WasmProfile::StartPrefsShutdownFence"),
+        )
 
         verify = re.search(
             r"void VerifyPersistentPrefsAndReplyOnFileSequence\(", self.profile

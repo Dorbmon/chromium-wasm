@@ -1856,6 +1856,7 @@ source_set("wasm_profile") {
   ]
 
   deps = [
+    ":wasm_profile_prefs_fence_controller",
     ":wasm_session_navigation_journal",
     "//base",
     "//chrome/browser/profiles:profile",
@@ -1876,6 +1877,32 @@ source_set("wasm_profile") {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     deps += [ ":wasm_profile_preferences_smoke" ]
   }
+}
+
+# Wires the normal volatile WasmProfile Preferences shutdown fence into the
+# existing result-bearing coordinator. It does not select WasmFS, OPFS, or any
+# storage backend; the profile remains non-persistent until the separate M7
+# durability and provenance gates pass.
+source_set("wasm_profile_prefs_fence_controller") {
+  public = [ "wasm_profile_prefs_fence_controller.h" ]
+
+  sources = [ "wasm_profile_prefs_fence_controller.cc" ]
+
+  public_deps = [ ":wasm_profile_persistent_prefs_shutdown_participant" ]
+
+  deps = [ "//base" ]
+}
+
+test("wasm_profile_prefs_fence_controller_unittests") {
+  sources = [ "wasm_profile_prefs_fence_controller_unittest.cc" ]
+
+  deps = [
+    ":wasm_profile_prefs_fence_controller",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//testing/gtest",
+  ]
 }
 
 # The test-only M7 Preferences protocol is linked into the source-selected
