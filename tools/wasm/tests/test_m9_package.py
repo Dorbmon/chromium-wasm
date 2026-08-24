@@ -120,13 +120,16 @@ class M9PackageTest(unittest.TestCase):
         )
         return out_dir, record
 
-    def _clean_attestation_patches(self) -> tuple[mock._patch, mock._patch]:
+    def _clean_attestation_patches(
+        self,
+    ) -> tuple[mock._patch, mock._patch, mock._patch]:
         attestation = package.clean_build_attestation
         return (
             mock.patch.object(attestation, "require_clean_top_level_checkout"),
             mock.patch.object(
                 attestation, "checkout_identity", return_value=ATTESTED_CHECKOUT
             ),
+            mock.patch.object(package, "_require_attested_manifest_chromium_ancestry"),
         )
 
     def _snapshot(self, root: Path) -> dict[str, bytes]:
@@ -423,6 +426,10 @@ class M9PackageTest(unittest.TestCase):
             attestation,
             "require_clean_top_level_checkout",
             side_effect=AssertionError("default package staging must not attest"),
+        ), mock.patch.object(
+            package,
+            "_require_attested_manifest_chromium_ancestry",
+            side_effect=AssertionError("default package staging must stay unverified"),
         ):
             dist_dir = self._stage(out_dir=out_dir)
 
@@ -436,10 +443,59 @@ class M9PackageTest(unittest.TestCase):
             (dist_dir / "README.txt").read_text("utf-8"),
         )
 
+    def test_attested_stage_rejects_rewritten_same_tree_source_identity(self) -> None:
+        out_dir, _ = self._make_attested_out_dir()
+        first_patch, second_patch, _ = self._clean_attestation_patches()
+        chromium = self.manifest["chromium"]
+        assert isinstance(chromium, dict)
+        chromium_revision = chromium["revision"]
+        assert isinstance(chromium_revision, str)
+        with (
+            first_patch,
+            second_patch,
+            mock.patch.object(
+                package,
+                "run",
+                side_effect=(None, M0Error("not an ancestor")),
+            ) as git,
+            self.assertRaisesRegex(
+                package.PackageError,
+                "identical tree or rewritten commit is not accepted",
+            ),
+        ):
+            package.package_release(
+                out_dir=out_dir,
+                dist_dir=self.root / "rewritten-source-dist",
+                module_name="chrome_wasm",
+                manifest=self.manifest,
+                port_revision=ATTESTED_CHECKOUT["commit"],
+                clean_build_attestation_path=(
+                    out_dir / package.clean_build_attestation.ATTESTATION_FILENAME
+                ),
+            )
+        self.assertEqual(
+            [
+                mock.call(
+                    ["git", "cat-file", "-e", f"{chromium_revision}^{{commit}}"]
+                ),
+                mock.call(
+                    [
+                        "git",
+                        "merge-base",
+                        "--is-ancestor",
+                        chromium_revision,
+                        ATTESTED_CHECKOUT["commit"],
+                    ]
+                ),
+            ],
+            git.call_args_list,
+        )
+        self.assertFalse((self.root / "rewritten-source-dist").exists())
+
     def test_stages_exact_matching_clean_build_attestation(self) -> None:
         out_dir, record = self._make_attested_out_dir()
-        first_patch, second_patch = self._clean_attestation_patches()
-        with first_patch as clean, second_patch as checkout:
+        first_patch, second_patch, third_patch = self._clean_attestation_patches()
+        with first_patch as clean, second_patch as checkout, third_patch as source:
             result = package.package_release(
                 out_dir=out_dir,
                 dist_dir=self.root / "attested-dist",
@@ -457,6 +513,7 @@ class M9PackageTest(unittest.TestCase):
         )
         self.assertEqual(2, clean.call_count)
         self.assertEqual(2, checkout.call_count)
+        self.assertEqual(2, source.call_count)
         self.assertEqual(
             package.ARTIFACT_SOURCE_PROVENANCE_LOCAL_CLEAN_BUILD_ATTESTED,
             package.verify_release_tree(self.root / "attested-dist")[
@@ -483,6 +540,10 @@ class M9PackageTest(unittest.TestCase):
             (self.root / "attested-dist" / "README.txt").read_text("utf-8"),
         )
         self.assertIn(
+            "same-tree rewritten commit",
+            (self.root / "attested-dist" / "README.txt").read_text("utf-8"),
+        )
+        self.assertIn(
             "not release provenance",
             " ".join(version["known_limitations"]),
         )
@@ -496,8 +557,8 @@ class M9PackageTest(unittest.TestCase):
         attestation_path.write_bytes(
             package.clean_build_attestation._canonical_json_bytes(record)
         )
-        first_patch, second_patch = self._clean_attestation_patches()
-        with first_patch, second_patch, self.assertRaisesRegex(
+        first_patch, second_patch, third_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, third_patch, self.assertRaisesRegex(
             package.PackageError, "does not exactly match"
         ):
             package.package_release(
@@ -512,8 +573,8 @@ class M9PackageTest(unittest.TestCase):
     def test_attested_stage_rejects_stale_selected_artifact(self) -> None:
         out_dir, _ = self._make_attested_out_dir()
         (out_dir / "chrome_wasm.wasm").write_bytes(b"\x00asm-stale-module")
-        first_patch, second_patch = self._clean_attestation_patches()
-        with first_patch, second_patch, self.assertRaisesRegex(
+        first_patch, second_patch, third_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, third_patch, self.assertRaisesRegex(
             package.PackageError, "does not exactly match"
         ):
             package.package_release(
@@ -530,8 +591,8 @@ class M9PackageTest(unittest.TestCase):
     def test_attested_stage_rejects_gn_args_that_no_longer_match_m6(self) -> None:
         out_dir, _ = self._make_attested_out_dir()
         (out_dir / "args.gn").write_text('is_debug = true\n', encoding="utf-8")
-        first_patch, second_patch = self._clean_attestation_patches()
-        with first_patch, second_patch, self.assertRaisesRegex(
+        first_patch, second_patch, third_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, third_patch, self.assertRaisesRegex(
             package.PackageError, "cannot be validated"
         ):
             package.package_release(
@@ -584,8 +645,8 @@ class M9PackageTest(unittest.TestCase):
 
     def test_attested_stage_requires_the_current_attested_commit(self) -> None:
         out_dir, _ = self._make_attested_out_dir()
-        first_patch, second_patch = self._clean_attestation_patches()
-        with first_patch, second_patch, self.assertRaisesRegex(
+        first_patch, second_patch, third_patch = self._clean_attestation_patches()
+        with first_patch, second_patch, third_patch, self.assertRaisesRegex(
             package.PackageError, "staging checkout does not match"
         ):
             package.package_release(

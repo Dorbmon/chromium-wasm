@@ -222,7 +222,9 @@ README_LOCAL_CLEAN_BUILD_ATTESTED_TEXT = README_TEXT.replace(
     'they were built from that checkout.',
     'The copied build artifacts have\n'
     'build.artifact_source_provenance = "local_clean_build_attested"; at staging\n'
-    'time they exactly matched a local clean-build attestation for this checkout.',
+    'time they exactly matched a local clean-build attestation for this checkout. '
+    'That label requires the manifest Chromium commit to be an ancestor of the '
+    'staging checkout; a same-tree rewritten commit is not accepted.',
 ).replace(
     '  * The recorded staging checkout is not a verified source identity for the\n'
     '    copied build artifacts.',
@@ -441,6 +443,50 @@ def _load_clean_build_attestation(
     return value
 
 
+def _require_attested_manifest_chromium_ancestry(
+    manifest: Mapping[str, object], checkout_commit: str
+) -> None:
+    """Require a commit-level source binding for an attested package label.
+
+    A copied source tree can retain every file while losing its upstream parent
+    edge.  That is not sufficient source provenance for the stronger local
+    clean-build label, so this check intentionally has no tree-equality
+    fallback.
+    """
+
+    chromium = manifest.get("chromium")
+    if not isinstance(chromium, Mapping):
+        raise PackageError("attested package toolchain manifest lacks Chromium")
+    chromium_revision = chromium.get("revision")
+    if not isinstance(chromium_revision, str) or not GIT_REVISION_RE.fullmatch(
+        chromium_revision
+    ):
+        raise PackageError("attested package Chromium source revision is invalid")
+    if not isinstance(checkout_commit, str) or not GIT_REVISION_RE.fullmatch(
+        checkout_commit
+    ):
+        raise PackageError("attested package checkout identity is invalid")
+    try:
+        run(
+            ["git", "cat-file", "-e", f"{chromium_revision}^{{commit}}"]
+        )
+        run(
+            [
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                chromium_revision,
+                checkout_commit,
+            ]
+        )
+    except M0Error as exc:
+        raise PackageError(
+            "attested package requires the manifest Chromium revision to be an "
+            "ancestor of the staging checkout; an identical tree or rewritten "
+            "commit is not accepted as source provenance"
+        ) from exc
+
+
 def _expected_clean_build_attestation(
     *,
     out_dir: Path,
@@ -464,6 +510,9 @@ def _expected_clean_build_attestation(
             raise PackageError(
                 "clean-build attestation manifest does not match the current checkout"
             )
+        _require_attested_manifest_chromium_ancestry(
+            current_manifest, checkout["commit"]
+        )
         expected_args = clean_build_attestation.expected_m6_chrome_gn_args(
             current_manifest
         )
