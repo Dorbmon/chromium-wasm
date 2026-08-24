@@ -53,6 +53,7 @@ def successful_page_result() -> dict[str, object]:
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
         "pageWebAssemblyAdd42Observed": True,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "pageWebAssemblyTablesObserved": False,
         "pageWebAssemblyMemoriesObserved": False,
         "pageWebAssemblyExceptionsObserved": False,
@@ -102,6 +103,10 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
             (
                 ("pageWebAssemblyUnavailableObserved", False),
                 ("pageWebAssemblyAdd42Observed", True),
+                (
+                    "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+                    False,
+                ),
                 ("pageWebAssemblyTablesObserved", False),
                 ("pageWebAssemblyMemoriesObserved", False),
                 ("pageWebAssemblyExceptionsObserved", False),
@@ -272,7 +277,13 @@ class M8PageWebAssemblyDomSmokeTest(unittest.TestCase):
         )
         self.assertEqual(
             smoke.DEFAULT_SMOKE_CONFIG.page_webassembly_expectations,
-            (("pageWebAssemblyUnavailableObserved", True),),
+            (
+                ("pageWebAssemblyUnavailableObserved", True),
+                (
+                    "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+                    False,
+                ),
+            ),
         )
         self.assertIsNone(smoke.DEFAULT_SMOKE_CONFIG.query_mode)
 

@@ -1354,6 +1354,13 @@ void WasmBrowserLifecycle::
           kInstantiateStreamingDataUrlModuleAdd42);
 }
 
+void WasmBrowserLifecycle::
+    StartPageWebAssemblyInstantiateFunctionImportDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kInstantiateFunctionImportModuleInstanceAdd42);
+}
+
 void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
     WasmBrowserDevToolsProtocolSmokeMode mode) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);

@@ -53,6 +53,7 @@ def successful_page_table_growth_result() -> dict[str, object]:
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
         "pageWebAssemblyAdd42Observed": False,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "pageWebAssemblyTablesObserved": True,
         "pageWebAssemblyTableConstructedImportedIndirectCallObserved": True,
         "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved": True,
@@ -119,6 +120,10 @@ class M8PageWebAssemblyTableGrowthDomSmokeTest(unittest.TestCase):
             (
                 ("pageWebAssemblyUnavailableObserved", False),
                 ("pageWebAssemblyAdd42Observed", False),
+                (
+                    "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+                    False,
+                ),
                 ("pageWebAssemblyTablesObserved", True),
                 (
                     "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -321,7 +326,13 @@ class M8PageWebAssemblyTableGrowthDomSmokeTest(unittest.TestCase):
         )
         self.assertEqual(
             smoke.DEFAULT_SMOKE_CONFIG.page_webassembly_expectations,
-            (("pageWebAssemblyUnavailableObserved", True),),
+            (
+                ("pageWebAssemblyUnavailableObserved", True),
+                (
+                    "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+                    False,
+                ),
+            ),
         )
         self.assertIsNone(smoke.DEFAULT_SMOKE_CONFIG.query_mode)
         self.assertIs(

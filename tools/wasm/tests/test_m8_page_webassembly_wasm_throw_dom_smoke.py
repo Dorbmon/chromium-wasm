@@ -119,6 +119,7 @@ def successful_wasm_throw_result() -> dict[str, object]:
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
         "pageWebAssemblyAdd42Observed": False,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "pageWebAssemblyTablesObserved": False,
         "pageWebAssemblyTableConstructedImportedIndirectCallObserved": False,
         "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved": False,
@@ -194,6 +195,10 @@ class M8PageWebAssemblyWasmThrowDomSmokeTest(unittest.TestCase):
             (
                 ("pageWebAssemblyUnavailableObserved", False),
                 ("pageWebAssemblyAdd42Observed", False),
+                (
+                    "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+                    False,
+                ),
                 ("pageWebAssemblyTablesObserved", False),
                 (
                     "pageWebAssemblyTableConstructedImportedIndirectCallObserved",

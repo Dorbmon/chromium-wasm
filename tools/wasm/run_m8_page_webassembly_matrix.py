@@ -49,6 +49,7 @@ PAGE_WEBASSEMBLY_MODE_FLAGS = (
     "--page-webassembly-wasm-throw-payload",
     "--page-webassembly-js-throw-payload",
     "--page-webassembly-instantiate-streaming",
+    "--page-webassembly-instantiate-function-import",
 )
 
 
@@ -81,14 +82,15 @@ def _runner_page_webassembly_mode_flags() -> tuple[str, ...]:
         f"--{page_wasm_smoke.PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MODE}",
         f"--{page_wasm_smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MODE}",
         f"--{page_wasm_smoke.PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MODE}",
+        f"--{page_wasm_smoke.PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_MODE}",
     )
 
 
 def validate_page_webassembly_mode_flags(mode_flags: tuple[str, ...]) -> None:
     """Reject an incomplete, duplicate, reordered, or unknown matrix."""
 
-    if len(mode_flags) != 12:
-        raise M0Error("M8 page-WebAssembly matrix must contain exactly 12 modes")
+    if len(mode_flags) != 13:
+        raise M0Error("M8 page-WebAssembly matrix must contain exactly 13 modes")
     if any(not isinstance(mode_flag, str) for mode_flag in mode_flags):
         raise M0Error("M8 page-WebAssembly matrix contains a non-string mode")
     if len(set(mode_flags)) != len(mode_flags):

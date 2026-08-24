@@ -233,6 +233,14 @@ class WasmBrowserLifecycle final {
   // cancellation, errors, tables, memories, exceptions, or threads.
   void StartPageWebAssemblyInstantiateStreamingDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that awaits
+  // WebAssembly.instantiate for one literal module with one imported i32 add
+  // function, checks its Module/Instance pair, and requires one JavaScript
+  // callback with (20, 22) before validating 42. It does not exercise general
+  // imports, coercions, cancellation, errors, tables, memories, exceptions,
+  // or threads.
+  void StartPageWebAssemblyInstantiateFunctionImportDevToolsProtocolSmoke();
+
   // Starts the test-only fixed WebContents AX snapshot proof. It takes one
   // snapshot and permits only its fixed static semantic text into the passive
   // host mirror; it is not an interactive accessibility bridge.

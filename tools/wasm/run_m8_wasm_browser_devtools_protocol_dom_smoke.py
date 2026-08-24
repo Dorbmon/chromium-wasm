@@ -281,6 +281,23 @@ PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SCOPE = (
 PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SWITCH = (
     "--wasm-browser-m8-page-webassembly-instantiate-streaming-smoke"
 )
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SENTINEL = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_DOM"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_MODE = (
+    "page-webassembly-instantiate-function-import"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_CASE = (
+    "browser_page_webassembly_instantiate_function_import_m8"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-webassembly-instantiate-function-"
+    "import-module-instance-callback-i32-20-22-add42-console-event-detach-close"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SWITCH = (
+    "--wasm-browser-m8-page-webassembly-instantiate-function-import-smoke"
+)
 NETWORK_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK"
 DOM_GET_DOCUMENT_MARKER = (
@@ -343,6 +360,10 @@ PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER = (
 PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER = (
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "INSTANTIATE_STREAMING_DATA_URL_APPLICATION_WASM_MODULE_INSTANCE_ADD_42_OK"
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "INSTANTIATE_FUNCTION_IMPORT_MODULE_INSTANCE_CALLBACK_I32_20_22_ADD_42_OK"
 )
 PAGE_JAVASCRIPT_SEMANTICS_MARKER = (
     "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_SEMANTICS:"
@@ -526,6 +547,20 @@ PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_LIMITATIONS = (
     "does_not_exercise_http_wisp_or_chunked_streaming",
     "does_not_exercise_arbitrary_fetch_sources_cors_cache_or_service_workers",
     "does_not_exercise_imports_cancellation_or_streaming_errors",
+    "does_not_exercise_page_webassembly_tables",
+    "does_not_exercise_page_webassembly_memories",
+    "does_not_exercise_page_webassembly_exceptions",
+    "does_not_exercise_page_webassembly_memory_growth",
+    "does_not_exercise_page_webassembly_threads",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_claim_m8_compatibility_completion",
+)
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_LIMITATIONS = (
+    "only_exercises_one_fixed_page_webassembly_instantiate_function_import_"
+    "module_instance_callback_i32_20_22_add42_path",
+    "does_not_exercise_general_import_resolution_or_coercions",
+    "does_not_exercise_module_compile_streaming_or_instantiate_streaming",
+    "does_not_exercise_cancellation_or_error_paths",
     "does_not_exercise_page_webassembly_tables",
     "does_not_exercise_page_webassembly_memories",
     "does_not_exercise_page_webassembly_exceptions",
@@ -762,6 +797,10 @@ DEFAULT_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     ),
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", True),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
     ),
     limitations=LIMITATIONS,
 )
@@ -892,6 +931,10 @@ PAGE_WEBASSEMBLY_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", True),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         ("pageWebAssemblyMemoriesObserved", False),
         ("pageWebAssemblyExceptionsObserved", False),
@@ -920,6 +963,10 @@ PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         ("pageWebAssemblyMemoriesObserved", True),
         (
@@ -952,6 +999,10 @@ PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", True),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -985,6 +1036,10 @@ PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", True),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -1022,6 +1077,10 @@ PAGE_WEBASSEMBLY_MEMORY_GROWTH_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         ("pageWebAssemblyTableGrowthObserved", False),
         ("pageWebAssemblyMemoriesObserved", True),
@@ -1056,6 +1115,10 @@ PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -1102,6 +1165,10 @@ PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SMOKE_CONFIG = DevToolsProtocolSmokeCon
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -1152,6 +1219,10 @@ PAGE_WEBASSEMBLY_WASM_TABLE_GROW_OPCODE_SMOKE_CONFIG = DevToolsProtocolSmokeConf
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", True),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -1207,6 +1278,10 @@ PAGE_WEBASSEMBLY_WASM_THROW_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -1258,6 +1333,10 @@ PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -1317,6 +1396,10 @@ PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     page_webassembly_expectations=(
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
+        (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
         ("pageWebAssemblyTablesObserved", False),
         (
             "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
@@ -1381,6 +1464,10 @@ PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG = DevToolsProtocolSmokeConfi
         ("pageWebAssemblyUnavailableObserved", False),
         ("pageWebAssemblyAdd42Observed", False),
         (
+            "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+            False,
+        ),
+        (
             "pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed",
             True,
         ),
@@ -1426,6 +1513,79 @@ PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG = DevToolsProtocolSmokeConfi
         ("pageWebAssemblyThreadsObserved", False),
     ),
     limitations=PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_LIMITATIONS,
+)
+
+PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SMOKE_CONFIG = (
+    DevToolsProtocolSmokeConfig(
+        mode_id=PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_MODE,
+        query_mode=PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_MODE,
+        sentinel=PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SENTINEL,
+        case=PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_CASE,
+        scope=PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SCOPE,
+        runtime_arguments=(PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SWITCH,),
+        native_markers=(
+            NETWORK_ENABLE_MARKER,
+            RUNTIME_ENABLE_MARKER,
+            RUNTIME_EVALUATE_MARKER,
+            PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_MARKER,
+            RUNTIME_CONSOLE_API_CALLED_MARKER,
+            DETACHED_MARKER,
+            LIFECYCLE_PASS_MARKER,
+        ),
+        page_webassembly_expectations=(
+            ("pageWebAssemblyUnavailableObserved", False),
+            ("pageWebAssemblyAdd42Observed", False),
+            (
+                "pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed",
+                False,
+            ),
+            (
+                "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+                True,
+            ),
+            ("pageWebAssemblyTablesObserved", False),
+            (
+                "pageWebAssemblyTableConstructedImportedIndirectCallObserved",
+                False,
+            ),
+            (
+                "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved",
+                False,
+            ),
+            ("pageWebAssemblyTableGrowthObserved", False),
+            (
+                "pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved",
+                False,
+            ),
+            ("pageWebAssemblyMemoriesObserved", False),
+            ("pageWebAssemblyMemoryConstructedImportedReadWriteObserved", False),
+            (
+                "pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved",
+                False,
+            ),
+            ("pageWebAssemblyExceptionsObserved", False),
+            (
+                "pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved",
+                False,
+            ),
+            ("pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved", False),
+            (
+                "pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved",
+                False,
+            ),
+            (
+                "pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved",
+                False,
+            ),
+            ("pageWebAssemblyMemoryGrowthObserved", False),
+            (
+                "pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved",
+                False,
+            ),
+            ("pageWebAssemblyThreadsObserved", False),
+        ),
+        limitations=PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_LIMITATIONS,
+    )
 )
 
 
@@ -1592,6 +1752,16 @@ def smoke_config_for_page_webassembly_instantiate_streaming(
     )
 
 
+def smoke_config_for_page_webassembly_instantiate_function_import(
+    page_webassembly_instantiate_function_import: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SMOKE_CONFIG
+        if page_webassembly_instantiate_function_import
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
 def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> None:
     if smoke_config not in (
         DEFAULT_SMOKE_CONFIG,
@@ -1611,6 +1781,7 @@ def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> No
         PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG,
+        PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SMOKE_CONFIG,
     ):
         raise M0Error("DevTools protocol smoke configuration is not fixed")
 
@@ -1922,6 +2093,11 @@ def _require_unique_ordered_markers(
         runtime_marker = PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_SMOKE_CONFIG:
         runtime_marker = PAGE_WEBASSEMBLY_INSTANTIATE_STREAMING_MARKER
+    elif (
+        smoke_config
+        == PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_SMOKE_CONFIG
+    ):
+        runtime_marker = PAGE_WEBASSEMBLY_INSTANTIATE_FUNCTION_IMPORT_MARKER
     else:
         runtime_marker = PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER
     dom_get_document_ordered = (
@@ -2225,6 +2401,14 @@ def main() -> int:
             "data:application/wasm module/instance/add42 DevTools smoke"
         ),
     )
+    parser.add_argument(
+        "--page-webassembly-instantiate-function-import",
+        action="store_true",
+        help=(
+            "run the fixed native page-WebAssembly instantiate() function "
+            "import callback/module-instance/add42 DevTools smoke"
+        ),
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
     if args.timeout < 2.0:
@@ -2248,6 +2432,7 @@ def main() -> int:
         + int(args.page_webassembly_wasm_throw_payload)
         + int(args.page_webassembly_js_throw_payload)
         + int(args.page_webassembly_instantiate_streaming)
+        + int(args.page_webassembly_instantiate_function_import)
         > 1
     ):
         parser.error(
@@ -2262,7 +2447,9 @@ def main() -> int:
             "--page-webassembly-wasm-table-grow-opcode, --page-webassembly-"
             "wasm-throw, --page-webassembly-wasm-throw-payload, and "
             "--page-webassembly-js-throw-payload, and "
-            "--page-webassembly-instantiate-streaming are mutually exclusive"
+            "--page-webassembly-instantiate-streaming, and "
+            "--page-webassembly-instantiate-function-import are mutually "
+            "exclusive"
         )
     smoke_config = (
         smoke_config_for_page_javascript_async_rejection(True)
@@ -2271,38 +2458,44 @@ def main() -> int:
             smoke_config_for_page_javascript_semantics(True)
             if args.page_javascript_semantics
             else (
-                smoke_config_for_page_webassembly_instantiate_streaming(True)
-                if args.page_webassembly_instantiate_streaming
+                smoke_config_for_page_webassembly_instantiate_function_import(
+                    True
+                )
+                if args.page_webassembly_instantiate_function_import
                 else (
-                    smoke_config_for_page_webassembly_js_throw_payload(True)
-                    if args.page_webassembly_js_throw_payload
+                    smoke_config_for_page_webassembly_instantiate_streaming(True)
+                    if args.page_webassembly_instantiate_streaming
                     else (
-                        smoke_config_for_page_webassembly_wasm_throw_payload(True)
-                        if args.page_webassembly_wasm_throw_payload
+                        smoke_config_for_page_webassembly_js_throw_payload(True)
+                        if args.page_webassembly_js_throw_payload
                         else (
-                            smoke_config_for_page_webassembly_wasm_throw(True)
-                            if args.page_webassembly_wasm_throw
+                            smoke_config_for_page_webassembly_wasm_throw_payload(True)
+                            if args.page_webassembly_wasm_throw_payload
                             else (
-                                smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
-                                if args.page_webassembly_wasm_memory_grow_opcode
+                                smoke_config_for_page_webassembly_wasm_throw(True)
+                                if args.page_webassembly_wasm_throw
                                 else (
-                                    smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
-                                    if args.page_webassembly_wasm_table_grow_opcode
+                                    smoke_config_for_page_webassembly_wasm_memory_grow_opcode(True)
+                                    if args.page_webassembly_wasm_memory_grow_opcode
                                     else (
-                                        smoke_config_for_page_webassembly_exceptions(True)
-                                        if args.page_webassembly_exceptions
+                                        smoke_config_for_page_webassembly_wasm_table_grow_opcode(True)
+                                        if args.page_webassembly_wasm_table_grow_opcode
                                         else (
-                                            smoke_config_for_page_webassembly_table_growth(True)
-                                            if args.page_webassembly_table_growth
+                                            smoke_config_for_page_webassembly_exceptions(True)
+                                            if args.page_webassembly_exceptions
                                             else (
-                                                smoke_config_for_page_webassembly_memory_growth(True)
-                                                if args.page_webassembly_memory_growth
+                                                smoke_config_for_page_webassembly_table_growth(True)
+                                                if args.page_webassembly_table_growth
                                                 else (
-                                                    smoke_config_for_page_webassembly_table(True)
-                                                    if args.page_webassembly_table
-                                                    else smoke_config_for_page_webassembly(
-                                                        args.page_webassembly,
-                                                        args.page_webassembly_memory,
+                                                    smoke_config_for_page_webassembly_memory_growth(True)
+                                                    if args.page_webassembly_memory_growth
+                                                    else (
+                                                        smoke_config_for_page_webassembly_table(True)
+                                                        if args.page_webassembly_table
+                                                        else smoke_config_for_page_webassembly(
+                                                            args.page_webassembly,
+                                                            args.page_webassembly_memory,
+                                                        )
                                                     )
                                                 )
                                             )

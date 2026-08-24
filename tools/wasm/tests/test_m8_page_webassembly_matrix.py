@@ -94,7 +94,7 @@ class M8PageWebAssemblyMatrixTest(unittest.TestCase):
         )
 
     def test_omitted_mode_is_rejected(self) -> None:
-        with self.assertRaisesRegex(M0Error, "exactly 12 modes"):
+        with self.assertRaisesRegex(M0Error, "exactly 13 modes"):
             matrix.validate_page_webassembly_mode_flags(
                 matrix.PAGE_WEBASSEMBLY_MODE_FLAGS[:-1]
             )

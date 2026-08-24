@@ -65,6 +65,7 @@ def successful_instantiate_streaming_result() -> dict[str, object]:
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
         "pageWebAssemblyAdd42Observed": False,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed": True,
         "pageWebAssemblyTablesObserved": False,
         "pageWebAssemblyTableConstructedImportedIndirectCallObserved": False,

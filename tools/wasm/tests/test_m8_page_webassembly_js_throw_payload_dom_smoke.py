@@ -138,6 +138,7 @@ def successful_js_throw_payload_result() -> dict[str, object]:
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
         "pageWebAssemblyAdd42Observed": False,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "pageWebAssemblyTablesObserved": False,
         "pageWebAssemblyTableConstructedImportedIndirectCallObserved": False,
         "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved": False,

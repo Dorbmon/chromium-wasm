@@ -51,6 +51,7 @@ def successful_result() -> dict[str, object]:
         "domGetDocumentObserved": True,
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": True,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "runtimeConsoleApiCalledObserved": True,
         "detachedObserved": True,
         "lifecyclePassObserved": True,

@@ -123,6 +123,7 @@ def successful_wasm_memory_grow_opcode_result() -> dict[str, object]:
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
         "pageWebAssemblyAdd42Observed": False,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "pageWebAssemblyTablesObserved": False,
         "pageWebAssemblyTableConstructedImportedIndirectCallObserved": False,
         "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved": False,
@@ -204,6 +205,10 @@ class M8PageWebAssemblyWasmMemoryGrowOpcodeDomSmokeTest(unittest.TestCase):
             (
                 ("pageWebAssemblyUnavailableObserved", False),
                 ("pageWebAssemblyAdd42Observed", False),
+                (
+                    "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed",
+                    False,
+                ),
                 ("pageWebAssemblyTablesObserved", False),
                 (
                     "pageWebAssemblyTableConstructedImportedIndirectCallObserved",

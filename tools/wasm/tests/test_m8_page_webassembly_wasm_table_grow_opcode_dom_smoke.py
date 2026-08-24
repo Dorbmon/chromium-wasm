@@ -179,6 +179,7 @@ def successful_wasm_table_grow_opcode_result() -> dict[str, object]:
         "runtimeEvaluateObserved": True,
         "pageWebAssemblyUnavailableObserved": False,
         "pageWebAssemblyAdd42Observed": False,
+        "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
         "pageWebAssemblyTablesObserved": True,
         "pageWebAssemblyTableConstructedImportedIndirectCallObserved": False,
         "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved": False,
@@ -263,6 +264,7 @@ class M8PageWebAssemblyWasmTableGrowOpcodeDomSmokeTest(unittest.TestCase):
             {
                 "pageWebAssemblyUnavailableObserved": False,
                 "pageWebAssemblyAdd42Observed": False,
+                "pageWebAssemblyInstantiateFunctionImportModuleInstanceCallbackI32Add42Observed": False,
                 "pageWebAssemblyTablesObserved": True,
                 "pageWebAssemblyTableConstructedImportedIndirectCallObserved": False,
                 "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved": False,
