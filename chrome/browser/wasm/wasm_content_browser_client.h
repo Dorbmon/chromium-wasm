@@ -44,7 +44,10 @@ class WasmContentBrowserClient final : public content::ContentBrowserClient {
   std::string GetProduct() override;
   std::string GetUserAgent() override;
   blink::UserAgentMetadata GetUserAgentMetadata() override;
+  bool AllowCompressionDictionaryTransport(
+      content::BrowserContext* context) override;
   bool IsHandledURL(const GURL& url) override;
+  bool ShouldEnableBtm(content::BrowserContext* browser_context) override;
 };
 
 #endif  // CHROME_BROWSER_WASM_WASM_CONTENT_BROWSER_CLIENT_H_

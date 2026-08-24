@@ -193,6 +193,16 @@ class M6WasmBrowserNormalLifecycleNodeSmokeTest(unittest.TestCase):
                 with self.assertRaisesRegex(M0Error, fragment):
                     runner.validate_result(invalid, output)
 
+    def test_validate_result_rejects_undrained_volatile_profile_stores(self) -> None:
+        result = _passing_result()
+        base_output = f"{runner.READY_MARKER}\n{runner.PASS_MARKER}"
+        for diagnostic in runner.UNDRAINED_VOLATILE_PROFILE_DIAGNOSTICS:
+            with self.subTest(diagnostic=diagnostic):
+                with self.assertRaisesRegex(
+                    M0Error, "undrained volatile-profile store"
+                ):
+                    runner.validate_result(result, f"{base_output}\n{diagnostic}")
+
     def test_snapshot_materializes_captured_bytes_after_source_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             out_dir = Path(temporary) / "out"

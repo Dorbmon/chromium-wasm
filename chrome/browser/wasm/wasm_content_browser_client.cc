@@ -69,6 +69,13 @@ blink::UserAgentMetadata WasmContentBrowserClient::GetUserAgentMetadata() {
   return embedder_support::GetUserAgentMetadata();
 }
 
+bool WasmContentBrowserClient::AllowCompressionDictionaryTransport(
+    content::BrowserContext* /*context*/) {
+  // This service owns profile-backed dictionary state. Keep it disabled until
+  // it has durable backing and a result-bearing terminal drain at shutdown.
+  return false;
+}
+
 bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
   if (!url.is_valid())
     return false;
@@ -84,4 +91,11 @@ bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
            IsWasmRootChromeUrl(url, kWasmHistoryHost) ||
            IsWasmRootChromeUrl(url, kWasmDownloadsHost) ||
            url.host() == kWasmThemeHost || url.host() == kWasmResourcesHost));
+}
+
+bool WasmContentBrowserClient::ShouldEnableBtm(
+    content::BrowserContext* /*browser_context*/) {
+  // This service owns profile-backed SQLite state. Keep it disabled until it
+  // has durable backing and a result-bearing terminal drain at shutdown.
+  return false;
 }

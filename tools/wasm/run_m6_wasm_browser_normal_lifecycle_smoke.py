@@ -61,6 +61,17 @@ _VERSION_IDENTITY_FIELDS = frozenset(("chromium", "v8", "emscripten", "port"))
 ARTIFACT_DELIVERY = "private-temporary-file-snapshot"
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
 
+# The normal Wasm profile is intentionally volatile until OPFS has durable
+# storage and a terminal, result-bearing shutdown lifecycle. These optional
+# services otherwise create profile-local SQLite stores with no such drain
+# result, so their diagnostic signatures make the normal lifecycle fail
+# closed. This does not assert that all profile persistence is supported.
+UNDRAINED_VOLATILE_PROFILE_DIAGNOSTICS = (
+    "content/browser/btm/btm_database.cc",
+    "Failed to initialize the DIPS SQLite database.",
+    "Unable to open SharedDictionary DB.",
+)
+
 
 @dataclass(frozen=True)
 class ArtifactSnapshot:
@@ -408,6 +419,13 @@ def validate_result(result: dict[str, Any], output: str) -> None:
         raise M0Error("ordinary Browser runtime is missing its pass marker")
     if result.get("hostShutdownRequests") != [1, 0]:
         raise M0Error("ordinary Browser host shutdown ABI was not one-shot")
+
+    for diagnostic in UNDRAINED_VOLATILE_PROFILE_DIAGNOSTICS:
+        if diagnostic in output:
+            raise M0Error(
+                "ordinary Browser activated an undrained volatile-profile "
+                f"store: {diagnostic}"
+            )
 
     browser_smoke._require_exact_int(
         result.get("canvasCopies"), "ordinary Browser canvas copy count", minimum=1
