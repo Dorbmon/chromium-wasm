@@ -44,7 +44,12 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_database_smoke.h"  // nogncheck
 #endif
-#include "chrome/browser/wasm/wasm_profile_storage.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// The experimental M7 target alone supplies this header and dependency. GN's
+// include checker does not evaluate target-specific definitions.
+#include "chrome/browser/wasm/wasm_profile_storage.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_browser_view_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_core_smoke.h"
 #include "chrome/browser/wasm/wasm_browser_window_lifecycle.h"
@@ -267,21 +272,24 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   if (!browser_process_) {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
   if (!chrome::IsWasmProfileStorageMounted()) {
-    LOG(ERROR) << "chrome_wasm profile storage is not mounted";
+    LOG(ERROR) << "chrome_wasm experimental profile storage is not mounted";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
+#endif
 
   base::FilePath user_data_directory;
   if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)) {
-    LOG(ERROR) << "chrome_wasm could not resolve its mounted profile root";
+    LOG(ERROR) << "chrome_wasm could not resolve its profile root";
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
   const base::FilePath profile_path =
       user_data_directory.AppendASCII("Default");
   if (!base::CreateDirectory(profile_path)) {
-    LOG(ERROR) << "chrome_wasm could not create its mounted profile path";
+    LOG(ERROR) << "chrome_wasm could not create its profile path";
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
@@ -306,10 +314,13 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   if (!profile_) {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
   if (!chrome::NotifyWasmProfileStorageProfileCreated()) {
     LOG(ERROR) << "chrome_wasm could not admit its profile storage lifecycle";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
+#endif
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
   // The M7 two-fresh-module Preferences acceptance intentionally stops here:
@@ -1042,9 +1053,9 @@ void WasmBrowserMainParts::FinishShutdown() {
     // the JsonPrefStore has committed and strictly read back Preferences on
     // its file sequence. Do not use a nested RunLoop or block this sequence.
     profile_->Shutdown();
-    if (!profile_->HasPersistentPrefsShutdownFenceCompleted()) {
-      if (!profile_->IsPersistentPrefsShutdownFencePending()) {
-        profile_->BeginPersistentPrefsShutdownFence(base::BindOnce(
+    if (!profile_->HasPrefsShutdownFenceCompleted()) {
+      if (!profile_->IsPrefsShutdownFencePending()) {
+        profile_->BeginPrefsShutdownFence(base::BindOnce(
             [](base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
               if (!main_parts) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
@@ -1062,8 +1073,8 @@ void WasmBrowserMainParts::FinishShutdown() {
               chrome::NotifyWasmProfileDatabaseSmokeFenceResult(success);
 #endif
               if (!success) {
-                LOG(ERROR) << "chrome_wasm Preferences persistence fence "
-                              "failed";
+                LOG(ERROR) << "chrome_wasm Preferences shutdown write/readback "
+                              "fence failed";
               }
               // Re-enter only after the UI-sequence state changed to a
               // terminal result. This is the sole path that may quit the UI
@@ -1074,13 +1085,21 @@ void WasmBrowserMainParts::FinishShutdown() {
       }
       return;
     }
-    if (!profile_->DidPersistentPrefsShutdownFenceSucceed()) {
+    const bool prefs_shutdown_fence_succeeded =
+        profile_->DidPrefsShutdownFenceSucceed();
+    if (!prefs_shutdown_fence_succeeded) {
+      LOG(ERROR) << "chrome_wasm Preferences shutdown write/readback fence "
+                    "failed";
+    }
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    if (!prefs_shutdown_fence_succeeded) {
       // ShutdownFoundation intentionally withholds the storage lifecycle
       // acknowledgement. ChromeMain's scoped backend drain will then
       // retain the lease and turn this otherwise normal Content result into a
       // non-normal process exit.
       LOG(ERROR) << "chrome_wasm will retain its OPFS profile lease after a "
-                    "failed Preferences persistence fence";
+                    "failed Preferences shutdown write/readback fence";
     } else {
       // Complete the Chrome-owned profile handoff before quitting the UI loop.
       // PostMainMessageLoopRun must never be the first place that releases
@@ -1118,6 +1137,11 @@ void WasmBrowserMainParts::FinishShutdown() {
       }
 #endif
     }
+#else
+    // Normal Chrome's profile path is volatile. The completed fence verifies
+    // orderly write/readback shutdown but does not establish reload durability.
+    profile_.reset();
+#endif
   }
 
   if (main_message_loop_quit_closure_) {
@@ -1146,12 +1170,18 @@ void WasmBrowserMainParts::ShutdownFoundation() {
   }
   if (profile_) {
     profile_->Shutdown();
-    // A normal FinishShutdown() releases the profile and acknowledges storage
-    // before it quits the UI loop. Reaching this fallback means startup or
-    // persistence failed before that fence, so retain the leased OPFS backend
-    // by neither resetting |profile_| nor notifying storage.
+    // A normal FinishShutdown() releases the profile before it quits the UI
+    // loop. Reaching this fallback means startup or the write/readback fence
+    // failed before that terminal handoff.
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
     LOG(ERROR) << "chrome_wasm retains its OPFS profile lease because "
                   "Preferences did not pass their shutdown fence";
+#else
+    LOG(ERROR) << "chrome_wasm releases its incomplete volatile profile "
+                  "after a Preferences shutdown write/readback fence failure";
+    profile_.reset();
+#endif
   }
   if (browser_process_) {
     browser_process_.reset();

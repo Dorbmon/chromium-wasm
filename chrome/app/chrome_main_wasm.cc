@@ -23,7 +23,12 @@
 // definition.
 #include "chrome/browser/wasm/wasm_profile_database_smoke.h"  // nogncheck
 #endif
-#include "chrome/browser/wasm/wasm_profile_storage.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// The experimental M7 GN configurations alone supply this header and target.
+// GN's include checker does not evaluate target-specific definitions.
+#include "chrome/browser/wasm/wasm_profile_storage.h"  // nogncheck
+#endif
 #include "chrome/common/chrome_result_codes.h"
 #include "content/public/app/content_main.h"
 #include "content/public/common/content_switches.h"
@@ -75,7 +80,6 @@ const base::CommandLine& GetInitialBrowserCommandLine() {
 
 extern "C" int ChromeMain(int argc, const char** argv) {
   int result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
-  bool profile_storage_initialized = false;
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
   bool preferences_smoke_enabled = false;
 #endif
@@ -142,25 +146,24 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       GetInitialCommandLineStorage() = *command_line;
     }
 
-    // This must happen before Content's delegate can register or resolve the
-    // /profile path. The leased backend has no in-memory or unleased fallback:
-    // a missing Web Locks/OPFS/pthread capability is a startup failure.
+    // The experimental M7 profile-storage backend must mount before Content's
+    // delegate can register or resolve /profile. Normal Chrome deliberately
+    // uses the volatile configured profile path until that backend is pinned
+    // and its durability lifecycle is proven.
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
     if (preferences_smoke_requested && !preferences_smoke_enabled) {
       // Invalid test input stops before the profile mount. The helper already
       // emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
-    } else if (!(profile_storage_initialized =
 #elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
     if (database_smoke_requested && !database_smoke_enabled) {
       // Invalid test input stops before the profile mount. The helper already
       // emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
-    } else if (!(profile_storage_initialized =
-#else
-    if (!(profile_storage_initialized =
 #endif
-                     chrome::InitializeWasmProfileStorage())) {
+    } else if (!chrome::InitializeWasmProfileStorage()) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
       chrome::ReportWasmProfilePreferencesSmokeFailure(
           chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
@@ -183,6 +186,13 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 
       result = content::ContentMain(std::move(params));
     }
+#else
+    // The normal and M6 targets use /profile on the volatile filesystem. Do
+    // not select the unpinned experimental OPFS/WasmFS backend merely to boot
+    // Chrome; path setup remains owned by the Wasm Chrome paths component.
+    base::PoissonAllocationSampler::Init();
+    result = content::ContentMain(std::move(params));
+#endif
   }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
@@ -199,11 +209,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
   }
 #endif
 
-  // BrowserMainParts records the profile-service shutdown boundary. Seal and
-  // drain the exact leased OPFS backend only after ContentMain and its
-  // delegate have both returned, when no Content teardown can issue another
-  // profile operation. A failed mount can also require this cleanup if
-  // leased-backend construction succeeded before mounting failed.
+  // The dedicated M7 probes seal and drain their exact leased OPFS backend
+  // only after ContentMain and its delegate have both returned, when no
+  // Content teardown can issue another profile operation. A failed mount can
+  // also require cleanup if leased-backend construction partially succeeded.
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
   if (chrome::NeedsWasmProfileStorageBackendDrain()) {
     const chrome::WasmProfileStorageDrainResult drain_result =
         chrome::DrainAndReleaseWasmProfileStorageBackend();
@@ -239,6 +250,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     }
 #endif
   }
+#endif
 
   const int exit_code = IsNormalChromeMainResult(result)
                             ? content::RESULT_CODE_NORMAL_EXIT

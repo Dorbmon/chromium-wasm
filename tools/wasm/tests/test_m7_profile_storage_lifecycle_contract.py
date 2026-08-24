@@ -3,10 +3,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Source contracts for Chrome's leased-OPFS profile storage lifecycle."""
+"""Source contracts for the experimental M7 OPFS profile-storage lifecycle."""
 
 from __future__ import annotations
 
+import re
 import unittest
 
 from tools.wasm.tests.m3_source_contract_test_support import source
@@ -31,6 +32,99 @@ def _matching_closing_brace(
     raise AssertionError(f"missing closing brace for {description}")
 
 
+_M7_STORAGE_MACROS = (
+    "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST",
+    "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST",
+)
+_M7_STORAGE_GN_FLAGS = (
+    "enable_chromium_wasm_m7_profile_preferences_test",
+    "enable_chromium_wasm_m7_profile_database_test",
+)
+
+
+def _is_in_m7_storage_macro_block(text: str, position: int) -> bool:
+    """Returns whether |position| is under either M7 storage capability."""
+
+    active_stack: list[bool] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if offset <= position < offset + len(line):
+            return any(active_stack)
+
+        directive = line.lstrip()
+        is_storage_directive = any(
+            macro in directive for macro in _M7_STORAGE_MACROS
+        )
+        if re.match(r"#\s*(if|ifdef|ifndef)\b", directive):
+            active_stack.append(is_storage_directive)
+        elif re.match(r"#\s*elif\b", directive):
+            if active_stack:
+                active_stack[-1] = is_storage_directive
+        elif re.match(r"#\s*else\b", directive):
+            if active_stack:
+                active_stack[-1] = False
+        elif re.match(r"#\s*endif\b", directive):
+            if active_stack:
+                active_stack.pop()
+        offset += len(line)
+    return False
+
+
+def _assert_only_in_m7_storage_blocks(
+    testcase: unittest.TestCase, text: str, token: str
+) -> None:
+    positions = [match.start() for match in re.finditer(re.escape(token), text)]
+    testcase.assertTrue(positions, f"missing {token}")
+    for position in positions:
+        with testcase.subTest(token=token, position=position):
+            testcase.assertTrue(
+                _is_in_m7_storage_macro_block(text, position),
+                f"{token} is not M7-storage-config-gated",
+            )
+
+
+def _body_after_signature(text: str, signature: str) -> str:
+    """Returns one balanced body without relying on line layout."""
+
+    start = text.index(signature)
+    opening_brace = text.index("{", start)
+    return text[
+        opening_brace + 1 : _matching_closing_brace(
+            text, opening_brace, signature
+        )
+    ]
+
+
+def _m7_storage_gn_blocks(text: str) -> list[tuple[int, int]]:
+    """Returns GN ``if`` bodies that explicitly grant an M7 capability."""
+
+    blocks = []
+    for match in re.finditer(r"if\s*\((.*?)\)\s*\{", text, re.DOTALL):
+        if not any(flag in match.group(1) for flag in _M7_STORAGE_GN_FLAGS):
+            continue
+        opening_brace = match.end() - 1
+        closing_brace = _matching_closing_brace(
+            text, opening_brace, "M7 storage GN capability"
+        )
+        blocks.append((opening_brace, closing_brace))
+    return blocks
+
+
+def _assert_only_in_m7_storage_gn_blocks(
+    testcase: unittest.TestCase, text: str, token: str
+) -> None:
+    positions = [match.start() for match in re.finditer(re.escape(token), text)]
+    testcase.assertTrue(positions, f"missing {token}")
+    blocks = _m7_storage_gn_blocks(text)
+    testcase.assertTrue(blocks, "missing M7 storage GN capability block")
+    for position in positions:
+        with testcase.subTest(token=token, position=position):
+            testcase.assertTrue(
+                any(start < position < end for start, end in blocks),
+                f"{token} is not M7-storage-config-gated",
+            )
+
+
 class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.storage_header = source(
@@ -46,6 +140,30 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         self.chrome_build = source("chrome/BUILD.gn")
         self.wasm_browser_build = source("chrome/browser/wasm/BUILD.gn")
+
+    def test_runtime_storage_consumers_are_m7_config_gated(self) -> None:
+        for text, tokens in (
+            (
+                self.chrome_main,
+                (
+                    '#include "chrome/browser/wasm/wasm_profile_storage.h"',
+                    "chrome::InitializeWasmProfileStorage()",
+                    "chrome::NeedsWasmProfileStorageBackendDrain()",
+                    "chrome::DrainAndReleaseWasmProfileStorageBackend()",
+                ),
+            ),
+            (
+                self.main_parts,
+                (
+                    '#include "chrome/browser/wasm/wasm_profile_storage.h"',
+                    "chrome::IsWasmProfileStorageMounted()",
+                    "chrome::NotifyWasmProfileStorageProfileCreated()",
+                    "chrome::NotifyWasmProfileStorageProfileShutdown()",
+                ),
+            ),
+        ):
+            for token in tokens:
+                _assert_only_in_m7_storage_blocks(self, text, token)
 
     def test_storage_mounts_only_the_leased_backend_at_the_profile_root(self) -> None:
         for token in (
@@ -181,24 +299,13 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.storage,
         )
 
-    def test_chrome_main_orders_mount_before_content_and_drain_after_teardown(
+    def test_experimental_chrome_main_orders_mount_before_content_and_drain_after_teardown(
         self,
     ) -> None:
         initialize = self.chrome_main.index(
             "chrome::InitializeWasmProfileStorage()"
         )
         content_main = self.chrome_main.index("content::ContentMain(std::move(params))")
-        delegate_scope_start = self.chrome_main.index(
-            "{\n    WasmChromeMainDelegate chrome_main_delegate;"
-        )
-        delegate_scope_end = _matching_closing_brace(
-            self.chrome_main,
-            delegate_scope_start,
-            "ChromeMain ContentMain delegate scope",
-        )
-        delegate_scope = self.chrome_main[
-            delegate_scope_start + 1 : delegate_scope_end
-        ]
         needs_drain = self.chrome_main.index(
             "chrome::NeedsWasmProfileStorageBackendDrain()"
         )
@@ -207,22 +314,12 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
 
         self.assertLess(initialize, content_main)
-        self.assertIn(
-            "WasmChromeMainDelegate chrome_main_delegate;", delegate_scope
-        )
+        self.assertIn("WasmChromeMainDelegate chrome_main_delegate;", self.chrome_main)
         self.assertIn(
             "content::ContentMainParams params(&chrome_main_delegate);",
-            delegate_scope,
+            self.chrome_main,
         )
-        self.assertIn("content::ContentMain(std::move(params))", delegate_scope)
-        self.assertLess(content_main, delegate_scope_end)
-        self.assertNotIn(
-            "chrome::NeedsWasmProfileStorageBackendDrain()", delegate_scope
-        )
-        self.assertNotIn(
-            "chrome::DrainAndReleaseWasmProfileStorageBackend()", delegate_scope
-        )
-        self.assertLess(delegate_scope_end, needs_drain)
+        self.assertLess(content_main, needs_drain)
         self.assertLess(needs_drain, drain)
         drain_marker = self.chrome_main.index(
             "chrome::NotifyWasmProfilePreferencesSmokeBackendDrain("
@@ -265,7 +362,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.chrome_main.index("fputs(\"CHROMIUM_WASM: host rejected"),
         )
 
-    def test_main_parts_admits_and_completes_profile_lifecycle_before_drain(
+    def test_experimental_main_parts_admits_and_completes_profile_lifecycle_before_drain(
         self,
     ) -> None:
         mounted = self.main_parts.index("chrome::IsWasmProfileStorageMounted()")
@@ -289,22 +386,46 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertNotIn("wasmfs_terminal_drain", self.main_parts)
         self.assertNotIn("wasmfs_unmount", self.main_parts)
 
-    def test_chrome_build_owns_wasmfs_and_storage_source_selection(self) -> None:
+    def test_only_experimental_m7_selects_wasmfs_and_storage(self) -> None:
+        chrome_wasm = _body_after_signature(
+            self.chrome_build, 'executable("chrome_wasm")'
+        )
+        chrome_https_test = _body_after_signature(
+            self.chrome_build, 'executable("chrome_wasm_m6_https_test")'
+        )
+        main_parts = _body_after_signature(
+            self.wasm_browser_build, 'source_set("wasm_browser_main_parts")'
+        )
+
         for token in (
             'config("chrome_wasm_profile_storage")',
             'ldflags = [ "-sWASMFS=1" ]',
-            '":chrome_wasm_profile_storage",',
-            '"//chrome/browser/wasm:wasm_profile_storage",',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.chrome_build)
+
+        for token in (
+            '":chrome_wasm_profile_storage"',
+            '"//chrome/browser/wasm:wasm_profile_storage"',
+        ):
+            with self.subTest(token=token):
+                _assert_only_in_m7_storage_gn_blocks(self, chrome_wasm, token)
+        _assert_only_in_m7_storage_gn_blocks(
+            self, main_parts, '":wasm_profile_storage"'
+        )
+        for token in (
+            '":chrome_wasm_profile_storage"',
+            '"//chrome/browser/wasm:wasm_profile_storage"',
+            '":wasm_profile_storage"',
+        ):
+            with self.subTest(token=token):
+                self.assertNotIn(token, chrome_https_test)
 
         for token in (
             'source_set("wasm_profile_storage")',
             'public = [ "wasm_profile_storage.h" ]',
             'sources = [ "wasm_profile_storage.cc" ]',
             'public_deps = [ ":wasm_profile_storage_drain_result" ]',
-            '":wasm_profile_storage",',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.wasm_browser_build)

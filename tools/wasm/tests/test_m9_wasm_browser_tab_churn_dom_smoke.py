@@ -508,7 +508,7 @@ class M9WasmBrowserTabChurnDomSmokeTest(unittest.TestCase):
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
         shutdown = profile[
             profile.index("void WasmProfile::Shutdown()") : profile.index(
-                "void WasmProfile::BeginPersistentPrefsShutdownFence"
+                "void WasmProfile::BeginPrefsShutdownFence"
             )
         ]
         finish_shutdown = main_parts[

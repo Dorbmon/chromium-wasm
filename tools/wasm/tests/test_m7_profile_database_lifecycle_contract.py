@@ -205,11 +205,13 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
         self.assertIn("base::BindOnce(&WasmBrowserMainParts::RequestShutdown", branch)
         self.assertIn("return content::RESULT_CODE_NORMAL_EXIT;", branch)
 
-    def test_database_close_then_fence_then_lifecycle_then_drain_order(self) -> None:
+    def test_database_close_then_prefs_fence_then_lifecycle_then_drain_order(
+        self,
+    ) -> None:
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
         )
-        fence_begin = finish.index("profile_->BeginPersistentPrefsShutdownFence")
+        fence_begin = finish.index("profile_->BeginPrefsShutdownFence")
         fence_marker = finish.index(
             "chrome::NotifyWasmProfileDatabaseSmokeFenceResult(success);"
         )
@@ -250,13 +252,11 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
         self.assertIn("created-but-not-\n        // shutdown lifecycle state", finish)
         self.assertIn("emits no LEASE_RELEASED", finish)
 
-        drain = _body_after_signature(
-            self.chrome_main,
-            "extern \"C\" int ChromeMain(int argc, const char** argv)",
+        self.assertIn("if (!drain_result.Succeeded())", self.chrome_main)
+        self.assertIn(
+            "result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", self.chrome_main
         )
-        self.assertIn("if (!drain_result.Succeeded())", drain)
-        self.assertIn("result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", drain)
-        self.assertIn("database_smoke_enabled", drain)
+        self.assertIn("database_smoke_enabled", self.chrome_main)
 
 
 if __name__ == "__main__":

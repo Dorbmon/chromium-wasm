@@ -242,7 +242,9 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             self.profile,
         )
 
-    def test_profile_branch_and_lifecycle_markers_follow_persistence_boundaries(self) -> None:
+    def test_profile_branch_and_lifecycle_markers_follow_experimental_storage_boundaries(
+        self,
+    ) -> None:
         admitted = self.main_parts.index(
             "chrome::NotifyWasmProfileStorageProfileCreated()"
         )
@@ -269,7 +271,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
         )
-        fence_begin = finish.index("profile_->BeginPersistentPrefsShutdownFence")
+        fence_begin = finish.index("profile_->BeginPrefsShutdownFence")
         fence_marker = finish.index(
             "chrome::NotifyWasmProfilePreferencesSmokeFenceResult(success);"
         )

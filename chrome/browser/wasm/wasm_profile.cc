@@ -203,24 +203,22 @@ void WasmProfile::Shutdown() {
   ShutdownStoragePartitions();
 }
 
-void WasmProfile::BeginPersistentPrefsShutdownFence(
+void WasmProfile::BeginPrefsShutdownFence(
     base::OnceCallback<void(bool success)> completion) {
   CHECK(shutdown_);
   CHECK(completion);
-  CHECK_EQ(persistent_prefs_shutdown_fence_state_,
-           PersistentPrefsShutdownFenceState::kNotStarted);
+  CHECK_EQ(prefs_shutdown_fence_state_, PrefsShutdownFenceState::kNotStarted);
   CHECK(prefs_);
   CHECK(json_pref_store_);
 
-  persistent_prefs_shutdown_fence_state_ =
-      PersistentPrefsShutdownFenceState::kPending;
+  prefs_shutdown_fence_state_ = PrefsShutdownFenceState::kPending;
 
   // Bind the result back to the UI sequence before handing it to the
   // JsonPrefStore file runner. WeakPtr is only dereferenced there; the file
   // runner merely owns the completion callback while it verifies the file.
   auto complete_on_ui = base::BindPostTask(
       base::SequencedTaskRunner::GetCurrentDefault(),
-      base::BindOnce(&WasmProfile::OnPersistentPrefsShutdownFenceComplete,
+      base::BindOnce(&WasmProfile::OnPrefsShutdownFenceComplete,
                      weak_ptr_factory_.GetWeakPtr(), std::move(completion)));
   prefs_->CommitPendingWrite(
       base::OnceClosure(),
@@ -229,31 +227,25 @@ void WasmProfile::BeginPersistentPrefsShutdownFence(
                      json_pref_store_->GetValues(), std::move(complete_on_ui)));
 }
 
-bool WasmProfile::IsPersistentPrefsShutdownFencePending() const {
-  return persistent_prefs_shutdown_fence_state_ ==
-         PersistentPrefsShutdownFenceState::kPending;
+bool WasmProfile::IsPrefsShutdownFencePending() const {
+  return prefs_shutdown_fence_state_ == PrefsShutdownFenceState::kPending;
 }
 
-bool WasmProfile::HasPersistentPrefsShutdownFenceCompleted() const {
-  return persistent_prefs_shutdown_fence_state_ ==
-             PersistentPrefsShutdownFenceState::kSucceeded ||
-         persistent_prefs_shutdown_fence_state_ ==
-             PersistentPrefsShutdownFenceState::kFailed;
+bool WasmProfile::HasPrefsShutdownFenceCompleted() const {
+  return prefs_shutdown_fence_state_ == PrefsShutdownFenceState::kSucceeded ||
+         prefs_shutdown_fence_state_ == PrefsShutdownFenceState::kFailed;
 }
 
-bool WasmProfile::DidPersistentPrefsShutdownFenceSucceed() const {
-  return persistent_prefs_shutdown_fence_state_ ==
-         PersistentPrefsShutdownFenceState::kSucceeded;
+bool WasmProfile::DidPrefsShutdownFenceSucceed() const {
+  return prefs_shutdown_fence_state_ == PrefsShutdownFenceState::kSucceeded;
 }
 
-void WasmProfile::OnPersistentPrefsShutdownFenceComplete(
+void WasmProfile::OnPrefsShutdownFenceComplete(
     base::OnceCallback<void(bool success)> completion,
     bool success) {
-  CHECK_EQ(persistent_prefs_shutdown_fence_state_,
-           PersistentPrefsShutdownFenceState::kPending);
-  persistent_prefs_shutdown_fence_state_ =
-      success ? PersistentPrefsShutdownFenceState::kSucceeded
-              : PersistentPrefsShutdownFenceState::kFailed;
+  CHECK_EQ(prefs_shutdown_fence_state_, PrefsShutdownFenceState::kPending);
+  prefs_shutdown_fence_state_ = success ? PrefsShutdownFenceState::kSucceeded
+                                        : PrefsShutdownFenceState::kFailed;
   std::move(completion).Run(success);
 }
 

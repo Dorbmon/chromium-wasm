@@ -1826,11 +1826,13 @@ source_set("wasm_browser_process") {
   ]
 }
 
-# A production Profile implementation with a durable JsonPrefStore at its
-# leased OPFS path. It deliberately selects Profile and ProfileKey directly
-# instead of the desktop profiles/misc aggregate, which owns services not
-# available in the first Wasm Chrome browser process. Other Chrome-owned
-# stores, including process Local State, retain their independent lifecycles.
+# A Profile implementation with a JsonPrefStore at Chrome's configured
+# user-data path. Normal Chrome uses the volatile Wasm path; the experimental
+# M7 OPFS backend is separately source-selected for its dedicated probes. This
+# deliberately selects Profile and ProfileKey directly instead of the desktop
+# profiles/misc aggregate, which owns services not available in the first Wasm
+# Chrome browser process. Other Chrome-owned stores, including process Local
+# State, retain their independent lifecycles.
 source_set("wasm_profile") {
   sources = [
     "wasm_profile.cc",
@@ -1918,12 +1920,12 @@ source_set("wasm_profile_storage_drain_result") {
   public = [ "wasm_profile_storage_drain_result.h" ]
 }
 
-# This owns the one leased OPFS mount used by the Chrome profile path. It is
-# intentionally separate from WasmProfile: JsonPrefStore owns only the
-# profile's Preferences file, while other Chrome-owned stores migrate only
-# behind their own durable lifecycle gates. The owner exists so its scoped
-# backend transition follows profile-service shutdown and complete ContentMain
-# teardown.
+# This owns the experimental leased OPFS mount used only by the dedicated M7
+# profile probes. It is intentionally separate from WasmProfile: JsonPrefStore
+# owns only the profile's Preferences file, while other Chrome-owned stores
+# migrate only behind their own durable lifecycle gates. The owner exists so
+# its scoped backend transition follows profile-service shutdown and complete
+# ContentMain teardown.
 source_set("wasm_profile_storage") {
   public = [ "wasm_profile_storage.h" ]
 
@@ -2087,7 +2089,6 @@ source_set("wasm_browser_main_parts") {
     ":wasm_chrome_paths",
     ":wasm_chrome_result_codes",
     ":wasm_profile",
-    ":wasm_profile_storage",
     "//base",
     "//components/color",
     "//content/public/browser",
@@ -2106,6 +2107,10 @@ source_set("wasm_browser_main_parts") {
   if (enable_chromium_wasm_m7_profile_database_test) {
     defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
     deps += [ ":wasm_profile_database_smoke" ]
+  }
+  if (enable_chromium_wasm_m7_profile_preferences_test ||
+      enable_chromium_wasm_m7_profile_database_test) {
+    deps += [ ":wasm_profile_storage" ]
   }
 }
 

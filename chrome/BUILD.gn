@@ -512,10 +512,10 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ]
   }
 
-  # Chrome's owned profile root is mounted by WasmProfileStorage before
-  # ContentMain. Keep this link setting on both production and the dedicated
-  # controlled-HTTPS executable, which share that startup path; no standalone
-  # tools/wasm feasibility target is used to provide production storage.
+  # The experimental M7 profile-storage target owns its own WasmFS link
+  # setting. Normal Chrome and the controlled M6 executable retain their
+  # volatile /profile path until an OPFS backend has an immutable pin and the
+  # required locking, durability, and recovery evidence.
   config("chrome_wasm_profile_storage") {
     ldflags = [ "-sWASMFS=1" ]
   }
@@ -563,19 +563,18 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ]
     configs += [
       ":chrome_wasm_assets",
-      ":chrome_wasm_profile_storage",
     ]
     if (enable_chromium_wasm_m7_profile_preferences_test) {
       # This capability exists only in the dedicated fresh M7 output
       # configuration. Its normal target label remains chrome_wasm so the
-      # source closure and OPFS startup stay identical to production.
+      # experimental OPFS startup remains isolated from normal Chrome.
       output_name = "chrome_wasm_m7_profile_preferences_test"
       defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     }
     if (enable_chromium_wasm_m7_profile_database_test) {
       # This independent capability exists only in its own fresh M7 output
-      # configuration. It shares Chrome's production startup and OPFS storage
-      # path without admitting the Preferences test helper or M6 test trust.
+      # configuration. It selects the experimental OPFS storage path without
+      # admitting the Preferences test helper or M6 test trust.
       output_name = "chrome_wasm_m7_profile_database_test"
       defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
       if (enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic) {
@@ -593,13 +592,16 @@ if (is_wasm && enable_chromium_wasm_chrome) {
             "chrome_wasm_m7_profile_database_write_interruption_diagnostic"
       }
     }
+    if (enable_chromium_wasm_m7_profile_preferences_test ||
+        enable_chromium_wasm_m7_profile_database_test) {
+      configs += [ ":chrome_wasm_profile_storage" ]
+    }
     deps = [
       ":wasm_packed_resources",
       "//chrome/app:generated_resources",
       "//chrome/browser/wasm:wasm_browser_views_platform",
       "//chrome/browser/wasm:wasm_chrome_main_delegate",
       "//chrome/browser/wasm:wasm_chrome_result_codes",
-      "//chrome/browser/wasm:wasm_profile_storage",
       "//chrome/common:buildflags",
       "//content/public/app",
       "//content/public/common",
@@ -611,6 +613,10 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     }
     if (enable_chromium_wasm_m7_profile_database_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_database_smoke" ]
+    }
+    if (enable_chromium_wasm_m7_profile_preferences_test ||
+        enable_chromium_wasm_m7_profile_database_test) {
+      deps += [ "//chrome/browser/wasm:wasm_profile_storage" ]
     }
   }
 
@@ -636,7 +642,6 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ]
     configs += [
       ":chrome_wasm_assets",
-      ":chrome_wasm_profile_storage",
     ]
     defines = [ "CHROME_WASM_M6_CONTROLLED_HTTPS_TEST=1" ]
     deps = [
@@ -648,7 +653,6 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       "//chrome/browser/wasm:wasm_chrome_main_delegate",
       "//chrome/browser/wasm:wasm_chrome_result_codes",
       "//chrome/browser/wasm:wasm_m6_controlled_https_test_mode",
-      "//chrome/browser/wasm:wasm_profile_storage",
       "//chrome/common:buildflags",
       "//content/public/app",
       "//content/public/common",

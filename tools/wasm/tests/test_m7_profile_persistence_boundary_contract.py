@@ -3,12 +3,11 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for Chrome's staged M7 OPFS profile-lifecycle integration.
+"""Contracts for normal volatile profile startup and experimental M7 storage.
 
-The first M7 slice mounts the canonical /profile root on a leased OPFS WasmFS
-backend and records a result-bearing scoped backend drain. The profile's
-Preferences file is the first Chrome-owned durable store; later migrations
-must prove every other persistent store independently.
+Normal Chrome owns a file-backed Preferences store beneath /profile, but does
+not claim durable OPFS persistence. The unpinned WasmFS/OPFS backend remains
+available only to the dedicated M7 experiment configurations.
 """
 
 from __future__ import annotations
@@ -383,6 +382,85 @@ def _tracked_direct_config_consumers(
     return consumers
 
 
+_M7_STORAGE_MACROS = (
+    "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST",
+    "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST",
+)
+_M7_STORAGE_GN_FLAGS = (
+    "enable_chromium_wasm_m7_profile_preferences_test",
+    "enable_chromium_wasm_m7_profile_database_test",
+)
+
+
+def _is_in_m7_storage_macro_block(text: str, position: int) -> bool:
+    """Returns whether |position| is under either M7 storage capability."""
+
+    active_stack: list[bool] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if offset <= position < offset + len(line):
+            return any(active_stack)
+
+        directive = line.lstrip()
+        is_storage_directive = any(
+            macro in directive for macro in _M7_STORAGE_MACROS
+        )
+        if re.match(r"#\s*(if|ifdef|ifndef)\b", directive):
+            active_stack.append(is_storage_directive)
+        elif re.match(r"#\s*elif\b", directive):
+            if active_stack:
+                active_stack[-1] = is_storage_directive
+        elif re.match(r"#\s*else\b", directive):
+            if active_stack:
+                active_stack[-1] = False
+        elif re.match(r"#\s*endif\b", directive):
+            if active_stack:
+                active_stack.pop()
+        offset += len(line)
+    return False
+
+
+def _assert_only_in_m7_storage_blocks(
+    testcase: unittest.TestCase, text: str, token: str
+) -> None:
+    positions = [match.start() for match in re.finditer(re.escape(token), text)]
+    testcase.assertTrue(positions, f"missing {token}")
+    for position in positions:
+        with testcase.subTest(token=token, position=position):
+            testcase.assertTrue(
+                _is_in_m7_storage_macro_block(text, position),
+                f"{token} is not M7-storage-config-gated",
+            )
+
+
+def _m7_storage_gn_blocks(text: str) -> list[tuple[int, int]]:
+    """Returns GN ``if`` bodies that explicitly grant an M7 capability."""
+
+    blocks = []
+    for match in re.finditer(r"if\s*\((.*?)\)\s*\{", text, re.DOTALL):
+        if not any(flag in match.group(1) for flag in _M7_STORAGE_GN_FLAGS):
+            continue
+        opening_brace = match.end() - 1
+        body = _balanced_body(text, opening_brace, "M7 storage GN capability")
+        blocks.append((opening_brace, opening_brace + len(body) + 1))
+    return blocks
+
+
+def _assert_only_in_m7_storage_gn_blocks(
+    testcase: unittest.TestCase, text: str, token: str
+) -> None:
+    positions = [match.start() for match in re.finditer(re.escape(token), text)]
+    testcase.assertTrue(positions, f"missing {token}")
+    blocks = _m7_storage_gn_blocks(text)
+    testcase.assertTrue(blocks, "missing M7 storage GN capability block")
+    for position in positions:
+        with testcase.subTest(token=token, position=position):
+            testcase.assertTrue(
+                any(start < position < end for start, end in blocks),
+                f"{token} is not M7-storage-config-gated",
+            )
+
+
 class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
     def setUp(self) -> None:
         self.profile_header = source("chrome/browser/wasm/wasm_profile.h")
@@ -392,18 +470,16 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         )
         self.wasm_browser_build = source("chrome/browser/wasm/BUILD.gn")
         self.chrome_build = source("chrome/BUILD.gn")
+        self.chrome_paths = source("chrome/common/chrome_paths_wasm.cc")
         self.wasm_tools_build = source("tools/wasm/BUILD.gn")
 
-    def test_profile_owns_a_durable_json_pref_store(self) -> None:
-        """Preferences use the leased profile path, not an in-memory store."""
+    def test_profile_owns_file_backed_json_prefs_without_durability_claim(
+        self,
+    ) -> None:
+        """Preferences remain file-backed without asserting OPFS persistence."""
 
-        for phrase in (
-            "leased OPFS WasmFS mount",
-            "real JsonPrefStore",
-            "Local State and all other profile stores remain independently scoped",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, self.profile_header)
+        self.assertIn("JsonPrefStore", self.profile_header)
+        self.assertNotIn("leased OPFS WasmFS mount", self.profile_header)
 
         self.assertIn(
             '#include "components/prefs/json_pref_store.h"', self.profile
@@ -446,11 +522,14 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             constructor_body.index("prefs_->SetString(kWasmPersistentPrefsFenceUuid,"),
         )
 
-    def test_preferences_shutdown_fence_is_async_and_strict(self) -> None:
+    def test_prefs_shutdown_fence_is_async_and_strict(self) -> None:
         """A completed write must round-trip on the JsonPrefStore file runner."""
 
+        for text in (self.profile_header, self.profile):
+            self.assertNotIn("PersistentPrefsShutdownFence", text)
+
         fence = re.search(
-            r"void WasmProfile::BeginPersistentPrefsShutdownFence\(\s*"
+            r"void WasmProfile::BeginPrefsShutdownFence\(\s*"
             r"base::OnceCallback<void\(bool success\)> completion\)\s*\{",
             self.profile,
         )
@@ -458,12 +537,12 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         fence_body = _balanced_body(
             self.profile,
             self.profile.find("{", fence.start()),
-            "WasmProfile::BeginPersistentPrefsShutdownFence",
+            "WasmProfile::BeginPrefsShutdownFence",
         )
         for required in (
             "CHECK(shutdown_)",
-            "PersistentPrefsShutdownFenceState::kNotStarted",
-            "PersistentPrefsShutdownFenceState::kPending",
+            "PrefsShutdownFenceState::kNotStarted",
+            "PrefsShutdownFenceState::kPending",
             "base::BindPostTask(",
             "base::SequencedTaskRunner::GetCurrentDefault()",
             "prefs_->CommitPendingWrite(",
@@ -507,8 +586,8 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, readback_body)
 
-    def test_main_parts_waits_for_the_fence_and_fails_closed(self) -> None:
-        """No normal storage handoff may bypass a failed preference readback."""
+    def test_main_parts_waits_for_the_prefs_fence_before_profile_reset(self) -> None:
+        """Normal teardown waits for the file-backed Preferences readback."""
 
         finish = re.search(
             r"void WasmBrowserMainParts::FinishShutdown\(\)\s*\{",
@@ -522,34 +601,48 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         )
         for required in (
             "profile_->Shutdown();",
-            "HasPersistentPrefsShutdownFenceCompleted()",
-            "IsPersistentPrefsShutdownFencePending()",
-            "BeginPersistentPrefsShutdownFence(",
+            "HasPrefsShutdownFenceCompleted()",
+            "IsPrefsShutdownFencePending()",
+            "BeginPrefsShutdownFence(",
             "weak_ptr_factory_.GetWeakPtr()",
             "main_parts->FinishShutdown();",
-            "DidPersistentPrefsShutdownFenceSucceed()",
+            "DidPrefsShutdownFenceSucceed()",
             "profile_.reset();",
-            "chrome::NotifyWasmProfileStorageProfileShutdown()",
             "main_message_loop_quit_closure_.Run();",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, finish_body)
         self.assertLess(
-            finish_body.index("BeginPersistentPrefsShutdownFence("),
+            finish_body.index("BeginPrefsShutdownFence("),
             finish_body.index("main_message_loop_quit_closure_.Run();"),
         )
         self.assertLess(
             finish_body.index("profile_.reset();"),
-            finish_body.index("chrome::NotifyWasmProfileStorageProfileShutdown()"),
-        )
-        self.assertLess(
-            finish_body.index("chrome::NotifyWasmProfileStorageProfileShutdown()"),
             finish_body.index("main_message_loop_quit_closure_.Run();"),
         )
-        self.assertEqual(
-            1, finish_body.count("chrome::NotifyWasmProfileStorageProfileShutdown()")
+        profile_reset_positions = [
+            match.start()
+            for match in re.finditer(re.escape("profile_.reset();"), finish_body)
+        ]
+        self.assertGreaterEqual(len(profile_reset_positions), 2)
+        self.assertTrue(
+            any(
+                _is_in_m7_storage_macro_block(finish_body, position)
+                for position in profile_reset_positions
+            )
         )
-        self.assertEqual(1, finish_body.count("profile_.reset();"))
+        self.assertTrue(
+            any(
+                not _is_in_m7_storage_macro_block(finish_body, position)
+                for position in profile_reset_positions
+            )
+        )
+
+        _assert_only_in_m7_storage_blocks(
+            self,
+            self.main_parts,
+            "chrome::NotifyWasmProfileStorageProfileShutdown()",
+        )
 
         foundation = re.search(
             r"void WasmBrowserMainParts::ShutdownFoundation\(\)\s*\{",
@@ -562,8 +655,27 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             "WasmBrowserMainParts::ShutdownFoundation",
         )
         self.assertIn("profile_->Shutdown();", foundation_body)
-        self.assertIn("neither resetting |profile_| nor notifying storage", foundation_body)
-        self.assertNotIn("profile_.reset();", foundation_body)
+        foundation_reset_positions = [
+            match.start()
+            for match in re.finditer(
+                re.escape("profile_.reset();"), foundation_body
+            )
+        ]
+        self.assertTrue(foundation_reset_positions)
+        for position in foundation_reset_positions:
+            with self.subTest(position=position):
+                self.assertFalse(
+                    _is_in_m7_storage_macro_block(foundation_body, position)
+                )
+        _assert_only_in_m7_storage_blocks(
+            self,
+            foundation_body,
+            "chrome_wasm retains its OPFS profile lease because",
+        )
+        self.assertIn(
+            "chrome_wasm releases its incomplete volatile profile",
+            foundation_body,
+        )
         self.assertNotIn(
             "NotifyWasmProfileStorageProfileShutdown", foundation_body
         )
@@ -595,8 +707,8 @@ executable("m7_wasmfs_conditional_testonly") {
         self.assertEqual(1, len(_gn_config_assignments(conditional_tokens)))
         self.assertFalse(_set_testonly(conditional_tokens, conditional_scopes[0]))
 
-    def test_main_parts_requires_the_mount_and_constructs_default_profile(self) -> None:
-        """DIR_USER_DATA must be resolved only after the storage mount."""
+    def test_main_parts_constructs_default_profile_beneath_profile_root(self) -> None:
+        """Normal startup keeps its /profile/Default construction path."""
 
         pre_main = re.search(
             r"int WasmBrowserMainParts::PreMainMessageLoopRun\(\) "
@@ -610,34 +722,45 @@ executable("m7_wasmfs_conditional_testonly") {
             "WasmBrowserMainParts::PreMainMessageLoopRun",
         )
         for required in (
-            "chrome::IsWasmProfileStorageMounted()",
-            'LOG(ERROR) << "chrome_wasm profile storage is not mounted"',
             "base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)",
-            'LOG(ERROR) << "chrome_wasm could not resolve its mounted profile root"',
             'user_data_directory.AppendASCII("Default")',
             "base::CreateDirectory(profile_path)",
-            'LOG(ERROR) << "chrome_wasm could not create its mounted profile path"',
             "profile_ = std::make_unique<WasmProfile>(profile_path);",
-            "chrome::NotifyWasmProfileStorageProfileCreated()",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, body)
 
         self.assertLess(
-            body.index("chrome::IsWasmProfileStorageMounted()"),
-            body.index("base::PathService::Get(chrome::DIR_USER_DATA"),
-        )
-        self.assertLess(
             body.index("base::CreateDirectory(profile_path)"),
             body.index("profile_ = std::make_unique<WasmProfile>(profile_path);"),
         )
-        self.assertLess(
-            body.index("profile_ = std::make_unique<WasmProfile>(profile_path);"),
-            body.index("chrome::NotifyWasmProfileStorageProfileCreated()"),
+
+        profile_root_start = self.chrome_paths.index(
+            "bool GetDefaultUserDataDirectory("
+        )
+        profile_root = _balanced_body(
+            self.chrome_paths,
+            self.chrome_paths.index("{", profile_root_start),
+            "GetDefaultUserDataDirectory",
+        )
+        self.assertIn('FILE_PATH_LITERAL("/profile")', self.chrome_paths)
+        self.assertIn("base::FilePath(kProfileRoot)", profile_root)
+
+        _assert_only_in_m7_storage_blocks(
+            self,
+            self.main_parts,
+            "chrome::IsWasmProfileStorageMounted()",
+        )
+        _assert_only_in_m7_storage_blocks(
+            self,
+            self.main_parts,
+            "chrome::NotifyWasmProfileStorageProfileCreated()",
         )
 
-    def test_chrome_wasm_owns_its_wasmfs_link_flag_and_storage_target(self) -> None:
-        """Production Chrome must select its owned M7 lifecycle, not a smoke."""
+    def test_normal_chrome_and_m6_do_not_select_experimental_wasmfs_storage(
+        self,
+    ) -> None:
+        """Only dedicated M7 artifacts select the unpinned storage backend."""
 
         chrome_assets = _gn_target_body(
             self.chrome_build, "config", "chrome_wasm_assets"
@@ -657,17 +780,30 @@ executable("m7_wasmfs_conditional_testonly") {
         chrome_profile_storage = _gn_target_body(
             self.wasm_browser_build, "source_set", "wasm_profile_storage"
         )
+        main_parts = _gn_target_body(
+            self.wasm_browser_build, "source_set", "wasm_browser_main_parts"
+        )
 
         self.assertIn("-sWASMFS=1", chrome_storage)
-        self.assertIn('":chrome_wasm_assets",', chrome_wasm)
-        self.assertIn('":chrome_wasm_profile_storage",', chrome_wasm)
-        self.assertIn('":chrome_wasm_profile_storage",', chrome_https_test)
-        self.assertIn(
-            '"//chrome/browser/wasm:wasm_profile_storage",', chrome_wasm
+        self.assertIn('":chrome_wasm_assets"', chrome_wasm)
+        _assert_only_in_m7_storage_gn_blocks(
+            self, chrome_wasm, '":chrome_wasm_profile_storage"'
         )
-        self.assertIn(
-            '"//chrome/browser/wasm:wasm_profile_storage",', chrome_https_test
+        _assert_only_in_m7_storage_gn_blocks(
+            self,
+            chrome_wasm,
+            '"//chrome/browser/wasm:wasm_profile_storage"',
         )
+        _assert_only_in_m7_storage_gn_blocks(
+            self, main_parts, '":wasm_profile_storage"'
+        )
+        for token in (
+            '":chrome_wasm_profile_storage"',
+            '"//chrome/browser/wasm:wasm_profile_storage"',
+            '":wasm_profile_storage"',
+        ):
+            with self.subTest(token=token):
+                self.assertNotIn(token, chrome_https_test)
         self.assertIn("wasm_profile_storage.cc", chrome_profile_storage)
         self.assertIn("wasm_profile_storage.h", chrome_profile_storage)
         self.assertIn('"//chrome/common:non_code_constants",', chrome_profile)

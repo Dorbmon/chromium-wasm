@@ -75,10 +75,11 @@ class PrefRegistrySyncable;
 
 // The Stage-A Chrome profile for the WebAssembly browser process.
 //
-// Its path resides in Chrome's leased OPFS WasmFS mount. User preferences use
-// a real JsonPrefStore at the canonical Preferences path; the Chrome-process
-// Local State and all other profile stores remain independently scoped until
-// they have their own durable migration and recovery evidence.
+// Its path resides at Chrome's configured user-data location. User preferences
+// use a real JsonPrefStore at the canonical Preferences path; normal Wasm
+// Chrome keeps that location volatile until the OPFS backend has the required
+// pin, durability, locking, and recovery evidence. The Chrome-process Local
+// State and all other profile stores remain independently scoped.
 class WasmProfile final : public Profile {
  public:
   explicit WasmProfile(base::FilePath profile_path);
@@ -91,16 +92,17 @@ class WasmProfile final : public Profile {
   // call it before ownership is released.
   void Shutdown();
 
-  // Starts the final user-preference persistence fence after Shutdown(). It
+  // Starts the final user-preference write/readback fence after Shutdown(). It
   // writes pending preferences, reads the bounded Preferences file back on the
   // JsonPrefStore file sequence, and compares the parsed strict JSON dictionary
   // with a UI-sequence snapshot. |completion| runs exactly once on the UI
-  // sequence while this profile remains alive.
-  void BeginPersistentPrefsShutdownFence(
+  // sequence while this profile remains alive. This validates orderly shutdown,
+  // not reload durability on the volatile normal profile path.
+  void BeginPrefsShutdownFence(
       base::OnceCallback<void(bool success)> completion);
-  bool IsPersistentPrefsShutdownFencePending() const;
-  bool HasPersistentPrefsShutdownFenceCompleted() const;
-  bool DidPersistentPrefsShutdownFenceSucceed() const;
+  bool IsPrefsShutdownFencePending() const;
+  bool HasPrefsShutdownFenceCompleted() const;
+  bool DidPrefsShutdownFenceSucceed() const;
 
   // The M6 history bootstrap reads this process-local journal through a weak
   // reference. It is intentionally not HistoryService and becomes inert
@@ -192,14 +194,14 @@ class WasmProfile final : public Profile {
   bool IsSignedIn() override;
 
  private:
-  enum class PersistentPrefsShutdownFenceState {
+  enum class PrefsShutdownFenceState {
     kNotStarted,
     kPending,
     kSucceeded,
     kFailed,
   };
 
-  void OnPersistentPrefsShutdownFenceComplete(
+  void OnPrefsShutdownFenceComplete(
       base::OnceCallback<void(bool success)> completion,
       bool success);
 
@@ -232,8 +234,8 @@ class WasmProfile final : public Profile {
   std::unique_ptr<WasmSessionNavigationJournal> session_navigation_journal_;
 
   bool shutdown_ = false;
-  PersistentPrefsShutdownFenceState persistent_prefs_shutdown_fence_state_ =
-      PersistentPrefsShutdownFenceState::kNotStarted;
+  PrefsShutdownFenceState prefs_shutdown_fence_state_ =
+      PrefsShutdownFenceState::kNotStarted;
   uint32_t primary_main_frame_navigations_ = 0;
   base::WeakPtrFactory<WasmProfile> weak_ptr_factory_{this};
 };
