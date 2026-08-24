@@ -86,11 +86,12 @@ POST_EXIT_FRAME_QUIESCENCE_SECONDS = 0.1
 MAX_OUTER_DOCUMENT_RESTARTS = OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
 OUTER_DOCUMENT_RELOAD_STRESS_SCOPE = (
     "real-browser-package-three-outer-document-epochs-loader-pthread-bootstrap-"
-    "and-host-shutdown-only"
+    "runtime-core-resource-receipt-and-host-shutdown-only"
 )
 OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS = (
     "fixed-three-epoch-outer-document-reload-observation-only",
     "fixed-100ms-post-exit-host-frame-quiescence-only",
+    "does_not_measure_resource-transfer-bytes-http-caching-or-external-delivery",
     "does_not_establish_long_run_reliability_or_resource_leak_freedom",
     "does_not_measure_memory_worker_exhaustion_or_out_of_memory_behavior",
     "does_not_measure_live_transport_or_resource_teardown",
@@ -128,6 +129,18 @@ MAX_RELEASE_WISP_ENDPOINT_CHARACTERS = 2048
 RELEASE_WISP_CONFIGURATION_GLOBAL = "__chromiumWasmReleaseWispV1"
 RELEASE_WISP_CONFIGURATION_VERSION = 1
 WISP_BOOTSTRAP_URL = "about:blank"
+RUNTIME_CORE_RESOURCE_RECEIPT = (
+    ("chromium-wasm-host.js", "script"),
+    ("chromium-wasm-pointer-input.js", "script"),
+    ("chromium-wasm-clipboard-input.js", "script"),
+    ("chromium-wasm-storage-estimate.js", "script"),
+    ("chromium-wasm-text-input.js", "script"),
+    ("chromium-wasm-release-wisp-config.js", "script"),
+    ("VERSION.json", "fetch"),
+    ("chromium-wasm.js", "fetch"),
+    ("chromium-wasm.wasm", "fetch"),
+)
+_RUNTIME_CORE_RESOURCE_RECEIPT_FIELDS = frozenset(("initiator_type", "path"))
 
 _STATUS_EXPRESSION = r"""
 (() => {
@@ -328,6 +341,108 @@ def _status(client: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise M0Error("package host status is not an object")
     return value
+
+
+def _runtime_core_resource_receipt_expression(expected_url: str) -> str:
+    """Build a read-only current-document Resource Timing receipt query."""
+
+    try:
+        parsed = urlsplit(expected_url)
+    except (TypeError, ValueError) as exc:
+        raise M0Error("package runtime resource receipt URL is invalid") from exc
+    if (
+        not isinstance(expected_url, str)
+        or parsed.scheme != "http"
+        or not parsed.netloc
+        or parsed.fragment
+    ):
+        raise M0Error("package runtime resource receipt URL is invalid")
+    expected_resources = [
+        {"initiatorType": initiator_type, "path": path}
+        for path, initiator_type in RUNTIME_CORE_RESOURCE_RECEIPT
+    ]
+    return f"""
+(() => {{
+  const expectedDocumentUrl = {json.dumps(expected_url)};
+  const expectedResources = {json.dumps(expected_resources, separators=(",", ":"))};
+  if (location.href !== expectedDocumentUrl) {{
+    return null;
+  }}
+  const documentUrl = new URL(expectedDocumentUrl);
+  const expectedByUrl = new Map();
+  for (const expected of expectedResources) {{
+    if (!expected || typeof expected.path !== "string" ||
+        typeof expected.initiatorType !== "string") {{
+      return null;
+    }}
+    const resourceUrl = new URL(`./${{expected.path}}`, documentUrl);
+    if (resourceUrl.origin !== documentUrl.origin || resourceUrl.search !== "" ||
+        resourceUrl.hash !== "" || expectedByUrl.has(resourceUrl.href)) {{
+      return null;
+    }}
+    expectedByUrl.set(resourceUrl.href, expected);
+  }}
+  const observed = new Map();
+  const entries = performance.getEntriesByType("resource");
+  if (!Array.isArray(entries)) {{
+    return null;
+  }}
+  for (const entry of entries) {{
+    if (!entry || typeof entry.name !== "string" ||
+        typeof entry.initiatorType !== "string") {{
+      continue;
+    }}
+    const expected = expectedByUrl.get(entry.name);
+    if (expected && entry.initiatorType === expected.initiatorType) {{
+      observed.set(expected.path, {{
+        initiator_type: expected.initiatorType,
+        path: expected.path,
+      }});
+    }}
+  }}
+  return expectedResources.filter((expected) => observed.has(expected.path)).map(
+      (expected) => observed.get(expected.path));
+}})()
+"""
+
+
+def validate_runtime_core_resource_receipt(value: object) -> list[dict[str, str]]:
+    """Require the exact, bounded package runtime-resource receipt."""
+
+    expected = [
+        {"initiator_type": initiator_type, "path": path}
+        for path, initiator_type in RUNTIME_CORE_RESOURCE_RECEIPT
+    ]
+    if type(value) is not list or len(value) != len(expected):
+        raise M0Error("package runtime resource receipt is incomplete")
+    normalized: list[dict[str, str]] = []
+    for index, (observed, expected_entry) in enumerate(zip(value, expected), start=1):
+        if (
+            type(observed) is not dict
+            or set(observed) != _RUNTIME_CORE_RESOURCE_RECEIPT_FIELDS
+        ):
+            raise M0Error(f"package runtime resource receipt {index} is malformed")
+        path = observed.get("path")
+        initiator_type = observed.get("initiator_type")
+        if type(path) is not str or type(initiator_type) is not str:
+            raise M0Error(f"package runtime resource receipt {index} is malformed")
+        if path != expected_entry["path"]:
+            raise M0Error(f"package runtime resource receipt {index} path is invalid")
+        if initiator_type != expected_entry["initiator_type"]:
+            raise M0Error(
+                f"package runtime resource receipt {index} initiator is invalid"
+            )
+        normalized.append({"initiator_type": initiator_type, "path": path})
+    return normalized
+
+
+def _capture_runtime_core_resource_receipt(
+    client: Any, *, expected_url: str
+) -> list[dict[str, str]]:
+    """Capture only current-document core package resource names and roles."""
+
+    value = client.evaluate(_runtime_core_resource_receipt_expression(expected_url))
+    return validate_runtime_core_resource_receipt(value)
 
 
 def _normalize_release_wisp_endpoint(value: object) -> str:
@@ -868,6 +983,7 @@ def _epoch_result(
     clean_shutdown: dict[str, Any],
     *,
     post_exit_frame_quiescent: bool = False,
+    runtime_core_resource_receipt: list[dict[str, str]] | None = None,
 ) -> dict[str, object]:
     _require_clean_shutdown(clean_shutdown, "package-host shutdown")
     result: dict[str, object] = {
@@ -879,6 +995,10 @@ def _epoch_result(
     }
     if post_exit_frame_quiescent:
         result["post_exit_frame_quiescent"] = True
+    if runtime_core_resource_receipt is not None:
+        result["runtime_core_resource_receipt"] = (
+            validate_runtime_core_resource_receipt(runtime_core_resource_receipt)
+        )
     return result
 
 
@@ -1010,6 +1130,16 @@ def run_package_browser_smoke(
             expected_wisp_configured=release_wisp_endpoint is not None,
             description="waiting for the first real package frame",
         )
+        observe_runtime_core_resource_receipt = (
+            restart_count == OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
+        )
+        first_runtime_core_resource_receipt = (
+            _capture_runtime_core_resource_receipt(
+                client, expected_url=first_url
+            )
+            if observe_runtime_core_resource_receipt
+            else None
+        )
         package_observation = (
             _package_startup_observation(
                 server=server,
@@ -1054,6 +1184,7 @@ def run_package_browser_smoke(
             first_ready,
             first_shutdown,
             post_exit_frame_quiescent=observe_post_exit_frame_quiescence,
+            runtime_core_resource_receipt=first_runtime_core_resource_receipt,
         )
         if restart_count == 0:
             result = {
@@ -1112,6 +1243,13 @@ def run_package_browser_smoke(
             if time_origin in seen_time_origins:
                 raise M0Error("package restart document time origin was reused")
             seen_time_origins.add(time_origin)
+            runtime_core_resource_receipt = (
+                _capture_runtime_core_resource_receipt(
+                    client, expected_url=restart_url
+                )
+                if observe_runtime_core_resource_receipt
+                else None
+            )
             shutdown = _request_clean_shutdown(
                 client=client,
                 browser=browser,
@@ -1148,6 +1286,7 @@ def run_package_browser_smoke(
                     ready,
                     shutdown,
                     post_exit_frame_quiescent=observe_post_exit_frame_quiescence,
+                    runtime_core_resource_receipt=runtime_core_resource_receipt,
                 )
             )
             prior_shutdown = shutdown

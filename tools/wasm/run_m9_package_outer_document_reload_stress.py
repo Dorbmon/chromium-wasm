@@ -7,10 +7,11 @@
 
 This deliberately starts from the immutable package server snapshot used by
 the ordinary package browser smoke.  Each lifetime must bind to a new outer
-document URL and time origin, report a real host frame, and complete both the
-native and Emscripten exit channels with zero.  It is a fixed, bounded reload
-observation, not evidence of long-run reliability, leak freedom, persistence,
-or M9 release completion.
+document URL and time origin, report a real host frame, retain its bounded
+document-scoped core host-bridge Resource Timing receipt, and complete both
+the native and Emscripten exit channels with zero.  It is a fixed, bounded
+reload observation, not evidence of long-run reliability, leak freedom,
+persistence, or M9 release completion.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ _EPOCH_FIELDS = frozenset(
         "frames_presented",
         "post_exit_frame_quiescent",
         "process_exit_code",
+        "runtime_core_resource_receipt",
         "runtime_exit_code",
         "shutdown_disabled",
         "shutdown_requested",
@@ -136,6 +138,15 @@ def validate_reload_stress_result(value: object) -> dict[str, object]:
             raise M0Error(
                 f"package reload stress epoch {index} lacks post-exit frame quiescence"
             )
+        try:
+            package_browser_smoke.validate_runtime_core_resource_receipt(
+                epoch["runtime_core_resource_receipt"]
+            )
+        except M0Error as error:
+            raise M0Error(
+                "package reload stress epoch "
+                f"{index} runtime resource receipt is invalid"
+            ) from error
         if (
             type(epoch["runtime_exit_code"]) is not int
             or type(epoch["process_exit_code"]) is not int

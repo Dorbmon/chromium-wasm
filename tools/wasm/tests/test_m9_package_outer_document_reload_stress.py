@@ -24,11 +24,21 @@ import run_m9_package_outer_document_reload_stress as runner
 from m0_common import M0Error
 
 
+def _runtime_core_resource_receipt() -> list[dict[str, str]]:
+    return [
+        {"initiator_type": initiator_type, "path": path}
+        for path, initiator_type in (
+            runner.package_browser_smoke.RUNTIME_CORE_RESOURCE_RECEIPT
+        )
+    ]
+
+
 def _epoch(frame_count: int) -> dict[str, object]:
     return {
         "frames_presented": frame_count,
         "post_exit_frame_quiescent": True,
         "process_exit_code": 0,
+        "runtime_core_resource_receipt": _runtime_core_resource_receipt(),
         "runtime_exit_code": 0,
         "shutdown_disabled": True,
         "shutdown_requested": True,
@@ -141,6 +151,35 @@ class M9PackageOuterDocumentReloadStressTest(unittest.TestCase):
                 invalid["epochs"][1][field] = replacement
                 with self.assertRaisesRegex(M0Error, message):
                     runner.validate_reload_stress_result(invalid)
+
+    def test_result_rejects_missing_or_forged_runtime_resource_receipts(self) -> None:
+        result = _passing_result()
+        missing_epoch_field = deepcopy(result)
+        del missing_epoch_field["epochs"][1]["runtime_core_resource_receipt"]
+        missing_resource = deepcopy(result)
+        missing_resource["epochs"][1]["runtime_core_resource_receipt"].pop()
+        wrong_path = deepcopy(result)
+        wrong_path["epochs"][1]["runtime_core_resource_receipt"][0][
+            "path"
+        ] = "forged-host-bridge.js"
+        wrong_initiator = deepcopy(result)
+        wrong_initiator["epochs"][1]["runtime_core_resource_receipt"][6][
+            "initiator_type"
+        ] = "script"
+        malformed = deepcopy(result)
+        del malformed["epochs"][1]["runtime_core_resource_receipt"][0][
+            "initiator_type"
+        ]
+
+        for name, invalid, message in (
+            ("missing epoch field", missing_epoch_field, "epoch 2 fields are invalid"),
+            ("missing resource", missing_resource, "runtime resource receipt"),
+            ("wrong path", wrong_path, "runtime resource receipt"),
+            ("wrong initiator", wrong_initiator, "runtime resource receipt"),
+            ("malformed", malformed, "runtime resource receipt"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(M0Error, message):
+                runner.validate_reload_stress_result(invalid)
 
     def test_run_uses_only_the_fixed_wisp_disabled_three_epoch_path(self) -> None:
         result = _passing_result()

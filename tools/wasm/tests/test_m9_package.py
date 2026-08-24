@@ -40,6 +40,13 @@ PORT_REVISION = "a" * 40
 ATTESTED_CHECKOUT = {"commit": PORT_REVISION, "tree": "b" * 40}
 
 
+def _runtime_core_resource_receipt() -> list[dict[str, str]]:
+    return [
+        {"initiator_type": initiator_type, "path": path}
+        for path, initiator_type in package_browser_smoke.RUNTIME_CORE_RESOURCE_RECEIPT
+    ]
+
+
 class M9PackageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -3085,6 +3092,84 @@ process.stdout.write(JSON.stringify(results));
                 launch_started_at=0.0,
             )
 
+    def test_runtime_core_resource_receipt_requires_exact_paths_and_roles(self) -> None:
+        receipt = _runtime_core_resource_receipt()
+        self.assertEqual(
+            receipt,
+            package_browser_smoke.validate_runtime_core_resource_receipt(receipt),
+        )
+
+        missing = deepcopy(receipt)
+        missing.pop()
+        wrong_path = deepcopy(receipt)
+        wrong_path[2]["path"] = "unexpected-resource.js"
+        wrong_initiator = deepcopy(receipt)
+        wrong_initiator[6]["initiator_type"] = "script"
+        malformed = deepcopy(receipt)
+        malformed[0].pop("initiator_type")
+        for name, value, message in (
+            ("missing", missing, "is incomplete"),
+            ("wrong path", wrong_path, "path is invalid"),
+            ("wrong initiator", wrong_initiator, "initiator is invalid"),
+            ("malformed", malformed, "is malformed"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(M0Error, message):
+                package_browser_smoke.validate_runtime_core_resource_receipt(value)
+
+    def test_runtime_core_resource_receipt_query_is_read_only_and_document_scoped(
+        self,
+    ) -> None:
+        expected_url = "http://127.0.0.1:32123/?m9_package_epoch=receipt"
+        expression = package_browser_smoke._runtime_core_resource_receipt_expression(
+            expected_url
+        )
+        self.assertIn('performance.getEntriesByType("resource")', expression)
+        self.assertIn("location.href !== expectedDocumentUrl", expression)
+        self.assertIn("resourceUrl.origin !== documentUrl.origin", expression)
+        self.assertIn("resourceUrl.search !== \"\"", expression)
+        self.assertNotIn("fetch(", expression)
+        self.assertIn(json.dumps(expected_url), expression)
+        for path, initiator_type in package_browser_smoke.RUNTIME_CORE_RESOURCE_RECEIPT:
+            with self.subTest(path=path):
+                self.assertIn(json.dumps(path), expression)
+                self.assertIn(json.dumps(initiator_type), expression)
+
+        class Client:
+            def __init__(self, result: object) -> None:
+                self.result = result
+                self.expressions: list[str] = []
+
+            def evaluate(self, value: str) -> object:
+                self.expressions.append(value)
+                return self.result
+
+        client = Client(_runtime_core_resource_receipt())
+        self.assertEqual(
+            _runtime_core_resource_receipt(),
+            package_browser_smoke._capture_runtime_core_resource_receipt(
+                client, expected_url=expected_url
+            ),
+        )
+        self.assertEqual([expression], client.expressions)
+
+        missing = _runtime_core_resource_receipt()
+        missing.pop()
+        with self.assertRaisesRegex(M0Error, "is incomplete"):
+            package_browser_smoke._capture_runtime_core_resource_receipt(
+                Client(missing), expected_url=expected_url
+            )
+        for invalid_url in (
+            "https://127.0.0.1:32123/",
+            "http://127.0.0.1:32123/#fragment",
+            "not-a-url",
+        ):
+            with self.subTest(invalid_url=invalid_url), self.assertRaisesRegex(
+                M0Error, "receipt URL is invalid"
+            ):
+                package_browser_smoke._runtime_core_resource_receipt_expression(
+                    invalid_url
+                )
+
     def test_package_browser_default_result_remains_one_clean_epoch(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
@@ -3174,6 +3259,11 @@ process.stdout.write(JSON.stringify(results));
             mock.patch.object(
                 package_browser_smoke, "_restart_after_clean_shutdown"
             ) as restart,
+            mock.patch.object(
+                package_browser_smoke,
+                "_capture_runtime_core_resource_receipt",
+                return_value=_runtime_core_resource_receipt(),
+            ) as capture_resource_receipt,
         ):
             result = package_browser_smoke.run_package_browser_smoke(
                 dist_dir=Path("/fake/dist"),
@@ -3225,6 +3315,7 @@ process.stdout.write(JSON.stringify(results));
             1000.0, request_shutdown.call_args.kwargs["expected_time_origin"]
         )
         restart.assert_not_called()
+        capture_resource_receipt.assert_not_called()
         stop_browser_group.assert_called_once_with(browser, mock.ANY)
 
     def test_package_browser_opt_in_adds_only_bounded_observation(self) -> None:
@@ -3608,6 +3699,11 @@ process.stdout.write(JSON.stringify(results));
                 "_restart_after_clean_shutdown",
                 return_value=second_client,
             ) as restart,
+            mock.patch.object(
+                package_browser_smoke,
+                "_capture_runtime_core_resource_receipt",
+                return_value=_runtime_core_resource_receipt(),
+            ) as capture_resource_receipt,
         ):
             result = package_browser_smoke.run_package_browser_smoke(
                 dist_dir=Path("/fake/dist"),
@@ -3648,6 +3744,7 @@ process.stdout.write(JSON.stringify(results));
         self.assertEqual(2, wait_for_ready.call_count)
         self.assertEqual(2, request_shutdown.call_count)
         restart.assert_called_once()
+        capture_resource_receipt.assert_not_called()
         stop_browser_group.assert_called_once_with(browser, mock.ANY)
         self.assertEqual(
             "http://127.0.0.1:32123/?m9_package_epoch=restart-epoch",
@@ -3689,6 +3786,212 @@ process.stdout.write(JSON.stringify(results));
             expected_metadata, second_shutdown_kwargs["expected_package_metadata"]
         )
         self.assertEqual(1001.0, second_shutdown_kwargs["expected_time_origin"])
+
+    def test_package_browser_three_epochs_retain_resource_receipts(self) -> None:
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 32123)
+        server.snapshot = snapshot_package_tree(self._stage())
+        expected_metadata = package.package_runtime_status_metadata(
+            server.snapshot.artifacts["VERSION.json"]
+        )
+        server_thread = mock.Mock()
+        server_thread.is_alive.return_value = False
+        stderr_thread = mock.Mock()
+        browser = mock.Mock()
+        browser.stderr = object()
+        browser.poll.return_value = None
+        profile = mock.Mock()
+        profile.name = "/tmp/m9-package-profile"
+        first_client = mock.Mock()
+        second_client = mock.Mock()
+        third_client = mock.Mock()
+        ready = [
+            {
+                "fatalCount": 0,
+                "framesPresented": frame_count,
+                "releaseStatus": package.RELEASE_STATUS,
+            }
+            for frame_count in (7, 11, 13)
+        ]
+        shutdown = {
+            "fatalCount": 0,
+            "shutdownRequested": True,
+            "shutdownDisabled": True,
+            "runtimeExitCode": 0,
+            "processExitCode": 0,
+        }
+        receipt = _runtime_core_resource_receipt()
+
+        with (
+            mock.patch.object(
+                package_browser_smoke,
+                "find_browser",
+                return_value=(Path("/fake/browser"), "test-browser"),
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "create_package_smoke_server",
+                return_value=server,
+            ),
+            mock.patch.object(
+                package_browser_smoke.threading,
+                "Thread",
+                side_effect=[server_thread, stderr_thread],
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "browser_command",
+                return_value=["/fake/browser", "profile", "url"],
+            ),
+            mock.patch.object(
+                package_browser_smoke.subprocess,
+                "Popen",
+                return_value=browser,
+            ),
+            mock.patch.object(
+                package_browser_smoke.tempfile,
+                "TemporaryDirectory",
+                return_value=profile,
+            ),
+            mock.patch.object(
+                package_browser_smoke, "unused_loopback_port", return_value=32124
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "wait_for_page_client",
+                return_value=first_client,
+            ),
+            mock.patch.object(
+                package_browser_smoke,
+                "_wait_for_ready_package_document",
+                side_effect=[
+                    (ready[0], 1000.0),
+                    (ready[1], 1001.0),
+                    (ready[2], 1002.0),
+                ],
+            ) as wait_for_ready,
+            mock.patch.object(
+                package_browser_smoke,
+                "_request_clean_shutdown",
+                side_effect=[shutdown, shutdown, shutdown],
+            ) as request_shutdown,
+            mock.patch.object(
+                package_browser_smoke.secrets,
+                "token_urlsafe",
+                side_effect=["first-epoch", "second-epoch", "third-epoch"],
+            ),
+            mock.patch.object(
+                package_browser_smoke, "stop_browser_group"
+            ) as stop_browser_group,
+            mock.patch.object(
+                package_browser_smoke,
+                "_restart_after_clean_shutdown",
+                side_effect=[second_client, third_client],
+            ) as restart,
+            mock.patch.object(
+                package_browser_smoke,
+                "_capture_runtime_core_resource_receipt",
+                side_effect=[deepcopy(receipt), deepcopy(receipt), deepcopy(receipt)],
+            ) as capture_resource_receipt,
+            mock.patch.object(
+                package_browser_smoke,
+                "_observe_post_exit_frame_quiescence",
+            ) as observe_quiescence,
+        ):
+            result = package_browser_smoke.run_package_browser_smoke(
+                dist_dir=Path("/fake/dist"),
+                browser_argument=None,
+                no_sandbox=False,
+                timeout=120.0,
+                outer_document_restart_count=(
+                    package_browser_smoke.OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
+                ),
+            )
+
+        self.assertEqual(
+            {
+                "browser_version": "test-browser",
+                "distinct_document_epoch_count": 3,
+                "distinct_document_time_origin_count": 3,
+                "epochs": [
+                    {
+                        "frames_presented": 7,
+                        "post_exit_frame_quiescent": True,
+                        "process_exit_code": 0,
+                        "runtime_core_resource_receipt": receipt,
+                        "runtime_exit_code": 0,
+                        "shutdown_disabled": True,
+                        "shutdown_requested": True,
+                    },
+                    {
+                        "frames_presented": 11,
+                        "post_exit_frame_quiescent": True,
+                        "process_exit_code": 0,
+                        "runtime_core_resource_receipt": receipt,
+                        "runtime_exit_code": 0,
+                        "shutdown_disabled": True,
+                        "shutdown_requested": True,
+                    },
+                    {
+                        "frames_presented": 13,
+                        "post_exit_frame_quiescent": True,
+                        "process_exit_code": 0,
+                        "runtime_core_resource_receipt": receipt,
+                        "runtime_exit_code": 0,
+                        "shutdown_disabled": True,
+                        "shutdown_requested": True,
+                    },
+                ],
+                "limitations": list(
+                    package_browser_smoke.OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS
+                ),
+                "m9_gate_complete": False,
+                "outer_document_epoch_count": 3,
+                "outer_document_restarts": 2,
+                "performance_gate": False,
+                "release_status": package.RELEASE_STATUS,
+                "scope": package_browser_smoke.OUTER_DOCUMENT_RELOAD_STRESS_SCOPE,
+                "served_version_json_sha256": expected_metadata[
+                    "versionJsonSha256"
+                ],
+            },
+            result,
+        )
+        self.assertEqual(3, wait_for_ready.call_count)
+        self.assertEqual(3, request_shutdown.call_count)
+        self.assertEqual(2, restart.call_count)
+        self.assertEqual(3, observe_quiescence.call_count)
+        self.assertEqual(
+            [
+                mock.call(
+                    first_client,
+                    expected_url=(
+                        "http://127.0.0.1:32123/?m9_package_epoch=first-epoch"
+                    ),
+                ),
+                mock.call(
+                    second_client,
+                    expected_url=(
+                        "http://127.0.0.1:32123/?m9_package_epoch=second-epoch"
+                    ),
+                ),
+                mock.call(
+                    third_client,
+                    expected_url=(
+                        "http://127.0.0.1:32123/?m9_package_epoch=third-epoch"
+                    ),
+                ),
+            ],
+            capture_resource_receipt.call_args_list,
+        )
+        self.assertEqual(
+            [False, False, False],
+            [
+                call.kwargs["expected_wisp_configured"]
+                for call in wait_for_ready.call_args_list
+            ],
+        )
+        stop_browser_group.assert_called_once_with(browser, mock.ANY)
 
     def test_package_browser_rejects_invalid_outer_document_restart_count(self) -> None:
         with mock.patch.object(package_browser_smoke, "find_browser") as find_browser:
