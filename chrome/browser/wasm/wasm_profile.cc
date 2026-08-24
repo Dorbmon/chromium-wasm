@@ -295,6 +295,13 @@ base::FilePath WasmProfile::GetPath() const {
   return profile_path_;
 }
 
+bool WasmProfile::ShouldUseInMemoryDefaultStoragePartition() {
+  // Keep the default StoragePartition volatile while this regular profile has
+  // no durable backing for its partition-owned services. Separately admitted
+  // Preferences I/O remains outside this partition policy.
+  return true;
+}
+
 content::DownloadManagerDelegate* WasmProfile::GetDownloadManagerDelegate() {
   // Downloads are not exposed until the M7 OPFS/export delegate exists.
   return nullptr;

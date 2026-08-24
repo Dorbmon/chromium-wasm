@@ -22,7 +22,9 @@ StoragePartitionConfig& StoragePartitionConfig::operator=(
 // static
 StoragePartitionConfig StoragePartitionConfig::CreateDefault(
     BrowserContext* browser_context) {
-  return StoragePartitionConfig("", "", browser_context->IsOffTheRecord());
+  return StoragePartitionConfig(
+      "", "", browser_context->IsOffTheRecord() ||
+                  browser_context->ShouldUseInMemoryDefaultStoragePartition());
 }
 
 // static

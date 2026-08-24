@@ -444,6 +444,10 @@ ContentIndexProvider* BrowserContext::GetContentIndexProvider() {
   return nullptr;
 }
 
+bool BrowserContext::ShouldUseInMemoryDefaultStoragePartition() {
+  return false;
+}
+
 bool BrowserContext::CanUseDiskWhenOffTheRecord() {
   return false;
 }

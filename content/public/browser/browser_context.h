@@ -398,6 +398,11 @@ class CONTENT_EXPORT BrowserContext : public base::SupportsUserData {
   // also off the record.
   virtual bool IsOffTheRecord() = 0;
 
+  // Returns true if the default StoragePartition must be memory-backed while
+  // this BrowserContext itself remains regular. The default implementation
+  // returns false.
+  virtual bool ShouldUseInMemoryDefaultStoragePartition();
+
   // Returns the DownloadManagerDelegate for this context. This will be called
   // once per context. The embedder owns the delegate and is responsible for
   // ensuring that it outlives DownloadManager. Note in particular that it is

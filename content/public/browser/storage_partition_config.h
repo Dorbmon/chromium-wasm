@@ -27,7 +27,8 @@ class CONTENT_EXPORT StoragePartitionConfig {
   StoragePartitionConfig& operator=(const StoragePartitionConfig&);
 
   // Creates a default config for |browser_context|. If |browser_context| is an
-  // off-the-record profile, then the config will have |in_memory_| set to true.
+  // off-the-record profile, or requests an in-memory default partition, then
+  // the config will have |in_memory_| set to true.
   static StoragePartitionConfig CreateDefault(BrowserContext* browser_context);
 
   // Creates a config tied to a specific domain.

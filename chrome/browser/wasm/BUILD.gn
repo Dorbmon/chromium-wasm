@@ -1918,6 +1918,35 @@ test("wasm_profile_prefs_fence_controller_unittests") {
   ]
 }
 
+# Keep this focused test off the monolithic Content test-support closure, which
+# includes unsupported Blink fuzz-test sources in Wasm configurations.
+source_set("wasm_storage_partition_config_test_support") {
+  testonly = true
+
+  public = [ "//content/public/test/browser_task_environment.h" ]
+  sources = [ "//content/public/test/browser_task_environment.cc" ]
+
+  deps = [
+    "//base",
+    "//base/test:test_support",
+    "//content/public/browser",
+  ]
+}
+
+# This verifies only default StoragePartition selection. It neither creates a
+# durable backend nor changes the regular Profile identity of WasmProfile.
+test("wasm_storage_partition_config_unittests") {
+  sources = [ "wasm_storage_partition_config_unittest.cc" ]
+
+  deps = [
+    ":wasm_storage_partition_config_test_support",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//content/public/browser",
+    "//testing/gtest",
+  ]
+}
+
 # The test-only M7 Preferences protocol is linked into the source-selected
 # M7 artifact only. The normal chrome_wasm configuration neither compiles this
 # target nor recognizes its runtime switches.
