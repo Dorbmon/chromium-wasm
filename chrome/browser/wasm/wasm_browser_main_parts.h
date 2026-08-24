@@ -79,6 +79,7 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   bool m9_repeating_timer_smoke_requested_ = false;
   bool m9_repeating_timer_smoke_started_ = false;
   int m9_repeating_timer_smoke_observed_ticks_ = 0;
+  int m9_repeating_timer_smoke_expected_ticks_ = 3;
   bool browser_window_shutdown_started_ = false;
   bool browser_window_lifecycle_smoke_requested_ = false;
   bool foundation_shutdown_ = false;

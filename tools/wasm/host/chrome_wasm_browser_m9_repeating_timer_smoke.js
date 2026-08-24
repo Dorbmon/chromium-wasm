@@ -24,8 +24,40 @@ const TICK_COUNT = 3;
 const HEARTBEAT_INTERVAL_MS = 20;
 const POST_EXIT_GRACE_MS = 100;
 const MAX_TIMEOUT_MS = 120000;
-const MAX_RECORD_HISTORY = 128;
+const STRESS_100_TICKS_MODE = "stress-100-ticks";
+const STRESS_100_TICKS_CASE = "browser_repeating_timer_m9_stress_100_ticks";
+const STRESS_100_TICKS_SCOPE = "fixed-one-hundred-native-ui-repeating-timer-ticks-with-pre-shutdown-quiescence-and-post-shutdown-quiet-observation";
+const STRESS_100_TICKS_SWITCH = "--wasm-browser-m9-repeating-timer-smoke-ticks=100";
+const STRESS_100_TICKS_READY_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:READY ticks=100 interval_ms=50";
+const STRESS_100_TICKS_QUIESCENT_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:QUIESCENT ticks=100 duration_ms=200";
+const STRESS_100_TICKS_PASS_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS ticks=100";
+const STRESS_100_TICK_COUNT = 100;
+const MAX_RECORD_HISTORY = 512;
 const MAX_FRAME_DIMENSION = 16384;
+
+const DEFAULT_TIMER_SMOKE_CONFIG = Object.freeze({
+  mode: null,
+  case: CASE,
+  scope: SCOPE,
+  switch: SWITCH,
+  readyMarker: READY_MARKER,
+  quiescentMarker: QUIESCENT_MARKER,
+  passMarker: PASS_MARKER,
+  tickCount: TICK_COUNT,
+});
+const STRESS_100_TICKS_TIMER_SMOKE_CONFIG = Object.freeze({
+  mode: STRESS_100_TICKS_MODE,
+  case: STRESS_100_TICKS_CASE,
+  scope: STRESS_100_TICKS_SCOPE,
+  switch: STRESS_100_TICKS_SWITCH,
+  readyMarker: STRESS_100_TICKS_READY_MARKER,
+  quiescentMarker: STRESS_100_TICKS_QUIESCENT_MARKER,
+  passMarker: STRESS_100_TICKS_PASS_MARKER,
+  tickCount: STRESS_100_TICK_COUNT,
+});
+const TIMER_SMOKE_CONFIGS_BY_MODE = Object.freeze({
+  [STRESS_100_TICKS_MODE]: STRESS_100_TICKS_TIMER_SMOKE_CONFIG,
+});
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -36,6 +68,18 @@ function appendBounded(records, record) {
   if (records.length > MAX_RECORD_HISTORY) {
     records.shift();
   }
+}
+
+function timerSmokeConfigFromQuery(query) {
+  const modes = query.getAll("mode");
+  if (modes.length === 0) {
+    return DEFAULT_TIMER_SMOKE_CONFIG;
+  }
+  if (modes.length !== 1 ||
+      !Object.prototype.hasOwnProperty.call(TIMER_SMOKE_CONFIGS_BY_MODE, modes[0])) {
+    throw new Error("repeating-timer mode must select one closed supported mode once");
+  }
+  return TIMER_SMOKE_CONFIGS_BY_MODE[modes[0]];
 }
 
 function asNonemptyString(value, description) {
@@ -120,7 +164,7 @@ function eventLoopSnapshot(heartbeatCount, animationFrameCount) {
   return Object.freeze({heartbeatCount, animationFrameCount});
 }
 
-function validateResult(result) {
+function validateResult(result, config) {
   const failures = [];
   const require = (condition, message) => {
     if (!condition) {
@@ -128,6 +172,8 @@ function validateResult(result) {
     }
   };
 
+  require(result.case === config.case, "timer smoke case is invalid");
+  require(result.scope === config.scope, "timer smoke scope is invalid");
   require(result.runtimeExitCode === 0, "runtime did not close normally");
   require(result.processExitCode === 0, "process did not report normal close");
   require(result.runtimeInitialized === true, "runtime did not initialize");
@@ -174,9 +220,9 @@ function validateResult(result) {
   const stderr = result.stderr;
   require(Array.isArray(stderr), "native stderr is not a list");
   if (Array.isArray(stderr)) {
-    require(countExact(stderr, READY_MARKER) === 1,
+    require(countExact(stderr, config.readyMarker) === 1,
         "native READY marker is missing or duplicated");
-    require(countExact(stderr, PASS_MARKER) === 1,
+    require(countExact(stderr, config.passMarker) === 1,
         "native PASS marker is missing or duplicated");
     require(countExact(stderr, LIFECYCLE_PASS_MARKER) === 1,
         "Browser lifecycle PASS marker is missing or duplicated");
@@ -186,24 +232,24 @@ function validateResult(result) {
     const timerLines = stderr.filter((line) =>
       line.startsWith(TIMER_MARKER_PREFIX));
     const expectedTimerLines = [
-      READY_MARKER,
-      `${TICK_MARKER_PREFIX}1`,
-      `${TICK_MARKER_PREFIX}2`,
-      `${TICK_MARKER_PREFIX}3`,
-      QUIESCENT_MARKER,
-      PASS_MARKER,
+      config.readyMarker,
+      ...Array.from(
+          {length: config.tickCount},
+          (_, index) => `${TICK_MARKER_PREFIX}${index + 1}`),
+      config.quiescentMarker,
+      config.passMarker,
     ];
     require(JSON.stringify(timerLines) === JSON.stringify(expectedTimerLines),
         "native timer markers are malformed, duplicated, or out of order");
     const lifecycleIndex = stderr.indexOf(LIFECYCLE_PASS_MARKER);
-    const passIndex = stderr.indexOf(PASS_MARKER);
+    const passIndex = stderr.indexOf(config.passMarker);
     require(passIndex >= 0 && lifecycleIndex > passIndex,
         "Browser lifecycle did not drain after native timer pass");
   }
 
   const ticks = result.ticks;
-  require(Array.isArray(ticks) && ticks.length === TICK_COUNT,
-      "host did not observe exactly three native timer ticks");
+  require(Array.isArray(ticks) && ticks.length === config.tickCount,
+      `host did not observe exactly ${config.tickCount} native timer ticks`);
   if (Array.isArray(ticks)) {
     require(ticks.every((tick, index) => tick?.ordinal === index + 1),
         "native timer tick ordinals are invalid");
@@ -225,6 +271,7 @@ function validateResult(result) {
 
 class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
   #canvas;
+  #config;
   #versions;
   #artifact;
   #captureHarness;
@@ -263,7 +310,7 @@ class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
   #errorHandler;
   #rejectionHandler;
 
-  constructor(canvas, versions, artifact, captureHarness) {
+  constructor(canvas, config, versions, artifact, captureHarness) {
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("repeating-timer smoke requires a canvas");
     }
@@ -273,6 +320,7 @@ class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
       throw new Error("repeating-timer identity reports are invalid");
     }
     this.#canvas = canvas;
+    this.#config = config;
     this.#versions = versions;
     this.#artifact = Object.freeze({...artifact});
     this.#captureHarness = Object.freeze({...captureHarness});
@@ -338,7 +386,7 @@ class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
   }
 
   #recordOutput(text) {
-    if (text === READY_MARKER) {
+    if (text === this.#config.readyMarker) {
       this.#readyObserved = true;
       return;
     }
@@ -350,13 +398,13 @@ class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
       }));
       return;
     }
-    if (text === QUIESCENT_MARKER) {
+    if (text === this.#config.quiescentMarker) {
       this.#quiescentObserved = true;
       this.#responsivenessAtQuiescent = eventLoopSnapshot(
           this.#heartbeatCount, this.#animationFrameCount);
       return;
     }
-    if (text === PASS_MARKER) {
+    if (text === this.#config.passMarker) {
       this.#passObserved = true;
       this.#responsivenessAtPass = eventLoopSnapshot(
           this.#heartbeatCount, this.#animationFrameCount);
@@ -518,8 +566,8 @@ class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
   #result(status, error) {
     return {
       protocol: HOST_PROTOCOL,
-      case: CASE,
-      scope: SCOPE,
+      case: this.#config.case,
+      scope: this.#config.scope,
       status,
       m9GateComplete: false,
       m9TimerSmokeOnly: true,
@@ -590,8 +638,10 @@ class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
         throw new Error("repeating-timer loader has no default factory export");
       }
       const host = this;
+      const moduleOptions = this.#config === DEFAULT_TIMER_SMOKE_CONFIG ?
+          {arguments: [SWITCH]} : {arguments: [this.#config.switch]};
       Promise.resolve(namespace.default({
-        arguments: [SWITCH],
+        ...moduleOptions,
         canvas: this.#canvas,
         noExitRuntime: false,
         mainScriptUrlOrBlob,
@@ -655,6 +705,7 @@ class ChromiumWasmBrowserM9RepeatingTimerSmokeHost {
 
 export async function runChromeWasmBrowserM9RepeatingTimerSmokeFromQuery() {
   const query = new URLSearchParams(location.search);
+  const config = timerSmokeConfigFromQuery(query);
   const token = asNonemptyString(query.get("token"), "result token");
   const moduleName = asNonemptyString(query.get("module"), "module name");
   if (!/^[A-Za-z0-9_]+$/.test(moduleName)) {
@@ -678,9 +729,9 @@ export async function runChromeWasmBrowserM9RepeatingTimerSmokeFromQuery() {
   }
   renderVersions(versionElement, versions);
   const host = new ChromiumWasmBrowserM9RepeatingTimerSmokeHost(
-      canvas, versions, artifact, captureHarness);
+      canvas, config, versions, artifact, captureHarness);
   const result = validateResult(await host.run(
-      `${HOST_ROOT}/artifacts/${moduleName}.js`, timeoutMs));
+      `${HOST_ROOT}/artifacts/${moduleName}.js`, timeoutMs), config);
   root.dataset.state = result.status;
   status.textContent = JSON.stringify(result, null, 2);
   const response = await fetch(
@@ -703,6 +754,14 @@ export const chromeWasmBrowserM9RepeatingTimerSmokeContract = Object.freeze({
   PRODUCT_MODULE_NAME,
   QUIESCENCE_DURATION_MS,
   SCOPE,
+  STRESS_100_TICKS_CASE,
+  STRESS_100_TICKS_MODE,
+  STRESS_100_TICKS_PASS_MARKER,
+  STRESS_100_TICKS_QUIESCENT_MARKER,
+  STRESS_100_TICKS_READY_MARKER,
+  STRESS_100_TICKS_SCOPE,
+  STRESS_100_TICKS_SWITCH,
+  STRESS_100_TICK_COUNT,
   SWITCH,
   TICK_COUNT,
 });

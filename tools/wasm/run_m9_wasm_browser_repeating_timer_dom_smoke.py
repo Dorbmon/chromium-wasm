@@ -6,19 +6,21 @@
 """Run the bounded native Chromium UI-sequence repeating-timer smoke.
 
 This is M9 preparation evidence, not an M9 release gate. It proves only that
-one visible single-process Browser executes three fixed ``base::RepeatingTimer``
-callbacks while the outer host event loop remains responsive, then reaches the
-ordinary Browser destruction barrier without later timer output. It does not
-measure long-run timer reliability, worker drain, memory leaks, performance,
-persistence, networking, a visually non-empty Chrome shell, or M8 feature
-compatibility. The canvas must be surface-ready, but this smoke does not claim
-the shell or first visually non-empty paint readiness reports.
+one visible single-process Browser executes either three default or one hundred
+explicit stress ``base::RepeatingTimer`` callbacks while the outer host event
+loop remains responsive, then reaches the ordinary Browser destruction barrier
+without later timer output. It does not measure long-run timer reliability,
+worker drain, memory leaks, performance, persistence, networking, a visually
+non-empty Chrome shell, or M8 feature compatibility. The canvas must be
+surface-ready, but this smoke does not claim the shell or first visually
+non-empty paint readiness reports.
 """
 
 from __future__ import annotations
 
 import argparse
 from collections import deque
+from dataclasses import dataclass
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -33,7 +35,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Callable
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from check_m6_chrome_boundary import check_boundary
 from m0_common import (
@@ -75,6 +77,22 @@ TIMER_MARKER_PREFIX = "CHROMIUM_WASM_M9_REPEATING_TIMER:"
 LIFECYCLE_PASS_MARKER = "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS"
 TICK_COUNT = 3
 POST_EXIT_GRACE_MS = 100
+STRESS_100_TICKS_MODE = "stress-100-ticks"
+STRESS_100_TICKS_CASE = "browser_repeating_timer_m9_stress_100_ticks"
+STRESS_100_TICKS_SCOPE = (
+    "fixed-one-hundred-native-ui-repeating-timer-ticks-with-pre-shutdown-"
+    "quiescence-and-post-shutdown-quiet-observation"
+)
+STRESS_100_TICKS_SWITCH = "--wasm-browser-m9-repeating-timer-smoke-ticks=100"
+STRESS_100_TICKS_READY_MARKER = (
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:READY ticks=100 interval_ms=50"
+)
+STRESS_100_TICKS_QUIESCENT_MARKER = (
+    "CHROMIUM_WASM_M9_REPEATING_TIMER:QUIESCENT ticks=100 duration_ms=200"
+)
+STRESS_100_TICKS_PASS_MARKER = "CHROMIUM_WASM_M9_REPEATING_TIMER:PASS ticks=100"
+STRESS_100_TICK_COUNT = 100
+STRESS_100_MINIMUM_TIMEOUT_SECONDS = 30.0
 HOST_ROOT = "/__m9_repeating_timer__"
 PRODUCT_MODULE_NAME = "chrome_wasm"
 MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -110,6 +128,65 @@ _CAPTURE_HARNESS_FIELDS = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class TimerSmokeConfig:
+    """One closed native repeating-timer observation contract."""
+
+    mode: str | None
+    case: str
+    scope: str
+    switch: str
+    ready_marker: str
+    quiescent_marker: str
+    pass_marker: str
+    tick_count: int
+    minimum_timeout_seconds: float
+
+    @property
+    def runtime_arguments(self) -> list[str]:
+        return [self.switch]
+
+
+DEFAULT_TIMER_SMOKE_CONFIG = TimerSmokeConfig(
+    mode=None,
+    case=CASE,
+    scope=SCOPE,
+    switch=SWITCH,
+    ready_marker=READY_MARKER,
+    quiescent_marker=QUIESCENT_MARKER,
+    pass_marker=PASS_MARKER,
+    tick_count=TICK_COUNT,
+    minimum_timeout_seconds=2.0,
+)
+STRESS_100_TICKS_TIMER_SMOKE_CONFIG = TimerSmokeConfig(
+    mode=STRESS_100_TICKS_MODE,
+    case=STRESS_100_TICKS_CASE,
+    scope=STRESS_100_TICKS_SCOPE,
+    switch=STRESS_100_TICKS_SWITCH,
+    ready_marker=STRESS_100_TICKS_READY_MARKER,
+    quiescent_marker=STRESS_100_TICKS_QUIESCENT_MARKER,
+    pass_marker=STRESS_100_TICKS_PASS_MARKER,
+    tick_count=STRESS_100_TICK_COUNT,
+    minimum_timeout_seconds=STRESS_100_MINIMUM_TIMEOUT_SECONDS,
+)
+
+
+def select_timer_smoke_config(*, stress_100_ticks: bool) -> TimerSmokeConfig:
+    """Select one of the fixed timer contracts; arbitrary tick counts are invalid."""
+
+    if stress_100_ticks:
+        return STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+    return DEFAULT_TIMER_SMOKE_CONFIG
+
+
+def _require_timer_smoke_config(config: object) -> TimerSmokeConfig:
+    if config is DEFAULT_TIMER_SMOKE_CONFIG:
+        return DEFAULT_TIMER_SMOKE_CONFIG
+    if config is STRESS_100_TICKS_TIMER_SMOKE_CONFIG:
+        return STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+    raise M0Error("repeating-timer configuration is not a closed supported mode")
+
+
 class RepeatingTimerSmokeServer(M9TrackingThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -123,6 +200,7 @@ class RepeatingTimerSmokeServer(M9TrackingThreadingHTTPServer):
     host_html: bytes
     host_js: bytes
     runner_source: bytes
+    timer_smoke_config: TimerSmokeConfig
 
 
 class RepeatingTimerSmokeRequestHandler(BaseHTTPRequestHandler):
@@ -154,8 +232,18 @@ class RepeatingTimerSmokeRequestHandler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:
-        path = urlsplit(self.path).path
+        request = urlsplit(self.path)
+        path = request.path
         if path in (HOST_ROOT, f"{HOST_ROOT}/"):
+            if not _query_matches_timer_smoke_config(
+                request.query, self.server.timer_smoke_config
+            ):
+                self._send_bytes(
+                    HTTPStatus.BAD_REQUEST,
+                    "text/plain; charset=utf-8",
+                    b"invalid repeating-timer mode\n",
+                )
+                return
             self._send_bytes(
                 HTTPStatus.OK, "text/html; charset=utf-8", self.server.host_html
             )
@@ -200,7 +288,9 @@ class RepeatingTimerSmokeRequestHandler(BaseHTTPRequestHandler):
                 b"invalid result size\n",
             )
             return
-        result = parse_result_payload(self.rfile.read(byte_count))
+        result = parse_result_payload(
+            self.rfile.read(byte_count), config=self.server.timer_smoke_config
+        )
         if result is None:
             self._send_bytes(
                 HTTPStatus.BAD_REQUEST,
@@ -230,7 +320,12 @@ class RepeatingTimerSmokeRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def parse_result_payload(payload: bytes) -> dict[str, Any] | None:
+def parse_result_payload(
+    payload: bytes,
+    *,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
+) -> dict[str, Any] | None:
+    config = _require_timer_smoke_config(config)
     try:
         result = json.loads(
             payload.decode("utf-8"),
@@ -241,11 +336,26 @@ def parse_result_payload(payload: bytes) -> dict[str, Any] | None:
     if (
         not isinstance(result, dict)
         or result.get("protocol") != 1
-        or result.get("case") != CASE
-        or result.get("scope") != SCOPE
+        or result.get("case") != config.case
+        or result.get("scope") != config.scope
     ):
         return None
     return result
+
+
+def _query_matches_timer_smoke_config(query: object, config: object) -> bool:
+    """Reject a missing, injected, or repeated mode before the loader is fetched."""
+
+    config = _require_timer_smoke_config(config)
+    if not isinstance(query, str):
+        return False
+    modes = [
+        value
+        for name, value in parse_qsl(query, keep_blank_values=True)
+        if name == "mode"
+    ]
+    expected_modes = [] if config.mode is None else [config.mode]
+    return modes == expected_modes
 
 
 def _require_product_module_name(module_name: object, boundary: str) -> str:
@@ -281,8 +391,10 @@ def create_server(
     result_queue: queue.Queue[dict[str, Any]],
     *,
     module_name: str,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> tuple[RepeatingTimerSmokeServer, dict[str, dict[str, object]]]:
     module_name = _require_product_module_name(module_name, "server")
+    config = _require_timer_smoke_config(config)
     artifacts, artifact_identity = _snapshot_artifacts(out_dir, module_name)
     return (
         create_server_from_artifacts(
@@ -292,6 +404,7 @@ def create_server(
             result_token,
             result_queue,
             module_name=module_name,
+            config=config,
         ),
         artifact_identity,
     )
@@ -305,6 +418,7 @@ def create_server_from_artifacts(
     result_queue: queue.Queue[dict[str, Any]],
     *,
     module_name: str,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
 ) -> RepeatingTimerSmokeServer:
@@ -317,6 +431,7 @@ def create_server_from_artifacts(
     """
 
     module_name = _require_product_module_name(module_name, "server")
+    config = _require_timer_smoke_config(config)
     expected_artifact_names = {f"{module_name}.js", f"{module_name}.wasm"}
     if (
         type(artifacts) is not dict
@@ -361,6 +476,7 @@ def create_server_from_artifacts(
         "chrome_wasm_browser_m9_repeating_timer_smoke.js"
     ]
     server.runner_source = runner_source
+    server.timer_smoke_config = config
     return server
 
 
@@ -415,22 +531,25 @@ def smoke_url(
     capture_harness: dict[str, object],
     module_name: str,
     timeout_seconds: float,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> str:
     module_name = _require_product_module_name(module_name, "URL")
     _require_product_module_name(server.module_name, "URL server")
+    config = _require_timer_smoke_config(config)
     host, port = server.server_address[:2]
-    query = urlencode(
-        {
-            "token": token,
-            "module": module_name,
-            "timeoutMs": str(int(timeout_seconds * 1000)),
-            "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
-            "artifact": json.dumps(artifact, sort_keys=True, separators=(",", ":")),
-            "captureHarness": json.dumps(
-                capture_harness, sort_keys=True, separators=(",", ":")
-            ),
-        }
-    )
+    query_fields = {
+        "token": token,
+        "module": module_name,
+        "timeoutMs": str(int(timeout_seconds * 1000)),
+        "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
+        "artifact": json.dumps(artifact, sort_keys=True, separators=(",", ":")),
+        "captureHarness": json.dumps(
+            capture_harness, sort_keys=True, separators=(",", ":")
+        ),
+    }
+    if config.mode is not None:
+        query_fields["mode"] = config.mode
+    query = urlencode(query_fields)
     return f"http://{host}:{port}{HOST_ROOT}/?{query}"
 
 
@@ -464,8 +583,13 @@ def _validate_event_loop_snapshot(value: object, description: str) -> dict[str, 
     }
 
 
-def _validate_ticks(value: object) -> list[dict[str, int]]:
-    if not isinstance(value, list) or len(value) != TICK_COUNT:
+def _validate_ticks(
+    value: object,
+    *,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
+) -> list[dict[str, int]]:
+    config = _require_timer_smoke_config(config)
+    if not isinstance(value, list) or len(value) != config.tick_count:
         raise M0Error("repeating-timer ticks do not have the fixed count")
     previous_heartbeat = -1
     previous_animation_frame = -1
@@ -558,15 +682,23 @@ def _validate_post_exit_observation(value: object) -> None:
         raise M0Error("repeating-timer post-exit counters are inconsistent")
 
 
-def _validate_native_markers(stderr: object) -> None:
+def _validate_native_markers(
+    stderr: object,
+    *,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
+) -> None:
+    config = _require_timer_smoke_config(config)
     if not isinstance(stderr, list) or any(type(line) is not str for line in stderr):
         raise M0Error("repeating-timer stderr is invalid")
     timer_lines = [line for line in stderr if line.startswith(TIMER_MARKER_PREFIX)]
     expected_timer_lines = [
-        READY_MARKER,
-        *(f"{TICK_MARKER_PREFIX}{ordinal}" for ordinal in range(1, TICK_COUNT + 1)),
-        QUIESCENT_MARKER,
-        PASS_MARKER,
+        config.ready_marker,
+        *(
+            f"{TICK_MARKER_PREFIX}{ordinal}"
+            for ordinal in range(1, config.tick_count + 1)
+        ),
+        config.quiescent_marker,
+        config.pass_marker,
     ]
     if timer_lines != expected_timer_lines:
         raise M0Error("repeating-timer native markers are malformed or out of order")
@@ -574,7 +706,7 @@ def _validate_native_markers(stderr: object) -> None:
         raise M0Error("repeating-timer native watchdog timed out")
     if stderr.count(LIFECYCLE_PASS_MARKER) != 1:
         raise M0Error("repeating-timer lifecycle PASS marker is not unique")
-    if stderr.index(LIFECYCLE_PASS_MARKER) <= stderr.index(PASS_MARKER):
+    if stderr.index(LIFECYCLE_PASS_MARKER) <= stderr.index(config.pass_marker):
         raise M0Error("repeating-timer lifecycle PASS did not follow native PASS")
 
 
@@ -651,11 +783,13 @@ def validate_result(
     expected_artifact_delivery: str = ARTIFACT_DELIVERY,
     expected_artifact_source_provenance: str = ARTIFACT_SOURCE_PROVENANCE,
     expected_version_provenance: str = VERSION_PROVENANCE,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> None:
+    config = _require_timer_smoke_config(config)
     for field, expected in {
         "protocol": 1,
-        "case": CASE,
-        "scope": SCOPE,
+        "case": config.case,
+        "scope": config.scope,
         "status": "pass",
         "m9GateComplete": False,
         "m9TimerSmokeOnly": True,
@@ -694,8 +828,8 @@ def validate_result(
             raise M0Error(f"repeating-timer {field} is not empty")
     if not isinstance(result.get("stdout"), list):
         raise M0Error("repeating-timer stdout is not a list")
-    _validate_native_markers(result.get("stderr"))
-    ticks = _validate_ticks(result.get("ticks"))
+    _validate_native_markers(result.get("stderr"), config=config)
+    ticks = _validate_ticks(result.get("ticks"), config=config)
     quiescence_responsiveness = _validate_event_loop_snapshot(
         result.get("responsivenessAtQuiescent"), "quiescence responsiveness"
     )
@@ -758,14 +892,16 @@ def write_failure_diagnostics(
     artifact_snapshot: dict[str, dict[str, object]] | None,
     artifact: dict[str, object] | None,
     capture_harness: dict[str, object] | None,
+    config: TimerSmokeConfig = DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> Path:
+    config = _require_timer_smoke_config(config)
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     path = diagnostics_dir / "chrome-browser-m9-repeating-timer-failure.json"
     payload = {
         "schema_version": 1,
         "runner": "run_m9_wasm_browser_repeating_timer_dom_smoke.py",
-        "case": CASE,
-        "scope": SCOPE,
+        "case": config.case,
+        "scope": config.scope,
         "stage": stage,
         "failure": {"type": type(error).__name__, "message": str(error)},
         "host_browser": {
@@ -849,9 +985,15 @@ def main() -> int:
     parser.add_argument("--module-name", default=PRODUCT_MODULE_NAME)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
+    parser.add_argument("--stress-100-ticks", action="store_true")
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
-    if args.timeout < 2.0:
+    timer_config = select_timer_smoke_config(
+        stress_100_ticks=args.stress_100_ticks
+    )
+    if args.timeout < timer_config.minimum_timeout_seconds:
+        if timer_config is STRESS_100_TICKS_TIMER_SMOKE_CONFIG:
+            parser.error("--stress-100-ticks requires --timeout of at least 30 seconds")
         parser.error("--timeout must be at least two seconds")
     if not MODULE_NAME_RE.fullmatch(args.module_name):
         parser.error("--module-name must contain only ASCII letters, digits, or _")
@@ -886,7 +1028,13 @@ def main() -> int:
         result_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         stage = "snapshot_server_inputs"
         server, artifact_snapshot = create_server(
-            "127.0.0.1", 0, out_dir, token, result_queue, module_name=args.module_name
+            "127.0.0.1",
+            0,
+            out_dir,
+            token,
+            result_queue,
+            module_name=args.module_name,
+            config=timer_config,
         )
         artifact = artifact_identity(server, module_name=args.module_name)
         capture_harness = capture_harness_identity(server)
@@ -898,12 +1046,16 @@ def main() -> int:
         print_context(
             "run_m9_wasm_browser_repeating_timer_dom_smoke.py",
             manifest,
-            case=CASE,
-            scope=SCOPE,
+            case=timer_config.case,
+            scope=timer_config.scope,
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
             module_name=args.module_name,
             host_browser_sandbox=not args.no_sandbox,
-            runtime_arguments=[SWITCH],
+            runtime_arguments=(
+                [SWITCH]
+                if timer_config is DEFAULT_TIMER_SMOKE_CONFIG
+                else timer_config.runtime_arguments
+            ),
             artifact=artifact,
             capture_harness=capture_harness,
             version_provenance=VERSION_PROVENANCE,
@@ -926,6 +1078,7 @@ def main() -> int:
             capture_harness=capture_harness,
             module_name=args.module_name,
             timeout_seconds=max(1.0, args.timeout - 1.0),
+            config=timer_config,
         )
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m9-repeating-timer-")
         stage = "launch_browser"
@@ -959,6 +1112,7 @@ def main() -> int:
             expected_versions=versions,
             expected_artifact_identity=artifact,
             expected_capture_harness_identity=capture_harness,
+            config=timer_config,
         )
     except (M0Error, OSError, KeyError, TypeError, ValueError) as error:
         primary_error = error
@@ -1011,6 +1165,7 @@ def main() -> int:
                 artifact_snapshot=artifact_snapshot,
                 artifact=artifact,
                 capture_harness=capture_harness,
+                config=timer_config,
             )
             print(
                 f"{SENTINEL}:DIAGNOSTICS "

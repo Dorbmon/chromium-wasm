@@ -70,6 +70,10 @@ SCOPE = (
     "verified-package-module-bytes-private-in-memory-alias-fixed-three-native-"
     "ui-repeating-timer-ticks-with-pre-shutdown-quiescence-only"
 )
+STRESS_100_TICKS_SCOPE = (
+    "verified-package-module-bytes-private-in-memory-alias-fixed-one-hundred-"
+    "native-ui-repeating-timer-ticks-with-pre-shutdown-quiescence-only"
+)
 PUBLIC_MODULE_NAME = "chromium-wasm"
 PRIVATE_MODULE_NAME = timer.PRODUCT_MODULE_NAME
 PACKAGE_ARTIFACT_DELIVERY = "verified-package-snapshot-private-in-memory-alias"
@@ -140,6 +144,21 @@ class PackageRepeatingTimerSnapshot:
     artifact: package_lifecycle.normal_lifecycle.ArtifactSnapshot
     artifact_identity: dict[str, object]
     runtime_metadata: dict[str, object]
+
+
+def _require_timer_config(config: object) -> timer.TimerSmokeConfig:
+    """Keep this wrapper bound to the timer runner's closed mode set."""
+
+    return timer._require_timer_smoke_config(config)
+
+
+def _package_scope(config: object) -> str:
+    config = _require_timer_config(config)
+    if config is timer.DEFAULT_TIMER_SMOKE_CONFIG:
+        return SCOPE
+    if config is timer.STRESS_100_TICKS_TIMER_SMOKE_CONFIG:
+        return STRESS_100_TICKS_SCOPE
+    raise M0Error("package repeating-timer configuration is not supported")
 
 
 def _exact_json_value_equal(value: object, expected: object) -> bool:
@@ -423,10 +442,15 @@ def create_package_repeating_timer_server(
     *,
     host_dir: Path | None = None,
     runner_source_path: Path | None = None,
+    config: timer.TimerSmokeConfig = timer.DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> timer.RepeatingTimerSmokeServer:
     """Serve immutable private aliases of the previously verified package bytes."""
 
     snapshot = _validate_package_snapshot(snapshot)
+    config = _require_timer_config(config)
+    kwargs: dict[str, object] = {}
+    if config is not timer.DEFAULT_TIMER_SMOKE_CONFIG:
+        kwargs["config"] = config
     return timer.create_server_from_artifacts(
         host,
         port,
@@ -439,21 +463,26 @@ def create_package_repeating_timer_server(
         module_name=PRIVATE_MODULE_NAME,
         host_dir=host_dir,
         runner_source_path=runner_source_path or Path(__file__),
+        **kwargs,
     )
 
 
 def package_repeating_timer_result(
-    runtime_result: dict[str, Any], snapshot: PackageRepeatingTimerSnapshot
+    runtime_result: dict[str, Any],
+    snapshot: PackageRepeatingTimerSnapshot,
+    *,
+    config: timer.TimerSmokeConfig = timer.DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> dict[str, object]:
     """Wrap a timer-host observation in package-bound, false-only metadata."""
 
+    config = _require_timer_config(config)
     return {
         "m9GateComplete": False,
         "packageArtifact": snapshot.artifact_identity,
         "packageRuntimeMetadata": snapshot.runtime_metadata,
         "releaseStatus": package_tool.RELEASE_STATUS,
         "repeatingTimer": runtime_result,
-        "scope": SCOPE,
+        "scope": _package_scope(config),
     }
 
 
@@ -463,12 +492,14 @@ def validate_package_repeating_timer_result(
     expected_snapshot: PackageRepeatingTimerSnapshot,
     expected_alias_identity: dict[str, object],
     expected_capture_harness_identity: dict[str, object],
+    config: timer.TimerSmokeConfig = timer.DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> dict[str, object]:
     """Validate package metadata plus the existing strict timer evidence."""
 
+    config = _require_timer_config(config)
     expected_snapshot = _validate_package_snapshot(expected_snapshot)
     result = _require_exact_fields(value, _RESULT_FIELDS, "result")
-    if result.get("scope") != SCOPE:
+    if result.get("scope") != _package_scope(config):
         raise M0Error("package repeating-timer result scope is invalid")
     if type(result.get("m9GateComplete")) is not bool or result["m9GateComplete"]:
         raise M0Error("package repeating-timer result must not complete M9")
@@ -491,15 +522,17 @@ def validate_package_repeating_timer_result(
     _validate_timer_alias_identity(expected_alias_identity, expected_snapshot)
     build = expected_snapshot.runtime_metadata["build"]
     assert isinstance(build, dict)
-    timer.validate_result(
-        runtime_result,
-        expected_versions=_runtime_versions(expected_snapshot.runtime_metadata),
-        expected_artifact_identity=expected_alias_identity,
-        expected_capture_harness_identity=expected_capture_harness_identity,
-        expected_artifact_delivery=PACKAGE_ARTIFACT_DELIVERY,
-        expected_artifact_source_provenance=build["artifactSourceProvenance"],
-        expected_version_provenance=PACKAGE_VERSION_PROVENANCE,
-    )
+    timer_kwargs: dict[str, object] = {
+        "expected_versions": _runtime_versions(expected_snapshot.runtime_metadata),
+        "expected_artifact_identity": expected_alias_identity,
+        "expected_capture_harness_identity": expected_capture_harness_identity,
+        "expected_artifact_delivery": PACKAGE_ARTIFACT_DELIVERY,
+        "expected_artifact_source_provenance": build["artifactSourceProvenance"],
+        "expected_version_provenance": PACKAGE_VERSION_PROVENANCE,
+    }
+    if config is not timer.DEFAULT_TIMER_SMOKE_CONFIG:
+        timer_kwargs["config"] = config
+    timer.validate_result(runtime_result, **timer_kwargs)
     return result
 
 
@@ -525,13 +558,15 @@ def write_failure_diagnostics(
     browser_stderr: deque[str],
     package_snapshot: PackageRepeatingTimerSnapshot | None,
     runtime_result: dict[str, Any] | None,
+    config: timer.TimerSmokeConfig = timer.DEFAULT_TIMER_SMOKE_CONFIG,
 ) -> Path:
+    config = _require_timer_config(config)
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     path = diagnostics_dir / "chrome-browser-package-repeating-timer-m9-failure.json"
     payload = {
         "schema_version": 1,
         "runner": "run_m9_package_repeating_timer_dom_smoke.py",
-        "scope": SCOPE,
+        "scope": _package_scope(config),
         "stage": stage,
         "limitations": list(LIMITATIONS),
         "failure": {"type": type(error).__name__, "message": str(error)},
@@ -565,8 +600,17 @@ def main() -> int:
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
+    parser.add_argument("--stress-100-ticks", action="store_true")
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
+    timer_config = timer.select_timer_smoke_config(
+        stress_100_ticks=args.stress_100_ticks
+    )
+    if (
+        timer_config is timer.STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+        and args.timeout < timer.STRESS_100_MINIMUM_TIMEOUT_SECONDS
+    ):
+        parser.error("--stress-100-ticks requires --timeout of at least 30 seconds")
     if args.timeout < 3.0:
         parser.error("--timeout must be at least three seconds")
 
@@ -606,7 +650,12 @@ def main() -> int:
 
         stage = "create_server"
         server = create_package_repeating_timer_server(
-            "127.0.0.1", 0, package_snapshot, token, result_queue
+            "127.0.0.1",
+            0,
+            package_snapshot,
+            token,
+            result_queue,
+            config=timer_config,
         )
         alias_identity = _timer_alias_identity(package_snapshot, server)
         capture_harness = timer.capture_harness_identity(
@@ -618,8 +667,12 @@ def main() -> int:
             "host_browser_sandbox": not args.no_sandbox,
             "limitations": list(LIMITATIONS),
             "package_runtime_metadata": package_snapshot.runtime_metadata,
-            "runtime_arguments": [timer.SWITCH],
-            "scope": SCOPE,
+            "runtime_arguments": (
+                [timer.SWITCH]
+                if timer_config is timer.DEFAULT_TIMER_SMOKE_CONFIG
+                else timer_config.runtime_arguments
+            ),
+            "scope": _package_scope(timer_config),
             "script": "run_m9_package_repeating_timer_dom_smoke.py",
             "toolchain_versions": versions,
             "version_provenance": PACKAGE_VERSION_PROVENANCE,
@@ -648,6 +701,7 @@ def main() -> int:
             capture_harness=capture_harness,
             module_name=PRIVATE_MODULE_NAME,
             timeout_seconds=max(1.0, args.timeout - 1.0),
+            config=timer_config,
         )
         profile = tempfile.TemporaryDirectory(
             prefix="chromium-wasm-m9-package-repeating-timer-"
@@ -677,7 +731,9 @@ def main() -> int:
         runtime_result = timer.wait_for_result(
             browser, browser_stderr, result_queue, time.monotonic() + args.timeout
         )
-        result = package_repeating_timer_result(runtime_result, package_snapshot)
+        result = package_repeating_timer_result(
+            runtime_result, package_snapshot, config=timer_config
+        )
         stage = "validate_result"
         assert alias_identity is not None
         assert capture_harness is not None
@@ -686,6 +742,7 @@ def main() -> int:
             expected_snapshot=package_snapshot,
             expected_alias_identity=alias_identity,
             expected_capture_harness_identity=capture_harness,
+            config=timer_config,
         )
     except (M0Error, timer.M0Error, OSError, KeyError, TypeError, ValueError) as error:
         primary_error = error
@@ -736,6 +793,7 @@ def main() -> int:
                 browser_stderr=browser_stderr,
                 package_snapshot=package_snapshot,
                 runtime_result=runtime_result,
+                config=timer_config,
             )
             print(
                 f"{SENTINEL}:DIAGNOSTICS "

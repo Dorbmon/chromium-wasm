@@ -16,8 +16,13 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import unittest
 from unittest import mock
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import urlopen
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[1]
@@ -46,7 +51,11 @@ CAPTURE_HARNESS_IDENTITY = {
 
 
 def event_loop_counts(
-    *, heartbeat: int, animation_frame: int, frames: int = 1, timer_markers: int = 6
+    *,
+    heartbeat: int,
+    animation_frame: int,
+    frames: int = 1,
+    timer_markers: int = 6,
 ) -> dict[str, int]:
     return {
         "animationFrameCount": animation_frame,
@@ -59,18 +68,29 @@ def event_loop_counts(
     }
 
 
-def successful_result() -> dict[str, object]:
+def successful_result(
+    config: smoke.TimerSmokeConfig = smoke.DEFAULT_TIMER_SMOKE_CONFIG,
+) -> dict[str, object]:
+    config = smoke._require_timer_smoke_config(config)
     readiness = {
         "shellReady": False,
         "surfaceReady": True,
         "firstVisuallyNonEmptyPaint": False,
     }
-    before = event_loop_counts(heartbeat=4, animation_frame=3)
-    after = event_loop_counts(heartbeat=5, animation_frame=4)
+    before = event_loop_counts(
+        heartbeat=config.tick_count + 1,
+        animation_frame=config.tick_count + 1,
+        timer_markers=config.tick_count + 3,
+    )
+    after = event_loop_counts(
+        heartbeat=config.tick_count + 2,
+        animation_frame=config.tick_count + 2,
+        timer_markers=config.tick_count + 3,
+    )
     return {
         "protocol": 1,
-        "case": smoke.CASE,
-        "scope": smoke.SCOPE,
+        "case": config.case,
+        "scope": config.scope,
         "status": "pass",
         "m9GateComplete": False,
         "m9TimerSmokeOnly": True,
@@ -87,17 +107,20 @@ def successful_result() -> dict[str, object]:
         "lifecyclePassObserved": True,
         "ozoneFocusObserved": True,
         "ticks": [
-            {"ordinal": 1, "heartbeatCount": 1, "animationFrameCount": 1},
-            {"ordinal": 2, "heartbeatCount": 2, "animationFrameCount": 1},
-            {"ordinal": 3, "heartbeatCount": 3, "animationFrameCount": 2},
+            {
+                "ordinal": ordinal,
+                "heartbeatCount": ordinal,
+                "animationFrameCount": ordinal,
+            }
+            for ordinal in range(1, config.tick_count + 1)
         ],
         "responsivenessAtPass": {
-            "heartbeatCount": 4,
-            "animationFrameCount": 3,
+            "heartbeatCount": config.tick_count + 1,
+            "animationFrameCount": config.tick_count + 1,
         },
         "responsivenessAtQuiescent": {
-            "heartbeatCount": 4,
-            "animationFrameCount": 3,
+            "heartbeatCount": config.tick_count + 1,
+            "animationFrameCount": config.tick_count + 1,
         },
         "postExitObservation": {
             "before": before,
@@ -123,12 +146,13 @@ def successful_result() -> dict[str, object]:
         "readinessReports": [readiness],
         "stdout": [],
         "stderr": [
-            smoke.READY_MARKER,
-            f"{smoke.TICK_MARKER_PREFIX}1",
-            f"{smoke.TICK_MARKER_PREFIX}2",
-            f"{smoke.TICK_MARKER_PREFIX}3",
-            smoke.QUIESCENT_MARKER,
-            smoke.PASS_MARKER,
+            config.ready_marker,
+            *(
+                f"{smoke.TICK_MARKER_PREFIX}{ordinal}"
+                for ordinal in range(1, config.tick_count + 1)
+            ),
+            config.quiescent_marker,
+            config.pass_marker,
             smoke.LIFECYCLE_PASS_MARKER,
         ],
         "failedChecks": [],
@@ -136,18 +160,57 @@ def successful_result() -> dict[str, object]:
     }
 
 
-def validate(result: dict[str, object]) -> None:
+def validate(
+    result: dict[str, object],
+    config: smoke.TimerSmokeConfig = smoke.DEFAULT_TIMER_SMOKE_CONFIG,
+) -> None:
     smoke.validate_result(
         result,
         expected_versions=VERSIONS,
         expected_artifact_identity=ARTIFACT_IDENTITY,
         expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
+        config=config,
     )
 
 
 class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
     def test_accepts_three_native_ticks_and_clean_browser_drain(self) -> None:
         validate(successful_result())
+
+    def test_accepts_only_the_fixed_one_hundred_tick_stress_contract(self) -> None:
+        config = smoke.STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+        result = successful_result(config)
+        validate(result, config)
+        self.assertEqual(
+            smoke.STRESS_100_TICKS_SWITCH, config.runtime_arguments[0]
+        )
+        self.assertEqual(100, len(result["ticks"]))
+        self.assertEqual(103, result["postExitObservation"]["before"]["timerMarkers"])
+
+        result["stderr"][-2] = smoke.PASS_MARKER
+        with self.assertRaisesRegex(M0Error, "native markers"):
+            validate(result, config)
+
+    def test_closed_stress_config_rejects_arbitrary_timer_contracts(self) -> None:
+        invalid = smoke.TimerSmokeConfig(
+            mode="stress-101-ticks",
+            case="browser_repeating_timer_m9_stress_101_ticks",
+            scope="arbitrary",
+            switch="--wasm-browser-m9-repeating-timer-smoke-ticks=101",
+            ready_marker="READY",
+            quiescent_marker="QUIESCENT",
+            pass_marker="PASS",
+            tick_count=101,
+            minimum_timeout_seconds=30.0,
+        )
+        with self.assertRaisesRegex(M0Error, "closed supported mode"):
+            smoke.validate_result(
+                successful_result(),
+                expected_versions=VERSIONS,
+                expected_artifact_identity=ARTIFACT_IDENTITY,
+                expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
+                config=invalid,
+            )
 
     def test_rejects_watchdog_extra_tick_unresponsive_host_or_post_exit_output(self) -> None:
         mutations = (
@@ -297,15 +360,133 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
         result["scope"] = "wrong"
         self.assertIsNone(smoke.parse_result_payload(json.dumps(result).encode()))
 
+    def test_stress_result_parser_is_bound_to_its_fixed_case_and_scope(self) -> None:
+        config = smoke.STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+        result = successful_result(config)
+        payload = json.dumps(result, separators=(",", ":")).encode()
+        self.assertEqual(smoke.parse_result_payload(payload, config=config), result)
+        self.assertIsNone(smoke.parse_result_payload(payload))
+
+        result["scope"] = smoke.SCOPE
+        self.assertIsNone(
+            smoke.parse_result_payload(json.dumps(result).encode(), config=config)
+        )
+
+    def test_stress_url_is_mode_bound_while_default_url_omits_mode(self) -> None:
+        server = mock.Mock()
+        server.module_name = smoke.PRODUCT_MODULE_NAME
+        server.server_address = ("127.0.0.1", 12345)
+        default_url = smoke.smoke_url(
+            server,
+            "test-token",
+            VERSIONS,
+            artifact=ARTIFACT_IDENTITY,
+            capture_harness=CAPTURE_HARNESS_IDENTITY,
+            module_name=smoke.PRODUCT_MODULE_NAME,
+            timeout_seconds=15.0,
+        )
+        stress_url = smoke.smoke_url(
+            server,
+            "test-token",
+            VERSIONS,
+            artifact=ARTIFACT_IDENTITY,
+            capture_harness=CAPTURE_HARNESS_IDENTITY,
+            module_name=smoke.PRODUCT_MODULE_NAME,
+            timeout_seconds=30.0,
+            config=smoke.STRESS_100_TICKS_TIMER_SMOKE_CONFIG,
+        )
+        self.assertNotIn("mode", parse_qs(urlsplit(default_url).query))
+        self.assertEqual(
+            [smoke.STRESS_100_TICKS_MODE],
+            parse_qs(urlsplit(stress_url).query)["mode"],
+        )
+
+    def test_server_mode_binding_rejects_injected_missing_and_repeated_modes(self) -> None:
+        default = smoke.DEFAULT_TIMER_SMOKE_CONFIG
+        stress = smoke.STRESS_100_TICKS_TIMER_SMOKE_CONFIG
+        self.assertTrue(smoke._query_matches_timer_smoke_config("token=a", default))
+        self.assertFalse(
+            smoke._query_matches_timer_smoke_config(
+                "token=a&mode=stress-100-ticks", default
+            )
+        )
+        self.assertTrue(
+            smoke._query_matches_timer_smoke_config(
+                "token=a&mode=stress-100-ticks", stress
+            )
+        )
+        for query in (
+            "token=a",
+            "token=a&mode=stress-101-ticks",
+            "token=a&mode=stress-100-ticks&mode=stress-100-ticks",
+        ):
+            with self.subTest(query=query):
+                self.assertFalse(smoke._query_matches_timer_smoke_config(query, stress))
+
+    def test_stress_server_rejects_tampered_mode_before_serving_the_host(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            host_dir = Path(temporary_directory)
+            (host_dir / "chrome_wasm_browser_m9_repeating_timer_smoke.html").write_text(
+                "<html>fixed host</html>\n", encoding="utf-8"
+            )
+            (host_dir / "chrome_wasm_browser_m9_repeating_timer_smoke.js").write_text(
+                "export const fixedHost = true;\n", encoding="utf-8"
+            )
+            server = smoke.create_server_from_artifacts(
+                "127.0.0.1",
+                0,
+                {
+                    "chrome_wasm.js": b"export default async function() {}\n",
+                    "chrome_wasm.wasm": b"\x00asm\x01\x00\x00\x00",
+                },
+                "test-token",
+                queue.Queue(maxsize=1),
+                module_name=smoke.PRODUCT_MODULE_NAME,
+                host_dir=host_dir,
+                runner_source_path=Path(__file__),
+                config=smoke.STRESS_100_TICKS_TIMER_SMOKE_CONFIG,
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address[:2]
+            try:
+                with urlopen(
+                    f"http://{host}:{port}{smoke.HOST_ROOT}/?mode=stress-100-ticks",
+                    timeout=5,
+                ) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(b"<html>fixed host</html>\n", response.read())
+                for query in ("", "?mode=stress-101-ticks", "?mode=stress-100-ticks&mode=stress-100-ticks"):
+                    with self.subTest(query=query):
+                        with self.assertRaises(HTTPError) as error:
+                            urlopen(
+                                f"http://{host}:{port}{smoke.HOST_ROOT}/{query}",
+                                timeout=5,
+                            )
+                        self.assertEqual(400, error.exception.code)
+                        error.exception.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                server.join_request_handlers(
+                    timeout=5, description="M9 stress mode server"
+                )
+            self.assertFalse(thread.is_alive())
+
     def test_native_timer_is_ui_owned_and_quiescent_before_shutdown(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
         header = source("chrome/browser/wasm/wasm_browser_main_parts.h")
         for marker in (
             "wasm-browser-m9-repeating-timer-smoke",
+            "wasm-browser-m9-repeating-timer-smoke-ticks",
             "kWasmBrowserM9RepeatingTimerSmokeTickCount = 3",
+            "kWasmBrowserM9RepeatingTimerSmokeStressTickCount = 100",
             "kWasmBrowserM9RepeatingTimerSmokeInterval",
             "kWasmBrowserM9RepeatingTimerSmokeQuiescenceDuration",
             "kWasmBrowserM9RepeatingTimerSmokeTimeout",
+            "kWasmBrowserM9RepeatingTimerSmokeStressTimeout",
+            "base::Seconds(12)",
             "StartM9RepeatingTimerSmoke",
             "OnM9RepeatingTimerSmokeTick",
             "OnM9RepeatingTimerSmokeTimeout",
@@ -353,6 +534,18 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
         self.assertIn("CHECK(!main_parts->m9_repeating_timer_smoke_timer_.IsRunning())", tick)
         self.assertIn("CHECK(main_parts->browser_lifecycle_->IsVisible())", tick)
         self.assertIn("StopM9RepeatingTimerSmoke();", timeout)
+        self.assertIn(
+            "parsed_stress_ticks != kWasmBrowserM9RepeatingTimerSmokeStressTickCount",
+            main_parts,
+        )
+        self.assertIn(
+            "browser_m9_repeating_timer_default_smoke &&",
+            main_parts,
+        )
+        self.assertIn(
+            "browser_m9_repeating_timer_stress_smoke",
+            main_parts,
+        )
 
         for shutdown_site in (
             "void WasmBrowserMainParts::RequestShutdown()",
@@ -383,6 +576,11 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             "responsivenessAtQuiescent",
             "PRODUCT_MODULE_NAME = \"chrome_wasm\"",
             "POST_EXIT_GRACE_MS = 100",
+            "STRESS_100_TICKS_MODE = \"stress-100-ticks\"",
+            "STRESS_100_TICKS_SWITCH = \"--wasm-browser-m9-repeating-timer-smoke-ticks=100\"",
+            "MAX_RECORD_HISTORY = 512",
+            "timerSmokeConfigFromQuery",
+            "query.getAll(\"mode\")",
             "timerMarkersQuiet",
             "framesQuiet",
             "heartbeatAdvanced",
@@ -398,6 +596,7 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             "ccall(",
             "chromium_wasm_browser_host_request_shutdown",
             "addEventListener(\"click\"",
+            "query.get(\"ticks\")",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, host)
@@ -421,7 +620,9 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
             "artifact_snapshot",
             "_validate_post_exit_observation",
             "_validate_native_markers",
-            "runtime_arguments=[SWITCH]",
+            "--stress-100-ticks",
+            "STRESS_100_MINIMUM_TIMEOUT_SECONDS = 30.0",
+            "config=timer_config",
             "wait_for_normal_close_result",
         ):
             with self.subTest(marker=marker):
@@ -429,6 +630,9 @@ class M9WasmBrowserRepeatingTimerDomSmokeTest(unittest.TestCase):
         self.assertNotIn("ccall(", runner)
         self.assertNotIn("drain_stream", runner)
         self.assertNotIn("stop_browser(", runner)
+        self.assertEqual(
+            [smoke.SWITCH], smoke.DEFAULT_TIMER_SMOKE_CONFIG.runtime_arguments
+        )
 
     def test_host_javascript_parses_with_node_when_available(self) -> None:
         node = shutil.which("node")
@@ -496,6 +700,17 @@ process.stdout.write(JSON.stringify({{error, fetchCalls}}));
         )
         self.assertEqual(0, observed["fetchCalls"])
 
+    def test_invalid_repeated_or_tampered_timer_modes_are_rejected_before_fetch(self) -> None:
+        for mode_query in (
+            "?mode=stress-101-ticks&token=test-token&module=chrome_wasm",
+            "?mode=stress-100-ticks&mode=stress-100-ticks&token=test-token&module=chrome_wasm",
+            "?mode=&token=test-token&module=chrome_wasm",
+        ):
+            with self.subTest(mode_query=mode_query):
+                observed = self._run_host_query(mode_query)
+                self.assertIn("closed supported mode once", observed["error"])
+                self.assertEqual(0, observed["fetchCalls"])
+
     def test_rejects_alternate_product_module_at_server_and_url_boundaries(self) -> None:
         alternate_module = "alternate_wasm"
         with self.assertRaisesRegex(
@@ -560,6 +775,33 @@ process.stdout.write(JSON.stringify({{error, fetchCalls}}));
         check_boundary.assert_not_called()
         create_server.assert_not_called()
         find_browser.assert_not_called()
+
+    def test_main_requires_a_thirty_second_timeout_for_stress_mode(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(smoke, "check_boundary") as check_boundary,
+            mock.patch.object(smoke, "create_server") as create_server,
+            mock.patch.object(
+                smoke.sys,
+                "argv",
+                [
+                    "repeating-timer-runner",
+                    "--stress-100-ticks",
+                    "--timeout",
+                    "29",
+                ],
+            ),
+            mock.patch.object(smoke.sys, "stderr", stderr),
+            self.assertRaisesRegex(SystemExit, "^2$"),
+        ):
+            smoke.main()
+
+        self.assertIn(
+            "--stress-100-ticks requires --timeout of at least 30 seconds",
+            stderr.getvalue(),
+        )
+        check_boundary.assert_not_called()
+        create_server.assert_not_called()
 
     def test_main_closes_an_unstarted_server_without_shutdown(self) -> None:
         server = mock.Mock()
