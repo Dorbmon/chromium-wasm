@@ -63,6 +63,17 @@ const PAGE_WEBASSEMBLY_EXCEPTIONS_SCOPE =
     "tag-js-throw-wasm-catch-console-event-detach-close";
 const PAGE_WEBASSEMBLY_EXCEPTIONS_SWITCH =
     "--wasm-browser-m8-page-webassembly-exceptions-smoke";
+const PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MODE =
+    "page-webassembly-wasm-memory-grow-opcode";
+const PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_CASE =
+    "browser_page_webassembly_wasm_memory_grow_opcode_m8";
+const PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-webassembly-memory-construct-import-" +
+    "wasm-memory-grow-opcode-one-to-two-pages-buffer-replaced-console-event-" +
+    "detach-close";
+const PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SWITCH =
+    "--wasm-browser-m8-page-webassembly-wasm-memory-grow-opcode-smoke";
 const NETWORK_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 const RUNTIME_ENABLE_MARKER =
@@ -91,6 +102,10 @@ const PAGE_WEBASSEMBLY_MEMORY_GROWTH_MARKER =
 const PAGE_WEBASSEMBLY_EXCEPTIONS_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "EXCEPTION_CONSTRUCTED_IMPORTED_TAG_JS_THROW_WASM_CATCH_42_OK";
+const PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
+    "MEMORY_CONSTRUCTED_IMPORTED_WASM_MEMORY_GROW_OPCODE_GROWN_1_TO_2_PAGES_" +
+    "BUFFER_REPLACED_OK";
 const RUNTIME_CONSOLE_API_CALLED_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 const DETACHED_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
@@ -293,6 +308,42 @@ const PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_MODE = Object.freeze({
   ]),
 });
 
+const PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SMOKE_MODE = Object.freeze({
+  id: PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MODE,
+  queryMode: PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MODE,
+  case: PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_CASE,
+  scope: PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SCOPE,
+  runtimeArguments: Object.freeze([
+    PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SWITCH,
+  ]),
+  pageWebAssemblyExpectations: Object.freeze({
+    pageWebAssemblyUnavailableObserved: false,
+    pageWebAssemblyAdd42Observed: false,
+    pageWebAssemblyTablesObserved: false,
+    pageWebAssemblyTableConstructedImportedIndirectCallObserved: false,
+    pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved: false,
+    pageWebAssemblyTableGrowthObserved: false,
+    pageWebAssemblyMemoriesObserved: true,
+    pageWebAssemblyMemoryConstructedImportedReadWriteObserved: false,
+    pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved: false,
+    pageWebAssemblyExceptionsObserved: false,
+    pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved: false,
+    pageWebAssemblyMemoryGrowthObserved: true,
+    pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved:
+        true,
+    pageWebAssemblyThreadsObserved: false,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -383,7 +434,8 @@ function isKnownSmokeMode(smokeMode) {
       smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_GROWTH_SMOKE_MODE ||
-      smokeMode === PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_MODE;
+      smokeMode === PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_MODE ||
+      smokeMode === PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SMOKE_MODE;
 }
 
 function validateResult(result, smokeMode) {
@@ -457,6 +509,8 @@ function validateResult(result, smokeMode) {
       PAGE_WEBASSEMBLY_MEMORY_GROWTH_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_EXCEPTIONS_MARKER :
+      smokeMode === PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SMOKE_MODE ?
+      PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MARKER :
       PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
@@ -523,6 +577,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #pageWebAssemblyMemoryGrowthObserved = false;
   #pageWebAssemblyExceptionsObserved = false;
   #pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved =
+      false;
+  #pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved =
       false;
   #runtimeConsoleApiCalledObserved = false;
   #detachedObserved = false;
@@ -610,6 +666,12 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     if (text.includes(PAGE_WEBASSEMBLY_EXCEPTIONS_MARKER)) {
       this.#pageWebAssemblyExceptionsObserved = true;
       this.#pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved =
+          true;
+    }
+    if (text.includes(PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MARKER)) {
+      this.#pageWebAssemblyMemoriesObserved = true;
+      this.#pageWebAssemblyMemoryGrowthObserved = true;
+      this.#pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved =
           true;
     }
     if (text.includes(RUNTIME_CONSOLE_API_CALLED_MARKER)) {
@@ -740,6 +802,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
           this.#pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved,
       pageWebAssemblyMemoryGrowthObserved:
           this.#pageWebAssemblyMemoryGrowthObserved,
+      pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved:
+          this.#pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved,
       pageWebAssemblyThreadsObserved: false,
     };
     return {
@@ -904,6 +968,9 @@ export function parseDevToolsProtocolSmokeQuery(query) {
   } else if (modes.length === 1 &&
              modes[0] === PAGE_WEBASSEMBLY_EXCEPTIONS_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_MODE;
+  } else if (modes.length === 1 &&
+             modes[0] === PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_MODE) {
+    smokeMode = PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SMOKE_MODE;
   } else {
     throw new Error("DevTools protocol query has an invalid mode");
   }
@@ -933,7 +1000,8 @@ async function fetchExpectedSmokeMode(token) {
        binding.mode !== PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_TABLE_GROWTH_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_MEMORY_GROWTH_SMOKE_MODE.id &&
-       binding.mode !== PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_MODE.id)) {
+       binding.mode !== PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_MODE.id &&
+       binding.mode !== PAGE_WEBASSEMBLY_WASM_MEMORY_GROW_OPCODE_SMOKE_MODE.id)) {
     throw new Error("DevTools protocol mode binding is invalid");
   }
   return binding.mode;

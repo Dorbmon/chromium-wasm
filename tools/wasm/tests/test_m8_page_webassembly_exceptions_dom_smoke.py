@@ -569,7 +569,8 @@ class M8PageWebAssemblyExceptionsDomSmokeTest(unittest.TestCase):
             "kPageWebAssemblyExceptionRuntimeEvaluateCommand"
         )
         command_end = protocol.index(
-            "constexpr char kFixedDevToolsProtocolSmokeUrl", command_start
+            "constexpr char kPageWebAssemblyWasmMemoryGrowOpcodeRuntimeEvaluateCommand",
+            command_start,
         )
         command = protocol[command_start:command_end]
         for expected in (
