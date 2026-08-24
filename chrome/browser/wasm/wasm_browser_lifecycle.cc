@@ -1229,6 +1229,12 @@ void WasmBrowserLifecycle::StartPageWebAssemblyTableDevToolsProtocolSmoke() {
       WasmBrowserDevToolsProtocolSmokeMode::kTableImportIndirectCall);
 }
 
+void WasmBrowserLifecycle::
+    StartPageWebAssemblyMemoryGrowthDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::kMemoryGrowImportReadWrite);
+}
+
 void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
     WasmBrowserDevToolsProtocolSmokeMode mode) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
