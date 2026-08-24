@@ -90,16 +90,16 @@ V8_SNAPSHOTLESS_RESULT_NUMERIC_VALUES = {
     "timer_cycles": "1",
     "test262_license_bytes": "2213",
     "test262_license_fnv1a": "1790394517849644",
-    "test262_embedded_source_bytes": "40217",
-    "test262_cases": "14",
-    "test262_executions": "25",
-    "test262_passed": "25",
+    "test262_embedded_source_bytes": "46111",
+    "test262_cases": "20",
+    "test262_executions": "37",
+    "test262_passed": "37",
     "test262_failed": "0",
-    "test262_scripts": "22",
+    "test262_scripts": "34",
     "test262_modules": "3",
-    "test262_strict": "14",
-    "test262_sloppy": "11",
-    "test262_async": "4",
+    "test262_strict": "20",
+    "test262_sloppy": "17",
+    "test262_async": "10",
     "test262_negative_parse": "2",
     "test262_negative_runtime": "2",
     "test262_negative_resolution": "1",
@@ -1183,7 +1183,7 @@ class NodeRunnerTest(unittest.TestCase):
             ("timer_delay_ms=25", "timer_delay_ms=24"),
             ("timer_elapsed_us=25581", "timer_elapsed_us=24999"),
             ("timer_cycles=1", "timer_cycles=2"),
-            ("test262_executions=25", "test262_executions=24"),
+            ("test262_executions=37", "test262_executions=36"),
             (
                 "test262_license_fnv1a=1790394517849644",
                 "test262_license_fnv1a=1790394517849645",
@@ -1280,8 +1280,8 @@ class NodeRunnerTest(unittest.TestCase):
                 1,
             ),
             stdout.replace(
-                "executions=25 passed=25",
-                "executions=24 passed=24",
+                "executions=37 passed=37",
+                "executions=36 passed=36",
                 1,
             ),
             stdout.replace(
@@ -2083,7 +2083,7 @@ class BrowserRunnerTest(unittest.TestCase):
                 line.replace(
                     V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE,
                     "CHROMIUM_WASM_M2_V8_JS:TEST262_SUMMARY "
-                    "cases=14 executions=24 passed=24 failed=0 status=ok",
+                    "cases=20 executions=36 passed=36 failed=0 status=ok",
                     1,
                 )
                 for line in result["stdout"]
@@ -2120,7 +2120,7 @@ class BrowserRunnerTest(unittest.TestCase):
             ("timer_delay_ms=25", "timer_delay_ms=24"),
             ("timer_elapsed_us=25581", "timer_elapsed_us=24999"),
             ("timer_cycles=1", "timer_cycles=2"),
-            ("test262_executions=25", "test262_executions=24"),
+            ("test262_executions=37", "test262_executions=36"),
             (
                 "test262_license_fnv1a=1790394517849644",
                 "test262_license_fnv1a=1790394517849645",

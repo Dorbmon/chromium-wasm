@@ -170,10 +170,10 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         receipt = smoke.validate_runtime_output(
             successful_runtime_output(module, wasm), "", module, wasm
         )
-        self.assertEqual(receipt["stdoutLines"], 49)
+        self.assertEqual(receipt["stdoutLines"], 61)
         self.assertEqual(receipt["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE)
-        self.assertEqual(receipt["test262Cases"], 14)
-        self.assertEqual(receipt["test262Executions"], 25)
+        self.assertEqual(receipt["test262Cases"], 20)
+        self.assertEqual(receipt["test262Executions"], 37)
         self.assertEqual(receipt["test262Profile"], smoke.EXPECTED_TEST262_PROFILE)
 
         malformed = successful_runtime_output(module, wasm).replace(
@@ -243,8 +243,8 @@ class M8V8Arm32CodegenRuntimeTest(unittest.TestCase):
         self.assertEqual(
             result["runtime"]["semanticSuite"], smoke.EXPECTED_SEMANTIC_SUITE
         )
-        self.assertEqual(result["runtime"]["test262Cases"], 14)
-        self.assertEqual(result["runtime"]["test262Executions"], 25)
+        self.assertEqual(result["runtime"]["test262Cases"], 20)
+        self.assertEqual(result["runtime"]["test262Executions"], 37)
         self.assertEqual(
             result["runtime"]["test262Profile"], smoke.EXPECTED_TEST262_PROFILE
         )

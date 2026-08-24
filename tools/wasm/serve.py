@@ -260,8 +260,8 @@ V8_SNAPSHOTLESS_RESULT_VALUES = {
         "d3b1cfad143ac76b5a3d8942aa354ce0"
     ),
     "test262_pack_sha256": (
-        "c290b8630ed71553ac1ceda6493fa4b5"
-        "1614593163d84c3b7baa27779e09d53b"
+        "52b6dd64301971d5ae05b51e34bca311"
+        "51a2ba4c9251246884b0d27177c6299a"
     ),
     "startup_snapshot": "runtime_generated",
     "external_startup_data": "off",
@@ -395,6 +395,33 @@ V8_SNAPSHOTLESS_TEST262_CASES = (
         ("sloppy", "strict"),
     ),
     (
+        "test/language/statements/async-function/"
+        "try-reject-finally-return.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/statements/async-function/"
+        "try-reject-finally-reject.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/language/statements/async-function/"
+        "try-return-finally-reject.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Map/prototype/entries/returns-iterator.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Set/prototype/values/returns-iterator.js",
+        ("sloppy", "strict"),
+    ),
+    (
+        "test/built-ins/Error/prototype/toString/undefined-props.js",
+        ("sloppy", "strict"),
+    ),
+    (
         "test/built-ins/Proxy/ownKeys/"
         "not-extensible-missing-keys-throws.js",
         ("sloppy", "strict"),
@@ -432,7 +459,7 @@ V8_SNAPSHOTLESS_TEST262_CASE_LINES = tuple(
 )
 V8_SNAPSHOTLESS_TEST262_SUMMARY_LINE = (
     "CHROMIUM_WASM_M2_V8_JS:TEST262_SUMMARY "
-    "cases=14 executions=25 passed=25 failed=0 status=ok"
+    "cases=20 executions=37 passed=37 failed=0 status=ok"
 )
 
 SHARED_MEMORY_RESULT_VALUES = {
@@ -931,16 +958,16 @@ def _validate_v8_snapshotless_result(
     expected_test262_values = {
         "test262_license_bytes": 2213,
         "test262_license_fnv1a": 1790394517849644,
-        "test262_embedded_source_bytes": 40217,
-        "test262_cases": 14,
-        "test262_executions": 25,
-        "test262_passed": 25,
+        "test262_embedded_source_bytes": 46111,
+        "test262_cases": 20,
+        "test262_executions": 37,
+        "test262_passed": 37,
         "test262_failed": 0,
-        "test262_scripts": 22,
+        "test262_scripts": 34,
         "test262_modules": 3,
-        "test262_strict": 14,
-        "test262_sloppy": 11,
-        "test262_async": 4,
+        "test262_strict": 20,
+        "test262_sloppy": 17,
+        "test262_async": 10,
         "test262_negative_parse": 2,
         "test262_negative_runtime": 2,
         "test262_negative_resolution": 1,

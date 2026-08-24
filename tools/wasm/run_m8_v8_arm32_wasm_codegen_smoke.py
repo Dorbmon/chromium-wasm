@@ -47,7 +47,7 @@ MAX_NODE_FAILURE_RECEIPT_BYTES = 1024
 EXPECTED_SEMANTIC_SUITE = (
     "closures_classes_exceptions_proxy_typedarray_bigint_promises_microtasks"
 )
-EXPECTED_TEST262_PROFILE = "pinned_14_case_25_execution_profile"
+EXPECTED_TEST262_PROFILE = "pinned_20_case_37_execution_profile"
 GN_ASSIGNMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*) = (?P<value>.+)$"
 )
@@ -79,10 +79,10 @@ EXPECTED_NODE_RESULT = {
     "semanticSuite": EXPECTED_SEMANTIC_SUITE,
     "status": "pass",
     "stderrLines": 0,
-    "test262Cases": 14,
-    "test262Executions": 25,
+    "test262Cases": 20,
+    "test262Executions": 37,
     "test262Profile": EXPECTED_TEST262_PROFILE,
-    "stdoutLines": 49,
+    "stdoutLines": 61,
 }
 NODE_FAILURE_REQUIRED_KEYS = frozenset(
     {
