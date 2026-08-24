@@ -438,10 +438,22 @@ def _validate_readiness(value: object, reports: object) -> None:
         raise M0Error("normal-browser readiness metadata is invalid")
     if not isinstance(reports, list) or not reports or not all(valid(report) for report in reports):
         raise M0Error("normal-browser readiness history is invalid")
+    if value.get("shellReady") is not True:
+        raise M0Error("normal-browser shell was not ready")
+    if not any(report["shellReady"] is True for report in reports):
+        raise M0Error("normal-browser shell was never ready")
     if value.get("surfaceReady") is not True:
         raise M0Error("normal-browser surface was not ready")
     if not any(report["surfaceReady"] is True for report in reports):
         raise M0Error("normal-browser surface was never ready")
+    if value.get("firstVisuallyNonEmptyPaint") is not False:
+        raise M0Error(
+            "normal-browser blank startup reported a visually non-empty paint"
+        )
+    if any(report["firstVisuallyNonEmptyPaint"] is True for report in reports):
+        raise M0Error(
+            "normal-browser blank startup history reported a visually non-empty paint"
+        )
     if reports[-1] != value:
         raise M0Error("normal-browser final readiness differs from its history")
 
@@ -473,9 +485,13 @@ def _validate_host_shutdown(value: object) -> None:
         raise M0Error("normal-browser shutdown has no visible evidence")
     if type(evidence.get("frameCount")) is not int or evidence["frameCount"] < 1:
         raise M0Error("normal-browser shutdown has no frame evidence")
-    for field in ("surfaceReady", "activeOzoneFocus", "canvasFocused"):
+    for field in ("shellReady", "surfaceReady", "activeOzoneFocus", "canvasFocused"):
         if evidence.get(field) is not True:
             raise M0Error(f"normal-browser shutdown {field} is not true")
+    if evidence.get("firstVisuallyNonEmptyPaint") is not False:
+        raise M0Error(
+            "normal-browser shutdown blank startup reported a visually non-empty paint"
+        )
     _validate_heartbeat(evidence.get("heartbeat"), "shutdown heartbeat")
 
 

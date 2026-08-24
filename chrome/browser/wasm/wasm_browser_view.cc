@@ -15,6 +15,7 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/wasm/wasm_browser_menu.h"
+#include "chrome/browser/wasm/wasm_browser_readiness.h"
 #include "chrome/browser/wasm/wasm_tab_strip_view.h"
 #include "chrome/browser/wasm/wasm_top_controls_view.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
@@ -238,7 +239,22 @@ BrowserWindow* BrowserWindow::FindBrowserWindowWithWebContents(
 }
 
 void BrowserView::Show() {
-  RequireBrowserWidget().Show();
+  BrowserWidget& browser_widget = RequireBrowserWidget();
+  browser_widget.Show();
+
+  // The object-only BrowserView smoke has no Browser-owned Chrome shell.
+  // Report shell construction only after the actual BrowserView widget has
+  // been shown with its selected WebContents and Wasm tab/control rows.
+  if (!browser_) {
+    return;
+  }
+  CHECK(active_web_contents_);
+  CHECK(wasm_tab_strip_);
+  CHECK(wasm_top_controls_);
+  CHECK(contents_web_view_);
+  CHECK_EQ(contents_web_view_->GetWebContents(), active_web_contents_);
+  CHECK(browser_widget.IsVisible());
+  CHECK(chrome::ReportWasmBrowserShellReady());
 }
 
 void BrowserView::Hide() {

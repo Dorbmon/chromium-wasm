@@ -1347,10 +1347,16 @@ function validateResult(result) {
       "no canvas frame was reported");
   require(isReadinessReport(result.readiness),
       "readiness metadata is invalid");
+  require(result.readiness?.shellReady === true,
+      "shell readiness was not reported");
   require(result.readiness?.surfaceReady === true,
       "surface readiness was not reported");
   require(result.readiness?.firstVisuallyNonEmptyPaint === true,
       "first visually non-empty paint was not reported");
+  require(Array.isArray(result.readinessReports) &&
+              result.readinessReports.some((report) =>
+                isReadinessReport(report) && report.shellReady === true),
+          "shell readiness was never reported");
   require(Array.isArray(result.readinessReports) &&
               result.readinessReports.some((report) =>
                 isReadinessReport(report) && report.surfaceReady === true),

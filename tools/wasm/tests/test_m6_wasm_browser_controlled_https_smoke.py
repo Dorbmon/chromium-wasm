@@ -835,6 +835,13 @@ class ControlledHttpsResultContractTest(unittest.TestCase):
             ),
             (
                 lambda result: (
+                    result["readiness"].__setitem__("shellReady", False),
+                    result["readinessReports"][0].__setitem__("shellReady", False),
+                ),
+                "shell was not ready",
+            ),
+            (
+                lambda result: (
                     result["readiness"].__setitem__(
                         "firstVisuallyNonEmptyPaint", False
                     ),
@@ -1120,6 +1127,8 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "firstEligibleScreenshotFrameId",
             "screenshotCaptureAttempted",
             "screenshotObservationSequence",
+            "result.readiness?.shellReady === true",
+            "shell readiness was not reported",
             "firstVisuallyNonEmptyPaint === true",
         ):
             with self.subTest(expected=expected):
@@ -1187,6 +1196,7 @@ class ControlledHttpsHostSourceContractTest(unittest.TestCase):
             "reloadTargetFirstVisuallyNonEmptyPaintSignalObservationSequence",
             "RELOAD_READY_MARKER",
             "RELOADED_MARKER",
+            "controlled-HTTPS shell was not ready",
             "h2-m6-ui",
             "chromium-wasm-m5-network-v1",
             "check_controlled_https_boundary(out_dir)",

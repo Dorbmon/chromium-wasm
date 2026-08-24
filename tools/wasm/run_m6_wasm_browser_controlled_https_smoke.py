@@ -1163,6 +1163,10 @@ def validate_result(
     )
     readiness = result["readiness"]
     readiness_reports = result["readinessReports"]
+    if readiness.get("shellReady") is not True:
+        raise M0Error("controlled-HTTPS shell was not ready")
+    if not any(report.get("shellReady") is True for report in readiness_reports):
+        raise M0Error("controlled-HTTPS shell was never ready")
     if readiness.get("firstVisuallyNonEmptyPaint") is not True:
         raise M0Error("controlled-HTTPS first visually non-empty paint is absent")
     if not any(

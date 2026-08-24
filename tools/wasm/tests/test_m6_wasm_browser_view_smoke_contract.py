@@ -133,6 +133,56 @@ class M6WasmBrowserViewSmokeContractTest(unittest.TestCase):
         self.assertIn("browser_view->browser_widget_.reset();", body)
         self.assertTrue(body.rstrip().endswith("browser_view->browser_widget_.reset();"))
 
+    def test_browser_owned_show_reports_only_shell_readiness(self) -> None:
+        build = source("chrome/browser/wasm/BUILD.gn")
+        readiness_header = source("chrome/browser/wasm/wasm_browser_readiness.h")
+        readiness = source("chrome/browser/wasm/wasm_browser_readiness.cc")
+        browser_view = source("chrome/browser/wasm/wasm_browser_view.cc")
+
+        self.assertIn("bool ReportWasmBrowserShellReady();", readiness_header)
+        for expected in (
+            '#include "build/build_config.h"',
+            "#if !BUILDFLAG(IS_WASM)",
+            "chromium_wasm_report_readiness(",
+            "/*shell_ready=*/1",
+            "/*surface_ready=*/-1",
+            "/*first_visually_nonempty_paint=*/-1",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, readiness)
+
+        show = re.search(
+            r"void BrowserView::Show\(\) \{(?P<body>.*?)\n\}",
+            browser_view,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(show)
+        show_body = show.group("body")
+        for expected in (
+            "BrowserWidget& browser_widget = RequireBrowserWidget();",
+            "browser_widget.Show();",
+            "if (!browser_)",
+            "CHECK(active_web_contents_);",
+            "CHECK(wasm_tab_strip_);",
+            "CHECK(wasm_top_controls_);",
+            "CHECK(contents_web_view_);",
+            "CHECK_EQ(contents_web_view_->GetWebContents(), active_web_contents_);",
+            "CHECK(browser_widget.IsVisible());",
+            "CHECK(chrome::ReportWasmBrowserShellReady());",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, show_body)
+        self.assertLess(
+            show_body.index("browser_widget.Show();"),
+            show_body.index("CHECK(chrome::ReportWasmBrowserShellReady());"),
+        )
+
+        readiness_target = _source_set_body(build, "wasm_browser_readiness")
+        browser_view_target = _source_set_body(build, "wasm_browser_view")
+        self.assertIn('"wasm_browser_readiness.cc"', readiness_target)
+        self.assertIn('"//ui/ozone/platform/wasm:wasm"', readiness_target)
+        self.assertIn('":wasm_browser_readiness",', browser_view_target)
+
     def test_switch_is_opt_in_and_normal_lifecycle_follows(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
 

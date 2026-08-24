@@ -365,6 +365,18 @@ source_set("wasm_browser_menu") {
 # It still avoids desktop BrowserView, Toolbar, TabStrip, LocationBar, and
 # omnibox selection. The null-Browser structural smoke retains the original
 # content-only FillLayout path.
+source_set("wasm_browser_readiness") {
+  public = [ "wasm_browser_readiness.h" ]
+
+  sources = [ "wasm_browser_readiness.cc" ]
+
+  visibility = [ ":wasm_browser_view" ]
+
+  # The versioned readiness import is implemented by ozone_wasm. This target
+  # owns only the Chrome-shell report; Ozone continues to own surface-ready.
+  deps = [ "//ui/ozone/platform/wasm:wasm" ]
+}
+
 source_set("wasm_browser_view") {
   assert(use_aura && use_ozone && toolkit_views)
 
@@ -387,6 +399,7 @@ source_set("wasm_browser_view") {
   deps = [
     ":wasm_browser_ui",
     ":wasm_browser_menu",
+    ":wasm_browser_readiness",
     ":wasm_tab_strip",
     ":wasm_top_controls",
     "//chrome/app:command_ids",

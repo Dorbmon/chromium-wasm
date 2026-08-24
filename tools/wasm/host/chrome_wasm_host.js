@@ -687,7 +687,9 @@ class ChromiumWasmNormalBrowserHost {
     }
     const visible = this.#normalBrowserReadyMarkerObserved &&
         this.#frameReports.length >= 1 &&
+        this.#readiness?.shellReady === true &&
         this.#readiness?.surfaceReady === true &&
+        this.#readiness?.firstVisuallyNonEmptyPaint === false &&
         this.#hasActiveOzoneFocus() &&
         document.activeElement === this.#canvas &&
         heartbeat.elapsedMs >= MIN_HEARTBEAT_ELAPSED_MS &&
@@ -699,7 +701,9 @@ class ChromiumWasmNormalBrowserHost {
     }
     return {
       frameCount: this.#frameReports.length,
+      shellReady: this.#readiness.shellReady,
       surfaceReady: this.#readiness.surfaceReady,
+      firstVisuallyNonEmptyPaint: this.#readiness.firstVisuallyNonEmptyPaint,
       activeOzoneFocus: true,
       canvasFocused: true,
       heartbeat,
@@ -977,12 +981,25 @@ function validateNormalBrowserResult(result) {
     }
   }
   require(isReadinessReport(result.readiness), "readiness metadata is invalid");
+  require(result.readiness?.shellReady === true,
+      "shell readiness was not reported");
   require(result.readiness?.surfaceReady === true,
       "surface readiness was not reported");
+  require(result.readiness?.firstVisuallyNonEmptyPaint === false,
+      "blank normal browser reported a visually non-empty paint");
+  require(Array.isArray(result.readinessReports) &&
+              result.readinessReports.some((report) =>
+                isReadinessReport(report) && report.shellReady === true),
+          "shell readiness was never reported");
   require(Array.isArray(result.readinessReports) &&
               result.readinessReports.some((report) =>
                 isReadinessReport(report) && report.surfaceReady === true),
           "surface readiness was never reported");
+  require(Array.isArray(result.readinessReports) &&
+              result.readinessReports.every((report) =>
+                isReadinessReport(report) &&
+                report.firstVisuallyNonEmptyPaint === false),
+          "blank normal browser readiness history reported a visually non-empty paint");
   require(Array.isArray(result.ozoneFocusReports) &&
               result.ozoneFocusReports.some((report) =>
                 isFocusReport(report) && report.keyboardTargetPresent === true &&
@@ -1000,7 +1017,9 @@ function validateNormalBrowserResult(result) {
           "host shutdown ABI did not return exactly [1, 0]");
   const visibleEvidence = shutdown?.visibleEvidence;
   require(visibleEvidence && visibleEvidence.frameCount >= 1 &&
+              visibleEvidence.shellReady === true &&
               visibleEvidence.surfaceReady === true &&
+              visibleEvidence.firstVisuallyNonEmptyPaint === false &&
               visibleEvidence.activeOzoneFocus === true &&
               visibleEvidence.canvasFocused === true,
           "host shutdown lacks visible browser evidence");

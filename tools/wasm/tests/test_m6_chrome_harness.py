@@ -82,7 +82,9 @@ def passing_result(
             "results": [1, 0],
             "visibleEvidence": {
                 "frameCount": 1,
+                "shellReady": True,
                 "surfaceReady": True,
+                "firstVisuallyNonEmptyPaint": False,
                 "activeOzoneFocus": True,
                 "canvasFocused": True,
                 "heartbeat": heartbeat(),
@@ -99,13 +101,13 @@ def passing_result(
         "readiness": {
             "shellReady": True,
             "surfaceReady": True,
-            "firstVisuallyNonEmptyPaint": True,
+            "firstVisuallyNonEmptyPaint": False,
         },
         "readinessReports": [
             {
                 "shellReady": True,
                 "surfaceReady": True,
-                "firstVisuallyNonEmptyPaint": True,
+                "firstVisuallyNonEmptyPaint": False,
             }
         ],
         "ozoneFocusReports": [{"keyboardTargetPresent": True, "active": True}],
@@ -456,8 +458,29 @@ class ChromeM6ResultValidationTest(unittest.TestCase):
                 "no host-canvas frame evidence",
             ),
             (
+                lambda result: result["readiness"].__setitem__("shellReady", False),
+                "shell was not ready",
+            ),
+            (
                 lambda result: result["readiness"].__setitem__("surfaceReady", False),
                 "surface was not ready",
+            ),
+            (
+                lambda result: (
+                    result["readiness"].__setitem__(
+                        "firstVisuallyNonEmptyPaint", True
+                    ),
+                    result["readinessReports"][0].__setitem__(
+                        "firstVisuallyNonEmptyPaint", True
+                    ),
+                ),
+                "blank startup reported a visually non-empty paint",
+            ),
+            (
+                lambda result: result["hostShutdown"]["visibleEvidence"].__setitem__(
+                    "shellReady", False
+                ),
+                "shutdown shellReady is not true",
             ),
             (
                 lambda result: result.__setitem__("ozoneFocusReports", []),
@@ -550,6 +573,10 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
             "location.reload();",
             "sessionStorage.setItem",
             "validateNormalBrowserResult",
+            "this.#readiness?.shellReady === true",
+            "this.#readiness?.firstVisuallyNonEmptyPaint === false",
+            "shell readiness was not reported",
+            "blank normal browser reported a visually non-empty paint",
             "m6GateComplete: false",
             run_chrome_wasm_smoke.NORMAL_BROWSER_READY_MARKER,
             run_chrome_wasm_smoke.NORMAL_BROWSER_PASS_MARKER,
@@ -569,6 +596,8 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
             "restartAttempts",
             "check_boundary(out_dir)",
             "validate_chrome_normal_browser_result",
+            "normal-browser shell was not ready",
+            "blank startup reported a visually non-empty paint",
             "_wait_for_results",
         ):
             with self.subTest(runner_token=token):
