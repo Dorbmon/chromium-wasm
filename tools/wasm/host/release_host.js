@@ -23,7 +23,9 @@ const PACKAGE_SCHEMA_VERSION = 4;
 const PACKAGE_METADATA_PROTOCOL = 1;
 const PRODUCT_NAME = "chromium-wasm";
 const PACKAGE_INPUT_MODULE_NAME = "chrome_wasm";
+const LOADER_ARTIFACT_PATH = "chromium-wasm.js";
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
+const WASM_ARTIFACT_PATH = "chromium-wasm.wasm";
 const ALLOWED_ARTIFACT_SOURCE_PROVENANCE = new Set([
   "unverified",
   "local_clean_build_attested",
@@ -90,8 +92,8 @@ const EXPECTED_PACKAGE_ARTIFACT_PATHS = Object.freeze([
   "chromium-wasm-release-wisp-config.js",
   "chromium-wasm-storage-estimate.js",
   "chromium-wasm-text-input.js",
-  "chromium-wasm.js",
-  "chromium-wasm.wasm",
+  LOADER_ARTIFACT_PATH,
+  WASM_ARTIFACT_PATH,
   "index.html",
 ]);
 
@@ -263,22 +265,66 @@ function parseCanonicalVersionJson(bytes) {
   return requireExactKeys(version, EXPECTED_VERSION_KEYS, "VERSION.json");
 }
 
-async function sha256Hex(bytes) {
+async function sha256Hex(bytes, description = "VERSION.json") {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new Error(`${description} bytes are invalid`);
+  }
   const subtle = globalThis.crypto?.subtle;
   if (!subtle || typeof subtle.digest !== "function") {
-    throw new Error("WebCrypto SHA-256 is unavailable for VERSION.json");
+    throw new Error(`WebCrypto SHA-256 is unavailable for ${description}`);
   }
   let digest;
   try {
     digest = await subtle.digest("SHA-256", bytes);
   } catch (error) {
-    throw new Error(`VERSION.json SHA-256 failed: ${String(error)}`);
+    throw new Error(`${description} SHA-256 failed: ${String(error)}`);
   }
   if (!(digest instanceof ArrayBuffer)) {
-    throw new Error("WebCrypto SHA-256 returned an invalid digest");
+    throw new Error(`WebCrypto SHA-256 returned an invalid digest for ${description}`);
   }
   return Array.from(new Uint8Array(digest), (value) =>
     value.toString(16).padStart(2, "0")).join("");
+}
+
+function requireArtifactResponseHeaders(response, contentType, description) {
+  const actualContentType = response?.headers?.get("Content-Type")
+      ?.split(";", 1)[0].trim().toLowerCase();
+  const expectedHeaders = {
+    "Cache-Control": "no-store",
+    ...EXPECTED_REQUIRED_HEADERS,
+  };
+  if (actualContentType !== contentType ||
+      Object.entries(expectedHeaders).some(([name, value]) =>
+        response?.headers?.get(name) !== value)) {
+    throw new Error(`${description} response headers are invalid`);
+  }
+}
+
+async function fetchVerifiedArtifact(url, identity, contentType, description) {
+  const response = await fetch(url.href, {
+    cache: "no-store",
+    credentials: "same-origin",
+    redirect: "error",
+  });
+  if (!response || !response.ok || response.url !== url.href) {
+    throw new Error(`${description} request was not exact`);
+  }
+  requireArtifactResponseHeaders(response, contentType, description);
+  let buffer;
+  try {
+    buffer = await response.arrayBuffer();
+  } catch (error) {
+    throw new Error(`${description} response bytes failed: ${String(error)}`);
+  }
+  if (!(buffer instanceof ArrayBuffer)) {
+    throw new Error(`${description} response bytes are invalid`);
+  }
+  const bytes = new Uint8Array(buffer);
+  if (bytes.byteLength !== identity.bytes ||
+      await sha256Hex(bytes, description) !== identity.sha256) {
+    throw new Error(`${description} disagrees with VERSION.json artifact identity`);
+  }
+  return bytes;
 }
 
 function validateGateState(value) {
@@ -359,6 +405,8 @@ function validateVersionMetadata(version) {
       report.artifacts.length !== EXPECTED_PACKAGE_ARTIFACT_PATHS.length) {
     throw new Error("VERSION.json artifact list is invalid");
   }
+  let loaderArtifact = null;
+  let wasmArtifact = null;
   for (let index = 0; index < report.artifacts.length; ++index) {
     const artifact = requireExactKeys(
         report.artifacts[index], EXPECTED_ARTIFACT_KEYS,
@@ -370,6 +418,15 @@ function validateVersionMetadata(version) {
     if (!Number.isSafeInteger(artifact.size_bytes) || artifact.size_bytes <= 0) {
       throw new Error("VERSION.json artifact size is invalid");
     }
+    const identity = Object.freeze({
+      bytes: artifact.size_bytes,
+      sha256: artifact.sha256,
+    });
+    if (artifact.path === LOADER_ARTIFACT_PATH) {
+      loaderArtifact = identity;
+    } else if (artifact.path === WASM_ARTIFACT_PATH) {
+      wasmArtifact = identity;
+    }
   }
   const toolchainManifestArtifact = report.artifacts.find(
       (artifact) => artifact.path === manifest.path);
@@ -377,7 +434,18 @@ function validateVersionMetadata(version) {
       toolchainManifestArtifact.sha256 !== manifest.sha256) {
     throw new Error("VERSION.json toolchain manifest artifact identity is invalid");
   }
-  return {build, gateState, versions};
+  if (loaderArtifact === null || wasmArtifact === null) {
+    throw new Error("VERSION.json executable artifact identities are missing");
+  }
+  return {
+    build,
+    executableArtifacts: Object.freeze({
+      loader: loaderArtifact,
+      wasm: wasmArtifact,
+    }),
+    gateState,
+    versions,
+  };
 }
 
 function isReadinessReport(value) {
@@ -514,6 +582,7 @@ class ChromiumWasmPreReleaseHost {
   #runtimeExitCode = null;
   #processExitCode = null;
   #shutdownRequested = false;
+  #runtimeArtifactsVerified = false;
   #wispConfigured = false;
   #gateState = null;
   #packageMetadata = null;
@@ -558,6 +627,7 @@ class ChromiumWasmPreReleaseHost {
       runtimeExitCode: this.#runtimeExitCode,
       processExitCode: this.#processExitCode,
       shutdownRequested: this.#shutdownRequested,
+      runtimeArtifactsVerified: this.#runtimeArtifactsVerified,
       wispConfigured: this.#wispConfigured,
       fatalCount: this.#fatalCount,
       records: this.#records,
@@ -905,8 +975,9 @@ class ChromiumWasmPreReleaseHost {
     if (version?.release_status !== RELEASE_STATUS) {
       throw new Error("VERSION.json does not declare this pre-release package");
     }
-    const gateState = validateGateState(version?.gate_state);
-    const inputModuleName = version?.build?.input_module_name;
+    const validatedVersion = validateVersionMetadata(version);
+    const gateState = validatedVersion.gateState;
+    const inputModuleName = validatedVersion.build.input_module_name;
     if (typeof inputModuleName !== "string" ||
         !/^[A-Za-z0-9_]+$/.test(inputModuleName)) {
       throw new Error("VERSION.json has an invalid input module name");
@@ -932,21 +1003,38 @@ class ChromiumWasmPreReleaseHost {
       throw new Error("browser canvas did not accept focus");
     }
 
-    const loaderUrl = new URL("./chromium-wasm.js", import.meta.url);
-    const [response, namespace] = await Promise.all([
-      fetch(loaderUrl, {cache: "no-store"}),
-      import(loaderUrl.href),
+    const loaderUrl = new URL(`./${LOADER_ARTIFACT_PATH}`, import.meta.url);
+    const wasmUrl = new URL(`./${WASM_ARTIFACT_PATH}`, import.meta.url);
+    const [loaderBytes, wasmBinary] = await Promise.all([
+      fetchVerifiedArtifact(
+          loaderUrl, validatedVersion.executableArtifacts.loader,
+          "text/javascript", "generated loader"),
+      fetchVerifiedArtifact(
+          wasmUrl, validatedVersion.executableArtifacts.wasm,
+          "application/wasm", "generated Wasm"),
     ]);
-    if (!response.ok) {
-      throw new Error(`generated loader request returned HTTP ${response.status}`);
+    if (typeof Blob !== "function" || typeof URL !== "function" ||
+        typeof URL.createObjectURL !== "function" ||
+        typeof URL.revokeObjectURL !== "function") {
+      throw new Error("verified generated loader requires Blob URL support");
+    }
+    const mainScriptUrlOrBlob = new Blob([loaderBytes], {
+      type: "text/javascript",
+    });
+    let namespace;
+    const loaderImportUrl = URL.createObjectURL(mainScriptUrlOrBlob);
+    try {
+      namespace = await import(loaderImportUrl);
+    } finally {
+      // The module namespace has captured this import. Keep the Blob itself
+      // alive in moduleOptions for Emscripten's worker bootstrap below.
+      URL.revokeObjectURL(loaderImportUrl);
     }
     if (typeof namespace.default !== "function") {
       throw new Error("generated loader has no default factory export");
     }
-    const mainScriptUrlOrBlob = await response.blob();
-    if (mainScriptUrlOrBlob.size === 0) {
-      throw new Error("generated loader is empty");
-    }
+    this.#runtimeArtifactsVerified = true;
+    this.#record("artifacts", "verified");
     const host = this;
     const moduleOptions = {
       canvas: this.#canvas,
@@ -956,7 +1044,7 @@ class ChromiumWasmPreReleaseHost {
         if (path !== `${inputModuleName}.wasm` && path !== "chromium-wasm.wasm") {
           throw new Error(`unexpected generated sidecar ${String(path)}`);
         }
-        return new URL("./chromium-wasm.wasm", loaderUrl).href;
+        return wasmUrl.href;
       },
       print(line) {
         host.#record("stdout", line);
@@ -973,6 +1061,7 @@ class ChromiumWasmPreReleaseHost {
       onExit(code) {
         host.#reportRuntimeExit(code);
       },
+      wasmBinary,
     };
     if (wispConfiguration !== undefined) {
       moduleOptions.chromiumWasmWisp = wispConfiguration;

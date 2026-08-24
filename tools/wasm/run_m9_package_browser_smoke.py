@@ -132,6 +132,7 @@ _STATUS_EXPRESSION = r"""
     records: payload.records,
     releaseStatus: payload.releaseStatus,
     runtimeInitialized: payload.runtimeInitialized,
+    runtimeArtifactsVerified: payload.runtimeArtifactsVerified,
     runtimeExitCode: payload.runtimeExitCode,
     processExitCode: payload.processExitCode,
     shutdownDisabled: shutdown.disabled,
@@ -529,6 +530,7 @@ def _is_ready(status: dict[str, Any]) -> bool:
         _has_zero_fatal_count(status)
         and status.get("crossOriginIsolated") is True
         and status.get("releaseStatus") == RELEASE_STATUS
+        and status.get("runtimeArtifactsVerified") is True
         and status.get("runtimeInitialized") is True
         and type(status.get("framesPresented")) is int
         and status["framesPresented"] >= 1

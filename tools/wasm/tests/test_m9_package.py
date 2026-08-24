@@ -87,6 +87,28 @@ class M9PackageTest(unittest.TestCase):
         )
         return dist_dir
 
+    def _refresh_staged_artifact_identity(
+        self, dist_dir: Path, artifact_path: str
+    ) -> None:
+        """Make a deliberately replaced fixture artifact match VERSION.json."""
+
+        contents = (dist_dir / artifact_path).read_bytes()
+        version_path = dist_dir / "VERSION.json"
+        version = json.loads(version_path.read_text(encoding="utf-8"))
+        record = next(
+            (
+                candidate
+                for candidate in version["artifacts"]
+                if candidate["path"] == artifact_path
+            ),
+            None,
+        )
+        self.assertIsNotNone(record)
+        assert isinstance(record, dict)
+        record["sha256"] = hashlib.sha256(contents).hexdigest()
+        record["size_bytes"] = len(contents)
+        version_path.write_bytes(package._canonical_json(version))
+
     def _make_attested_out_dir(self) -> tuple[Path, dict[str, object]]:
         directory = tempfile.TemporaryDirectory(
             prefix="m9-package-attested-", dir=REPO_ROOT / "out"
@@ -1565,7 +1587,7 @@ class M9PackageTest(unittest.TestCase):
 
         self.assertNotIn("/__m6__/", host)
         self.assertNotIn("/__m6__/", index)
-        self.assertIn('"./chromium-wasm.js"', host)
+        self.assertIn('LOADER_ARTIFACT_PATH = "chromium-wasm.js"', host)
         for module in (
             "chromium-wasm-pointer-input.js",
             "chromium-wasm-release-wisp-config.js",
@@ -1588,10 +1610,10 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn(
             "version?.schema_version !== PACKAGE_SCHEMA_VERSION", host
         )
-        self.assertIn("validateGateState(version?.gate_state)", host)
+        self.assertIn("validateVersionMetadata(version)", host)
         self.assertIn("#renderGateState(gateState)", host)
         self.assertLess(
-            host.index("validateGateState(version?.gate_state)"),
+            host.index("validateVersionMetadata(version)"),
             host.index("this.#installBridge()"),
         )
         for name in package.EXPECTED_GATE_STATE:
@@ -1619,6 +1641,7 @@ class M9PackageTest(unittest.TestCase):
 """,
             encoding="utf-8",
         )
+        self._refresh_staged_artifact_identity(fixture, "chromium-wasm.js")
         script = """
 import {readFile} from "node:fs/promises";
 
@@ -1671,23 +1694,40 @@ globalThis.__chromiumWasmReleaseWispV1 = Object.freeze({
 });
 const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
 const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
-function responseFor(bytes) {
+const wasmBytes = new Uint8Array(await readFile(__WASM_PATH__));
+const loaderUrl = __LOADER_URI__;
+function responseFor(bytes, url, contentType) {
+  const headers = {
+    "cache-control": "no-store",
+    "content-length": String(bytes.byteLength),
+    "content-type": contentType,
+    "cross-origin-embedder-policy": "require-corp",
+    "cross-origin-opener-policy": "same-origin",
+    "cross-origin-resource-policy": "same-origin",
+    "x-content-type-options": "nosniff",
+  };
   return {
     ok: true,
-    headers: {get(name) {
-      return String(name).toLowerCase() === "content-length" ?
-          String(bytes.byteLength) : null;
-    }},
+    url,
+    headers: {get(name) { return headers[String(name).toLowerCase()] || null; }},
     async arrayBuffer() {
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     },
-    async blob() { return new Blob([bytes]); },
   };
 }
+URL.createObjectURL = () => loaderUrl;
+URL.revokeObjectURL = () => {};
 globalThis.fetch = async (input) => {
   const url = String(input);
-  if (url.endsWith("VERSION.json")) return responseFor(versionBytes);
-  if (url.endsWith("chromium-wasm.js")) return responseFor(loaderBytes);
+  if (url.endsWith("VERSION.json")) {
+    return responseFor(versionBytes, url, "application/json; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.js")) {
+    return responseFor(loaderBytes, url, "text/javascript; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.wasm")) {
+    return responseFor(wasmBytes, url, "application/wasm");
+  }
   throw new Error(`unexpected fetch ${url}`);
 };
 const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
@@ -1700,6 +1740,9 @@ process.stdout.write(JSON.stringify({
   noAdditionalSettings: Object.keys(options.chromiumWasmWisp).length === 2,
   endpointProtocol: new URL(options.chromiumWasmWisp?.endpoint).protocol,
   endpointPath: new URL(options.chromiumWasmWisp?.endpoint).pathname,
+  mainScriptUrlOrBlobIsBlob: options.mainScriptUrlOrBlob instanceof Blob,
+  runtimeArtifactsVerified: payload.runtimeArtifactsVerified,
+  wasmBinaryBytes: options.wasmBinary?.byteLength,
   wispConfigured: payload.wispConfigured,
   wispRecord: payload.records.find((record) => record.kind === "wisp")?.value,
 }));
@@ -1708,6 +1751,10 @@ process.stdout.write(JSON.stringify({
             "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
         ).replace(
             "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__WASM_PATH__", json.dumps(str(fixture / "chromium-wasm.wasm"))
+        ).replace(
+            "__LOADER_URI__", json.dumps((fixture / "chromium-wasm.js").as_uri())
         ).replace(
             "__HOST_URI__",
             json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
@@ -1726,12 +1773,169 @@ process.stdout.write(JSON.stringify({
                 "endpointPath": "/carrier/",
                 "endpointProtocol": "wss:",
                 "factoryReceivedOption": True,
+                "mainScriptUrlOrBlobIsBlob": True,
                 "noAdditionalSettings": True,
                 "optionFrozen": True,
+                "runtimeArtifactsVerified": True,
+                "wasmBinaryBytes": 8,
                 "wispConfigured": True,
                 "wispRecord": "configured",
             },
             json.loads(completed.stdout),
+        )
+
+    def test_release_host_rejects_unbound_executable_artifacts_before_import(
+        self,
+    ) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+
+        fixture = self._stage(name="release-host-artifact-binding-fixture")
+        (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+        script = """
+import {readFile} from "node:fs/promises";
+
+class HTMLElement {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.disabled = false;
+    this.style = {};
+    this.textContent = "";
+  }
+  addEventListener() {}
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children = nodes; }
+}
+class HTMLCanvasElement extends HTMLElement {
+  focus() { document.activeElement = this; }
+}
+class HTMLTextAreaElement extends HTMLElement {}
+class HTMLButtonElement extends HTMLElement {}
+Object.assign(globalThis, {
+  HTMLElement,
+  HTMLButtonElement,
+  HTMLCanvasElement,
+  HTMLTextAreaElement,
+  crossOriginIsolated: true,
+});
+globalThis.addEventListener = () => {};
+const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
+const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
+const wasmBytes = new Uint8Array(await readFile(__WASM_PATH__));
+let mode = "";
+function responseFor(bytes, url, contentType, mutateHeaders = false) {
+  const headers = {
+    "cache-control": "no-store",
+    "content-length": String(bytes.byteLength),
+    "content-type": contentType,
+    "cross-origin-embedder-policy": "require-corp",
+    "cross-origin-opener-policy": "same-origin",
+    "cross-origin-resource-policy": "same-origin",
+    "x-content-type-options": "nosniff",
+  };
+  if (mutateHeaders) headers["cross-origin-resource-policy"] = "cross-origin";
+  return {
+    ok: true,
+    url: mode === "loader-redirect" && url.endsWith("chromium-wasm.js") ?
+        `${url}?redirected` : url,
+    headers: {get(name) { return headers[String(name).toLowerCase()] || null; }},
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+  };
+}
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith("VERSION.json")) {
+    return responseFor(versionBytes, url, "application/json; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.js")) {
+    const bytes = mode === "loader-byte" ?
+        new Uint8Array([...loaderBytes, 0]) : loaderBytes;
+    return responseFor(
+        bytes, url, "text/javascript; charset=utf-8", mode === "loader-header");
+  }
+  if (url.endsWith("chromium-wasm.wasm")) {
+    const bytes = mode === "wasm-byte" ?
+        new Uint8Array([...wasmBytes, 0]) : wasmBytes;
+    return responseFor(bytes, url, "application/wasm");
+  }
+  throw new Error(`unexpected fetch ${url}`);
+};
+const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
+function installElements() {
+  const root = new HTMLElement();
+  const canvas = new HTMLCanvasElement();
+  const textProxy = new HTMLTextAreaElement();
+  const status = new HTMLElement();
+  const versions = new HTMLElement();
+  const gateState = new HTMLElement();
+  const shutdown = new HTMLButtonElement();
+  const elements = new Map([
+    ["#chrome-root", root], ["#browser-canvas", canvas],
+    ["#browser-text-proxy", textProxy], ["#chrome-status", status],
+    ["#versions", versions], ["#gate-state", gateState], ["#shutdown", shutdown],
+  ]);
+  globalThis.document = {
+    activeElement: null,
+    createElement() { return new HTMLElement(); },
+    querySelector(selector) { return elements.get(selector) || null; },
+  };
+}
+async function observe(nextMode) {
+  mode = nextMode;
+  globalThis.__chromiumWasmHostBridgeV1 = undefined;
+  installElements();
+  try {
+    await runChromiumWasmPreRelease();
+    return "accepted";
+  } catch (error) {
+    return String(error);
+  }
+}
+const results = {};
+for (const entry of ["loader-byte", "wasm-byte", "loader-header", "loader-redirect"]) {
+  results[entry] = await observe(entry);
+}
+process.stdout.write(JSON.stringify(results));
+"""
+        script = script.replace(
+            "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
+        ).replace(
+            "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__WASM_PATH__", json.dumps(str(fixture / "chromium-wasm.wasm"))
+        ).replace(
+            "__HOST_URI__",
+            json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
+        )
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        observed = json.loads(completed.stdout)
+        self.assertIn(
+            "generated loader disagrees with VERSION.json artifact identity",
+            observed["loader-byte"],
+        )
+        self.assertIn(
+            "generated Wasm disagrees with VERSION.json artifact identity",
+            observed["wasm-byte"],
+        )
+        self.assertIn(
+            "generated loader response headers are invalid",
+            observed["loader-header"],
+        )
+        self.assertIn(
+            "generated loader request was not exact",
+            observed["loader-redirect"],
         )
 
     def test_release_host_projects_canonical_version_bytes_and_fails_without_webcrypto(
@@ -1882,6 +2086,7 @@ process.stdout.write(JSON.stringify({{
 """,
             encoding="utf-8",
         )
+        self._refresh_staged_artifact_identity(fixture, "chromium-wasm.js")
         script = """
 import {readFile} from "node:fs/promises";
 
@@ -1935,23 +2140,40 @@ globalThis.document = {
 globalThis.addEventListener = () => {};
 const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
 const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
-function responseFor(bytes) {
+const wasmBytes = new Uint8Array(await readFile(__WASM_PATH__));
+const loaderUrl = __LOADER_URI__;
+function responseFor(bytes, url, contentType) {
+  const headers = {
+    "cache-control": "no-store",
+    "content-length": String(bytes.byteLength),
+    "content-type": contentType,
+    "cross-origin-embedder-policy": "require-corp",
+    "cross-origin-opener-policy": "same-origin",
+    "cross-origin-resource-policy": "same-origin",
+    "x-content-type-options": "nosniff",
+  };
   return {
     ok: true,
-    headers: {get(name) {
-      return String(name).toLowerCase() === "content-length" ?
-          String(bytes.byteLength) : null;
-    }},
+    url,
+    headers: {get(name) { return headers[String(name).toLowerCase()] || null; }},
     async arrayBuffer() {
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     },
-    async blob() { return new Blob([bytes]); },
   };
 }
+URL.createObjectURL = () => loaderUrl;
+URL.revokeObjectURL = () => {};
 globalThis.fetch = async (input) => {
   const url = String(input);
-  if (url.endsWith("VERSION.json")) return responseFor(versionBytes);
-  if (url.endsWith("chromium-wasm.js")) return responseFor(loaderBytes);
+  if (url.endsWith("VERSION.json")) {
+    return responseFor(versionBytes, url, "application/json; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.js")) {
+    return responseFor(loaderBytes, url, "text/javascript; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.wasm")) {
+    return responseFor(wasmBytes, url, "application/wasm");
+  }
   throw new Error(`unexpected fetch ${url}`);
 };
 const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
@@ -1969,6 +2191,10 @@ process.stdout.write(JSON.stringify({
             "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
         ).replace(
             "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__WASM_PATH__", json.dumps(str(fixture / "chromium-wasm.wasm"))
+        ).replace(
+            "__LOADER_URI__", json.dumps((fixture / "chromium-wasm.js").as_uri())
         ).replace(
             "__HOST_URI__",
             json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
@@ -2048,6 +2274,7 @@ process.stdout.write(JSON.stringify({
 """,
             encoding="utf-8",
         )
+        self._refresh_staged_artifact_identity(fixture, "chromium-wasm.js")
         script = """
 import {readFile} from "node:fs/promises";
 
@@ -2091,23 +2318,40 @@ globalThis.addEventListener = () => {};
 globalThis.removeEventListener = () => {};
 const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
 const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
-function responseFor(bytes) {
+const wasmBytes = new Uint8Array(await readFile(__WASM_PATH__));
+const loaderUrl = __LOADER_URI__;
+function responseFor(bytes, url, contentType) {
+  const headers = {
+    "cache-control": "no-store",
+    "content-length": String(bytes.byteLength),
+    "content-type": contentType,
+    "cross-origin-embedder-policy": "require-corp",
+    "cross-origin-opener-policy": "same-origin",
+    "cross-origin-resource-policy": "same-origin",
+    "x-content-type-options": "nosniff",
+  };
   return {
     ok: true,
-    headers: {get(name) {
-      return String(name).toLowerCase() === "content-length" ?
-          String(bytes.byteLength) : null;
-    }},
+    url,
+    headers: {get(name) { return headers[String(name).toLowerCase()] || null; }},
     async arrayBuffer() {
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     },
-    async blob() { return new Blob([bytes]); },
   };
 }
+URL.createObjectURL = () => loaderUrl;
+URL.revokeObjectURL = () => {};
 globalThis.fetch = async (input) => {
   const url = String(input);
-  if (url.endsWith("VERSION.json")) return responseFor(versionBytes);
-  if (url.endsWith("chromium-wasm.js")) return responseFor(loaderBytes);
+  if (url.endsWith("VERSION.json")) {
+    return responseFor(versionBytes, url, "application/json; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.js")) {
+    return responseFor(loaderBytes, url, "text/javascript; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.wasm")) {
+    return responseFor(wasmBytes, url, "application/wasm");
+  }
   throw new Error(`unexpected fetch ${url}`);
 };
 const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
@@ -2161,6 +2405,10 @@ process.stdout.write(JSON.stringify(results));
             "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
         ).replace(
             "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__WASM_PATH__", json.dumps(str(fixture / "chromium-wasm.wasm"))
+        ).replace(
+            "__LOADER_URI__", json.dumps((fixture / "chromium-wasm.js").as_uri())
         ).replace(
             "__HOST_URI__",
             json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
@@ -2243,9 +2491,16 @@ process.stdout.write(JSON.stringify(results));
         self.assertIn("displayedVersions", smoke)
         self.assertIn("artifact source provenance", smoke)
         self.assertIn('"local_clean_build_attested" in displayed_versions', smoke)
+        self.assertIn("runtimeArtifactsVerified", smoke)
         self.assertIn("mainScriptUrlOrBlob", host)
         self.assertIn("inputModuleName", host)
-        self.assertIn('"./chromium-wasm.wasm"', host)
+        self.assertIn("fetchVerifiedArtifact(", host)
+        self.assertIn("LOADER_ARTIFACT_PATH", host)
+        self.assertIn("WASM_ARTIFACT_PATH", host)
+        self.assertIn("wasmBinary,", host)
+        self.assertIn(
+            "runtimeArtifactsVerified: this.#runtimeArtifactsVerified", host
+        )
         self.assertIn("#fatalCount = 0", host)
         self.assertIn("fatalCount: this.#fatalCount", host)
         self.assertIn("#runtimeExitCode = null", host)
@@ -2476,6 +2731,7 @@ process.stdout.write(JSON.stringify(results));
                 for index in range(32)
             ],
             "releaseStatus": package.RELEASE_STATUS,
+            "runtimeArtifactsVerified": True,
             "runtimeInitialized": True,
             "shutdownDisabled": True,
             "shutdownRequested": True,

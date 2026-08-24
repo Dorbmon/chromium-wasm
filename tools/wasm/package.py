@@ -822,11 +822,12 @@ def _validate_self_contained_loader(
     """Reject a build whose generated runtime needs omitted sidecar files.
 
     The pre-release layout deliberately renames the generated loader. The
-    paired release host uses Emscripten's mainScriptUrlOrBlob pthread path, so
-    the generated loader's ordinary same-name JavaScript worker fallback is
-    not a package sidecar. A generated data package or distinct worker script,
-    however, would need an explicitly designed package layout and must not be
-    silently dropped.
+    paired release host verifies the loader and Wasm bytes against
+    ``VERSION.json`` before it imports the loader through Emscripten's
+    ``mainScriptUrlOrBlob`` pthread path. The generated loader's ordinary
+    same-name JavaScript worker fallback is therefore not a package sidecar.
+    A generated data package or distinct worker script, however, would need
+    an explicitly designed package layout and must not be silently dropped.
     """
     loader_path = out_dir / f"{module_name}.js"
     host_path = host_dir / "release_host.js"
@@ -844,9 +845,12 @@ def _validate_self_contained_loader(
                 f"{sidecar}"
             )
     for required_host_fragment in (
+        "fetchVerifiedArtifact(",
         "mainScriptUrlOrBlob",
         "inputModuleName",
-        '"./chromium-wasm.wasm"',
+        "LOADER_ARTIFACT_PATH",
+        "WASM_ARTIFACT_PATH",
+        "wasmBinary,",
         '"./chromium-wasm-release-wisp-config.js"',
     ):
         if required_host_fragment not in host:
