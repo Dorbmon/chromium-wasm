@@ -640,6 +640,70 @@ class M3MediaSourceContractTest(unittest.TestCase):
         )[1].split("#else", 1)[0]
         self.assertNotIn("NullVideoDecoder", wasm_failure)
 
+    def test_webrtc_omits_builtin_audio_codecs_on_wasm(self) -> None:
+        audio_codecs = source("third_party/webrtc/api/audio_codecs/BUILD.gn")
+        opus_codecs = source(
+            "third_party/webrtc/api/audio_codecs/opus/BUILD.gn"
+        )
+        audio_coding = source(
+            "third_party/webrtc/modules/audio_coding/BUILD.gn"
+        )
+        test_build = source("third_party/webrtc/test/BUILD.gn")
+
+        native_audio_factories = braced_block(audio_codecs, "if (!is_wasm)")
+        for target in (
+            "builtin_audio_decoder_factory",
+            "builtin_audio_encoder_factory",
+            "opus_audio_decoder_factory",
+            "opus_audio_encoder_factory",
+        ):
+            with self.subTest(target=target):
+                self.assertIn(f'rtc_library("{target}")', native_audio_factories)
+        self.assertNotIn(
+            'rtc_library("builtin_audio_decoder_factory")',
+            audio_codecs.split("if (!is_wasm)", 1)[0],
+        )
+
+        native_opus_codecs = braced_block(opus_codecs, "if (!is_wasm)")
+        for target in (
+            "audio_encoder_opus_config",
+            "audio_decoder_opus_config",
+            "audio_encoder_opus",
+            "audio_decoder_opus",
+            "audio_encoder_multiopus",
+            "audio_decoder_multiopus",
+            "unittests",
+        ):
+            with self.subTest(target=target):
+                self.assertIn(f'(\"{target}\")', native_opus_codecs)
+
+        native_audio_coding = braced_block(audio_coding, "if (!is_wasm)")
+        for target in (
+            "audio_coding_opus_common",
+            "webrtc_opus",
+            "webrtc_multiopus",
+            "webrtc_opus_wrapper",
+        ):
+            with self.subTest(target=target):
+                self.assertIn(f'rtc_library("{target}")', native_audio_coding)
+        self.assertIn(
+            'if (!is_wasm) {\n'
+            '  rtc_library("audio_coding_modules_tests_shared")',
+            audio_coding,
+        )
+
+        audio_codec_mocks = braced_block(
+            test_build, 'rtc_library("audio_codec_mocks")'
+        )
+        common_mock_deps = audio_codec_mocks.split("if (!is_wasm)", 1)[0]
+        self.assertIn('"../api/audio_codecs:audio_codecs_api"', common_mock_deps)
+        self.assertNotIn("builtin_audio_decoder_factory", common_mock_deps)
+        native_mock_deps = braced_block(audio_codec_mocks, "if (!is_wasm)")
+        self.assertIn(
+            '"../api/audio_codecs:builtin_audio_decoder_factory"',
+            native_mock_deps,
+        )
+
     def test_media_recorder_rejects_codec_capability_on_wasm(self) -> None:
         build = source(
             "third_party/blink/renderer/modules/mediarecorder/BUILD.gn"
