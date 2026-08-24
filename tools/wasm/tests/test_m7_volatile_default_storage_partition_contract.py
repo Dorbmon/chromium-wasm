@@ -49,6 +49,11 @@ class M7VolatileDefaultStoragePartitionContractTest(unittest.TestCase):
         self.lifecycle_implementation = source(
             "chrome/browser/wasm/wasm_browser_lifecycle.cc"
         )
+        self.wasm_browser_build = source("chrome/browser/wasm/BUILD.gn")
+        self.content_test_build = source("content/test/BUILD.gn")
+        self.browser_task_environment = source(
+            "content/public/test/browser_task_environment.cc"
+        )
         self.normal_lifecycle_runner = source(
             "tools/wasm/run_m6_wasm_browser_normal_lifecycle_smoke.py"
         )
@@ -166,6 +171,39 @@ class M7VolatileDefaultStoragePartitionContractTest(unittest.TestCase):
         )
         self.assertIn(
             "does not establish M7 completion", self.normal_lifecycle_runner
+        )
+
+    def test_partition_config_test_uses_content_owned_task_support(self) -> None:
+        self.assertNotIn(
+            'source_set("wasm_storage_partition_config_test_support")',
+            self.wasm_browser_build,
+        )
+        self.assertIn(
+            '"//content/test:wasm_browser_task_environment_test_support",',
+            self.wasm_browser_build,
+        )
+        content_support_start = self.content_test_build.index(
+            'source_set("wasm_browser_task_environment_test_support")'
+        )
+        content_support = _body_after_signature(
+            self.content_test_build,
+            'source_set("wasm_browser_task_environment_test_support")',
+        )
+        self.assertIn(
+            "if (is_wasm) {",
+            self.content_test_build[:content_support_start],
+        )
+        for dependency in (
+            '"//base",',
+            '"//base/test:test_support",',
+            '"//content/browser:for_content_tests",',
+            '"//content/public/browser",',
+        ):
+            with self.subTest(dependency=dependency):
+                self.assertIn(dependency, content_support)
+        self.assertNotIn(
+            '#include "content/public/test/test_utils.h"',
+            self.browser_task_environment,
         )
 
 

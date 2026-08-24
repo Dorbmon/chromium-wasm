@@ -70,6 +70,26 @@ static_library("setup_field_trials") {
   ]
 }
 
+if (is_wasm) {
+  # BrowserTaskEnvironment needs Content-private browser test infrastructure.
+  # Keep its small Wasm-only use in //content/test, where :for_content_tests
+  # deliberately grants that access, instead of copying the source into a
+  # Chrome target.
+  source_set("wasm_browser_task_environment_test_support") {
+    testonly = true
+
+    public = [ "../public/test/browser_task_environment.h" ]
+    sources = [ "../public/test/browser_task_environment.cc" ]
+
+    deps = [
+      "//base",
+      "//base/test:test_support",
+      "//content/browser:for_content_tests",
+      "//content/public/browser",
+    ]
+  }
+}
+
 # Use a static library here because many test binaries depend on this but don't
 # require many files from it. This makes linking more efficient.
 static_library("test_support") {
