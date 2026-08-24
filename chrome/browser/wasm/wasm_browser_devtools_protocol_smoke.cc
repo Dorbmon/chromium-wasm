@@ -49,6 +49,10 @@ constexpr char kPageJavaScriptPlatformSemanticsRuntimeEvaluateCommand[] =
     R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
     R"json("(async()=>{const module=await import('data:text/javascript,export%20let%20base%3D20%3Bexport%20const%20bump%3D()%3D%3E%2B%2Bbase%3Bexport%20const%20add%3Dvalue%3D%3Ebase%2Bvalue%3B');if(module.base!==20||module.bump()!==21||module.base!==21||module.add(21)!==42)throw new Error('data module live binding result was not 42');const cloneSource={nested:{answer:42},bytes:new ArrayBuffer(4)};new Uint8Array(cloneSource.bytes).set([3,1,4,1]);const clone=structuredClone(cloneSource,{transfer:[cloneSource.bytes]});if(cloneSource.bytes.byteLength!==0||clone.nested===cloneSource.nested||clone.nested.answer!==42||new Uint8Array(clone.bytes).join(',')!=='3,1,4,1')throw new Error('structured clone transfer result changed');const channel=new MessageChannel();const messageSource=new ArrayBuffer(2);new Uint8Array(messageSource).set([6,7]);const message=await new Promise(resolve=>{channel.port1.onmessage=event=>resolve(event.data);channel.port1.start();channel.port2.postMessage({answer:42,bytes:messageSource},[messageSource]);});channel.port1.close();channel.port2.close();if(messageSource.byteLength!==0||message.answer!==42||!(message.bytes instanceof ArrayBuffer)||new Uint8Array(message.bytes).join(',')!=='6,7')throw new Error('MessageChannel transfer result changed');let connected=0;const elementName='chromium-wasm-m8-platform-semantics';class FixedElement extends HTMLElement{connectedCallback(){connected++;this.setAttribute('data-answer','42');}}customElements.define(elementName,FixedElement);const observerPromise=new Promise(resolve=>{const observer=new MutationObserver(entries=>{observer.disconnect();resolve(entries);});observer.observe(document.body,{childList:true});});const element=document.createElement(elementName);document.body.append(element);const entries=await observerPromise;if(connected!==1||!element.isConnected||element.getAttribute('data-answer')!=='42'||entries.length!==1||entries[0].addedNodes.length!==1||entries[0].addedNodes[0]!==element)throw new Error('custom element or MutationObserver result changed');element.remove();console.log('chromium-wasm-m8-page-javascript-platform-semantics-data-module-live-binding-structured-clone-transfer-message-channel-transfer-custom-element-mutation-observer');return 'page-javascript-platform-semantics-data-module-live-binding-structured-clone-transfer-message-channel-transfer-custom-element-mutation-observer-ok';})()","returnByValue":true,)json"
     R"json("awaitPromise":true,"allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kPageJavaScriptDataUrlFetchTextRuntimeEvaluateCommand[] =
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(async()=>{const response=await fetch('data:text/plain;charset=utf-8,chromium-wasm-m8-fixed-fetch-text-42');if(!response.ok)throw new Error('fixed data URL fetch did not return ok');console.log('chromium-wasm-m8-page-javascript-data-url-fetch-response-ok');const text=await response.text();if(text!=='chromium-wasm-m8-fixed-fetch-text-42')throw new Error('fixed data URL response text changed');console.log('chromium-wasm-m8-page-javascript-data-url-fetch-text-42-ok');return 'page-javascript-data-url-fetch-response-text-42-ok';})()","returnByValue":true,)json"
+    R"json("awaitPromise":true,"allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kPageWebAssemblyRuntimeEvaluateCommand[] =
     R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
     R"json("(()=>{const b=new Uint8Array([)json"
@@ -223,6 +227,8 @@ constexpr char kFixedPageJavaScriptAsyncRejectionDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20JavaScript%20async%20rejection%20smoke";
 constexpr char kFixedPageJavaScriptPlatformSemanticsDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20JavaScript%20platform%20semantics%20smoke";
+constexpr char kFixedPageJavaScriptDataUrlFetchTextDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20JavaScript%20data%20URL%20fetch%20text%20smoke";
 constexpr char kFixedPageWebAssemblyDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20smoke";
 constexpr char kFixedPageWebAssemblyMemoryDevToolsProtocolSmokeUrl[] =
@@ -268,6 +274,15 @@ constexpr char kPageJavaScriptPlatformSemanticsSuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_PLATFORM_SEMANTICS:"
     "DATA_MODULE_LIVE_BINDING_STRUCTURED_CLONE_TRANSFER_MESSAGE_CHANNEL_"
     "TRANSFER_CUSTOM_ELEMENT_MUTATION_OBSERVER_OK";
+constexpr char kPageJavaScriptDataUrlFetchTextResponseSuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:"
+    "FETCH_RESPONSE_OK";
+constexpr char kPageJavaScriptDataUrlFetchTextTextSuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:"
+    "RESPONSE_TEXT_42_OK";
+constexpr char kPageJavaScriptDataUrlFetchTextSuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:"
+    "FETCH_RESPONSE_TEXT_42_OK";
 constexpr char kPageWebAssemblySuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
 constexpr char kPageWebAssemblyMemorySuccessMarker[] =
@@ -325,6 +340,8 @@ constexpr char kPageJavaScriptPlatformSemanticsRuntimeEvaluateExpectedValue[] =
     "page-javascript-platform-semantics-data-module-live-binding-"
     "structured-clone-transfer-message-channel-transfer-custom-element-"
     "mutation-observer-ok";
+constexpr char kPageJavaScriptDataUrlFetchTextRuntimeEvaluateExpectedValue[] =
+    "page-javascript-data-url-fetch-response-text-42-ok";
 constexpr char kPageWebAssemblyRuntimeEvaluateExpectedValue[] =
     "wasm-add-42";
 constexpr char kPageWebAssemblyMemoryRuntimeEvaluateExpectedValue[] =
@@ -363,6 +380,12 @@ constexpr char
         "chromium-wasm-m8-page-javascript-platform-semantics-data-module-"
         "live-binding-structured-clone-transfer-message-channel-transfer-"
         "custom-element-mutation-observer";
+constexpr char
+    kPageJavaScriptDataUrlFetchTextResponseRuntimeConsoleApiCalledExpectedValue[] =
+        "chromium-wasm-m8-page-javascript-data-url-fetch-response-ok";
+constexpr char
+    kPageJavaScriptDataUrlFetchTextTextRuntimeConsoleApiCalledExpectedValue[] =
+        "chromium-wasm-m8-page-javascript-data-url-fetch-text-42-ok";
 constexpr char kPageWebAssemblyRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-page-webassembly-add-42";
 constexpr char kPageWebAssemblyMemoryRuntimeConsoleApiCalledExpectedValue[] =
@@ -423,6 +446,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
       WasmBrowserDevToolsProtocolSmokeMode::
           kOrdinaryJavaScriptPlatformSemantics) {
     return GURL(kFixedPageJavaScriptPlatformSemanticsDevToolsProtocolSmokeUrl);
+  }
+  if (mode ==
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kOrdinaryJavaScriptDataUrlFetchText) {
+    return GURL(kFixedPageJavaScriptDataUrlFetchTextDevToolsProtocolSmokeUrl);
   }
   if (mode ==
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42) {
@@ -656,6 +684,10 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
                           kOrdinaryJavaScriptPlatformSemantics) {
     expected_value =
         kPageJavaScriptPlatformSemanticsRuntimeEvaluateExpectedValue;
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kOrdinaryJavaScriptDataUrlFetchText) {
+    expected_value =
+        kPageJavaScriptDataUrlFetchTextRuntimeEvaluateExpectedValue;
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::
                  kValidateModuleInstanceAdd42) {
@@ -722,6 +754,11 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
                      kOrdinaryJavaScriptPlatformSemantics) {
       Fail("Runtime.evaluate did not return the fixed page-JavaScript "
            "platform semantics result");
+    }
+    if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                     kOrdinaryJavaScriptDataUrlFetchText) {
+      Fail("Runtime.evaluate did not return the fixed page-JavaScript data "
+           "URL fetch Response.text result");
     }
     if (mode_ ==
         WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite) {
@@ -802,6 +839,10 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
                           kOrdinaryJavaScriptPlatformSemantics) {
     std::fprintf(stderr, "%s\n",
                  kPageJavaScriptPlatformSemanticsSuccessMarker);
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kOrdinaryJavaScriptDataUrlFetchText) {
+    std::fprintf(stderr, "%s\n",
+                 kPageJavaScriptDataUrlFetchTextSuccessMarker);
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::
                  kValidateModuleInstanceAdd42) {
@@ -947,6 +988,13 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
                   kPageJavaScriptPlatformSemanticsRuntimeEvaluateCommand));
     return;
   }
+  if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                   kOrdinaryJavaScriptDataUrlFetchText) {
+    agent_host_->DispatchProtocolMessage(
+        this, base::byte_span_from_cstring(
+                  kPageJavaScriptDataUrlFetchTextRuntimeEvaluateCommand));
+    return;
+  }
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42) {
     agent_host_->DispatchProtocolMessage(
@@ -1067,6 +1115,43 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
       argument ? argument->FindString("type") : nullptr;
   const std::string* argument_value =
       argument ? argument->FindString("value") : nullptr;
+  if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kOrdinaryJavaScriptDataUrlFetchText) {
+    const char* expected_value = nullptr;
+    if (runtime_console_api_call_count_ == 0) {
+      expected_value =
+          kPageJavaScriptDataUrlFetchTextResponseRuntimeConsoleApiCalledExpectedValue;
+    } else if (runtime_console_api_call_count_ == 1) {
+      expected_value =
+          kPageJavaScriptDataUrlFetchTextTextRuntimeConsoleApiCalledExpectedValue;
+    } else {
+      Fail("Runtime.consoleAPICalled delivered too many fixed data URL fetch "
+           "phase events");
+    }
+    if (!type || *type != kRuntimeConsoleApiCalledExpectedType ||
+        !argument_type ||
+        *argument_type != kRuntimeEvaluateExpectedType || !argument_value ||
+        *argument_value != expected_value) {
+      Fail("Runtime.consoleAPICalled did not contain the fixed data URL fetch "
+           "phase argument");
+    }
+    ++runtime_console_api_call_count_;
+    if (runtime_console_api_call_count_ == 1) {
+      std::fprintf(stderr, "%s\n",
+                   kPageJavaScriptDataUrlFetchTextResponseSuccessMarker);
+      std::fflush(stderr);
+      return;
+    }
+    CHECK_EQ(runtime_console_api_call_count_, 2);
+    runtime_console_api_called_received_ = true;
+    std::fprintf(stderr, "%s\n",
+                 kPageJavaScriptDataUrlFetchTextTextSuccessMarker);
+    std::fprintf(stderr, "%s\n", kRuntimeConsoleApiCalledSuccessMarker);
+    std::fflush(stderr);
+    CompleteRuntimeEvaluate();
+    return;
+  }
   const char* expected_value = nullptr;
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {

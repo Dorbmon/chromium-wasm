@@ -150,6 +150,12 @@ class WasmBrowserLifecycle final {
   // expression, or protocol command.
   void StartPageJavaScriptPlatformSemanticsDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that fetches one literal
+  // data:text URL, observes the successful Response phase, awaits
+  // Response.text(), and observes its fixed text phase. It exposes no
+  // host-selected URL, request, headers, body, or protocol command.
+  void StartPageJavaScriptDataUrlFetchTextDevToolsProtocolSmoke();
+
   // Starts the separate, test-only fixed DevTools protocol proof that validates
   // one literal page WebAssembly module and its add(20, 22) result. Like the
   // unavailable-boundary proof, it has no host-selected URL, expression, or

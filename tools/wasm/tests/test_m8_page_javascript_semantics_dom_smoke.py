@@ -254,6 +254,7 @@ class M8PageJavaScriptSemanticsDomSmokeTest(unittest.TestCase):
             "      browser_m8_page_javascript_semantics_smoke ||\n"
             "      browser_m8_page_javascript_async_rejection_smoke ||\n"
             "      browser_m8_page_javascript_platform_semantics_smoke ||\n"
+            "      browser_m8_page_javascript_data_url_fetch_text_smoke ||\n"
             "      browser_m8_page_webassembly_smoke",
             main_parts,
         )
@@ -265,6 +266,8 @@ class M8PageJavaScriptSemanticsDomSmokeTest(unittest.TestCase):
             "                     browser_m8_page_javascript_async_rejection_smoke) +\n"
             "                 static_cast<int>(\n"
             "                     browser_m8_page_javascript_platform_semantics_smoke) +\n"
+            "                 static_cast<int>(\n"
+            "                     browser_m8_page_javascript_data_url_fetch_text_smoke) +\n"
             "                 static_cast<int>(browser_m8_page_webassembly_smoke)",
             main_parts,
         )
@@ -281,7 +284,8 @@ class M8PageJavaScriptSemanticsDomSmokeTest(unittest.TestCase):
             "kPageJavaScriptSemanticsRuntimeEvaluateCommand"
         )
         command_end = protocol.index(
-            "constexpr char kPageWebAssemblyRuntimeEvaluateCommand", command_start
+            "constexpr char kPageJavaScriptDataUrlFetchTextRuntimeEvaluateCommand",
+            command_start,
         )
         command = protocol[command_start:command_end]
         for expected in (

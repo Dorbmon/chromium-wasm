@@ -39,6 +39,16 @@ const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SCOPE =
     "mutation-observer-console-event-detach-close";
 const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SWITCH =
     "--wasm-browser-m8-page-javascript-platform-semantics-smoke";
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MODE =
+    "page-javascript-data-url-fetch-text";
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_CASE =
+    "browser_page_javascript_data_url_fetch_text_m8";
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-javascript-fetch-data-text-response-" +
+    "text-two-phase-console-event-detach-close";
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SWITCH =
+    "--wasm-browser-m8-page-javascript-data-url-fetch-text-smoke";
 const PAGE_WEBASSEMBLY_MODE = "page-webassembly";
 const PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8";
 const PAGE_WEBASSEMBLY_SCOPE =
@@ -173,6 +183,13 @@ const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER =
     "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_PLATFORM_SEMANTICS:" +
     "DATA_MODULE_LIVE_BINDING_STRUCTURED_CLONE_TRANSFER_MESSAGE_CHANNEL_" +
     "TRANSFER_CUSTOM_ELEMENT_MUTATION_OBSERVER_OK";
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:FETCH_RESPONSE_OK";
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:RESPONSE_TEXT_42_OK";
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:" +
+    "FETCH_RESPONSE_TEXT_42_OK";
 const PAGE_WEBASSEMBLY_ADD42_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
@@ -307,6 +324,31 @@ const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE = Object.freeze({
     RUNTIME_EVALUATE_MARKER,
     PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE = Object.freeze({
+  id: PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MODE,
+  queryMode: PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MODE,
+  case: PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_CASE,
+  scope: PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({}),
+  ordinaryJavaScriptExpectations: Object.freeze({
+    v8ProvenanceEstablished: false,
+    pageJavaScriptDataUrlFetchResponseObserved: true,
+    pageJavaScriptDataUrlFetchTextObserved: true,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER,
+    PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
   ]),
@@ -807,6 +849,7 @@ function isKnownSmokeMode(smokeMode) {
       smokeMode === PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE ||
       smokeMode === PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE ||
       smokeMode === PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE ||
+      smokeMode === PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ||
@@ -895,6 +938,8 @@ function validateResult(result, smokeMode) {
       PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER :
       smokeMode === PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE ?
       PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER :
+      smokeMode === PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE ?
+      PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_ADD42_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ?
@@ -923,28 +968,54 @@ function validateResult(result, smokeMode) {
   const domGetDocumentOrdered = smokeMode !== DEFAULT_SMOKE_MODE ||
       (positions[RUNTIME_ENABLE_MARKER] < positions[DOM_GET_DOCUMENT_MARKER] &&
        positions[DOM_GET_DOCUMENT_MARKER] < positions[RUNTIME_EVALUATE_MARKER]);
-  require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
-              positions[RUNTIME_ENABLE_MARKER] >= 0 &&
-              positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
-              positions[runtimeMarker] >= 0 &&
-              positions[RUNTIME_CONSOLE_API_CALLED_MARKER] >= 0 &&
-              positions[DETACHED_MARKER] >= 0 &&
-              positions[LIFECYCLE_PASS_MARKER] >= 0 &&
-              positions[NETWORK_ENABLE_MARKER] <
-                  positions[RUNTIME_ENABLE_MARKER] &&
-              positions[RUNTIME_ENABLE_MARKER] <
-                  positions[RUNTIME_EVALUATE_MARKER] &&
-              positions[RUNTIME_ENABLE_MARKER] <
-                  positions[RUNTIME_CONSOLE_API_CALLED_MARKER] &&
-              positions[RUNTIME_EVALUATE_MARKER] <
-                  positions[runtimeMarker] &&
-              positions[runtimeMarker] <
-                  positions[DETACHED_MARKER] &&
-              positions[RUNTIME_CONSOLE_API_CALLED_MARKER] <
-                  positions[DETACHED_MARKER] &&
-              positions[DETACHED_MARKER] < positions[LIFECYCLE_PASS_MARKER] &&
-              domGetDocumentOrdered,
-          "native DevTools protocol markers are not ordered");
+  if (smokeMode === PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE) {
+    require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
+                positions[RUNTIME_ENABLE_MARKER] >= 0 &&
+                positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER] >=
+                    0 &&
+                positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER] >= 0 &&
+                positions[RUNTIME_CONSOLE_API_CALLED_MARKER] >= 0 &&
+                positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
+                positions[runtimeMarker] >= 0 &&
+                positions[DETACHED_MARKER] >= 0 &&
+                positions[LIFECYCLE_PASS_MARKER] >= 0 &&
+                positions[NETWORK_ENABLE_MARKER] <
+                    positions[RUNTIME_ENABLE_MARKER] &&
+                positions[RUNTIME_ENABLE_MARKER] <
+                    positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER] &&
+                positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER] <
+                    positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER] &&
+                positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER] <
+                    positions[RUNTIME_CONSOLE_API_CALLED_MARKER] &&
+                positions[RUNTIME_CONSOLE_API_CALLED_MARKER] <
+                    positions[RUNTIME_EVALUATE_MARKER] &&
+                positions[RUNTIME_EVALUATE_MARKER] < positions[runtimeMarker] &&
+                positions[runtimeMarker] < positions[DETACHED_MARKER] &&
+                positions[DETACHED_MARKER] < positions[LIFECYCLE_PASS_MARKER],
+            "native DevTools data URL fetch phase markers are not ordered");
+  } else {
+    require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
+                positions[RUNTIME_ENABLE_MARKER] >= 0 &&
+                positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
+                positions[runtimeMarker] >= 0 &&
+                positions[RUNTIME_CONSOLE_API_CALLED_MARKER] >= 0 &&
+                positions[DETACHED_MARKER] >= 0 &&
+                positions[LIFECYCLE_PASS_MARKER] >= 0 &&
+                positions[NETWORK_ENABLE_MARKER] <
+                    positions[RUNTIME_ENABLE_MARKER] &&
+                positions[RUNTIME_ENABLE_MARKER] <
+                    positions[RUNTIME_EVALUATE_MARKER] &&
+                positions[RUNTIME_ENABLE_MARKER] <
+                    positions[RUNTIME_CONSOLE_API_CALLED_MARKER] &&
+                positions[RUNTIME_EVALUATE_MARKER] <
+                    positions[runtimeMarker] &&
+                positions[runtimeMarker] < positions[DETACHED_MARKER] &&
+                positions[RUNTIME_CONSOLE_API_CALLED_MARKER] <
+                    positions[DETACHED_MARKER] &&
+                positions[DETACHED_MARKER] < positions[LIFECYCLE_PASS_MARKER] &&
+                domGetDocumentOrdered,
+            "native DevTools protocol markers are not ordered");
+  }
 
   if (failures.length !== 0) {
     result.status = "fail";
@@ -982,6 +1053,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #pageJavaScriptAsyncRejectionCatchFinallyOrderObserved = false;
   #pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved =
       false;
+  #pageJavaScriptDataUrlFetchResponseObserved = false;
+  #pageJavaScriptDataUrlFetchTextObserved = false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
   #pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed =
@@ -1075,6 +1148,12 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     if (text.includes(PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER)) {
       this.#pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved =
           true;
+    }
+    if (text.includes(PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER)) {
+      this.#pageJavaScriptDataUrlFetchResponseObserved = true;
+    }
+    if (text.includes(PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER)) {
+      this.#pageJavaScriptDataUrlFetchTextObserved = true;
     }
     if (text.includes(PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER)) {
       this.#pageWebAssemblyUnavailableObserved = true;
@@ -1267,6 +1346,15 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
         v8ProvenanceEstablished: false,
         pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved:
             this.#pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved,
+      };
+    } else if (this.#smokeMode ===
+               PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE) {
+      pageRuntimeResult = {
+        v8ProvenanceEstablished: false,
+        pageJavaScriptDataUrlFetchResponseObserved:
+            this.#pageJavaScriptDataUrlFetchResponseObserved,
+        pageJavaScriptDataUrlFetchTextObserved:
+            this.#pageJavaScriptDataUrlFetchTextObserved,
       };
     } else {
       pageRuntimeResult = {
@@ -1463,6 +1551,9 @@ export function parseDevToolsProtocolSmokeQuery(query) {
   } else if (modes.length === 1 &&
              modes[0] === PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE) {
     smokeMode = PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE;
+  } else if (modes.length === 1 &&
+             modes[0] === PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MODE) {
+    smokeMode = PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MEMORY_MODE) {
@@ -1523,6 +1614,7 @@ async function fetchExpectedSmokeMode(token) {
        binding.mode !== PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE.id &&
        binding.mode !== PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE.id &&
        binding.mode !== PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE.id &&
+       binding.mode !== PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE.id &&

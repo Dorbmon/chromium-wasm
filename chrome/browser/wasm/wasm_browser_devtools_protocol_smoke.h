@@ -32,6 +32,7 @@ enum class WasmBrowserDevToolsProtocolSmokeMode {
   kOrdinaryJavaScriptSemantics,
   kOrdinaryJavaScriptAsyncRejection,
   kOrdinaryJavaScriptPlatformSemantics,
+  kOrdinaryJavaScriptDataUrlFetchText,
   kValidateModuleInstanceAdd42,
   kMemoryImportReadWrite,
   kTableImportIndirectCall,
@@ -58,8 +59,10 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // DOM.getDocument before it evaluates its one literal expression. The separate
 // ordinary-JavaScript semantics mode and alternate page-WebAssembly modes retain
 // their narrower Network.enable, Runtime.enable, and Runtime.evaluate exchange.
-// It also accepts one exact console event produced by that expression. This is
-// deliberately not a DevTools frontend or a protocol transport: it accepts
+// It accepts one exact console event for every existing closed mode and exactly
+// two ordered console events for the fixed data: URL Fetch/Response.text
+// diagnostic. This is deliberately not a DevTools frontend or a protocol
+// transport: it accepts
 // only those fixed successful responses and the one event and forwards no
 // protocol traffic to JavaScript or another process. Its default expression
 // exercises ordinary page JavaScript and verifies that |typeof WebAssembly| is
@@ -77,7 +80,12 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // element's connected callback and child-list MutationObserver record. It
 // does not exercise network modules, import maps, module graphs, workers,
 // timers, general cloning or messaging, or broad custom-element behavior. A
-// second closed page-WebAssembly mode imports one fixed one-page
+// separate ordinary-JavaScript diagnostic awaits fetch() of one literal data:
+// text URL, records the fixed successful response phase, awaits Response.text(),
+// and records the fixed text-complete phase before returning one fixed value.
+// It does not exercise HTTP, WISP, arbitrary URL loading, streaming reads,
+// cancellation, errors, cache, CORS, Service Workers, or general fetch
+// behavior. A second closed page-WebAssembly mode imports one fixed one-page
 // memory and witnesses JavaScript-to-Wasm and Wasm-to-JavaScript reads and
 // writes without exercising growth, tables, exceptions, or threads. A third
 // closed page-WebAssembly mode imports one fixed, non-growable table,
@@ -184,6 +192,7 @@ class WasmBrowserDevToolsProtocolSmoke final
   GURL permitted_url_;
   bool runtime_evaluate_response_received_ = false;
   bool runtime_console_api_called_received_ = false;
+  int runtime_console_api_call_count_ = 0;
   base::OnceClosure success_callback_;
 };
 

@@ -101,6 +101,21 @@ PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SCOPE = (
 PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SWITCH = (
     "--wasm-browser-m8-page-javascript-platform-semantics-smoke"
 )
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SENTINEL = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_DOM"
+)
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MODE = "page-javascript-data-url-fetch-text"
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_CASE = (
+    "browser_page_javascript_data_url_fetch_text_m8"
+)
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-javascript-fetch-data-text-response-"
+    "text-two-phase-console-event-detach-close"
+)
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SWITCH = (
+    "--wasm-browser-m8-page-javascript-data-url-fetch-text-smoke"
+)
 PAGE_WEBASSEMBLY_SENTINEL = "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_DOM"
 PAGE_WEBASSEMBLY_MODE = "page-webassembly"
 PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8"
@@ -342,6 +357,16 @@ PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER = (
     "DATA_MODULE_LIVE_BINDING_STRUCTURED_CLONE_TRANSFER_MESSAGE_CHANNEL_"
     "TRANSFER_CUSTOM_ELEMENT_MUTATION_OBSERVER_OK"
 )
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:FETCH_RESPONSE_OK"
+)
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:RESPONSE_TEXT_42_OK"
+)
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT:"
+    "FETCH_RESPONSE_TEXT_42_OK"
+)
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
 )
@@ -545,6 +570,19 @@ PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_LIMITATIONS = (
     "does_not_establish_v8_dependency_or_artifact_source_provenance",
     "does_not_claim_m8_compatibility_completion",
 )
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_LIMITATIONS = (
+    "only_exercises_one_fixed_page_javascript_fetch_data_text_response_text_"
+    "two_phase_console_path",
+    "does_not_establish_general_ecmascript_or_browser_web_platform_"
+    "compatibility",
+    "does_not_exercise_http_wisp_cross_origin_fetch_cors_cache_or_service_"
+    "workers",
+    "does_not_exercise_stream_readers_request_bodies_cancellation_errors_or_"
+    "general_fetch_behavior",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_establish_v8_dependency_or_artifact_source_provenance",
+    "does_not_claim_m8_compatibility_completion",
+)
 
 
 @dataclass(frozen=True)
@@ -641,6 +679,15 @@ def require_build_profile_for_smoke(
     ):
         raise M0Error(
             "page-JavaScript platform semantics mode requires --build-profile "
+            f"{M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE}; that profile is "
+            "experimental and does not complete M8"
+        )
+    if (
+        smoke_config == PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG
+        and not profile.allows_page_webassembly_attempt
+    ):
+        raise M0Error(
+            "page-JavaScript data URL fetch text mode requires --build-profile "
             f"{M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE}; that profile is "
             "experimental and does not complete M8"
         )
@@ -796,6 +843,33 @@ PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
             "MessageChannelCustomElementMutationObserverObserved",
             True,
         ),
+    ),
+)
+
+PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id=PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MODE,
+    query_mode=PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MODE,
+    sentinel=PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SENTINEL,
+    case=PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_CASE,
+    scope=PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SCOPE,
+    runtime_arguments=(PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER,
+        PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(),
+    limitations=PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_LIMITATIONS,
+    ordinary_javascript_expectations=(
+        ("v8ProvenanceEstablished", False),
+        ("pageJavaScriptDataUrlFetchResponseObserved", True),
+        ("pageJavaScriptDataUrlFetchTextObserved", True),
     ),
 )
 
@@ -1398,6 +1472,16 @@ def smoke_config_for_page_javascript_platform_semantics(
     )
 
 
+def smoke_config_for_page_javascript_data_url_fetch_text(
+    page_javascript_data_url_fetch_text: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG
+        if page_javascript_data_url_fetch_text
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
 def smoke_config_for_page_webassembly_memory(
     page_webassembly_memory: bool,
 ) -> DevToolsProtocolSmokeConfig:
@@ -1514,6 +1598,7 @@ def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> No
         PAGE_JAVASCRIPT_SEMANTICS_SMOKE_CONFIG,
         PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG,
         PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG,
+        PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG,
@@ -1811,6 +1896,8 @@ def _require_unique_ordered_markers(
         runtime_marker = PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER
     elif smoke_config == PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG:
         runtime_marker = PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER
+    elif smoke_config == PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG:
+        runtime_marker = PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_SMOKE_CONFIG:
         runtime_marker = PAGE_WEBASSEMBLY_ADD42_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG:
@@ -1845,6 +1932,22 @@ def _require_unique_ordered_markers(
             < positions[RUNTIME_EVALUATE_MARKER]
         )
     )
+    if smoke_config == PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG:
+        if not (
+            positions[NETWORK_ENABLE_MARKER]
+            < positions[RUNTIME_ENABLE_MARKER]
+            < positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER]
+            < positions[PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER]
+            < positions[RUNTIME_CONSOLE_API_CALLED_MARKER]
+            < positions[RUNTIME_EVALUATE_MARKER]
+            < positions[runtime_marker]
+            < positions[DETACHED_MARKER]
+            < positions[LIFECYCLE_PASS_MARKER]
+        ):
+            raise M0Error(
+                "DevTools protocol data URL fetch phase markers are not ordered"
+            )
+        return
     if not (
         positions[NETWORK_ENABLE_MARKER]
         < positions[RUNTIME_ENABLE_MARKER]
@@ -2019,6 +2122,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--page-javascript-data-url-fetch-text",
+        action="store_true",
+        help=(
+            "run the fixed native page-JavaScript data URL fetch/Response.text "
+            "two-phase DevTools diagnostic smoke"
+        ),
+    )
+    parser.add_argument(
         "--page-webassembly",
         action="store_true",
         help=(
@@ -2124,6 +2235,7 @@ def main() -> int:
         int(args.page_javascript_semantics)
         + int(args.page_javascript_async_rejection)
         + int(args.page_javascript_platform_semantics)
+        + int(args.page_javascript_data_url_fetch_text)
         + int(args.page_webassembly)
         + int(args.page_webassembly_memory)
         + int(args.page_webassembly_table)
@@ -2141,6 +2253,7 @@ def main() -> int:
         parser.error(
             "--page-javascript-semantics, --page-javascript-async-rejection, "
             "--page-javascript-platform-semantics, "
+            "--page-javascript-data-url-fetch-text, "
             "--page-webassembly, "
             "--page-webassembly-memory, "
             "--page-webassembly-table, --page-webassembly-memory-growth, and "
@@ -2208,6 +2321,8 @@ def main() -> int:
         # JavaScript mode separate while preserving the Page-WebAssembly
         # selector above exactly.
         smoke_config = smoke_config_for_page_javascript_platform_semantics(True)
+    if args.page_javascript_data_url_fetch_text:
+        smoke_config = smoke_config_for_page_javascript_data_url_fetch_text(True)
 
     build_profile = chrome_build_profile(args.build_profile)
     try:

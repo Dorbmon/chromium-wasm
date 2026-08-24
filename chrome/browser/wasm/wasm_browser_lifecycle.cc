@@ -1273,6 +1273,13 @@ void WasmBrowserLifecycle::
           kOrdinaryJavaScriptPlatformSemantics);
 }
 
+void WasmBrowserLifecycle::
+    StartPageJavaScriptDataUrlFetchTextDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kOrdinaryJavaScriptDataUrlFetchText);
+}
+
 void WasmBrowserLifecycle::StartPageWebAssemblyDevToolsProtocolSmoke() {
   StartDevToolsProtocolSmokeInternal(
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);

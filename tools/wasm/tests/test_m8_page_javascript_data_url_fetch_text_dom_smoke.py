@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for the bounded M8 async-rejection page smoke."""
+"""Contracts for the bounded M8 data URL fetch/Response.text diagnostic."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from tools.wasm.tests.m3_source_contract_test_support import source
 VERSIONS = {"chromium": "c", "v8": "v", "emscripten": "e", "port": "p"}
 
 
-def successful_async_rejection_result() -> dict[str, object]:
+def successful_data_url_fetch_text_result() -> dict[str, object]:
     readiness = {
         "shellReady": True,
         "surfaceReady": True,
@@ -35,8 +35,8 @@ def successful_async_rejection_result() -> dict[str, object]:
     }
     return {
         "protocol": 1,
-        "case": smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_CASE,
-        "scope": smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_SCOPE,
+        "case": smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_CASE,
+        "scope": smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SCOPE,
         "status": "pass",
         "m8GateComplete": False,
         "runtimeExitCode": 0,
@@ -49,7 +49,8 @@ def successful_async_rejection_result() -> dict[str, object]:
         "runtimeEnableObserved": True,
         "runtimeEvaluateObserved": True,
         "v8ProvenanceEstablished": False,
-        "pageJavaScriptAsyncRejectionCatchFinallyOrderObserved": True,
+        "pageJavaScriptDataUrlFetchResponseObserved": True,
+        "pageJavaScriptDataUrlFetchTextObserved": True,
         "runtimeConsoleApiCalledObserved": True,
         "detachedObserved": True,
         "lifecyclePassObserved": True,
@@ -67,9 +68,11 @@ def successful_async_rejection_result() -> dict[str, object]:
         "stderr": [
             smoke.NETWORK_ENABLE_MARKER,
             smoke.RUNTIME_ENABLE_MARKER,
-            smoke.RUNTIME_EVALUATE_MARKER,
-            smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER,
+            smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER,
+            smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER,
             smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
+            smoke.RUNTIME_EVALUATE_MARKER,
+            smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_MARKER,
             smoke.DETACHED_MARKER,
             smoke.LIFECYCLE_PASS_MARKER,
         ],
@@ -78,25 +81,26 @@ def successful_async_rejection_result() -> dict[str, object]:
     }
 
 
-class M8PageJavaScriptAsyncRejectionDomSmokeTest(unittest.TestCase):
+class M8PageJavaScriptDataUrlFetchTextDomSmokeTest(unittest.TestCase):
     def test_mode_is_fixed_experimental_and_false_only(self) -> None:
-        config = smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
-        self.assertEqual(config.mode_id, "page-javascript-async-rejection")
-        self.assertEqual(config.query_mode, "page-javascript-async-rejection")
+        config = smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG
+        self.assertEqual(config.mode_id, "page-javascript-data-url-fetch-text")
+        self.assertEqual(config.query_mode, "page-javascript-data-url-fetch-text")
         self.assertEqual(
             config.sentinel,
-            "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_ASYNC_REJECTION_DOM",
+            "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_DOM",
         )
         self.assertEqual(
             config.runtime_arguments,
-            ("--wasm-browser-m8-page-javascript-async-rejection-smoke",),
+            ("--wasm-browser-m8-page-javascript-data-url-fetch-text-smoke",),
         )
         self.assertEqual(config.page_webassembly_expectations, ())
         self.assertEqual(
             config.ordinary_javascript_expectations,
             (
                 ("v8ProvenanceEstablished", False),
-                ("pageJavaScriptAsyncRejectionCatchFinallyOrderObserved", True),
+                ("pageJavaScriptDataUrlFetchResponseObserved", True),
+                ("pageJavaScriptDataUrlFetchTextObserved", True),
             ),
         )
         self.assertIn(
@@ -105,10 +109,11 @@ class M8PageJavaScriptAsyncRejectionDomSmokeTest(unittest.TestCase):
         )
         self.assertIn("does_not_claim_m8_compatibility_completion", config.limitations)
         self.assertIs(
-            smoke.smoke_config_for_page_javascript_async_rejection(True), config
+            smoke.smoke_config_for_page_javascript_data_url_fetch_text(True),
+            config,
         )
         self.assertIs(
-            smoke.smoke_config_for_page_javascript_async_rejection(False),
+            smoke.smoke_config_for_page_javascript_data_url_fetch_text(False),
             smoke.DEFAULT_SMOKE_CONFIG,
         )
 
@@ -119,66 +124,51 @@ class M8PageJavaScriptAsyncRejectionDomSmokeTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             M0Error,
-            "page-JavaScript async rejection mode requires --build-profile "
+            "page-JavaScript data URL fetch text mode requires --build-profile "
             "m8-codegen-experiment",
         ):
             smoke.require_build_profile_for_smoke(
-                m6, smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
+                m6, smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG
             )
         smoke.require_build_profile_for_smoke(
-            codegen, smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
+            codegen, smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG
         )
 
-    def test_result_requires_the_fixed_witness_and_false_gates(self) -> None:
-        config = smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
+    def test_result_requires_two_ordered_phases_and_false_gates(self) -> None:
+        config = smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG
         smoke.validate_result(
-            successful_async_rejection_result(),
+            successful_data_url_fetch_text_result(),
             expected_versions=VERSIONS,
             smoke_config=config,
         )
         for field, expected in config.ordinary_javascript_expectations:
             with self.subTest(field=field):
-                result = copy.deepcopy(successful_async_rejection_result())
+                result = copy.deepcopy(successful_data_url_fetch_text_result())
                 result[field] = not expected
                 with self.assertRaisesRegex(M0Error, rf"{field} mismatch"):
                     smoke.validate_result(
                         result, expected_versions=VERSIONS, smoke_config=config
                     )
-        result = successful_async_rejection_result()
+
+        result = successful_data_url_fetch_text_result()
+        result["stderr"][2], result["stderr"][3] = (
+            result["stderr"][3],
+            result["stderr"][2],
+        )
+        with self.assertRaisesRegex(M0Error, "phase markers are not ordered"):
+            smoke.validate_result(
+                result, expected_versions=VERSIONS, smoke_config=config
+            )
+
+        result = successful_data_url_fetch_text_result()
         result["m8GateComplete"] = True
         with self.assertRaisesRegex(M0Error, "m8GateComplete mismatch"):
             smoke.validate_result(
                 result, expected_versions=VERSIONS, smoke_config=config
             )
 
-    def test_result_rejects_wrong_or_repeated_native_marker(self) -> None:
-        config = smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
-        result = successful_async_rejection_result()
-        result["stderr"] = [
-            smoke.NETWORK_ENABLE_MARKER,
-            smoke.RUNTIME_ENABLE_MARKER,
-            smoke.RUNTIME_EVALUATE_MARKER,
-            smoke.PAGE_JAVASCRIPT_SEMANTICS_MARKER,
-            smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
-            smoke.DETACHED_MARKER,
-            smoke.LIFECYCLE_PASS_MARKER,
-        ]
-        with self.assertRaisesRegex(M0Error, "marker count is 0"):
-            smoke.validate_result(
-                result, expected_versions=VERSIONS, smoke_config=config
-            )
-
-        result = successful_async_rejection_result()
-        result["stderr"] = result["stderr"] + [
-            smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER,
-        ]
-        with self.assertRaisesRegex(M0Error, "marker count is 2"):
-            smoke.validate_result(
-                result, expected_versions=VERSIONS, smoke_config=config
-            )
-
-    def test_url_binds_the_closed_mode_and_result_shape(self) -> None:
-        config = smoke.PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG
+    def test_url_and_result_payload_bind_the_closed_mode(self) -> None:
+        config = smoke.PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_CONFIG
         server = SimpleNamespace(server_address=("127.0.0.1", 31337))
         url = smoke.smoke_url(
             server,
@@ -190,106 +180,101 @@ class M8PageJavaScriptAsyncRejectionDomSmokeTest(unittest.TestCase):
         )
         self.assertEqual(
             parse_qs(urlsplit(url).query, keep_blank_values=True)["mode"],
-            ["page-javascript-async-rejection"],
+            ["page-javascript-data-url-fetch-text"],
         )
-        payload = json.dumps(successful_async_rejection_result()).encode("utf-8")
+        payload = json.dumps(successful_data_url_fetch_text_result()).encode("utf-8")
         self.assertEqual(
             smoke.parse_result_payload(payload, smoke_config=config),
-            successful_async_rejection_result(),
+            successful_data_url_fetch_text_result(),
         )
         self.assertIsNone(smoke.parse_result_payload(payload))
 
-    def test_host_keeps_the_async_witness_native_and_token_bound(self) -> None:
+    def test_host_is_token_bound_and_does_not_own_the_page_fetch(self) -> None:
         host = source(
             "tools/wasm/host/chrome_wasm_browser_devtools_protocol_smoke_host.js"
         )
         for expected in (
-            'const PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE = "page-javascript-async-rejection";',
-            "PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE",
-            "PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER",
-            "pageJavaScriptAsyncRejectionCatchFinallyOrderObserved:",
-            "query.getAll(\"mode\")",
+            "PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_SMOKE_MODE",
+            "PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_RESPONSE_MARKER",
+            "PAGE_JAVASCRIPT_DATA_URL_FETCH_TEXT_TEXT_MARKER",
+            "pageJavaScriptDataUrlFetchResponseObserved:",
+            "pageJavaScriptDataUrlFetchTextObserved:",
+            'query.getAll("mode")',
             "fetchExpectedSmokeMode",
             "arguments: [...this.#smokeMode.runtimeArguments]",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, host)
         for forbidden in (
-            "Promise.reject('fixed-rejection')",
-            "order.push('finally')",
-            "page-javascript-async-rejection-catch-finally-order-ok",
+            "chromium-wasm-m8-fixed-fetch-text-42",
+            "fetch('data:text/plain;charset=utf-8",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, host)
 
-    def test_native_route_is_fixed_and_arms_the_lifecycle_smoke(self) -> None:
+    def test_native_route_has_only_the_fixed_two_phase_fetch_witness(self) -> None:
         main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
         lifecycle = source("chrome/browser/wasm/wasm_browser_lifecycle.cc")
+        lifecycle_header = source("chrome/browser/wasm/wasm_browser_lifecycle.h")
         protocol_header = source(
             "chrome/browser/wasm/wasm_browser_devtools_protocol_smoke.h"
         )
         protocol = source("chrome/browser/wasm/wasm_browser_devtools_protocol_smoke.cc")
         runner = source("tools/wasm/run_m8_wasm_browser_devtools_protocol_dom_smoke.py")
+
         self.assertIn(
-            '"wasm-browser-m8-page-javascript-async-rejection-smoke"', main_parts
-        )
-        self.assertIn(
-            "const bool browser_m8_page_javascript_async_rejection_smoke =",
+            '"wasm-browser-m8-page-javascript-data-url-fetch-text-smoke"',
             main_parts,
         )
         self.assertEqual(
-            main_parts.count("browser_m8_page_javascript_async_rejection_smoke"),
+            main_parts.count("browser_m8_page_javascript_data_url_fetch_text_smoke"),
             3,
         )
         self.assertIn(
-            "browser_m8_page_javascript_semantics_smoke ||\n"
-            "      browser_m8_page_javascript_async_rejection_smoke ||\n"
-            "      browser_m8_page_javascript_platform_semantics_smoke ||\n"
-            "      browser_m8_page_javascript_data_url_fetch_text_smoke ||\n"
-            "      browser_m8_page_webassembly_smoke",
-            main_parts,
+            "StartPageJavaScriptDataUrlFetchTextDevToolsProtocolSmoke", main_parts
         )
         self.assertIn(
-            "browser_m8_page_javascript_semantics_smoke) +\n"
-            "                 static_cast<int>(\n"
-            "                     browser_m8_page_javascript_async_rejection_smoke) +\n"
-            "                 static_cast<int>(\n"
-            "                     browser_m8_page_javascript_platform_semantics_smoke) +\n"
-            "                 static_cast<int>(\n"
-            "                     browser_m8_page_javascript_data_url_fetch_text_smoke) +\n"
-            "                 static_cast<int>(browser_m8_page_webassembly_smoke)",
-            main_parts,
+            "StartPageJavaScriptDataUrlFetchTextDevToolsProtocolSmoke", lifecycle
         )
         self.assertIn(
-            "StartPageJavaScriptAsyncRejectionDevToolsProtocolSmoke", main_parts
+            "StartPageJavaScriptDataUrlFetchTextDevToolsProtocolSmoke",
+            lifecycle_header,
         )
-        self.assertIn(
-            "StartPageJavaScriptAsyncRejectionDevToolsProtocolSmoke", lifecycle
-        )
-        self.assertIn("kOrdinaryJavaScriptAsyncRejection", protocol_header)
-        self.assertIn("--page-javascript-async-rejection", runner)
+        self.assertIn("kOrdinaryJavaScriptDataUrlFetchText", protocol_header)
+        self.assertIn("--page-javascript-data-url-fetch-text", runner)
+        self.assertIn("smoke_config_for_page_javascript_data_url_fetch_text", runner)
 
         command_start = protocol.index(
-            "kPageJavaScriptAsyncRejectionRuntimeEvaluateCommand"
+            "kPageJavaScriptDataUrlFetchTextRuntimeEvaluateCommand"
         )
         command_end = protocol.index(
-            "constexpr char kPageJavaScriptDataUrlFetchTextRuntimeEvaluateCommand",
-            command_start,
+            "constexpr char kPageWebAssemblyRuntimeEvaluateCommand", command_start
         )
         command = protocol[command_start:command_end]
-        for expected in (
-            "Promise.reject('fixed-rejection')",
-            "catch(error)",
-            "finally{order.push('finally');}",
-            "order.join(',')!=='try,catch,finally,after'",
-            '"awaitPromise":true',
-            '"returnByValue":true',
-            "page-javascript-async-rejection-catch-finally-order-ok",
-            "chromium-wasm-m8-page-javascript-async-rejection-catch-finally-order",
-        ):
+        expected_order = (
+            "const response=await fetch('data:text/plain;charset=utf-8,chromium-wasm-m8-fixed-fetch-text-42')",
+            "console.log('chromium-wasm-m8-page-javascript-data-url-fetch-response-ok')",
+            "const text=await response.text()",
+            "console.log('chromium-wasm-m8-page-javascript-data-url-fetch-text-42-ok')",
+            "return 'page-javascript-data-url-fetch-response-text-42-ok'",
+        )
+        positions = []
+        for expected in expected_order:
             with self.subTest(expected=expected):
                 self.assertIn(expected, command)
-        for forbidden in ("WebAssembly", "fetch(", "SharedArrayBuffer", "setTimeout"):
+                positions.append(command.index(expected))
+        self.assertEqual(positions, sorted(positions))
+        for expected in (
+            '"awaitPromise":true',
+            '"returnByValue":true',
+            "kPageJavaScriptDataUrlFetchTextResponseSuccessMarker",
+            "kPageJavaScriptDataUrlFetchTextTextSuccessMarker",
+            "runtime_console_api_call_count_ == 0",
+            "runtime_console_api_call_count_ == 1",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, protocol)
+        for forbidden in ("WebAssembly", "AbortController", "ReadableStream"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, command)
 
