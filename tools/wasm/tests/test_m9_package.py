@@ -161,6 +161,7 @@ class M9PackageTest(unittest.TestCase):
                 "chromium-wasm-clipboard-input.js",
                 "chromium-wasm-host.js",
                 "chromium-wasm-pointer-input.js",
+                "chromium-wasm-release-wisp-config.js",
                 "chromium-wasm-storage-estimate.js",
                 "chromium-wasm-text-input.js",
                 "chromium-wasm.js",
@@ -225,6 +226,14 @@ class M9PackageTest(unittest.TestCase):
         )
         self.assertIn(
             "not a verified source identity",
+            (dist_dir / "README.txt").read_text("utf-8"),
+        )
+        self.assertIn(
+            "__chromiumWasmReleaseWispV1",
+            (dist_dir / "README.txt").read_text("utf-8"),
+        )
+        self.assertIn(
+            "networking is explicitly unavailable",
             (dist_dir / "README.txt").read_text("utf-8"),
         )
         self.assertIn(
@@ -1498,6 +1507,7 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn('"./chromium-wasm.js"', host)
         for module in (
             "chromium-wasm-pointer-input.js",
+            "chromium-wasm-release-wisp-config.js",
             "chromium-wasm-text-input.js",
             "chromium-wasm-clipboard-input.js",
             "chromium-wasm-storage-estimate.js",
@@ -1531,6 +1541,137 @@ class M9PackageTest(unittest.TestCase):
         self.assertIn('"unverified"', host)
         self.assertIn('"local_clean_build_attested"', host)
         self.assertIn("local clean-build attestation", index)
+
+    def test_release_host_passes_validated_wisp_to_emscripten_factory(self) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+
+        fixture = self.root / "release-host-wisp-fixture"
+        shutil.copytree(self._stage(), fixture)
+        (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+        (fixture / "chromium-wasm.js").write_text(
+            """export default function(options) {
+  globalThis.__capturedReleaseWispOptions = options;
+  return Promise.resolve({});
+}
+""",
+            encoding="utf-8",
+        )
+        script = """
+import {readFile} from "node:fs/promises";
+
+class HTMLElement {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.disabled = false;
+    this.style = {};
+    this.textContent = "";
+  }
+  addEventListener() {}
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children = nodes; }
+}
+class HTMLCanvasElement extends HTMLElement {
+  focus() { document.activeElement = this; }
+}
+class HTMLTextAreaElement extends HTMLElement {}
+class HTMLButtonElement extends HTMLElement {}
+Object.assign(globalThis, {
+  HTMLElement,
+  HTMLButtonElement,
+  HTMLCanvasElement,
+  HTMLTextAreaElement,
+  crossOriginIsolated: true,
+});
+globalThis.addEventListener = () => {};
+const root = new HTMLElement();
+const canvas = new HTMLCanvasElement();
+const textProxy = new HTMLTextAreaElement();
+const status = new HTMLElement();
+const versions = new HTMLElement();
+const gateState = new HTMLElement();
+const shutdown = new HTMLButtonElement();
+const elements = new Map([
+  ["#chrome-root", root], ["#browser-canvas", canvas],
+  ["#browser-text-proxy", textProxy], ["#chrome-status", status],
+  ["#versions", versions], ["#gate-state", gateState], ["#shutdown", shutdown],
+]);
+globalThis.document = {
+  activeElement: null,
+  createElement() { return new HTMLElement(); },
+  querySelector(selector) { return elements.get(selector) || null; },
+};
+const endpointHost = ["release", "-", "gateway", ".invalid"].join("");
+globalThis.__chromiumWasmReleaseWispV1 = Object.freeze({
+  version: 1,
+  endpoint: ["w", "ss:", "//", endpointHost, "/carrier/"].join(""),
+});
+const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
+const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
+function responseFor(bytes) {
+  return {
+    ok: true,
+    headers: {get(name) {
+      return String(name).toLowerCase() === "content-length" ?
+          String(bytes.byteLength) : null;
+    }},
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+    async blob() { return new Blob([bytes]); },
+  };
+}
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith("VERSION.json")) return responseFor(versionBytes);
+  if (url.endsWith("chromium-wasm.js")) return responseFor(loaderBytes);
+  throw new Error(`unexpected fetch ${url}`);
+};
+const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
+await runChromiumWasmPreRelease();
+const options = globalThis.__capturedReleaseWispOptions;
+const payload = JSON.parse(status.textContent);
+process.stdout.write(JSON.stringify({
+  factoryReceivedOption: Object.hasOwn(options, "chromiumWasmWisp"),
+  optionFrozen: Object.isFrozen(options.chromiumWasmWisp),
+  noAdditionalSettings: Object.keys(options.chromiumWasmWisp).length === 2,
+  endpointProtocol: new URL(options.chromiumWasmWisp?.endpoint).protocol,
+  endpointPath: new URL(options.chromiumWasmWisp?.endpoint).pathname,
+  wispConfigured: payload.wispConfigured,
+  wispRecord: payload.records.find((record) => record.kind === "wisp")?.value,
+}));
+"""
+        script = script.replace(
+            "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
+        ).replace(
+            "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__HOST_URI__",
+            json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
+        )
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        self.assertEqual(
+            {
+                "endpointPath": "/carrier/",
+                "endpointProtocol": "wss:",
+                "factoryReceivedOption": True,
+                "noAdditionalSettings": True,
+                "optionFrozen": True,
+                "wispConfigured": True,
+                "wispRecord": "configured",
+            },
+            json.loads(completed.stdout),
+        )
 
     def test_release_host_projects_canonical_version_bytes_and_fails_without_webcrypto(
         self,

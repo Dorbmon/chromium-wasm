@@ -11,6 +11,7 @@ import {ChromiumWasmTrustedPointerInput} from "./chromium-wasm-pointer-input.js"
 import {ChromiumWasmTrustedClipboardInput} from "./chromium-wasm-clipboard-input.js";
 import {ChromiumWasmOuterOriginStorageEstimate} from "./chromium-wasm-storage-estimate.js";
 import {ChromiumWasmTrustedTextInput} from "./chromium-wasm-text-input.js";
+import {loadReleaseWispConfiguration} from "./chromium-wasm-release-wisp-config.js";
 
 const HOST_PROTOCOL = 1;
 const MAX_FRAME_DIMENSION = 16384;
@@ -86,6 +87,7 @@ const EXPECTED_PACKAGE_ARTIFACT_PATHS = Object.freeze([
   "chromium-wasm-clipboard-input.js",
   "chromium-wasm-host.js",
   "chromium-wasm-pointer-input.js",
+  "chromium-wasm-release-wisp-config.js",
   "chromium-wasm-storage-estimate.js",
   "chromium-wasm-text-input.js",
   "chromium-wasm.js",
@@ -512,6 +514,7 @@ class ChromiumWasmPreReleaseHost {
   #runtimeExitCode = null;
   #processExitCode = null;
   #shutdownRequested = false;
+  #wispConfigured = false;
   #gateState = null;
   #packageMetadata = null;
   #windowErrorHandler = null;
@@ -555,6 +558,7 @@ class ChromiumWasmPreReleaseHost {
       runtimeExitCode: this.#runtimeExitCode,
       processExitCode: this.#processExitCode,
       shutdownRequested: this.#shutdownRequested,
+      wispConfigured: this.#wispConfigured,
       fatalCount: this.#fatalCount,
       records: this.#records,
     };
@@ -914,6 +918,8 @@ class ChromiumWasmPreReleaseHost {
     if (!packageMetadata || typeof packageMetadata !== "object") {
       throw new Error("VERSION.json runtime metadata is invalid");
     }
+    const wispConfiguration = loadReleaseWispConfiguration();
+    this.#wispConfigured = wispConfiguration !== undefined;
     this.#gateState = gateState;
     this.#packageMetadata = packageMetadata;
     this.#renderVersions(version);
@@ -968,6 +974,10 @@ class ChromiumWasmPreReleaseHost {
         host.#reportRuntimeExit(code);
       },
     };
+    if (wispConfiguration !== undefined) {
+      moduleOptions.chromiumWasmWisp = wispConfiguration;
+    }
+    this.#record("wisp", this.#wispConfigured ? "configured" : "unconfigured");
     Promise.resolve(namespace.default(moduleOptions)).catch((error) => {
       host.#reportFatal(`generated loader rejected: ${String(error)}`);
     });

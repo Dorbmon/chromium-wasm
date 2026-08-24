@@ -111,6 +111,10 @@ HOST_ASSETS = (
     ("release_index.html", "index.html"),
     ("release_host.js", "chromium-wasm-host.js"),
     ("chrome_wasm_pointer_input.js", "chromium-wasm-pointer-input.js"),
+    (
+        "chrome_wasm_release_wisp_config.js",
+        "chromium-wasm-release-wisp-config.js",
+    ),
     ("chrome_wasm_text_input.js", "chromium-wasm-text-input.js"),
     ("chrome_wasm_clipboard_input.js", "chromium-wasm-clipboard-input.js"),
     (
@@ -173,6 +177,15 @@ The server must use application/wasm for chromium-wasm.wasm and JavaScript MIME
 types for the JavaScript host and generated loader. The host page requires a
 cross-origin-isolated context so Chromium's application pthread can run away
 from the browser's JavaScript main thread.
+
+WISP is opt-in. Before the release host starts, an operator may install the
+versioned public input globalThis.__chromiumWasmReleaseWispV1 with an object
+containing version=1 and a secure WSS endpoint whose path ends in "/". The
+host accepts no plaintext WS endpoint, credentials, query, fragment, or
+additional WISP settings. It validates and copies this input into the
+Emscripten module before Chromium starts. If the input is omitted, Chromium
+networking is explicitly unavailable; the host does not replace browser
+networking with page fetch().
 
 Known non-release limitations:
 
@@ -785,6 +798,7 @@ def _validate_self_contained_loader(
         "mainScriptUrlOrBlob",
         "inputModuleName",
         '"./chromium-wasm.wasm"',
+        '"./chromium-wasm-release-wisp-config.js"',
     ):
         if required_host_fragment not in host:
             raise PackageError(
