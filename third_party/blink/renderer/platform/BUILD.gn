@@ -2439,6 +2439,12 @@ source_set("blink_platform_unittests_sources") {
     "widget/input/widget_input_handler_manager_unittest.cc",
   ]
 
+  if (is_wasm) {
+    # The production factory is replaced by video_codec_factory_wasm.cc, which
+    # intentionally exposes no desktop H264 implementation for this test.
+    sources -= [ "peerconnection/video_codec_factory_test.cc" ]
+  }
+
   if (use_dawn) {
     sources += [ "graphics/gpu/webgpu_swap_buffer_provider_test.cc" ]
   }
