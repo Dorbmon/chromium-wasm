@@ -2238,6 +2238,7 @@ source_set("wasm_chrome_main_delegate") {
     "//components/network_session_configurator/common",
     "//content/public/app",
     "//content/public/common",
+    "//gpu/config:config",
     "//ui/base",
     "//ui/gl",
     "//ui/ozone",

@@ -25,6 +25,7 @@
 #include "components/network_session_configurator/common/network_switches.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
+#include "gpu/config/gpu_switches.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/gl/gl_switches.h"
 #include "ui/ozone/public/ozone_platform.h"
@@ -65,6 +66,12 @@ std::optional<int> WasmChromeMainDelegate::BasicStartupComplete() {
     command_line.AppendSwitch(switches::kSingleProcess);
   }
   command_line.RemoveSwitch(switches::kDisableGpu);
+  // Shader disk caches consume a StoragePartition's nominal profile path
+  // outside its in-memory backend. Keep them disabled until durable backing
+  // and a result-bearing shutdown drain are explicitly admitted.
+  if (!command_line.HasSwitch(switches::kDisableGpuShaderDiskCache)) {
+    command_line.AppendSwitch(switches::kDisableGpuShaderDiskCache);
+  }
   if (!command_line.HasSwitch(switches::kDisableGpuCompositing)) {
     command_line.AppendSwitch(switches::kDisableGpuCompositing);
   }
