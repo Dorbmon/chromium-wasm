@@ -1102,10 +1102,16 @@ function packageRuntimeMetadata(validatedVersion, versionBytes, versionJsonSha25
 }
 
 export async function loadVersion() {
-  const response = await fetch("./VERSION.json", {cache: "no-store"});
-  if (!response.ok) {
-    throw new Error(`VERSION.json request returned HTTP ${response.status}`);
+  const versionUrl = new URL("./VERSION.json", import.meta.url);
+  const response = await fetch(versionUrl.href, {
+    cache: "no-store",
+    credentials: "same-origin",
+    redirect: "error",
+  });
+  if (!response || !response.ok || response.url !== versionUrl.href) {
+    throw new Error("VERSION.json request was not exact");
   }
+  requireArtifactResponseHeaders(response, "application/json", "VERSION.json");
   const contentLength = response.headers?.get("Content-Length");
   if (typeof contentLength !== "string" || !/^\d+$/.test(contentLength)) {
     throw new Error("VERSION.json response lacks a bounded Content-Length");

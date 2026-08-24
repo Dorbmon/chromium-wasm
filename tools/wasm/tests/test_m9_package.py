@@ -2016,7 +2016,7 @@ process.stdout.write(JSON.stringify({
             json.loads(completed.stdout),
         )
 
-    def test_release_host_rejects_unbound_executable_artifacts_before_import(
+    def test_release_host_rejects_unbound_metadata_and_executable_artifacts_before_import(
         self,
     ) -> None:
         node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
@@ -2070,7 +2070,8 @@ function responseFor(bytes, url, contentType, mutateHeaders = false) {
   if (mutateHeaders) headers["cross-origin-resource-policy"] = "cross-origin";
   return {
     ok: true,
-    url: mode === "loader-redirect" && url.endsWith("chromium-wasm.js") ?
+    url: (mode === "loader-redirect" && url.endsWith("chromium-wasm.js")) ||
+        (mode === "version-redirect" && url.endsWith("VERSION.json")) ?
         `${url}?redirected` : url,
     headers: {get(name) { return headers[String(name).toLowerCase()] || null; }},
     async arrayBuffer() {
@@ -2081,7 +2082,9 @@ function responseFor(bytes, url, contentType, mutateHeaders = false) {
 globalThis.fetch = async (input) => {
   const url = String(input);
   if (url.endsWith("VERSION.json")) {
-    return responseFor(versionBytes, url, "application/json; charset=utf-8");
+    return responseFor(
+        versionBytes, url, "application/json; charset=utf-8",
+        mode === "version-header");
   }
   if (url.endsWith("chromium-wasm.js")) {
     const bytes = mode === "loader-byte" ?
@@ -2128,7 +2131,10 @@ async function observe(nextMode) {
   }
 }
 const results = {};
-for (const entry of ["loader-byte", "wasm-byte", "loader-header", "loader-redirect"]) {
+for (const entry of [
+  "loader-byte", "wasm-byte", "loader-header", "loader-redirect",
+  "version-header", "version-redirect",
+]) {
   results[entry] = await observe(entry);
 }
 process.stdout.write(JSON.stringify(results));
@@ -2169,6 +2175,14 @@ process.stdout.write(JSON.stringify(results));
             "generated loader request was not exact",
             observed["loader-redirect"],
         )
+        self.assertIn(
+            "VERSION.json response headers are invalid",
+            observed["version-header"],
+        )
+        self.assertIn(
+            "VERSION.json request was not exact",
+            observed["version-redirect"],
+        )
 
     def test_release_host_projects_canonical_version_bytes_and_fails_without_webcrypto(
         self,
@@ -2208,13 +2222,22 @@ const versionBytes = new Uint8Array(
 const invalidVersionBytes = new Uint8Array(
     await readFile({json.dumps(str(invalid_version_path))}));
 const bomVersionBytes = new Uint8Array([0xef, 0xbb, 0xbf, ...versionBytes]);
-function responseFor(bytes) {{
+function responseFor(bytes, url) {{
+  const headers = {{
+    "cache-control": "no-store",
+    "content-length": String(bytes.byteLength),
+    "content-type": "application/json; charset=utf-8",
+    "cross-origin-embedder-policy": "require-corp",
+    "cross-origin-opener-policy": "same-origin",
+    "cross-origin-resource-policy": "same-origin",
+    "x-content-type-options": "nosniff",
+  }};
   return {{
     ok: true,
+    url,
     headers: {{
       get(name) {{
-        return String(name).toLowerCase() === "content-length" ?
-            String(bytes.byteLength) : null;
+        return headers[String(name).toLowerCase()] || null;
       }},
     }},
     async arrayBuffer() {{
@@ -2224,7 +2247,17 @@ function responseFor(bytes) {{
   }};
 }}
 let served = versionBytes;
-globalThis.fetch = async () => responseFor(served);
+let initialRequestOptions = null;
+globalThis.fetch = async (input, options) => {{
+  if (initialRequestOptions === null) {{
+    initialRequestOptions = {{
+      cache: options?.cache,
+      credentials: options?.credentials,
+      redirect: options?.redirect,
+    }};
+  }}
+  return responseFor(served, String(input));
+}};
 const {{loadVersion}} = await import({json.dumps(host.as_uri())});
 const loaded = await loadVersion();
 const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
@@ -2273,6 +2306,7 @@ process.stdout.write(JSON.stringify({{
   bom,
   noCrypto,
   noncanonical,
+  initialRequestOptions,
 }}));
 """
         completed = subprocess.run(
@@ -2286,6 +2320,14 @@ process.stdout.write(JSON.stringify({{
         )
         observed = json.loads(completed.stdout)
         self.assertEqual(expected, observed["metadata"])
+        self.assertEqual(
+            {
+                "cache": "no-store",
+                "credentials": "same-origin",
+                "redirect": "error",
+            },
+            observed["initialRequestOptions"],
+        )
         self.assertIn("WebCrypto SHA-256 is unavailable", observed["noCrypto"])
         self.assertIn("not canonical deterministic JSON", observed["noncanonical"])
         self.assertIn("not canonical deterministic JSON", observed["bom"])
