@@ -11,6 +11,14 @@ const SCOPE =
     "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
     "runtime-enable-dom-get-document-runtime-evaluate-console-event-detach-close";
 const SWITCH = "--wasm-browser-devtools-protocol-smoke";
+const PAGE_JAVASCRIPT_SEMANTICS_MODE = "page-javascript-semantics";
+const PAGE_JAVASCRIPT_SEMANTICS_CASE = "browser_page_javascript_semantics_m8";
+const PAGE_JAVASCRIPT_SEMANTICS_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-javascript-closures-classes-promise-" +
+    "microtasks-bigint-typed-arrays-console-event-detach-close";
+const PAGE_JAVASCRIPT_SEMANTICS_SWITCH =
+    "--wasm-browser-m8-page-javascript-semantics-smoke";
 const PAGE_WEBASSEMBLY_MODE = "page-webassembly";
 const PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8";
 const PAGE_WEBASSEMBLY_SCOPE =
@@ -135,6 +143,9 @@ const RUNTIME_EVALUATE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
 const PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE";
+const PAGE_JAVASCRIPT_SEMANTICS_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_SEMANTICS:" +
+    "CLOSURES_CLASSES_PROMISE_MICROTASKS_BIGINT_TYPED_ARRAYS_OK";
 const PAGE_WEBASSEMBLY_ADD42_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
@@ -200,6 +211,29 @@ const DEFAULT_SMOKE_MODE = Object.freeze({
     DOM_GET_DOCUMENT_MARKER,
     RUNTIME_EVALUATE_MARKER,
     PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE = Object.freeze({
+  id: PAGE_JAVASCRIPT_SEMANTICS_MODE,
+  queryMode: PAGE_JAVASCRIPT_SEMANTICS_MODE,
+  case: PAGE_JAVASCRIPT_SEMANTICS_CASE,
+  scope: PAGE_JAVASCRIPT_SEMANTICS_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_JAVASCRIPT_SEMANTICS_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({}),
+  ordinaryJavaScriptExpectations: Object.freeze({
+    v8ProvenanceEstablished: false,
+    pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved:
+        true,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_JAVASCRIPT_SEMANTICS_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
@@ -698,6 +732,7 @@ function markerIndex(records, marker) {
 
 function isKnownSmokeMode(smokeMode) {
   return smokeMode === DEFAULT_SMOKE_MODE ||
+      smokeMode === PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ||
@@ -746,6 +781,11 @@ function validateResult(result, smokeMode) {
     require(result[field] === expected,
         "page WebAssembly expectation mismatch: " + field);
   }
+  for (const [field, expected] of Object.entries(
+      smokeMode.ordinaryJavaScriptExpectations || {})) {
+    require(result[field] === expected,
+        "ordinary JavaScript expectation mismatch: " + field);
+  }
   require(result.runtimeConsoleApiCalledObserved === true,
       "Runtime.consoleAPICalled marker was not observed");
   require(result.detachedObserved === true, "detach marker was not observed");
@@ -775,7 +815,9 @@ function validateResult(result, smokeMode) {
   } else {
     require(false, "native stderr is not a list");
   }
-  const pageWebAssemblyMarker = smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
+  const runtimeMarker = smokeMode === PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE ?
+      PAGE_JAVASCRIPT_SEMANTICS_MARKER :
+      smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_ADD42_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_MEMORY_MARKER :
@@ -806,7 +848,7 @@ function validateResult(result, smokeMode) {
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
-              positions[pageWebAssemblyMarker] >= 0 &&
+              positions[runtimeMarker] >= 0 &&
               positions[RUNTIME_CONSOLE_API_CALLED_MARKER] >= 0 &&
               positions[DETACHED_MARKER] >= 0 &&
               positions[LIFECYCLE_PASS_MARKER] >= 0 &&
@@ -817,8 +859,8 @@ function validateResult(result, smokeMode) {
               positions[RUNTIME_ENABLE_MARKER] <
                   positions[RUNTIME_CONSOLE_API_CALLED_MARKER] &&
               positions[RUNTIME_EVALUATE_MARKER] <
-                  positions[pageWebAssemblyMarker] &&
-              positions[pageWebAssemblyMarker] <
+                  positions[runtimeMarker] &&
+              positions[runtimeMarker] <
                   positions[DETACHED_MARKER] &&
               positions[RUNTIME_CONSOLE_API_CALLED_MARKER] <
                   positions[DETACHED_MARKER] &&
@@ -857,6 +899,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #runtimeEnableObserved = false;
   #domGetDocumentObserved = false;
   #runtimeEvaluateObserved = false;
+  #pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved =
+      false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
   #pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed =
@@ -939,6 +983,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     }
     if (text.includes(RUNTIME_EVALUATE_MARKER)) {
       this.#runtimeEvaluateObserved = true;
+    }
+    if (text.includes(PAGE_JAVASCRIPT_SEMANTICS_MARKER)) {
+      this.#pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved =
+          true;
     }
     if (text.includes(PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER)) {
       this.#pageWebAssemblyUnavailableObserved = true;
@@ -1106,45 +1154,56 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   }
 
   #result(status, error) {
-    const pageWebAssemblyResult = this.#smokeMode === DEFAULT_SMOKE_MODE ? {
-      pageWebAssemblyUnavailableObserved:
-          this.#pageWebAssemblyUnavailableObserved,
-    } : {
-      pageWebAssemblyUnavailableObserved:
-          this.#pageWebAssemblyUnavailableObserved,
-      pageWebAssemblyAdd42Observed: this.#pageWebAssemblyAdd42Observed,
-      pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed:
-          this.#pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed,
-      pageWebAssemblyTablesObserved: this.#pageWebAssemblyTablesObserved,
-      pageWebAssemblyTableConstructedImportedIndirectCallObserved:
-          this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved,
-      pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved:
-          this.#pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved,
-      pageWebAssemblyTableGrowthObserved:
-          this.#pageWebAssemblyTableGrowthObserved,
-      pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved:
-          this.#pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved,
-      pageWebAssemblyMemoriesObserved: this.#pageWebAssemblyMemoriesObserved,
-      pageWebAssemblyMemoryConstructedImportedReadWriteObserved:
-          this.#pageWebAssemblyMemoryConstructedImportedReadWriteObserved,
-      pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved:
-          this.#pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved,
-      pageWebAssemblyExceptionsObserved:
-          this.#pageWebAssemblyExceptionsObserved,
-      pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved:
-          this.#pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved,
-      pageWebAssemblyMemoryGrowthObserved:
-          this.#pageWebAssemblyMemoryGrowthObserved,
-      pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved:
-          this.#pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved,
-      pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved:
-          this.#pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved,
-      pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved:
-          this.#pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved,
-      pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved:
-          this.#pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved,
-      pageWebAssemblyThreadsObserved: false,
-    };
+    let pageRuntimeResult;
+    if (this.#smokeMode === DEFAULT_SMOKE_MODE) {
+      pageRuntimeResult = {
+        pageWebAssemblyUnavailableObserved:
+            this.#pageWebAssemblyUnavailableObserved,
+      };
+    } else if (this.#smokeMode === PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE) {
+      pageRuntimeResult = {
+        v8ProvenanceEstablished: false,
+        pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved:
+            this.#pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved,
+      };
+    } else {
+      pageRuntimeResult = {
+        pageWebAssemblyUnavailableObserved:
+            this.#pageWebAssemblyUnavailableObserved,
+        pageWebAssemblyAdd42Observed: this.#pageWebAssemblyAdd42Observed,
+        pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed:
+            this.#pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed,
+        pageWebAssemblyTablesObserved: this.#pageWebAssemblyTablesObserved,
+        pageWebAssemblyTableConstructedImportedIndirectCallObserved:
+            this.#pageWebAssemblyTableConstructedImportedIndirectCallObserved,
+        pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved:
+            this.#pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved,
+        pageWebAssemblyTableGrowthObserved:
+            this.#pageWebAssemblyTableGrowthObserved,
+        pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved:
+            this.#pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved,
+        pageWebAssemblyMemoriesObserved: this.#pageWebAssemblyMemoriesObserved,
+        pageWebAssemblyMemoryConstructedImportedReadWriteObserved:
+            this.#pageWebAssemblyMemoryConstructedImportedReadWriteObserved,
+        pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved:
+            this.#pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved,
+        pageWebAssemblyExceptionsObserved:
+            this.#pageWebAssemblyExceptionsObserved,
+        pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved:
+            this.#pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved,
+        pageWebAssemblyMemoryGrowthObserved:
+            this.#pageWebAssemblyMemoryGrowthObserved,
+        pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved:
+            this.#pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved,
+        pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved:
+            this.#pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved,
+        pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved:
+            this.#pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved,
+        pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved:
+            this.#pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved,
+        pageWebAssemblyThreadsObserved: false,
+      };
+    }
     return {
       protocol: HOST_PROTOCOL,
       case: this.#smokeMode.case,
@@ -1161,7 +1220,7 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       runtimeEnableObserved: this.#runtimeEnableObserved,
       domGetDocumentObserved: this.#domGetDocumentObserved,
       runtimeEvaluateObserved: this.#runtimeEvaluateObserved,
-      ...pageWebAssemblyResult,
+      ...pageRuntimeResult,
       runtimeConsoleApiCalledObserved: this.#runtimeConsoleApiCalledObserved,
       detachedObserved: this.#detachedObserved,
       lifecyclePassObserved: this.#lifecyclePassObserved,
@@ -1293,6 +1352,9 @@ export function parseDevToolsProtocolSmokeQuery(query) {
   let smokeMode;
   if (modes.length === 0) {
     smokeMode = DEFAULT_SMOKE_MODE;
+  } else if (modes.length === 1 &&
+             modes[0] === PAGE_JAVASCRIPT_SEMANTICS_MODE) {
+    smokeMode = PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MEMORY_MODE) {
@@ -1350,6 +1412,7 @@ async function fetchExpectedSmokeMode(token) {
       binding.protocol !== HOST_PROTOCOL ||
       !Object.hasOwn(binding, "mode") || Object.keys(binding).length !== 2 ||
       (binding.mode !== DEFAULT_SMOKE_MODE.id &&
+       binding.mode !== PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE.id &&

@@ -37,6 +37,10 @@ constexpr char kRuntimeEvaluateCommand[] =
     R"json("(console.log('chromium-wasm-m8-devtools-console'),)json"
     R"json( typeof WebAssembly)","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kPageJavaScriptSemanticsRuntimeEvaluateCommand[] =
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(async()=>{const makeAdder=(base)=>value=>base+value;if(makeAdder(20)(22)!==42)throw new Error('closure result was not 42');class Counter{constructor(value){this.value=value;}add(value){return this.value+value;}}class DerivedCounter extends Counter{twice(){return this.add(this.value);}}if(new DerivedCounter(21).twice()!==42)throw new Error('class result was not 42');const microtasks=[];Promise.resolve().then(()=>microtasks.push('first')).then(()=>microtasks.push('second'));microtasks.push('sync');await Promise.resolve();await Promise.resolve();if(microtasks.join(',')!=='sync,first,second')throw new Error('Promise microtasks did not checkpoint');const bigint=9007199254740993n;if(bigint+7n!==9007199254741000n)throw new Error('BigInt result was not exact');const values=new Uint16Array([3,1,4]);values[1]=values[0]+values[2];if(values.join(',')!=='3,7,4')throw new Error('typed array result was not 3,7,4');console.log('chromium-wasm-m8-page-javascript-semantics-closures-classes-promise-microtasks-bigint-typed-arrays');return 'page-javascript-semantics-closures-classes-promise-microtasks-bigint-typed-arrays-ok';})()","returnByValue":true,)json"
+    R"json("awaitPromise":true,"allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kPageWebAssemblyRuntimeEvaluateCommand[] =
     R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
     R"json("(()=>{const b=new Uint8Array([)json"
@@ -205,6 +209,8 @@ constexpr char kPageWebAssemblyInstantiateStreamingRuntimeEvaluateCommand[] =
     R"json("awaitPromise":true,"allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kFixedDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
+constexpr char kFixedPageJavaScriptSemanticsDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20JavaScript%20semantics%20smoke";
 constexpr char kFixedPageWebAssemblyDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20smoke";
 constexpr char kFixedPageWebAssemblyMemoryDevToolsProtocolSmokeUrl[] =
@@ -240,6 +246,9 @@ constexpr char kRuntimeEvaluateSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
 constexpr char kPageWebAssemblyUnavailableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE";
+constexpr char kPageJavaScriptSemanticsSuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_SEMANTICS:"
+    "CLOSURES_CLASSES_PROMISE_MICROTASKS_BIGINT_TYPED_ARRAYS_OK";
 constexpr char kPageWebAssemblySuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
 constexpr char kPageWebAssemblyMemorySuccessMarker[] =
@@ -288,6 +297,9 @@ constexpr int kPageWebAssemblyRuntimeEvaluateCommandId = 3;
 constexpr size_t kMaximumProtocolResponseBytes = 4 * 1024;
 constexpr char kRuntimeEvaluateExpectedType[] = "string";
 constexpr char kRuntimeEvaluateExpectedValue[] = "undefined";
+constexpr char kPageJavaScriptSemanticsRuntimeEvaluateExpectedValue[] =
+    "page-javascript-semantics-closures-classes-promise-microtasks-bigint-"
+    "typed-arrays-ok";
 constexpr char kPageWebAssemblyRuntimeEvaluateExpectedValue[] =
     "wasm-add-42";
 constexpr char kPageWebAssemblyMemoryRuntimeEvaluateExpectedValue[] =
@@ -316,6 +328,9 @@ constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
 constexpr char kRuntimeConsoleApiCalledExpectedType[] = "log";
 constexpr char kRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-devtools-console";
+constexpr char kPageJavaScriptSemanticsRuntimeConsoleApiCalledExpectedValue[] =
+    "chromium-wasm-m8-page-javascript-semantics-closures-classes-promise-"
+    "microtasks-bigint-typed-arrays";
 constexpr char kPageWebAssemblyRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-page-webassembly-add-42";
 constexpr char kPageWebAssemblyMemoryRuntimeConsoleApiCalledExpectedValue[] =
@@ -363,6 +378,10 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
   if (mode ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
     return GURL(kFixedDevToolsProtocolSmokeUrl);
+  }
+  if (mode ==
+      WasmBrowserDevToolsProtocolSmokeMode::kOrdinaryJavaScriptSemantics) {
+    return GURL(kFixedPageJavaScriptSemanticsDevToolsProtocolSmokeUrl);
   }
   if (mode ==
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42) {
@@ -465,8 +484,9 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   // lifecycle-owned page root through DOM.getDocument before it evaluates
   // |typeof WebAssembly|. That expression does not enable page WebAssembly.
   // There is no frontend, pipe, socket, host ABI, or caller-provided command
-  // surface. The closed alternate expressions use only literal module bytes
-  // and fixed add, memory import/read-write, table
+  // surface. The closed alternate expressions use only a fixed ordinary-
+  // JavaScript semantic witness or literal module bytes and fixed add, memory
+  // import/read-write, table
   // import/indirect-call, table-growth, memory-growth, exception, or
   // memory.grow-opcode, table.grow-opcode, zero-payload Wasm-throw, or typed
   // Wasm-throw-payload witnesses.
@@ -586,6 +606,10 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
     expected_value = kRuntimeEvaluateExpectedValue;
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::
+                 kOrdinaryJavaScriptSemantics) {
+    expected_value = kPageJavaScriptSemanticsRuntimeEvaluateExpectedValue;
+  } else if (mode_ ==
+             WasmBrowserDevToolsProtocolSmokeMode::
                  kValidateModuleInstanceAdd42) {
     expected_value = kPageWebAssemblyRuntimeEvaluateExpectedValue;
   } else if (mode_ ==
@@ -635,6 +659,11 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
         WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
       Fail("Runtime.evaluate did not return the fixed "
            "page-WebAssembly-unavailable result");
+    }
+    if (mode_ ==
+        WasmBrowserDevToolsProtocolSmokeMode::kOrdinaryJavaScriptSemantics) {
+      Fail("Runtime.evaluate did not return the fixed page-JavaScript "
+           "semantics result");
     }
     if (mode_ ==
         WasmBrowserDevToolsProtocolSmokeMode::kMemoryImportReadWrite) {
@@ -704,6 +733,10 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
     std::fprintf(stderr, "%s\n", kPageWebAssemblyUnavailableSuccessMarker);
+  } else if (mode_ ==
+             WasmBrowserDevToolsProtocolSmokeMode::
+                 kOrdinaryJavaScriptSemantics) {
+    std::fprintf(stderr, "%s\n", kPageJavaScriptSemanticsSuccessMarker);
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::
                  kValidateModuleInstanceAdd42) {
@@ -829,6 +862,13 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
   }
   state_ = State::kEvaluatingRuntime;
   if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::kOrdinaryJavaScriptSemantics) {
+    agent_host_->DispatchProtocolMessage(
+        this, base::byte_span_from_cstring(
+                  kPageJavaScriptSemanticsRuntimeEvaluateCommand));
+    return;
+  }
+  if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42) {
     agent_host_->DispatchProtocolMessage(
         this,
@@ -952,6 +992,11 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
   if (mode_ ==
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
     expected_value = kRuntimeConsoleApiCalledExpectedValue;
+  } else if (mode_ ==
+             WasmBrowserDevToolsProtocolSmokeMode::
+                 kOrdinaryJavaScriptSemantics) {
+    expected_value =
+        kPageJavaScriptSemanticsRuntimeConsoleApiCalledExpectedValue;
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::
                  kValidateModuleInstanceAdd42) {

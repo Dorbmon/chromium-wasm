@@ -29,6 +29,7 @@ namespace chrome {
 // Runtime.evaluate command defined in the implementation.
 enum class WasmBrowserDevToolsProtocolSmokeMode {
   kPageWebAssemblyUnavailable,
+  kOrdinaryJavaScriptSemantics,
   kValidateModuleInstanceAdd42,
   kMemoryImportReadWrite,
   kTableImportIndirectCall,
@@ -52,9 +53,9 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // A switch-gated, direct DevToolsAgentHost client used only to prove that the
 // active Wasm Browser tab can accept fixed protocol requests. The unavailable
 // page-WebAssembly boundary additionally obtains the root DOM document through
-// DOM.getDocument before it evaluates its one literal expression. Alternate
-// page-WebAssembly modes retain their narrower Network.enable, Runtime.enable,
-// and Runtime.evaluate exchange.
+// DOM.getDocument before it evaluates its one literal expression. The separate
+// ordinary-JavaScript semantics mode and alternate page-WebAssembly modes retain
+// their narrower Network.enable, Runtime.enable, and Runtime.evaluate exchange.
 // It also accepts one exact console event produced by that expression. This is
 // deliberately not a DevTools frontend or a protocol transport: it accepts
 // only those fixed successful responses and the one event and forwards no
@@ -63,7 +64,11 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // "undefined" in this disabled configuration; it does not construct, compile,
 // or otherwise exercise page WebAssembly. The separate closed page-WebAssembly
 // mode is limited to one literal 41-byte module and its fixed add(20, 22)
-// result. A second closed page-WebAssembly mode imports one fixed one-page
+// result. The closed ordinary-JavaScript semantics mode awaits one literal
+// expression that checks a lexical closure, class inheritance, a two-checkpoint
+// Promise microtask sequence, BigInt arithmetic, and one Uint16Array mutation.
+// It does not inspect WebAssembly or establish feature compatibility. A second
+// closed page-WebAssembly mode imports one fixed one-page
 // memory and witnesses JavaScript-to-Wasm and Wasm-to-JavaScript reads and
 // writes without exercising growth, tables, exceptions, or threads. A third
 // closed page-WebAssembly mode imports one fixed, non-growable table,

@@ -1214,6 +1214,11 @@ void WasmBrowserLifecycle::StartDevToolsProtocolSmoke() {
       WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable);
 }
 
+void WasmBrowserLifecycle::StartPageJavaScriptSemanticsDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::kOrdinaryJavaScriptSemantics);
+}
+
 void WasmBrowserLifecycle::StartPageWebAssemblyDevToolsProtocolSmoke() {
   StartDevToolsProtocolSmokeInternal(
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
