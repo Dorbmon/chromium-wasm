@@ -10,11 +10,12 @@
 // or infer worker utilization, saturation, or long-run behavior.
 
 const HOST_PROTOCOL = 1;
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const CASE = "chrome_wasm_m9_measurement_baseline";
 const PRODUCT_MODULE_NAME = "chrome_wasm";
 const SCOPE = "one-fresh-host-run-cold-loader-runtime-frame-wasm-buffer-capacity-" +
-    "native-memory-snapshot-first-pthread-worker-bootstrap-event-delivery";
+    "native-memory-snapshot-first-pthread-worker-bootstrap-event-delivery-" +
+    "canvas2d-pixel-witness";
 const RELEASE_STATUS = "pre_m7_m8_not_releasable";
 const MAX_TIMEOUT_MS = 120000;
 const MIN_TIMEOUT_MS = 10000;
@@ -37,11 +38,21 @@ const WORKER_OBSERVATION_DEFINITION =
     "matched pthread Worker main-thread observed construction-to-loaded-control-" +
     "message bootstrap/event-delivery latency; not worker CPU utilization, " +
     "saturation, drain, or internal execution";
+const CANVAS_PIXEL_WITNESS_GRID_COLUMNS = 8;
+const CANVAS_PIXEL_WITNESS_GRID_ROWS = 8;
+const CANVAS_PIXEL_WITNESS_DEFINITION =
+    "fixed 8x8 Canvas2D backing-store RGB sampling after the first reportFrame " +
+    "following its synchronous ImageData copy; visible_pixels_observed means " +
+    "at least one nonblack sampled RGB value, not first visually nonempty " +
+    "paint, raster, compositor, display, or vsync evidence";
 const MEASUREMENT_LIMITS = Object.freeze([
   "observational pre-release baseline only; not a performance gate",
   "one sample only; no cross-run performance inference or benchmark claim",
   "frame timing is the host callback after synchronous Canvas2D " +
       "ImageData copy; not raster, compositor, or vsync presentation timing",
+  "Canvas2D pixel witness samples only a fixed backing-store RGB grid after " +
+      "the first frame copy; it is not first visually nonempty paint, raster, " +
+      "compositor, display, or vsync evidence",
   "HEAPU8.buffer.byteLength is Wasm buffer capacity, not allocated or " +
       "resident memory usage",
   "native memory counters distinguish Wasm capacity/maximum/headroom from " +
@@ -92,6 +103,56 @@ function focusReport(value) {
       value.protocol === HOST_PROTOCOL &&
       typeof value.keyboardTargetPresent === "boolean" &&
       typeof value.active === "boolean";
+}
+
+// Samples the Canvas2D backing store after the platform's synchronous frame
+// copy. This intentionally retains only bounded aggregate RGB evidence: it
+// does not retain page pixels or infer what the browser compositor displayed.
+export function canvasPixelWitness(canvas) {
+  if (!canvas || !positiveInteger(canvas.width) ||
+      !positiveInteger(canvas.height) ||
+      canvas.width > MAX_FRAME_DIMENSION ||
+      canvas.height > MAX_FRAME_DIMENSION ||
+      typeof canvas.getContext !== "function") {
+    throw new Error("Canvas2D pixel witness requires a bounded canvas");
+  }
+  const context = canvas.getContext("2d", {willReadFrequently: true});
+  if (!context || typeof context.getImageData !== "function") {
+    throw new Error("Canvas2D pixel witness requires a readable 2D context");
+  }
+
+  const distinctRgbValues = new Set();
+  let nonblackRgbSampleCount = 0;
+  for (let row = 0; row < CANVAS_PIXEL_WITNESS_GRID_ROWS; ++row) {
+    const y = Math.min(canvas.height - 1, Math.floor(
+        (row + 0.5) * canvas.height / CANVAS_PIXEL_WITNESS_GRID_ROWS));
+    for (let column = 0; column < CANVAS_PIXEL_WITNESS_GRID_COLUMNS; ++column) {
+      const x = Math.min(canvas.width - 1, Math.floor(
+          (column + 0.5) * canvas.width / CANVAS_PIXEL_WITNESS_GRID_COLUMNS));
+      const imageData = context.getImageData(x, y, 1, 1);
+      if (!imageData || !(imageData.data instanceof Uint8ClampedArray) ||
+          imageData.data.length !== 4) {
+        throw new Error("Canvas2D pixel witness returned malformed pixel data");
+      }
+      const rgb = (imageData.data[0] << 16) |
+          (imageData.data[1] << 8) | imageData.data[2];
+      distinctRgbValues.add(rgb);
+      if (rgb !== 0) {
+        nonblackRgbSampleCount += 1;
+      }
+    }
+  }
+  const sampleCount = CANVAS_PIXEL_WITNESS_GRID_COLUMNS *
+      CANVAS_PIXEL_WITNESS_GRID_ROWS;
+  return Object.freeze({
+    definition: CANVAS_PIXEL_WITNESS_DEFINITION,
+    distinct_rgb_value_count: distinctRgbValues.size,
+    non_black_rgb_sample_count: nonblackRgbSampleCount,
+    sample_count: sampleCount,
+    sample_grid_columns: CANVAS_PIXEL_WITNESS_GRID_COLUMNS,
+    sample_grid_rows: CANVAS_PIXEL_WITNESS_GRID_ROWS,
+    visible_pixels_observed: nonblackRgbSampleCount !== 0,
+  });
 }
 
 function wasmHeapBufferCapacitySnapshot(module) {
@@ -285,6 +346,7 @@ class ChromiumWasmM9MeasurementHost {
   #workerObservation = new WorkerObservation();
   #module = null;
   #firstFrame = null;
+  #canvasPixelWitness = null;
   #readiness = {
     firstVisuallyNonEmptyPaint: false,
     shellReady: false,
@@ -484,6 +546,13 @@ class ChromiumWasmM9MeasurementHost {
     // synchronous Canvas2D ImageData copy/putImageData work has returned.
     // This is not a claim about raster, compositor, display, or vsync timing.
     this.#setTiming("first_frame_callback_after_canvas_copy");
+    try {
+      this.#canvasPixelWitness = canvasPixelWitness(this.#canvas);
+    } catch (error) {
+      this.#fail(`Canvas2D pixel witness after first frame copy failed: ` +
+          boundedFailure(error));
+      return;
+    }
     this.#firstFrame = Object.freeze({
       chromium_timestamp_ms: report.timestampMs,
       height: report.height,
@@ -762,6 +831,7 @@ class ChromiumWasmM9MeasurementHost {
             runtimeCapacity.wasm_heap_buffer_capacity_bytes : null;
     return {
       case: CASE,
+      canvas_pixel_witness: this.#canvasPixelWitness,
       cold_start_definition: COLD_START_DEFINITION,
       durations_ms: {
         factory_call_to_runtime_initialized: timingDelta(

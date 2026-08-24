@@ -91,11 +91,12 @@ else:
 
 
 SENTINEL = "CHROMIUM_WASM_M9_BASELINE"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CASE = "chrome_wasm_m9_measurement_baseline"
 SCOPE = (
     "one-fresh-host-run-cold-loader-runtime-frame-wasm-buffer-capacity-"
-    "native-memory-snapshot-first-pthread-worker-bootstrap-event-delivery"
+    "native-memory-snapshot-first-pthread-worker-bootstrap-event-delivery-"
+    "canvas2d-pixel-witness"
 )
 BASELINE_KIND = "pre-release-m9-measurement-baseline"
 RELEASE_STATUS = "pre_m7_m8_not_releasable"
@@ -138,12 +139,25 @@ WORKER_OBSERVATION_DEFINITION = (
     "message bootstrap/event-delivery latency; not worker CPU utilization, "
     "saturation, drain, or internal execution"
 )
+CANVAS_PIXEL_WITNESS_GRID_COLUMNS = 8
+CANVAS_PIXEL_WITNESS_GRID_ROWS = 8
+CANVAS_PIXEL_WITNESS_DEFINITION = (
+    "fixed 8x8 Canvas2D backing-store RGB sampling after the first reportFrame "
+    "following its synchronous ImageData copy; visible_pixels_observed means "
+    "at least one nonblack sampled RGB value, not first visually nonempty "
+    "paint, raster, compositor, display, or vsync evidence"
+)
 SAMPLE_MEASUREMENT_LIMITS = (
     "observational pre-release baseline only; not a performance gate",
     "one sample only; no cross-run performance inference or benchmark claim",
     (
         "frame timing is the host callback after synchronous Canvas2D "
         "ImageData copy; not raster, compositor, or vsync presentation timing"
+    ),
+    (
+        "Canvas2D pixel witness samples only a fixed backing-store RGB grid after "
+        "the first frame copy; it is not first visually nonempty paint, raster, "
+        "compositor, display, or vsync evidence"
     ),
     (
         "HEAPU8.buffer.byteLength is Wasm buffer capacity, not allocated or "
@@ -217,6 +231,7 @@ _REQUIRED_DURATION_FIELDS = (
 _SNAPSHOT_FIELDS = frozenset(
     (
         "case",
+        "canvas_pixel_witness",
         "cold_start_definition",
         "durations_ms",
         "failure",
@@ -299,6 +314,17 @@ _FRAME_FIELDS = frozenset(
         "host_callback_after_canvas_copy_ms",
         "id",
         "width",
+    )
+)
+_CANVAS_PIXEL_WITNESS_FIELDS = frozenset(
+    (
+        "definition",
+        "distinct_rgb_value_count",
+        "non_black_rgb_sample_count",
+        "sample_count",
+        "sample_grid_columns",
+        "sample_grid_rows",
+        "visible_pixels_observed",
     )
 )
 _WORKER_OBSERVATION_FIELDS = frozenset(
@@ -674,6 +700,76 @@ def _validate_wasm_heap_buffer_capacity_snapshot(
     )
 
 
+def _validate_canvas_pixel_witness(value: object) -> None:
+    witness = _require_exact_fields(
+        value, _CANVAS_PIXEL_WITNESS_FIELDS, "Canvas2D pixel witness"
+    )
+    if witness.get("definition") != CANVAS_PIXEL_WITNESS_DEFINITION:
+        raise M0Error(
+            "M9 measurement Canvas2D pixel witness definition is invalid"
+        )
+    columns = _require_integer(
+        witness.get("sample_grid_columns"),
+        "Canvas2D pixel witness grid columns",
+        minimum=1,
+    )
+    rows = _require_integer(
+        witness.get("sample_grid_rows"),
+        "Canvas2D pixel witness grid rows",
+        minimum=1,
+    )
+    if (columns != CANVAS_PIXEL_WITNESS_GRID_COLUMNS or
+            rows != CANVAS_PIXEL_WITNESS_GRID_ROWS):
+        raise M0Error("M9 measurement Canvas2D pixel witness grid is invalid")
+    sample_count = _require_integer(
+        witness.get("sample_count"),
+        "Canvas2D pixel witness sample count",
+        minimum=1,
+    )
+    if sample_count != columns * rows:
+        raise M0Error(
+            "M9 measurement Canvas2D pixel witness sample count disagrees with "
+            "its grid"
+        )
+    nonblack_count = _require_integer(
+        witness.get("non_black_rgb_sample_count"),
+        "Canvas2D pixel witness nonblack RGB sample count",
+    )
+    distinct_count = _require_integer(
+        witness.get("distinct_rgb_value_count"),
+        "Canvas2D pixel witness distinct RGB value count",
+        minimum=1,
+    )
+    if nonblack_count > sample_count:
+        raise M0Error(
+            "M9 measurement Canvas2D pixel witness nonblack RGB sample count "
+            "exceeds its grid"
+        )
+    if distinct_count > sample_count:
+        raise M0Error(
+            "M9 measurement Canvas2D pixel witness distinct RGB value count "
+            "exceeds its grid"
+        )
+    minimum_distinct_count = 2 if 0 < nonblack_count < sample_count else 1
+    maximum_distinct_count = nonblack_count + (
+        1 if nonblack_count < sample_count else 0
+    )
+    if not minimum_distinct_count <= distinct_count <= maximum_distinct_count:
+        raise M0Error(
+            "M9 measurement Canvas2D pixel witness distinct RGB value count "
+            "disagrees with sampled RGB counts"
+        )
+    visible = _require_boolean(
+        witness.get("visible_pixels_observed"),
+        "Canvas2D pixel witness visible-pixels flag",
+    )
+    if visible != (nonblack_count != 0):
+        raise M0Error(
+            "M9 measurement Canvas2D pixel witness visible-pixels flag disagrees "
+            "with sampled RGB values"
+        )
+
+
 def _validate_native_memory_snapshot_point(
     value: object, description: str
 ) -> dict[str, int]:
@@ -886,6 +982,8 @@ def validate_measurement_snapshot(snapshot: dict[str, Any]) -> None:
         raise M0Error(
             "M9 measurement first frame does not match its host-copy callback timing"
         )
+
+    _validate_canvas_pixel_witness(snapshot["canvas_pixel_witness"])
 
     lifecycle = _require_exact_fields(
         snapshot["lifecycle"], _LIFECYCLE_FIELDS, "lifecycle"

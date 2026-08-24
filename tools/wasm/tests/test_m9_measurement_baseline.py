@@ -70,6 +70,22 @@ def first_matched_pthread_worker_startup(
     }
 
 
+def canvas_pixel_witness(
+    *, nonblack_rgb_sample_count: int = 0, distinct_rgb_value_count: int = 1
+) -> dict[str, object]:
+    columns = baseline.CANVAS_PIXEL_WITNESS_GRID_COLUMNS
+    rows = baseline.CANVAS_PIXEL_WITNESS_GRID_ROWS
+    return {
+        "definition": baseline.CANVAS_PIXEL_WITNESS_DEFINITION,
+        "distinct_rgb_value_count": distinct_rgb_value_count,
+        "non_black_rgb_sample_count": nonblack_rgb_sample_count,
+        "sample_count": columns * rows,
+        "sample_grid_columns": columns,
+        "sample_grid_rows": rows,
+        "visible_pixels_observed": nonblack_rgb_sample_count != 0,
+    }
+
+
 def passing_snapshot() -> dict[str, object]:
     timing = {
         "host_module_evaluated": 1.0,
@@ -96,6 +112,7 @@ def passing_snapshot() -> dict[str, object]:
     }
     return {
         "case": baseline.CASE,
+        "canvas_pixel_witness": canvas_pixel_witness(),
         "cold_start_definition": baseline.COLD_START_DEFINITION,
         "durations_ms": durations,
         "failure": None,
@@ -880,6 +897,7 @@ class M9MeasurementValidationTest(unittest.TestCase):
             ("timing_ms", "runtime_exit"),
             ("lifecycle", "fatal_error_count"),
             ("lifecycle", "process_exit_code"),
+            ("canvas_pixel_witness", "sample_count"),
             ("native_memory_snapshot", "at_pre_shutdown"),
             ("wasm_heap_buffer_capacity", "at_runtime_exit"),
             ("worker_observation", "at_runtime_exit"),
@@ -899,6 +917,50 @@ class M9MeasurementValidationTest(unittest.TestCase):
 
         sample = passing_snapshot()
         sample["native_memory_snapshot"]["unbounded_rss_bytes"] = 1  # type: ignore[index]
+        with self.assertRaisesRegex(M0Error, "schema mismatch"):
+            baseline.validate_measurement_snapshot(sample)
+
+    def test_accepts_canvas_backing_store_observation_without_gate_claim(self) -> None:
+        sample = passing_snapshot()
+        sample["canvas_pixel_witness"] = canvas_pixel_witness(
+            nonblack_rgb_sample_count=1, distinct_rgb_value_count=2
+        )
+        baseline.validate_measurement_snapshot(sample)
+        self.assertFalse(sample["m9_gate_complete"])
+        self.assertFalse(sample["performance_gate"])
+
+    def test_rejects_malformed_canvas_pixel_witness(self) -> None:
+        cases = (
+            ("definition", "not-the-backing-store-definition", "definition is invalid"),
+            ("sample_grid_columns", 7, "grid is invalid"),
+            ("sample_count", 63, "sample count disagrees"),
+            ("non_black_rgb_sample_count", 65, "nonblack RGB sample count exceeds"),
+            ("distinct_rgb_value_count", 65, "distinct RGB value count exceeds"),
+            (
+                "distinct_rgb_value_count",
+                2,
+                "distinct RGB value count disagrees with sampled RGB counts",
+            ),
+            ("visible_pixels_observed", True, "visible-pixels flag disagrees"),
+        )
+        for field, value, error in cases:
+            with self.subTest(field=field):
+                sample = passing_snapshot()
+                sample["canvas_pixel_witness"][field] = value  # type: ignore[index]
+                with self.assertRaisesRegex(M0Error, error):
+                    baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample["canvas_pixel_witness"] = canvas_pixel_witness(
+            nonblack_rgb_sample_count=1, distinct_rgb_value_count=1
+        )
+        with self.assertRaisesRegex(
+            M0Error, "distinct RGB value count disagrees with sampled RGB counts"
+        ):
+            baseline.validate_measurement_snapshot(sample)
+
+        sample = passing_snapshot()
+        sample["canvas_pixel_witness"]["unexpected"] = 1  # type: ignore[index]
         with self.assertRaisesRegex(M0Error, "schema mismatch"):
             baseline.validate_measurement_snapshot(sample)
 
@@ -1616,6 +1678,10 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
             "observational M9 baseline, not a benchmark or a release gate",
             "mainScriptUrlOrBlob",
             "first_frame_callback_after_canvas_copy",
+            "canvasPixelWitness",
+            "Canvas2D backing-store RGB sampling",
+            "visible_pixels_observed",
+            "getImageData",
             "SharedArrayBuffer",
             "new Proxy(nativeWorker",
             'event?.data?.cmd === "loaded"',
@@ -1643,6 +1709,7 @@ class M9MeasurementSourceContractTest(unittest.TestCase):
             'BASELINE_KIND = "pre-release-m9-measurement-baseline"',
             "create_measurement_server",
             "validate_measurement_snapshot",
+            "_validate_canvas_pixel_witness",
             "validate_baseline_result",
             "_FIRST_MATCHED_PTHREAD_WORKER_STARTUP_FIELDS",
             "artifact_source_provenance",
@@ -1803,6 +1870,49 @@ process.stdout.write(JSON.stringify({{valid, missing, malformed, unaligned, maxi
         self.assertIn("exact nonnegative", observed["malformed"])
         self.assertIn("not Wasm-page aligned", observed["unaligned"])
         self.assertIn("maximum is below", observed["maximum"])
+
+    def test_canvas_pixel_witness_counts_only_bounded_backing_store_samples(
+        self,
+    ) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+        host = REPO_ROOT / "tools/wasm/host/chrome_wasm_m9_measurement_host.js"
+        script = f"""
+const {{canvasPixelWitness}} = await import({json.dumps(host.as_uri())});
+let samples = 0;
+const canvas = {{
+  width: 8,
+  height: 8,
+  getContext() {{
+    return {{
+      getImageData(x, y, width, height) {{
+        if (width !== 1 || height !== 1) throw new Error("unexpected sample size");
+        samples += 1;
+        return {{data: new Uint8ClampedArray(x === 7 && y === 7 ?
+            [4, 5, 6, 255] : [0, 0, 0, 255])}};
+      }},
+    }};
+  }},
+}};
+const witness = canvasPixelWitness(canvas);
+process.stdout.write(JSON.stringify({{samples, witness}}));
+"""
+        completed = subprocess.run(
+            [str(node), "--input-type=module", "--eval", script],
+            capture_output=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stdout + completed.stderr
+        )
+        observed = json.loads(completed.stdout)
+        self.assertEqual(64, observed["samples"])
+        self.assertEqual(64, observed["witness"]["sample_count"])
+        self.assertEqual(1, observed["witness"]["non_black_rgb_sample_count"])
+        self.assertEqual(2, observed["witness"]["distinct_rgb_value_count"])
+        self.assertTrue(observed["witness"]["visible_pixels_observed"])
 
     def test_host_javascript_parses_when_node_is_available(self) -> None:
         node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
