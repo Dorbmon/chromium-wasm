@@ -22,6 +22,7 @@ import unittest
 from copy import deepcopy
 from typing import Callable
 from unittest import mock
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from tools.wasm import package
@@ -44,6 +45,13 @@ def _runtime_core_resource_receipt() -> list[dict[str, str]]:
     return [
         {"initiator_type": initiator_type, "path": path}
         for path, initiator_type in package_browser_smoke.RUNTIME_CORE_RESOURCE_RECEIPT
+    ]
+
+
+def _runtime_core_server_receipt() -> list[dict[str, object]]:
+    return [
+        {"path": path, "successful_get_count": 1}
+        for path, _initiator in package_browser_smoke.RUNTIME_CORE_RESOURCE_RECEIPT
     ]
 
 
@@ -1467,6 +1475,109 @@ class M9PackageTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_epoch_route_serves_unchanged_snapshot_and_records_successful_gets(
+        self,
+    ) -> None:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind(("127.0.0.1", 0))
+        except PermissionError:
+            self.skipTest("test sandbox does not permit loopback socket binding")
+
+        dist_dir = self._stage()
+        expected_loader = (dist_dir / "chromium-wasm.js").read_bytes()
+        server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
+        epoch = "epoch_token-1"
+        route = server.register_epoch_route(epoch)
+        self.assertEqual(
+            f"{package_smoke.EPOCH_ROUTE_PREFIX}{epoch}/", route
+        )
+        self.assertEqual(
+            (None, "/chromium-wasm.js"),
+            server.resolve_epoch_scoped_request_path("/chromium-wasm.js"),
+        )
+        self.assertEqual(
+            (epoch, "/"), server.resolve_epoch_scoped_request_path(route)
+        )
+        self.assertEqual(
+            (epoch, "/chromium-wasm.js"),
+            server.resolve_epoch_scoped_request_path(route + "chromium-wasm.js"),
+        )
+        for unsafe_path in (
+            f"{package_smoke.EPOCH_ROUTE_PREFIX}unregistered/",
+            f"{route}../VERSION.json",
+            f"{route}%2e%2e/VERSION.json",
+            f"{route}/VERSION.json",
+            f"{package_smoke.EPOCH_ROUTE_PREFIX}{epoch}",
+        ):
+            with self.subTest(unsafe_path=unsafe_path):
+                self.assertEqual(
+                    (None, None),
+                    server.resolve_epoch_scoped_request_path(unsafe_path),
+                )
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = server.server_address[:2]
+            with urlopen(
+                f"http://{host}:{port}/chromium-wasm.js", timeout=10
+            ) as response:
+                self.assertEqual(200, response.status)
+                self.assertEqual(expected_loader, response.read())
+            with urlopen(
+                f"http://{host}:{port}{route}chromium-wasm.js", timeout=10
+            ) as response:
+                self.assertEqual(200, response.status)
+                self.assertEqual(expected_loader, response.read())
+                self.assertEqual("no-store", response.headers.get("Cache-Control"))
+                for name, value in package.REQUIRED_HEADERS.items():
+                    self.assertEqual(value, response.headers.get(name))
+            with self.assertRaises(HTTPError) as error:
+                urlopen(
+                    f"http://{host}:{port}"
+                    f"{package_smoke.EPOCH_ROUTE_PREFIX}unregistered/"
+                    "chromium-wasm.js",
+                    timeout=10,
+                )
+            self.assertEqual(404, error.exception.code)
+            error.exception.close()
+            self.assertEqual(
+                {"/chromium-wasm.js": 1},
+                server.epoch_successful_get_counts(epoch),
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            server.join_request_handlers(
+                timeout=5, description="M9 epoch-route package server"
+            )
+
+    def test_epoch_route_rejects_reused_invalid_and_unbounded_receipts(self) -> None:
+        server = create_package_smoke_server("127.0.0.1", 0, self._stage())
+        try:
+            for token in ("", "contains/slash", "contains space", "x" * 97):
+                with self.subTest(token=token), self.assertRaisesRegex(
+                    M0Error, "route token is invalid"
+                ):
+                    server.register_epoch_route(token)
+            server.register_epoch_route("one")
+            with self.assertRaisesRegex(M0Error, "token was reused"):
+                server.register_epoch_route("one")
+            server.register_epoch_route("two")
+            server.register_epoch_route("three")
+            with self.assertRaisesRegex(M0Error, "route count exceeds"):
+                server.register_epoch_route("four")
+            for _ in range(package_smoke.MAX_EPOCH_SUCCESSFUL_GETS + 1):
+                server.record_epoch_successful_get("one", "/chromium-wasm.js")
+            with self.assertRaisesRegex(M0Error, "receipt exceeded its bound"):
+                server.epoch_successful_get_counts("one")
+            with self.assertRaisesRegex(M0Error, "route is not registered"):
+                server.epoch_successful_get_counts("missing")
+        finally:
+            server.server_close()
 
     def test_package_browser_metadata_uses_immutable_server_version_snapshot(
         self,
@@ -3170,6 +3281,79 @@ process.stdout.write(JSON.stringify(results));
                     invalid_url
                 )
 
+    def test_runtime_core_server_receipt_requires_exact_successful_gets(self) -> None:
+        receipt = _runtime_core_server_receipt()
+        self.assertEqual(
+            receipt,
+            package_browser_smoke.validate_runtime_core_server_receipt(receipt),
+        )
+        missing = deepcopy(receipt)
+        missing.pop()
+        wrong_path = deepcopy(receipt)
+        wrong_path[1]["path"] = "forged-resource.js"
+        repeated_get = deepcopy(receipt)
+        repeated_get[2]["successful_get_count"] = 2
+        bool_get = deepcopy(receipt)
+        bool_get[3]["successful_get_count"] = True
+        malformed = deepcopy(receipt)
+        malformed[0].pop("successful_get_count")
+        for name, value, message in (
+            ("missing", missing, "is incomplete"),
+            ("wrong path", wrong_path, "path is invalid"),
+            ("repeated GET", repeated_get, "successful GET count is invalid"),
+            ("boolean GET", bool_get, "successful GET count is invalid"),
+            ("malformed", malformed, "is malformed"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(M0Error, message):
+                package_browser_smoke.validate_runtime_core_server_receipt(value)
+
+    def test_epoch_document_url_and_server_receipt_bind_one_token(self) -> None:
+        epoch = "server_receipt-token"
+        server = mock.Mock()
+        server.register_epoch_route.return_value = (
+            f"{package_smoke.EPOCH_ROUTE_PREFIX}{epoch}/"
+        )
+        server.epoch_successful_get_counts.return_value = {
+            "/": 1,
+            **{
+                f"/{path}": 1
+                for path, _initiator in (
+                    package_browser_smoke.RUNTIME_CORE_RESOURCE_RECEIPT
+                )
+            },
+        }
+        self.assertEqual(
+            (
+                "http://127.0.0.1:32123"
+                f"{package_smoke.EPOCH_ROUTE_PREFIX}{epoch}/"
+                f"?m9_package_epoch={epoch}"
+            ),
+            package_browser_smoke._register_epoch_document_url(
+                server, "http://127.0.0.1:32123/", epoch
+            ),
+        )
+        server.register_epoch_route.assert_called_once_with(epoch)
+        self.assertEqual(
+            _runtime_core_server_receipt(),
+            package_browser_smoke._capture_runtime_core_server_receipt(
+                server, epoch=epoch
+            ),
+        )
+        server.epoch_successful_get_counts.assert_called_once_with(epoch)
+
+        server.register_epoch_route.return_value = "/unexpected/"
+        with self.assertRaisesRegex(M0Error, "epoch route is invalid"):
+            package_browser_smoke._register_epoch_document_url(
+                server, "http://127.0.0.1:32123/", epoch
+            )
+        server.epoch_successful_get_counts.return_value = {
+            "/chromium-wasm-host.js": 0
+        }
+        with self.assertRaisesRegex(M0Error, "server receipt"):
+            package_browser_smoke._capture_runtime_core_server_receipt(
+                server, epoch=epoch
+            )
+
     def test_package_browser_default_result_remains_one_clean_epoch(self) -> None:
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
@@ -3791,6 +3975,11 @@ process.stdout.write(JSON.stringify(results));
         server = mock.Mock()
         server.server_address = ("127.0.0.1", 32123)
         server.snapshot = snapshot_package_tree(self._stage())
+        server.register_epoch_route.side_effect = [
+            f"{package_smoke.EPOCH_ROUTE_PREFIX}first-epoch/",
+            f"{package_smoke.EPOCH_ROUTE_PREFIX}second-epoch/",
+            f"{package_smoke.EPOCH_ROUTE_PREFIX}third-epoch/",
+        ]
         expected_metadata = package.package_runtime_status_metadata(
             server.snapshot.artifacts["VERSION.json"]
         )
@@ -3821,6 +4010,7 @@ process.stdout.write(JSON.stringify(results));
             "processExitCode": 0,
         }
         receipt = _runtime_core_resource_receipt()
+        server_receipt = _runtime_core_server_receipt()
 
         with (
             mock.patch.object(
@@ -3895,6 +4085,15 @@ process.stdout.write(JSON.stringify(results));
             ) as capture_resource_receipt,
             mock.patch.object(
                 package_browser_smoke,
+                "_capture_runtime_core_server_receipt",
+                side_effect=[
+                    deepcopy(server_receipt),
+                    deepcopy(server_receipt),
+                    deepcopy(server_receipt),
+                ],
+            ) as capture_server_receipt,
+            mock.patch.object(
+                package_browser_smoke,
                 "_observe_post_exit_frame_quiescence",
             ) as observe_quiescence,
         ):
@@ -3919,6 +4118,7 @@ process.stdout.write(JSON.stringify(results));
                         "post_exit_frame_quiescent": True,
                         "process_exit_code": 0,
                         "runtime_core_resource_receipt": receipt,
+                        "runtime_core_server_receipt": server_receipt,
                         "runtime_exit_code": 0,
                         "shutdown_disabled": True,
                         "shutdown_requested": True,
@@ -3928,6 +4128,7 @@ process.stdout.write(JSON.stringify(results));
                         "post_exit_frame_quiescent": True,
                         "process_exit_code": 0,
                         "runtime_core_resource_receipt": receipt,
+                        "runtime_core_server_receipt": server_receipt,
                         "runtime_exit_code": 0,
                         "shutdown_disabled": True,
                         "shutdown_requested": True,
@@ -3937,6 +4138,7 @@ process.stdout.write(JSON.stringify(results));
                         "post_exit_frame_quiescent": True,
                         "process_exit_code": 0,
                         "runtime_core_resource_receipt": receipt,
+                        "runtime_core_server_receipt": server_receipt,
                         "runtime_exit_code": 0,
                         "shutdown_disabled": True,
                         "shutdown_requested": True,
@@ -3966,23 +4168,45 @@ process.stdout.write(JSON.stringify(results));
                 mock.call(
                     first_client,
                     expected_url=(
-                        "http://127.0.0.1:32123/?m9_package_epoch=first-epoch"
+                        "http://127.0.0.1:32123"
+                        f"{package_smoke.EPOCH_ROUTE_PREFIX}first-epoch/"
+                        "?m9_package_epoch=first-epoch"
                     ),
                 ),
                 mock.call(
                     second_client,
                     expected_url=(
-                        "http://127.0.0.1:32123/?m9_package_epoch=second-epoch"
+                        "http://127.0.0.1:32123"
+                        f"{package_smoke.EPOCH_ROUTE_PREFIX}second-epoch/"
+                        "?m9_package_epoch=second-epoch"
                     ),
                 ),
                 mock.call(
                     third_client,
                     expected_url=(
-                        "http://127.0.0.1:32123/?m9_package_epoch=third-epoch"
+                        "http://127.0.0.1:32123"
+                        f"{package_smoke.EPOCH_ROUTE_PREFIX}third-epoch/"
+                        "?m9_package_epoch=third-epoch"
                     ),
                 ),
             ],
             capture_resource_receipt.call_args_list,
+        )
+        self.assertEqual(
+            [
+                mock.call(server, epoch="first-epoch"),
+                mock.call(server, epoch="second-epoch"),
+                mock.call(server, epoch="third-epoch"),
+            ],
+            capture_server_receipt.call_args_list,
+        )
+        self.assertEqual(
+            [
+                mock.call("first-epoch"),
+                mock.call("second-epoch"),
+                mock.call("third-epoch"),
+            ],
+            server.register_epoch_route.call_args_list,
         )
         self.assertEqual(
             [False, False, False],

@@ -46,7 +46,10 @@ if __package__:
         stop_browser_group,
     )
     from .m9_server_cleanup import shutdown_server_bounded
-    from .run_m9_package_smoke import create_package_smoke_server
+    from .run_m9_package_smoke import (
+        EPOCH_ROUTE_PREFIX,
+        create_package_smoke_server,
+    )
 else:
     import package as package_tool
 
@@ -62,7 +65,7 @@ else:
         stop_browser_group,
     )
     from m9_server_cleanup import shutdown_server_bounded
-    from run_m9_package_smoke import create_package_smoke_server
+    from run_m9_package_smoke import EPOCH_ROUTE_PREFIX, create_package_smoke_server
 
 
 SENTINEL = "CHROMIUM_WASM_M9_PACKAGE"
@@ -86,12 +89,14 @@ POST_EXIT_FRAME_QUIESCENCE_SECONDS = 0.1
 MAX_OUTER_DOCUMENT_RESTARTS = OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
 OUTER_DOCUMENT_RELOAD_STRESS_SCOPE = (
     "real-browser-package-three-outer-document-epochs-loader-pthread-bootstrap-"
-    "runtime-core-resource-receipt-and-host-shutdown-only"
+    "runtime-core-resource-timing-and-local-server-receipt-and-host-shutdown-only"
 )
 OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS = (
     "fixed-three-epoch-outer-document-reload-observation-only",
     "fixed-100ms-post-exit-host-frame-quiescence-only",
-    "does_not_measure_resource-transfer-bytes-http-caching-or-external-delivery",
+    "local-server-receipt-uses-only-an-immutable-same-origin-test-route-with-"
+    "cache-control-no-store",
+    "does_not_measure_resource-transfer-bytes-general-http-caching-or-external-delivery",
     "does_not_establish_long_run_reliability_or_resource_leak_freedom",
     "does_not_measure_memory_worker_exhaustion_or_out_of_memory_behavior",
     "does_not_measure_live_transport_or_resource_teardown",
@@ -141,6 +146,7 @@ RUNTIME_CORE_RESOURCE_RECEIPT = (
     ("chromium-wasm.wasm", "fetch"),
 )
 _RUNTIME_CORE_RESOURCE_RECEIPT_FIELDS = frozenset(("initiator_type", "path"))
+_RUNTIME_CORE_SERVER_RECEIPT_FIELDS = frozenset(("path", "successful_get_count"))
 
 _STATUS_EXPRESSION = r"""
 (() => {
@@ -445,6 +451,66 @@ def _capture_runtime_core_resource_receipt(
     return validate_runtime_core_resource_receipt(value)
 
 
+def validate_runtime_core_server_receipt(
+    value: object,
+) -> list[dict[str, object]]:
+    """Require one successful local-server GET for every core package resource.
+
+    The fixed three-epoch stress uses an opaque same-origin path component for
+    each outer document.  This receipt is deliberately narrower than general
+    HTTP-cache or external-delivery evidence: it proves only what the local
+    immutable-snapshot server received for that one path namespace.
+    """
+
+    expected_paths = [path for path, _initiator in RUNTIME_CORE_RESOURCE_RECEIPT]
+    if type(value) is not list or len(value) != len(expected_paths):
+        raise M0Error("package runtime server receipt is incomplete")
+    normalized: list[dict[str, object]] = []
+    for index, (observed, expected_path) in enumerate(
+        zip(value, expected_paths), start=1
+    ):
+        if (
+            type(observed) is not dict
+            or set(observed) != _RUNTIME_CORE_SERVER_RECEIPT_FIELDS
+        ):
+            raise M0Error(f"package runtime server receipt {index} is malformed")
+        path = observed.get("path")
+        successful_get_count = observed.get("successful_get_count")
+        if type(path) is not str or path != expected_path:
+            raise M0Error(f"package runtime server receipt {index} path is invalid")
+        if type(successful_get_count) is not int or successful_get_count != 1:
+            raise M0Error(
+                f"package runtime server receipt {index} successful GET count is invalid"
+            )
+        normalized.append(
+            {"path": path, "successful_get_count": successful_get_count}
+        )
+    return normalized
+
+
+def _capture_runtime_core_server_receipt(
+    server: Any, *, epoch: str
+) -> list[dict[str, object]]:
+    """Project one server-side epoch log into a bounded core-resource receipt."""
+
+    if not isinstance(epoch, str) or not epoch:
+        raise M0Error("package runtime server receipt epoch is invalid")
+    try:
+        counts = server.epoch_successful_get_counts(epoch)
+    except (AttributeError, TypeError) as exc:
+        raise M0Error("package server does not expose an epoch GET receipt") from exc
+    if type(counts) is not dict:
+        raise M0Error("package server epoch GET receipt is invalid")
+    receipt = [
+        {
+            "path": path,
+            "successful_get_count": counts.get(f"/{path}"),
+        }
+        for path, _initiator in RUNTIME_CORE_RESOURCE_RECEIPT
+    ]
+    return validate_runtime_core_server_receipt(receipt)
+
+
 def _normalize_release_wisp_endpoint(value: object) -> str:
     """Accept only the public WSS carrier shape used by the release host.
 
@@ -595,6 +661,35 @@ def _make_epoch_url(url: str, epoch: str) -> str:
             urlencode([*pairs, (EPOCH_QUERY_KEY, epoch)]),
             "",
         )
+    )
+
+
+def _register_epoch_document_url(server: Any, package_url: str, epoch: str) -> str:
+    """Bind one stress-only document URL to the server's opaque epoch route."""
+
+    if not isinstance(package_url, str) or not isinstance(epoch, str) or not epoch:
+        raise M0Error("package epoch document URL is invalid")
+    try:
+        route_path = server.register_epoch_route(epoch)
+    except (AttributeError, TypeError) as exc:
+        raise M0Error("package server does not expose an epoch route") from exc
+    expected_route_path = f"{EPOCH_ROUTE_PREFIX}{epoch}/"
+    if route_path != expected_route_path:
+        raise M0Error("package server epoch route is invalid")
+    try:
+        parsed = urlsplit(package_url)
+    except (TypeError, ValueError) as exc:
+        raise M0Error("package epoch document URL is invalid") from exc
+    if (
+        parsed.scheme != "http"
+        or not parsed.netloc
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise M0Error("package epoch document URL is invalid")
+    return _make_epoch_url(
+        urlunsplit((parsed.scheme, parsed.netloc, route_path, "", "")), epoch
     )
 
 
@@ -984,6 +1079,7 @@ def _epoch_result(
     *,
     post_exit_frame_quiescent: bool = False,
     runtime_core_resource_receipt: list[dict[str, str]] | None = None,
+    runtime_core_server_receipt: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     _require_clean_shutdown(clean_shutdown, "package-host shutdown")
     result: dict[str, object] = {
@@ -998,6 +1094,10 @@ def _epoch_result(
     if runtime_core_resource_receipt is not None:
         result["runtime_core_resource_receipt"] = (
             validate_runtime_core_resource_receipt(runtime_core_resource_receipt)
+        )
+    if runtime_core_server_receipt is not None:
+        result["runtime_core_server_receipt"] = validate_runtime_core_server_receipt(
+            runtime_core_server_receipt
         )
     return result
 
@@ -1056,6 +1156,9 @@ def run_package_browser_smoke(
                 "package outer-document restart selection and count disagree"
             )
         restart_count = 1 if outer_document_restart else outer_document_restart_count
+        observe_runtime_core_resource_receipt = (
+            restart_count == OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
+        )
         if type(emit_package_observation) is not bool:
             raise M0Error("package observation selection is invalid")
         if emit_package_observation and release_wisp_endpoint is not None:
@@ -1079,7 +1182,11 @@ def run_package_browser_smoke(
         host, port = server.server_address[:2]
         package_url = f"http://{host}:{port}/"
         first_epoch = secrets.token_urlsafe(18)
-        first_url = _make_epoch_url(package_url, first_epoch)
+        first_url = (
+            _register_epoch_document_url(server, package_url, first_epoch)
+            if observe_runtime_core_resource_receipt
+            else _make_epoch_url(package_url, first_epoch)
+        )
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m9-package-")
         debug_port = unused_loopback_port()
         launch_url = (
@@ -1130,9 +1237,6 @@ def run_package_browser_smoke(
             expected_wisp_configured=release_wisp_endpoint is not None,
             description="waiting for the first real package frame",
         )
-        observe_runtime_core_resource_receipt = (
-            restart_count == OUTER_DOCUMENT_RELOAD_STRESS_RESTART_COUNT
-        )
         first_runtime_core_resource_receipt = (
             _capture_runtime_core_resource_receipt(
                 client, expected_url=first_url
@@ -1180,11 +1284,17 @@ def run_package_browser_smoke(
                     "for fixed outer-document lifetime 1"
                 ),
             )
+        first_runtime_core_server_receipt = (
+            _capture_runtime_core_server_receipt(server, epoch=first_epoch)
+            if observe_runtime_core_resource_receipt
+            else None
+        )
         first_result = _epoch_result(
             first_ready,
             first_shutdown,
             post_exit_frame_quiescent=observe_post_exit_frame_quiescence,
             runtime_core_resource_receipt=first_runtime_core_resource_receipt,
+            runtime_core_server_receipt=first_runtime_core_server_receipt,
         )
         if restart_count == 0:
             result = {
@@ -1216,7 +1326,11 @@ def run_package_browser_smoke(
             if epoch in seen_epochs:
                 raise M0Error("package restart document epoch was reused")
             seen_epochs.add(epoch)
-            restart_url = _make_epoch_url(package_url, epoch)
+            restart_url = (
+                _register_epoch_document_url(server, package_url, epoch)
+                if observe_runtime_core_resource_receipt
+                else _make_epoch_url(package_url, epoch)
+            )
             client = _restart_after_clean_shutdown(
                 client=client,
                 clean_shutdown=prior_shutdown,
@@ -1281,12 +1395,18 @@ def run_package_browser_smoke(
                         f"for fixed outer-document lifetime {restart_index + 1}"
                     ),
                 )
+            runtime_core_server_receipt = (
+                _capture_runtime_core_server_receipt(server, epoch=epoch)
+                if observe_runtime_core_resource_receipt
+                else None
+            )
             epoch_results.append(
                 _epoch_result(
                     ready,
                     shutdown,
                     post_exit_frame_quiescent=observe_post_exit_frame_quiescence,
                     runtime_core_resource_receipt=runtime_core_resource_receipt,
+                    runtime_core_server_receipt=runtime_core_server_receipt,
                 )
             )
             prior_shutdown = shutdown

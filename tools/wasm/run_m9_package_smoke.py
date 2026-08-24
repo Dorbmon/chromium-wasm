@@ -81,6 +81,13 @@ PACKAGE_SMOKE_TIMEOUT_SECONDS = 10.0
 _DELIVERY_HEADER_NAMES = frozenset(
     (*REQUIRED_HEADERS, "Cache-Control", "Content-Length", "Content-Type")
 )
+# The fixed three-document reload observation needs a server-side request
+# receipt that is unambiguously tied to one document lifetime.  This is an
+# opt-in test-server namespace only: normal package URLs and the immutable
+# package bytes remain unchanged.
+EPOCH_ROUTE_PREFIX = "/__chromium_wasm_m9_epoch__/"
+MAX_EPOCH_ROUTE_COUNT = 3
+MAX_EPOCH_SUCCESSFUL_GETS = 32
 
 
 class PackageSmokeServer(M9TrackingThreadingHTTPServer):
@@ -89,7 +96,98 @@ class PackageSmokeServer(M9TrackingThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], snapshot: PackageTreeSnapshot):
         self.snapshot = snapshot
+        self._epoch_route_lock = threading.Lock()
+        self._epoch_route_successful_gets: dict[str, list[str]] = {}
+        self._epoch_route_receipt_overflow: set[str] = set()
         super().__init__(address, PackageSmokeRequestHandler)
+
+    @staticmethod
+    def _is_valid_epoch_route_token(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and 1 <= len(value) <= 96
+            and value.isascii()
+            and all(character.isalnum() or character in "-_" for character in value)
+        )
+
+    def register_epoch_route(self, epoch: str) -> str:
+        """Enable one opaque same-origin path namespace for a test epoch.
+
+        The caller supplies the same random token in the outer-document query
+        and path.  The handler accepts only registered tokens, so a generic
+        static package request cannot accidentally become an epoch receipt.
+        """
+
+        if not self._is_valid_epoch_route_token(epoch):
+            raise M0Error("package epoch route token is invalid")
+        with self._epoch_route_lock:
+            if epoch in self._epoch_route_successful_gets:
+                raise M0Error("package epoch route token was reused")
+            if len(self._epoch_route_successful_gets) >= MAX_EPOCH_ROUTE_COUNT:
+                raise M0Error("package epoch route count exceeds its bound")
+            self._epoch_route_successful_gets[epoch] = []
+        return f"{EPOCH_ROUTE_PREFIX}{epoch}/"
+
+    def resolve_epoch_scoped_request_path(
+        self, request_path: str
+    ) -> tuple[str | None, str | None]:
+        """Map a registered virtual epoch path to one canonical package path.
+
+        A ``None`` package path means that the request was unsafe or addressed
+        an unregistered epoch and must receive the ordinary fixed 404 response.
+        Unscoped paths are returned verbatim, preserving the root static-server
+        delivery contract.
+        """
+
+        if not isinstance(request_path, str):
+            return None, None
+        if not request_path.startswith(EPOCH_ROUTE_PREFIX):
+            return None, request_path
+        remaining = request_path.removeprefix(EPOCH_ROUTE_PREFIX)
+        epoch, separator, artifact = remaining.partition("/")
+        if (
+            not separator
+            or not self._is_valid_epoch_route_token(epoch)
+            or artifact.startswith("/")
+            or "%" in artifact
+        ):
+            return None, None
+        if artifact and any(
+            component in ("", ".", "..") for component in artifact.split("/")
+        ):
+            return None, None
+        with self._epoch_route_lock:
+            if epoch not in self._epoch_route_successful_gets:
+                return None, None
+        return epoch, "/" if not artifact else f"/{artifact}"
+
+    def record_epoch_successful_get(self, epoch: str, package_path: str) -> None:
+        """Retain one bounded, successful GET fact for a registered epoch."""
+
+        with self._epoch_route_lock:
+            requests = self._epoch_route_successful_gets.get(epoch)
+            if requests is None:
+                return
+            if len(requests) >= MAX_EPOCH_SUCCESSFUL_GETS:
+                self._epoch_route_receipt_overflow.add(epoch)
+                return
+            requests.append(package_path)
+
+    def epoch_successful_get_counts(self, epoch: str) -> dict[str, int]:
+        """Copy the bounded server-side successful-GET receipt for one epoch."""
+
+        if not self._is_valid_epoch_route_token(epoch):
+            raise M0Error("package epoch route token is invalid")
+        with self._epoch_route_lock:
+            requests = self._epoch_route_successful_gets.get(epoch)
+            if requests is None:
+                raise M0Error("package epoch route is not registered")
+            if epoch in self._epoch_route_receipt_overflow:
+                raise M0Error("package epoch successful GET receipt exceeded its bound")
+            counts: dict[str, int] = {}
+            for package_path in requests:
+                counts[package_path] = counts.get(package_path, 0) + 1
+            return counts
 
 
 class PackageSmokeRequestHandler(BaseHTTPRequestHandler):
@@ -119,15 +217,29 @@ class PackageSmokeRequestHandler(BaseHTTPRequestHandler):
         self._serve()
 
     def _serve(self) -> None:
-        status, content_type, contents = package_response(
-            self.server.snapshot.artifacts, urlsplit(self.path).path
+        epoch, package_path = self.server.resolve_epoch_scoped_request_path(
+            urlsplit(self.path).path
         )
-        if status != HTTPStatus.OK:
-            self._send_bytes(
-                status, content_type, contents
+        if package_path is None:
+            status, content_type, contents = (
+                HTTPStatus.NOT_FOUND,
+                NOT_FOUND_CONTENT_TYPE,
+                NOT_FOUND_BODY,
             )
-            return
-        self._send_bytes(HTTPStatus.OK, content_type, contents)
+        else:
+            status, content_type, contents = package_response(
+                self.server.snapshot.artifacts, package_path
+            )
+        self._send_bytes(status, content_type, contents)
+        if (
+            epoch is not None
+            and status == HTTPStatus.OK
+            and self.command == "GET"
+        ):
+            # A ready package host can only consume a response after this
+            # handler has completed the body write.  The runner snapshots this
+            # receipt after that readiness acknowledgement.
+            self.server.record_epoch_successful_get(epoch, package_path)
 
 
 ArtifactIdentity = tuple[int, int, int, int, int, int]

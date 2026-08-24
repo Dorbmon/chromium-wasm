@@ -33,12 +33,22 @@ def _runtime_core_resource_receipt() -> list[dict[str, str]]:
     ]
 
 
+def _runtime_core_server_receipt() -> list[dict[str, object]]:
+    return [
+        {"path": path, "successful_get_count": 1}
+        for path, _initiator in (
+            runner.package_browser_smoke.RUNTIME_CORE_RESOURCE_RECEIPT
+        )
+    ]
+
+
 def _epoch(frame_count: int) -> dict[str, object]:
     return {
         "frames_presented": frame_count,
         "post_exit_frame_quiescent": True,
         "process_exit_code": 0,
         "runtime_core_resource_receipt": _runtime_core_resource_receipt(),
+        "runtime_core_server_receipt": _runtime_core_server_receipt(),
         "runtime_exit_code": 0,
         "shutdown_disabled": True,
         "shutdown_requested": True,
@@ -170,6 +180,14 @@ class M9PackageOuterDocumentReloadStressTest(unittest.TestCase):
         del malformed["epochs"][1]["runtime_core_resource_receipt"][0][
             "initiator_type"
         ]
+        missing_server_epoch_field = deepcopy(result)
+        del missing_server_epoch_field["epochs"][1]["runtime_core_server_receipt"]
+        missing_server_resource = deepcopy(result)
+        missing_server_resource["epochs"][1]["runtime_core_server_receipt"].pop()
+        repeated_server_get = deepcopy(result)
+        repeated_server_get["epochs"][1]["runtime_core_server_receipt"][0][
+            "successful_get_count"
+        ] = 2
 
         for name, invalid, message in (
             ("missing epoch field", missing_epoch_field, "epoch 2 fields are invalid"),
@@ -177,6 +195,21 @@ class M9PackageOuterDocumentReloadStressTest(unittest.TestCase):
             ("wrong path", wrong_path, "runtime resource receipt"),
             ("wrong initiator", wrong_initiator, "runtime resource receipt"),
             ("malformed", malformed, "runtime resource receipt"),
+            (
+                "missing server epoch field",
+                missing_server_epoch_field,
+                "epoch 2 fields are invalid",
+            ),
+            (
+                "missing server resource",
+                missing_server_resource,
+                "runtime server receipt",
+            ),
+            (
+                "repeated server GET",
+                repeated_server_get,
+                "runtime server receipt",
+            ),
         ):
             with self.subTest(name=name), self.assertRaisesRegex(M0Error, message):
                 runner.validate_reload_stress_result(invalid)
