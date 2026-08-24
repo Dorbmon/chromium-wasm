@@ -244,6 +244,7 @@ class M8PageJavaScriptAsyncRejectionDomSmokeTest(unittest.TestCase):
         self.assertIn(
             "browser_m8_page_javascript_semantics_smoke ||\n"
             "      browser_m8_page_javascript_async_rejection_smoke ||\n"
+            "      browser_m8_page_javascript_platform_semantics_smoke ||\n"
             "      browser_m8_page_webassembly_smoke",
             main_parts,
         )
@@ -251,6 +252,8 @@ class M8PageJavaScriptAsyncRejectionDomSmokeTest(unittest.TestCase):
             "browser_m8_page_javascript_semantics_smoke) +\n"
             "                 static_cast<int>(\n"
             "                     browser_m8_page_javascript_async_rejection_smoke) +\n"
+            "                 static_cast<int>(\n"
+            "                     browser_m8_page_javascript_platform_semantics_smoke) +\n"
             "                 static_cast<int>(browser_m8_page_webassembly_smoke)",
             main_parts,
         )

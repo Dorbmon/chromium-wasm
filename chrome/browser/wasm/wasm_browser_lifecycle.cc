@@ -1266,6 +1266,13 @@ void WasmBrowserLifecycle::
       WasmBrowserDevToolsProtocolSmokeMode::kOrdinaryJavaScriptAsyncRejection);
 }
 
+void WasmBrowserLifecycle::
+    StartPageJavaScriptPlatformSemanticsDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(
+      WasmBrowserDevToolsProtocolSmokeMode::
+          kOrdinaryJavaScriptPlatformSemantics);
+}
+
 void WasmBrowserLifecycle::StartPageWebAssemblyDevToolsProtocolSmoke() {
   StartDevToolsProtocolSmokeInternal(
       WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);

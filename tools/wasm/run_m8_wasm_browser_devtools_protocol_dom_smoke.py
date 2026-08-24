@@ -85,6 +85,22 @@ PAGE_JAVASCRIPT_ASYNC_REJECTION_SCOPE = (
 PAGE_JAVASCRIPT_ASYNC_REJECTION_SWITCH = (
     "--wasm-browser-m8-page-javascript-async-rejection-smoke"
 )
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SENTINEL = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_DOM"
+)
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE = "page-javascript-platform-semantics"
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_CASE = (
+    "browser_page_javascript_platform_semantics_m8"
+)
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-javascript-data-module-live-binding-"
+    "structured-clone-transfer-message-channel-transfer-custom-element-"
+    "mutation-observer-console-event-detach-close"
+)
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SWITCH = (
+    "--wasm-browser-m8-page-javascript-platform-semantics-smoke"
+)
 PAGE_WEBASSEMBLY_SENTINEL = "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_DOM"
 PAGE_WEBASSEMBLY_MODE = "page-webassembly"
 PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8"
@@ -321,6 +337,11 @@ PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER = (
     "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_ASYNC_REJECTION:"
     "CATCH_FINALLY_ORDER_OK"
 )
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_PLATFORM_SEMANTICS:"
+    "DATA_MODULE_LIVE_BINDING_STRUCTURED_CLONE_TRANSFER_MESSAGE_CHANNEL_"
+    "TRANSFER_CUSTOM_ELEMENT_MUTATION_OBSERVER_OK"
+)
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
 )
@@ -509,6 +530,21 @@ PAGE_JAVASCRIPT_ASYNC_REJECTION_LIMITATIONS = (
     "does_not_establish_v8_dependency_or_artifact_source_provenance",
     "does_not_claim_m8_compatibility_completion",
 )
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_LIMITATIONS = (
+    "only_exercises_one_fixed_page_javascript_data_module_live_binding_"
+    "structured_clone_transfer_message_channel_transfer_custom_element_"
+    "mutation_observer_path",
+    "does_not_establish_general_ecmascript_or_browser_web_platform_"
+    "compatibility",
+    "does_not_exercise_http_wisp_or_cross_origin_module_loading_import_maps_or_"
+    "module_graphs",
+    "does_not_exercise_workers_service_workers_timers_or_general_task_"
+    "scheduling",
+    "does_not_exercise_general_cloning_messaging_or_custom_element_behavior",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_establish_v8_dependency_or_artifact_source_provenance",
+    "does_not_claim_m8_compatibility_completion",
+)
 
 
 @dataclass(frozen=True)
@@ -596,6 +632,15 @@ def require_build_profile_for_smoke(
     ):
         raise M0Error(
             "page-JavaScript semantics mode requires --build-profile "
+            f"{M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE}; that profile is "
+            "experimental and does not complete M8"
+        )
+    if (
+        smoke_config == PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG
+        and not profile.allows_page_webassembly_attempt
+    ):
+        raise M0Error(
+            "page-JavaScript platform semantics mode requires --build-profile "
             f"{M8_CHROME_CODEGEN_EXPERIMENT_BUILD_PROFILE}; that profile is "
             "experimental and does not complete M8"
         )
@@ -723,6 +768,34 @@ PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
     ordinary_javascript_expectations=(
         ("v8ProvenanceEstablished", False),
         ("pageJavaScriptAsyncRejectionCatchFinallyOrderObserved", True),
+    ),
+)
+
+PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id=PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE,
+    query_mode=PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE,
+    sentinel=PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SENTINEL,
+    case=PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_CASE,
+    scope=PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SCOPE,
+    runtime_arguments=(PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(),
+    limitations=PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_LIMITATIONS,
+    ordinary_javascript_expectations=(
+        ("v8ProvenanceEstablished", False),
+        (
+            "pageJavaScriptPlatformSemanticsDataModuleStructuredClone"
+            "MessageChannelCustomElementMutationObserverObserved",
+            True,
+        ),
     ),
 )
 
@@ -1315,6 +1388,16 @@ def smoke_config_for_page_javascript_async_rejection(
     )
 
 
+def smoke_config_for_page_javascript_platform_semantics(
+    page_javascript_platform_semantics: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG
+        if page_javascript_platform_semantics
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
 def smoke_config_for_page_webassembly_memory(
     page_webassembly_memory: bool,
 ) -> DevToolsProtocolSmokeConfig:
@@ -1430,6 +1513,7 @@ def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> No
         DEFAULT_SMOKE_CONFIG,
         PAGE_JAVASCRIPT_SEMANTICS_SMOKE_CONFIG,
         PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG,
+        PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG,
         PAGE_WEBASSEMBLY_TABLE_SMOKE_CONFIG,
@@ -1725,6 +1809,8 @@ def _require_unique_ordered_markers(
         runtime_marker = PAGE_JAVASCRIPT_SEMANTICS_MARKER
     elif smoke_config == PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_CONFIG:
         runtime_marker = PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER
+    elif smoke_config == PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_CONFIG:
+        runtime_marker = PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_SMOKE_CONFIG:
         runtime_marker = PAGE_WEBASSEMBLY_ADD42_MARKER
     elif smoke_config == PAGE_WEBASSEMBLY_MEMORY_SMOKE_CONFIG:
@@ -1925,6 +2011,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--page-javascript-platform-semantics",
+        action="store_true",
+        help=(
+            "run the fixed native page-JavaScript data-module/structuredClone/"
+            "MessageChannel/custom-element/MutationObserver DevTools smoke"
+        ),
+    )
+    parser.add_argument(
         "--page-webassembly",
         action="store_true",
         help=(
@@ -2029,6 +2123,7 @@ def main() -> int:
     if (
         int(args.page_javascript_semantics)
         + int(args.page_javascript_async_rejection)
+        + int(args.page_javascript_platform_semantics)
         + int(args.page_webassembly)
         + int(args.page_webassembly_memory)
         + int(args.page_webassembly_table)
@@ -2045,6 +2140,7 @@ def main() -> int:
     ):
         parser.error(
             "--page-javascript-semantics, --page-javascript-async-rejection, "
+            "--page-javascript-platform-semantics, "
             "--page-webassembly, "
             "--page-webassembly-memory, "
             "--page-webassembly-table, --page-webassembly-memory-growth, and "
@@ -2107,6 +2203,11 @@ def main() -> int:
             )
         )
     )
+    if args.page_javascript_platform_semantics:
+        # The mutually exclusive parser gate keeps this closed ordinary-
+        # JavaScript mode separate while preserving the Page-WebAssembly
+        # selector above exactly.
+        smoke_config = smoke_config_for_page_javascript_platform_semantics(True)
 
     build_profile = chrome_build_profile(args.build_profile)
     try:

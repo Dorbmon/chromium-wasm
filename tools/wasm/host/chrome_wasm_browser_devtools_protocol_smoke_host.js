@@ -28,6 +28,17 @@ const PAGE_JAVASCRIPT_ASYNC_REJECTION_SCOPE =
     "finally-order-console-event-detach-close";
 const PAGE_JAVASCRIPT_ASYNC_REJECTION_SWITCH =
     "--wasm-browser-m8-page-javascript-async-rejection-smoke";
+const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE =
+    "page-javascript-platform-semantics";
+const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_CASE =
+    "browser_page_javascript_platform_semantics_m8";
+const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-javascript-data-module-live-binding-" +
+    "structured-clone-transfer-message-channel-transfer-custom-element-" +
+    "mutation-observer-console-event-detach-close";
+const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SWITCH =
+    "--wasm-browser-m8-page-javascript-platform-semantics-smoke";
 const PAGE_WEBASSEMBLY_MODE = "page-webassembly";
 const PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8";
 const PAGE_WEBASSEMBLY_SCOPE =
@@ -158,6 +169,10 @@ const PAGE_JAVASCRIPT_SEMANTICS_MARKER =
 const PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER =
     "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_ASYNC_REJECTION:" +
     "CATCH_FINALLY_ORDER_OK";
+const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_JAVASCRIPT_PLATFORM_SEMANTICS:" +
+    "DATA_MODULE_LIVE_BINDING_STRUCTURED_CLONE_TRANSFER_MESSAGE_CHANNEL_" +
+    "TRANSFER_CUSTOM_ELEMENT_MUTATION_OBSERVER_OK";
 const PAGE_WEBASSEMBLY_ADD42_MARKER =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
     "VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
@@ -268,6 +283,29 @@ const PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE = Object.freeze({
     RUNTIME_ENABLE_MARKER,
     RUNTIME_EVALUATE_MARKER,
     PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE = Object.freeze({
+  id: PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE,
+  queryMode: PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE,
+  case: PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_CASE,
+  scope: PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({}),
+  ordinaryJavaScriptExpectations: Object.freeze({
+    v8ProvenanceEstablished: false,
+    pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved:
+        true,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER,
     RUNTIME_CONSOLE_API_CALLED_MARKER,
     DETACHED_MARKER,
     LIFECYCLE_PASS_MARKER,
@@ -768,6 +806,7 @@ function isKnownSmokeMode(smokeMode) {
   return smokeMode === DEFAULT_SMOKE_MODE ||
       smokeMode === PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE ||
       smokeMode === PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE ||
+      smokeMode === PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ||
       smokeMode === PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE ||
@@ -854,6 +893,8 @@ function validateResult(result, smokeMode) {
       PAGE_JAVASCRIPT_SEMANTICS_MARKER :
       smokeMode === PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE ?
       PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER :
+      smokeMode === PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE ?
+      PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
       PAGE_WEBASSEMBLY_ADD42_MARKER :
       smokeMode === PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE ?
@@ -939,6 +980,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #pageJavaScriptSemanticsClosuresClassesPromiseMicrotasksBigIntTypedArraysObserved =
       false;
   #pageJavaScriptAsyncRejectionCatchFinallyOrderObserved = false;
+  #pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved =
+      false;
   #pageWebAssemblyUnavailableObserved = false;
   #pageWebAssemblyAdd42Observed = false;
   #pageWebAssemblyInstantiateStreamingDataUrlModuleInstanceAdd42Observed =
@@ -1028,6 +1071,10 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     }
     if (text.includes(PAGE_JAVASCRIPT_ASYNC_REJECTION_MARKER)) {
       this.#pageJavaScriptAsyncRejectionCatchFinallyOrderObserved = true;
+    }
+    if (text.includes(PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MARKER)) {
+      this.#pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved =
+          true;
     }
     if (text.includes(PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER)) {
       this.#pageWebAssemblyUnavailableObserved = true;
@@ -1213,6 +1260,13 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
         v8ProvenanceEstablished: false,
         pageJavaScriptAsyncRejectionCatchFinallyOrderObserved:
             this.#pageJavaScriptAsyncRejectionCatchFinallyOrderObserved,
+      };
+    } else if (this.#smokeMode ===
+               PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE) {
+      pageRuntimeResult = {
+        v8ProvenanceEstablished: false,
+        pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved:
+            this.#pageJavaScriptPlatformSemanticsDataModuleStructuredCloneMessageChannelCustomElementMutationObserverObserved,
       };
     } else {
       pageRuntimeResult = {
@@ -1406,6 +1460,9 @@ export function parseDevToolsProtocolSmokeQuery(query) {
   } else if (modes.length === 1 &&
              modes[0] === PAGE_JAVASCRIPT_ASYNC_REJECTION_MODE) {
     smokeMode = PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE;
+  } else if (modes.length === 1 &&
+             modes[0] === PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_MODE) {
+    smokeMode = PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MODE) {
     smokeMode = PAGE_WEBASSEMBLY_SMOKE_MODE;
   } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MEMORY_MODE) {
@@ -1465,6 +1522,7 @@ async function fetchExpectedSmokeMode(token) {
       (binding.mode !== DEFAULT_SMOKE_MODE.id &&
        binding.mode !== PAGE_JAVASCRIPT_SEMANTICS_SMOKE_MODE.id &&
        binding.mode !== PAGE_JAVASCRIPT_ASYNC_REJECTION_SMOKE_MODE.id &&
+       binding.mode !== PAGE_JAVASCRIPT_PLATFORM_SEMANTICS_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_MEMORY_SMOKE_MODE.id &&
        binding.mode !== PAGE_WEBASSEMBLY_TABLE_SMOKE_MODE.id &&

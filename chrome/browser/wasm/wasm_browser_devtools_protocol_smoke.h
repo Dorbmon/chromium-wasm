@@ -31,6 +31,7 @@ enum class WasmBrowserDevToolsProtocolSmokeMode {
   kPageWebAssemblyUnavailable,
   kOrdinaryJavaScriptSemantics,
   kOrdinaryJavaScriptAsyncRejection,
+  kOrdinaryJavaScriptPlatformSemantics,
   kValidateModuleInstanceAdd42,
   kMemoryImportReadWrite,
   kTableImportIndirectCall,
@@ -68,8 +69,15 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
 // result. The closed ordinary-JavaScript semantics mode awaits one literal
 // expression that checks a lexical closure, class inheritance, a two-checkpoint
 // Promise microtask sequence, BigInt arithmetic, and one Uint16Array mutation.
-// It does not inspect WebAssembly or establish feature compatibility. A second
-// closed page-WebAssembly mode imports one fixed one-page
+// It does not inspect WebAssembly or establish feature compatibility. A
+// separate ordinary-JavaScript mode awaits one literal expression that imports
+// one literal data: module with one live exported binding, transfers one fixed
+// ArrayBuffer through structuredClone, transfers one other fixed ArrayBuffer
+// through a same-document MessageChannel, and observes one fixed custom
+// element's connected callback and child-list MutationObserver record. It
+// does not exercise network modules, import maps, module graphs, workers,
+// timers, general cloning or messaging, or broad custom-element behavior. A
+// second closed page-WebAssembly mode imports one fixed one-page
 // memory and witnesses JavaScript-to-Wasm and Wasm-to-JavaScript reads and
 // writes without exercising growth, tables, exceptions, or threads. A third
 // closed page-WebAssembly mode imports one fixed, non-growable table,

@@ -143,6 +143,13 @@ class WasmBrowserLifecycle final {
   // host-selected URL, expression, or protocol command.
   void StartPageJavaScriptAsyncRejectionDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed proof that awaits one literal
+  // ordinary-JavaScript page expression covering a data: module live binding,
+  // structured-clone and MessageChannel transfers, and one custom-element/
+  // MutationObserver path. It does not expose a host-selected URL, module,
+  // expression, or protocol command.
+  void StartPageJavaScriptPlatformSemanticsDevToolsProtocolSmoke();
+
   // Starts the separate, test-only fixed DevTools protocol proof that validates
   // one literal page WebAssembly module and its add(20, 22) result. Like the
   // unavailable-boundary proof, it has no host-selected URL, expression, or
