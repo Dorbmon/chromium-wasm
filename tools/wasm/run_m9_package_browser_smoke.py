@@ -11,8 +11,10 @@ therefore a successful frame proves the release host's Blob-backed Emscripten
 pthread loader route and renamed Wasm locateFile mapping.  Its optional second
 epoch first performs an orderly host shutdown, then navigates the *outer*
 document and requires a fresh packaged loader lifetime in the same host
-browser.  It is not an M6 UI, M7 persistence, M8 compatibility, or M9 release
-acceptance test.
+browser. An optional credential-free WSS endpoint is installed through CDP
+before each package document begins; it proves only release-host configuration
+handoff, not a live carrier or Chromium network request. It is not an M6 UI,
+M7 persistence, M8 compatibility, or M9 release acceptance test.
 """
 
 from __future__ import annotations
@@ -72,6 +74,10 @@ OUTER_DOCUMENT_RESTART_SCOPE = (
 RELEASE_STATUS = package_tool.RELEASE_STATUS
 EPOCH_QUERY_KEY = "m9_package_epoch"
 MAX_SAFE_INTEGER = (1 << 53) - 1
+MAX_RELEASE_WISP_ENDPOINT_CHARACTERS = 2048
+RELEASE_WISP_CONFIGURATION_GLOBAL = "__chromiumWasmReleaseWispV1"
+RELEASE_WISP_CONFIGURATION_VERSION = 1
+WISP_BOOTSTRAP_URL = "about:blank"
 
 _STATUS_EXPRESSION = r"""
 (() => {
@@ -130,6 +136,7 @@ _STATUS_EXPRESSION = r"""
     processExitCode: payload.processExitCode,
     shutdownDisabled: shutdown.disabled,
     shutdownRequested: payload.shutdownRequested,
+    wispConfigured: payload.wispConfigured,
     displayedVersions: versions.textContent,
   };
 })()
@@ -185,6 +192,140 @@ def _status(client: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise M0Error("package host status is not an object")
     return value
+
+
+def _normalize_release_wisp_endpoint(value: object) -> str:
+    """Accept only the public WSS carrier shape used by the release host.
+
+    The generated host is still the authoritative validator and normalizer.
+    This runner repeats the security boundary only to avoid putting a malformed
+    or credential-bearing command-line value into a DevTools init script. Its
+    failure strings intentionally never include the supplied endpoint.
+    """
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > MAX_RELEASE_WISP_ENDPOINT_CHARACTERS
+        or value != value.strip()
+    ):
+        raise M0Error("release WISP endpoint is invalid")
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        username = parsed.username
+        password = parsed.password
+        # Accessing .port forces urllib to reject an invalid port rather than
+        # allowing a differently parsed carrier through this preflight.
+        _ = parsed.port
+    except ValueError as exc:
+        raise M0Error("release WISP endpoint is invalid") from exc
+    if (
+        parsed.scheme != "wss"
+        or not parsed.netloc
+        or not hostname
+        or username is not None
+        or password is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.endswith("/")
+    ):
+        raise M0Error("release WISP endpoint violates the transport policy")
+    return value
+
+
+def _release_wisp_init_script(endpoint: str) -> str:
+    """Produce an idempotent, pre-document CDP configuration script.
+
+    The endpoint literal is necessarily present in DevTools' in-memory source,
+    but this helper and all callers keep it out of logs, errors, and the
+    runner's structured result.  Re-registering an identical source before a
+    later outer-document navigation is safe: each new realm receives the same
+    immutable own data property once or validates the property installed by a
+    prior registration.
+    """
+
+    normalized_endpoint = _normalize_release_wisp_endpoint(endpoint)
+    configuration_json = json.dumps(
+        {
+            "endpoint": normalized_endpoint,
+            "version": RELEASE_WISP_CONFIGURATION_VERSION,
+        },
+        separators=(",", ":"),
+    )
+    global_json = json.dumps(RELEASE_WISP_CONFIGURATION_GLOBAL)
+    return (
+        "(() => {\n"
+        f"  const configuration = Object.freeze({configuration_json});\n"
+        f"  const descriptor = Object.getOwnPropertyDescriptor(globalThis, {global_json});\n"
+        "  if (descriptor === undefined) {\n"
+        f"    Object.defineProperty(globalThis, {global_json}, {{\n"
+        "      configurable: false,\n"
+        "      enumerable: false,\n"
+        "      value: configuration,\n"
+        "      writable: false,\n"
+        "    });\n"
+        "    return;\n"
+        "  }\n"
+        "  if (!Object.hasOwn(descriptor, \"value\") || descriptor.configurable ||\n"
+        "      descriptor.enumerable || descriptor.writable || !descriptor.value ||\n"
+        "      descriptor.value.version !== configuration.version ||\n"
+        "      descriptor.value.endpoint !== configuration.endpoint) {\n"
+        "    throw new Error(\"release WISP configuration collision\");\n"
+        "  }\n"
+        "})();"
+    )
+
+
+def _install_release_wisp_configuration(client: Any, endpoint: str) -> None:
+    """Install configuration before the next document starts, or fail closed."""
+
+    source = _release_wisp_init_script(endpoint)
+    try:
+        # Chrome does not activate Page.addScriptToEvaluateOnNewDocument for a
+        # raw remote-debugging connection until the Page domain is enabled.
+        # Do this before the package navigation, not after a host document has
+        # started executing.
+        client.call("Page.enable")
+        response = client.call(
+            "Page.addScriptToEvaluateOnNewDocument", {"source": source}
+        )
+    except Exception as exc:
+        raise M0Error("DevTools could not install release WISP configuration") from exc
+    identifier = response.get("identifier") if isinstance(response, dict) else None
+    if not isinstance(identifier, str) or not identifier:
+        raise M0Error("DevTools did not acknowledge release WISP configuration")
+
+
+def _navigate_to_package_document(client: Any, package_url: str) -> None:
+    """Start exactly one package document after any required init script."""
+
+    try:
+        response = client.call("Page.navigate", {"url": package_url})
+    except Exception as exc:
+        raise M0Error("DevTools could not navigate to the package document") from exc
+    frame_id = response.get("frameId") if isinstance(response, dict) else None
+    if not isinstance(frame_id, str) or not frame_id:
+        raise M0Error("DevTools did not acknowledge package document navigation")
+
+
+def _require_release_wisp_configuration(
+    status: dict[str, Any], expected: bool | None
+) -> None:
+    """Bind host status to an optional redacted pre-navigation configuration."""
+
+    if expected is None:
+        return
+    observed = status.get("wispConfigured")
+    if observed is not expected:
+        observed_state = (
+            "enabled" if observed is True else "disabled" if observed is False else "missing"
+        )
+        expected_state = "enabled" if expected else "disabled"
+        raise M0Error(
+            "package host WISP configuration state is invalid "
+            f"(expected {expected_state}, observed {observed_state})"
+        )
 
 
 def _make_epoch_url(url: str, epoch: str) -> str:
@@ -339,14 +480,15 @@ def _restart_after_clean_shutdown(
     restart_url: str,
     debug_port: int,
     deadline: float,
+    release_wisp_endpoint: str | None = None,
 ) -> Any:
     """Navigate only after a verified first host shutdown and reattach CDP."""
 
     _require_clean_shutdown(clean_shutdown, "first fixed package-host shutdown")
     try:
-        navigation = client.call("Page.navigate", {"url": restart_url})
-        if not isinstance(navigation.get("frameId"), str) or not navigation["frameId"]:
-            raise M0Error("Page.navigate did not return a frame identity")
+        if release_wisp_endpoint is not None:
+            _install_release_wisp_configuration(client, release_wisp_endpoint)
+        _navigate_to_package_document(client, restart_url)
     finally:
         # A navigation invalidates the first document's observation channel.
         # Always close it before asking DevTools for the exact fresh target.
@@ -454,6 +596,7 @@ def _wait_for_ready_package_document(
     expected_package_metadata: dict[str, object],
     prior_time_origin: float | None,
     description: str,
+    expected_wisp_configured: bool | None = None,
 ) -> tuple[dict[str, Any], float]:
     ready = _wait_for_status(
         client=client,
@@ -463,6 +606,7 @@ def _wait_for_ready_package_document(
         predicate=_is_ready,
         description=description,
     )
+    _require_release_wisp_configuration(ready, expected_wisp_configured)
     return (
         ready,
         _require_ready_package_document(
@@ -548,6 +692,7 @@ def run_package_browser_smoke(
     no_sandbox: bool,
     timeout: float,
     outer_document_restart: bool = False,
+    release_wisp_endpoint: str | None = None,
 ) -> dict[str, object]:
     server = None
     server_thread = None
@@ -559,6 +704,10 @@ def run_package_browser_smoke(
     profile: tempfile.TemporaryDirectory[str] | None = None
     primary_error: BaseException | None = None
     try:
+        if release_wisp_endpoint is not None:
+            release_wisp_endpoint = _normalize_release_wisp_endpoint(
+                release_wisp_endpoint
+            )
         browser_path, browser_version = find_browser(browser_argument)
         server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
         server_thread = threading.Thread(
@@ -575,8 +724,13 @@ def run_package_browser_smoke(
         first_url = _make_epoch_url(package_url, first_epoch)
         profile = tempfile.TemporaryDirectory(prefix="chromium-wasm-m9-package-")
         debug_port = unused_loopback_port()
+        launch_url = (
+            WISP_BOOTSTRAP_URL
+            if release_wisp_endpoint is not None
+            else first_url
+        )
         command = browser_command(
-            browser_path, profile.name, first_url, no_sandbox=no_sandbox
+            browser_path, profile.name, launch_url, no_sandbox=no_sandbox
         )
         command[1:1] = [
             "--enable-logging=stderr",
@@ -601,7 +755,10 @@ def run_package_browser_smoke(
         )
         stderr_reader.start()
         deadline = time.monotonic() + timeout
-        client = wait_for_page_client(debug_port, first_url, deadline)
+        client = wait_for_page_client(debug_port, launch_url, deadline)
+        if release_wisp_endpoint is not None:
+            _install_release_wisp_configuration(client, release_wisp_endpoint)
+            _navigate_to_package_document(client, first_url)
         first_ready, first_time_origin = _wait_for_ready_package_document(
             client=client,
             browser=browser,
@@ -611,6 +768,9 @@ def run_package_browser_smoke(
             expected_epoch=first_epoch,
             expected_package_metadata=expected_package_metadata,
             prior_time_origin=None,
+            expected_wisp_configured=(
+                True if release_wisp_endpoint is not None else None
+            ),
             description="waiting for the first real package frame",
         )
         first_shutdown = _request_clean_shutdown(
@@ -626,7 +786,7 @@ def run_package_browser_smoke(
         )
         first_result = _epoch_result(first_ready, first_shutdown)
         if not outer_document_restart:
-            return {
+            result = {
                 "browser_version": browser_version,
                 "frames_presented": first_result["frames_presented"],
                 "runtime_exit_code": first_result["runtime_exit_code"],
@@ -639,6 +799,9 @@ def run_package_browser_smoke(
                 "shutdown_disabled": first_result["shutdown_disabled"],
                 "shutdown_requested": first_result["shutdown_requested"],
             }
+            if release_wisp_endpoint is not None:
+                result["release_wisp_pre_navigation_configured"] = True
+            return result
 
         second_epoch = secrets.token_urlsafe(18)
         if second_epoch == first_epoch:
@@ -650,6 +813,7 @@ def run_package_browser_smoke(
             restart_url=second_url,
             debug_port=debug_port,
             deadline=deadline,
+            release_wisp_endpoint=release_wisp_endpoint,
         )
         second_ready, second_time_origin = _wait_for_ready_package_document(
             client=client,
@@ -660,6 +824,9 @@ def run_package_browser_smoke(
             expected_epoch=second_epoch,
             expected_package_metadata=expected_package_metadata,
             prior_time_origin=first_time_origin,
+            expected_wisp_configured=(
+                True if release_wisp_endpoint is not None else None
+            ),
             description="waiting for the fresh outer-document package frame",
         )
         second_shutdown = _request_clean_shutdown(
@@ -674,7 +841,7 @@ def run_package_browser_smoke(
             description="waiting for the second clean fixed package-host shutdown",
         )
         second_result = _epoch_result(second_ready, second_shutdown)
-        return {
+        result = {
             "browser_version": browser_version,
             "epochs": [first_result, second_result],
             "outer_document_restart": True,
@@ -684,6 +851,9 @@ def run_package_browser_smoke(
                 "versionJsonSha256"
             ],
         }
+        if release_wisp_endpoint is not None:
+            result["release_wisp_pre_navigation_configured"] = True
+        return result
     except BaseException as exc:
         primary_error = exc
         raise
@@ -735,6 +905,13 @@ def main() -> int:
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
     parser.add_argument(
+        "--release-wisp-endpoint",
+        help=(
+            "install one credential-free wss: carrier endpoint through CDP "
+            "before each package document; this does not test live WISP traffic"
+        ),
+    )
+    parser.add_argument(
         "--outer-document-restart",
         action="store_true",
         help=(
@@ -755,6 +932,7 @@ def main() -> int:
             no_sandbox=args.no_sandbox,
             timeout=args.timeout,
             outer_document_restart=args.outer_document_restart,
+            release_wisp_endpoint=args.release_wisp_endpoint,
         )
         print(
             f"{SENTINEL}:BROWSER_SMOKE_PASS "
