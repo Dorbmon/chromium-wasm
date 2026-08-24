@@ -35,8 +35,21 @@ constexpr char kRuntimeEvaluateCommand[] =
     R"json("(console.log('chromium-wasm-m8-devtools-console'),)json"
     R"json( typeof WebAssembly)","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kPageWebAssemblyRuntimeEvaluateCommand[] =
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(()=>{const b=new Uint8Array([)json"
+    R"json(0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,7,7,1,3,97,)json"
+    R"json(100,100,0,0,10,9,1,7,0,32,0,32,1,106,11]);)json"
+    R"json(if(!WebAssembly.validate(b))throw new Error('wasm validation failed');)json"
+    R"json(const m=new WebAssembly.Module(b);const i=new WebAssembly.Instance(m);)json"
+    R"json(const r=i.exports.add(20,22);if(r!==42)throw new Error('wasm add result was not 42');)json"
+    R"json(console.log('chromium-wasm-m8-page-webassembly-add-42');)json"
+    R"json(return 'wasm-add-42';})()","returnByValue":true,)json"
+    R"json("allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kFixedDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
+constexpr char kFixedPageWebAssemblyDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20smoke";
 constexpr char kNetworkEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 constexpr char kRuntimeEnableSuccessMarker[] =
@@ -45,6 +58,8 @@ constexpr char kRuntimeEvaluateSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
 constexpr char kPageWebAssemblyUnavailableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE";
+constexpr char kPageWebAssemblySuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
 constexpr char kRuntimeConsoleApiCalledSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 constexpr char kDetachedMarker[] =
@@ -56,16 +71,38 @@ constexpr int kRuntimeEvaluateCommandId = 3;
 constexpr size_t kMaximumProtocolResponseBytes = 4 * 1024;
 constexpr char kRuntimeEvaluateExpectedType[] = "string";
 constexpr char kRuntimeEvaluateExpectedValue[] = "undefined";
+constexpr char kPageWebAssemblyRuntimeEvaluateExpectedValue[] =
+    "wasm-add-42";
 constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
 constexpr char kRuntimeConsoleApiCalledExpectedType[] = "log";
 constexpr char kRuntimeConsoleApiCalledExpectedValue[] =
     "chromium-wasm-m8-devtools-console";
+constexpr char kPageWebAssemblyRuntimeConsoleApiCalledExpectedValue[] =
+    "chromium-wasm-m8-page-webassembly-add-42";
 
 }  // namespace
 
+GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
+    WasmBrowserDevToolsProtocolSmokeMode mode) {
+  if (mode ==
+      WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
+    return GURL(kFixedDevToolsProtocolSmokeUrl);
+  }
+  CHECK_EQ(mode,
+           WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
+  return GURL(kFixedPageWebAssemblyDevToolsProtocolSmokeUrl);
+}
+
 WasmBrowserDevToolsProtocolSmoke::WasmBrowserDevToolsProtocolSmoke(
     base::OnceClosure success_callback)
-    : success_callback_(std::move(success_callback)) {
+    : WasmBrowserDevToolsProtocolSmoke(
+          WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable,
+          std::move(success_callback)) {}
+
+WasmBrowserDevToolsProtocolSmoke::WasmBrowserDevToolsProtocolSmoke(
+    WasmBrowserDevToolsProtocolSmokeMode mode,
+    base::OnceClosure success_callback)
+    : mode_(mode), success_callback_(std::move(success_callback)) {
   CHECK(success_callback_);
 }
 
@@ -82,7 +119,7 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   CHECK(!primary_main_frame_);
   CHECK(!permitted_url_.is_valid());
 
-  const GURL expected_url(kFixedDevToolsProtocolSmokeUrl);
+  const GURL expected_url(GetWasmBrowserDevToolsProtocolSmokeUrl(mode_));
   CHECK(expected_url.is_valid());
   CHECK_EQ(web_contents->GetLastCommittedURL(), expected_url);
 
@@ -103,10 +140,11 @@ void WasmBrowserDevToolsProtocolSmoke::Start(
   state_ = State::kEnablingNetwork;
   // These three literal commands are the only protocol messages this client
   // can emit. There is no frontend, pipe, socket, host ABI, or caller-provided
-  // command surface. Runtime.evaluate runs one ordinary JavaScript expression
-  // only. It reads only |typeof WebAssembly| to make the current disabled
-  // page-WebAssembly boundary observable; it neither constructs nor compiles
-  // a page module and does not enable page WebAssembly.
+  // command surface. The default Runtime.evaluate expression reads only
+  // |typeof WebAssembly| to make the current disabled page-WebAssembly
+  // boundary observable; it neither constructs nor compiles a page module and
+  // does not enable page WebAssembly. The closed alternate expression uses
+  // only its literal module bytes and fixed add(20, 22) witnesses.
   agent_host_->DispatchProtocolMessage(
       this, base::byte_span_from_cstring(kNetworkEnableCommand));
 }
@@ -190,10 +228,25 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
       remote_result ? remote_result->FindString("type") : nullptr;
   const std::string* result_value =
       remote_result ? remote_result->FindString("value") : nullptr;
+  const char* expected_value = nullptr;
+  if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
+    expected_value = kRuntimeEvaluateExpectedValue;
+  } else {
+    CHECK_EQ(
+        mode_,
+        WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
+    expected_value = kPageWebAssemblyRuntimeEvaluateExpectedValue;
+  }
   if (!result_type || *result_type != kRuntimeEvaluateExpectedType ||
-      !result_value || *result_value != kRuntimeEvaluateExpectedValue) {
-    Fail("Runtime.evaluate did not return the fixed page-WebAssembly-unavailable "
-         "result");
+      !result_value || *result_value != expected_value) {
+    if (mode_ ==
+        WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
+      Fail("Runtime.evaluate did not return the fixed "
+           "page-WebAssembly-unavailable result");
+    }
+    Fail("Runtime.evaluate did not return the fixed "
+         "page-WebAssembly add(20, 22) result");
   }
   if (runtime_evaluate_response_received_) {
     Fail("Runtime.evaluate returned more than one fixed response");
@@ -201,7 +254,12 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   runtime_evaluate_response_received_ = true;
   std::fprintf(stderr, "%s\n", kRuntimeEvaluateSuccessMarker);
   std::fflush(stderr);
-  std::fprintf(stderr, "%s\n", kPageWebAssemblyUnavailableSuccessMarker);
+  if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
+    std::fprintf(stderr, "%s\n", kPageWebAssemblyUnavailableSuccessMarker);
+  } else {
+    std::fprintf(stderr, "%s\n", kPageWebAssemblySuccessMarker);
+  }
   std::fflush(stderr);
   CompleteRuntimeEvaluate();
 }
@@ -276,8 +334,17 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
   state_ = State::kEvaluatingRuntime;
   std::fprintf(stderr, "%s\n", kRuntimeEnableSuccessMarker);
   std::fflush(stderr);
+  if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
+    agent_host_->DispatchProtocolMessage(
+        this, base::byte_span_from_cstring(kRuntimeEvaluateCommand));
+    return;
+  }
+  CHECK_EQ(mode_,
+           WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
   agent_host_->DispatchProtocolMessage(
-      this, base::byte_span_from_cstring(kRuntimeEvaluateCommand));
+      this,
+      base::byte_span_from_cstring(kPageWebAssemblyRuntimeEvaluateCommand));
 }
 
 void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
@@ -294,10 +361,20 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
       argument ? argument->FindString("type") : nullptr;
   const std::string* argument_value =
       argument ? argument->FindString("value") : nullptr;
+  const char* expected_value = nullptr;
+  if (mode_ ==
+      WasmBrowserDevToolsProtocolSmokeMode::kPageWebAssemblyUnavailable) {
+    expected_value = kRuntimeConsoleApiCalledExpectedValue;
+  } else {
+    CHECK_EQ(
+        mode_,
+        WasmBrowserDevToolsProtocolSmokeMode::kValidateModuleInstanceAdd42);
+    expected_value = kPageWebAssemblyRuntimeConsoleApiCalledExpectedValue;
+  }
   if (!type || *type != kRuntimeConsoleApiCalledExpectedType ||
       !argument_type ||
       *argument_type != kRuntimeEvaluateExpectedType || !argument_value ||
-      *argument_value != kRuntimeConsoleApiCalledExpectedValue) {
+      *argument_value != expected_value) {
     Fail("Runtime.consoleAPICalled did not contain the fixed log argument");
   }
   if (runtime_console_api_called_received_) {

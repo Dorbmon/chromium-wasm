@@ -130,6 +130,12 @@ class WasmBrowserLifecycle final {
   // transport, or caller-selected protocol command.
   void StartDevToolsProtocolSmoke();
 
+  // Starts the separate, test-only fixed DevTools protocol proof that validates
+  // one literal page WebAssembly module and its add(20, 22) result. Like the
+  // unavailable-boundary proof, it has no host-selected URL, expression, or
+  // protocol-command surface.
+  void StartPageWebAssemblyDevToolsProtocolSmoke();
+
   // Starts the test-only fixed WebContents AX snapshot proof. It takes one
   // snapshot and permits only its fixed static semantic text into the passive
   // host mirror; it is not an interactive accessibility bridge.
@@ -167,6 +173,8 @@ class WasmBrowserLifecycle final {
   bool VerifyHostStorageEstimateSmokeCheck(int stage);
   bool OnHostStorageEstimateSmokePresented(int stage);
   void OnHostStorageEstimateSettingsNavigationObserved();
+  void StartDevToolsProtocolSmokeInternal(
+      bool exercises_page_webassembly);
   void OnDevToolsProtocolSmokeNavigationObserved();
   void OnDevToolsProtocolSmokeSucceeded();
   void BeginDevToolsProtocolSmokeShutdown();
@@ -247,6 +255,7 @@ class WasmBrowserLifecycle final {
   std::unique_ptr<WasmBrowserNavigationChurnSmoke>
       host_navigation_churn_smoke_;
   bool devtools_protocol_smoke_started_ = false;
+  bool devtools_protocol_smoke_exercises_page_webassembly_ = false;
   bool devtools_protocol_smoke_succeeded_ = false;
   raw_ptr<content::WebContents> devtools_protocol_smoke_contents_ = nullptr;
   std::unique_ptr<WasmBrowserDevToolsProtocolNavigationObserver>

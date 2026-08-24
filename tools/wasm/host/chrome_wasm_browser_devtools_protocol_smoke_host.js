@@ -11,6 +11,13 @@ const SCOPE =
     "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
     "runtime-enable-runtime-evaluate-console-event-detach-close";
 const SWITCH = "--wasm-browser-devtools-protocol-smoke";
+const PAGE_WEBASSEMBLY_MODE = "page-webassembly";
+const PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8";
+const PAGE_WEBASSEMBLY_SCOPE =
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-" +
+    "runtime-enable-runtime-evaluate-page-webassembly-validate-module-instance-" +
+    "add42-console-event-detach-close";
+const PAGE_WEBASSEMBLY_SWITCH = "--wasm-browser-m8-page-webassembly-smoke";
 const NETWORK_ENABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 const RUNTIME_ENABLE_MARKER =
@@ -19,6 +26,9 @@ const RUNTIME_EVALUATE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_EVALUATE_OK";
 const PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE";
+const PAGE_WEBASSEMBLY_ADD42_MARKER =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:" +
+    "VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK";
 const RUNTIME_CONSOLE_API_CALLED_MARKER =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 const DETACHED_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:DETACHED";
@@ -27,6 +37,53 @@ const LIFECYCLE_PASS_MARKER = "CHROMIUM_WASM_M6_BROWSER_LIFECYCLE:PASS";
 const MAX_TIMEOUT_MS = 120000;
 const MAX_FRAME_DIMENSION = 16384;
 const MAX_RECORD_HISTORY = 64;
+const HOST_ROOT = "/__m8_browser_devtools_protocol__";
+
+const DEFAULT_SMOKE_MODE = Object.freeze({
+  id: "default",
+  queryMode: null,
+  case: CASE,
+  scope: SCOPE,
+  runtimeArguments: Object.freeze([SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({
+    pageWebAssemblyUnavailableObserved: true,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
+
+const PAGE_WEBASSEMBLY_SMOKE_MODE = Object.freeze({
+  id: PAGE_WEBASSEMBLY_MODE,
+  queryMode: PAGE_WEBASSEMBLY_MODE,
+  case: PAGE_WEBASSEMBLY_CASE,
+  scope: PAGE_WEBASSEMBLY_SCOPE,
+  runtimeArguments: Object.freeze([PAGE_WEBASSEMBLY_SWITCH]),
+  pageWebAssemblyExpectations: Object.freeze({
+    pageWebAssemblyUnavailableObserved: false,
+    pageWebAssemblyAdd42Observed: true,
+    pageWebAssemblyTablesObserved: false,
+    pageWebAssemblyMemoriesObserved: false,
+    pageWebAssemblyExceptionsObserved: false,
+    pageWebAssemblyMemoryGrowthObserved: false,
+    pageWebAssemblyThreadsObserved: false,
+  }),
+  nativeMarkers: Object.freeze([
+    NETWORK_ENABLE_MARKER,
+    RUNTIME_ENABLE_MARKER,
+    RUNTIME_EVALUATE_MARKER,
+    PAGE_WEBASSEMBLY_ADD42_MARKER,
+    RUNTIME_CONSOLE_API_CALLED_MARKER,
+    DETACHED_MARKER,
+    LIFECYCLE_PASS_MARKER,
+  ]),
+});
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -111,7 +168,15 @@ function markerIndex(records, marker) {
   return records.findIndex((record) => record.includes(marker));
 }
 
-function validateResult(result) {
+function isKnownSmokeMode(smokeMode) {
+  return smokeMode === DEFAULT_SMOKE_MODE ||
+      smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE;
+}
+
+function validateResult(result, smokeMode) {
+  if (!isKnownSmokeMode(smokeMode)) {
+    throw new Error("DevTools protocol smoke mode is not fixed");
+  }
   const failures = [];
   const require = (condition, message) => {
     if (!condition) {
@@ -133,8 +198,11 @@ function validateResult(result) {
       "Runtime.enable marker was not observed");
   require(result.runtimeEvaluateObserved === true,
       "Runtime.evaluate marker was not observed");
-  require(result.pageWebAssemblyUnavailableObserved === true,
-      "page WebAssembly unavailable marker was not observed");
+  for (const [field, expected] of Object.entries(
+      smokeMode.pageWebAssemblyExpectations)) {
+    require(result[field] === expected,
+        "page WebAssembly expectation mismatch: " + field);
+  }
   require(result.runtimeConsoleApiCalledObserved === true,
       "Runtime.consoleAPICalled marker was not observed");
   require(result.detachedObserved === true, "detach marker was not observed");
@@ -151,15 +219,7 @@ function validateResult(result) {
       "host did not observe a ready canvas surface");
 
   const stderr = result.stderr;
-  const markers = [
-    NETWORK_ENABLE_MARKER,
-    RUNTIME_ENABLE_MARKER,
-    RUNTIME_EVALUATE_MARKER,
-    PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
-    RUNTIME_CONSOLE_API_CALLED_MARKER,
-    DETACHED_MARKER,
-    LIFECYCLE_PASS_MARKER,
-  ];
+  const markers = smokeMode.nativeMarkers;
   const positions = {};
   if (Array.isArray(stderr)) {
     for (const marker of markers) {
@@ -172,10 +232,12 @@ function validateResult(result) {
   } else {
     require(false, "native stderr is not a list");
   }
+  const pageWebAssemblyMarker = smokeMode === PAGE_WEBASSEMBLY_SMOKE_MODE ?
+      PAGE_WEBASSEMBLY_ADD42_MARKER : PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER;
   require(positions[NETWORK_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_ENABLE_MARKER] >= 0 &&
               positions[RUNTIME_EVALUATE_MARKER] >= 0 &&
-              positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER] >= 0 &&
+              positions[pageWebAssemblyMarker] >= 0 &&
               positions[RUNTIME_CONSOLE_API_CALLED_MARKER] >= 0 &&
               positions[DETACHED_MARKER] >= 0 &&
               positions[LIFECYCLE_PASS_MARKER] >= 0 &&
@@ -186,8 +248,8 @@ function validateResult(result) {
               positions[RUNTIME_ENABLE_MARKER] <
                   positions[RUNTIME_CONSOLE_API_CALLED_MARKER] &&
               positions[RUNTIME_EVALUATE_MARKER] <
-                  positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER] &&
-              positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER] <
+                  positions[pageWebAssemblyMarker] &&
+              positions[pageWebAssemblyMarker] <
                   positions[DETACHED_MARKER] &&
               positions[RUNTIME_CONSOLE_API_CALLED_MARKER] <
                   positions[DETACHED_MARKER] &&
@@ -204,6 +266,7 @@ function validateResult(result) {
 class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #canvas;
   #versions;
+  #smokeMode;
   #module = null;
   #stdout = [];
   #stderr = [];
@@ -224,18 +287,23 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   #runtimeEnableObserved = false;
   #runtimeEvaluateObserved = false;
   #pageWebAssemblyUnavailableObserved = false;
+  #pageWebAssemblyAdd42Observed = false;
   #runtimeConsoleApiCalledObserved = false;
   #detachedObserved = false;
   #lifecyclePassObserved = false;
   #errorHandler;
   #rejectionHandler;
 
-  constructor(canvas, versions) {
+  constructor(canvas, versions, smokeMode) {
     if (!(canvas instanceof HTMLCanvasElement)) {
       throw new Error("DevTools protocol smoke requires a canvas");
     }
+    if (!isKnownSmokeMode(smokeMode)) {
+      throw new Error("DevTools protocol smoke mode is not fixed");
+    }
     this.#canvas = canvas;
     this.#versions = versions;
+    this.#smokeMode = smokeMode;
     this.#runtimeExitPromise = new Promise((resolve) => {
       this.#runtimeExitResolver = resolve;
     });
@@ -277,6 +345,9 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
     }
     if (text.includes(PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER)) {
       this.#pageWebAssemblyUnavailableObserved = true;
+    }
+    if (text.includes(PAGE_WEBASSEMBLY_ADD42_MARKER)) {
+      this.#pageWebAssemblyAdd42Observed = true;
     }
     if (text.includes(RUNTIME_CONSOLE_API_CALLED_MARKER)) {
       this.#runtimeConsoleApiCalledObserved = true;
@@ -381,10 +452,24 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   }
 
   #result(status, error) {
+    const pageWebAssemblyResult = this.#smokeMode ===
+        PAGE_WEBASSEMBLY_SMOKE_MODE ? {
+      pageWebAssemblyUnavailableObserved:
+          this.#pageWebAssemblyUnavailableObserved,
+      pageWebAssemblyAdd42Observed: this.#pageWebAssemblyAdd42Observed,
+      pageWebAssemblyTablesObserved: false,
+      pageWebAssemblyMemoriesObserved: false,
+      pageWebAssemblyExceptionsObserved: false,
+      pageWebAssemblyMemoryGrowthObserved: false,
+      pageWebAssemblyThreadsObserved: false,
+    } : {
+      pageWebAssemblyUnavailableObserved:
+          this.#pageWebAssemblyUnavailableObserved,
+    };
     return {
       protocol: HOST_PROTOCOL,
-      case: CASE,
-      scope: SCOPE,
+      case: this.#smokeMode.case,
+      scope: this.#smokeMode.scope,
       status,
       m8GateComplete: false,
       runtimeExitCode: this.#runtimeExitCode,
@@ -396,8 +481,7 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       networkEnableObserved: this.#networkEnableObserved,
       runtimeEnableObserved: this.#runtimeEnableObserved,
       runtimeEvaluateObserved: this.#runtimeEvaluateObserved,
-      pageWebAssemblyUnavailableObserved:
-          this.#pageWebAssemblyUnavailableObserved,
+      ...pageWebAssemblyResult,
       runtimeConsoleApiCalledObserved: this.#runtimeConsoleApiCalledObserved,
       detachedObserved: this.#detachedObserved,
       lifecyclePassObserved: this.#lifecyclePassObserved,
@@ -451,7 +535,8 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
       }
       const host = this;
       namespace.default({
-        arguments: [SWITCH],
+        arguments: this.#smokeMode === DEFAULT_SMOKE_MODE ?
+            [SWITCH] : [PAGE_WEBASSEMBLY_SWITCH],
         canvas: this.#canvas,
         noExitRuntime: false,
         mainScriptUrlOrBlob,
@@ -493,15 +578,78 @@ class ChromiumWasmBrowserDevToolsProtocolSmokeHost {
   }
 }
 
-export async function runChromeWasmBrowserDevToolsProtocolSmokeFromQuery() {
-  const query = new URLSearchParams(location.search);
-  const token = asNonemptyString(query.get("token"), "result token");
-  const moduleName = asNonemptyString(query.get("module"), "module name");
+function requireSingleQueryValue(query, key, description) {
+  const values = query.getAll(key);
+  if (values.length !== 1) {
+    throw new Error(description + " must occur exactly once");
+  }
+  return asNonemptyString(values[0], description);
+}
+
+export function parseDevToolsProtocolSmokeQuery(query) {
+  if (!(query instanceof URLSearchParams)) {
+    throw new Error("DevTools protocol query must be URLSearchParams");
+  }
+  const acceptedKeys =
+      new Set(["token", "module", "timeoutMs", "versions", "mode"]);
+  for (const key of query.keys()) {
+    if (!acceptedKeys.has(key)) {
+      throw new Error(
+          "DevTools protocol query has an unsupported field: " + key);
+    }
+  }
+  const token = requireSingleQueryValue(query, "token", "result token");
+  const moduleName = requireSingleQueryValue(query, "module", "module name");
   if (!/^[A-Za-z0-9_]+$/.test(moduleName)) {
     throw new Error("module name contains unsupported characters");
   }
-  const timeoutMs = Number(query.get("timeoutMs"));
-  const versions = parseVersions(query.get("versions"));
+  const timeoutMs = Number(requireSingleQueryValue(
+      query, "timeoutMs", "DevTools protocol timeout"));
+  const versions = parseVersions(requireSingleQueryValue(
+      query, "versions", "DevTools protocol versions"));
+  const modes = query.getAll("mode");
+  let smokeMode;
+  if (modes.length === 0) {
+    smokeMode = DEFAULT_SMOKE_MODE;
+  } else if (modes.length === 1 && modes[0] === PAGE_WEBASSEMBLY_MODE) {
+    smokeMode = PAGE_WEBASSEMBLY_SMOKE_MODE;
+  } else {
+    throw new Error("DevTools protocol query has an invalid mode");
+  }
+  return Object.freeze({token, moduleName, timeoutMs, versions, smokeMode});
+}
+
+async function fetchExpectedSmokeMode(token) {
+  const response = await fetch(
+      HOST_ROOT + "/config/" + encodeURIComponent(token), {cache: "no-store"});
+  if (!response.ok) {
+    throw new Error("DevTools protocol mode binding returned HTTP " +
+        response.status);
+  }
+  let binding;
+  try {
+    binding = JSON.parse(await response.text());
+  } catch (error) {
+    throw new Error("DevTools protocol mode binding is not JSON: " +
+        String(error));
+  }
+  if (!binding || typeof binding !== "object" || Array.isArray(binding) ||
+      binding.protocol !== HOST_PROTOCOL ||
+      !Object.hasOwn(binding, "mode") || Object.keys(binding).length !== 2 ||
+      (binding.mode !== DEFAULT_SMOKE_MODE.id &&
+       binding.mode !== PAGE_WEBASSEMBLY_SMOKE_MODE.id)) {
+    throw new Error("DevTools protocol mode binding is invalid");
+  }
+  return binding.mode;
+}
+
+export async function runChromeWasmBrowserDevToolsProtocolSmokeFromQuery() {
+  const parameters = parseDevToolsProtocolSmokeQuery(
+      new URLSearchParams(location.search));
+  const expectedSmokeMode = await fetchExpectedSmokeMode(parameters.token);
+  if (expectedSmokeMode !== parameters.smokeMode.id) {
+    throw new Error("DevTools protocol query mode does not match its binding");
+  }
   const root = document.querySelector("#browser-devtools-protocol-root");
   const canvas = document.querySelector("#browser-canvas");
   const status = document.querySelector("#browser-devtools-protocol-status");
@@ -510,15 +658,16 @@ export async function runChromeWasmBrowserDevToolsProtocolSmokeFromQuery() {
       !(status instanceof HTMLElement) || !(versionElement instanceof HTMLElement)) {
     throw new Error("DevTools protocol page is missing required elements");
   }
-  renderVersions(versionElement, versions);
-  const host = new ChromiumWasmBrowserDevToolsProtocolSmokeHost(canvas, versions);
+  renderVersions(versionElement, parameters.versions);
+  const host = new ChromiumWasmBrowserDevToolsProtocolSmokeHost(
+      canvas, parameters.versions, parameters.smokeMode);
   const result = validateResult(await host.run(
-      "/__m8_browser_devtools_protocol__/artifacts/" + moduleName + ".js",
-      timeoutMs));
+      HOST_ROOT + "/artifacts/" + parameters.moduleName + ".js",
+      parameters.timeoutMs), parameters.smokeMode);
   root.dataset.state = result.status;
   status.textContent = JSON.stringify(result, null, 2);
   const response = await fetch(
-      "/__m8_browser_devtools_protocol__/result/" + encodeURIComponent(token), {
+      HOST_ROOT + "/result/" + encodeURIComponent(parameters.token), {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(result),

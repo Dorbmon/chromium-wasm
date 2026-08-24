@@ -1212,6 +1212,15 @@ void WasmBrowserLifecycle::StartHostStorageEstimateSmoke() {
 }
 
 void WasmBrowserLifecycle::StartDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(/*exercises_page_webassembly=*/false);
+}
+
+void WasmBrowserLifecycle::StartPageWebAssemblyDevToolsProtocolSmoke() {
+  StartDevToolsProtocolSmokeInternal(/*exercises_page_webassembly=*/true);
+}
+
+void WasmBrowserLifecycle::StartDevToolsProtocolSmokeInternal(
+    bool exercises_page_webassembly) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   CHECK(initialized_);
   CHECK(!shutdown_started_);
@@ -1237,9 +1246,16 @@ void WasmBrowserLifecycle::StartDevToolsProtocolSmoke() {
   CHECK(contents->GetPrimaryMainFrame());
   CHECK_EQ(browser_->GetBrowserView().GetActiveWebContents(), contents);
 
-  const GURL smoke_url(kDevToolsProtocolSmokeUrl);
+  const GURL smoke_url =
+      exercises_page_webassembly
+          ? GetWasmBrowserDevToolsProtocolSmokeUrl(
+                WasmBrowserDevToolsProtocolSmokeMode::
+                    kValidateModuleInstanceAdd42)
+          : GURL(kDevToolsProtocolSmokeUrl);
   CHECK(smoke_url.is_valid());
   devtools_protocol_smoke_started_ = true;
+  devtools_protocol_smoke_exercises_page_webassembly_ =
+      exercises_page_webassembly;
   devtools_protocol_smoke_contents_ = contents;
   devtools_protocol_smoke_navigation_observer_ =
       std::make_unique<WasmBrowserDevToolsProtocolNavigationObserver>(
@@ -1274,12 +1290,30 @@ void WasmBrowserLifecycle::OnDevToolsProtocolSmokeNavigationObserved() {
       contents->GetPrimaryMainFrame();
   CHECK(primary_main_frame);
   CHECK(primary_main_frame->IsRenderFrameLive());
-  CHECK_EQ(contents->GetLastCommittedURL(), GURL(kDevToolsProtocolSmokeUrl));
+  const GURL expected_url =
+      devtools_protocol_smoke_exercises_page_webassembly_
+          ? GetWasmBrowserDevToolsProtocolSmokeUrl(
+                WasmBrowserDevToolsProtocolSmokeMode::
+                    kValidateModuleInstanceAdd42)
+          : GURL(kDevToolsProtocolSmokeUrl);
+  CHECK_EQ(contents->GetLastCommittedURL(), expected_url);
 
   devtools_protocol_smoke_navigation_observer_.reset();
-  devtools_protocol_smoke_ = std::make_unique<WasmBrowserDevToolsProtocolSmoke>(
-      base::BindOnce(&WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded,
-                     weak_ptr_factory_.GetWeakPtr()));
+  if (devtools_protocol_smoke_exercises_page_webassembly_) {
+    devtools_protocol_smoke_ =
+        std::make_unique<WasmBrowserDevToolsProtocolSmoke>(
+            WasmBrowserDevToolsProtocolSmokeMode::
+                kValidateModuleInstanceAdd42,
+            base::BindOnce(
+                &WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded,
+                weak_ptr_factory_.GetWeakPtr()));
+  } else {
+    devtools_protocol_smoke_ =
+        std::make_unique<WasmBrowserDevToolsProtocolSmoke>(
+            base::BindOnce(
+                &WasmBrowserLifecycle::OnDevToolsProtocolSmokeSucceeded,
+                weak_ptr_factory_.GetWeakPtr()));
+  }
   devtools_protocol_smoke_->Start(contents);
 }
 

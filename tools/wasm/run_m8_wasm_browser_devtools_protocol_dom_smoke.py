@@ -6,8 +6,8 @@
 """Run the fixed in-process DevTools protocol smoke in a real browser host.
 
 The real browser supplies the cross-origin-isolated worker environment needed
-by the mandatory OPFS profile backend.  This runner serves immutable snapshots
-of one built loader and Wasm module, then requires the native fixed
+by the threaded Wasm Chrome host. This runner serves immutable snapshots of
+one built loader and Wasm module, then requires the native fixed
 Network.enable, Runtime.enable, Runtime.evaluate, Console API event, detach,
 and lifecycle-close markers.  It is neither a DevTools frontend nor a remote
 debugging/protocol transport, and it does not claim M8 completion.
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from dataclasses import dataclass
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,6 +56,15 @@ SCOPE = (
     "runtime-enable-runtime-evaluate-console-event-detach-close"
 )
 SWITCH = "--wasm-browser-devtools-protocol-smoke"
+PAGE_WEBASSEMBLY_SENTINEL = "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_DOM"
+PAGE_WEBASSEMBLY_MODE = "page-webassembly"
+PAGE_WEBASSEMBLY_CASE = "browser_page_webassembly_m8"
+PAGE_WEBASSEMBLY_SCOPE = (
+    "fixed-data-url-primary-webcontents-native-devtools-client-network-enable-"
+    "runtime-enable-runtime-evaluate-page-webassembly-validate-module-instance-"
+    "add42-console-event-detach-close"
+)
+PAGE_WEBASSEMBLY_SWITCH = "--wasm-browser-m8-page-webassembly-smoke"
 NETWORK_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK"
 RUNTIME_ENABLE_MARKER = "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_ENABLE_OK"
 RUNTIME_EVALUATE_MARKER = (
@@ -62,6 +72,10 @@ RUNTIME_EVALUATE_MARKER = (
 )
 PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:PAGE_WEBASSEMBLY_UNAVAILABLE"
+)
+PAGE_WEBASSEMBLY_ADD42_MARKER = (
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "VALIDATED_MODULE_CONSTRUCTED_INSTANCE_ADD_42_OK"
 )
 RUNTIME_CONSOLE_API_CALLED_MARKER = (
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK"
@@ -80,6 +94,105 @@ LIMITATIONS = (
     "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
     "does_not_claim_m8_compatibility_completion",
 )
+PAGE_WEBASSEMBLY_LIMITATIONS = (
+    "only_validates_one_fixed_page_webassembly_module_instance_add42_path",
+    "does_not_exercise_page_webassembly_tables",
+    "does_not_exercise_page_webassembly_memories",
+    "does_not_exercise_page_webassembly_exceptions",
+    "does_not_exercise_page_webassembly_memory_growth",
+    "does_not_exercise_page_webassembly_threads",
+    "does_not_provide_a_devtools_frontend_or_generic_protocol_bridge",
+    "does_not_claim_m8_compatibility_completion",
+)
+
+
+@dataclass(frozen=True)
+class DevToolsProtocolSmokeConfig:
+    """One closed native DevTools smoke configuration.
+
+    The runner never relays a caller-provided DevTools command, URL, or page
+    expression.  The optional page-WebAssembly configuration is another fixed
+    native smoke rather than a general WebAssembly test surface.
+    """
+
+    mode_id: str
+    query_mode: str | None
+    sentinel: str
+    case: str
+    scope: str
+    runtime_arguments: tuple[str, ...]
+    native_markers: tuple[str, ...]
+    page_webassembly_expectations: tuple[tuple[str, object], ...]
+    limitations: tuple[str, ...]
+
+
+DEFAULT_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id="default",
+    query_mode=None,
+    sentinel=SENTINEL,
+    case=CASE,
+    scope=SCOPE,
+    runtime_arguments=(SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(
+        ("pageWebAssemblyUnavailableObserved", True),
+    ),
+    limitations=LIMITATIONS,
+)
+
+PAGE_WEBASSEMBLY_SMOKE_CONFIG = DevToolsProtocolSmokeConfig(
+    mode_id=PAGE_WEBASSEMBLY_MODE,
+    query_mode=PAGE_WEBASSEMBLY_MODE,
+    sentinel=PAGE_WEBASSEMBLY_SENTINEL,
+    case=PAGE_WEBASSEMBLY_CASE,
+    scope=PAGE_WEBASSEMBLY_SCOPE,
+    runtime_arguments=(PAGE_WEBASSEMBLY_SWITCH,),
+    native_markers=(
+        NETWORK_ENABLE_MARKER,
+        RUNTIME_ENABLE_MARKER,
+        RUNTIME_EVALUATE_MARKER,
+        PAGE_WEBASSEMBLY_ADD42_MARKER,
+        RUNTIME_CONSOLE_API_CALLED_MARKER,
+        DETACHED_MARKER,
+        LIFECYCLE_PASS_MARKER,
+    ),
+    page_webassembly_expectations=(
+        ("pageWebAssemblyUnavailableObserved", False),
+        ("pageWebAssemblyAdd42Observed", True),
+        ("pageWebAssemblyTablesObserved", False),
+        ("pageWebAssemblyMemoriesObserved", False),
+        ("pageWebAssemblyExceptionsObserved", False),
+        ("pageWebAssemblyMemoryGrowthObserved", False),
+        ("pageWebAssemblyThreadsObserved", False),
+    ),
+    limitations=PAGE_WEBASSEMBLY_LIMITATIONS,
+)
+
+
+def smoke_config_for_page_webassembly(
+    page_webassembly: bool,
+) -> DevToolsProtocolSmokeConfig:
+    return (
+        PAGE_WEBASSEMBLY_SMOKE_CONFIG
+        if page_webassembly
+        else DEFAULT_SMOKE_CONFIG
+    )
+
+
+def _require_known_smoke_config(smoke_config: DevToolsProtocolSmokeConfig) -> None:
+    if smoke_config not in (
+        DEFAULT_SMOKE_CONFIG,
+        PAGE_WEBASSEMBLY_SMOKE_CONFIG,
+    ):
+        raise M0Error("DevTools protocol smoke configuration is not fixed")
 
 
 class DevToolsProtocolSmokeServer(ThreadingHTTPServer):
@@ -94,6 +207,7 @@ class DevToolsProtocolSmokeServer(ThreadingHTTPServer):
     result_queue: queue.Queue[dict[str, Any]]
     result_lock: threading.Lock
     result_received: bool
+    smoke_config: DevToolsProtocolSmokeConfig
 
 
 class DevToolsProtocolSmokeRequestHandler(BaseHTTPRequestHandler):
@@ -140,6 +254,20 @@ class DevToolsProtocolSmokeRequestHandler(BaseHTTPRequestHandler):
                 self.server.host_js,
             )
             return
+        if path == f"{HOST_ROOT}/config/{self.server.result_token}":
+            mode_payload = json.dumps(
+                {
+                    "protocol": 1,
+                    "mode": self.server.smoke_config.mode_id,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self._send_bytes(
+                HTTPStatus.OK,
+                "application/json; charset=utf-8",
+                mode_payload,
+            )
+            return
         prefix = f"{HOST_ROOT}/artifacts/"
         if path.startswith(prefix):
             name = path[len(prefix) :]
@@ -172,7 +300,9 @@ class DevToolsProtocolSmokeRequestHandler(BaseHTTPRequestHandler):
                 b"invalid result size\n",
             )
             return
-        result = parse_result_payload(self.rfile.read(byte_count))
+        result = parse_result_payload(
+            self.rfile.read(byte_count), smoke_config=self.server.smoke_config
+        )
         if result is None:
             self._send_bytes(
                 HTTPStatus.BAD_REQUEST,
@@ -202,7 +332,12 @@ class DevToolsProtocolSmokeRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def parse_result_payload(payload: bytes) -> dict[str, Any] | None:
+def parse_result_payload(
+    payload: bytes,
+    *,
+    smoke_config: DevToolsProtocolSmokeConfig = DEFAULT_SMOKE_CONFIG,
+) -> dict[str, Any] | None:
+    _require_known_smoke_config(smoke_config)
     try:
         result = json.loads(
             payload.decode("utf-8"),
@@ -214,8 +349,8 @@ def parse_result_payload(payload: bytes) -> dict[str, Any] | None:
         not isinstance(result, dict)
         or type(result.get("protocol")) is not int
         or result.get("protocol") != 1
-        or result.get("case") != CASE
-        or result.get("scope") != SCOPE
+        or result.get("case") != smoke_config.case
+        or result.get("scope") != smoke_config.scope
     ):
         return None
     return result
@@ -229,9 +364,11 @@ def create_server(
     result_queue: queue.Queue[dict[str, Any]],
     *,
     module_name: str,
+    smoke_config: DevToolsProtocolSmokeConfig = DEFAULT_SMOKE_CONFIG,
 ) -> DevToolsProtocolSmokeServer:
     if not MODULE_NAME_RE.fullmatch(module_name):
         raise M0Error("module name must contain only ASCII letters, digits, or _")
+    _require_known_smoke_config(smoke_config)
     out_dir = out_dir.resolve()
     host_dir = Path(__file__).with_name("host")
     artifacts = snapshot_regular_files(
@@ -264,6 +401,7 @@ def create_server(
     server.result_queue = result_queue
     server.result_lock = threading.Lock()
     server.result_received = False
+    server.smoke_config = smoke_config
     return server
 
 
@@ -290,16 +428,19 @@ def smoke_url(
     *,
     module_name: str,
     timeout_seconds: float,
+    smoke_config: DevToolsProtocolSmokeConfig = DEFAULT_SMOKE_CONFIG,
 ) -> str:
+    _require_known_smoke_config(smoke_config)
     host, port = server.server_address[:2]
-    query = urlencode(
-        {
-            "token": token,
-            "module": module_name,
-            "timeoutMs": str(int(timeout_seconds * 1000)),
-            "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
-        }
-    )
+    query_values = {
+        "token": token,
+        "module": module_name,
+        "timeoutMs": str(int(timeout_seconds * 1000)),
+        "versions": json.dumps(versions, sort_keys=True, separators=(",", ":")),
+    }
+    if smoke_config.query_mode is not None:
+        query_values["mode"] = smoke_config.query_mode
+    query = urlencode(query_values)
     return f"http://{host}:{port}{HOST_ROOT}/?{query}"
 
 
@@ -311,17 +452,14 @@ def _require_equal(result: dict[str, Any], field: str, expected: object) -> None
         )
 
 
-def _require_unique_ordered_markers(stderr: list[object]) -> None:
+def _require_unique_ordered_markers(
+    stderr: list[object],
+    *,
+    smoke_config: DevToolsProtocolSmokeConfig = DEFAULT_SMOKE_CONFIG,
+) -> None:
+    _require_known_smoke_config(smoke_config)
     output = "\n".join(str(value) for value in stderr)
-    markers = (
-        NETWORK_ENABLE_MARKER,
-        RUNTIME_ENABLE_MARKER,
-        RUNTIME_EVALUATE_MARKER,
-        PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER,
-        RUNTIME_CONSOLE_API_CALLED_MARKER,
-        DETACHED_MARKER,
-        LIFECYCLE_PASS_MARKER,
-    )
+    markers = smoke_config.native_markers
     positions: dict[str, int] = {}
     for marker in markers:
         count = output.count(marker)
@@ -332,10 +470,15 @@ def _require_unique_ordered_markers(stderr: list[object]) -> None:
         positions[marker] = output.index(marker)
     if FAILURE_MARKER in output:
         raise M0Error("DevTools protocol native smoke emitted a failure marker")
+    page_webassembly_marker = (
+        PAGE_WEBASSEMBLY_ADD42_MARKER
+        if smoke_config == PAGE_WEBASSEMBLY_SMOKE_CONFIG
+        else PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER
+    )
     if not (
         positions[NETWORK_ENABLE_MARKER] < positions[RUNTIME_ENABLE_MARKER]
         < positions[RUNTIME_EVALUATE_MARKER]
-        < positions[PAGE_WEBASSEMBLY_UNAVAILABLE_MARKER]
+        < positions[page_webassembly_marker]
         < positions[DETACHED_MARKER]
         < positions[LIFECYCLE_PASS_MARKER]
         and positions[RUNTIME_ENABLE_MARKER]
@@ -345,11 +488,17 @@ def _require_unique_ordered_markers(stderr: list[object]) -> None:
         raise M0Error("DevTools protocol native markers are not ordered")
 
 
-def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]) -> None:
-    for field, expected in {
+def validate_result(
+    result: dict[str, Any],
+    *,
+    expected_versions: dict[str, str],
+    smoke_config: DevToolsProtocolSmokeConfig = DEFAULT_SMOKE_CONFIG,
+) -> None:
+    _require_known_smoke_config(smoke_config)
+    expected_fields = {
         "protocol": 1,
-        "case": CASE,
-        "scope": SCOPE,
+        "case": smoke_config.case,
+        "scope": smoke_config.scope,
         "status": "pass",
         "m8GateComplete": False,
         "runtimeExitCode": 0,
@@ -360,14 +509,15 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
         "networkEnableObserved": True,
         "runtimeEnableObserved": True,
         "runtimeEvaluateObserved": True,
-        "pageWebAssemblyUnavailableObserved": True,
         "runtimeConsoleApiCalledObserved": True,
         "detachedObserved": True,
         "lifecyclePassObserved": True,
         "abort": None,
         "failedChecks": [],
         "error": None,
-    }.items():
+    }
+    expected_fields.update(smoke_config.page_webassembly_expectations)
+    for field, expected in expected_fields.items():
         _require_equal(result, field, expected)
     process_exit_code = result.get("processExitCode")
     if process_exit_code is not None and (
@@ -382,7 +532,7 @@ def validate_result(result: dict[str, Any], *, expected_versions: dict[str, str]
     stderr = result.get("stderr")
     if not isinstance(stderr, list):
         raise M0Error("DevTools protocol stderr is not a list")
-    _require_unique_ordered_markers(stderr)
+    _require_unique_ordered_markers(stderr, smoke_config=smoke_config)
     browser_view_smoke._validate_frame_reports(result.get("frameReports"))
     browser_view_smoke._validate_readiness(
         result.get("readiness"), result.get("readinessReports")
@@ -422,14 +572,15 @@ def write_failure_diagnostics(
     browser: subprocess.Popen[str] | None,
     browser_stderr: deque[str],
     runtime_result: dict[str, Any] | None,
+    smoke_config: DevToolsProtocolSmokeConfig,
 ) -> Path:
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     path = diagnostics_dir / "chrome-browser-devtools-protocol-m8-failure.json"
     payload = {
         "schema_version": 1,
         "runner": "run_m8_wasm_browser_devtools_protocol_dom_smoke.py",
-        "case": CASE,
-        "scope": SCOPE,
+        "case": smoke_config.case,
+        "scope": smoke_config.scope,
         "stage": stage,
         "failure": {"type": type(error).__name__, "message": str(error)},
         "host_browser": {
@@ -440,6 +591,8 @@ def write_failure_diagnostics(
         },
         "runtime_result": runtime_result,
     }
+    if smoke_config.query_mode is not None:
+        payload["mode"] = smoke_config.mode_id
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -457,12 +610,21 @@ def main() -> int:
     parser.add_argument("--module-name", default="chrome_wasm")
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
+    parser.add_argument(
+        "--page-webassembly",
+        action="store_true",
+        help=(
+            "run the fixed native page-WebAssembly validate/module/instance/add42 "
+            "DevTools smoke"
+        ),
+    )
     parser.add_argument("--timeout", type=parse_timeout, default=60.0)
     args = parser.parse_args()
     if args.timeout < 2.0:
         parser.error("--timeout must be at least two seconds")
     if not MODULE_NAME_RE.fullmatch(args.module_name):
         parser.error("--module-name must contain only ASCII letters, digits, or _")
+    smoke_config = smoke_config_for_page_webassembly(args.page_webassembly)
 
     out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
     diagnostics_dir = args.diagnostics_dir or out_dir / "diagnostics"
@@ -490,14 +652,14 @@ def main() -> int:
         print_context(
             "run_m8_wasm_browser_devtools_protocol_dom_smoke.py",
             manifest,
-            case=CASE,
-            scope=SCOPE,
+            case=smoke_config.case,
+            scope=smoke_config.scope,
             gn_args=manifest.get("m6_chrome_gn_args", manifest.get("gn_args")),
             module_name=args.module_name,
             host_browser_sandbox=not args.no_sandbox,
             artifact_delivery=ARTIFACT_DELIVERY,
-            runtime_arguments=[SWITCH],
-            limitations=list(LIMITATIONS),
+            runtime_arguments=list(smoke_config.runtime_arguments),
+            limitations=list(smoke_config.limitations),
         )
         stage = "find_browser"
         browser_path, browser_version = find_browser(args.browser)
@@ -511,6 +673,7 @@ def main() -> int:
             token,
             result_queue,
             module_name=args.module_name,
+            smoke_config=smoke_config,
         )
         server_thread = threading.Thread(
             target=server.serve_forever,
@@ -524,6 +687,7 @@ def main() -> int:
             versions,
             module_name=args.module_name,
             timeout_seconds=max(1.0, args.timeout - 1.0),
+            smoke_config=smoke_config,
         )
         profile = tempfile.TemporaryDirectory(
             prefix="chromium-wasm-m8-devtools-protocol-"
@@ -554,20 +718,22 @@ def main() -> int:
             browser, browser_stderr, result_queue, time.monotonic() + args.timeout
         )
         stage = "validate_result"
-        validate_result(result, expected_versions=versions)
+        validate_result(
+            result, expected_versions=versions, smoke_config=smoke_config
+        )
         print(
-            f"{SENTINEL}:ARTIFACT "
+            f"{smoke_config.sentinel}:ARTIFACT "
             + json.dumps(
                 artifact_identity(server), sort_keys=True, separators=(",", ":")
             ),
             flush=True,
         )
         print(
-            f"{SENTINEL}:BROWSER_RESULT "
+            f"{smoke_config.sentinel}:BROWSER_RESULT "
             + json.dumps(result, sort_keys=True, separators=(",", ":")),
             flush=True,
         )
-        print(f"{SENTINEL}:PASS", flush=True)
+        print(f"{smoke_config.sentinel}:PASS", flush=True)
         return 0
     except (M0Error, OSError, KeyError, TypeError, ValueError) as exc:
         if browser is not None:
@@ -584,18 +750,23 @@ def main() -> int:
                 browser=browser,
                 browser_stderr=browser_stderr,
                 runtime_result=result,
+                smoke_config=smoke_config,
             )
             print(
-                f"{SENTINEL}:DIAGNOSTICS "
+                f"{smoke_config.sentinel}:DIAGNOSTICS "
                 + json.dumps({"path": str(diagnostic)}),
                 file=sys.stderr,
             )
         except (OSError, TypeError, ValueError) as diagnostic_error:
             print(
-                f"{SENTINEL}:DIAGNOSTICS_FAIL reason={diagnostic_error}",
+                f"{smoke_config.sentinel}:DIAGNOSTICS_FAIL reason={diagnostic_error}",
                 file=sys.stderr,
             )
-        print(f"{SENTINEL}:FAIL reason={exc}", file=sys.stderr, flush=True)
+        print(
+            f"{smoke_config.sentinel}:FAIL reason={exc}",
+            file=sys.stderr,
+            flush=True,
+        )
         return 1
     finally:
         if browser is not None:
