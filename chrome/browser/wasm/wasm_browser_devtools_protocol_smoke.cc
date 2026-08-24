@@ -182,6 +182,17 @@ constexpr char kPageWebAssemblyWasmThrowPayloadRuntimeEvaluateCommand[] =
     R"json(console.log('chromium-wasm-m8-page-webassembly-wasm-throw-imported-i32-tag-js-catch-payload-42');)json"
     R"json(return 'wasm-throw-imported-i32-tag-js-catch-payload-42';})()","returnByValue":true,)json"
     R"json("allowUnsafeEvalBlockedByCSP":false}})json";
+constexpr char kPageWebAssemblyJsThrowPayloadRuntimeEvaluateCommand[] =
+    R"json({"id":3,"method":"Runtime.evaluate","params":{"expression":)json"
+    R"json("(()=>{const b=new Uint8Array([)json"
+    R"json(0,97,115,109,1,0,0,0,1,9,2,96,1,127,0,96,0,1,127,2,26,2,3,101,110,118,7,116,104,114,111,119,101,114,0,1,3,101,110,118,3,116,97,103,4,0,0,3,2,1,1,7,7,1,3,114,117,110,0,1,10,11,1,9,0,6,127,16,0,7,0,11,11]);)json"
+    R"json(if(!WebAssembly.validate(b))throw new Error('wasm typed JS throw validation failed');)json"
+    R"json(const tag=new WebAssembly.Tag({parameters:['i32']});)json"
+    R"json(const m=new WebAssembly.Module(b);const i=new WebAssembly.Instance(m,{env:{tag,thrower:()=>{throw new WebAssembly.Exception(tag,[42]);}}});)json"
+    R"json(if(i.exports.run()!==42)throw new Error('wasm typed JS throw catch result was not 42');)json"
+    R"json(console.log('chromium-wasm-m8-page-webassembly-imported-i32-tag-js-throw-wasm-catch-payload-42');)json"
+    R"json(return 'wasm-exception-imported-i32-tag-js-throw-wasm-catch-payload-42';})()","returnByValue":true,)json"
+    R"json("allowUnsafeEvalBlockedByCSP":false}})json";
 constexpr char kFixedDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20DevTools%20smoke";
 constexpr char kFixedPageWebAssemblyDevToolsProtocolSmokeUrl[] =
@@ -204,6 +215,8 @@ constexpr char kFixedPageWebAssemblyWasmThrowDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20Wasm%20throw%20smoke";
 constexpr char kFixedPageWebAssemblyWasmThrowPayloadDevToolsProtocolSmokeUrl[] =
     "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20Wasm%20throw%20payload%20smoke";
+constexpr char kFixedPageWebAssemblyJsThrowPayloadDevToolsProtocolSmokeUrl[] =
+    "data:text/html;charset=utf-8,Chromium%20Wasm%20page%20WebAssembly%20JavaScript%20throw%20payload%20smoke";
 constexpr char kNetworkEnableSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:NETWORK_ENABLE_OK";
 constexpr char kRuntimeEnableSuccessMarker[] =
@@ -241,6 +254,9 @@ constexpr char kPageWebAssemblyWasmThrowSuccessMarker[] =
 constexpr char kPageWebAssemblyWasmThrowPayloadSuccessMarker[] =
     "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
     "EXCEPTION_IMPORTED_I32_TAG_WASM_THROW_JS_CATCH_PAYLOAD_42_OK";
+constexpr char kPageWebAssemblyJsThrowPayloadSuccessMarker[] =
+    "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY:"
+    "EXCEPTION_IMPORTED_I32_TAG_JS_THROW_WASM_CATCH_PAYLOAD_42_OK";
 constexpr char kRuntimeConsoleApiCalledSuccessMarker[] =
     "CHROMIUM_WASM_M8_DEVTOOLS_PROTOCOL:RUNTIME_CONSOLE_API_CALLED_OK";
 constexpr char kDetachedMarker[] =
@@ -272,6 +288,8 @@ constexpr char kPageWebAssemblyWasmThrowRuntimeEvaluateExpectedValue[] =
     "wasm-throw-imported-tag-js-catch";
 constexpr char kPageWebAssemblyWasmThrowPayloadRuntimeEvaluateExpectedValue[] =
     "wasm-throw-imported-i32-tag-js-catch-payload-42";
+constexpr char kPageWebAssemblyJsThrowPayloadRuntimeEvaluateExpectedValue[] =
+    "wasm-exception-imported-i32-tag-js-throw-wasm-catch-payload-42";
 constexpr char kRuntimeConsoleApiCalledMethod[] = "Runtime.consoleAPICalled";
 constexpr char kRuntimeConsoleApiCalledExpectedType[] = "log";
 constexpr char kRuntimeConsoleApiCalledExpectedValue[] =
@@ -306,6 +324,10 @@ constexpr char kPageWebAssemblyWasmThrowRuntimeConsoleApiCalledExpectedValue[] =
 constexpr char
     kPageWebAssemblyWasmThrowPayloadRuntimeConsoleApiCalledExpectedValue[] =
         "chromium-wasm-m8-page-webassembly-wasm-throw-imported-i32-tag-js-"
+        "catch-payload-42";
+constexpr char
+    kPageWebAssemblyJsThrowPayloadRuntimeConsoleApiCalledExpectedValue[] =
+        "chromium-wasm-m8-page-webassembly-imported-i32-tag-js-throw-wasm-"
         "catch-payload-42";
 
 }  // namespace
@@ -354,11 +376,15 @@ GURL GetWasmBrowserDevToolsProtocolSmokeUrl(
       WasmBrowserDevToolsProtocolSmokeMode::kWasmThrowImportedTagJsCatch) {
     return GURL(kFixedPageWebAssemblyWasmThrowDevToolsProtocolSmokeUrl);
   }
+  if (mode == WasmBrowserDevToolsProtocolSmokeMode::
+                  kWasmThrowImportedI32TagJsCatchPayload) {
+    return GURL(kFixedPageWebAssemblyWasmThrowPayloadDevToolsProtocolSmokeUrl);
+  }
   CHECK_EQ(
       mode,
       WasmBrowserDevToolsProtocolSmokeMode::
-          kWasmThrowImportedI32TagJsCatchPayload);
-  return GURL(kFixedPageWebAssemblyWasmThrowPayloadDevToolsProtocolSmokeUrl);
+          kExceptionImportedI32TagJsThrowWasmCatchPayload);
+  return GURL(kFixedPageWebAssemblyJsThrowPayloadDevToolsProtocolSmokeUrl);
 }
 
 WasmBrowserDevToolsProtocolSmoke::WasmBrowserDevToolsProtocolSmoke(
@@ -534,13 +560,17 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
              WasmBrowserDevToolsProtocolSmokeMode::kWasmThrowImportedTagJsCatch) {
     expected_value =
         kPageWebAssemblyWasmThrowRuntimeEvaluateExpectedValue;
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kWasmThrowImportedI32TagJsCatchPayload) {
+    expected_value =
+        kPageWebAssemblyWasmThrowPayloadRuntimeEvaluateExpectedValue;
   } else {
     CHECK_EQ(
         mode_,
         WasmBrowserDevToolsProtocolSmokeMode::
-            kWasmThrowImportedI32TagJsCatchPayload);
+            kExceptionImportedI32TagJsThrowWasmCatchPayload);
     expected_value =
-        kPageWebAssemblyWasmThrowPayloadRuntimeEvaluateExpectedValue;
+        kPageWebAssemblyJsThrowPayloadRuntimeEvaluateExpectedValue;
   }
   if (!result_type || *result_type != kRuntimeEvaluateExpectedType ||
       !result_value || *result_value != expected_value) {
@@ -595,6 +625,11 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
       Fail("Runtime.evaluate did not return the fixed page-WebAssembly "
            "Wasm-throw imported-i32-tag JavaScript-catch-payload-42 result");
     }
+    if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                     kExceptionImportedI32TagJsThrowWasmCatchPayload) {
+      Fail("Runtime.evaluate did not return the fixed page-WebAssembly "
+           "JavaScript-throw imported-i32-tag Wasm-catch-payload-42 result");
+    }
     Fail("Runtime.evaluate did not return the fixed "
          "page-WebAssembly add(20, 22) result");
   }
@@ -637,13 +672,16 @@ void WasmBrowserDevToolsProtocolSmoke::DispatchProtocolMessage(
   } else if (mode_ ==
              WasmBrowserDevToolsProtocolSmokeMode::kWasmThrowImportedTagJsCatch) {
     std::fprintf(stderr, "%s\n", kPageWebAssemblyWasmThrowSuccessMarker);
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kWasmThrowImportedI32TagJsCatchPayload) {
+    std::fprintf(stderr, "%s\n",
+                 kPageWebAssemblyWasmThrowPayloadSuccessMarker);
   } else {
     CHECK_EQ(
         mode_,
         WasmBrowserDevToolsProtocolSmokeMode::
-            kWasmThrowImportedI32TagJsCatchPayload);
-    std::fprintf(stderr, "%s\n",
-                 kPageWebAssemblyWasmThrowPayloadSuccessMarker);
+            kExceptionImportedI32TagJsThrowWasmCatchPayload);
+    std::fprintf(stderr, "%s\n", kPageWebAssemblyJsThrowPayloadSuccessMarker);
   }
   std::fflush(stderr);
   CompleteRuntimeEvaluate();
@@ -796,14 +834,22 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeEnable() {
             kPageWebAssemblyWasmThrowRuntimeEvaluateCommand));
     return;
   }
+  if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                   kWasmThrowImportedI32TagJsCatchPayload) {
+    agent_host_->DispatchProtocolMessage(
+        this,
+        base::byte_span_from_cstring(
+            kPageWebAssemblyWasmThrowPayloadRuntimeEvaluateCommand));
+    return;
+  }
   CHECK_EQ(
       mode_,
       WasmBrowserDevToolsProtocolSmokeMode::
-          kWasmThrowImportedI32TagJsCatchPayload);
+          kExceptionImportedI32TagJsThrowWasmCatchPayload);
   agent_host_->DispatchProtocolMessage(
       this,
       base::byte_span_from_cstring(
-          kPageWebAssemblyWasmThrowPayloadRuntimeEvaluateCommand));
+          kPageWebAssemblyJsThrowPayloadRuntimeEvaluateCommand));
 }
 
 void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
@@ -859,13 +905,17 @@ void WasmBrowserDevToolsProtocolSmoke::CompleteRuntimeConsoleApiCalled(
              WasmBrowserDevToolsProtocolSmokeMode::kWasmThrowImportedTagJsCatch) {
     expected_value =
         kPageWebAssemblyWasmThrowRuntimeConsoleApiCalledExpectedValue;
+  } else if (mode_ == WasmBrowserDevToolsProtocolSmokeMode::
+                          kWasmThrowImportedI32TagJsCatchPayload) {
+    expected_value =
+        kPageWebAssemblyWasmThrowPayloadRuntimeConsoleApiCalledExpectedValue;
   } else {
     CHECK_EQ(
         mode_,
         WasmBrowserDevToolsProtocolSmokeMode::
-            kWasmThrowImportedI32TagJsCatchPayload);
+            kExceptionImportedI32TagJsThrowWasmCatchPayload);
     expected_value =
-        kPageWebAssemblyWasmThrowPayloadRuntimeConsoleApiCalledExpectedValue;
+        kPageWebAssemblyJsThrowPayloadRuntimeConsoleApiCalledExpectedValue;
   }
   if (!type || *type != kRuntimeConsoleApiCalledExpectedType ||
       !argument_type ||

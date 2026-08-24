@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+"""Contracts for the bounded M8 typed JS-throw page smoke."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+from pathlib import Path
+import sys
+import threading
+from types import SimpleNamespace
+import unittest
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import urlopen
+
+
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(TOOLS_DIR))
+
+from m0_common import M0Error
+import run_m8_wasm_browser_devtools_protocol_dom_smoke as smoke
+from tools.wasm.tests.m3_source_contract_test_support import source
+
+
+VERSIONS = {"chromium": "c", "v8": "v", "emscripten": "e", "port": "p"}
+
+# The fixed module imports a thrower() -> i32 and Tag(i32). Its run() -> i32
+# body is try i32; call thrower; catch tag[0]; end; end. The fixed import
+# always throws WebAssembly.Exception(tag, [42]), so the Wasm catch returns 42.
+JS_THROW_PAYLOAD_MODULE_BYTES = bytes(
+    (
+        0,
+        97,
+        115,
+        109,
+        1,
+        0,
+        0,
+        0,
+        1,
+        9,
+        2,
+        96,
+        1,
+        127,
+        0,
+        96,
+        0,
+        1,
+        127,
+        2,
+        26,
+        2,
+        3,
+        101,
+        110,
+        118,
+        7,
+        116,
+        104,
+        114,
+        111,
+        119,
+        101,
+        114,
+        0,
+        1,
+        3,
+        101,
+        110,
+        118,
+        3,
+        116,
+        97,
+        103,
+        4,
+        0,
+        0,
+        3,
+        2,
+        1,
+        1,
+        7,
+        7,
+        1,
+        3,
+        114,
+        117,
+        110,
+        0,
+        1,
+        10,
+        11,
+        1,
+        9,
+        0,
+        6,
+        127,
+        16,
+        0,
+        7,
+        0,
+        11,
+        11,
+    )
+)
+JS_THROW_PAYLOAD_MODULE_SHA256 = (
+    "d1aacafdf73b1d89c92b7334ae1a37efb84bc4be556977df86bd24241b99c3b3"
+)
+
+
+def successful_js_throw_payload_result() -> dict[str, object]:
+    readiness = {
+        "shellReady": True,
+        "surfaceReady": True,
+        "firstVisuallyNonEmptyPaint": True,
+    }
+    return {
+        "protocol": 1,
+        "case": smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_CASE,
+        "scope": smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SCOPE,
+        "status": "pass",
+        "m8GateComplete": False,
+        "runtimeExitCode": 0,
+        "processExitCode": 0,
+        "runtimeInitialized": True,
+        "crossOriginIsolated": True,
+        "sharedArrayBuffer": True,
+        "canvasFocusAccepted": True,
+        "networkEnableObserved": True,
+        "runtimeEnableObserved": True,
+        "runtimeEvaluateObserved": True,
+        "pageWebAssemblyUnavailableObserved": False,
+        "pageWebAssemblyAdd42Observed": False,
+        "pageWebAssemblyTablesObserved": False,
+        "pageWebAssemblyTableConstructedImportedIndirectCallObserved": False,
+        "pageWebAssemblyTableConstructedImportedGrownIndirectCallObserved": False,
+        "pageWebAssemblyTableGrowthObserved": False,
+        "pageWebAssemblyTableConstructedImportedWasmGrowOpcodeOneToTwoEntriesObserved": False,
+        "pageWebAssemblyMemoriesObserved": False,
+        "pageWebAssemblyMemoryConstructedImportedReadWriteObserved": False,
+        "pageWebAssemblyMemoryConstructedImportedGrownPostGrowthReadWriteObserved": False,
+        "pageWebAssemblyExceptionsObserved": True,
+        "pageWebAssemblyExceptionConstructedImportedTagJsThrowWasmCatchObserved": False,
+        "pageWebAssemblyExceptionImportedTagWasmThrowJsCatchObserved": False,
+        "pageWebAssemblyExceptionImportedI32TagWasmThrowJsCatchPayloadObserved": False,
+        "pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved": True,
+        "pageWebAssemblyMemoryGrowthObserved": False,
+        "pageWebAssemblyMemoryConstructedImportedWasmGrowOpcodeOneToTwoPagesObserved": False,
+        "pageWebAssemblyThreadsObserved": False,
+        "runtimeConsoleApiCalledObserved": True,
+        "detachedObserved": True,
+        "lifecyclePassObserved": True,
+        "abort": None,
+        "fatalErrors": [],
+        "windowErrors": [],
+        "unhandledRejections": [],
+        "versions": VERSIONS,
+        "frameReports": [
+            {"id": 1, "width": 640, "height": 480, "timestampMs": 1.0},
+        ],
+        "readiness": readiness,
+        "readinessReports": [readiness],
+        "stdout": [],
+        "stderr": [
+            smoke.NETWORK_ENABLE_MARKER,
+            smoke.RUNTIME_ENABLE_MARKER,
+            smoke.RUNTIME_EVALUATE_MARKER,
+            smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER,
+            smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
+            smoke.DETACHED_MARKER,
+            smoke.LIFECYCLE_PASS_MARKER,
+        ],
+        "failedChecks": [],
+        "error": None,
+    }
+
+
+class M8PageWebAssemblyJsThrowPayloadDomSmokeTest(unittest.TestCase):
+    def test_fixed_module_has_exact_bytes_hash_and_typed_catch(self) -> None:
+        self.assertEqual(len(JS_THROW_PAYLOAD_MODULE_BYTES), 73)
+        self.assertEqual(
+            hashlib.sha256(JS_THROW_PAYLOAD_MODULE_BYTES).hexdigest(),
+            JS_THROW_PAYLOAD_MODULE_SHA256,
+        )
+        self.assertEqual(JS_THROW_PAYLOAD_MODULE_BYTES[:8], b"\0asm\x01\0\0\0")
+        self.assertIn(
+            b"\x02\x1a\x02\x03env\x07thrower\x00\x01\x03env\x03tag\x04\x00\x00",
+            JS_THROW_PAYLOAD_MODULE_BYTES,
+        )
+        self.assertIn(
+            b"\x0a\x0b\x01\x09\x00\x06\x7f\x10\x00\x07\x00\x0b\x0b",
+            JS_THROW_PAYLOAD_MODULE_BYTES,
+        )
+
+    def test_mode_is_one_fixed_configuration(self) -> None:
+        config = smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG
+        self.assertEqual(config.mode_id, "page-webassembly-js-throw-payload")
+        self.assertEqual(
+            config.sentinel,
+            "CHROMIUM_WASM_M8_PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_DOM",
+        )
+        self.assertEqual(config.runtime_arguments, (
+            "--wasm-browser-m8-page-webassembly-js-throw-payload-smoke",
+        ))
+        self.assertTrue(
+            dict(config.page_webassembly_expectations)[
+                "pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved"
+            ]
+        )
+        self.assertIs(
+            smoke.smoke_config_for_page_webassembly_js_throw_payload(True),
+            config,
+        )
+        self.assertIs(
+            smoke.smoke_config_for_page_webassembly_js_throw_payload(False),
+            smoke.DEFAULT_SMOKE_CONFIG,
+        )
+
+    def test_result_requires_only_the_fixed_typed_js_throw_witness(self) -> None:
+        config = smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG
+        smoke.validate_result(
+            successful_js_throw_payload_result(),
+            expected_versions=VERSIONS,
+            smoke_config=config,
+        )
+        for field, expected in config.page_webassembly_expectations:
+            with self.subTest(field=field):
+                result = copy.deepcopy(successful_js_throw_payload_result())
+                result[field] = not expected
+                with self.assertRaisesRegex(M0Error, rf"{field} mismatch"):
+                    smoke.validate_result(
+                        result, expected_versions=VERSIONS, smoke_config=config
+                    )
+        result = successful_js_throw_payload_result()
+        result["m8GateComplete"] = True
+        with self.assertRaisesRegex(M0Error, "m8GateComplete mismatch"):
+            smoke.validate_result(
+                result, expected_versions=VERSIONS, smoke_config=config
+            )
+
+    def test_result_rejects_wrong_or_repeated_marker(self) -> None:
+        config = smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG
+        result = successful_js_throw_payload_result()
+        result["stderr"] = [
+            smoke.NETWORK_ENABLE_MARKER,
+            smoke.RUNTIME_ENABLE_MARKER,
+            smoke.RUNTIME_EVALUATE_MARKER,
+            smoke.PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_MARKER,
+            smoke.RUNTIME_CONSOLE_API_CALLED_MARKER,
+            smoke.DETACHED_MARKER,
+            smoke.LIFECYCLE_PASS_MARKER,
+        ]
+        with self.assertRaisesRegex(M0Error, "marker count is 0"):
+            smoke.validate_result(
+                result, expected_versions=VERSIONS, smoke_config=config
+            )
+
+        result = successful_js_throw_payload_result()
+        result["stderr"] = successful_js_throw_payload_result()["stderr"] + [
+            smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER,
+        ]
+        with self.assertRaisesRegex(M0Error, "marker count is 2"):
+            smoke.validate_result(
+                result, expected_versions=VERSIONS, smoke_config=config
+            )
+
+    def test_url_and_server_bind_the_closed_mode_to_its_token(self) -> None:
+        config = smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG
+        server = SimpleNamespace(server_address=("127.0.0.1", 31337))
+        url = smoke.smoke_url(
+            server,
+            "token",
+            VERSIONS,
+            module_name="chrome_wasm",
+            timeout_seconds=30.0,
+            smoke_config=config,
+        )
+        self.assertEqual(
+            parse_qs(urlsplit(url).query, keep_blank_values=True)["mode"],
+            ["page-webassembly-js-throw-payload"],
+        )
+        payload = json.dumps(successful_js_throw_payload_result()).encode("utf-8")
+        self.assertEqual(
+            smoke.parse_result_payload(payload, smoke_config=config),
+            successful_js_throw_payload_result(),
+        )
+
+        result_server = smoke.DevToolsProtocolSmokeServer(
+            ("127.0.0.1", 0), smoke.DevToolsProtocolSmokeRequestHandler
+        )
+        result_server.result_token = "fixed-js-throw-payload-token"
+        result_server.smoke_config = config
+        thread = threading.Thread(target=result_server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host, port = result_server.server_address[:2]
+            binding_url = (
+                "http://"
+                f"{host}:{port}{smoke.HOST_ROOT}/config/"
+                "fixed-js-throw-payload-token"
+            )
+            with urlopen(binding_url, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    json.loads(response.read()),
+                    {"protocol": 1, "mode": "page-webassembly-js-throw-payload"},
+                )
+            with self.assertRaises(HTTPError) as context:
+                urlopen(
+                    f"http://{host}:{port}{smoke.HOST_ROOT}/config/wrong-token",
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 404)
+            context.exception.close()
+        finally:
+            result_server.shutdown()
+            result_server.server_close()
+            thread.join(timeout=5)
+
+    def test_host_keeps_module_execution_native_and_mode_token_bound(self) -> None:
+        host = source(
+            "tools/wasm/host/chrome_wasm_browser_devtools_protocol_smoke_host.js"
+        )
+        for expected in (
+            'const PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MODE =',
+            '"page-webassembly-js-throw-payload";',
+            "PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_MODE",
+            "PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_MARKER",
+            "pageWebAssemblyExceptionImportedI32TagJsThrowWasmCatchPayloadObserved:",
+            "query.getAll(\"mode\")",
+            "fetchExpectedSmokeMode",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, host)
+        for forbidden in (
+            "new WebAssembly",
+            "WebAssembly.validate",
+            "WebAssembly.Module",
+            "WebAssembly.Instance",
+            "WebAssembly.Tag",
+            "WebAssembly.Exception",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, host)
+
+    def test_native_route_has_one_literal_typed_js_throw_witness(self) -> None:
+        main_parts = source("chrome/browser/wasm/wasm_browser_main_parts.cc")
+        lifecycle = source("chrome/browser/wasm/wasm_browser_lifecycle.cc")
+        protocol_header = source(
+            "chrome/browser/wasm/wasm_browser_devtools_protocol_smoke.h"
+        )
+        protocol = source("chrome/browser/wasm/wasm_browser_devtools_protocol_smoke.cc")
+        runner = source("tools/wasm/run_m8_wasm_browser_devtools_protocol_dom_smoke.py")
+        self.assertIn(
+            '"wasm-browser-m8-page-webassembly-js-throw-payload-smoke"',
+            main_parts,
+        )
+        self.assertIn(
+            "StartPageWebAssemblyJsThrowPayloadDevToolsProtocolSmoke",
+            main_parts,
+        )
+        self.assertIn(
+            "StartPageWebAssemblyJsThrowPayloadDevToolsProtocolSmoke",
+            lifecycle,
+        )
+        self.assertIn(
+            "kExceptionImportedI32TagJsThrowWasmCatchPayload", protocol_header
+        )
+        self.assertIn("--page-webassembly-js-throw-payload", runner)
+
+        command_start = protocol.index(
+            "kPageWebAssemblyJsThrowPayloadRuntimeEvaluateCommand"
+        )
+        command_end = protocol.index("constexpr char kFixedDevToolsProtocolSmokeUrl", command_start)
+        command = protocol[command_start:command_end]
+        for expected in (
+            "WebAssembly.validate(b)",
+            "new WebAssembly.Tag({parameters:['i32']})",
+            "new WebAssembly.Module(b)",
+            "new WebAssembly.Instance(m,{env:{tag,thrower:()=>{throw new WebAssembly.Exception(tag,[42]);}}})",
+            "i.exports.run()!==42",
+            "wasm-exception-imported-i32-tag-js-throw-wasm-catch-payload-42",
+            "chromium-wasm-m8-page-webassembly-imported-i32-tag-js-throw-wasm-catch-payload-42",
+            "0,97,115,109,1,0,0,0,1,9,2,96,1,127,0,96,0,1,127,2,26,2,3,101,110,118,7,116,104,114,111,119,101,114,0,1,3,101,110,118,3,116,97,103,4,0,0,3,2,1,1,7,7,1,3,114,117,110,0,1,10,11,1,9,0,6,127,16,0,7,0,11,11",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, command)
+        for forbidden in (
+            "new WebAssembly.Memory",
+            "new WebAssembly.Table",
+            "SharedArrayBuffer",
+            "Atomics",
+            "DataView",
+            "memory.grow(",
+            "table.grow(",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, command)
+
+    def test_existing_typed_exception_modes_remain_distinct(self) -> None:
+        config = smoke.PAGE_WEBASSEMBLY_JS_THROW_PAYLOAD_SMOKE_CONFIG
+        self.assertNotEqual(
+            smoke.PAGE_WEBASSEMBLY_WASM_THROW_PAYLOAD_SMOKE_CONFIG, config
+        )
+        self.assertNotEqual(smoke.PAGE_WEBASSEMBLY_EXCEPTIONS_SMOKE_CONFIG, config)
+
+
+if __name__ == "__main__":
+    unittest.main()
