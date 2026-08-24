@@ -282,8 +282,19 @@ class NetworkChangeNotifierConnectionCostTest : public TestWithTaskEnvironment {
 };
 
 TEST_F(NetworkChangeNotifierConnectionCostTest, GetConnectionCost) {
+#if BUILDFLAG(IS_WASM)
+  // The Wasm host bridge deliberately does not report a technology or
+  // metering information before it has an advisory browser-host observation.
+  EXPECT_EQ(NetworkChangeNotifier::CONNECTION_UNKNOWN,
+            NetworkChangeNotifier::GetConnectionType());
+  EXPECT_EQ(NetworkChangeNotifier::SUBTYPE_UNKNOWN,
+            NetworkChangeNotifier::GetConnectionSubtype());
+  EXPECT_EQ(NetworkChangeNotifier::ConnectionCost::CONNECTION_COST_UNKNOWN,
+            NetworkChangeNotifier::GetConnectionCost());
+#else
   EXPECT_NE(NetworkChangeNotifier::ConnectionCost::CONNECTION_COST_UNKNOWN,
             NetworkChangeNotifier::GetConnectionCost());
+#endif
 }
 
 TEST_F(NetworkChangeNotifierConnectionCostTest, AddObserver) {

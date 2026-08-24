@@ -72,6 +72,15 @@ UNDRAINED_VOLATILE_PROFILE_DIAGNOSTICS = (
     "Unable to open SharedDictionary DB.",
 )
 
+# `NetworkChangeNotifier::CreateIfNeeded()` used to fall through to
+# NOTIMPLEMENTED on Wasm. Keep the normal no-switch lifecycle fail-closed if
+# that exact platform selection regresses, without rejecting unrelated
+# explicitly unsupported API diagnostics.
+NETWORK_CHANGE_NOTIFIER_NOT_IMPLEMENTED_DIAGNOSTICS = (
+    "Not implemented reached in",
+    "NetworkChangeNotifier::CreateIfNeeded",
+)
+
 
 @dataclass(frozen=True)
 class ArtifactSnapshot:
@@ -426,6 +435,15 @@ def validate_result(result: dict[str, Any], output: str) -> None:
                 "ordinary Browser activated an undrained volatile-profile "
                 f"store: {diagnostic}"
             )
+
+    if all(
+        diagnostic in output
+        for diagnostic in NETWORK_CHANGE_NOTIFIER_NOT_IMPLEMENTED_DIAGNOSTICS
+    ):
+        raise M0Error(
+            "ordinary Browser reached the Wasm NetworkChangeNotifier "
+            "NOTIMPLEMENTED path"
+        )
 
     browser_smoke._require_exact_int(
         result.get("canvasCopies"), "ordinary Browser canvas copy count", minimum=1

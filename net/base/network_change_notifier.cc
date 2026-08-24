@@ -33,6 +33,8 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "net/base/network_change_notifier_win.h"
+#elif BUILDFLAG(IS_WASM)
+#include "net/base/network_change_notifier_wasm.h"
 #elif BUILDFLAG(IS_LINUX)
 #include "net/base/network_change_notifier_linux.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
@@ -325,6 +327,13 @@ std::unique_ptr<NetworkChangeNotifier> NetworkChangeNotifier::CreateIfNeeded(
 #elif BUILDFLAG(IS_FUCHSIA)
   return std::make_unique<NetworkChangeNotifierFuchsia>(
       /*require_wlan=*/false);
+#elif BUILDFLAG(IS_WASM)
+  // The browser host can provide only an advisory offline/online hint. Do not
+  // inherit the generic CONNECTION_NONE initial state or a caller-supplied
+  // technology: the Wasm notifier begins UNKNOWN and never claims one.
+  static_cast<void>(initial_type);
+  static_cast<void>(initial_subtype);
+  return std::make_unique<NetworkChangeNotifierWasm>();
 #else
   NOTIMPLEMENTED();
   return nullptr;
