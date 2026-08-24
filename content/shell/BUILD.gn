@@ -43,8 +43,9 @@ if (is_android) {
 }
 
 # TODO(crbug.com/1336055, spang): Investigate using shell_views with cast builds
-# as true.
-shell_use_toolkit_views = toolkit_views && !is_castos
+# as true. Wasm keeps Chrome Views but Content Shell uses its Aura/Ozone path
+# because the Views delegate depends on test-only desktop support.
+shell_use_toolkit_views = toolkit_views && !is_castos && !is_wasm
 
 declare_args() {
   content_shell_product_name = "Content Shell"
