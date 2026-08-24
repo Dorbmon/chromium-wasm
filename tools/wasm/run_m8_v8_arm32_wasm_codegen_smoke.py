@@ -47,6 +47,7 @@ MAX_NODE_FAILURE_RECEIPT_BYTES = 1024
 EXPECTED_SEMANTIC_SUITE = (
     "closures_classes_exceptions_proxy_typedarray_bigint_promises_microtasks"
 )
+EXPECTED_TEST262_PROFILE = "pinned_14_case_25_execution_profile"
 GN_ASSIGNMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*) = (?P<value>.+)$"
 )
@@ -78,7 +79,10 @@ EXPECTED_NODE_RESULT = {
     "semanticSuite": EXPECTED_SEMANTIC_SUITE,
     "status": "pass",
     "stderrLines": 0,
-    "stdoutLines": 22,
+    "test262Cases": 14,
+    "test262Executions": 25,
+    "test262Profile": EXPECTED_TEST262_PROFILE,
+    "stdoutLines": 49,
 }
 NODE_FAILURE_REQUIRED_KEYS = frozenset(
     {
@@ -299,7 +303,7 @@ def run_smoke(out_dir: Path, timeout_seconds: float) -> dict[str, object]:
         "runtime": receipt,
         "scope": (
             "fixed-standalone-v8-arm32-simulator-liftoff-codegen-and-"
-            "bounded-javascript-semantics"
+            "bounded-javascript-semantics-and-pinned-test262-profile"
         ),
         "status": "pass",
         "v8ProvenanceEstablished": False,
@@ -308,6 +312,7 @@ def run_smoke(out_dir: Path, timeout_seconds: float) -> dict[str, object]:
             "does_not_run_chrome_or_blink",
             "does_not_run_webassembly_spec_or_js_api_suites",
             "does_not_establish_broad_javascript_compatibility",
+            "does_not_run_broad_test262_suite",
             "does_not_establish_immutable_v8_dependency_provenance",
             "does_not_complete_m8",
         ],
