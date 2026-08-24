@@ -1533,6 +1533,22 @@ source_set("wasm_browser_accessibility_snapshot_smoke") {
   ]
 }
 
+# This M8.7 witness owns no extension or PDF implementation. It compiles only
+# the two public buildflag headers under the selected Wasm Chrome configuration
+# and fails if either currently-disabled product surface is accidentally
+# enabled. It must remain standalone: linking it into chrome_wasm would make a
+# compile-time source-selection observation look like browser feature support.
+executable("wasm_pdf_extensions_capability_smoke") {
+  testonly = true
+  sources = [ "wasm_pdf_extensions_capability_smoke.cc" ]
+
+  deps = [
+    "//base",
+    "//extensions/buildflags",
+    "//pdf:buildflags",
+  ]
+}
+
 source_set("wasm_browser_lifecycle") {
   public = [ "wasm_browser_lifecycle.h" ]
 
