@@ -23,9 +23,10 @@ Protocol:
 * only after document 2's bounded host settle receipt does the runner issue
   the actual DevTools ``Page.reload`` command;
 * document 3 is fresh and emits exactly one fixed
-  ``LEVELDB_POST_SYNC_OBSERVATION outcome=...`` marker followed by a separate
-  clean diagnostic lifecycle. Its outcome is an observation, not proof that
-  any outcome is durable or recoverable.
+  ``LEVELDB_POST_SYNC_OBSERVATION outcome=...`` marker, then a fixed redacted
+  SQLite close/reopen integrity marker, followed by a separate clean diagnostic
+  lifecycle. Its outcome is an observation, not proof that any outcome is
+  durable or recoverable.
 
 Every top-level replacement requires both the server's Fetch Metadata
 ``document``/``navigate`` observation and a same-frame, changed-loader CDP
@@ -122,6 +123,9 @@ DIAGNOSTIC_CLEAN_MARKERS = (
     f"{M7_DATABASE_MARKER_PREFIX}DIAGNOSTIC_DATABASES_CLOSED",
     f"{M7_DATABASE_MARKER_PREFIX}DIAGNOSTIC_FENCE_OK",
     f"{M7_DATABASE_MARKER_PREFIX}DIAGNOSTIC_LEASE_RELEASED",
+)
+POST_SYNC_SQLITE_REOPEN_INTEGRITY_MARKER = (
+    f"{M7_DATABASE_MARKER_PREFIX}SQLITE_POST_SYNC_REOPEN_INTEGRITY_OK"
 )
 
 ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
@@ -1211,6 +1215,7 @@ def expected_markers(ordinal: int, escrow: TokenEscrow, outcome: str | None = No
         return [
             f"{M7_DATABASE_MARKER_PREFIX}READY",
             f"{M7_DATABASE_MARKER_PREFIX}LEVELDB_POST_SYNC_OBSERVATION outcome={outcome}",
+            POST_SYNC_SQLITE_REOPEN_INTEGRITY_MARKER,
             *DIAGNOSTIC_CLEAN_MARKERS,
         ]
     raise M0Error("write-interruption marker expectation is invalid")

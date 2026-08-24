@@ -48,6 +48,7 @@ class M7ProfileDatabaseWriteInterruptionDiagnosticContractTest(
             "LEVELDB_POST_SYNC_OBSERVATION outcome=missing",
             "LEVELDB_POST_SYNC_OBSERVATION outcome=other",
             "LEVELDB_POST_SYNC_OBSERVATION outcome=open-failed",
+            "SQLITE_POST_SYNC_REOPEN_INTEGRITY_OK",
             "DIAGNOSTIC_DATABASES_CLOSED",
             "DIAGNOSTIC_FENCE_OK",
             "DIAGNOSTIC_LEASE_RELEASED",
@@ -97,8 +98,7 @@ class M7ProfileDatabaseWriteInterruptionDiagnosticContractTest(
         self.assertEqual(self.wasm_build.count(flag), 1)
 
         target = _body_after_signature(self.chrome_build, 'executable("chrome_wasm")')
-        branch_start = target.index(f"else if ({flag})")
-        branch = target[branch_start : branch_start + 700]
+        branch = _body_after_signature(target, f"else if ({flag})")
         self.assertIn(
             'output_name =\n'
             '            "chrome_wasm_m7_profile_database_write_interruption_diagnostic"',
@@ -238,6 +238,28 @@ class M7ProfileDatabaseWriteInterruptionDiagnosticContractTest(
         self.assertNotIn("ToString", observation)
         self.assertNotIn("AsUTF8Unsafe", observation)
         self.assertNotIn("database_path", observation)
+
+        sqlite_reopen = _body_after_signature(
+            self.smoke, "void EmitPostSyncSqliteReopenIntegrity()"
+        )
+        self.assertIn("SQLITE_POST_SYNC_REOPEN_INTEGRITY_OK", sqlite_reopen)
+        self.assertNotIn("AsUTF8Unsafe", sqlite_reopen)
+        self.assertNotIn("sqlite_path", sqlite_reopen)
+
+        observe_start = run_task.index("case SmokeMode::kObserveLevelDBWriteB:")
+        observe_end = run_task.index("case SmokeMode::kNone:", observe_start)
+        observe = run_task[observe_start:observe_end]
+        self.assertIn("ObservePostSyncLevelDBWrite(", observe)
+        self.assertIn("ReadSqliteTokenAndVerifyAfterClose(", observe)
+        self.assertIn("EmitPostSyncSqliteReopenIntegrity();", observe)
+        self.assertLess(
+            observe.index("ObservePostSyncLevelDBWrite("),
+            observe.index("ReadSqliteTokenAndVerifyAfterClose("),
+        )
+        self.assertLess(
+            observe.index("ReadSqliteTokenAndVerifyAfterClose("),
+            observe.index("EmitPostSyncSqliteReopenIntegrity();"),
+        )
 
     def test_clean_diagnostic_terminals_replace_ordinary_acceptance_markers(
         self,

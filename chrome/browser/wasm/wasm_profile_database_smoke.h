@@ -93,10 +93,17 @@ namespace chrome {
 //   CHROMIUM_WASM_M7_DATABASE:LEVELDB_POST_SYNC_OBSERVATION outcome=other
 //   CHROMIUM_WASM_M7_DATABASE:LEVELDB_POST_SYNC_OBSERVATION outcome=open-failed
 //
-// Every observation is a valid diagnostic result, not evidence that B was
-// durable. It then cleanly emits only the three diagnostic terminal markers
-// above. The diagnostic artifact never emits ordinary DATABASES_CLOSED,
-// FENCE_OK, or LEASE_RELEASED for any clean mode.
+// After that separate LevelDB handle has closed, it also independently closes
+// and reopens SQLite's pre-existing A value and requires its normal full
+// integrity result before emitting this fixed, redacted diagnostic marker:
+//
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_POST_SYNC_REOPEN_INTEGRITY_OK
+//
+// Every LevelDB observation remains a diagnostic result, not evidence that B
+// was durable. The SQLite marker is only an in-module close/reopen observation;
+// it does not establish interruption recovery. It then cleanly emits only the
+// three diagnostic terminal markers above. The diagnostic artifact never emits
+// ordinary DATABASES_CLOSED, FENCE_OK, or LEASE_RELEASED for any clean mode.
 
 // True when any switch in the dedicated database protocol is present. This
 // includes orphaned token switches so ChromeMain fails them before ordinary

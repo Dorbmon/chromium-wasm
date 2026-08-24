@@ -776,6 +776,16 @@ void EmitPostSyncObservation(PostSyncObservation observation) {
                kMarkerPrefix, PostSyncObservationName(observation));
   std::fflush(stderr);
 }
+
+void EmitPostSyncSqliteReopenIntegrity() {
+  // Keep this separate from the LevelDB value classification. It witnesses
+  // only a fresh SQLite close/reopen plus FullIntegrityCheck for the existing
+  // A value, never a path, token, SQLite error, or interruption-recovery
+  // result.
+  std::fprintf(stderr, "%sSQLITE_POST_SYNC_REOPEN_INTEGRITY_OK\n",
+               kMarkerPrefix);
+  std::fflush(stderr);
+}
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
 
 sql::DatabaseOptions DatabaseOptionsForSmoke() {
@@ -1142,11 +1152,16 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
     case SmokeMode::kObserveLevelDBWriteB:
       // Every fixed observation is useful controlled diagnostic output. It is
       // not a B durability claim, so open failure and every value class
-      // complete this diagnostic cleanly through its distinct terminal-marker
-      // grammar.
+      // retain their distinct terminal-marker grammar. Before that grammar is
+      // allowed to complete, separately close and reopen the pre-existing
+      // SQLite A database and require its normal full-integrity result. This
+      // is still an in-module diagnostic, not interruption recovery.
       EmitPostSyncObservation(ObservePostSyncLevelDBWrite(
           leveldb_path, input.token_a, input.token_b, input.leveldb_options));
-      success = true;
+      if (ReadSqliteTokenAndVerifyAfterClose(sqlite_path, input.token_a)) {
+        EmitPostSyncSqliteReopenIntegrity();
+        success = true;
+      }
       break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     case SmokeMode::kNone:

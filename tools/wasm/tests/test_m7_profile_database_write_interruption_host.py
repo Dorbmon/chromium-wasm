@@ -149,6 +149,7 @@ export default function(options) {
     return clean([
       "CHROMIUM_WASM_M7_DATABASE:READY",
       "CHROMIUM_WASM_M7_DATABASE:LEVELDB_POST_SYNC_OBSERVATION outcome=b",
+      "CHROMIUM_WASM_M7_DATABASE:SQLITE_POST_SYNC_REOPEN_INTEGRITY_OK",
       "CHROMIUM_WASM_M7_DATABASE:DIAGNOSTIC_DATABASES_CLOSED",
       "CHROMIUM_WASM_M7_DATABASE:DIAGNOSTIC_FENCE_OK",
       "CHROMIUM_WASM_M7_DATABASE:DIAGNOSTIC_LEASE_RELEASED",
@@ -444,6 +445,7 @@ class M7ProfileDatabaseWriteInterruptionHostTest(unittest.TestCase):
             "#finishFinalQuiescence(run)",
             "isReadyAfterResultUpload()",
             "POST_SYNC_OBSERVATION_OUTCOMES",
+            "POST_SYNC_SQLITE_REOPEN_INTEGRITY_MARKER",
             "DIAGNOSTIC_DATABASES_CLOSED",
             "DIAGNOSTIC_FENCE_OK",
             "DIAGNOSTIC_LEASE_RELEASED",

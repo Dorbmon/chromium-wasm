@@ -82,6 +82,8 @@ const CONTROLLED_ABORT_WINDOW_ERROR_COUNT = 2;
 const POST_SYNC_OBSERVATION_OUTCOMES = Object.freeze([
   "a", "b", "missing", "other", "open-failed",
 ]);
+const POST_SYNC_SQLITE_REOPEN_INTEGRITY_MARKER =
+    `${M7_MARKER_PREFIX}SQLITE_POST_SYNC_REOPEN_INTEGRITY_OK`;
 const DIAGNOSTIC_CLEAN_MARKERS = Object.freeze([
   `${M7_MARKER_PREFIX}DIAGNOSTIC_DATABASES_CLOSED`,
   `${M7_MARKER_PREFIX}DIAGNOSTIC_FENCE_OK`,
@@ -326,6 +328,7 @@ function expectedCleanMarkers(ordinal, tokenEvidence) {
     return Object.freeze([
       `${M7_MARKER_PREFIX}READY`,
       null,
+      POST_SYNC_SQLITE_REOPEN_INTEGRITY_MARKER,
       ...DIAGNOSTIC_CLEAN_MARKERS,
     ]);
   }
