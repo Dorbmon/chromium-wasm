@@ -686,6 +686,10 @@ class ChromiumWasmPreReleaseHost {
     this.#record("fatal", value);
   }
 
+  #hasTerminalExit() {
+    return this.#runtimeExitCode !== null || this.#processExitCode !== null;
+  }
+
   #verifyExitAgreement() {
     if (this.#runtimeExitCode !== null && this.#processExitCode !== null &&
         this.#runtimeExitCode !== this.#processExitCode) {
@@ -772,6 +776,10 @@ class ChromiumWasmPreReleaseHost {
           !Number.isFinite(report.timestampMs) || report.timestampMs < 0) {
         throw new Error("frame report is invalid");
       }
+      if (this.#hasTerminalExit()) {
+        this.#reportFatal("frame report arrived after terminal exit");
+        return;
+      }
       this.#frameCount += 1;
       this.#renderStatus();
     } catch (error) {
@@ -782,6 +790,10 @@ class ChromiumWasmPreReleaseHost {
   #reportReadiness(value) {
     if (!isReadinessReport(value) || value.protocol !== HOST_PROTOCOL) {
       this.#reportFatal("invalid readiness report");
+      return;
+    }
+    if (this.#hasTerminalExit()) {
+      this.#reportFatal("readiness report arrived after terminal exit");
       return;
     }
     this.#readiness = {
@@ -967,7 +979,7 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #setModule(module) {
-    if (this.#runtimeExitCode !== null || this.#processExitCode !== null) {
+    if (this.#hasTerminalExit()) {
       this.#record("runtime", "initialization ignored after terminal exit");
       return;
     }
@@ -1019,8 +1031,7 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #requestShutdown() {
-    if (this.#shutdownRequested || this.#runtimeExitCode !== null ||
-        this.#processExitCode !== null || !this.#module ||
+    if (this.#shutdownRequested || this.#hasTerminalExit() || !this.#module ||
         typeof this.#module.ccall !== "function") {
       return;
     }

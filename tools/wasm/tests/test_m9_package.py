@@ -2514,6 +2514,24 @@ process.stdout.write(JSON.stringify({
     if (globalThis.__m9ExitMode !== "late-runtime-after-native-exit") {
       options.onRuntimeInitialized.call(module);
     }
+    const sendLatePresentation = (after) => {
+      queueMicrotask(() => {
+        bridge.reportFrame({
+          protocol: 1,
+          id: 1,
+          width: 1,
+          height: 1,
+          timestampMs: 0,
+        });
+        bridge.reportReadiness({
+          protocol: 1,
+          shellReady: true,
+          surfaceReady: true,
+          firstVisuallyNonEmptyPaint: true,
+        });
+        after();
+      });
+    };
     switch (globalThis.__m9ExitMode) {
       case "clean":
         options.onExit(0);
@@ -2550,6 +2568,14 @@ process.stdout.write(JSON.stringify({
           shutdownDisabled: document.querySelector("#shutdown").disabled,
         };
         options.onExit(0);
+        break;
+      case "late-presentation-after-runtime-exit":
+        options.onExit(0);
+        sendLatePresentation(() => nativeExit(0));
+        break;
+      case "late-presentation-after-native-exit":
+        nativeExit(0);
+        sendLatePresentation(() => options.onExit(0));
         break;
       default:
         throw new Error(`unexpected exit mode ${String(globalThis.__m9ExitMode)}`);
@@ -2672,6 +2698,7 @@ async function observe(mode) {
   await runChromiumWasmPreRelease();
   await new Promise((resolve) => setTimeout(resolve, 0));
   const payload = JSON.parse(status.textContent);
+  const latePresentation = mode.startsWith("late-presentation-after-");
   return {
     fatalCount: payload.fatalCount,
     processExitCode: payload.processExitCode,
@@ -2682,13 +2709,19 @@ async function observe(mode) {
       shutdownDisabledAfterLateInitialization:
           globalThis.__m9LateRuntimeInitialization.shutdownDisabled,
     } : {}),
+    ...(latePresentation ? {
+      framesPresented: payload.framesPresented,
+      readiness: payload.readiness,
+      shutdownDisabled: document.querySelector("#shutdown").disabled,
+    } : {}),
   };
 }
 const results = {};
 for (const mode of [
   "clean", "mismatch-runtime-first", "mismatch-native-first",
   "duplicate-runtime", "duplicate-native", "missing-runtime", "missing-native",
-  "late-runtime-after-native-exit",
+  "late-runtime-after-native-exit", "late-presentation-after-runtime-exit",
+  "late-presentation-after-native-exit",
 ]) {
   results[mode] = await observe(mode);
 }
@@ -2766,6 +2799,24 @@ process.stdout.write(JSON.stringify(results));
                     "runtimeExitCode": 0,
                     "runtimeInitialized": False,
                     "shutdownDisabledAfterLateInitialization": True,
+                },
+                "late-presentation-after-runtime-exit": {
+                    "fatalCount": 2,
+                    "framesPresented": 0,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "readiness": None,
+                    "runtimeExitCode": 0,
+                    "shutdownDisabled": True,
+                },
+                "late-presentation-after-native-exit": {
+                    "fatalCount": 2,
+                    "framesPresented": 0,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "readiness": None,
+                    "runtimeExitCode": 0,
+                    "shutdownDisabled": True,
                 },
             },
             json.loads(completed.stdout),
