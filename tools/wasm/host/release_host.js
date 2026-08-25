@@ -585,6 +585,7 @@ class ChromiumWasmPreReleaseHost {
   #frameCount = 0;
   #runtimeExitCode = null;
   #processExitCode = null;
+  #runtimeAbortObserved = false;
   #shutdownRequested = false;
   #runtimeArtifactsVerified = false;
   #wispConfigured = false;
@@ -690,6 +691,10 @@ class ChromiumWasmPreReleaseHost {
     return this.#runtimeExitCode !== null || this.#processExitCode !== null;
   }
 
+  #isExecutionQuiesced() {
+    return this.#runtimeAbortObserved || this.#hasTerminalExit();
+  }
+
   #verifyExitAgreement() {
     if (this.#runtimeExitCode !== null && this.#processExitCode !== null &&
         this.#runtimeExitCode !== this.#processExitCode) {
@@ -697,12 +702,13 @@ class ChromiumWasmPreReleaseHost {
     }
   }
 
-  #disposeRuntimeBridgesAtExit() {
-    // A terminal report can arrive in either native/runtime order. Make every
-    // trusted adapter see an unavailable Module while it removes DOM routes so
-    // its normal detach cleanup cannot call into a runtime that has exited.
-    // Do not restore it: an adapter whose DOM removal threw might still retain
-    // its getModule closure, which must remain unable to call terminal Wasm.
+  #quiesceRuntimeBridges() {
+    // An abort or terminal exit can arrive after trusted adapters accepted
+    // asynchronous outer-DOM work. Make every adapter see an unavailable
+    // Module while it removes DOM routes so its normal cleanup cannot call
+    // into an unavailable runtime. Do not restore it: an adapter whose DOM
+    // removal threw might still retain its getModule closure, which must
+    // remain unable to call terminal Wasm.
     const pointerInput = this.#pointerInput;
     const textInput = this.#textInput;
     const clipboardInput = this.#clipboardInput;
@@ -731,6 +737,13 @@ class ChromiumWasmPreReleaseHost {
     this.#latestTextInputState = null;
   }
 
+  #reportRuntimeAbort(reason) {
+    this.#runtimeAbortObserved = true;
+    this.#shutdownButton.disabled = true;
+    this.#quiesceRuntimeBridges();
+    this.#reportFatal(`Wasm abort: ${String(reason)}`);
+  }
+
   #reportRuntimeExit(value) {
     try {
       if (!Number.isSafeInteger(value) || this.#runtimeExitCode !== null) {
@@ -738,7 +751,7 @@ class ChromiumWasmPreReleaseHost {
       }
       this.#runtimeExitCode = value;
       this.#shutdownButton.disabled = true;
-      this.#disposeRuntimeBridgesAtExit();
+      this.#quiesceRuntimeBridges();
       this.#record("runtime-exit", value);
       this.#verifyExitAgreement();
     } catch (error) {
@@ -757,7 +770,7 @@ class ChromiumWasmPreReleaseHost {
       }
       this.#processExitCode = report.exitCode;
       this.#shutdownButton.disabled = true;
-      this.#disposeRuntimeBridgesAtExit();
+      this.#quiesceRuntimeBridges();
       this.#record("native-process-exit", report.exitCode);
       this.#verifyExitAgreement();
     } catch (error) {
@@ -776,8 +789,8 @@ class ChromiumWasmPreReleaseHost {
           !Number.isFinite(report.timestampMs) || report.timestampMs < 0) {
         throw new Error("frame report is invalid");
       }
-      if (this.#hasTerminalExit()) {
-        this.#reportFatal("frame report arrived after terminal exit");
+      if (this.#isExecutionQuiesced()) {
+        this.#reportFatal("frame report arrived after terminal state");
         return;
       }
       this.#frameCount += 1;
@@ -792,8 +805,8 @@ class ChromiumWasmPreReleaseHost {
       this.#reportFatal("invalid readiness report");
       return;
     }
-    if (this.#hasTerminalExit()) {
-      this.#reportFatal("readiness report arrived after terminal exit");
+    if (this.#isExecutionQuiesced()) {
+      this.#reportFatal("readiness report arrived after terminal state");
       return;
     }
     this.#readiness = {
@@ -979,8 +992,8 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #setModule(module) {
-    if (this.#hasTerminalExit()) {
-      this.#record("runtime", "initialization ignored after terminal exit");
+    if (this.#isExecutionQuiesced()) {
+      this.#record("runtime", "initialization ignored after terminal state");
       return;
     }
     if (!module || typeof module !== "object" ||
@@ -1031,13 +1044,19 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #requestShutdown() {
-    if (this.#shutdownRequested || this.#hasTerminalExit() || !this.#module ||
+    if (this.#shutdownRequested || this.#isExecutionQuiesced() || !this.#module ||
         typeof this.#module.ccall !== "function") {
       return;
     }
     try {
       const accepted = this.#module.ccall(
           "chromium_wasm_browser_host_request_shutdown", "number", [], []);
+      // Emscripten can synchronously re-enter a host callback from this ABI.
+      // An abort or exit observed there has already quiesced the runtime, so
+      // do not record this now-stale request as an accepted shutdown.
+      if (this.#isExecutionQuiesced()) {
+        return;
+      }
       if (accepted !== 1) {
         throw new Error(`shutdown ABI returned ${String(accepted)}`);
       }
@@ -1047,6 +1066,9 @@ class ChromiumWasmPreReleaseHost {
       this.#textInput?.releaseActiveInput("host-shutdown");
       this.#record("shutdown", "accepted");
     } catch (error) {
+      if (this.#isExecutionQuiesced()) {
+        return;
+      }
       this.#reportFatal(`shutdown ABI failed: ${String(error)}`);
     }
   }
@@ -1139,7 +1161,7 @@ class ChromiumWasmPreReleaseHost {
         host.#setModule(this);
       },
       onAbort(reason) {
-        host.#reportFatal(`Wasm abort: ${String(reason)}`);
+        host.#reportRuntimeAbort(reason);
       },
       onExit(code) {
         host.#reportRuntimeExit(code);

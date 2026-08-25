@@ -2346,16 +2346,16 @@ process.stdout.write(JSON.stringify({{
         (fixture / "chromium-wasm.js").write_text(
             """export default function(options) {
   queueMicrotask(() => {
-    options.onAbort("earlier fatal");
-    for (let index = 0; index < 32; ++index) {
-      options.print(`ordinary record ${index}`);
-    }
     globalThis.__chromiumWasmHostBridgeV1.reportReadiness({
       protocol: 1,
       shellReady: true,
       surfaceReady: true,
       firstVisuallyNonEmptyPaint: true,
     });
+    options.onAbort("earlier fatal");
+    for (let index = 0; index < 32; ++index) {
+      options.print(`ordinary record ${index}`);
+    }
   });
   return new Promise(() => {});
 }
@@ -2505,13 +2505,23 @@ process.stdout.write(JSON.stringify({
         (fixture / "chromium-wasm.js").write_text(
             """export default function(options) {
   queueMicrotask(() => {
-    const module = {ccall() { return 1; }};
+    const module = {
+      ccall(name) {
+        if (globalThis.__m9ExitMode === "shutdown-abort-reentrant" &&
+            name === "chromium_wasm_browser_host_request_shutdown") {
+          options.onAbort("synthetic abort from shutdown ABI");
+          throw new Error("synthetic shutdown abort");
+        }
+        return 1;
+      },
+    };
     const bridge = globalThis.__chromiumWasmHostBridgeV1;
     const nativeExit = (code) => bridge.reportProcessExit({
       protocol: 1,
       exitCode: code,
     });
-    if (globalThis.__m9ExitMode !== "late-runtime-after-native-exit") {
+    if (globalThis.__m9ExitMode !== "late-runtime-after-native-exit" &&
+        globalThis.__m9ExitMode !== "abort-before-runtime-initialization") {
       options.onRuntimeInitialized.call(module);
     }
     const sendLatePresentation = (after) => {
@@ -2569,6 +2579,20 @@ process.stdout.write(JSON.stringify({
         };
         options.onExit(0);
         break;
+      case "abort-before-runtime-initialization":
+        options.onAbort("synthetic abort before initialization");
+        options.onRuntimeInitialized.call(module);
+        globalThis.__m9LateRuntimeInitialization = {
+          shutdownDisabled: document.querySelector("#shutdown").disabled,
+        };
+        nativeExit(0);
+        options.onExit(0);
+        break;
+      case "shutdown-abort-reentrant":
+        document.querySelector("#shutdown").dispatch("click");
+        nativeExit(0);
+        options.onExit(0);
+        break;
       case "late-presentation-after-runtime-exit":
         options.onExit(0);
         sendLatePresentation(() => nativeExit(0));
@@ -2576,6 +2600,13 @@ process.stdout.write(JSON.stringify({
       case "late-presentation-after-native-exit":
         nativeExit(0);
         sendLatePresentation(() => options.onExit(0));
+        break;
+      case "late-presentation-after-abort":
+        options.onAbort("synthetic abort before late presentation");
+        sendLatePresentation(() => {
+          nativeExit(0);
+          options.onExit(0);
+        });
         break;
       default:
         throw new Error(`unexpected exit mode ${String(globalThis.__m9ExitMode)}`);
@@ -2598,9 +2629,24 @@ class HTMLElement {
     this.style = {};
     this.textContent = "";
     this.value = "";
+    this.#listeners = new Map();
   }
-  addEventListener() {}
-  removeEventListener() {}
+  #listeners;
+  addEventListener(type, listener) {
+    const listeners = this.#listeners.get(type) || new Set();
+    listeners.add(listener);
+    this.#listeners.set(type, listeners);
+  }
+  removeEventListener(type, listener) {
+    const listeners = this.#listeners.get(type);
+    listeners?.delete(listener);
+    if (listeners?.size === 0) this.#listeners.delete(type);
+  }
+  dispatch(type) {
+    for (const listener of this.#listeners.get(type) || []) {
+      listener({type});
+    }
+  }
   append(...nodes) {
     this.children.push(...nodes);
     this.textContent += nodes.map((node) => node.textContent).join("");
@@ -2699,6 +2745,7 @@ async function observe(mode) {
   await new Promise((resolve) => setTimeout(resolve, 0));
   const payload = JSON.parse(status.textContent);
   const latePresentation = mode.startsWith("late-presentation-after-");
+  const reentrantShutdownAbort = mode === "shutdown-abort-reentrant";
   return {
     fatalCount: payload.fatalCount,
     processExitCode: payload.processExitCode,
@@ -2708,6 +2755,11 @@ async function observe(mode) {
       runtimeInitialized: payload.runtimeInitialized,
       shutdownDisabledAfterLateInitialization:
           globalThis.__m9LateRuntimeInitialization.shutdownDisabled,
+    } : {}),
+    ...(reentrantShutdownAbort ? {
+      runtimeInitialized: payload.runtimeInitialized,
+      shutdownDisabled: document.querySelector("#shutdown").disabled,
+      shutdownRequested: payload.shutdownRequested,
     } : {}),
     ...(latePresentation ? {
       framesPresented: payload.framesPresented,
@@ -2720,8 +2772,10 @@ const results = {};
 for (const mode of [
   "clean", "mismatch-runtime-first", "mismatch-native-first",
   "duplicate-runtime", "duplicate-native", "missing-runtime", "missing-native",
-  "late-runtime-after-native-exit", "late-presentation-after-runtime-exit",
-  "late-presentation-after-native-exit",
+  "late-runtime-after-native-exit", "abort-before-runtime-initialization",
+  "shutdown-abort-reentrant",
+  "late-presentation-after-runtime-exit",
+  "late-presentation-after-native-exit", "late-presentation-after-abort",
 ]) {
   results[mode] = await observe(mode);
 }
@@ -2800,6 +2854,23 @@ process.stdout.write(JSON.stringify(results));
                     "runtimeInitialized": False,
                     "shutdownDisabledAfterLateInitialization": True,
                 },
+                "abort-before-runtime-initialization": {
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                    "runtimeInitialized": False,
+                    "shutdownDisabledAfterLateInitialization": True,
+                },
+                "shutdown-abort-reentrant": {
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                    "runtimeInitialized": True,
+                    "shutdownDisabled": True,
+                    "shutdownRequested": False,
+                },
                 "late-presentation-after-runtime-exit": {
                     "fatalCount": 2,
                     "framesPresented": 0,
@@ -2811,6 +2882,15 @@ process.stdout.write(JSON.stringify(results));
                 },
                 "late-presentation-after-native-exit": {
                     "fatalCount": 2,
+                    "framesPresented": 0,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "readiness": None,
+                    "runtimeExitCode": 0,
+                    "shutdownDisabled": True,
+                },
+                "late-presentation-after-abort": {
+                    "fatalCount": 3,
                     "framesPresented": 0,
                     "pageState": "failed",
                     "processExitCode": 0,
@@ -2833,6 +2913,7 @@ process.stdout.write(JSON.stringify(results));
         (fixture / "chromium-wasm.js").write_text(
             """export default function(options) {
   queueMicrotask(() => {
+    const abortBeforeExit = globalThis.__m9AbortBeforeExit === true;
     const terminalViaNative = globalThis.__m9TerminalViaNative === true;
     const calls = [];
     const module = {
@@ -2859,39 +2940,70 @@ process.stdout.write(JSON.stringify(results));
         throw new Error("release-host cleanup fixture did not defer storage");
       }
       const inputCountBeforeExit = document.body.children.length;
-      if (terminalViaNative) {
-        bridge.reportProcessExit({protocol: 1, exitCode: 0});
-      } else {
-        options.onExit(0);
-      }
-      const inputCountAfterExit = document.body.children.length;
-      bridge.reportOzoneBrowserFilePickerDelivery({
-        protocol: 1,
-        requestId: 1,
-        accepted: false,
-      });
-      const postExitPickerAccepted = bridge.requestOzoneBrowserFilePicker({
-        protocol: 1,
-        requestId: 2,
-      });
-      const postExitStorageAccepted = bridge.requestOuterOriginStorageEstimate({
-        protocol: 1,
-        generation: 2,
-      });
-      if (terminalViaNative) {
-        options.onExit(0);
-      } else {
-        bridge.reportProcessExit({protocol: 1, exitCode: 0});
-      }
-      globalThis.__m9TerminalBridgeCleanup = {
-        calls,
-        inputCountAfterExit,
-        inputCountBeforeExit,
-        pickerAccepted,
-        postExitPickerAccepted,
-        postExitStorageAccepted,
-        storageAccepted,
+      let inputCountAfterAbort = null;
+      let postAbortPickerAccepted = null;
+      let postAbortStorageAccepted = null;
+      const completeTerminalReports = () => {
+        if (terminalViaNative) {
+          bridge.reportProcessExit({protocol: 1, exitCode: 0});
+        } else {
+          options.onExit(0);
+        }
+        const inputCountAfterExit = document.body.children.length;
+        bridge.reportOzoneBrowserFilePickerDelivery({
+          protocol: 1,
+          requestId: 1,
+          accepted: false,
+        });
+        const postExitPickerAccepted = bridge.requestOzoneBrowserFilePicker({
+          protocol: 1,
+          requestId: abortBeforeExit ? 3 : 2,
+        });
+        const postExitStorageAccepted = bridge.requestOuterOriginStorageEstimate({
+          protocol: 1,
+          generation: abortBeforeExit ? 3 : 2,
+        });
+        if (terminalViaNative) {
+          options.onExit(0);
+        } else {
+          bridge.reportProcessExit({protocol: 1, exitCode: 0});
+        }
+        globalThis.__m9TerminalBridgeCleanup = {
+          calls,
+          inputCountAfterAbort,
+          inputCountAfterExit,
+          inputCountBeforeExit,
+          pickerAccepted,
+          postAbortPickerAccepted,
+          postAbortStorageAccepted,
+          postExitPickerAccepted,
+          postExitStorageAccepted,
+          storageAccepted,
+        };
       };
+      if (abortBeforeExit) {
+        options.onAbort("synthetic abort after initialization");
+        inputCountAfterAbort = document.body.children.length;
+        bridge.reportOzoneBrowserFilePickerDelivery({
+          protocol: 1,
+          requestId: 1,
+          accepted: false,
+        });
+        postAbortPickerAccepted = bridge.requestOzoneBrowserFilePicker({
+          protocol: 1,
+          requestId: 2,
+        });
+        postAbortStorageAccepted = bridge.requestOuterOriginStorageEstimate({
+          protocol: 1,
+          generation: 2,
+        });
+        // Dispatch directly instead of relying on disabled-button behavior:
+        // the host guard itself must reject shutdown after an abort.
+        document.querySelector("#shutdown").dispatch("click");
+        globalThis.__m9FinishTerminalBridgeCleanup = completeTerminalReports;
+        return;
+      }
+      completeTerminalReports();
     }).catch((error) => {
       globalThis.__m9TerminalBridgeCleanupFailure = String(error);
     });
@@ -2906,8 +3018,10 @@ process.stdout.write(JSON.stringify(results));
 import {readFile} from "node:fs/promises";
 
 const nativeSetTimeout = globalThis.setTimeout;
+const abortBeforeExit = __ABORT_BEFORE_EXIT__;
 const throwOnInputRemove = __THROW_ON_INPUT_REMOVE__;
 const rejectEstimate = __REJECT_ESTIMATE__;
+globalThis.__m9AbortBeforeExit = abortBeforeExit;
 globalThis.__m9TerminalViaNative = __TERMINAL_VIA_NATIVE__;
 const timerTokens = new Set();
 globalThis.setTimeout = (callback, delay) => {
@@ -2940,6 +3054,11 @@ class HTMLElement {
     const listeners = this.#listeners.get(type);
     listeners?.delete(listener);
     if (listeners?.size === 0) this.#listeners.delete(type);
+  }
+  dispatch(type) {
+    for (const listener of this.#listeners.get(type) || []) {
+      listener({type});
+    }
   }
   listenerCount(type) { return this.#listeners.get(type)?.size || 0; }
   append(...nodes) {
@@ -3107,6 +3226,27 @@ await new Promise((resolve) => nativeSetTimeout(resolve, 0));
 if (globalThis.__m9TerminalBridgeCleanupFailure) {
   throw new Error(globalThis.__m9TerminalBridgeCleanupFailure);
 }
+let abortSnapshot = null;
+if (abortBeforeExit) {
+  if (typeof globalThis.__m9FinishTerminalBridgeCleanup !== "function") {
+    throw new Error("release-host abort cleanup fixture did not reach abort state");
+  }
+  const input = createdInputs[0];
+  abortSnapshot = {
+    documentVisibilityListenerCount:
+        listenerCount(documentListeners, "visibilitychange"),
+    inputCancelListenerCount: input.listenerCount("cancel"),
+    inputChangeListenerCount: input.listenerCount("change"),
+    inputCount: body.children.length,
+    shutdownDisabled: shutdown.disabled,
+    textProxyListenerCount:
+        textProxy.listenerCount("beforeinput") + textProxy.listenerCount("input") +
+        textProxy.listenerCount("keydown") + textProxy.listenerCount("keyup") +
+        textProxy.listenerCount("blur") + textProxy.listenerCount("paste"),
+    timerCount: timerTokens.size,
+    windowBlurListenerCount: listenerCount(windowListeners, "blur"),
+  };
+}
 if (rejectEstimate) {
   settleEstimate.reject(new Error("synthetic deferred storage failure"));
 } else {
@@ -3114,7 +3254,16 @@ if (rejectEstimate) {
 }
 await Promise.resolve();
 await Promise.resolve();
+if (abortBeforeExit) {
+  // Let the deferred estimate settle while only the abort—not a later exit
+  // report—can quiesce its completion route.
+  await new Promise((resolve) => nativeSetTimeout(resolve, 0));
+  globalThis.__m9FinishTerminalBridgeCleanup();
+}
 await new Promise((resolve) => nativeSetTimeout(resolve, 0));
+if (globalThis.__m9TerminalBridgeCleanupFailure) {
+  throw new Error(globalThis.__m9TerminalBridgeCleanupFailure);
+}
 const payload = JSON.parse(status.textContent);
 const input = createdInputs[0];
 process.stdout.write(JSON.stringify({
@@ -3124,6 +3273,16 @@ process.stdout.write(JSON.stringify({
   fatalCount: payload.fatalCount,
   inputCancelListenerCount: input.listenerCount("cancel"),
   inputChangeListenerCount: input.listenerCount("change"),
+  ...(abortBeforeExit ? {
+    abortSnapshot,
+    inputCountAfterAbort:
+        globalThis.__m9TerminalBridgeCleanup.inputCountAfterAbort,
+    postAbortPickerAccepted:
+        globalThis.__m9TerminalBridgeCleanup.postAbortPickerAccepted,
+    postAbortStorageAccepted:
+        globalThis.__m9TerminalBridgeCleanup.postAbortStorageAccepted,
+    shutdownRequested: payload.shutdownRequested,
+  } : {}),
   inputCountAfterExit: globalThis.__m9TerminalBridgeCleanup.inputCountAfterExit,
   inputCountBeforeExit: globalThis.__m9TerminalBridgeCleanup.inputCountBeforeExit,
   inputRemoved: input.parentNode === null && !body.children.includes(input),
@@ -3184,53 +3343,76 @@ process.stdout.write(JSON.stringify({
             "timerCount": 0,
             "windowBlurListenerCount": 0,
         }
-        for terminal_via_native in (False, True):
-            for reject_estimate in (False, True):
-                for throw_on_input_remove in (False, True):
-                    with self.subTest(
-                        terminal_via_native=terminal_via_native,
-                        reject_estimate=reject_estimate,
-                        throw_on_input_remove=throw_on_input_remove,
-                    ):
-                        completed = subprocess.run(
-                            [
-                                str(node),
-                                "--input-type=module",
-                                "--eval",
-                                script.replace(
-                                    "__THROW_ON_INPUT_REMOVE__",
-                                    "true" if throw_on_input_remove else "false",
-                                ).replace(
-                                    "__REJECT_ESTIMATE__",
-                                    "true" if reject_estimate else "false",
-                                ).replace(
-                                    "__TERMINAL_VIA_NATIVE__",
-                                    "true" if terminal_via_native else "false",
-                                ),
-                            ],
-                            capture_output=True,
-                            encoding="utf-8",
-                            check=False,
-                        )
-                        self.assertEqual(
-                            0, completed.returncode,
-                            completed.stdout + completed.stderr,
-                        )
-                        expected_for_case = {
-                            **expected,
-                            **(
-                                {
-                                    "fatalCount": 1,
-                                    "inputCountAfterExit": 1,
-                                    "inputRemoved": False,
-                                }
-                                if throw_on_input_remove
-                                else {}
-                            ),
-                        }
-                        self.assertEqual(
-                            expected_for_case, json.loads(completed.stdout)
-                        )
+        for abort_before_exit in (False, True):
+            for terminal_via_native in (False, True):
+                for reject_estimate in (False, True):
+                    for throw_on_input_remove in (False, True):
+                        with self.subTest(
+                            abort_before_exit=abort_before_exit,
+                            terminal_via_native=terminal_via_native,
+                            reject_estimate=reject_estimate,
+                            throw_on_input_remove=throw_on_input_remove,
+                        ):
+                            completed = subprocess.run(
+                                [
+                                    str(node),
+                                    "--input-type=module",
+                                    "--eval",
+                                    script.replace(
+                                        "__ABORT_BEFORE_EXIT__",
+                                        "true" if abort_before_exit else "false",
+                                    ).replace(
+                                        "__THROW_ON_INPUT_REMOVE__",
+                                        "true" if throw_on_input_remove else "false",
+                                    ).replace(
+                                        "__REJECT_ESTIMATE__",
+                                        "true" if reject_estimate else "false",
+                                    ).replace(
+                                        "__TERMINAL_VIA_NATIVE__",
+                                        "true" if terminal_via_native else "false",
+                                    ),
+                                ],
+                                capture_output=True,
+                                encoding="utf-8",
+                                check=False,
+                            )
+                            self.assertEqual(
+                                0, completed.returncode,
+                                completed.stdout + completed.stderr,
+                            )
+                            expected_for_case = {**expected}
+                            if abort_before_exit:
+                                input_count = 1 if throw_on_input_remove else 0
+                                expected_for_case.update(
+                                    {
+                                        "abortSnapshot": {
+                                            "documentVisibilityListenerCount": 0,
+                                            "inputCancelListenerCount": 0,
+                                            "inputChangeListenerCount": 0,
+                                            "inputCount": input_count,
+                                            "shutdownDisabled": True,
+                                            "textProxyListenerCount": 0,
+                                            "timerCount": 0,
+                                            "windowBlurListenerCount": 0,
+                                        },
+                                        "fatalCount": 1 + int(throw_on_input_remove),
+                                        "inputCountAfterAbort": input_count,
+                                        "postAbortPickerAccepted": False,
+                                        "postAbortStorageAccepted": False,
+                                        "shutdownRequested": False,
+                                    }
+                                )
+                            if throw_on_input_remove:
+                                expected_for_case.update(
+                                    {
+                                        "fatalCount": 2 if abort_before_exit else 1,
+                                        "inputCountAfterExit": 1,
+                                        "inputRemoved": False,
+                                    }
+                                )
+                            self.assertEqual(
+                                expected_for_case, json.loads(completed.stdout)
+                            )
 
     def test_browser_smoke_requires_the_blob_backed_renamed_loader_path(self) -> None:
         smoke = (REPO_ROOT / "tools/wasm/run_m9_package_browser_smoke.py").read_text(
