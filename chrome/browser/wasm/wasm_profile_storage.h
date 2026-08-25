@@ -5,6 +5,9 @@
 #ifndef CHROME_BROWSER_WASM_WASM_PROFILE_STORAGE_H_
 #define CHROME_BROWSER_WASM_WASM_PROFILE_STORAGE_H_
 
+#include <optional>
+
+#include "chrome/browser/wasm/wasm_profile_ordered_drain_lifecycle.h"
 #include "chrome/browser/wasm/wasm_profile_storage_drain_result.h"
 
 namespace chrome {
@@ -37,11 +40,22 @@ bool NeedsWasmProfileStorageBackendDrain();
 bool NotifyWasmProfileStorageProfileCreated();
 bool NotifyWasmProfileStorageProfileShutdown();
 
+// Admits one known profile-storage operation while the mounted test profile is
+// live. Every returned hold must report a terminal result. Once profile
+// shutdown begins, new admissions are refused and the post-ContentMain backend
+// drain requires the resulting one-shot permit. This is intentionally exposed
+// only to the narrowly source-selected M7 test profile owners; it does not
+// imply that normal Chrome profile services are persistent.
+std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+TryAcquireWasmProfileStorageProfileIO();
+
 // Attempts to permanently seal only Chrome's leased OPFS backend, release its
-// profile lease, and retire its dedicated worker. ChromeMain calls this only
-// after ContentMain returns, because the profile backend must be quiesced after
-// all Content teardown. Unrelated WasmFS operations and the normal Emscripten
-// exit tail remain usable.
+// profile lease, and retire its dedicated worker. After a profile was created,
+// it first requires an explicit shutdown quiescence observation and its
+// one-shot post-ContentMain permit. ChromeMain calls this only after
+// ContentMain returns, because the profile backend must be quiesced after all
+// Content teardown. Unrelated WasmFS operations and the normal Emscripten exit
+// tail remain usable.
 WasmProfileStorageDrainResult DrainAndReleaseWasmProfileStorageBackend();
 
 }  // namespace chrome

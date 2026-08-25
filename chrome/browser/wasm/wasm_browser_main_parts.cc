@@ -5,6 +5,7 @@
 #include "chrome/browser/wasm/wasm_browser_main_parts.h"
 
 #include <cstdio>
+#include <optional>
 #include <string>
 
 #include "base/check.h"
@@ -393,10 +394,38 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // setup. Its completion requests ordinary asynchronous profile shutdown only
   // after the single database runner has closed and destroyed both engines.
   if (chrome::IsWasmProfileDatabaseSmokeEnabled()) {
+    auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+    if (!profile_io_hold) {
+      LOG(ERROR) << "chrome_wasm could not admit its profile database I/O";
+      RequestShutdown();
+      return content::RESULT_CODE_NORMAL_EXIT;
+    }
     if (!chrome::StartWasmProfileDatabaseSmoke(
             profile_->GetPath(),
-            base::BindOnce(&WasmBrowserMainParts::RequestShutdown,
-                           weak_ptr_factory_.GetWeakPtr()))) {
+            base::BindOnce(
+                [](std::optional<
+                       WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+                       profile_io_hold,
+                   base::WeakPtr<WasmBrowserMainParts> main_parts) {
+                  CHECK(profile_io_hold);
+                  const bool database_succeeded =
+                      chrome::DidWasmProfileDatabaseSmokeSucceed();
+                  const bool profile_io_completed = profile_io_hold->Complete(
+                      database_succeeded
+                          ? WasmProfileOrderedDrainLifecycle::
+                                ProfileIOCompletion::kSucceeded
+                          : WasmProfileOrderedDrainLifecycle::
+                                ProfileIOCompletion::kFailed);
+                  if (!profile_io_completed) {
+                    LOG(ERROR) << "chrome_wasm could not complete its profile "
+                                  "database I/O admission";
+                  }
+                  if (main_parts) {
+                    main_parts->RequestShutdown();
+                  }
+                },
+                std::move(profile_io_hold),
+                weak_ptr_factory_.GetWeakPtr()))) {
       RequestShutdown();
     }
     return content::RESULT_CODE_NORMAL_EXIT;

@@ -525,9 +525,26 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
     def test_prefs_shutdown_fence_is_async_and_strict(self) -> None:
         """A completed write must round-trip on the JsonPrefStore file runner."""
 
+        self.assertNotIn("wasm_profile_storage", self.profile_header)
         for text in (self.profile_header, self.profile):
-            self.assertNotIn("wasm_profile_storage", text)
             self.assertNotIn("wasmfs_", text)
+
+        # The normal profile remains free of the OPFS adapter. The two
+        # source-selected M7 artifacts may include it solely to admit their
+        # bounded Preferences fence into the ordered storage epoch.
+        self.assertIn(
+            "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)", self.profile
+        )
+        self.assertIn(
+            "defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)", self.profile
+        )
+        self.assertIn(
+            '#include "chrome/browser/wasm/wasm_profile_storage.h"',
+            self.profile,
+        )
+        self.assertIn(
+            "CompletePersistentPrefsWithProfileStorageHold", self.profile
+        )
 
         fence = re.search(
             r"void WasmProfile::BeginPrefsShutdownFence\(\s*"

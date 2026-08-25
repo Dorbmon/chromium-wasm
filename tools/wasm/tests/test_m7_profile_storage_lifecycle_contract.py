@@ -160,6 +160,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                     "chrome::IsWasmProfileStorageMounted()",
                     "chrome::NotifyWasmProfileStorageProfileCreated()",
                     "chrome::NotifyWasmProfileStorageProfileShutdown()",
+                    "chrome::TryAcquireWasmProfileStorageProfileIO()",
                 ),
             ),
         ):
@@ -329,7 +330,23 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertIn("result.backend_retire_failures != 0", self.storage)
         self.assertIn("!result.backend_retired", self.storage)
         self.assertIn("result.error = -EBUSY;", self.storage)
-        self.assertIn("profile_created_ && !profile_shutdown_", self.storage)
+        for token in (
+            "std::make_unique<WasmProfileOrderedDrainLifecycle>()",
+            "TryAcquireProfileIO()",
+            "profile_io_lifecycle_->TryAcquireProfileIO()",
+            "profile_io_lifecycle_->BeginQuiesce()",
+            "profile_io_observation_->ClaimPostContentDrain()",
+            "profile_io_drain_permit->GetProfileIOQuiesceResult()",
+            "profile_io_quiesce_result->admitted_operations == 0",
+            "!profile_io_quiesce_result->Succeeded()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.storage)
+        self.assertIn(
+            "WasmProfileOrderedDrainLifecycle::Status::\n"
+            "                          kWaitingForRegisteredProfileIO",
+            self.storage,
+        )
         self.assertIn(
             "if (emscripten_is_main_browser_thread() ||\n"
             "          emscripten_is_main_runtime_thread()) {\n"
@@ -350,6 +367,76 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "    return backend_drain_result_;",
             self.storage,
         )
+
+    def test_known_test_profile_operations_must_quiesce_before_backend_drain(
+        self,
+    ) -> None:
+        storage_created = _body_after_signature(
+            self.storage, "bool NotifyProfileCreated()"
+        )
+        self.assertLess(
+            storage_created.index(
+                "std::make_unique<WasmProfileOrderedDrainLifecycle>()"
+            ),
+            storage_created.index("profile_created_ = true;"),
+        )
+
+        storage_shutdown = _body_after_signature(
+            self.storage, "bool NotifyProfileShutdown()"
+        )
+        self.assertIn("if (profile_created_)", storage_shutdown)
+        self.assertIn("profile_io_lifecycle_->BeginQuiesce()", storage_shutdown)
+        self.assertLess(
+            storage_shutdown.index("profile_io_lifecycle_->BeginQuiesce()"),
+            storage_shutdown.index("profile_shutdown_ = true;"),
+        )
+
+        storage_drain = _body_after_signature(
+            self.storage, "WasmProfileStorageDrainResult DrainAndReleaseBackend()"
+        )
+        self.assertLess(
+            storage_drain.index("profile_io_observation_->ClaimPostContentDrain()"),
+            storage_drain.index("backend_drain_attempted_ = true;"),
+        )
+        self.assertLess(
+            storage_drain.index("emscripten_is_main_browser_thread()"),
+            storage_drain.index("profile_io_observation_->ClaimPostContentDrain()"),
+        )
+        self.assertLess(
+            storage_drain.index("profile_io_drain_permit"),
+            storage_drain.index("WasmProfileStorageDrainResult result = DrainBackend(backend);"),
+        )
+
+        profile = source("chrome/browser/wasm/wasm_profile.cc")
+        prefs_fence = _body_after_signature(
+            profile, "bool WasmProfile::StartPrefsShutdownFence("
+        )
+        for token in (
+            "chrome::TryAcquireWasmProfileStorageProfileIO()",
+            "CompletePersistentPrefsWithProfileStorageHold",
+            "std::move(*profile_io_hold)",
+            "base::BindPostTask",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, prefs_fence)
+        self.assertLess(
+            prefs_fence.index("chrome::TryAcquireWasmProfileStorageProfileIO()"),
+            prefs_fence.index("prefs_->CommitPendingWrite("),
+        )
+
+        database_admission = self.main_parts.index(
+            "auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();"
+        )
+        database_start = self.main_parts.index(
+            "chrome::StartWasmProfileDatabaseSmoke("
+        )
+        database_complete = self.main_parts.index(
+            "profile_io_hold->Complete("
+        )
+        database_shutdown = self.main_parts.index("main_parts->RequestShutdown();")
+        self.assertLess(database_admission, database_start)
+        self.assertLess(database_start, database_complete)
+        self.assertLess(database_complete, database_shutdown)
 
     def test_experimental_chrome_main_orders_mount_before_content_and_drain_after_teardown(
         self,
@@ -414,6 +501,37 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.chrome_main.index("fputs(\"CHROMIUM_WASM: host rejected"),
         )
 
+    def test_dedicated_artifacts_reject_unowned_profile_startup_before_mount(
+        self,
+    ) -> None:
+        preferences_capability = _body_after_signature(
+            self.chrome_main,
+            "if (!preferences_smoke_requested || !preferences_smoke_enabled)",
+        )
+        database_capability = _body_after_signature(
+            self.chrome_main,
+            "if (!database_smoke_requested || !database_smoke_enabled)",
+        )
+        for capability in (preferences_capability, database_capability):
+            self.assertIn(
+                "result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", capability
+            )
+
+        preferences_capability_start = self.chrome_main.index(
+            "if (!preferences_smoke_requested || !preferences_smoke_enabled)"
+        )
+        database_capability_start = self.chrome_main.index(
+            "if (!database_smoke_requested || !database_smoke_enabled)"
+        )
+        preferences_mount = self.chrome_main.index(
+            "chrome::InitializeWasmProfilePreferencesStorage()"
+        )
+        database_mount = self.chrome_main.index(
+            "chrome::InitializeWasmProfileStorage()"
+        )
+        self.assertLess(preferences_capability_start, preferences_mount)
+        self.assertLess(database_capability_start, database_mount)
+
     def test_experimental_main_parts_admits_and_completes_profile_lifecycle_before_drain(
         self,
     ) -> None:
@@ -477,7 +595,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             'source_set("wasm_profile_storage")',
             'public = [ "wasm_profile_storage.h" ]',
             'sources = [ "wasm_profile_storage.cc" ]',
-            'public_deps = [ ":wasm_profile_storage_drain_result" ]',
+            '":wasm_profile_ordered_drain_lifecycle",',
+            '":wasm_profile_storage_drain_result",',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.wasm_browser_build)

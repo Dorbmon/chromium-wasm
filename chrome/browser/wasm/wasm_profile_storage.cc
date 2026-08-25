@@ -9,6 +9,8 @@
 #include <emscripten/wasmfs_opfs_profile_drain.h>
 
 #include <cerrno>
+#include <memory>
+#include <optional>
 
 #include "base/check.h"
 #include "base/no_destructor.h"
@@ -139,24 +141,48 @@ class WasmProfileStorageState {
         profile_created_ || profile_shutdown_) {
       return false;
     }
+    profile_io_lifecycle_ =
+        std::make_unique<WasmProfileOrderedDrainLifecycle>();
     profile_created_ = true;
     return true;
   }
 
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+  TryAcquireProfileIO() {
+    base::AutoLock lock(lock_);
+    if (state_ != State::kMounted || backend_drain_attempted_ ||
+        !profile_created_ || profile_shutdown_ || !profile_io_lifecycle_) {
+      return std::nullopt;
+    }
+    return profile_io_lifecycle_->TryAcquireProfileIO();
+  }
+
   bool NotifyProfileShutdown() {
     base::AutoLock lock(lock_);
-    if (state_ != State::kMounted || backend_drain_attempted_) {
+    if (state_ != State::kMounted || backend_drain_attempted_ ||
+        profile_shutdown_) {
       return false;
     }
     // A Content startup failure can reach BrowserMainParts teardown without
     // constructing a profile. In that case there is no live profile service
     // to wait for, and this records that fact before ChromeMain later drains.
+    if (profile_created_) {
+      if (!profile_io_lifecycle_) {
+        return false;
+      }
+      profile_io_observation_ = profile_io_lifecycle_->BeginQuiesce();
+      if (!profile_io_observation_) {
+        return false;
+      }
+    }
     profile_shutdown_ = true;
     return true;
   }
 
   WasmProfileStorageDrainResult DrainAndReleaseBackend() {
     backend_t backend = nullptr;
+    std::optional<WasmProfileOrderedDrainLifecycle::PostContentDrainPermit>
+        profile_io_drain_permit;
     {
       base::AutoLock lock(lock_);
       if (backend_drain_attempted_) {
@@ -173,21 +199,56 @@ class WasmProfileStorageState {
             initialization_error_ != 0 ? initialization_error_ : -EINVAL;
         return result;
       }
-      if (state_ == State::kMounted && profile_created_ && !profile_shutdown_) {
-        WasmProfileStorageDrainResult result;
-        result.error = -EBUSY;
-        return result;
-      }
       // Preserve the mounted state after an invalid-thread call so an
-      // embedding can retry from Chromium's application pthread. The scoped
-      // WasmFS API does not seal the backend when it returns EAGAIN.
+      // embedding can retry from Chromium's application pthread. Check this
+      // before claiming the one-shot profile-I/O permit: an unsupported
+      // caller must not consume a clean handoff that the supported caller
+      // still needs to perform the actual scoped drain.
       if (emscripten_is_main_browser_thread() ||
           emscripten_is_main_runtime_thread()) {
         WasmProfileStorageDrainResult result;
         result.error = -EAGAIN;
         return result;
       }
+      if (state_ == State::kMounted && profile_created_) {
+        if (!profile_shutdown_) {
+          WasmProfileStorageDrainResult result;
+          result.error = -EBUSY;
+          return result;
+        }
+        if (!profile_io_observation_) {
+          WasmProfileStorageDrainResult result;
+          result.error = -EIO;
+          return result;
+        }
 
+        profile_io_drain_permit =
+            profile_io_observation_->ClaimPostContentDrain();
+        if (!profile_io_drain_permit) {
+          const WasmProfileOrderedDrainLifecycle::Result profile_io_result =
+              profile_io_observation_->GetResult();
+          WasmProfileStorageDrainResult result;
+          result.error =
+              profile_io_result.status ==
+                      WasmProfileOrderedDrainLifecycle::Status::
+                          kWaitingForRegisteredProfileIO
+                  ? -EBUSY
+                  : -EIO;
+          return result;
+        }
+
+        const std::optional<
+            WasmProfileOrderedDrainLifecycle::ProfileIOQuiesceResult>
+            profile_io_quiesce_result =
+                profile_io_drain_permit->GetProfileIOQuiesceResult();
+        if (!profile_io_quiesce_result ||
+            profile_io_quiesce_result->admitted_operations == 0 ||
+            !profile_io_quiesce_result->Succeeded()) {
+          WasmProfileStorageDrainResult result;
+          result.error = -EIO;
+          return result;
+        }
+      }
       backend_drain_attempted_ = true;
       state_ = State::kDraining;
       backend = backend_;
@@ -317,6 +378,10 @@ class WasmProfileStorageState {
   backend_t backend_ GUARDED_BY(lock_) = nullptr;
   bool profile_created_ GUARDED_BY(lock_) = false;
   bool profile_shutdown_ GUARDED_BY(lock_) = false;
+  std::unique_ptr<WasmProfileOrderedDrainLifecycle> profile_io_lifecycle_
+      GUARDED_BY(lock_);
+  scoped_refptr<WasmProfileOrderedDrainLifecycle::Observation>
+      profile_io_observation_ GUARDED_BY(lock_);
   bool backend_drain_attempted_ GUARDED_BY(lock_) = false;
   WasmProfileStorageDrainResult backend_drain_result_ GUARDED_BY(lock_);
 };
@@ -354,6 +419,11 @@ bool NotifyWasmProfileStorageProfileCreated() {
 
 bool NotifyWasmProfileStorageProfileShutdown() {
   return GetWasmProfileStorageState().NotifyProfileShutdown();
+}
+
+std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+TryAcquireWasmProfileStorageProfileIO() {
+  return GetWasmProfileStorageState().TryAcquireProfileIO();
 }
 
 WasmProfileStorageDrainResult DrainAndReleaseWasmProfileStorageBackend() {

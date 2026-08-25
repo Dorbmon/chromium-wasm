@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for the non-integrated M7 profile-drain control plane."""
+"""Contracts for the narrowly integrated M7 profile-drain control plane."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class M7ProfileOrderedDrainLifecycleContractTest(unittest.TestCase):
             "chrome/browser/wasm/wasm_browser_main_parts.cc"
         )
 
-    def test_target_is_base_only_and_has_no_runtime_consumer(self) -> None:
+    def test_target_is_base_only_and_only_m7_storage_consumes_it(self) -> None:
         target = _body_after_signature(
             self.build, 'source_set("wasm_profile_ordered_drain_lifecycle")'
         )
@@ -58,38 +58,46 @@ class M7ProfileOrderedDrainLifecycleContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
-        for text in (self.chrome_main, self.main_parts):
-            self.assertNotIn("wasm_profile_ordered_drain_lifecycle", text)
-            self.assertNotIn("WasmProfileOrderedDrainLifecycle", text)
+        storage_target = _body_after_signature(
+            self.build, 'source_set("wasm_profile_storage")'
+        )
+        self.assertIn('":wasm_profile_ordered_drain_lifecycle",', storage_target)
+        self.assertIn(
+            "TryAcquireWasmProfileStorageProfileIO", self.main_parts
+        )
+        self.assertIn(
+            "WasmProfileOrderedDrainLifecycle::ProfileIOHold", self.main_parts
+        )
 
-        for signature in (
-            'source_set("wasm_browser_main_parts")',
-            'source_set("wasm_profile")',
-        ):
-            target = _body_after_signature(self.build, signature)
-            self.assertNotIn("wasm_profile_ordered_drain_lifecycle", target)
+        profile_target = _body_after_signature(
+            self.build, 'source_set("wasm_profile")'
+        )
+        self.assertIn('":wasm_profile_storage"', profile_target)
+        self.assertIn(
+            '"CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1"', profile_target
+        )
 
         chrome_target = _body_after_signature(
             self.chrome_build, 'executable("chrome_wasm")'
         )
-        self.assertNotIn("wasm_profile_ordered_drain_lifecycle", chrome_target)
+        self.assertNotIn('":wasm_profile_ordered_drain_lifecycle",', chrome_target)
 
     def test_epoch_never_selects_or_invokes_the_profile_storage_backend(self) -> None:
-        for text in (self.header, self.implementation):
-            for forbidden in (
-                "WasmProfileStorageDrainResult",
-                "InitializeWasmProfileStorage",
-                "DrainAndReleaseWasmProfileStorageBackend",
-                "NeedsWasmProfileStorageBackendDrain",
-                "wasmfs_",
-                "<emscripten/",
-                '"/profile"',
-                "SequencedTaskRunner",
-                "PostTask",
-                "OnceCallback",
-            ):
-                with self.subTest(forbidden=forbidden):
-                    self.assertNotIn(forbidden, text)
+        for forbidden in (
+            "WasmProfileStorageDrainResult",
+            "InitializeWasmProfileStorage",
+            "DrainAndReleaseWasmProfileStorageBackend",
+            "NeedsWasmProfileStorageBackendDrain",
+            "wasmfs_",
+            "<emscripten/",
+            '"/profile"',
+            "SequencedTaskRunner",
+            "PostTask",
+            "OnceCallback",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.header)
+                self.assertNotIn(forbidden, self.implementation)
 
         self.assertIn(
             "class Observation : public base::RefCountedThreadSafe<Observation>",

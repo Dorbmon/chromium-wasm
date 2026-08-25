@@ -202,7 +202,20 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
 
         branch = self.main_parts[database_branch:host_input]
         self.assertIn("profile_->GetPath()", branch)
-        self.assertIn("base::BindOnce(&WasmBrowserMainParts::RequestShutdown", branch)
+        self.assertIn(
+            "chrome::TryAcquireWasmProfileStorageProfileIO()", branch
+        )
+        self.assertIn("WasmProfileOrderedDrainLifecycle::ProfileIOHold", branch)
+        self.assertIn("profile_io_hold->Complete(", branch)
+        self.assertIn("main_parts->RequestShutdown();", branch)
+        self.assertLess(
+            branch.index("chrome::TryAcquireWasmProfileStorageProfileIO()"),
+            branch.index("chrome::StartWasmProfileDatabaseSmoke("),
+        )
+        self.assertLess(
+            branch.index("profile_io_hold->Complete("),
+            branch.index("main_parts->RequestShutdown();"),
+        )
         self.assertIn("return content::RESULT_CODE_NORMAL_EXIT;", branch)
 
     def test_database_close_then_prefs_fence_then_lifecycle_then_drain_order(

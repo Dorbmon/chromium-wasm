@@ -22,19 +22,19 @@
 //   4. issue one move-only permit for the outer, post-ContentMain drain seam.
 //
 // This type deliberately does not invoke or acknowledge the backend
-// transaction. A future ChromeMain-owned storage adapter must accept its
-// permit only after ContentMain and its delegate scope have returned, then
-// invoke the one concrete WasmFS transaction that seals the backend, accounts
+// transaction. The narrowly source-selected M7 test storage adapter accepts
+// its permit only after ContentMain and its delegate scope have returned, then
+// invokes the one concrete WasmFS transaction that seals the backend, accounts
 // for every target descriptor, flushes and closes data files, conditionally
 // releases the lease, and retires the worker. Keeping that call outside this
 // epoch prevents an early release while profile teardown can still issue I/O.
 //
-// This remains a preparatory control-plane primitive. It does not make Chrome
-// profile I/O use its admission handles, it does not activate the local OPFS
-// fork, and it does not establish persistence, durability, recovery, or lock
-// semantics. A clean result means only that its explicitly admitted epoch is
-// ready to be handed to the outer drain seam; it is never a storage success
-// claim.
+// This remains a narrow control-plane primitive. Its M7 test adapter registers
+// only known Preferences and SQLite/LevelDB smoke operations; it does not make
+// all Chrome profile I/O use admission handles and it does not establish full
+// profile persistence, durability, recovery, or lock semantics. A clean result
+// means only that its explicitly admitted epoch is ready to be handed to the
+// outer drain seam; it is never a storage success claim.
 class WasmProfileOrderedDrainLifecycle {
  public:
   enum class ProfileIOCompletion {

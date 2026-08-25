@@ -1893,9 +1893,16 @@ source_set("wasm_profile") {
     "//url",
   ]
 
+  if (enable_chromium_wasm_m7_profile_preferences_test ||
+      enable_chromium_wasm_m7_profile_database_test) {
+    deps += [ ":wasm_profile_storage" ]
+  }
   if (enable_chromium_wasm_m7_profile_preferences_test) {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     deps += [ ":wasm_profile_preferences_smoke" ]
+  }
+  if (enable_chromium_wasm_m7_profile_database_test) {
+    defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
   }
   if (enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic) {
     defines = [ "CHROME_WASM_M7_NORMAL_PROFILE_FENCE_FAILURE_DIAGNOSTIC=1" ]
@@ -2034,7 +2041,10 @@ source_set("wasm_profile_storage") {
 
   sources = [ "wasm_profile_storage.cc" ]
 
-  public_deps = [ ":wasm_profile_storage_drain_result" ]
+  public_deps = [
+    ":wasm_profile_ordered_drain_lifecycle",
+    ":wasm_profile_storage_drain_result",
+  ]
 
   deps = [ "//base" ]
 
@@ -2072,10 +2082,10 @@ source_set("wasm_profile_shutdown_coordinator") {
   deps = [ "//base" ]
 }
 
-# This preparatory epoch owns only registered-I/O admission ordering and a
-# one-shot post-ContentMain handoff permit. It does not invoke storage and is
-# not wired to Chrome teardown until every profile I/O owner can participate
-# and the OPFS backend is remotely pinned.
+# This control-plane epoch owns only registered-I/O admission ordering and a
+# one-shot post-ContentMain handoff permit. It remains base-only; the dedicated
+# M7 test profile storage target is its only runtime adapter. Normal Chrome and
+# profile services not explicitly registered by that adapter remain volatile.
 source_set("wasm_profile_ordered_drain_lifecycle") {
   public = [ "wasm_profile_ordered_drain_lifecycle.h" ]
 

@@ -167,14 +167,18 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-    if (preferences_smoke_requested && !preferences_smoke_enabled) {
-      // Invalid test input stops before the profile mount. The helper already
-      // emitted its fixed redacted failure marker.
+    if (!preferences_smoke_requested || !preferences_smoke_enabled) {
+      // The dedicated artifact must never fall through to ordinary Chrome
+      // startup with a leased profile mount: only its known Preferences owner
+      // participates in the M7 test storage-I/O epoch. Invalid test input
+      // already emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
 #elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
-    if (database_smoke_requested && !database_smoke_enabled) {
-      // Invalid test input stops before the profile mount. The helper already
-      // emitted its fixed redacted failure marker.
+    if (!database_smoke_requested || !database_smoke_enabled) {
+      // The dedicated artifact must never fall through to ordinary Chrome
+      // startup with a leased profile mount: only its known database and
+      // Preferences owners participate in the M7 test storage-I/O epoch.
+      // Invalid test input already emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)

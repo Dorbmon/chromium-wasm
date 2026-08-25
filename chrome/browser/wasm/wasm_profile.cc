@@ -27,6 +27,11 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_storage.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_prefs_fence_controller.h"
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
 #include "chrome/common/chrome_constants.h"
@@ -111,6 +116,21 @@ void VerifyPersistentPrefsAndReplyOnFileSequence(
 #endif
   std::move(reply).Run(readback_succeeded);
 }
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+void CompletePersistentPrefsWithProfileStorageHold(
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> completion,
+    bool success) {
+  const bool profile_io_completed = profile_io_hold.Complete(
+      success ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                    kSucceeded
+              : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                    kFailed);
+  std::move(completion).Run(success && profile_io_completed);
+}
+#endif
 
 }  // namespace
 
@@ -252,14 +272,30 @@ bool WasmProfile::StartPrefsShutdownFence(
   CHECK(prefs_);
   CHECK(json_pref_store_);
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!profile_io_hold) {
+    return false;
+  }
+  auto completion_after_profile_io = base::BindOnce(
+      &CompletePersistentPrefsWithProfileStorageHold,
+      std::move(*profile_io_hold), std::move(completion));
+#else
+  auto completion_after_profile_io = std::move(completion);
+#endif
+
   // Bind the result back to the UI sequence before handing it to the
   // JsonPrefStore file runner. The registered participant receives it there
-  // and releases its hold; the controller invokes the profile completion only
-  // after that terminal result has been aggregated. The file runner merely
-  // owns the completion callback while it verifies the file.
+  // and releases its hold; the M7 test profile's outer storage admission also
+  // completes there only after the bounded file-sequence readback. The
+  // controller invokes the profile completion only after that terminal result
+  // has been aggregated. The file runner merely owns the completion callback
+  // while it verifies the file.
   auto complete_on_ui = base::BindPostTask(
       base::SequencedTaskRunner::GetCurrentDefault(),
-      std::move(completion));
+      std::move(completion_after_profile_io));
   prefs_->CommitPendingWrite(
       base::OnceClosure(),
       base::BindOnce(&VerifyPersistentPrefsAndReplyOnFileSequence,
