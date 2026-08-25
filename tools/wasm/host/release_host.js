@@ -569,6 +569,7 @@ class ChromiumWasmPreReleaseHost {
   #gateStateElement;
   #shutdownButton;
   #module = null;
+  #runtimeInitialized = false;
   #pointerInput = null;
   #textInput = null;
   #clipboardInput = null;
@@ -624,7 +625,7 @@ class ChromiumWasmPreReleaseHost {
       releaseStatus: RELEASE_STATUS,
       gateState: this.#gateState,
       packageMetadata: this.#packageMetadata,
-      runtimeInitialized: this.#module !== null,
+      runtimeInitialized: this.#runtimeInitialized,
       framesPresented: this.#frameCount,
       readiness: this.#readiness,
       runtimeExitCode: this.#runtimeExitCode,
@@ -692,6 +693,40 @@ class ChromiumWasmPreReleaseHost {
     }
   }
 
+  #disposeRuntimeBridgesAtExit() {
+    // A terminal report can arrive in either native/runtime order. Make every
+    // trusted adapter see an unavailable Module while it removes DOM routes so
+    // its normal detach cleanup cannot call into a runtime that has exited.
+    // Do not restore it: an adapter whose DOM removal threw might still retain
+    // its getModule closure, which must remain unable to call terminal Wasm.
+    const pointerInput = this.#pointerInput;
+    const textInput = this.#textInput;
+    const clipboardInput = this.#clipboardInput;
+    const filePicker = this.#filePicker;
+    const storageEstimate = this.#storageEstimate;
+    this.#module = null;
+    const dispose = (adapter, method, description) => {
+      try {
+        adapter?.[method]();
+      } catch (_) {
+        // Continue through every adapter even when a hostile or broken outer
+        // DOM route rejects one removal. No outer exception text is retained.
+        this.#reportFatal(`${description} bridge teardown failed`);
+      }
+    };
+    dispose(pointerInput, "detach", "pointer input");
+    dispose(textInput, "detach", "text input");
+    dispose(clipboardInput, "detach", "clipboard input");
+    dispose(filePicker, "detach", "file picker");
+    dispose(storageEstimate, "dispose", "storage estimate");
+    this.#pointerInput = null;
+    this.#textInput = null;
+    this.#clipboardInput = null;
+    this.#filePicker = null;
+    this.#storageEstimate = null;
+    this.#latestTextInputState = null;
+  }
+
   #reportRuntimeExit(value) {
     try {
       if (!Number.isSafeInteger(value) || this.#runtimeExitCode !== null) {
@@ -699,6 +734,7 @@ class ChromiumWasmPreReleaseHost {
       }
       this.#runtimeExitCode = value;
       this.#shutdownButton.disabled = true;
+      this.#disposeRuntimeBridgesAtExit();
       this.#record("runtime-exit", value);
       this.#verifyExitAgreement();
     } catch (error) {
@@ -717,6 +753,7 @@ class ChromiumWasmPreReleaseHost {
       }
       this.#processExitCode = report.exitCode;
       this.#shutdownButton.disabled = true;
+      this.#disposeRuntimeBridgesAtExit();
       this.#record("native-process-exit", report.exitCode);
       this.#verifyExitAgreement();
     } catch (error) {
@@ -930,16 +967,21 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #setModule(module) {
+    if (this.#runtimeExitCode !== null || this.#processExitCode !== null) {
+      this.#record("runtime", "initialization ignored after terminal exit");
+      return;
+    }
     if (!module || typeof module !== "object" ||
         typeof module.ccall !== "function") {
       this.#reportFatal("onRuntimeInitialized did not supply a callable Module");
       return;
     }
-    if (this.#module !== null) {
+    if (this.#runtimeInitialized) {
       this.#reportFatal("onRuntimeInitialized supplied multiple Module objects");
       return;
     }
     this.#module = module;
+    this.#runtimeInitialized = true;
     this.#pointerInput = new ChromiumWasmTrustedPointerInput(this.#canvas, {
       getModule: () => this.#module,
       recordFatal: (message) => this.#reportFatal(message),
@@ -977,7 +1019,8 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #requestShutdown() {
-    if (this.#shutdownRequested || !this.#module ||
+    if (this.#shutdownRequested || this.#runtimeExitCode !== null ||
+        this.#processExitCode !== null || !this.#module ||
         typeof this.#module.ccall !== "function") {
       return;
     }

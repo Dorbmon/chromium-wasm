@@ -2506,12 +2506,14 @@ process.stdout.write(JSON.stringify({
             """export default function(options) {
   queueMicrotask(() => {
     const module = {ccall() { return 1; }};
-    options.onRuntimeInitialized.call(module);
     const bridge = globalThis.__chromiumWasmHostBridgeV1;
     const nativeExit = (code) => bridge.reportProcessExit({
       protocol: 1,
       exitCode: code,
     });
+    if (globalThis.__m9ExitMode !== "late-runtime-after-native-exit") {
+      options.onRuntimeInitialized.call(module);
+    }
     switch (globalThis.__m9ExitMode) {
       case "clean":
         options.onExit(0);
@@ -2539,6 +2541,14 @@ process.stdout.write(JSON.stringify({
         nativeExit(0);
         break;
       case "missing-native":
+        options.onExit(0);
+        break;
+      case "late-runtime-after-native-exit":
+        nativeExit(0);
+        options.onRuntimeInitialized.call(module);
+        globalThis.__m9LateRuntimeInitialization = {
+          shutdownDisabled: document.querySelector("#shutdown").disabled,
+        };
         options.onExit(0);
         break;
       default:
@@ -2657,6 +2667,7 @@ function installElements() {
 async function observe(mode) {
   globalThis.__chromiumWasmHostBridgeV1 = undefined;
   globalThis.__m9ExitMode = mode;
+  globalThis.__m9LateRuntimeInitialization = null;
   const {root, status} = installElements();
   await runChromiumWasmPreRelease();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2666,12 +2677,18 @@ async function observe(mode) {
     processExitCode: payload.processExitCode,
     runtimeExitCode: payload.runtimeExitCode,
     pageState: root.dataset.state || null,
+    ...(globalThis.__m9LateRuntimeInitialization ? {
+      runtimeInitialized: payload.runtimeInitialized,
+      shutdownDisabledAfterLateInitialization:
+          globalThis.__m9LateRuntimeInitialization.shutdownDisabled,
+    } : {}),
   };
 }
 const results = {};
 for (const mode of [
   "clean", "mismatch-runtime-first", "mismatch-native-first",
   "duplicate-runtime", "duplicate-native", "missing-runtime", "missing-native",
+  "late-runtime-after-native-exit",
 ]) {
   results[mode] = await observe(mode);
 }
@@ -2742,9 +2759,427 @@ process.stdout.write(JSON.stringify(results));
                     "processExitCode": None,
                     "runtimeExitCode": 0,
                 },
+                "late-runtime-after-native-exit": {
+                    "fatalCount": 0,
+                    "pageState": None,
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                    "runtimeInitialized": False,
+                    "shutdownDisabledAfterLateInitialization": True,
+                },
             },
             json.loads(completed.stdout),
         )
+
+    def test_release_host_disposes_pending_dom_bridges_at_terminal_exit(self) -> None:
+        node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
+        if not node.is_file():
+            self.skipTest("the pinned Node executable is unavailable")
+
+        fixture = self.root / "release-host-terminal-bridge-cleanup-fixture"
+        shutil.copytree(self._stage(), fixture)
+        (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+        (fixture / "chromium-wasm.js").write_text(
+            """export default function(options) {
+  queueMicrotask(() => {
+    const terminalViaNative = globalThis.__m9TerminalViaNative === true;
+    const calls = [];
+    const module = {
+      HEAPU8: new Uint8Array(128),
+      _malloc() { return 8; },
+      _free() {},
+      ccall(name) {
+        calls.push(name);
+        return 1;
+      },
+    };
+    options.onRuntimeInitialized.call(module);
+    const bridge = globalThis.__chromiumWasmHostBridgeV1;
+    const storageAccepted = bridge.requestOuterOriginStorageEstimate({
+      protocol: 1,
+      generation: 1,
+    });
+    const pickerAccepted = bridge.requestOzoneBrowserFilePicker({
+      protocol: 1,
+      requestId: 1,
+    });
+    Promise.resolve().then(() => {
+      if (!globalThis.__m9StorageEstimateEntered) {
+        throw new Error("release-host cleanup fixture did not defer storage");
+      }
+      const inputCountBeforeExit = document.body.children.length;
+      if (terminalViaNative) {
+        bridge.reportProcessExit({protocol: 1, exitCode: 0});
+      } else {
+        options.onExit(0);
+      }
+      const inputCountAfterExit = document.body.children.length;
+      bridge.reportOzoneBrowserFilePickerDelivery({
+        protocol: 1,
+        requestId: 1,
+        accepted: false,
+      });
+      const postExitPickerAccepted = bridge.requestOzoneBrowserFilePicker({
+        protocol: 1,
+        requestId: 2,
+      });
+      const postExitStorageAccepted = bridge.requestOuterOriginStorageEstimate({
+        protocol: 1,
+        generation: 2,
+      });
+      if (terminalViaNative) {
+        options.onExit(0);
+      } else {
+        bridge.reportProcessExit({protocol: 1, exitCode: 0});
+      }
+      globalThis.__m9TerminalBridgeCleanup = {
+        calls,
+        inputCountAfterExit,
+        inputCountBeforeExit,
+        pickerAccepted,
+        postExitPickerAccepted,
+        postExitStorageAccepted,
+        storageAccepted,
+      };
+    }).catch((error) => {
+      globalThis.__m9TerminalBridgeCleanupFailure = String(error);
+    });
+  });
+  return new Promise(() => {});
+}
+""",
+            encoding="utf-8",
+        )
+        self._refresh_staged_artifact_identity(fixture, "chromium-wasm.js")
+        script = """
+import {readFile} from "node:fs/promises";
+
+const nativeSetTimeout = globalThis.setTimeout;
+const throwOnInputRemove = __THROW_ON_INPUT_REMOVE__;
+const rejectEstimate = __REJECT_ESTIMATE__;
+globalThis.__m9TerminalViaNative = __TERMINAL_VIA_NATIVE__;
+const timerTokens = new Set();
+globalThis.setTimeout = (callback, delay) => {
+  const token = {callback, delay};
+  timerTokens.add(token);
+  return token;
+};
+globalThis.clearTimeout = (token) => {
+  timerTokens.delete(token);
+};
+
+class HTMLElement {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.disabled = false;
+    this.parentNode = null;
+    this.style = {};
+    this.textContent = "";
+    this.value = "";
+    this.#listeners = new Map();
+  }
+  #listeners;
+  addEventListener(type, listener) {
+    const listeners = this.#listeners.get(type) || new Set();
+    listeners.add(listener);
+    this.#listeners.set(type, listeners);
+  }
+  removeEventListener(type, listener) {
+    const listeners = this.#listeners.get(type);
+    listeners?.delete(listener);
+    if (listeners?.size === 0) this.#listeners.delete(type);
+  }
+  listenerCount(type) { return this.#listeners.get(type)?.size || 0; }
+  append(...nodes) {
+    for (const node of nodes) {
+      node.remove?.();
+      node.parentNode = this;
+      this.children.push(node);
+    }
+    this.textContent += nodes.map((node) => node.textContent).join("");
+  }
+  replaceChildren(...nodes) {
+    for (const child of this.children) child.parentNode = null;
+    this.children = [];
+    this.textContent = "";
+    this.append(...nodes);
+  }
+  remove() {
+    if (!this.parentNode) return;
+    const siblings = this.parentNode.children;
+    const index = siblings.indexOf(this);
+    if (index >= 0) siblings.splice(index, 1);
+    this.parentNode = null;
+  }
+  setAttribute() {}
+  focus() { document.activeElement = this; }
+  blur() {
+    if (document.activeElement === this) document.activeElement = null;
+  }
+  setSelectionRange() {}
+}
+class HTMLCanvasElement extends HTMLElement {}
+class HTMLTextAreaElement extends HTMLElement {}
+class HTMLButtonElement extends HTMLElement {}
+class HTMLInputElement extends HTMLElement {
+  constructor() {
+    super();
+    this.showPickerCount = 0;
+  }
+  showPicker() { ++this.showPickerCount; }
+  remove() {
+    if (throwOnInputRemove && this.parentNode) {
+      throw new Error("synthetic input removal failure");
+    }
+    super.remove();
+  }
+}
+const documentListeners = new Map();
+const windowListeners = new Map();
+function addListener(map, type, listener) {
+  const listeners = map.get(type) || new Set();
+  listeners.add(listener);
+  map.set(type, listeners);
+}
+function removeListener(map, type, listener) {
+  const listeners = map.get(type);
+  listeners?.delete(listener);
+  if (listeners?.size === 0) map.delete(type);
+}
+function listenerCount(map, type) { return map.get(type)?.size || 0; }
+Object.assign(globalThis, {
+  HTMLElement,
+  HTMLButtonElement,
+  HTMLCanvasElement,
+  HTMLInputElement,
+  HTMLTextAreaElement,
+  crossOriginIsolated: true,
+});
+globalThis.window = globalThis;
+globalThis.addEventListener = (type, listener) =>
+    addListener(windowListeners, type, listener);
+globalThis.removeEventListener = (type, listener) =>
+    removeListener(windowListeners, type, listener);
+const body = new HTMLElement();
+const createdInputs = [];
+const root = new HTMLElement();
+const canvas = new HTMLCanvasElement();
+const textProxy = new HTMLTextAreaElement();
+const status = new HTMLElement();
+const versions = new HTMLElement();
+const gateState = new HTMLElement();
+const shutdown = new HTMLButtonElement();
+const elements = new Map([
+  ["#chrome-root", root], ["#browser-canvas", canvas],
+  ["#browser-text-proxy", textProxy], ["#chrome-status", status],
+  ["#versions", versions], ["#gate-state", gateState], ["#shutdown", shutdown],
+]);
+globalThis.document = {
+  activeElement: null,
+  body,
+  hidden: false,
+  visibilityState: "visible",
+  addEventListener(type, listener) { addListener(documentListeners, type, listener); },
+  removeEventListener(type, listener) {
+    removeListener(documentListeners, type, listener);
+  },
+  createElement(tag) {
+    if (tag === "input") {
+      const input = new HTMLInputElement();
+      createdInputs.push(input);
+      return input;
+    }
+    return new HTMLElement();
+  },
+  querySelector(selector) { return elements.get(selector) || null; },
+};
+let settleEstimate;
+let estimateCalls = 0;
+const deferredEstimate = new Promise((resolve, reject) => {
+  settleEstimate = {reject, resolve};
+});
+Object.defineProperty(globalThis, "navigator", {
+  configurable: true,
+  value: {
+    storage: {
+      estimate() {
+        ++estimateCalls;
+        globalThis.__m9StorageEstimateEntered = true;
+        return deferredEstimate;
+      },
+    },
+    userActivation: {isActive: true},
+  },
+});
+const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
+const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
+const wasmBytes = new Uint8Array(await readFile(__WASM_PATH__));
+const loaderUrl = __LOADER_URI__;
+function responseFor(bytes, url, contentType) {
+  const headers = {
+    "cache-control": "no-store",
+    "content-length": String(bytes.byteLength),
+    "content-type": contentType,
+    "cross-origin-embedder-policy": "require-corp",
+    "cross-origin-opener-policy": "same-origin",
+    "cross-origin-resource-policy": "same-origin",
+    "x-content-type-options": "nosniff",
+  };
+  return {
+    ok: true,
+    url,
+    headers: {get(name) { return headers[String(name).toLowerCase()] || null; }},
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+  };
+}
+URL.createObjectURL = () => loaderUrl;
+URL.revokeObjectURL = () => {};
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith("VERSION.json")) {
+    return responseFor(versionBytes, url, "application/json; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.js")) {
+    return responseFor(loaderBytes, url, "text/javascript; charset=utf-8");
+  }
+  if (url.endsWith("chromium-wasm.wasm")) {
+    return responseFor(wasmBytes, url, "application/wasm");
+  }
+  throw new Error(`unexpected fetch ${url}`);
+};
+const {runChromiumWasmPreRelease} = await import(__HOST_URI__);
+await runChromiumWasmPreRelease();
+await new Promise((resolve) => nativeSetTimeout(resolve, 0));
+if (globalThis.__m9TerminalBridgeCleanupFailure) {
+  throw new Error(globalThis.__m9TerminalBridgeCleanupFailure);
+}
+if (rejectEstimate) {
+  settleEstimate.reject(new Error("synthetic deferred storage failure"));
+} else {
+  settleEstimate.resolve({usage: 256, quota: 1024});
+}
+await Promise.resolve();
+await Promise.resolve();
+await new Promise((resolve) => nativeSetTimeout(resolve, 0));
+const payload = JSON.parse(status.textContent);
+const input = createdInputs[0];
+process.stdout.write(JSON.stringify({
+  calls: globalThis.__m9TerminalBridgeCleanup.calls,
+  createdInputCount: createdInputs.length,
+  documentVisibilityListenerCount: listenerCount(documentListeners, "visibilitychange"),
+  fatalCount: payload.fatalCount,
+  inputCancelListenerCount: input.listenerCount("cancel"),
+  inputChangeListenerCount: input.listenerCount("change"),
+  inputCountAfterExit: globalThis.__m9TerminalBridgeCleanup.inputCountAfterExit,
+  inputCountBeforeExit: globalThis.__m9TerminalBridgeCleanup.inputCountBeforeExit,
+  inputRemoved: input.parentNode === null && !body.children.includes(input),
+  pickerAccepted: globalThis.__m9TerminalBridgeCleanup.pickerAccepted,
+  postExitPickerAccepted:
+      globalThis.__m9TerminalBridgeCleanup.postExitPickerAccepted,
+  postExitStorageAccepted:
+      globalThis.__m9TerminalBridgeCleanup.postExitStorageAccepted,
+  processExitCode: payload.processExitCode,
+  runtimeExitCode: payload.runtimeExitCode,
+  showPickerCount: input.showPickerCount,
+  shutdownDisabled: shutdown.disabled,
+  storageAccepted: globalThis.__m9TerminalBridgeCleanup.storageAccepted,
+  storageEstimateCallCount: estimateCalls,
+  storageResultRecordCount:
+      payload.records.filter((record) => record.kind === "storage-estimate").length,
+  textProxyListenerCount:
+      textProxy.listenerCount("beforeinput") + textProxy.listenerCount("input") +
+      textProxy.listenerCount("keydown") + textProxy.listenerCount("keyup") +
+      textProxy.listenerCount("blur") + textProxy.listenerCount("paste"),
+  timerCount: timerTokens.size,
+  windowBlurListenerCount: listenerCount(windowListeners, "blur"),
+}));
+"""
+        script = script.replace(
+            "__VERSION_PATH__", json.dumps(str(fixture / "VERSION.json"))
+        ).replace(
+            "__LOADER_PATH__", json.dumps(str(fixture / "chromium-wasm.js"))
+        ).replace(
+            "__WASM_PATH__", json.dumps(str(fixture / "chromium-wasm.wasm"))
+        ).replace(
+            "__LOADER_URI__", json.dumps((fixture / "chromium-wasm.js").as_uri())
+        ).replace(
+            "__HOST_URI__",
+            json.dumps((fixture / "chromium-wasm-host.js").as_uri()),
+        )
+        expected = {
+            "calls": [],
+            "createdInputCount": 1,
+            "documentVisibilityListenerCount": 0,
+            "fatalCount": 0,
+            "inputCancelListenerCount": 0,
+            "inputChangeListenerCount": 0,
+            "inputCountAfterExit": 0,
+            "inputCountBeforeExit": 1,
+            "inputRemoved": True,
+            "pickerAccepted": True,
+            "postExitPickerAccepted": False,
+            "postExitStorageAccepted": False,
+            "processExitCode": 0,
+            "runtimeExitCode": 0,
+            "showPickerCount": 1,
+            "shutdownDisabled": True,
+            "storageAccepted": True,
+            "storageEstimateCallCount": 1,
+            "storageResultRecordCount": 0,
+            "textProxyListenerCount": 0,
+            "timerCount": 0,
+            "windowBlurListenerCount": 0,
+        }
+        for terminal_via_native in (False, True):
+            for reject_estimate in (False, True):
+                for throw_on_input_remove in (False, True):
+                    with self.subTest(
+                        terminal_via_native=terminal_via_native,
+                        reject_estimate=reject_estimate,
+                        throw_on_input_remove=throw_on_input_remove,
+                    ):
+                        completed = subprocess.run(
+                            [
+                                str(node),
+                                "--input-type=module",
+                                "--eval",
+                                script.replace(
+                                    "__THROW_ON_INPUT_REMOVE__",
+                                    "true" if throw_on_input_remove else "false",
+                                ).replace(
+                                    "__REJECT_ESTIMATE__",
+                                    "true" if reject_estimate else "false",
+                                ).replace(
+                                    "__TERMINAL_VIA_NATIVE__",
+                                    "true" if terminal_via_native else "false",
+                                ),
+                            ],
+                            capture_output=True,
+                            encoding="utf-8",
+                            check=False,
+                        )
+                        self.assertEqual(
+                            0, completed.returncode,
+                            completed.stdout + completed.stderr,
+                        )
+                        expected_for_case = {
+                            **expected,
+                            **(
+                                {
+                                    "fatalCount": 1,
+                                    "inputCountAfterExit": 1,
+                                    "inputRemoved": False,
+                                }
+                                if throw_on_input_remove
+                                else {}
+                            ),
+                        }
+                        self.assertEqual(
+                            expected_for_case, json.loads(completed.stdout)
+                        )
 
     def test_browser_smoke_requires_the_blob_backed_renamed_loader_path(self) -> None:
         smoke = (REPO_ROOT / "tools/wasm/run_m9_package_browser_smoke.py").read_text(
