@@ -80,6 +80,64 @@ class M7WasmfsOpfsSmokeContractTest(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, smoke)
 
+    def test_direct_backend_contract_keeps_supported_and_unsupported_paths_explicit(
+        self,
+    ) -> None:
+        smoke = source("tools/wasm/m7_wasmfs_opfs_smoke.cc")
+        contract = re.search(
+            r"void TestDirectOpfsBackendContract\(const FixturePaths& paths\) "
+            r"\{(?P<body>.*?)\n\}",
+            smoke,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(contract)
+        body = contract.group("body")
+
+        for token in (
+            'PrintPhase("direct_opfs_backend_contract")',
+            "RequireDirectoryCreate(contract_root",
+            "RequireDirectoryCreate(contract_nested",
+            "RequireDirectoryCreate(contract_empty",
+            "WriteDurableNewFile(contract_temporary, kCommitGenerationBData",
+            "contract_temp_fdatasync",
+            "rename(contract_temporary.c_str(), contract_final.c_str()) == 0",
+            "RequireDirectoryNames(contract_root, {\"empty\", \"nested\"}",
+            "RequireDirectoryNames(contract_nested, {\"record.bin\"}",
+            "RequireDirectoryNames(contract_empty, {}",
+            "rmdir(contract_empty.c_str()) == 0",
+            "O_RDONLY | O_DIRECTORY",
+            "fsync(directory) == -1 && errno == ENOTSUP",
+            "fdatasync(directory) == -1 && errno == ENOTSUP",
+            "rename(contract_empty.c_str(), contract_renamed_empty.c_str()) == -1 &&",
+            "errno == EBUSY",
+            "chmod(contract_final.c_str(), 0600) == -1 && errno == ENOTSUP",
+            "utimensat(AT_FDCWD, contract_final.c_str(), changed_times, 0) == -1 &&",
+            "errno == ENOTSUP",
+            "DIRECT_BACKEND_CONTRACT",
+            "directory_durability=not_claimed",
+            "normal_chrome_profile=not_claimed",
+            "m7_gate_complete=false",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, body)
+
+        self.assertLess(
+            body.index("WriteDurableNewFile(contract_temporary"),
+            body.index("rename(contract_temporary.c_str(), contract_final.c_str())"),
+        )
+        self.assertLess(
+            body.index("rename(contract_temporary.c_str(), contract_final.c_str())"),
+            body.index("fsync(directory) == -1 && errno == ENOTSUP"),
+        )
+        self.assertLess(
+            body.index("fdatasync(directory) == -1 && errno == ENOTSUP"),
+            body.index("rmdir(contract_empty.c_str()) == 0"),
+        )
+        self.assertLess(
+            smoke.index("TestDirectOpfsBackendContract(paths);"),
+            smoke.index("RequireDirectoryCreate(paths.tree"),
+        )
+
     def test_rename_replace_persists_only_completed_overwrites(self) -> None:
         smoke = source("tools/wasm/m7_wasmfs_opfs_smoke.cc")
         write = re.search(

@@ -49,6 +49,14 @@ const PASS_MARKER = "CHROMIUM_WASM_M7_OPFS:PASS";
 const FAIL_MARKER = "CHROMIUM_WASM_M7_OPFS:FAIL";
 const RENAME_REPLACE_MARKER =
     "rename_replace=ok atomic_recovery=not_claimed";
+const DIRECT_BACKEND_CONTRACT_MARKER =
+    "CHROMIUM_WASM_M7_OPFS:DIRECT_BACKEND_CONTRACT " +
+    "nested_mkdir_list_empty_rmdir=ok " +
+    "file_temp_rename_fdatasync=ok directory_rename=ebusy " +
+    "directory_fsync=enotsup directory_fdatasync=enotsup " +
+    "chmod=enotsup utimens=enotsup " +
+    "directory_durability=not_claimed " +
+    "normal_chrome_profile=not_claimed m7_gate_complete=false";
 const MAX_TIMEOUT_MS = 180000;
 const MAX_OUTPUT_LINES = 128;
 const CAPABILITY_PROBE_TIMEOUT_MS = 5000;
@@ -345,6 +353,10 @@ function nativeMarkerFailure(context, output) {
       !outputContains(output, WRITE_READY_MARKER)) {
     return "native WasmFS OPFS smoke did not emit its phase marker";
   }
+  if (context.phase === WRITE_PHASE &&
+      !outputContainsExact(output, DIRECT_BACKEND_CONTRACT_MARKER)) {
+    return "native WasmFS OPFS smoke did not report its direct backend contract";
+  }
   if (context.phase === VERIFY_PHASE &&
       !outputContains(output, VERIFY_STARTED_MARKER)) {
     return "native WasmFS OPFS smoke did not emit its phase marker";
@@ -565,6 +577,10 @@ function baseResult(context) {
     // file-lock evidence.
     persistenceScope: PERSISTENCE_SCOPE,
     completedRenameReplacePersistence: false,
+    // This is a same-module observation of a few direct WasmFS OPFS calls.
+    // It deliberately remains distinct from directory durability, normal
+    // Chrome profile persistence, and M7 completion.
+    directBackendContractObserved: false,
     interruptedUpdateBoundary: recoveryBoundaryForPhase(context.phase),
     interruptedUpdateRecoveryProven: false,
     atomicRecoveryProven: false,
@@ -626,6 +642,8 @@ async function executePhase(context) {
     result.completedRenameReplacePersistence =
         (context.phase === WRITE_PHASE || context.phase === VERIFY_PHASE) &&
         outputContains(runtime.output, RENAME_REPLACE_MARKER);
+    result.directBackendContractObserved = context.phase === WRITE_PHASE &&
+        outputContainsExact(runtime.output, DIRECT_BACKEND_CONTRACT_MARKER);
     const recoveryReady = expectedRecoveryReadyMarker(context.phase);
     result.interruptedUpdateRecoveryProven = recoveryReady !== null &&
         outputContainsExact(runtime.output, recoveryReady);
@@ -676,12 +694,14 @@ async function postResult(context, result) {
 function verifyResultShape(result) {
   const regularPersistencePhase = result.phase === WRITE_PHASE ||
       result.phase === VERIFY_PHASE;
+  const directBackendContractPhase = result.phase === WRITE_PHASE;
   const recoveryVerify = isRecoveryVerifyPhase(result.phase);
   if (result.status !== "pass" || result.opfsFallbackUsed !== false ||
       result.crossOriginIsolated !== true || result.sharedArrayBuffer !== true ||
       result.opfsCapability !== true || result.origin !== location.origin ||
       result.persistenceScope !== PERSISTENCE_SCOPE ||
       result.completedRenameReplacePersistence !== regularPersistencePhase ||
+      result.directBackendContractObserved !== directBackendContractPhase ||
       result.interruptedUpdateBoundary !== recoveryBoundaryForPhase(result.phase) ||
       result.interruptedUpdateRecoveryProven !== recoveryVerify ||
       result.atomicRecoveryProven !== false ||
@@ -745,6 +765,7 @@ export const m7WasmfsOpfsSmokeContract = Object.freeze({
     RECOVERY_VERIFY_STARTED_MARKER,
     RECOVERY_READY_MARKER,
     RENAME_REPLACE_MARKER,
+    DIRECT_BACKEND_CONTRACT_MARKER,
     PASS_MARKER,
     FAIL_MARKER,
   ]),

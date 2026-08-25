@@ -49,7 +49,13 @@ def passing_result(phase: str) -> dict[str, object]:
     completion_marker = smoke.expected_completion_marker(phase)
     stdout: list[str] = []
     if phase == smoke.WRITE_PHASE:
-        stdout.extend([smoke.WRITE_READY_MARKER, smoke.RENAME_REPLACE_MARKER])
+        stdout.extend(
+            [
+                smoke.WRITE_READY_MARKER,
+                smoke.RENAME_REPLACE_MARKER,
+                smoke.DIRECT_BACKEND_CONTRACT_MARKER,
+            ]
+        )
     elif phase == smoke.VERIFY_PHASE:
         stdout.extend([smoke.VERIFY_STARTED_MARKER, smoke.RENAME_REPLACE_MARKER])
     else:
@@ -75,6 +81,7 @@ def passing_result(phase: str) -> dict[str, object]:
         "persistenceScope": smoke.PERSISTENCE_SCOPE,
         "completedRenameReplacePersistence": phase
         in (smoke.WRITE_PHASE, smoke.VERIFY_PHASE),
+        "directBackendContractObserved": phase == smoke.WRITE_PHASE,
         "interruptedUpdateBoundary": smoke.recovery_boundary_for_phase(phase),
         "interruptedUpdateRecoveryProven": smoke.is_recovery_verify_phase(phase),
         "atomicRecoveryProven": False,
@@ -165,6 +172,21 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         write = passing_result(smoke.WRITE_PHASE)
         write["stdout"] = [
             smoke.WRITE_READY_MARKER,
+            smoke.expected_completion_marker(smoke.WRITE_PHASE),
+        ]
+        with self.assertRaises(M0Error):
+            smoke.validate_result_pair(
+                write,
+                passing_result(smoke.VERIFY_PHASE),
+                expected_run_namespace=RUN_NAMESPACE,
+                expected_origin=ORIGIN,
+            )
+
+    def test_validate_result_pair_requires_direct_backend_contract_marker(self) -> None:
+        write = passing_result(smoke.WRITE_PHASE)
+        write["stdout"] = [
+            smoke.WRITE_READY_MARKER,
+            smoke.RENAME_REPLACE_MARKER,
             smoke.expected_completion_marker(smoke.WRITE_PHASE),
         ]
         with self.assertRaises(M0Error):
@@ -485,6 +507,7 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         self.assertIn("opfsFallbackUsed: false", host)
         self.assertIn("persistenceScope: PERSISTENCE_SCOPE", host)
         self.assertIn("completedRenameReplacePersistence: false", host)
+        self.assertIn("directBackendContractObserved: false", host)
         self.assertIn("interruptedUpdateBoundary: recoveryBoundaryForPhase", host)
         self.assertIn("interruptedUpdateRecoveryProven: false", host)
         self.assertIn("atomicRecoveryProven: false", host)
@@ -495,6 +518,12 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         self.assertIn("function expectedCompletionMarker(phase)", host)
         self.assertIn("const RENAME_REPLACE_MARKER =", host)
         self.assertIn("outputContains(runtime.output, RENAME_REPLACE_MARKER)", host)
+        self.assertIn("const DIRECT_BACKEND_CONTRACT_MARKER =", host)
+        self.assertIn(
+            "outputContainsExact(runtime.output, DIRECT_BACKEND_CONTRACT_MARKER)",
+            host,
+        )
+        self.assertIn("directBackendContractObserved !== directBackendContractPhase", host)
         self.assertIn("fileLockSemanticsProven: false", host)
         self.assertIn("concurrentAccessHandleSemanticsProven: false", host)
         self.assertIn("await postResult(context, result);", host)
@@ -569,10 +598,15 @@ class M7WasmfsOpfsDomSmokeTest(unittest.TestCase):
         self.assertIn('"runtimeExitCode": None', runner)
         self.assertIn("regular_persistence_phase = expected_phase", runner)
         self.assertIn('"completedRenameReplacePersistence": regular_persistence_phase', runner)
+        self.assertIn(
+            '"directBackendContractObserved": direct_backend_contract_phase',
+            runner,
+        )
         self.assertIn('"interruptedUpdateRecoveryProven": recovery_verify_phase', runner)
         self.assertIn('"atomicRecoveryProven": False', runner)
         self.assertIn('"databaseRecoveryProven": False', runner)
         self.assertIn("RENAME_REPLACE_MARKER", runner)
+        self.assertIn("DIRECT_BACKEND_CONTRACT_MARKER", runner)
         self.assertIn('"completionObserved": True', runner)
         self.assertIn('"runtimeLifecycle": "live-runtime"', runner)
         self.assertIn('"teardownMode": "outer-document"', runner)

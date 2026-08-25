@@ -80,6 +80,15 @@ RECOVERY_POSTCOMMIT_BOUNDARY = "after_completed_rename_return"
 PASS_MARKER = "CHROMIUM_WASM_M7_OPFS:PASS"
 FAIL_MARKER = "CHROMIUM_WASM_M7_OPFS:FAIL"
 RENAME_REPLACE_MARKER = "rename_replace=ok atomic_recovery=not_claimed"
+DIRECT_BACKEND_CONTRACT_MARKER = (
+    "CHROMIUM_WASM_M7_OPFS:DIRECT_BACKEND_CONTRACT "
+    "nested_mkdir_list_empty_rmdir=ok "
+    "file_temp_rename_fdatasync=ok directory_rename=ebusy "
+    "directory_fsync=enotsup directory_fdatasync=enotsup "
+    "chmod=enotsup utimens=enotsup "
+    "directory_durability=not_claimed "
+    "normal_chrome_profile=not_claimed m7_gate_complete=false"
+)
 
 
 def is_initial_phase(phase: str) -> bool:
@@ -466,6 +475,7 @@ def validate_phase_result(
     expected_origin: str,
 ) -> None:
     regular_persistence_phase = expected_phase in (WRITE_PHASE, VERIFY_PHASE)
+    direct_backend_contract_phase = expected_phase == WRITE_PHASE
     recovery_verify_phase = is_recovery_verify_phase(expected_phase)
     for field, expected in {
         "protocol": 1,
@@ -481,6 +491,7 @@ def validate_phase_result(
         "opfsFallbackUsed": False,
         "persistenceScope": PERSISTENCE_SCOPE,
         "completedRenameReplacePersistence": regular_persistence_phase,
+        "directBackendContractObserved": direct_backend_contract_phase,
         "interruptedUpdateBoundary": recovery_boundary_for_phase(expected_phase),
         "interruptedUpdateRecoveryProven": recovery_verify_phase,
         "atomicRecoveryProven": False,
@@ -514,6 +525,7 @@ def validate_phase_result(
         _require_equal(result, "freshOuterDocument", False)
         _require_equal(result, "freshModuleIdentity", False)
         _require_output(result, WRITE_READY_MARKER)
+        _require_exact_output(result, DIRECT_BACKEND_CONTRACT_MARKER)
     else:
         _require_equal(result, "outerReload", True)
         _require_equal(result, "freshOuterDocument", True)

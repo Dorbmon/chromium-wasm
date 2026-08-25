@@ -346,6 +346,111 @@ void VerifyMetadata(const std::string& path, off_t expected_size,
           reason);
 }
 
+void TestDirectOpfsBackendContract(const FixturePaths& paths) {
+  // Keep this direct backend probe inside the isolated WasmFS target. It
+  // documents both the operations currently supplied by the pinned OPFS
+  // backend and the namespace/metadata operations it deliberately refuses.
+  // Nothing here mounts a Chrome profile or supplies a directory durability
+  // guarantee.
+  const std::string contract_root = paths.root + "/direct-contract";
+  const std::string contract_nested = contract_root + "/nested";
+  const std::string contract_empty = contract_root + "/empty";
+  const std::string contract_temporary = contract_nested + "/record.tmp";
+  const std::string contract_final = contract_nested + "/record.bin";
+  const std::string contract_renamed_empty = contract_root + "/empty-moved";
+
+  PrintPhase("direct_opfs_backend_contract");
+  RequireDirectoryCreate(contract_root, "contract_root_mkdir");
+  RequireDirectoryCreate(contract_nested, "contract_nested_mkdir");
+  RequireDirectoryCreate(contract_empty, "contract_empty_mkdir");
+  WriteDurableNewFile(contract_temporary, kCommitGenerationBData,
+                      "contract_temp_create", "contract_temp_write",
+                      "contract_temp_fdatasync", "contract_temp_close");
+  Require(rename(contract_temporary.c_str(), contract_final.c_str()) == 0,
+          "contract_file_temp_rename");
+  Require(IsMissing(contract_temporary), "contract_temp_present_after_rename");
+  VerifyExactFile(contract_final, kCommitGenerationBData,
+                  "contract_final_open", "contract_final_stat",
+                  "contract_final_read", "contract_final_close");
+  RequireDirectoryNames(contract_root, {"empty", "nested"},
+                        "contract_root_enumerate_open",
+                        "contract_root_enumerate",
+                        "contract_root_enumerate_close");
+  RequireDirectoryNames(contract_nested, {"record.bin"},
+                        "contract_nested_enumerate_open",
+                        "contract_nested_enumerate",
+                        "contract_nested_enumerate_close");
+  RequireDirectoryNames(contract_empty, {}, "contract_empty_enumerate_open",
+                        "contract_empty_enumerate",
+                        "contract_empty_enumerate_close");
+
+  // The browser File System Access API has no directory move primitive. The
+  // pinned backend therefore rejects directory rename explicitly instead of
+  // pretending the operation completed.
+  Require(IsMissing(contract_renamed_empty),
+          "contract_directory_rename_target_preexisting");
+  errno = 0;
+  Require(rename(contract_empty.c_str(), contract_renamed_empty.c_str()) == -1 &&
+              errno == EBUSY,
+          "contract_directory_rename_not_ebusy");
+  Require(IsMissing(contract_renamed_empty),
+          "contract_directory_rename_target_created");
+  RequireDirectoryNames(contract_empty, {},
+                        "contract_empty_after_rename_open",
+                        "contract_empty_after_rename",
+                        "contract_empty_after_rename_close");
+
+  // WasmFS has no directory flush operation. Keep that limitation visible to
+  // the browser contract instead of treating a file SyncAccessHandle flush as
+  // a namespace durability promise.
+  const int directory =
+      open(contract_empty.c_str(), O_RDONLY | O_DIRECTORY);
+  Require(directory >= 0, "contract_directory_open");
+  errno = 0;
+  Require(fsync(directory) == -1 && errno == ENOTSUP,
+          "contract_directory_fsync_not_enotsup");
+  errno = 0;
+  Require(fdatasync(directory) == -1 && errno == ENOTSUP,
+          "contract_directory_fdatasync_not_enotsup");
+  Require(close(directory) == 0, "contract_directory_close");
+
+  // OPFS cannot persist explicit POSIX metadata. Do not make a silent success
+  // claim when Chromium requests a mode or timestamp mutation.
+  const timespec changed_times[2] = {
+      {42, 111000000},
+      {43, 222000000},
+  };
+  errno = 0;
+  Require(chmod(contract_final.c_str(), 0600) == -1 && errno == ENOTSUP,
+          "contract_chmod_not_enotsup");
+  errno = 0;
+  Require(utimensat(AT_FDCWD, contract_final.c_str(), changed_times, 0) == -1 &&
+              errno == ENOTSUP,
+          "contract_utimens_not_enotsup");
+  VerifyExactFile(contract_final, kCommitGenerationBData,
+                  "contract_final_after_metadata_open",
+                  "contract_final_after_metadata_stat",
+                  "contract_final_after_metadata_read",
+                  "contract_final_after_metadata_close");
+
+  Require(unlink(contract_final.c_str()) == 0, "contract_final_unlink");
+  Require(rmdir(contract_empty.c_str()) == 0, "contract_empty_rmdir");
+  Require(rmdir(contract_nested.c_str()) == 0, "contract_nested_rmdir");
+  Require(rmdir(contract_root.c_str()) == 0, "contract_root_rmdir");
+  Require(IsMissing(contract_root), "contract_root_present_after_rmdir");
+
+  std::fprintf(stdout,
+               "%s:DIRECT_BACKEND_CONTRACT "
+               "nested_mkdir_list_empty_rmdir=ok "
+               "file_temp_rename_fdatasync=ok directory_rename=ebusy "
+               "directory_fsync=enotsup directory_fdatasync=enotsup "
+               "chmod=enotsup utimens=enotsup "
+               "directory_durability=not_claimed "
+               "normal_chrome_profile=not_claimed m7_gate_complete=false\n",
+               kPrefix);
+  std::fflush(stdout);
+}
+
 void TestSameInstanceWriteOpenCoalescing(const FixturePaths& paths) {
   // WasmFS caches one OPFSFile/OpenState per in-process path identity. A second
   // writable open therefore joins the first SyncAccessHandle; it is not a
@@ -363,6 +468,7 @@ void RunWritePhase(const FixturePaths& paths) {
   PrintPhase("fixture_create");
   Require(IsMissing(paths.root), "fixture_preexisting");
   RequireDirectoryCreate(paths.root, "fixture_root_create");
+  TestDirectOpfsBackendContract(paths);
   RequireDirectoryCreate(paths.tree, "fixture_tree_create");
   RequireDirectoryCreate(paths.nested, "fixture_nested_create");
   RequireDirectoryCreate(paths.empty, "fixture_empty_create");
