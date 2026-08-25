@@ -600,7 +600,9 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             "VerifyPersistentPrefsAndReplyOnFileSequence",
         )
         self.assertIn("VerifyPersistentPrefsOnFileSequence", verify_body)
-        self.assertIn("std::move(reply).Run(success);", verify_body)
+        self.assertIn(
+            "std::move(reply).Run(readback_succeeded);", verify_body
+        )
 
         readback = re.search(
             r"bool VerifyPersistentPrefsOnFileSequence\(", self.profile
