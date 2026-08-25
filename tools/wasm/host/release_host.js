@@ -9,6 +9,7 @@
 
 import {ChromiumWasmTrustedPointerInput} from "./chromium-wasm-pointer-input.js";
 import {ChromiumWasmTrustedClipboardInput} from "./chromium-wasm-clipboard-input.js";
+import {ChromiumWasmTrustedFilePicker} from "./chromium-wasm-file-picker.js";
 import {ChromiumWasmOuterOriginStorageEstimate} from "./chromium-wasm-storage-estimate.js";
 import {ChromiumWasmTrustedTextInput} from "./chromium-wasm-text-input.js";
 import {loadReleaseWispConfiguration} from "./chromium-wasm-release-wisp-config.js";
@@ -87,6 +88,7 @@ const EXPECTED_PACKAGE_ARTIFACT_PATHS = Object.freeze([
   "README.txt",
   "TOOLCHAIN.json",
   "chromium-wasm-clipboard-input.js",
+  "chromium-wasm-file-picker.js",
   "chromium-wasm-host.js",
   "chromium-wasm-pointer-input.js",
   "chromium-wasm-release-wisp-config.js",
@@ -570,6 +572,7 @@ class ChromiumWasmPreReleaseHost {
   #pointerInput = null;
   #textInput = null;
   #clipboardInput = null;
+  #filePicker = null;
   #storageEstimate = null;
   #latestTextInputState = null;
   #records = [];
@@ -851,6 +854,21 @@ class ChromiumWasmPreReleaseHost {
     }
   }
 
+  #reportOzoneBrowserFilePickerDelivery(value) {
+    try {
+      const report = asReport(value, "browser file-picker delivery");
+      if (report.protocol !== HOST_PROTOCOL ||
+          !Number.isSafeInteger(report.requestId) || report.requestId < 1 ||
+          report.requestId > 0x7fffffff ||
+          typeof report.accepted !== "boolean") {
+        throw new Error("browser file-picker delivery is invalid");
+      }
+      this.#filePicker?.handleOzoneBrowserFilePickerDelivery(report);
+    } catch (error) {
+      this.#reportFatal(`invalid browser file-picker delivery: ${String(error)}`);
+    }
+  }
+
   #installBridge() {
     if (globalThis.__chromiumWasmHostBridgeV1 !== undefined) {
       throw new Error("a Chromium Wasm host bridge is already installed");
@@ -887,6 +905,12 @@ class ChromiumWasmPreReleaseHost {
       },
       reportOzoneBrowserClipboardPasteDelivery(value) {
         host.#reportOzoneBrowserClipboardPasteDelivery(value);
+      },
+      requestOzoneBrowserFilePicker(value) {
+        return host.#filePicker?.request(value) === true;
+      },
+      reportOzoneBrowserFilePickerDelivery(value) {
+        host.#reportOzoneBrowserFilePickerDelivery(value);
       },
       requestOuterOriginStorageEstimate(value) {
         return host.#storageEstimate?.request(value) === true;
@@ -934,6 +958,11 @@ class ChromiumWasmPreReleaseHost {
           reportFatal: (message) => this.#reportFatal(message),
         });
     this.#clipboardInput.attach();
+    this.#filePicker = new ChromiumWasmTrustedFilePicker({
+      getModule: () => this.#module,
+      reportFatal: (message) => this.#reportFatal(message),
+    });
+    this.#filePicker.attach();
     this.#storageEstimate = new ChromiumWasmOuterOriginStorageEstimate({
       getModule: () => this.#module,
       recordFatal: (message) => this.#reportFatal(message),

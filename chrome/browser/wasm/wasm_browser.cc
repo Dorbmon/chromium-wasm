@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/wasm/wasm_browser_file_picker.h"
 #include "chrome/browser/wasm/wasm_browser_security_warning_dialog.h"
 #include "chrome/browser/wasm/wasm_tab_bootstrap_delegate.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
@@ -163,6 +164,8 @@ Browser::Browser(const CreateParams& params)
       tab_delegate_.get(), profile_.get(), /*group_model_factory=*/nullptr);
   tab_strip_model_observer_ = std::make_unique<TabStripModelObserver>(this);
   tab_strip_model_->AddObserver(tab_strip_model_observer_.get());
+  file_picker_ = std::make_unique<chrome::WasmBrowserFilePicker>(
+      tab_strip_model_.get());
 
   features_ = std::make_unique<BrowserWindowFeatures>();
   features_->Init(this);
@@ -234,6 +237,7 @@ Browser::~Browser() {
   weak_ptr_factory_.InvalidateWeakPtrs();
   window_observer_.reset();
   security_warning_dialog_.reset();
+  file_picker_.reset();
   if (!features_torn_down_) {
     features_->TearDownPreBrowserWindowDestruction();
   }
@@ -588,6 +592,13 @@ void Browser::OnTabWillBeRemoved(tabs::TabInterface* tab, int index) {
 
   const bool was_active = tab == tab_strip_model_->GetActiveTab();
 
+  CHECK(file_picker_);
+  // The browser-owned file-picker delegate retains a volatile imported file
+  // only while its owning WebContents remains in this bounded tab model.
+  // Detach before the model can release the contents or the Views host can
+  // observe its removal.
+  file_picker_->DetachFromWebContents(tab->GetContents());
+
   CHECK(security_warning_dialog_);
   // Close and clear this manager before the model releases the WebContents.
   // The controller owns one delegate across all tabs, so this also prevents a
@@ -606,6 +617,32 @@ void Browser::OnTabStripModelChanged(
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
   CHECK_EQ(tab_strip_model, tab_strip_model_.get());
+  CHECK(file_picker_);
+  switch (change.type()) {
+    case TabStripModelChange::kInserted: {
+      const TabStripModelChange::Insert* const inserted = change.GetInsert();
+      CHECK(inserted);
+      for (const auto& contents : inserted->contents) {
+        CHECK(file_picker_->AttachToWebContents(contents.contents));
+      }
+      break;
+    }
+    case TabStripModelChange::kReplaced: {
+      const TabStripModelChange::Replace* const replacement =
+          change.GetReplace();
+      CHECK(replacement);
+      file_picker_->DetachFromWebContents(replacement->old_contents);
+      CHECK(file_picker_->AttachToWebContents(replacement->new_contents));
+      break;
+    }
+    case TabStripModelChange::kSelectionOnly:
+    case TabStripModelChange::kRemoved:
+    case TabStripModelChange::kMoved:
+      break;
+  }
+  if (selection.active_tab_changed()) {
+    file_picker_->OnActiveWebContentsChanged();
+  }
   CHECK(security_warning_dialog_);
   security_warning_dialog_->OnTabStripModelChanged(change);
   if (!selection.active_tab_changed()) {

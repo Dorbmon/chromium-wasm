@@ -138,6 +138,7 @@ RUNTIME_CORE_RESOURCE_RECEIPT = (
     ("chromium-wasm-host.js", "script"),
     ("chromium-wasm-pointer-input.js", "script"),
     ("chromium-wasm-clipboard-input.js", "script"),
+    ("chromium-wasm-file-picker.js", "script"),
     ("chromium-wasm-storage-estimate.js", "script"),
     ("chromium-wasm-text-input.js", "script"),
     ("chromium-wasm-release-wisp-config.js", "script"),

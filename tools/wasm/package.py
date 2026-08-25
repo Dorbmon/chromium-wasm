@@ -117,6 +117,7 @@ HOST_ASSETS = (
     ),
     ("chrome_wasm_text_input.js", "chromium-wasm-text-input.js"),
     ("chrome_wasm_clipboard_input.js", "chromium-wasm-clipboard-input.js"),
+    ("chrome_wasm_file_picker.js", "chromium-wasm-file-picker.js"),
     (
         "chrome_wasm_storage_estimate.js",
         "chromium-wasm-storage-estimate.js",

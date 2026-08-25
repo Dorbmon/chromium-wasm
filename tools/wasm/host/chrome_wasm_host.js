@@ -4,6 +4,7 @@
 
 import {ChromiumWasmTrustedPointerInput} from "./chrome_wasm_pointer_input.js";
 import {ChromiumWasmTrustedClipboardInput} from "./chrome_wasm_clipboard_input.js";
+import {ChromiumWasmTrustedFilePicker} from "./chrome_wasm_file_picker.js";
 import {ChromiumWasmOuterOriginStorageEstimate} from "./chrome_wasm_storage_estimate.js";
 import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";
 
@@ -255,6 +256,7 @@ class ChromiumWasmNormalBrowserHost {
   #ozoneTextInputDeliveries = [];
   #ozoneBrowserTextInputDeliveries = [];
   #ozoneBrowserClipboardPasteDeliveries = [];
+  #ozoneBrowserFilePickerDeliveries = [];
   #outerOriginStorageEstimateReports = [];
   #normalBrowserReadyMarkerObserved = false;
   #normalBrowserPassMarkerObserved = false;
@@ -263,6 +265,7 @@ class ChromiumWasmNormalBrowserHost {
   #pointerInput = null;
   #textInput = null;
   #clipboardInput = null;
+  #filePicker = null;
   #storageEstimate = null;
   #errorHandler;
   #rejectionHandler;
@@ -569,6 +572,26 @@ class ChromiumWasmNormalBrowserHost {
     }
   }
 
+  #reportOzoneBrowserFilePickerDelivery(value) {
+    try {
+      const report = asReport(value, "browser file-picker delivery report");
+      if (report.protocol !== HOST_PROTOCOL ||
+          !Number.isSafeInteger(report.requestId) || report.requestId < 1 ||
+          report.requestId > 0x7fffffff ||
+          typeof report.accepted !== "boolean") {
+        throw new Error("browser file-picker delivery metadata is invalid");
+      }
+      appendBounded(this.#ozoneBrowserFilePickerDeliveries, {
+        requestId: report.requestId,
+        accepted: report.accepted,
+      });
+      this.#filePicker?.handleOzoneBrowserFilePickerDelivery(report);
+    } catch (error) {
+      this.#recordFatal(
+          `invalid browser file-picker delivery report: ${String(error)}`);
+    }
+  }
+
   #reportOuterOriginStorageEstimate(value) {
     try {
       const report = asReport(value, "outer-origin storage-estimate report");
@@ -626,6 +649,12 @@ class ChromiumWasmNormalBrowserHost {
       reportOzoneBrowserClipboardPasteDelivery(report) {
         host.#reportOzoneBrowserClipboardPasteDelivery(report);
       },
+      requestOzoneBrowserFilePicker(report) {
+        return host.#filePicker?.request(report) === true;
+      },
+      reportOzoneBrowserFilePickerDelivery(report) {
+        host.#reportOzoneBrowserFilePickerDelivery(report);
+      },
       requestOuterOriginStorageEstimate(report) {
         return host.#storageEstimate?.request(report) === true;
       },
@@ -662,6 +691,11 @@ class ChromiumWasmNormalBrowserHost {
           reportFatal: (message) => this.#recordFatal(message),
         });
     this.#clipboardInput.attach();
+    this.#filePicker = new ChromiumWasmTrustedFilePicker({
+      getModule: () => this.#module,
+      reportFatal: (message) => this.#recordFatal(message),
+    });
+    this.#filePicker.attach();
     this.#storageEstimate = new ChromiumWasmOuterOriginStorageEstimate({
       getModule: () => this.#module,
       recordFatal: (message) => this.#recordFatal(message),
@@ -816,9 +850,11 @@ class ChromiumWasmNormalBrowserHost {
       ozoneBrowserTextInputDeliveries: this.#ozoneBrowserTextInputDeliveries,
       ozoneBrowserClipboardPasteDeliveries:
           this.#ozoneBrowserClipboardPasteDeliveries,
+      ozoneBrowserFilePickerDeliveries: this.#ozoneBrowserFilePickerDeliveries,
       outerOriginStorageEstimateReports: this.#outerOriginStorageEstimateReports,
       trustedTextInput: this.#textInput?.snapshot() || null,
       trustedClipboardInput: this.#clipboardInput?.snapshot() || null,
+      trustedFilePicker: this.#filePicker?.snapshot() || null,
       canvasBackingStore: {
         width: this.#canvas.width,
         height: this.#canvas.height,
@@ -929,6 +965,8 @@ class ChromiumWasmNormalBrowserHost {
       this.#textInput = null;
       this.#clipboardInput?.detach();
       this.#clipboardInput = null;
+      this.#filePicker?.detach();
+      this.#filePicker = null;
       this.#storageEstimate?.dispose();
       this.#storageEstimate = null;
       this.#stopHeartbeat();

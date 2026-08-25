@@ -334,6 +334,55 @@ mergeInto(LibraryManager.library, {
     return 1;
   },
 
+  // This synchronous import admits one ordinary page file-input request. It
+  // carries only a monotonic opaque ID: the trusted outer DOM adapter checks
+  // transient user activation before it calls input.showPicker(), and returns
+  // selected bytes only through the bounded copied C ABI.
+  chromium_wasm_request_ozone_browser_file_picker__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_request_ozone_browser_file_picker__proxy: 'sync',
+  chromium_wasm_request_ozone_browser_file_picker: (requestId) => {
+    if (!Number.isSafeInteger(requestId) || requestId < 1 ||
+        requestId > 0x7fffffff) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge || typeof bridge.requestOzoneBrowserFilePicker !== 'function') {
+      return 0;
+    }
+    return bridge.requestOzoneBrowserFilePicker({
+      protocol: ChromiumWasmHostBridge.version,
+      requestId,
+    }) === true ? 1 : 0;
+  },
+
+  // Native terminal delivery reports contain only the opaque request ID and
+  // whether Chromium materialized the file in its volatile vault. The host
+  // never learns a Chromium path, Browser identity, filename, or file bytes.
+  chromium_wasm_report_ozone_browser_file_picker_delivery__deps: [
+    '$ChromiumWasmHostBridge',
+  ],
+  chromium_wasm_report_ozone_browser_file_picker_delivery__proxy: 'sync',
+  chromium_wasm_report_ozone_browser_file_picker_delivery: (
+      requestId, accepted) => {
+    if (!Number.isSafeInteger(requestId) || requestId < 1 ||
+        requestId > 0x7fffffff || (accepted !== 0 && accepted !== 1)) {
+      return 0;
+    }
+    const bridge = ChromiumWasmHostBridge.bridge();
+    if (!bridge ||
+        typeof bridge.reportOzoneBrowserFilePickerDelivery !== 'function') {
+      return 0;
+    }
+    bridge.reportOzoneBrowserFilePickerDelivery({
+      protocol: ChromiumWasmHostBridge.version,
+      requestId,
+      accepted: accepted === 1,
+    });
+    return 1;
+  },
+
   // This synchronous import is an admission request only. The host must defer
   // navigator.storage.estimate() completion until after this proxy call has
   // returned, then invoke the fixed scalar C ABI with the same generation.

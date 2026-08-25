@@ -212,6 +212,11 @@ class ChromeM6ServerTest(unittest.TestCase):
                 b"ChromiumWasmTrustedClipboardInput",
             ),
             (
+                "/__m6__/chrome_wasm_file_picker.js",
+                "text/javascript; charset=utf-8",
+                b"ChromiumWasmTrustedFilePicker",
+            ),
+            (
                 "/__m6__/chrome_wasm_storage_estimate.js",
                 "text/javascript; charset=utf-8",
                 b"ChromiumWasmOuterOriginStorageEstimate",
@@ -565,8 +570,11 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
             "reportOzoneFocusState(report)",
             "reportOzoneBrowserTextInputDelivery(report)",
             "reportOzoneBrowserClipboardPasteDelivery(report)",
+            "requestOzoneBrowserFilePicker(report)",
+            "reportOzoneBrowserFilePickerDelivery(report)",
             'import {ChromiumWasmTrustedTextInput} from "./chrome_wasm_text_input.js";',
             'import {ChromiumWasmTrustedClipboardInput} from "./chrome_wasm_clipboard_input.js";',
+            'import {ChromiumWasmTrustedFilePicker} from "./chrome_wasm_file_picker.js";',
             'import {ChromiumWasmOuterOriginStorageEstimate} from "./chrome_wasm_storage_estimate.js";',
             "MAX_NORMAL_BROWSER_TIMEOUT_MS = 120000",
             "requestAnimationFrame",
@@ -614,6 +622,7 @@ class ChromeM6HostSourceContractTest(unittest.TestCase):
             ROOT_DIR / "tools/wasm/host/chrome_wasm_pointer_input.js",
             ROOT_DIR / "tools/wasm/host/chrome_wasm_text_input.js",
             ROOT_DIR / "tools/wasm/host/chrome_wasm_clipboard_input.js",
+            ROOT_DIR / "tools/wasm/host/chrome_wasm_file_picker.js",
             ROOT_DIR / "tools/wasm/host/chrome_wasm_storage_estimate.js",
         ):
             with self.subTest(host=host.name):

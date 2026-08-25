@@ -30,6 +30,7 @@ class TabStripModelChange;
 struct TabStripSelectionChange;
 
 namespace chrome {
+class WasmBrowserFilePicker;
 class WasmBrowserSecurityWarningDialog;
 class WasmTabBootstrapDelegate;
 }  // namespace chrome
@@ -206,6 +207,7 @@ class Browser final : public BrowserWindowInterface {
   std::unique_ptr<chrome::WasmTabBootstrapDelegate> tab_delegate_;
   std::unique_ptr<TabStripModel> tab_strip_model_;
   std::unique_ptr<TabStripModelObserver> tab_strip_model_observer_;
+  std::unique_ptr<chrome::WasmBrowserFilePicker> file_picker_;
   std::unique_ptr<chrome::WasmBrowserSecurityWarningDialog>
       security_warning_dialog_;
   std::unique_ptr<BrowserWindowFeatures> features_;

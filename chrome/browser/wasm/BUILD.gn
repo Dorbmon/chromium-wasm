@@ -494,6 +494,8 @@ source_set("wasm_browser") {
 
   sources = [
     "wasm_browser.cc",
+    "wasm_browser_file_picker.cc",
+    "wasm_browser_file_picker.h",
     "wasm_browser_security_warning_dialog.cc",
   ]
 
@@ -520,6 +522,7 @@ source_set("wasm_browser") {
     "//ui/base",
     "//ui/base/mojom:ui_base_types",
     "//ui/gfx/geometry",
+    "//ui/ozone/platform/wasm:wasm",
     "//ui/views",
   ]
 }

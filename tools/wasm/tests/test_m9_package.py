@@ -241,6 +241,7 @@ class M9PackageTest(unittest.TestCase):
                 "TOOLCHAIN.json",
                 "VERSION.json",
                 "chromium-wasm-clipboard-input.js",
+                "chromium-wasm-file-picker.js",
                 "chromium-wasm-host.js",
                 "chromium-wasm-pointer-input.js",
                 "chromium-wasm-release-wisp-config.js",
@@ -1825,6 +1826,7 @@ class M9PackageTest(unittest.TestCase):
             "chromium-wasm-release-wisp-config.js",
             "chromium-wasm-text-input.js",
             "chromium-wasm-clipboard-input.js",
+            "chromium-wasm-file-picker.js",
             "chromium-wasm-storage-estimate.js",
         ):
             with self.subTest(module=module):
@@ -3257,7 +3259,12 @@ process.stdout.write(JSON.stringify(results));
         wrong_path = deepcopy(receipt)
         wrong_path[2]["path"] = "unexpected-resource.js"
         wrong_initiator = deepcopy(receipt)
-        wrong_initiator[6]["initiator_type"] = "script"
+        fetch_index = next(
+            index
+            for index, item in enumerate(wrong_initiator)
+            if item["initiator_type"] == "fetch"
+        )
+        wrong_initiator[fetch_index]["initiator_type"] = "script"
         malformed = deepcopy(receipt)
         malformed[0].pop("initiator_type")
         for name, value, message in (

@@ -160,6 +160,13 @@ class ChromeM6RequestHandler(BaseHTTPRequestHandler):
                 self.server.clipboard_input_js_bytes,
             )
             return
+        if path == "/__m6__/chrome_wasm_file_picker.js":
+            self._send_bytes(
+                HTTPStatus.OK,
+                "text/javascript; charset=utf-8",
+                self.server.file_picker_js_bytes,
+            )
+            return
         if path == "/__m6__/chrome_wasm_storage_estimate.js":
             self._send_bytes(
                 HTTPStatus.OK,
@@ -301,6 +308,9 @@ def create_chrome_m6_server(
     clipboard_input_js_path = (
         Path(__file__).with_name("host") / "chrome_wasm_clipboard_input.js"
     )
+    file_picker_js_path = (
+        Path(__file__).with_name("host") / "chrome_wasm_file_picker.js"
+    )
     storage_estimate_js_path = (
         Path(__file__).with_name("host") / "chrome_wasm_storage_estimate.js"
     )
@@ -317,6 +327,7 @@ def create_chrome_m6_server(
     server.pointer_input_js_bytes = pointer_input_js_path.read_bytes()
     server.text_input_js_bytes = text_input_js_path.read_bytes()
     server.clipboard_input_js_bytes = clipboard_input_js_path.read_bytes()
+    server.file_picker_js_bytes = file_picker_js_path.read_bytes()
     server.storage_estimate_js_bytes = storage_estimate_js_path.read_bytes()
     return server
 
