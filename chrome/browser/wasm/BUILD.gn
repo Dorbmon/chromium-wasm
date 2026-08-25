@@ -2014,6 +2014,13 @@ if (enable_chromium_wasm_m7_profile_database_test) {
       defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC=1" ]
     }
 
+    if (enable_chromium_wasm_m7_profile_database_recovery_test) {
+      # The recovery probe has its own source behavior and marker grammar. It
+      # must not share a binary with the observation-only interruption
+      # diagnostic, which intentionally accepts non-recovery outcomes.
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST=1" ]
+    }
+
     deps = [
       "//base",
       "//crypto",

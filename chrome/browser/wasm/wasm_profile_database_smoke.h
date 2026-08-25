@@ -25,15 +25,23 @@ namespace chrome {
 //   --wasm-profile-database-smoke=verify-b
 //   --wasm-profile-database-token-b=<64 lowercase hex>
 //
-// The distinct write-interruption diagnostic artifact additionally accepts
-// these diagnostic-only modes. They are rejected by the normal and abort-PC
-// artifacts, even though those artifacts share this source file:
+// The distinct write-interruption diagnostic and bounded recovery artifacts
+// additionally accept their own private modes. They are rejected by the
+// normal and abort-PC artifacts, even though those artifacts share this source
+// file:
 //
 //   --wasm-profile-database-smoke=interrupt-leveldb-write-b
 //   --wasm-profile-database-token-a=<64 lowercase hex>
 //   --wasm-profile-database-token-b=<64 lowercase hex>
 //
 //   --wasm-profile-database-smoke=observe-leveldb-write-b
+//   --wasm-profile-database-token-a=<64 lowercase hex>
+//   --wasm-profile-database-token-b=<64 lowercase hex>
+//
+// The bounded recovery artifact accepts this final mode instead of the
+// diagnostic observation mode:
+//
+//   --wasm-profile-database-smoke=recover-leveldb-write-b
 //   --wasm-profile-database-token-a=<64 lowercase hex>
 //   --wasm-profile-database-token-b=<64 lowercase hex>
 //
@@ -104,6 +112,26 @@ namespace chrome {
 // it does not establish interruption recovery. It then cleanly emits only the
 // three diagnostic terminal markers above. The diagnostic artifact never emits
 // ordinary DATABASES_CLOSED, FENCE_OK, or LEASE_RELEASED for any clean mode.
+
+// The separate recovery artifact has a deliberately narrower grammar. Its
+// first fresh module writes A; its second fresh module verifies A and aborts
+// only after the owner-thread active LevelDB .log Sync returns from a sync
+// Put(B); and its third fresh module reacquires the test profile lease before
+// reopening LevelDB twice with `paranoid_checks` and checksum reads. The third
+// module accepts only a matching A or B value from both independently closed
+// LevelDB handles and separately reopens SQLite's pre-existing A value twice
+// with FullIntegrityCheck. Its fixed markers are proof for that bounded
+// controlled boundary only, never a claim about physical crash behavior,
+// SQLite interruption recovery, directory durability, cross-store atomicity,
+// full Chromium profile persistence, or M7 completion:
+//
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_LEASE_REACQUIRED
+//   CHROMIUM_WASM_M7_DATABASE:LEVELDB_RECOVERY_A_OK sha256=<digest-a>
+//   CHROMIUM_WASM_M7_DATABASE:LEVELDB_RECOVERY_B_OK sha256=<digest-b>
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_RECOVERY_A_INTEGRITY_OK sha256=<digest-a>
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_DATABASES_CLOSED
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_FENCE_OK
+//   CHROMIUM_WASM_M7_DATABASE:RECOVERY_LEASE_RELEASED
 
 // True when any switch in the dedicated database protocol is present. This
 // includes orphaned token switches so ChromeMain fails them before ordinary

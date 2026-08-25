@@ -1057,9 +1057,10 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
         )
         self.assertNotIn("LevelDBOptionsForSmoke", task)
         # The original four normal-mode uses retain the UI-created options;
-        # the source-selected write-interruption diagnostic adds three more
-        # uses without constructing options on its worker.
-        self.assertEqual(7, task.count("input.leveldb_options"))
+        # the source-selected interruption diagnostic adds three more and the
+        # bounded recovery probe adds its strict double-reopen consumer,
+        # without constructing options on its worker.
+        self.assertEqual(8, task.count("input.leveldb_options"))
 
         for signature in (
             "bool ReadLevelDBToken(const base::FilePath& database_path,",

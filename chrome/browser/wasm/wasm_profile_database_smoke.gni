@@ -19,6 +19,14 @@ declare_args() {
   # and must remain a different artifact from normal and abort-PC database
   # smokes.
   enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic = false
+
+  # This bounded recovery probe is a separate fresh artifact. It interrupts a
+  # real synchronous LevelDB write after its active .log Sync returns, then
+  # requires a fresh module to reopen the database twice with checksum and
+  # paranoid checks. It deliberately does not claim directory durability,
+  # power-loss behavior, SQLite interruption recovery, cross-store atomicity,
+  # normal-profile persistence, or M7 completion.
+  enable_chromium_wasm_m7_profile_database_recovery_test = false
 }
 
 assert(!enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic ||
@@ -28,9 +36,18 @@ assert(
     !enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic ||
         enable_chromium_wasm_m7_profile_database_test,
     "M7 write-interruption diagnostic requires the M7 database smoke configuration")
+assert(!enable_chromium_wasm_m7_profile_database_recovery_test ||
+           enable_chromium_wasm_m7_profile_database_test,
+       "M7 database recovery probe requires the M7 database smoke configuration")
 assert(
-    !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic && enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic),
-    "M7 database diagnostics require separate fresh output configurations")
+    !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
+      enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic) &&
+        !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_recovery_test) &&
+        !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_recovery_test),
+    "M7 database diagnostics require separate fresh output configurations; " +
+        "the recovery probe requires another fresh output configuration")
 
 assert(!enable_chromium_wasm_m7_profile_database_test ||
            (is_wasm && enable_chromium_wasm_chrome),
@@ -49,6 +66,11 @@ if (enable_chromium_wasm_m7_profile_database_test) {
     _m7_database_output_message =
         "M7 write-interruption diagnostic must use " +
         "out/wasm-chrome-m7-profile-database-write-interruption"
+  } else if (enable_chromium_wasm_m7_profile_database_recovery_test) {
+    _m7_database_output_dir = "wasm-chrome-m7-profile-database-recovery"
+    _m7_database_output_message =
+        "M7 database recovery probe must use " +
+        "out/wasm-chrome-m7-profile-database-recovery"
   }
   assert(get_path_info(root_out_dir, "name") == _m7_database_output_dir,
          _m7_database_output_message)

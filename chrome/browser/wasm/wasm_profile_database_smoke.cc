@@ -50,10 +50,18 @@ constexpr char kTokenBSwitch[] = "wasm-profile-database-token-b";
 constexpr char kWriteAMode[] = "write-a";
 constexpr char kVerifyAWriteBMode[] = "verify-a-write-b";
 constexpr char kVerifyBMode[] = "verify-b";
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 constexpr char kInterruptLevelDBWriteBMode[] = "interrupt-leveldb-write-b";
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
 constexpr char kObserveLevelDBWriteBMode[] = "observe-leveldb-write-b";
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+constexpr char kRecoverLevelDBWriteBMode[] = "recover-leveldb-write-b";
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 constexpr size_t kOpaqueTokenLength = 64;
 
 constexpr char kSQLiteFilename[] = "m7_profile_database_smoke.sqlite";
@@ -68,14 +76,24 @@ enum class SmokeMode {
   kWriteA,
   kVerifyAWriteB,
   kVerifyB,
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   kInterruptLevelDBWriteB,
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
   kObserveLevelDBWriteB,
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+  kRecoverLevelDBWriteB,
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 };
 
 enum class DatabaseTaskResult {
   kSuccess,
+  kRecoveryA,
+  kRecoveryB,
   kFailure,
 };
 
@@ -115,9 +133,10 @@ enum class DatabaseTaskPhase {
   kLevelDBReadOpen,
   kLevelDBReadGet,
   kLevelDBReadClose,
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   kLevelDBWriteLogSyncReturned,
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   kTaskComplete,
 };
 
@@ -187,10 +206,11 @@ const char* DatabaseTaskPhaseName(DatabaseTaskPhase phase) {
       return "leveldb-read-get";
     case DatabaseTaskPhase::kLevelDBReadClose:
       return "leveldb-read-close";
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     case DatabaseTaskPhase::kLevelDBWriteLogSyncReturned:
       return "leveldb-write-log-sync-returned";
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     case DatabaseTaskPhase::kTaskComplete:
       return "task-complete";
   }
@@ -536,7 +556,8 @@ class DatabaseOpenDiagnosticEnv final : public leveldb::EnvWrapper {
   size_t owner_file_exists_ordinal_ = 0;
 };
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 // This state belongs to exactly one diagnostic OpenDB and every WritableFile
 // that it created. It deliberately admits only the synchronous Put owner's
 // active .log file: a background maintenance Sync cannot move the requested
@@ -686,7 +707,7 @@ class DatabaseWriteInterruptionEnv final : public leveldb::EnvWrapper {
 
   const std::shared_ptr<DatabaseWriteInterruptionState> state_;
 };
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 
 struct DatabaseTaskInput {
   DatabaseTaskInput(base::FilePath profile_path,
@@ -736,13 +757,14 @@ std::string DigestToken(std::string_view token) {
   return base::HexEncodeLower(crypto::hash::Sha256(token));
 }
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 void EmitDatabaseDigestMarker(const char* marker, std::string_view digest) {
   std::fprintf(stderr, "%s%s sha256=%.*s\n", kMarkerPrefix, marker,
                static_cast<int>(digest.size()), digest.data());
   std::fflush(stderr);
 }
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
 enum class PostSyncObservation {
@@ -926,15 +948,17 @@ bool ReadLevelDBToken(const base::FilePath& database_path,
   return success;
 }
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 bool ReadExistingLevelDBTokenWithoutPhases(
     const base::FilePath& database_path,
     std::string_view expected_token,
     const leveldb_env::Options& options) {
-  // A diagnostic verifier must not create a replacement database while
-  // attempting to establish its fresh-document A witness.
+  // A verifier must not create a replacement database while attempting to
+  // establish its fresh-document A witness.
   leveldb_env::Options existing_options = options;
   existing_options.create_if_missing = false;
+  existing_options.paranoid_checks = true;
   std::unique_ptr<leveldb::DB> database;
   if (!leveldb_env::OpenDB(existing_options, database_path.AsUTF8Unsafe(),
                            &database)
@@ -946,8 +970,11 @@ bool ReadExistingLevelDBTokenWithoutPhases(
   leveldb::ReadOptions read_options;
   read_options.verify_checksums = true;
   std::string value;
-  return database->Get(read_options, kDatabaseKey, &value).ok() &&
-         std::string_view(value) == expected_token;
+  const bool success =
+      database->Get(read_options, kDatabaseKey, &value).ok() &&
+      std::string_view(value) == expected_token;
+  database.reset();
+  return success;
 }
 
 // Opens its own target-local Env after the fresh A checks have completed. The
@@ -983,6 +1010,9 @@ bool InterruptLevelDBWriteAfterLogSync(
   return false;
 }
 
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
 PostSyncObservation ObservePostSyncLevelDBWrite(
     const base::FilePath& database_path,
     std::string_view token_a,
@@ -1021,6 +1051,70 @@ bool IsWriteInterruptionDiagnosticMode(SmokeMode mode) {
          mode == SmokeMode::kObserveLevelDBWriteB;
 }
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+enum class RecoveredLevelDBValue {
+  kA,
+  kB,
+};
+
+std::optional<RecoveredLevelDBValue> ReadRecoveredLevelDBValueOnce(
+    const base::FilePath& database_path,
+    std::string_view token_a,
+    std::string_view token_b,
+    const leveldb_env::Options& options) {
+  // Do not let a verifier create a replacement database. The fresh recovery
+  // document must reopen the post-interruption database exactly as it exists.
+  leveldb_env::Options existing_options = options;
+  existing_options.create_if_missing = false;
+  existing_options.paranoid_checks = true;
+  std::unique_ptr<leveldb::DB> database;
+  if (!leveldb_env::OpenDB(existing_options, database_path.AsUTF8Unsafe(),
+                           &database)
+           .ok() ||
+      !database) {
+    return std::nullopt;
+  }
+
+  leveldb::ReadOptions read_options;
+  read_options.verify_checksums = true;
+  std::string value;
+  const leveldb::Status status =
+      database->Get(read_options, kDatabaseKey, &value);
+  std::optional<RecoveredLevelDBValue> result;
+  if (status.ok() && std::string_view(value) == token_a) {
+    result = RecoveredLevelDBValue::kA;
+  } else if (status.ok() && std::string_view(value) == token_b) {
+    result = RecoveredLevelDBValue::kB;
+  }
+  // Explicitly destroy the first owner before a second independent OpenDB.
+  database.reset();
+  return result;
+}
+
+std::optional<RecoveredLevelDBValue> ReadRecoveredLevelDBValueTwice(
+    const base::FilePath& database_path,
+    std::string_view token_a,
+    std::string_view token_b,
+    const leveldb_env::Options& options) {
+  const std::optional<RecoveredLevelDBValue> first =
+      ReadRecoveredLevelDBValueOnce(database_path, token_a, token_b, options);
+  if (!first) {
+    return std::nullopt;
+  }
+  const std::optional<RecoveredLevelDBValue> second =
+      ReadRecoveredLevelDBValueOnce(database_path, token_a, token_b, options);
+  if (!second || *second != *first) {
+    return std::nullopt;
+  }
+  return first;
+}
+
+bool IsDatabaseRecoveryMode(SmokeMode mode) {
+  return mode == SmokeMode::kInterruptLevelDBWriteB ||
+         mode == SmokeMode::kRecoverLevelDBWriteB;
+}
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 
 bool WriteLevelDBToken(const base::FilePath& database_path,
                        std::string_view token,
@@ -1088,6 +1182,11 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
   }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+  const bool emit_task_phases = !IsDatabaseRecoveryMode(input.mode);
+  if (emit_task_phases) {
+    EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
+  }
 #else
   EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
@@ -1097,6 +1196,9 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
       input.profile_path.AppendASCII(kLevelDBDirectory);
 
   bool success = false;
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+  std::optional<RecoveredLevelDBValue> recovered_leveldb_value;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   switch (input.mode) {
     case SmokeMode::kWriteA:
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kSQLiteWrite);
@@ -1132,7 +1234,8 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
             leveldb_path, input.token_b, input.leveldb_options);
       }
       break;
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     case SmokeMode::kInterruptLevelDBWriteB:
       // These read markers must be emitted before the target-local writer is
       // armed: the subsequent native abort intentionally prevents the task
@@ -1149,6 +1252,9 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
         }
       }
       break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     case SmokeMode::kObserveLevelDBWriteB:
       // Every fixed observation is useful controlled diagnostic output. It is
       // not a B durability claim, so open failure and every value class
@@ -1164,18 +1270,42 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
       }
       break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    case SmokeMode::kRecoverLevelDBWriteB:
+      // This strictly bounded recovery witness permits only a stable A or B
+      // LevelDB value from two independently closed/reopened checksum and
+      // paranoid-check handles. SQLite remains the committed A control and
+      // must independently pass two full-integrity close/reopen checks.
+      recovered_leveldb_value = ReadRecoveredLevelDBValueTwice(
+          leveldb_path, input.token_a, input.token_b, input.leveldb_options);
+      if (recovered_leveldb_value &&
+          ReadSqliteTokenAndVerifyAfterClose(sqlite_path, input.token_a)) {
+        success = true;
+      }
+      break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     case SmokeMode::kNone:
       break;
   }
 
   input.ClearRawTokens();
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);
   }
 #else
   EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+  if (success && recovered_leveldb_value == RecoveredLevelDBValue::kA) {
+    return DatabaseTaskResult::kRecoveryA;
+  }
+  if (success && recovered_leveldb_value == RecoveredLevelDBValue::kB) {
+    return DatabaseTaskResult::kRecoveryB;
+  }
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   return success ? DatabaseTaskResult::kSuccess : DatabaseTaskResult::kFailure;
 }
 
@@ -1204,6 +1334,16 @@ class WasmProfileDatabaseSmokeState {
     }
 
     const std::string mode = command_line->GetSwitchValueASCII(kSmokeSwitch);
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    // A recovery artifact cannot be used as a generic graceful-close test.
+    // Its source-selected protocol has exactly one seed, one controlled
+    // interruption, and one strict fresh-module recovery mode.
+    if (mode != kWriteAMode && mode != kInterruptLevelDBWriteBMode &&
+        mode != kRecoverLevelDBWriteBMode) {
+      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+      return false;
+    }
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     if (mode == kWriteAMode) {
       if (!has_token_a || has_token_b) {
         ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
@@ -1233,7 +1373,30 @@ class WasmProfileDatabaseSmokeState {
       token_a_digest_ = DigestToken(token_a_);
       token_b_digest_ = DigestToken(token_b_);
       expected_digest_ = token_b_digest_;
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    } else if (mode == kInterruptLevelDBWriteBMode ||
+               mode == kRecoverLevelDBWriteBMode) {
+      if (!has_token_a || !has_token_b) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      token_a_ = command_line->GetSwitchValueASCII(kTokenASwitch);
+      token_b_ = command_line->GetSwitchValueASCII(kTokenBSwitch);
+      if (!IsOpaqueToken(token_a_) || !IsOpaqueToken(token_b_) ||
+          token_a_ == token_b_) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      mode_ = mode == kInterruptLevelDBWriteBMode
+                  ? SmokeMode::kInterruptLevelDBWriteB
+                  : SmokeMode::kRecoverLevelDBWriteB;
+      token_a_digest_ = DigestToken(token_a_);
+      token_b_digest_ = DigestToken(token_b_);
+      // The clean terminal marker has no token digest. Keep a private,
+      // nonempty expectation solely for the existing result-bearing lifecycle
+      // validation; recovered A and B are distinguished before that handoff.
+      expected_digest_ = token_b_digest_;
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     } else if (mode == kInterruptLevelDBWriteBMode ||
                mode == kObserveLevelDBWriteBMode) {
       if (!has_token_a || !has_token_b) {
@@ -1256,7 +1419,7 @@ class WasmProfileDatabaseSmokeState {
       // unchanged result-bearing lifecycle still requires a nonempty private
       // expectation before it can release the real profile lease.
       expected_digest_ = token_b_digest_;
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     } else if (mode == kVerifyBMode) {
       if (has_token_a || !has_token_b) {
         ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
@@ -1289,6 +1452,14 @@ class WasmProfileDatabaseSmokeState {
     started_ = true;
     completion_ = std::move(completion);
     EmitMarker("READY");
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    // Start is reached only after the dedicated Chrome entry point mounted the
+    // exact leased OPFS backend and BrowserMainParts admitted the profile
+    // lifecycle. Each outer document constructs a fresh module, so this is a
+    // fixed receipt for the test backend's fresh lease acquisition, not a
+    // claim about general Chromium profile locking.
+    EmitMarker("RECOVERY_LEASE_REACQUIRED");
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 
     // leveldb_env::Options initializes Chromium's shared browser block cache.
     // Do that on this UI/main sequence before this input is posted to the
@@ -1307,6 +1478,10 @@ class WasmProfileDatabaseSmokeState {
     // contract is the current abort candidate.
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     if (!IsWriteInterruptionDiagnosticMode(mode_)) {
+      EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
+    }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    if (!IsDatabaseRecoveryMode(mode_)) {
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
     }
 #else
@@ -1342,6 +1517,8 @@ class WasmProfileDatabaseSmokeState {
     // This artifact can cleanly release the real profile lease, but that
     // lifecycle fact is not an M7 persistence acceptance.
     EmitMarker("DIAGNOSTIC_FENCE_OK");
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    EmitMarker("RECOVERY_FENCE_OK");
 #else
     EmitDigestMarker("FENCE_OK", expected_digest_);
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
@@ -1371,6 +1548,8 @@ class WasmProfileDatabaseSmokeState {
     lease_released_ = true;
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
     EmitMarker("DIAGNOSTIC_LEASE_RELEASED");
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    EmitMarker("RECOVERY_LEASE_RELEASED");
 #else
     EmitMarker("LEASE_RELEASED");
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
@@ -1423,7 +1602,10 @@ class WasmProfileDatabaseSmokeState {
     task_completed_ = true;
     task_runner_.reset();
 
-    if (result != DatabaseTaskResult::kSuccess || expected_digest_.empty()) {
+    if ((result != DatabaseTaskResult::kSuccess &&
+         result != DatabaseTaskResult::kRecoveryA &&
+         result != DatabaseTaskResult::kRecoveryB) ||
+        expected_digest_.empty()) {
       ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
     } else {
       database_succeeded_ = true;
@@ -1442,17 +1624,34 @@ class WasmProfileDatabaseSmokeState {
           EmitDigestMarker("SQLITE_READ_B_OK", token_b_digest_);
           EmitDigestMarker("LEVELDB_READ_B_OK", token_b_digest_);
           break;
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
         case SmokeMode::kInterruptLevelDBWriteB:
           // The intended native abort prevents this branch. If Put returned
           // without the fixed phase, do not convert it into a clean result.
           ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
           break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
         case SmokeMode::kObserveLevelDBWriteB:
           // RunDatabaseTask() already emitted exactly one fixed observation
           // after its fresh LevelDB handle was destroyed.
           break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+        case SmokeMode::kRecoverLevelDBWriteB:
+          if (result == DatabaseTaskResult::kRecoveryA) {
+            EmitDigestMarker("LEVELDB_RECOVERY_A_OK", token_a_digest_);
+          } else if (result == DatabaseTaskResult::kRecoveryB) {
+            EmitDigestMarker("LEVELDB_RECOVERY_B_OK", token_b_digest_);
+          } else {
+            ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+            break;
+          }
+          EmitDigestMarker("SQLITE_RECOVERY_A_INTEGRITY_OK", token_a_digest_);
+          break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
         case SmokeMode::kNone:
           ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
           break;
@@ -1463,6 +1662,8 @@ class WasmProfileDatabaseSmokeState {
         databases_closed_ = true;
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
         EmitMarker("DIAGNOSTIC_DATABASES_CLOSED");
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+        EmitMarker("RECOVERY_DATABASES_CLOSED");
 #else
         EmitDigestMarker("DATABASES_CLOSED", expected_digest_);
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)

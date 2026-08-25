@@ -598,6 +598,11 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         # smokes.
         output_name =
             "chrome_wasm_m7_profile_database_write_interruption_diagnostic"
+      } else if (enable_chromium_wasm_m7_profile_database_recovery_test) {
+        # This bounded recovery probe remains source-selected and test-only.
+        # Its fresh output prevents its controlled abort/reopen protocol from
+        # changing the ordinary M7 database graceful-close artifact.
+        output_name = "chrome_wasm_m7_profile_database_recovery_test"
       }
     }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
