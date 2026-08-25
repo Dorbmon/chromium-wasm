@@ -47,6 +47,7 @@ if __package__:
     )
     from .m9_server_cleanup import shutdown_server_bounded
     from .run_m9_package_smoke import (
+        EPOCH_QUERY_KEY,
         EPOCH_ROUTE_PREFIX,
         create_package_smoke_server,
     )
@@ -65,7 +66,11 @@ else:
         stop_browser_group,
     )
     from m9_server_cleanup import shutdown_server_bounded
-    from run_m9_package_smoke import EPOCH_ROUTE_PREFIX, create_package_smoke_server
+    from run_m9_package_smoke import (
+        EPOCH_QUERY_KEY,
+        EPOCH_ROUTE_PREFIX,
+        create_package_smoke_server,
+    )
 
 
 SENTINEL = "CHROMIUM_WASM_M9_PACKAGE"
@@ -103,7 +108,6 @@ OUTER_DOCUMENT_RELOAD_STRESS_LIMITATIONS = (
     "does_not_establish_m7_persistence_m8_compatibility_or_m9_release_completion",
 )
 RELEASE_STATUS = package_tool.RELEASE_STATUS
-EPOCH_QUERY_KEY = "m9_package_epoch"
 MAX_SAFE_INTEGER = (1 << 53) - 1
 PACKAGE_OBSERVATION_SCHEMA_VERSION = 1
 PACKAGE_OBSERVATION_SCOPE = (
@@ -492,7 +496,7 @@ def validate_runtime_core_server_receipt(
 def _capture_runtime_core_server_receipt(
     server: Any, *, epoch: str
 ) -> list[dict[str, object]]:
-    """Project one server-side epoch log into a bounded core-resource receipt."""
+    """Project one server-side epoch log into a bounded package receipt."""
 
     if not isinstance(epoch, str) or not epoch:
         raise M0Error("package runtime server receipt epoch is invalid")
@@ -502,6 +506,9 @@ def _capture_runtime_core_server_receipt(
         raise M0Error("package server does not expose an epoch GET receipt") from exc
     if type(counts) is not dict:
         raise M0Error("package server epoch GET receipt is invalid")
+    document_get_count = counts.get("/")
+    if type(document_get_count) is not int or document_get_count != 1:
+        raise M0Error("package epoch document GET receipt is invalid")
     receipt = [
         {
             "path": path,

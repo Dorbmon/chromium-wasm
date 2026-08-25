@@ -86,6 +86,7 @@ _DELIVERY_HEADER_NAMES = frozenset(
 # opt-in test-server namespace only: normal package URLs and the immutable
 # package bytes remain unchanged.
 EPOCH_ROUTE_PREFIX = "/__chromium_wasm_m9_epoch__/"
+EPOCH_QUERY_KEY = "m9_package_epoch"
 MAX_EPOCH_ROUTE_COUNT = 3
 MAX_EPOCH_SUCCESSFUL_GETS = 32
 
@@ -161,6 +162,42 @@ class PackageSmokeServer(M9TrackingThreadingHTTPServer):
                 return None, None
         return epoch, "/" if not artifact else f"/{artifact}"
 
+    def resolve_epoch_scoped_request_target(
+        self, request_target: str
+    ) -> tuple[str | None, str | None]:
+        """Resolve one origin-form request target and its epoch receipt.
+
+        Epoch routes exist solely to bind one fresh outer document to the
+        corresponding server-side receipt. Require its exact opaque token in
+        both the virtual path and document query. Artifact requests under the
+        route are queryless, so they cannot be substituted for the document
+        receipt or introduce an unobserved variant.
+        """
+
+        if not isinstance(request_target, str):
+            return None, None
+        try:
+            parsed = urlsplit(request_target)
+        except (TypeError, ValueError):
+            return None, None
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or request_target.startswith("//")
+            or "#" in request_target
+            or not parsed.path.startswith("/")
+        ):
+            return None, None
+        epoch, package_path = self.resolve_epoch_scoped_request_path(parsed.path)
+        if epoch is None:
+            return epoch, package_path
+        if package_path == "/":
+            if parsed.query != f"{EPOCH_QUERY_KEY}={epoch}":
+                return None, None
+        elif parsed.query or "?" in request_target:
+            return None, None
+        return epoch, package_path
+
     def record_epoch_successful_get(self, epoch: str, package_path: str) -> None:
         """Retain one bounded, successful GET fact for a registered epoch."""
 
@@ -216,10 +253,25 @@ class PackageSmokeRequestHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         self._serve()
 
+    def _raw_request_target(self) -> str | None:
+        """Return the unnormalized target accepted by the base parser."""
+
+        try:
+            words = self.raw_requestline.decode("iso-8859-1").rstrip("\r\n").split()
+        except (AttributeError, UnicodeError):
+            return None
+        if len(words) not in (2, 3):
+            return None
+        return words[1]
+
     def _serve(self) -> None:
-        epoch, package_path = self.server.resolve_epoch_scoped_request_path(
-            urlsplit(self.path).path
-        )
+        request_target = self._raw_request_target()
+        if request_target is None:
+            epoch, package_path = None, None
+        else:
+            epoch, package_path = self.server.resolve_epoch_scoped_request_target(
+                request_target
+            )
         if package_path is None:
             status, content_type, contents = (
                 HTTPStatus.NOT_FOUND,

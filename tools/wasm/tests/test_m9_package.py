@@ -1487,6 +1487,7 @@ class M9PackageTest(unittest.TestCase):
             self.skipTest("test sandbox does not permit loopback socket binding")
 
         dist_dir = self._stage()
+        expected_index = (dist_dir / "index.html").read_bytes()
         expected_loader = (dist_dir / "chromium-wasm.js").read_bytes()
         server = create_package_smoke_server("127.0.0.1", 0, dist_dir)
         epoch = "epoch_token-1"
@@ -1505,6 +1506,22 @@ class M9PackageTest(unittest.TestCase):
             (epoch, "/chromium-wasm.js"),
             server.resolve_epoch_scoped_request_path(route + "chromium-wasm.js"),
         )
+        self.assertEqual(
+            (None, "/chromium-wasm.js"),
+            server.resolve_epoch_scoped_request_target(
+                "/chromium-wasm.js?ordinary=1"
+            ),
+        )
+        self.assertEqual(
+            (epoch, "/"),
+            server.resolve_epoch_scoped_request_target(
+                f"{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}"
+            ),
+        )
+        self.assertEqual(
+            (epoch, "/chromium-wasm.js"),
+            server.resolve_epoch_scoped_request_target(route + "chromium-wasm.js"),
+        )
         for unsafe_path in (
             f"{package_smoke.EPOCH_ROUTE_PREFIX}unregistered/",
             f"{route}../VERSION.json",
@@ -1517,6 +1534,25 @@ class M9PackageTest(unittest.TestCase):
                     (None, None),
                     server.resolve_epoch_scoped_request_path(unsafe_path),
                 )
+        for unsafe_target in (
+            route,
+            f"{route}?{package_smoke.EPOCH_QUERY_KEY}=wrong",
+            f"{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}"
+            f"&{package_smoke.EPOCH_QUERY_KEY}={epoch}",
+            f"{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}&extra=1",
+            f"{route}chromium-wasm.js?extra=1",
+            f"{route}chromium-wasm.js?",
+            f"//{route.lstrip('/')}?{package_smoke.EPOCH_QUERY_KEY}={epoch}",
+            f"http://127.0.0.1{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}",
+            f"//example.test{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}",
+            f"{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}#fragment",
+            "not-an-origin-form",
+        ):
+            with self.subTest(unsafe_target=unsafe_target):
+                self.assertEqual(
+                    (None, None),
+                    server.resolve_epoch_scoped_request_target(unsafe_target),
+                )
 
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1528,6 +1564,18 @@ class M9PackageTest(unittest.TestCase):
                 self.assertEqual(200, response.status)
                 self.assertEqual(expected_loader, response.read())
             with urlopen(
+                f"http://{host}:{port}/chromium-wasm.js?ordinary=1", timeout=10
+            ) as response:
+                self.assertEqual(200, response.status)
+                self.assertEqual(expected_loader, response.read())
+            with urlopen(
+                f"http://{host}:{port}{route}"
+                f"?{package_smoke.EPOCH_QUERY_KEY}={epoch}",
+                timeout=10,
+            ) as response:
+                self.assertEqual(200, response.status)
+                self.assertEqual(expected_index, response.read())
+            with urlopen(
                 f"http://{host}:{port}{route}chromium-wasm.js", timeout=10
             ) as response:
                 self.assertEqual(200, response.status)
@@ -1535,6 +1583,28 @@ class M9PackageTest(unittest.TestCase):
                 self.assertEqual("no-store", response.headers.get("Cache-Control"))
                 for name, value in package.REQUIRED_HEADERS.items():
                     self.assertEqual(value, response.headers.get(name))
+            for rejected_target in (
+                route,
+                f"{route}?{package_smoke.EPOCH_QUERY_KEY}=wrong",
+                f"{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}"
+                f"&{package_smoke.EPOCH_QUERY_KEY}={epoch}",
+                f"{route}?{package_smoke.EPOCH_QUERY_KEY}={epoch}&extra=1",
+                f"{route}chromium-wasm.js?extra=1",
+            ):
+                with self.subTest(rejected_target=rejected_target):
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(
+                            f"http://{host}:{port}{rejected_target}", timeout=10
+                        )
+                    self.assertEqual(404, error.exception.code)
+                    error.exception.close()
+            slash_alias_response = package_smoke._fetch_package_response(
+                host,
+                port,
+                f"//{route.lstrip('/')}?{package_smoke.EPOCH_QUERY_KEY}={epoch}",
+                "GET",
+            )
+            self.assertEqual(HTTPStatus.NOT_FOUND, slash_alias_response.status)
             with self.assertRaises(HTTPError) as error:
                 urlopen(
                     f"http://{host}:{port}"
@@ -1545,7 +1615,7 @@ class M9PackageTest(unittest.TestCase):
             self.assertEqual(404, error.exception.code)
             error.exception.close()
             self.assertEqual(
-                {"/chromium-wasm.js": 1},
+                {"/": 1, "/chromium-wasm.js": 1},
                 server.epoch_successful_get_counts(epoch),
             )
         finally:
@@ -4284,6 +4354,14 @@ process.stdout.write(JSON.stringify({
             )
         server.epoch_successful_get_counts.return_value = {
             "/chromium-wasm-host.js": 0
+        }
+        with self.assertRaisesRegex(M0Error, "document GET receipt"):
+            package_browser_smoke._capture_runtime_core_server_receipt(
+                server, epoch=epoch
+            )
+        server.epoch_successful_get_counts.return_value = {
+            "/": 1,
+            "/chromium-wasm-host.js": 0,
         }
         with self.assertRaisesRegex(M0Error, "server receipt"):
             package_browser_smoke._capture_runtime_core_server_receipt(
