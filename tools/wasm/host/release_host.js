@@ -106,6 +106,14 @@ function appendBounded(records, record) {
   }
 }
 
+function stringifyForDiagnostic(value) {
+  try {
+    return String(value);
+  } catch (_) {
+    return "<unprintable>";
+  }
+}
+
 function asReport(value, description) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${description} must be an object`);
@@ -585,7 +593,7 @@ class ChromiumWasmPreReleaseHost {
   #frameCount = 0;
   #runtimeExitCode = null;
   #processExitCode = null;
-  #runtimeAbortObserved = false;
+  #executionFailureObserved = false;
   #shutdownRequested = false;
   #runtimeArtifactsVerified = false;
   #wispConfigured = false;
@@ -616,7 +624,7 @@ class ChromiumWasmPreReleaseHost {
   #record(kind, value) {
     appendBounded(this.#records, {
       kind,
-      value: String(value).slice(0, MAX_LOG_LINE_CHARS),
+      value: stringifyForDiagnostic(value).slice(0, MAX_LOG_LINE_CHARS),
     });
     this.#renderStatus();
   }
@@ -692,7 +700,7 @@ class ChromiumWasmPreReleaseHost {
   }
 
   #isExecutionQuiesced() {
-    return this.#runtimeAbortObserved || this.#hasTerminalExit();
+    return this.#executionFailureObserved || this.#hasTerminalExit();
   }
 
   #verifyExitAgreement() {
@@ -737,11 +745,22 @@ class ChromiumWasmPreReleaseHost {
     this.#latestTextInputState = null;
   }
 
-  #reportRuntimeAbort(reason) {
-    this.#runtimeAbortObserved = true;
+  #reportExecutionFailure(value) {
+    // A clean exit is itself terminal, but a later abort, page exception, or
+    // loader rejection remains diagnostic evidence. Suppress only duplicate
+    // execution failures after the first one has already quiesced adapters.
+    if (this.#executionFailureObserved) {
+      return;
+    }
+    this.#executionFailureObserved = true;
     this.#shutdownButton.disabled = true;
     this.#quiesceRuntimeBridges();
-    this.#reportFatal(`Wasm abort: ${String(reason)}`);
+    this.#reportFatal(value);
+  }
+
+  #reportRuntimeAbort(reason) {
+    this.#reportExecutionFailure(
+        `Wasm abort: ${stringifyForDiagnostic(reason)}`);
   }
 
   #reportRuntimeExit(value) {
@@ -982,10 +1001,23 @@ class ChromiumWasmPreReleaseHost {
 
   #capturePageErrors() {
     this.#windowErrorHandler = (event) => {
-      this.#reportFatal(String(event.error || event.message || "window error"));
+      let value = "window error";
+      try {
+        value = event?.error || event?.message || value;
+      } catch (_) {
+        value = "unreadable window error";
+      }
+      this.#reportExecutionFailure(stringifyForDiagnostic(value));
     };
     this.#unhandledRejectionHandler = (event) => {
-      this.#reportFatal(`unhandled rejection: ${String(event.reason)}`);
+      let reason;
+      try {
+        reason = event?.reason;
+      } catch (_) {
+        reason = "<unreadable rejection>";
+      }
+      this.#reportExecutionFailure(
+          `unhandled rejection: ${stringifyForDiagnostic(reason)}`);
     };
     addEventListener("error", this.#windowErrorHandler);
     addEventListener("unhandledrejection", this.#unhandledRejectionHandler);
@@ -1172,9 +1204,18 @@ class ChromiumWasmPreReleaseHost {
       moduleOptions.chromiumWasmWisp = wispConfiguration;
     }
     this.#record("wisp", this.#wispConfigured ? "configured" : "unconfigured");
-    Promise.resolve(namespace.default(moduleOptions)).catch((error) => {
-      host.#reportFatal(`generated loader rejected: ${String(error)}`);
-    });
+    Promise.resolve()
+        .then(() => {
+          if (host.#isExecutionQuiesced()) {
+            host.#record("loader", "invocation ignored after terminal state");
+            return undefined;
+          }
+          return namespace.default(moduleOptions);
+        })
+        .catch((error) => {
+          host.#reportExecutionFailure(
+              `generated loader rejected: ${stringifyForDiagnostic(error)}`);
+        });
     this.#record("loader", "started");
   }
 }

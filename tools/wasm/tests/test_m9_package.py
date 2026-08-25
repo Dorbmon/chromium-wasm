@@ -2504,6 +2504,50 @@ process.stdout.write(JSON.stringify({
         (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
         (fixture / "chromium-wasm.js").write_text(
             """export default function(options) {
+  if (globalThis.__m9ExitMode === "page-error-before-loader") {
+    ++globalThis.__m9PageFailureLoaderCalls;
+    return new Promise(() => {});
+  }
+  if (globalThis.__m9ExitMode === "loader-throw-before-initialization") {
+    const calls = [];
+    const module = {
+      ccall(name) {
+        calls.push(name);
+        return 1;
+      },
+    };
+    const bridge = globalThis.__chromiumWasmHostBridgeV1;
+    globalThis.__m9SynchronousLoaderFailure = {
+      calls,
+      lateInitialize() {
+        options.onRuntimeInitialized.call(module);
+      },
+      nativeExit(code) {
+        bridge.reportProcessExit({protocol: 1, exitCode: code});
+      },
+      runtimeExit: options.onExit,
+    };
+    throw new Error("synthetic loader throw before initialization");
+  }
+  if (globalThis.__m9ExitMode === "loader-throw-after-initialization") {
+    const calls = [];
+    const module = {
+      ccall(name) {
+        calls.push(name);
+        return 1;
+      },
+    };
+    const bridge = globalThis.__chromiumWasmHostBridgeV1;
+    options.onRuntimeInitialized.call(module);
+    globalThis.__m9SynchronousLoaderFailure = {
+      calls,
+      nativeExit(code) {
+        bridge.reportProcessExit({protocol: 1, exitCode: code});
+      },
+      runtimeExit: options.onExit,
+    };
+    throw new Error("synthetic loader throw after initialization");
+  }
   queueMicrotask(() => {
     const module = {
       ccall(name) {
@@ -2546,6 +2590,11 @@ process.stdout.write(JSON.stringify({
       case "clean":
         options.onExit(0);
         nativeExit(0);
+        break;
+      case "abort-after-clean-exit":
+        options.onExit(0);
+        nativeExit(0);
+        options.onAbort("synthetic abort after clean exit");
         break;
       case "mismatch-runtime-first":
         options.onExit(0);
@@ -2672,8 +2721,17 @@ Object.assign(globalThis, {
   crossOriginIsolated: true,
 });
 globalThis.window = globalThis;
-globalThis.addEventListener = () => {};
-globalThis.removeEventListener = () => {};
+const windowListeners = new Map();
+globalThis.addEventListener = (type, listener) => {
+  const listeners = windowListeners.get(type) || new Set();
+  listeners.add(listener);
+  windowListeners.set(type, listeners);
+};
+globalThis.removeEventListener = (type, listener) => {
+  const listeners = windowListeners.get(type);
+  listeners?.delete(listener);
+  if (listeners?.size === 0) windowListeners.delete(type);
+};
 const versionBytes = new Uint8Array(await readFile(__VERSION_PATH__));
 const loaderBytes = new Uint8Array(await readFile(__LOADER_PATH__));
 const wasmBytes = new Uint8Array(await readFile(__WASM_PATH__));
@@ -2705,6 +2763,11 @@ globalThis.fetch = async (input) => {
     return responseFor(versionBytes, url, "application/json; charset=utf-8");
   }
   if (url.endsWith("chromium-wasm.js")) {
+    if (globalThis.__m9ExitMode === "page-error-before-loader") {
+      for (const listener of windowListeners.get("error") || []) {
+        listener({error: new Error("synthetic page error before loader")});
+      }
+    }
     return responseFor(loaderBytes, url, "text/javascript; charset=utf-8");
   }
   if (url.endsWith("chromium-wasm.wasm")) {
@@ -2740,11 +2803,27 @@ async function observe(mode) {
   globalThis.__chromiumWasmHostBridgeV1 = undefined;
   globalThis.__m9ExitMode = mode;
   globalThis.__m9LateRuntimeInitialization = null;
+  globalThis.__m9PageFailureLoaderCalls = 0;
+  globalThis.__m9SynchronousLoaderFailure = null;
+  windowListeners.clear();
   const {root, status} = installElements();
   await runChromiumWasmPreRelease();
   await new Promise((resolve) => setTimeout(resolve, 0));
+  const synchronousLoaderFailure = mode.startsWith("loader-throw-");
+  if (synchronousLoaderFailure) {
+    const failure = globalThis.__m9SynchronousLoaderFailure;
+    if (!failure) {
+      throw new Error("synchronous loader failure fixture did not initialize");
+    }
+    document.querySelector("#shutdown").dispatch("click");
+    failure.lateInitialize?.();
+    failure.nativeExit(0);
+    failure.runtimeExit(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   const payload = JSON.parse(status.textContent);
   const latePresentation = mode.startsWith("late-presentation-after-");
+  const pageErrorBeforeLoader = mode === "page-error-before-loader";
   const reentrantShutdownAbort = mode === "shutdown-abort-reentrant";
   return {
     fatalCount: payload.fatalCount,
@@ -2761,6 +2840,17 @@ async function observe(mode) {
       shutdownDisabled: document.querySelector("#shutdown").disabled,
       shutdownRequested: payload.shutdownRequested,
     } : {}),
+    ...(synchronousLoaderFailure ? {
+      calls: globalThis.__m9SynchronousLoaderFailure.calls,
+      runtimeInitialized: payload.runtimeInitialized,
+      shutdownDisabled: document.querySelector("#shutdown").disabled,
+      shutdownRequested: payload.shutdownRequested,
+    } : {}),
+    ...(pageErrorBeforeLoader ? {
+      loaderCalls: globalThis.__m9PageFailureLoaderCalls,
+      shutdownDisabled: document.querySelector("#shutdown").disabled,
+      shutdownRequested: payload.shutdownRequested,
+    } : {}),
     ...(latePresentation ? {
       framesPresented: payload.framesPresented,
       readiness: payload.readiness,
@@ -2772,8 +2862,10 @@ const results = {};
 for (const mode of [
   "clean", "mismatch-runtime-first", "mismatch-native-first",
   "duplicate-runtime", "duplicate-native", "missing-runtime", "missing-native",
+  "abort-after-clean-exit", "page-error-before-loader",
   "late-runtime-after-native-exit", "abort-before-runtime-initialization",
-  "shutdown-abort-reentrant",
+  "shutdown-abort-reentrant", "loader-throw-before-initialization",
+  "loader-throw-after-initialization",
   "late-presentation-after-runtime-exit",
   "late-presentation-after-native-exit", "late-presentation-after-abort",
 ]) {
@@ -2809,6 +2901,21 @@ process.stdout.write(JSON.stringify(results));
                     "pageState": None,
                     "processExitCode": 0,
                     "runtimeExitCode": 0,
+                },
+                "abort-after-clean-exit": {
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                },
+                "page-error-before-loader": {
+                    "fatalCount": 1,
+                    "loaderCalls": 0,
+                    "pageState": "failed",
+                    "processExitCode": None,
+                    "runtimeExitCode": None,
+                    "shutdownDisabled": True,
+                    "shutdownRequested": False,
                 },
                 "mismatch-runtime-first": {
                     "fatalCount": 1,
@@ -2871,6 +2978,26 @@ process.stdout.write(JSON.stringify(results));
                     "shutdownDisabled": True,
                     "shutdownRequested": False,
                 },
+                "loader-throw-after-initialization": {
+                    "calls": [],
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                    "runtimeInitialized": True,
+                    "shutdownDisabled": True,
+                    "shutdownRequested": False,
+                },
+                "loader-throw-before-initialization": {
+                    "calls": [],
+                    "fatalCount": 1,
+                    "pageState": "failed",
+                    "processExitCode": 0,
+                    "runtimeExitCode": 0,
+                    "runtimeInitialized": False,
+                    "shutdownDisabled": True,
+                    "shutdownRequested": False,
+                },
                 "late-presentation-after-runtime-exit": {
                     "fatalCount": 2,
                     "framesPresented": 0,
@@ -2902,7 +3029,7 @@ process.stdout.write(JSON.stringify(results));
             json.loads(completed.stdout),
         )
 
-    def test_release_host_disposes_pending_dom_bridges_at_terminal_exit(self) -> None:
+    def test_release_host_disposes_pending_dom_bridges_at_terminal_state(self) -> None:
         node = REPO_ROOT / "third_party/emsdk/node/22.16.0_64bit/bin/node"
         if not node.is_file():
             self.skipTest("the pinned Node executable is unavailable")
@@ -2912,8 +3039,21 @@ process.stdout.write(JSON.stringify(results));
         (fixture / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
         (fixture / "chromium-wasm.js").write_text(
             """export default function(options) {
+  const failureMode = globalThis.__m9TerminalFailure;
+  const loaderRejection = failureMode === "loader-rejection" ||
+      failureMode === "hostile-loader-rejection";
+  let resolveTerminalFailureStarted;
+  if (failureMode !== "none") {
+    globalThis.__m9TerminalFailureStarted = new Promise((resolve) => {
+      resolveTerminalFailureStarted = resolve;
+    });
+  }
+  let rejectLoader;
+  const loaderPromise = loaderRejection ?
+      new Promise((_resolve, reject) => { rejectLoader = reject; }) :
+      new Promise(() => {});
   queueMicrotask(() => {
-    const abortBeforeExit = globalThis.__m9AbortBeforeExit === true;
+    const terminalFailureBeforeExit = failureMode !== "none";
     const terminalViaNative = globalThis.__m9TerminalViaNative === true;
     const calls = [];
     const module = {
@@ -2940,9 +3080,9 @@ process.stdout.write(JSON.stringify(results));
         throw new Error("release-host cleanup fixture did not defer storage");
       }
       const inputCountBeforeExit = document.body.children.length;
-      let inputCountAfterAbort = null;
-      let postAbortPickerAccepted = null;
-      let postAbortStorageAccepted = null;
+      let inputCountAfterFailure = null;
+      let postFailurePickerAccepted = null;
+      let postFailureStorageAccepted = null;
       const completeTerminalReports = () => {
         if (terminalViaNative) {
           bridge.reportProcessExit({protocol: 1, exitCode: 0});
@@ -2957,11 +3097,11 @@ process.stdout.write(JSON.stringify(results));
         });
         const postExitPickerAccepted = bridge.requestOzoneBrowserFilePicker({
           protocol: 1,
-          requestId: abortBeforeExit ? 3 : 2,
+          requestId: terminalFailureBeforeExit ? 3 : 2,
         });
         const postExitStorageAccepted = bridge.requestOuterOriginStorageEstimate({
           protocol: 1,
-          generation: abortBeforeExit ? 3 : 2,
+          generation: terminalFailureBeforeExit ? 3 : 2,
         });
         if (terminalViaNative) {
           options.onExit(0);
@@ -2970,45 +3110,99 @@ process.stdout.write(JSON.stringify(results));
         }
         globalThis.__m9TerminalBridgeCleanup = {
           calls,
-          inputCountAfterAbort,
+          inputCountAfterFailure,
           inputCountAfterExit,
           inputCountBeforeExit,
           pickerAccepted,
-          postAbortPickerAccepted,
-          postAbortStorageAccepted,
+          postFailurePickerAccepted,
+          postFailureStorageAccepted,
           postExitPickerAccepted,
           postExitStorageAccepted,
           storageAccepted,
         };
       };
-      if (abortBeforeExit) {
-        options.onAbort("synthetic abort after initialization");
-        inputCountAfterAbort = document.body.children.length;
+      const beginTerminalFailure = () => {
+        inputCountAfterFailure = document.body.children.length;
         bridge.reportOzoneBrowserFilePickerDelivery({
           protocol: 1,
           requestId: 1,
           accepted: false,
         });
-        postAbortPickerAccepted = bridge.requestOzoneBrowserFilePicker({
+        postFailurePickerAccepted = bridge.requestOzoneBrowserFilePicker({
           protocol: 1,
           requestId: 2,
         });
-        postAbortStorageAccepted = bridge.requestOuterOriginStorageEstimate({
+        postFailureStorageAccepted = bridge.requestOuterOriginStorageEstimate({
           protocol: 1,
           generation: 2,
         });
         // Dispatch directly instead of relying on disabled-button behavior:
-        // the host guard itself must reject shutdown after an abort.
+        // the host guard itself must reject shutdown after a terminal failure.
         document.querySelector("#shutdown").dispatch("click");
         globalThis.__m9FinishTerminalBridgeCleanup = completeTerminalReports;
-        return;
+        resolveTerminalFailureStarted?.();
+      };
+      const hostileDiagnostic = () => ({
+        [Symbol.toPrimitive]() {
+          throw new Error("synthetic hostile diagnostic conversion");
+        },
+      });
+      switch (failureMode) {
+        case "abort":
+          options.onAbort("synthetic abort after initialization");
+          beginTerminalFailure();
+          return;
+        case "hostile-abort":
+          options.onAbort(hostileDiagnostic());
+          beginTerminalFailure();
+          return;
+        case "loader-rejection":
+          rejectLoader(new Error("synthetic loader rejection after initialization"));
+          // A task boundary gives the host's factory-rejection handler a
+          // chance to quiesce live bridges before this fixture attempts any
+          // further bridge use. The harness replaces setTimeout to count
+          // host timers, so use its preserved native timer explicitly.
+          globalThis.__m9NativeSetTimeout(beginTerminalFailure, 0);
+          return;
+        case "hostile-loader-rejection":
+          rejectLoader(hostileDiagnostic());
+          globalThis.__m9NativeSetTimeout(beginTerminalFailure, 0);
+          return;
+        case "window-error":
+          globalThis.__m9DispatchHostFailure("error", {
+            error: new Error("synthetic window error after initialization"),
+          });
+          beginTerminalFailure();
+          return;
+        case "hostile-window-error":
+          globalThis.__m9DispatchHostFailure("error", {
+            error: hostileDiagnostic(),
+          });
+          beginTerminalFailure();
+          return;
+        case "unhandled-rejection":
+          globalThis.__m9DispatchHostFailure("unhandledrejection", {
+            reason: new Error("synthetic rejection after initialization"),
+          });
+          beginTerminalFailure();
+          return;
+        case "hostile-unhandled-rejection":
+          globalThis.__m9DispatchHostFailure("unhandledrejection", {
+            reason: hostileDiagnostic(),
+          });
+          beginTerminalFailure();
+          return;
+        case "none":
+          completeTerminalReports();
+          return;
+        default:
+          throw new Error(`unexpected terminal failure ${String(failureMode)}`);
       }
-      completeTerminalReports();
     }).catch((error) => {
       globalThis.__m9TerminalBridgeCleanupFailure = String(error);
     });
   });
-  return new Promise(() => {});
+  return loaderPromise;
 }
 """,
             encoding="utf-8",
@@ -3018,10 +3212,12 @@ process.stdout.write(JSON.stringify(results));
 import {readFile} from "node:fs/promises";
 
 const nativeSetTimeout = globalThis.setTimeout;
-const abortBeforeExit = __ABORT_BEFORE_EXIT__;
+globalThis.__m9NativeSetTimeout = nativeSetTimeout;
+const terminalFailure = __TERMINAL_FAILURE__;
+const terminalFailureBeforeExit = terminalFailure !== "none";
 const throwOnInputRemove = __THROW_ON_INPUT_REMOVE__;
 const rejectEstimate = __REJECT_ESTIMATE__;
-globalThis.__m9AbortBeforeExit = abortBeforeExit;
+globalThis.__m9TerminalFailure = terminalFailure;
 globalThis.__m9TerminalViaNative = __TERMINAL_VIA_NATIVE__;
 const timerTokens = new Set();
 globalThis.setTimeout = (callback, delay) => {
@@ -3131,6 +3327,11 @@ globalThis.addEventListener = (type, listener) =>
     addListener(windowListeners, type, listener);
 globalThis.removeEventListener = (type, listener) =>
     removeListener(windowListeners, type, listener);
+globalThis.__m9DispatchHostFailure = (type, event) => {
+  for (const listener of windowListeners.get(type) || []) {
+    listener(event);
+  }
+};
 const body = new HTMLElement();
 const createdInputs = [];
 const root = new HTMLElement();
@@ -3226,13 +3427,17 @@ await new Promise((resolve) => nativeSetTimeout(resolve, 0));
 if (globalThis.__m9TerminalBridgeCleanupFailure) {
   throw new Error(globalThis.__m9TerminalBridgeCleanupFailure);
 }
-let abortSnapshot = null;
-if (abortBeforeExit) {
+let failureSnapshot = null;
+if (terminalFailureBeforeExit) {
+  if (!globalThis.__m9TerminalFailureStarted) {
+    throw new Error("release-host failure cleanup fixture did not start");
+  }
+  await globalThis.__m9TerminalFailureStarted;
   if (typeof globalThis.__m9FinishTerminalBridgeCleanup !== "function") {
-    throw new Error("release-host abort cleanup fixture did not reach abort state");
+    throw new Error("release-host failure cleanup fixture did not reach terminal state");
   }
   const input = createdInputs[0];
-  abortSnapshot = {
+  failureSnapshot = {
     documentVisibilityListenerCount:
         listenerCount(documentListeners, "visibilitychange"),
     inputCancelListenerCount: input.listenerCount("cancel"),
@@ -3254,8 +3459,8 @@ if (rejectEstimate) {
 }
 await Promise.resolve();
 await Promise.resolve();
-if (abortBeforeExit) {
-  // Let the deferred estimate settle while only the abort—not a later exit
+if (terminalFailureBeforeExit) {
+  // Let the deferred estimate settle while only the failure—not a later exit
   // report—can quiesce its completion route.
   await new Promise((resolve) => nativeSetTimeout(resolve, 0));
   globalThis.__m9FinishTerminalBridgeCleanup();
@@ -3273,14 +3478,15 @@ process.stdout.write(JSON.stringify({
   fatalCount: payload.fatalCount,
   inputCancelListenerCount: input.listenerCount("cancel"),
   inputChangeListenerCount: input.listenerCount("change"),
-  ...(abortBeforeExit ? {
-    abortSnapshot,
-    inputCountAfterAbort:
-        globalThis.__m9TerminalBridgeCleanup.inputCountAfterAbort,
-    postAbortPickerAccepted:
-        globalThis.__m9TerminalBridgeCleanup.postAbortPickerAccepted,
-    postAbortStorageAccepted:
-        globalThis.__m9TerminalBridgeCleanup.postAbortStorageAccepted,
+  ...(terminalFailureBeforeExit ? {
+    failureMode: terminalFailure,
+    failureSnapshot,
+    inputCountAfterFailure:
+        globalThis.__m9TerminalBridgeCleanup.inputCountAfterFailure,
+    postFailurePickerAccepted:
+        globalThis.__m9TerminalBridgeCleanup.postFailurePickerAccepted,
+    postFailureStorageAccepted:
+        globalThis.__m9TerminalBridgeCleanup.postFailureStorageAccepted,
     shutdownRequested: payload.shutdownRequested,
   } : {}),
   inputCountAfterExit: globalThis.__m9TerminalBridgeCleanup.inputCountAfterExit,
@@ -3343,12 +3549,22 @@ process.stdout.write(JSON.stringify({
             "timerCount": 0,
             "windowBlurListenerCount": 0,
         }
-        for abort_before_exit in (False, True):
+        for terminal_failure in (
+            "none",
+            "abort",
+            "hostile-abort",
+            "loader-rejection",
+            "hostile-loader-rejection",
+            "window-error",
+            "hostile-window-error",
+            "unhandled-rejection",
+            "hostile-unhandled-rejection",
+        ):
             for terminal_via_native in (False, True):
                 for reject_estimate in (False, True):
                     for throw_on_input_remove in (False, True):
                         with self.subTest(
-                            abort_before_exit=abort_before_exit,
+                            terminal_failure=terminal_failure,
                             terminal_via_native=terminal_via_native,
                             reject_estimate=reject_estimate,
                             throw_on_input_remove=throw_on_input_remove,
@@ -3359,8 +3575,8 @@ process.stdout.write(JSON.stringify({
                                     "--input-type=module",
                                     "--eval",
                                     script.replace(
-                                        "__ABORT_BEFORE_EXIT__",
-                                        "true" if abort_before_exit else "false",
+                                        "__TERMINAL_FAILURE__",
+                                        json.dumps(terminal_failure),
                                     ).replace(
                                         "__THROW_ON_INPUT_REMOVE__",
                                         "true" if throw_on_input_remove else "false",
@@ -3381,11 +3597,12 @@ process.stdout.write(JSON.stringify({
                                 completed.stdout + completed.stderr,
                             )
                             expected_for_case = {**expected}
-                            if abort_before_exit:
+                            if terminal_failure != "none":
                                 input_count = 1 if throw_on_input_remove else 0
                                 expected_for_case.update(
                                     {
-                                        "abortSnapshot": {
+                                        "failureMode": terminal_failure,
+                                        "failureSnapshot": {
                                             "documentVisibilityListenerCount": 0,
                                             "inputCancelListenerCount": 0,
                                             "inputChangeListenerCount": 0,
@@ -3395,17 +3612,19 @@ process.stdout.write(JSON.stringify({
                                             "timerCount": 0,
                                             "windowBlurListenerCount": 0,
                                         },
-                                        "fatalCount": 1 + int(throw_on_input_remove),
-                                        "inputCountAfterAbort": input_count,
-                                        "postAbortPickerAccepted": False,
-                                        "postAbortStorageAccepted": False,
+                                        "fatalCount": 2 if throw_on_input_remove else 1,
+                                        "inputCountAfterFailure": input_count,
+                                        "postFailurePickerAccepted": False,
+                                        "postFailureStorageAccepted": False,
                                         "shutdownRequested": False,
                                     }
                                 )
                             if throw_on_input_remove:
                                 expected_for_case.update(
                                     {
-                                        "fatalCount": 2 if abort_before_exit else 1,
+                                        "fatalCount": (
+                                            2 if terminal_failure != "none" else 1
+                                        ),
                                         "inputCountAfterExit": 1,
                                         "inputRemoved": False,
                                     }
