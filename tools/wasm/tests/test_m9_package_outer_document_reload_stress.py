@@ -173,9 +173,16 @@ class M9PackageOuterDocumentReloadStressTest(unittest.TestCase):
             "path"
         ] = "forged-host-bridge.js"
         wrong_initiator = deepcopy(result)
-        wrong_initiator["epochs"][1]["runtime_core_resource_receipt"][6][
-            "initiator_type"
-        ] = "script"
+        fetch_index = next(
+            index
+            for index, receipt in enumerate(
+                wrong_initiator["epochs"][1]["runtime_core_resource_receipt"]
+            )
+            if receipt["initiator_type"] == "fetch"
+        )
+        wrong_initiator["epochs"][1]["runtime_core_resource_receipt"][
+            fetch_index
+        ]["initiator_type"] = "script"
         malformed = deepcopy(result)
         del malformed["epochs"][1]["runtime_core_resource_receipt"][0][
             "initiator_type"
