@@ -270,7 +270,7 @@
 	url = https://chromium.googlesource.com/chromium/deps/hunspell_dictionaries
 [submodule "third_party/icu"]
 	path = third_party/icu
-	url = https://chromium.googlesource.com/chromium/deps/icu
+	url = https://github.com/Dorbmon/chromium-wasm-icu.git
 [submodule "third_party/javalang/src"]
 	path = third_party/javalang/src
 	url = https://chromium.googlesource.com/external/github.com/c2nes/javalang

@@ -34,7 +34,9 @@
     },
     "icu": {
       "path": "third_party/icu",
-      "revision": "3859e64eed5d34544b27fbcab0ac1685ce83df3c"
+      "upstream_revision": "3859e64eed5d34544b27fbcab0ac1685ce83df3c",
+      "revision": "e99ba06067413fc5f9abfdf9e59e7d27a403a280",
+      "remote": "https://github.com/Dorbmon/chromium-wasm-icu.git"
     },
     "webrtc": {
       "path": "third_party/webrtc",
