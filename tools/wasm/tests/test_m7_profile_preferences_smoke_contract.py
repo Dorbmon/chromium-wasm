@@ -78,6 +78,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.smoke = source(
             "chrome/browser/wasm/wasm_profile_preferences_smoke.cc"
         )
+        self.history = source("chrome/browser/wasm/wasm_profile_history_smoke.cc")
         self.profile = source("chrome/browser/wasm/wasm_profile.cc")
         self.main_parts = source(
             "chrome/browser/wasm/wasm_browser_main_parts.cc"
@@ -94,6 +95,8 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             'constexpr char kSmokeSwitch[] = "wasm-profile-preferences-smoke";',
             'constexpr char kTokenASwitch[] = "wasm-profile-preferences-token-a";',
             'constexpr char kTokenBSwitch[] = "wasm-profile-preferences-token-b";',
+            '"wasm-profile-preferences-browser-smoke"',
+            '"wasm-profile-preferences-history-smoke"',
             'constexpr char kWriteMode[] = "write";',
             'constexpr char kVerifyAndWriteMode[] = "verify-and-write";',
             'constexpr char kVerifyBMode[] = "verify-b";',
@@ -118,7 +121,10 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertIn("token B must differ from token A", self.header)
         self.assertIn("if (has_token_a || !has_token_b)", self.smoke)
         self.assertIn("where |digest| is exactly 64 lowercase hexadecimal", self.header)
-        self.assertIn("arguments, capability, storage, profile, read, fence", self.header)
+        self.assertIn(
+            "arguments, capability, storage, profile, browser, history,",
+            self.header,
+        )
 
     def test_markers_are_stderr_only_digest_or_fixed_failure_output(self) -> None:
         for token in (
@@ -128,6 +134,8 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             'EmitDigestMarker("READ_B_OK", token_b_digest_)',
             'EmitDigestMarker("WRITE_ACCEPTED", token_b_digest_)',
             'EmitDigestMarker("WRITE_ACCEPTED", token_a_digest_)',
+            'EmitMarker("BROWSER_SMOKE_CLOSED")',
+            'EmitMarker("HISTORY_BACKEND_CLOSED")',
             'EmitDigestMarker("FENCE_OK", expected_fence_digest_)',
             'EmitMarker("LEASE_RELEASED")',
             'std::fprintf(stderr, "%sFAIL stage=%s\\n", kMarkerPrefix,',
@@ -214,6 +222,9 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         storage_lifecycle = _body_after_signature(
             self.smoke, "void NotifyStorageLifecycle(bool success)"
         )
+        browser = _body_after_signature(
+            self.smoke, "void NotifyBrowserSmokeResult(bool success)"
+        )
         fence = _body_after_signature(
             self.smoke, "void NotifyFenceResult(bool success)"
         )
@@ -229,6 +240,105 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertIn("storage_lifecycle_succeeded_", storage_lifecycle)
         self.assertIn("!storage_lifecycle_succeeded_", backend_drain)
         self.assertIn("if (lease_released_)", backend_drain)
+        self.assertIn("browser_smoke_required_", browser)
+        self.assertIn("browser_smoke_completed_ = true;", browser)
+        self.assertIn('EmitMarker("BROWSER_SMOKE_CLOSED")', browser)
+        self.assertIn(
+            "browser_smoke_required_ && !browser_smoke_completed_", fence
+        )
+        history = _body_after_signature(
+            self.smoke, "void NotifyHistorySmokeResult(bool success)"
+        )
+        self.assertIn("history_smoke_required_", history)
+        self.assertIn("!browser_smoke_completed_", history)
+        self.assertIn("history_smoke_completed_ = true;", history)
+        self.assertIn('EmitMarker("HISTORY_BACKEND_CLOSED")', history)
+        self.assertIn(
+            "history_smoke_required_ && !history_smoke_completed_", fence
+        )
+
+    def test_history_service_probe_is_direct_and_closed_before_storage_handoff(self) -> None:
+        for token in (
+            '#include "components/history/core/browser/history_service.h"',
+            "std::make_unique<history::HistoryService>(",
+            "history::HistoryDatabaseParamsForPath(",
+            "history::SOURCE_BROWSED",
+            "history_service_->AddPage(",
+            "history_service_->SetPageTitle(",
+            "history_service_->FlushForTest(",
+            "history_service_->QueryURLAndVisits(",
+            "history_service_->SetOnBackendDestroyTask(",
+            "history_service_->Shutdown();",
+            "history_service_.reset();",
+            '"HISTORY_A_WRITE_ACCEPTED"',
+            '"HISTORY_A_READ_OK"',
+            '"HISTORY_B_WRITE_ACCEPTED"',
+            '"HISTORY_B_READ_OK"',
+            '"HISTORY_QUERY_VALIDATION_FAILED"',
+            '"HISTORY_QUERY_NOT_FOUND"',
+            '"HISTORY_QUERY_URL_MISMATCH"',
+            '"HISTORY_QUERY_TITLE_MISMATCH"',
+            '"HISTORY_QUERY_NO_VISITS"',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.history)
+
+        for forbidden in (
+            "HistoryServiceFactory::",
+            "ChromeHistoryClient",
+            "BookmarkModelFactory",
+            "StoragePartition::",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.history)
+
+        close = _body_after_signature(self.history, "void Close()")
+        backend_destroy = _body_after_signature(
+            self.history, "void OnBackendDestroyed()"
+        )
+        self.assertLess(
+            close.index("SetOnBackendDestroyTask"), close.index("Shutdown();")
+        )
+        self.assertLess(close.index("Shutdown();"), close.index("history_service_.reset();"))
+        self.assertIn("completed_ = true;", backend_destroy)
+        self.assertIn("std::move(completion_).Run(succeeded_);", backend_destroy)
+
+        verify = _body_after_signature(self.history, "void Verify(GURL url,")
+        callback = verify.index("auto on_query =")
+        query = verify.index("history_service_->QueryURLAndVisits(")
+        self.assertLess(callback, query)
+        self.assertIn("base::Unretained(this), url, title, marker,", verify)
+        self.assertIn("std::move(on_query)", verify)
+
+        browser_manager = self.main_parts.index(
+            "BrowserManagerServiceFactory::GetForProfile(profile_.get())"
+        )
+        history_hold = self.main_parts.index(
+            "chrome::TryAcquireWasmProfileStorageProfileIO()", browser_manager
+        )
+        history_complete = self.main_parts.index(
+            "(*profile_io_hold)->Complete(", history_hold
+        )
+        history_start = self.main_parts.index(
+            "chrome::StartWasmProfileHistorySmoke(profile_->GetPath()",
+            history_complete,
+        )
+        self.assertLess(history_hold, history_start)
+        self.assertLess(history_hold, history_complete)
+        self.assertLess(history_complete, history_start)
+        completion_callback = self.main_parts[history_complete:history_start]
+        self.assertIn("main_parts->RequestShutdown();", completion_callback)
+
+        finish = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
+        )
+        history_guard = finish.index(
+            "IsWasmProfilePreferencesHistorySmokeEnabled()"
+        )
+        storage_handoff = finish.index(
+            "NotifyWasmProfileStorageProfileShutdown();"
+        )
+        self.assertLess(history_guard, storage_handoff)
 
     def test_test_pref_is_capability_gated_before_prefservice_construction(self) -> None:
         register = _body_after_signature(
@@ -276,7 +386,28 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "chrome::StartWasmProfilePreferencesSmoke(profile_->GetPrefs())",
             branch,
         )
+        self.assertIn(
+            "chrome::IsWasmProfilePreferencesBrowserSmokeEnabled()", branch
+        )
         self.assertIn("RequestShutdown();", branch)
+
+        browser_branch_start = self.main_parts.index(
+            "if (chrome::IsWasmProfilePreferencesBrowserSmokeEnabled())",
+            browser_manager,
+        )
+        browser_branch_end = self.main_parts.index("#endif", browser_branch_start)
+        browser_branch = self.main_parts[browser_branch_start:browser_branch_end]
+        browser_run = browser_branch.index("chrome::RunWasmBrowserSmoke(profile_.get())")
+        browser_failure = browser_branch.index(
+            "chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(false);"
+        )
+        browser_complete = browser_branch.index(
+            "chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(true);"
+        )
+        browser_shutdown = browser_branch.index("RequestShutdown();")
+        self.assertLess(browser_run, browser_failure)
+        self.assertLess(browser_failure, browser_complete)
+        self.assertLess(browser_complete, browser_shutdown)
 
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
@@ -291,7 +422,8 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "chrome::NotifyWasmProfileStorageProfileShutdown();"
         )
         lifecycle_marker = finish.index(
-            "chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle("
+            "chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(",
+            storage_notify,
         )
         self.assertLess(fence_begin, fence_marker)
         self.assertLess(fence_marker, fence_reentry)
@@ -431,9 +563,13 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
                 'defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]',
                 target,
             )
-            self.assertIn(
-                'deps += [ ":wasm_profile_preferences_smoke" ]', target
-            )
+            if source_set == "wasm_profile":
+                self.assertIn(
+                    'deps += [ ":wasm_profile_preferences_smoke" ]', target
+                )
+            else:
+                self.assertIn('":wasm_profile_preferences_smoke",', target)
+                self.assertIn('":wasm_profile_history_smoke",', target)
 
         helper_start = self.wasm_build.index(
             'if (enable_chromium_wasm_m7_profile_preferences_test) {\n'

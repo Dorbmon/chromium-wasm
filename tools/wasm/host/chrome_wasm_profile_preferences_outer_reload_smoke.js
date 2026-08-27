@@ -2,18 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Three-outer-document Preferences handoff witness. Chromium owns the profile,
-// registered preference, lifecycle fence, backend drain, and cooperative
-// lease. The host receives one runner-escrowed argument bundle per document;
-// it neither opens profile storage nor retains raw preference values in a
-// receipt. This is intentionally an orderly-reload witness, not a crash or
-// recovery claim.
+// Three-outer-document Preferences and core HistoryService handoff witness.
+// Chromium owns the profile, registered preference, fixed Browser close,
+// History/Favicons database close, lifecycle fence, backend drain, and
+// cooperative lease. The host receives one runner-escrowed argument bundle per
+// document; it neither opens profile storage nor retains raw preference values
+// in a receipt. This is intentionally an orderly-reload witness, not a crash
+// or recovery claim.
 
 const HOST_PROTOCOL = 1;
 const CASE = "chrome_profile_preferences_three_outer_document_reload_m7";
 const SCOPE =
-    "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-test-" +
-    "modules-orderly-reload-only";
+    "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-and-" +
+    "history-test-modules-orderly-reload-only";
 const PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_preferences_test";
 const M7_MARKER_PREFIX = "CHROMIUM_WASM_M7_PREFS:";
 const SUPPRESSED_NATIVE_OUTPUT = "<suppressed-native-output>";
@@ -323,6 +324,9 @@ function expectedMarkers(ordinal, tokenEvidence) {
     return Object.freeze([
       `${M7_MARKER_PREFIX}READY`,
       `${M7_MARKER_PREFIX}WRITE_ACCEPTED sha256=${tokenEvidence.tokenA}`,
+      `${M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED`,
+      `${M7_MARKER_PREFIX}HISTORY_A_WRITE_ACCEPTED`,
+      `${M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED`,
       `${M7_MARKER_PREFIX}FENCE_OK sha256=${tokenEvidence.tokenA}`,
       `${M7_MARKER_PREFIX}LEASE_RELEASED`,
     ]);
@@ -332,6 +336,10 @@ function expectedMarkers(ordinal, tokenEvidence) {
       `${M7_MARKER_PREFIX}READY`,
       `${M7_MARKER_PREFIX}READ_A_OK sha256=${tokenEvidence.tokenA}`,
       `${M7_MARKER_PREFIX}WRITE_ACCEPTED sha256=${tokenEvidence.tokenB}`,
+      `${M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED`,
+      `${M7_MARKER_PREFIX}HISTORY_A_READ_OK`,
+      `${M7_MARKER_PREFIX}HISTORY_B_WRITE_ACCEPTED`,
+      `${M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED`,
       `${M7_MARKER_PREFIX}FENCE_OK sha256=${tokenEvidence.tokenB}`,
       `${M7_MARKER_PREFIX}LEASE_RELEASED`,
     ]);
@@ -340,6 +348,10 @@ function expectedMarkers(ordinal, tokenEvidence) {
     return Object.freeze([
       `${M7_MARKER_PREFIX}READY`,
       `${M7_MARKER_PREFIX}READ_B_OK sha256=${tokenEvidence.tokenB}`,
+      `${M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED`,
+      `${M7_MARKER_PREFIX}HISTORY_A_READ_OK`,
+      `${M7_MARKER_PREFIX}HISTORY_B_READ_OK`,
+      `${M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED`,
       `${M7_MARKER_PREFIX}FENCE_OK sha256=${tokenEvidence.tokenB}`,
       `${M7_MARKER_PREFIX}LEASE_RELEASED`,
     ]);
@@ -754,8 +766,21 @@ class PreferencesOuterReloadHost {
     const expected = destination === run.stderr && this.activeRun === run ?
         run.expectedMarkers[run.markerIndex] : null;
     const exactMarker = text === expected && text.startsWith(M7_MARKER_PREFIX);
-    appendOutput(destination, exactMarker ? text : SUPPRESSED_NATIVE_OUTPUT,
-                 exactMarker);
+    // Preserve this fixed failure-only History checkpoint while still
+    // suppressing all native diagnostics. It contains no SQL text, path, or
+    // opaque preference material and lets the runner distinguish an open
+    // failure from a later fixed history failure without exposing details.
+    const historyFailureCheckpoint =
+        text === `${M7_MARKER_PREFIX}HISTORY_DATABASE_PROFILE_ERROR` ||
+        text === `${M7_MARKER_PREFIX}HISTORY_QUERY_VALIDATION_FAILED` ||
+        text === `${M7_MARKER_PREFIX}HISTORY_QUERY_NOT_FOUND` ||
+        text === `${M7_MARKER_PREFIX}HISTORY_QUERY_URL_MISMATCH` ||
+        text === `${M7_MARKER_PREFIX}HISTORY_QUERY_TITLE_MISMATCH` ||
+        text === `${M7_MARKER_PREFIX}HISTORY_QUERY_NO_VISITS`;
+    appendOutput(destination,
+                 exactMarker || historyFailureCheckpoint ?
+                     text : SUPPRESSED_NATIVE_OUTPUT,
+                 exactMarker || historyFailureCheckpoint);
     if (!text.includes(M7_MARKER_PREFIX)) return;
     if (destination !== run.stderr || this.activeRun !== run) {
       this.recordFatal("marker-outside-active-stderr");
@@ -1002,17 +1027,23 @@ class PreferencesOuterReloadHost {
       moduleArguments = [
         "--wasm-profile-preferences-smoke=write",
         `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
+        "--wasm-profile-preferences-browser-smoke",
+        "--wasm-profile-preferences-history-smoke",
       ];
     } else if (run.ordinal === 2) {
       moduleArguments = [
         "--wasm-profile-preferences-smoke=verify-and-write",
         `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
         `--wasm-profile-preferences-token-b=${this.rawTokens.tokenB}`,
+        "--wasm-profile-preferences-browser-smoke",
+        "--wasm-profile-preferences-history-smoke",
       ];
     } else if (run.ordinal === 3) {
       moduleArguments = [
         "--wasm-profile-preferences-smoke=verify-b",
         `--wasm-profile-preferences-token-b=${this.rawTokens.tokenB}`,
+        "--wasm-profile-preferences-browser-smoke",
+        "--wasm-profile-preferences-history-smoke",
       ];
     } else {
       this.recordFatal("run-ordinal-invalid");

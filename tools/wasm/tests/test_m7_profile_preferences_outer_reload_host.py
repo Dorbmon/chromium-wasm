@@ -23,6 +23,14 @@ HOST_URI = HOST_PATH.as_uri()
 def fake_host_script() -> str:
     loader_source = r'''
 export default async function(options) {
+  if (!options.arguments.includes(
+      "--wasm-profile-preferences-browser-smoke")) {
+    throw new Error("Browser smoke capability is missing");
+  }
+  if (!options.arguments.includes(
+      "--wasm-profile-preferences-history-smoke")) {
+    throw new Error("History smoke capability is missing");
+  }
   const tokenAArgument = options.arguments.find((argument) =>
       argument.startsWith("--wasm-profile-preferences-token-a="));
   const tokenA = tokenAArgument ? tokenAArgument.split("=")[1] : null;
@@ -49,13 +57,24 @@ export default async function(options) {
   options.printErr(marker + "READY");
   if (globalThis.__ordinal === 1) {
     options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestA);
+    options.printErr(marker + "BROWSER_SMOKE_CLOSED");
+    options.printErr(marker + "HISTORY_A_WRITE_ACCEPTED");
+    options.printErr(marker + "HISTORY_BACKEND_CLOSED");
     options.printErr(marker + "FENCE_OK sha256=" + digestA);
   } else if (globalThis.__ordinal === 2) {
     options.printErr(marker + "READ_A_OK sha256=" + digestA);
     options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestB);
+    options.printErr(marker + "BROWSER_SMOKE_CLOSED");
+    options.printErr(marker + "HISTORY_A_READ_OK");
+    options.printErr(marker + "HISTORY_B_WRITE_ACCEPTED");
+    options.printErr(marker + "HISTORY_BACKEND_CLOSED");
     options.printErr(marker + "FENCE_OK sha256=" + digestB);
   } else {
     options.printErr(marker + "READ_B_OK sha256=" + digestB);
+    options.printErr(marker + "BROWSER_SMOKE_CLOSED");
+    options.printErr(marker + "HISTORY_A_READ_OK");
+    options.printErr(marker + "HISTORY_B_READ_OK");
+    options.printErr(marker + "HISTORY_BACKEND_CLOSED");
     options.printErr(marker + "FENCE_OK sha256=" + digestB);
   }
   options.printErr(marker + "LEASE_RELEASED");
@@ -189,7 +208,7 @@ const bootstrap = {
   protocol: 1,
   case: "chrome_profile_preferences_three_outer_document_reload_m7",
   scope:
-      "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-test-modules-orderly-reload-only",
+      "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-and-history-test-modules-orderly-reload-only",
   ordinal,
   mode: ordinal === 1 ? "write" : ordinal === 2 ? "verify-and-write" : "verify-b",
   tokenA: ordinal === 3 ? null : rawA,
@@ -316,6 +335,12 @@ class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
         self.assertIn("--wasm-profile-preferences-smoke=write", source)
         self.assertIn("--wasm-profile-preferences-smoke=verify-and-write", source)
         self.assertIn("--wasm-profile-preferences-smoke=verify-b", source)
+        self.assertIn("--wasm-profile-preferences-browser-smoke", source)
+        self.assertIn("--wasm-profile-preferences-history-smoke", source)
+        self.assertIn("BROWSER_SMOKE_CLOSED", source)
+        self.assertIn("HISTORY_BACKEND_CLOSED", source)
+        self.assertIn("HISTORY_A_READ_OK", source)
+        self.assertIn("HISTORY_B_READ_OK", source)
         self.assertIn("READ_B_OK", source)
         self.assertIn("<suppressed-native-output>", source)
 
