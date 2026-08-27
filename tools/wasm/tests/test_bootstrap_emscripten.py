@@ -88,6 +88,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
         "system/lib/wasmfs/pipe_backend.h",
         "system/lib/wasmfs/syscalls.cpp",
         "system/lib/wasmfs/thread_utils.h",
+        "system/lib/wasmfs/virtual.h",
         "system/lib/wasmfs/wasmfs.cpp",
         "system/lib/wasmfs/wasmfs.h",
         "tools/emscripten.py",
@@ -97,7 +98,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
 )
 
 EXPECTED_M7_OPFS_SOURCE_FILE_HASHES_SHA256 = (
-    "237c24a8929b68ec68f4944b19f61b6d078515baa93ba60ab004a57a51d1dcc5"
+    "e9b1070429d529b59ce4c598acab4d704bacee667aeb4abb28188ce38c9fc381"
 )
 
 
@@ -426,7 +427,7 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
         )
         self.assertEqual(
             source_pin["revision"],
-            "c29be46c0c37efd5e58c9e6ef441321a7ee84e98",
+            "387e1252703c5ad11b1a7218c2a6e90fdaf8a49c",
         )
         self.assertEqual(source_pin["version"], "5.0.6-git")
         self.assertEqual(
