@@ -92,6 +92,13 @@ const WebsiteSettingsInfo* WebsiteSettingsRegistry::Register(
 #elif BUILDFLAG(IS_FUCHSIA)
   if (!(platform & PLATFORM_FUCHSIA))
     return nullptr;
+#elif BUILDFLAG(IS_WASM)
+  // M6 does not provide Chrome sync or persistent content-settings storage.
+  // Register only entries explicitly shared with every platform, never imply
+  // that the Wasm host has desktop permission or hardware capabilities.
+  if (!(platform & PLATFORM_WASM))
+    return nullptr;
+  sync_status = WebsiteSettingsInfo::UNSYNCABLE;
 #else
 #error "Unsupported platform"
 #endif
