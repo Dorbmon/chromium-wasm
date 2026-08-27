@@ -198,6 +198,9 @@ void ImportantFileWriter::ProduceAndWriteStringToFileAtomically(
       std::move(data_producer_for_background_sequence).Run();
   if (!data) {
     DLOG(WARNING) << "Failed to serialize data to be saved in " << path.value();
+    if (!after_write_callback.is_null()) {
+      std::move(after_write_callback).Run(false);
+    }
     return;
   }
 
@@ -461,9 +464,9 @@ void ImportantFileWriter::DoScheduledWrite() {
     std::optional<std::string> data;
     data = std::get<DataSerializer*>(serializer_)->SerializeData();
     if (!data) {
-      DLOG(WARNING) << "Failed to serialize data to be saved in "
-                    << path_.value();
-      ClearPendingWrite();
+      WriteNowWithBackgroundDataProducer(base::BindOnce(
+          []() -> std::optional<std::string> { return std::nullopt; }));
+      DCHECK(!HasPendingWrite());
       return;
     }
 

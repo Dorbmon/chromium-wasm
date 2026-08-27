@@ -131,9 +131,11 @@ class BASE_EXPORT ImportantFileWriter {
   void DoScheduledWrite();
 
   // Registers |before_next_write_callback| and |after_next_write_callback| to
-  // be synchronously invoked from WriteFileAtomically() before its next write
-  // and after its next write, respectively. The boolean passed to
-  // |after_next_write_callback| indicates whether the write was successful.
+  // be synchronously invoked immediately before its next write and after its
+  // next write attempt, respectively. The boolean passed to
+  // |after_next_write_callback| indicates whether the write was successful. A
+  // failed serialization invokes only |after_next_write_callback| with false
+  // because no write was begun.
   // Both callbacks must be thread safe as they will be called on |task_runner_|
   // and may be called during Chrome shutdown.
   // If called more than once before a write is scheduled on |task_runner|, the

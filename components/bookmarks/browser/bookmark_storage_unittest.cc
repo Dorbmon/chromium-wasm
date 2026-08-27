@@ -12,7 +12,11 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/task/bind_post_task.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -181,6 +185,31 @@ TEST_P(BookmarkStorageWithSingleFileTest, ShouldSaveFileToDiskAfterDelay) {
                     GetHistogramImportantFileSuffix()}),
       metrics::BookmarksSerializationResult::kSuccess, 1);
   EXPECT_FALSE(base::PathExists(GetSecondaryFilepath()));
+}
+
+TEST_P(BookmarkStorageWithSingleFileTest,
+       FlushPendingWriteForTestingReportsCompletedWrite) {
+  std::unique_ptr<BookmarkModel> model = CreateModelWithOneBookmark();
+
+  base::test::TaskEnvironment task_environment;
+  BookmarkStorage storage(
+      model.get(), BookmarkStorage::kSelectLocalOrSyncableNodes, encryptor_,
+      clear_text_file_path_, encrypted_file_path_);
+  storage.ScheduleSave();
+
+  base::RunLoop run_loop;
+  bool write_succeeded = false;
+  EXPECT_TRUE(storage.FlushPendingWriteForTesting(base::BindPostTask(
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      base::BindLambdaForTesting([&](bool success) {
+        write_succeeded = success;
+        run_loop.Quit();
+      }))));
+  run_loop.Run();
+
+  EXPECT_TRUE(write_succeeded);
+  EXPECT_FALSE(storage.HasScheduledSaveForTesting());
+  EXPECT_TRUE(base::PathExists(GetPrimaryFilepath()));
 }
 
 TEST_P(BookmarkStorageWithSingleFileTest,

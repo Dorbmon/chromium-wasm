@@ -3,29 +3,33 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run an optional three-outer-document Preferences/CookieManager/History witness.
+"""Run an optional Preferences/BookmarkModel/CookieManager/History witness.
 
 Every document runs the dedicated Preferences mode plus a fixed real Browser
-lifecycle, a direct test-only CookieManager persistence path, and directly
-owned core HistoryService. The Browser close, CookieManager flush/reopen and
-SQLite backend-close markers, and History/Favicons backend-close marker must
-precede the Preferences fence. Document one writes A, Cookie A, and History A.
-After its exact, redacted lifecycle receipt and flushed ready acknowledgement,
-this runner issues a DevTools ``Page.reload`` command. Document two reads A,
-Cookie A, and History A before it writes B, Cookie B, and History B. After the
-same flushed ready barrier, the runner issues one further DevTools
-``Page.reload``; document three reads B, Cookie B, and History A/B.
+lifecycle, a direct test-only BookmarkModel persistence path, a direct
+test-only CookieManager persistence path, and directly owned core
+HistoryService. The Browser close, BookmarkModel local write/reopen and model
+destruction markers, CookieManager flush/reopen and SQLite backend-close
+markers, and History/Favicons backend-close marker must precede the Preferences
+fence. Document one writes A, Bookmark A, Cookie A, and History A. After its
+exact, redacted lifecycle receipt and flushed ready acknowledgement, this
+runner issues a DevTools ``Page.reload`` command. Document two reads A,
+Bookmark A, Cookie A, and History A before it writes B, Bookmark B, Cookie B,
+and History B. After the same flushed ready barrier, the runner issues one
+further DevTools ``Page.reload``; document three reads B, Bookmark B, Cookie
+B, and History A/B.
 
 This is deliberately non-gating and makes no crash-recovery, normal navigation
 history, desktop History UI/bookmark graph, general HTTP cookie request path,
 encrypted or session-cookie behavior, web-storage, service-worker, contender,
-or M7-complete claim. It proves only a direct CookieManager SQLite
-flush/reopen and backend-close probe before profile teardown, and a direct
-core HistoryService History/Favicons SQLite probe within the dedicated profile
-mount. It does not prove full cookie-service or profile persistence. The
-private A/B values exist only in this process's in-memory escrow and in each
-one-shot bootstrap response body; no URL, page receipt, diagnostic, browser
-stderr, or stdout contains them.
+or M7-complete claim. It proves only a direct BookmarkModel clear-text local
+JSON write/reopen and model-destruction probe, a direct CookieManager SQLite
+flush/reopen and backend-close probe before profile teardown, and a direct core
+HistoryService History/Favicons SQLite probe within the dedicated profile
+mount. It does not prove full BookmarkModel, cookie-service, or profile
+persistence. The private A/B values exist only in this process's in-memory
+escrow and in each one-shot bootstrap response body; no URL, page receipt,
+diagnostic, browser stderr, or stdout contains them.
 
 Each later bootstrap requires all of: validated predecessor ready state,
 runner arming, a fresh top-level Fetch-Metadata document navigation, and a
@@ -67,7 +71,7 @@ SENTINEL = "CHROMIUM_WASM_M7_CHROME_PROFILE_PREFERENCES_OUTER_RELOAD_DOM"
 CASE = "chrome_profile_preferences_three_outer_document_reload_m7"
 SCOPE = (
     "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-"
-    "cookie-manager-and-history-test-modules-orderly-reload-only"
+    "bookmark-model-cookie-manager-and-history-test-modules-orderly-reload-only"
 )
 PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_preferences_test"
 PRODUCT_GN_TARGET = "//chrome:chrome_wasm"
@@ -1251,6 +1255,8 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
             f"{M7_MARKER_PREFIX}READY",
             f"{M7_MARKER_PREFIX}WRITE_ACCEPTED sha256={escrow.token_a_digest}",
             f"{M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED",
+            f"{M7_MARKER_PREFIX}BOOKMARK_A_WRITE_FLUSHED sha256={escrow.token_a_digest}",
+            f"{M7_MARKER_PREFIX}BOOKMARK_MODEL_CLOSED",
             f"{M7_MARKER_PREFIX}COOKIE_A_WRITE_FLUSHED sha256={escrow.token_a_digest}",
             f"{M7_MARKER_PREFIX}COOKIE_BACKEND_CLOSED",
             f"{M7_MARKER_PREFIX}HISTORY_A_WRITE_ACCEPTED",
@@ -1264,6 +1270,9 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
             f"{M7_MARKER_PREFIX}READ_A_OK sha256={escrow.token_a_digest}",
             f"{M7_MARKER_PREFIX}WRITE_ACCEPTED sha256={escrow.token_b_digest}",
             f"{M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED",
+            f"{M7_MARKER_PREFIX}BOOKMARK_A_READ_OK sha256={escrow.token_a_digest}",
+            f"{M7_MARKER_PREFIX}BOOKMARK_B_WRITE_FLUSHED sha256={escrow.token_b_digest}",
+            f"{M7_MARKER_PREFIX}BOOKMARK_MODEL_CLOSED",
             f"{M7_MARKER_PREFIX}COOKIE_A_READ_OK sha256={escrow.token_a_digest}",
             f"{M7_MARKER_PREFIX}COOKIE_B_WRITE_FLUSHED sha256={escrow.token_b_digest}",
             f"{M7_MARKER_PREFIX}COOKIE_BACKEND_CLOSED",
@@ -1278,6 +1287,9 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
             f"{M7_MARKER_PREFIX}READY",
             f"{M7_MARKER_PREFIX}READ_B_OK sha256={escrow.token_b_digest}",
             f"{M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED",
+            f"{M7_MARKER_PREFIX}BOOKMARK_B_READ_OK sha256={escrow.token_b_digest}",
+            f"{M7_MARKER_PREFIX}BOOKMARK_CLEANUP_FLUSHED",
+            f"{M7_MARKER_PREFIX}BOOKMARK_MODEL_CLOSED",
             f"{M7_MARKER_PREFIX}COOKIE_B_READ_OK sha256={escrow.token_b_digest}",
             f"{M7_MARKER_PREFIX}COOKIE_BACKEND_CLOSED",
             f"{M7_MARKER_PREFIX}HISTORY_A_READ_OK",
@@ -1737,7 +1749,9 @@ def write_failure_diagnostics(
             "not_m7_gate_complete",
             "not_crash_recovery",
             "not_normal_navigation_history_or_desktop_history_graph",
+            "not_desktop_bookmark_factory_sync_or_encrypted_bookmark_coverage",
             "not_general_http_cookie_or_encrypted_session_cookie_coverage",
+            "not_full_bookmark_model_or_profile_persistence_coverage",
             "not_full_cookie_service_or_profile_persistence_coverage",
             "not_full_profile_or_database_service_coverage",
             "not_artifact_source_provenance",
@@ -2014,6 +2028,8 @@ def main() -> int:
                 "documents": 3,
                 "m7GateComplete": False,
                 "outerDocumentReload": True,
+                "bookmarkModelFlushReopenAndClose": True,
+                "bookmarkModelFullServicePersistenceProven": False,
                 "cookieManagerFlushReopenAndBackendClose": True,
                 "cookieManagerFullServicePersistenceProven": False,
                 "rawPreferencesTokensSerialized": False,

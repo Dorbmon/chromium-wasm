@@ -47,6 +47,10 @@
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_bookmark_smoke.h"  // nogncheck
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_cookie_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
@@ -508,7 +512,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
     chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(true);
-    StartWasmProfileCookieSmokeOrHistoryOrShutdown();
+    StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown();
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 #endif
@@ -1383,6 +1387,80 @@ void WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete() {
 }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+void WasmBrowserMainParts::
+    StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown() {
+  CHECK(profile_);
+  if (!chrome::IsWasmProfilePreferencesBookmarkSmokeEnabled()) {
+    StartWasmProfileCookieSmokeOrHistoryOrShutdown();
+    return;
+  }
+
+  // BookmarkModel is deliberately outside WasmProfile's keyed-service graph.
+  // Retain profile-storage admission until its local JSON write reported a
+  // result and the direct model has been synchronously destroyed, then start
+  // the CookieManager and History witnesses in their explicit order.
+  std::optional<chrome::WasmProfilePreferencesBookmarkSmokeInput>
+      bookmark_input = chrome::TakeWasmProfilePreferencesBookmarkSmokeInput();
+  auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!bookmark_input || !profile_io_hold) {
+    if (!profile_io_hold) {
+      chrome::ReportWasmProfilePreferencesSmokeFailure(
+          chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
+    }
+    chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
+    RequestShutdown();
+    return;
+  }
+
+  auto bookmark_profile_io_hold = std::make_shared<std::optional<
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold>>(
+      std::move(*profile_io_hold));
+  auto bookmark_completion = base::BindOnce(
+      [](std::shared_ptr<std::optional<
+             WasmProfileOrderedDrainLifecycle::ProfileIOHold>>
+             profile_io_hold,
+         base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
+        CHECK(profile_io_hold);
+        CHECK(*profile_io_hold);
+        chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(success);
+        const bool bookmark_succeeded =
+            success && chrome::DidWasmProfileBookmarkSmokeSucceed() &&
+            chrome::DidWasmProfilePreferencesBookmarkSmokeSucceed();
+        const bool profile_io_completed = (*profile_io_hold)->Complete(
+            bookmark_succeeded
+                ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                      kSucceeded
+                : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                      kFailed);
+        if (!profile_io_completed) {
+          LOG(ERROR) << "chrome_wasm could not complete its profile bookmark "
+                        "I/O admission";
+        }
+        if (!main_parts) {
+          return;
+        }
+        if (bookmark_succeeded && profile_io_completed) {
+          main_parts->StartWasmProfileCookieSmokeOrHistoryOrShutdown();
+        } else {
+          main_parts->RequestShutdown();
+        }
+      },
+      bookmark_profile_io_hold, weak_ptr_factory_.GetWeakPtr());
+  if (!chrome::StartWasmProfileBookmarkSmoke(profile_->GetPath(),
+                                               std::move(*bookmark_input),
+                                               std::move(bookmark_completion))) {
+    chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
+    CHECK(*bookmark_profile_io_hold);
+    const bool profile_io_completed = (*bookmark_profile_io_hold)->Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    if (!profile_io_completed) {
+      LOG(ERROR) << "chrome_wasm could not complete its profile bookmark I/O "
+                    "admission after startup failure";
+    }
+    RequestShutdown();
+  }
+}
+
 void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown() {
   CHECK(profile_);
   if (!chrome::IsWasmProfilePreferencesCookieSmokeEnabled()) {
@@ -1581,6 +1659,15 @@ void WasmBrowserMainParts::FinishShutdown() {
       profile_.reset();
       bool smoke_allows_storage_lifecycle = true;
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+      if (chrome::IsWasmProfilePreferencesBookmarkSmokeEnabled() &&
+          (!chrome::DidWasmProfilePreferencesBookmarkSmokeSucceed() ||
+           !chrome::DidWasmProfileBookmarkSmokeSucceed())) {
+        // This direct, test-only BookmarkModel owns exactly one clear-text
+        // local store. Its result-bearing write and model destruction must
+        // finish before the V4 lease is handed to the outer drain.
+        chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(false);
+        smoke_allows_storage_lifecycle = false;
+      }
       if (chrome::IsWasmProfilePreferencesCookieSmokeEnabled() &&
           (!chrome::DidWasmProfilePreferencesCookieSmokeSucceed() ||
            !chrome::DidWasmProfileCookieSmokeSucceed())) {

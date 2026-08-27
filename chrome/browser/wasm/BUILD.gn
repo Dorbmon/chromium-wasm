@@ -2007,6 +2007,24 @@ if (enable_chromium_wasm_m7_profile_preferences_test) {
       "//url",
     ]
   }
+  # The optional BookmarkModel witness is linked only into the same dedicated
+  # M7 Preferences artifact. It owns one core BookmarkModel directly rather
+  # than admitting BookmarkModelFactory, sync, encryption, or normal profile
+  # service persistence.
+  source_set("wasm_profile_bookmark_smoke") {
+    public = [ "wasm_profile_bookmark_smoke.h" ]
+
+    sources = [ "wasm_profile_bookmark_smoke.cc" ]
+
+    deps = [
+      ":wasm_profile_preferences_smoke",
+      "//base",
+      "//components/bookmarks/browser",
+      "//components/bookmarks/common",
+      "//components/signin/public/base",
+      "//url",
+    ]
+  }
   # The optional CookieManager witness remains inside the dedicated M7
   # Preferences artifact. It drives the default in-memory StoragePartition's
   # real CookieManager path while ContentBrowserClient persistently selects
@@ -2268,6 +2286,7 @@ source_set("wasm_browser_main_parts") {
   if (enable_chromium_wasm_m7_profile_preferences_test) {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     deps += [
+      ":wasm_profile_bookmark_smoke",
       ":wasm_profile_cookie_smoke",
       ":wasm_profile_history_smoke",
       ":wasm_profile_preferences_smoke",
