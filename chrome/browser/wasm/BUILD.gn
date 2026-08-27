@@ -1988,6 +1988,25 @@ if (enable_chromium_wasm_m7_profile_preferences_test) {
       "//crypto",
     ]
   }
+
+  # The optional HistoryService witness is linked only into the same dedicated
+  # M7 Preferences artifact. It owns one core HistoryService directly rather
+  # than admitting the desktop history/bookmark factory graph or changing the
+  # normal StoragePartition policy.
+  source_set("wasm_profile_history_smoke") {
+    public = [ "wasm_profile_history_smoke.h" ]
+
+    sources = [ "wasm_profile_history_smoke.cc" ]
+
+    deps = [
+      ":wasm_profile_preferences_smoke",
+      "//base",
+      "//components/history/content/browser",
+      "//components/history/core/browser",
+      "//components/version_info",
+      "//url",
+    ]
+  }
 }
 
 # The test-only M7 database protocol is linked into the source-selected M7
@@ -2229,7 +2248,10 @@ source_set("wasm_browser_main_parts") {
 
   if (enable_chromium_wasm_m7_profile_preferences_test) {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
-    deps += [ ":wasm_profile_preferences_smoke" ]
+    deps += [
+      ":wasm_profile_history_smoke",
+      ":wasm_profile_preferences_smoke",
+    ]
   }
   if (enable_chromium_wasm_m7_profile_database_test) {
     defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]

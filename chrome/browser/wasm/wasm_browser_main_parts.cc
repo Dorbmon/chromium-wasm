@@ -5,6 +5,7 @@
 #include "chrome/browser/wasm/wasm_browser_main_parts.h"
 
 #include <cstdio>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -43,6 +44,10 @@
 // The normal source-selected configuration alone supplies this target. GN's
 // include checker does not evaluate target-specific definitions.
 #include "chrome/browser/wasm/wasm_profile_shutdown_failure_latch.h"  // nogncheck
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_history_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
@@ -374,17 +379,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #endif
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-  // The M7 two-fresh-module Preferences acceptance intentionally stops here:
-  // its native PrefService action runs after profile admission, but before any
-  // host input, clipboard, pointer, storage-estimate, Browser, WebContents,
-  // or BrowserWindow setup. RequestShutdown() lets the ordinary asynchronous
-  // JsonPrefStore fence and Chrome-owned scoped OPFS drain prove the handoff.
+  // The default M7 two-fresh-module Preferences acceptance intentionally
+  // stops here: its native PrefService action runs after profile admission,
+  // but before any host input, Browser, WebContents, or BrowserWindow setup.
+  // The separately opt-in outer-reload Browser witness starts the exact same
+  // action here, then falls through to normal Wasm host initialization so its
+  // fixed Browser lifecycle can close before the Preferences fence.
   if (chrome::IsWasmProfilePreferencesSmokeEnabled()) {
     if (!chrome::StartWasmProfilePreferencesSmoke(profile_->GetPrefs())) {
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
-    RequestShutdown();
-    return content::RESULT_CODE_NORMAL_EXIT;
+    if (!chrome::IsWasmProfilePreferencesBrowserSmokeEnabled()) {
+      RequestShutdown();
+      return content::RESULT_CODE_NORMAL_EXIT;
+    }
   }
 #endif
 
@@ -488,6 +496,67 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // Exercise the factory while the profile is live. Browser::Create() will
   // retrieve this same manager when the real window lifecycle is selected.
   CHECK(BrowserManagerServiceFactory::GetForProfile(profile_.get()));
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  if (chrome::IsWasmProfilePreferencesBrowserSmokeEnabled()) {
+    if (!chrome::RunWasmBrowserSmoke(profile_.get())) {
+      chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(false);
+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
+    chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(true);
+    if (chrome::IsWasmProfilePreferencesHistorySmokeEnabled()) {
+      auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+      if (!profile_io_hold) {
+        chrome::ReportWasmProfilePreferencesSmokeFailure(
+            chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
+        chrome::NotifyWasmProfilePreferencesHistorySmokeResult(false);
+        RequestShutdown();
+        return content::RESULT_CODE_NORMAL_EXIT;
+      }
+
+      auto history_profile_io_hold = std::make_shared<std::optional<
+          WasmProfileOrderedDrainLifecycle::ProfileIOHold>>(
+          std::move(*profile_io_hold));
+      auto history_completion = base::BindOnce(
+          [](std::shared_ptr<std::optional<
+                 WasmProfileOrderedDrainLifecycle::ProfileIOHold>>
+                 profile_io_hold,
+             base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
+            CHECK(profile_io_hold);
+            CHECK(*profile_io_hold);
+            chrome::NotifyWasmProfilePreferencesHistorySmokeResult(success);
+            const bool profile_io_completed = (*profile_io_hold)->Complete(
+                success ? WasmProfileOrderedDrainLifecycle::
+                              ProfileIOCompletion::kSucceeded
+                        : WasmProfileOrderedDrainLifecycle::
+                              ProfileIOCompletion::kFailed);
+            if (!profile_io_completed) {
+              LOG(ERROR) << "chrome_wasm could not complete its profile "
+                            "history I/O admission";
+            }
+            if (main_parts) {
+              main_parts->RequestShutdown();
+            }
+          },
+          history_profile_io_hold, weak_ptr_factory_.GetWeakPtr());
+      if (!chrome::StartWasmProfileHistorySmoke(profile_->GetPath(),
+                                                 std::move(history_completion))) {
+        chrome::NotifyWasmProfilePreferencesHistorySmokeResult(false);
+        CHECK(*history_profile_io_hold);
+        const bool profile_io_completed = (*history_profile_io_hold)->Complete(
+            WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+        if (!profile_io_completed) {
+          LOG(ERROR) << "chrome_wasm could not complete its profile history "
+                        "I/O admission after startup failure";
+        }
+        RequestShutdown();
+      }
+      return content::RESULT_CODE_NORMAL_EXIT;
+    }
+    RequestShutdown();
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+#endif
 
   // This dedicated Chrome target installs Chromium's local test root before
   // ContentMain. The smoke then reaches one exact H2 fixture through the
@@ -1422,6 +1491,17 @@ void WasmBrowserMainParts::FinishShutdown() {
       // this Profile or acknowledges its storage lifecycle: ContentMain's
       // outer scoped drain follows that hook and needs this ordering.
       profile_.reset();
+      bool smoke_allows_storage_lifecycle = true;
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+      if (chrome::IsWasmProfilePreferencesHistorySmokeEnabled() &&
+          !chrome::DidWasmProfilePreferencesHistorySmokeSucceed()) {
+        // This direct, test-only HistoryService is outside WasmProfile's
+        // keyed-service graph. Its backend-destroy callback must have closed
+        // History and Favicons before the V4 lease can be handed off.
+        chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(false);
+        smoke_allows_storage_lifecycle = false;
+      }
+#endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
       if (chrome::IsWasmProfileDatabaseSmokeEnabled() &&
           !chrome::DidWasmProfileDatabaseSmokeSucceed()) {
@@ -1430,28 +1510,28 @@ void WasmBrowserMainParts::FinishShutdown() {
         // shutdown lifecycle state so ChromeMain's scoped drain fails closed,
         // converts the otherwise normal result, and emits no LEASE_RELEASED.
         chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(false);
-      } else {
+        smoke_allows_storage_lifecycle = false;
+      }
 #endif
-      const bool storage_lifecycle_notified =
-          chrome::NotifyWasmProfileStorageProfileShutdown();
+      if (smoke_allows_storage_lifecycle) {
+        const bool storage_lifecycle_notified =
+            chrome::NotifyWasmProfileStorageProfileShutdown();
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-      chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(
-          storage_lifecycle_notified);
+        chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(
+            storage_lifecycle_notified);
 #endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
         chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(
             storage_lifecycle_notified);
 #endif
-      if (!storage_lifecycle_notified) {
-        // Do not synthesize a clean handoff. The outer scoped drain observes
-        // this missing acknowledgement, retains the lease, and changes the
-        // process result to non-normal.
-        LOG(ERROR) << "chrome_wasm could not complete its profile storage "
-                      "lifecycle";
+        if (!storage_lifecycle_notified) {
+          // Do not synthesize a clean handoff. The outer scoped drain observes
+          // this missing acknowledgement, retains the lease, and changes the
+          // process result to non-normal.
+          LOG(ERROR) << "chrome_wasm could not complete its profile storage "
+                        "lifecycle";
+        }
       }
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
-      }
-#endif
     }
 #else
     // Normal Chrome's profile path is volatile. The completed fence verifies

@@ -3,20 +3,24 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Run an optional three-outer-document Chrome Preferences reload witness.
+"""Run an optional three-outer-document Chrome Preferences/History witness.
 
-Document one runs the existing Preferences ``write`` mode. After its exact,
-redacted lifecycle receipt and flushed ready acknowledgement, this runner
-issues a DevTools ``Page.reload`` command. Document two runs
-``verify-and-write`` and must read A before it writes B. After the same
-flushed ready barrier, the runner issues one further DevTools ``Page.reload``;
-document three runs ``verify-b`` and must read B.
+Every document runs the dedicated Preferences mode plus a fixed real Browser
+lifecycle and directly owned core HistoryService. The Browser close and the
+History/Favicons backend-close marker must precede the Preferences fence.
+Document one writes A and History A. After its exact, redacted lifecycle
+receipt and flushed ready acknowledgement, this runner issues a DevTools
+``Page.reload`` command. Document two reads A and History A before it writes B
+and History B. After the same flushed ready barrier, the runner issues one
+further DevTools ``Page.reload``; document three reads B and History A/B.
 
-This is deliberately non-gating and makes no crash-recovery, database,
-cookies, history, web-storage, service-worker, contender, or M7-complete
-claim.  The private A/B values exist only in this process's in-memory escrow
-and in each one-shot bootstrap response body; no URL, page receipt,
-diagnostic, browser stderr, or stdout contains them.
+This is deliberately non-gating and makes no crash-recovery, normal navigation
+history, desktop History UI/bookmark graph, cookies, web-storage,
+service-worker, contender, or M7-complete claim. It proves only a direct core
+HistoryService History/Favicons SQLite probe within the dedicated profile
+mount. The private A/B values exist only in this process's in-memory escrow and
+in each one-shot bootstrap response body; no URL, page receipt, diagnostic,
+browser stderr, or stdout contains them.
 
 Each later bootstrap requires all of: validated predecessor ready state,
 runner arming, a fresh top-level Fetch-Metadata document navigation, and a
@@ -57,8 +61,8 @@ from run_browser_smoke import browser_command, drain_stream, find_browser, stop_
 SENTINEL = "CHROMIUM_WASM_M7_CHROME_PROFILE_PREFERENCES_OUTER_RELOAD_DOM"
 CASE = "chrome_profile_preferences_three_outer_document_reload_m7"
 SCOPE = (
-    "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-test-"
-    "modules-orderly-reload-only"
+    "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-and-"
+    "history-test-modules-orderly-reload-only"
 )
 PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_preferences_test"
 PRODUCT_GN_TARGET = "//chrome:chrome_wasm"
@@ -1241,6 +1245,9 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
         return [
             f"{M7_MARKER_PREFIX}READY",
             f"{M7_MARKER_PREFIX}WRITE_ACCEPTED sha256={escrow.token_a_digest}",
+            f"{M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED",
+            f"{M7_MARKER_PREFIX}HISTORY_A_WRITE_ACCEPTED",
+            f"{M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED",
             f"{M7_MARKER_PREFIX}FENCE_OK sha256={escrow.token_a_digest}",
             f"{M7_MARKER_PREFIX}LEASE_RELEASED",
         ]
@@ -1249,6 +1256,10 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
             f"{M7_MARKER_PREFIX}READY",
             f"{M7_MARKER_PREFIX}READ_A_OK sha256={escrow.token_a_digest}",
             f"{M7_MARKER_PREFIX}WRITE_ACCEPTED sha256={escrow.token_b_digest}",
+            f"{M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED",
+            f"{M7_MARKER_PREFIX}HISTORY_A_READ_OK",
+            f"{M7_MARKER_PREFIX}HISTORY_B_WRITE_ACCEPTED",
+            f"{M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED",
             f"{M7_MARKER_PREFIX}FENCE_OK sha256={escrow.token_b_digest}",
             f"{M7_MARKER_PREFIX}LEASE_RELEASED",
         ]
@@ -1256,6 +1267,10 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
         return [
             f"{M7_MARKER_PREFIX}READY",
             f"{M7_MARKER_PREFIX}READ_B_OK sha256={escrow.token_b_digest}",
+            f"{M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED",
+            f"{M7_MARKER_PREFIX}HISTORY_A_READ_OK",
+            f"{M7_MARKER_PREFIX}HISTORY_B_READ_OK",
+            f"{M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED",
             f"{M7_MARKER_PREFIX}FENCE_OK sha256={escrow.token_b_digest}",
             f"{M7_MARKER_PREFIX}LEASE_RELEASED",
         ]
@@ -1709,7 +1724,8 @@ def write_failure_diagnostics(
         "nonclaims": [
             "not_m7_gate_complete",
             "not_crash_recovery",
-            "not_database_or_profile_service_coverage",
+            "not_normal_navigation_history_or_desktop_history_graph",
+            "not_full_profile_or_database_service_coverage",
             "not_artifact_source_provenance",
         ],
         "failure": {

@@ -322,6 +322,74 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                 )
         smoke.validate_outer_document_transitions(*phases)
 
+    def test_rejects_missing_or_reordered_browser_close_marker(self) -> None:
+        escrow = smoke.new_token_escrow()
+        expected_document = smoke.DocumentEvidence("navigate", 100.0)
+        for mutation in ("missing", "reordered"):
+            with self.subTest(mutation=mutation):
+                receipt = passing_result(1, escrow, 100.0)
+                run = receipt["run"]
+                markers = list(run["markers"])
+                browser_marker = f"{smoke.M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED"
+                marker_index = markers.index(browser_marker)
+                if mutation == "missing":
+                    markers.pop(marker_index)
+                else:
+                    markers[marker_index], markers[marker_index + 1] = (
+                        markers[marker_index + 1],
+                        markers[marker_index],
+                    )
+                run["markers"] = markers
+                run["stderr"] = markers
+                run["markerCount"] = len(markers)
+                with self.assertRaises(M0Error):
+                    smoke.validate_phase_result(
+                        receipt,
+                        ordinal=1,
+                        expected_versions=VERSIONS,
+                        expected_artifact_identity=ARTIFACT_IDENTITY,
+                        expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
+                        expected_origin=ORIGIN,
+                        expected_document=expected_document,
+                        escrow=escrow,
+                        result_token=RESULT_CAPABILITY,
+                        session=SESSION_CAPABILITY,
+                    )
+
+    def test_rejects_missing_or_reordered_history_backend_close_marker(self) -> None:
+        escrow = smoke.new_token_escrow()
+        expected_document = smoke.DocumentEvidence("navigate", 100.0)
+        for mutation in ("missing", "reordered"):
+            with self.subTest(mutation=mutation):
+                receipt = passing_result(1, escrow, 100.0)
+                run = receipt["run"]
+                markers = list(run["markers"])
+                history_marker = f"{smoke.M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED"
+                marker_index = markers.index(history_marker)
+                if mutation == "missing":
+                    markers.pop(marker_index)
+                else:
+                    markers[marker_index], markers[marker_index + 1] = (
+                        markers[marker_index + 1],
+                        markers[marker_index],
+                    )
+                run["markers"] = markers
+                run["stderr"] = markers
+                run["markerCount"] = len(markers)
+                with self.assertRaises(M0Error):
+                    smoke.validate_phase_result(
+                        receipt,
+                        ordinal=1,
+                        expected_versions=VERSIONS,
+                        expected_artifact_identity=ARTIFACT_IDENTITY,
+                        expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
+                        expected_origin=ORIGIN,
+                        expected_document=expected_document,
+                        escrow=escrow,
+                        result_token=RESULT_CAPABILITY,
+                        session=SESSION_CAPABILITY,
+                    )
+
     def test_rejects_boolean_redaction_count_and_open_output_grammar(self) -> None:
         escrow = smoke.new_token_escrow()
         receipt = passing_result(1, escrow, 100.0)

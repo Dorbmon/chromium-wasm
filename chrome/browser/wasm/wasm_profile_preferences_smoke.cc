@@ -27,6 +27,10 @@ namespace {
 constexpr char kSmokeSwitch[] = "wasm-profile-preferences-smoke";
 constexpr char kTokenASwitch[] = "wasm-profile-preferences-token-a";
 constexpr char kTokenBSwitch[] = "wasm-profile-preferences-token-b";
+constexpr char kBrowserSmokeSwitch[] =
+    "wasm-profile-preferences-browser-smoke";
+constexpr char kHistorySmokeSwitch[] =
+    "wasm-profile-preferences-history-smoke";
 constexpr char kWriteMode[] = "write";
 constexpr char kVerifyAndWriteMode[] = "verify-and-write";
 constexpr char kVerifyBMode[] = "verify-b";
@@ -62,7 +66,22 @@ class WasmProfilePreferencesSmokeState {
     const bool has_mode = command_line->HasSwitch(kSmokeSwitch);
     const bool has_token_a = command_line->HasSwitch(kTokenASwitch);
     const bool has_token_b = command_line->HasSwitch(kTokenBSwitch);
+    const bool has_browser_smoke =
+        command_line->HasSwitch(kBrowserSmokeSwitch);
+    const bool has_history_smoke =
+        command_line->HasSwitch(kHistorySmokeSwitch);
     if (!has_mode) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+      return false;
+    }
+    if (has_browser_smoke &&
+        !command_line->GetSwitchValueASCII(kBrowserSmokeSwitch).empty()) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+      return false;
+    }
+    if (has_history_smoke &&
+        (!has_browser_smoke ||
+         !command_line->GetSwitchValueASCII(kHistorySmokeSwitch).empty())) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
     }
@@ -114,11 +133,21 @@ class WasmProfilePreferencesSmokeState {
     if (!token_b_.empty()) {
       token_b_digest_ = DigestToken(token_b_);
     }
+    browser_smoke_required_ = has_browser_smoke;
+    history_smoke_required_ = has_history_smoke;
     enabled_ = true;
     return true;
   }
 
   bool enabled() const { return enabled_; }
+
+  bool browser_smoke_required() const {
+    return enabled_ && browser_smoke_required_;
+  }
+
+  bool history_smoke_required() const {
+    return enabled_ && history_smoke_required_;
+  }
 
   bool Start(PrefService* prefs) {
     if (!enabled_ || started_ || !prefs) {
@@ -163,8 +192,47 @@ class WasmProfilePreferencesSmokeState {
     return true;
   }
 
+  void NotifyBrowserSmokeResult(bool success) {
+    if (!enabled_ || failure_reported_) {
+      return;
+    }
+    if (!success || !started_ || !browser_smoke_required_ ||
+        browser_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kBrowser);
+      return;
+    }
+    browser_smoke_completed_ = true;
+    EmitMarker("BROWSER_SMOKE_CLOSED");
+  }
+
+  void NotifyHistorySmokeResult(bool success) {
+    if (!enabled_ || failure_reported_) {
+      return;
+    }
+    if (!success || !started_ || !history_smoke_required_ ||
+        !browser_smoke_completed_ || history_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kHistory);
+      return;
+    }
+    history_smoke_completed_ = true;
+    EmitMarker("HISTORY_BACKEND_CLOSED");
+  }
+
+  bool history_smoke_succeeded() const {
+    return enabled_ && history_smoke_required_ && history_smoke_completed_ &&
+           !failure_reported_;
+  }
+
   void NotifyFenceResult(bool success) {
     if (!enabled_ || failure_reported_) {
+      return;
+    }
+    if (browser_smoke_required_ && !browser_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kBrowser);
+      return;
+    }
+    if (history_smoke_required_ && !history_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kHistory);
       return;
     }
     if (!success || !started_ || expected_fence_digest_.empty()) {
@@ -249,6 +317,10 @@ class WasmProfilePreferencesSmokeState {
         return "storage";
       case WasmProfilePreferencesSmokeFailureStage::kProfile:
         return "profile";
+      case WasmProfilePreferencesSmokeFailureStage::kBrowser:
+        return "browser";
+      case WasmProfilePreferencesSmokeFailureStage::kHistory:
+        return "history";
       case WasmProfilePreferencesSmokeFailureStage::kRead:
         return "read";
       case WasmProfilePreferencesSmokeFailureStage::kFence:
@@ -282,6 +354,10 @@ class WasmProfilePreferencesSmokeState {
   bool configured_ = false;
   bool enabled_ = false;
   bool started_ = false;
+  bool browser_smoke_required_ = false;
+  bool browser_smoke_completed_ = false;
+  bool history_smoke_required_ = false;
+  bool history_smoke_completed_ = false;
   bool fence_succeeded_ = false;
   bool storage_lifecycle_succeeded_ = false;
   bool lease_released_ = false;
@@ -305,7 +381,9 @@ bool HasWasmProfilePreferencesSmokeArguments() {
   const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   return command_line->HasSwitch(kSmokeSwitch) ||
          command_line->HasSwitch(kTokenASwitch) ||
-         command_line->HasSwitch(kTokenBSwitch);
+         command_line->HasSwitch(kTokenBSwitch) ||
+         command_line->HasSwitch(kBrowserSmokeSwitch) ||
+         command_line->HasSwitch(kHistorySmokeSwitch);
 }
 
 bool EnableWasmProfilePreferencesSmokeTestMode() {
@@ -314,6 +392,14 @@ bool EnableWasmProfilePreferencesSmokeTestMode() {
 
 bool IsWasmProfilePreferencesSmokeEnabled() {
   return GetWasmProfilePreferencesSmokeState().enabled();
+}
+
+bool IsWasmProfilePreferencesBrowserSmokeEnabled() {
+  return GetWasmProfilePreferencesSmokeState().browser_smoke_required();
+}
+
+bool IsWasmProfilePreferencesHistorySmokeEnabled() {
+  return GetWasmProfilePreferencesSmokeState().history_smoke_required();
 }
 
 void RegisterWasmProfilePreferencesSmokePref(
@@ -326,6 +412,18 @@ void RegisterWasmProfilePreferencesSmokePref(
 
 bool StartWasmProfilePreferencesSmoke(PrefService* prefs) {
   return GetWasmProfilePreferencesSmokeState().Start(prefs);
+}
+
+void NotifyWasmProfilePreferencesBrowserSmokeResult(bool success) {
+  GetWasmProfilePreferencesSmokeState().NotifyBrowserSmokeResult(success);
+}
+
+void NotifyWasmProfilePreferencesHistorySmokeResult(bool success) {
+  GetWasmProfilePreferencesSmokeState().NotifyHistorySmokeResult(success);
+}
+
+bool DidWasmProfilePreferencesHistorySmokeSucceed() {
+  return GetWasmProfilePreferencesSmokeState().history_smoke_succeeded();
 }
 
 void NotifyWasmProfilePreferencesSmokeFenceResult(bool success) {
