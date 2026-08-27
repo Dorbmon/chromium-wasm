@@ -568,6 +568,9 @@ class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
     def test_cli_reports_source_only_scope_without_full_bootstrap_marker(self) -> None:
         manifest = load_manifest()
         stdout = io.StringIO()
+        gpu_lists_version = mock.Mock()
+        skia_lastchange = mock.Mock()
+        dawn_lastchange = mock.Mock()
         with (
             mock.patch.object(bootstrap, "load_manifest", return_value=manifest),
             mock.patch.object(bootstrap, "print_context") as print_context,
@@ -578,12 +581,12 @@ class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
             mock.patch.object(
                 bootstrap, "ensure_nested_source_dependencies"
             ) as nested_source_deps,
-            mock.patch.object(
-                bootstrap, "ensure_skia_lastchange"
-            ) as skia_lastchange,
-            mock.patch.object(
-                bootstrap, "ensure_dawn_lastchange"
-            ) as dawn_lastchange,
+            mock.patch.multiple(
+                bootstrap,
+                ensure_gpu_lists_version=gpu_lists_version,
+                ensure_skia_lastchange=skia_lastchange,
+                ensure_dawn_lastchange=dawn_lastchange,
+            ),
             mock.patch.object(bootstrap, "ensure_test262") as test262,
             mock.patch.object(bootstrap, "ensure_build_tools") as build_tools,
             mock.patch.object(
@@ -621,6 +624,7 @@ class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
         source_distribution.assert_called_once_with(manifest, install=True)
         source_deps.assert_not_called()
         nested_source_deps.assert_not_called()
+        gpu_lists_version.assert_not_called()
         skia_lastchange.assert_not_called()
         dawn_lastchange.assert_not_called()
         test262.assert_not_called()
@@ -790,6 +794,11 @@ class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
             call_order.append("depot-tools")
             return Path("/pinned/depot-tools/cipd"), bootstrap_python
 
+        gpu_lists_version = mock.Mock(
+            side_effect=record("gpu-lists-version")
+        )
+        skia_lastchange = mock.Mock(side_effect=record("skia-lastchange"))
+        dawn_lastchange = mock.Mock(side_effect=record("dawn-lastchange"))
         with (
             mock.patch.object(bootstrap, "load_manifest", return_value=manifest),
             mock.patch.object(bootstrap, "print_context"),
@@ -803,16 +812,12 @@ class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
                 "ensure_nested_source_dependencies",
                 side_effect=record("nested-provenance"),
             ) as nested_source_deps,
-            mock.patch.object(
+            mock.patch.multiple(
                 bootstrap,
-                "ensure_skia_lastchange",
-                side_effect=record("skia-lastchange"),
-            ) as skia_lastchange,
-            mock.patch.object(
-                bootstrap,
-                "ensure_dawn_lastchange",
-                side_effect=record("dawn-lastchange"),
-            ) as dawn_lastchange,
+                ensure_gpu_lists_version=gpu_lists_version,
+                ensure_skia_lastchange=skia_lastchange,
+                ensure_dawn_lastchange=dawn_lastchange,
+            ),
             mock.patch.object(
                 bootstrap, "ensure_test262", side_effect=record("test262")
             ),
@@ -887,6 +892,7 @@ class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
             required_submodules=bootstrap.M3_REQUIRED_SUBMODULES,
         )
         nested_source_deps.assert_called_once_with(manifest, install=False)
+        gpu_lists_version.assert_called_once_with(manifest, install=False)
         skia_lastchange.assert_called_once_with(manifest, install=False)
         dawn_lastchange.assert_called_once_with(manifest, install=False)
         chromium_node_runtime.assert_called_once_with(manifest, install=False)
@@ -904,6 +910,7 @@ class EmscriptenSourceOnlyBootstrapModeTest(unittest.TestCase):
             [
                 "provenance",
                 "nested-provenance",
+                "gpu-lists-version",
                 "skia-lastchange",
                 "dawn-lastchange",
                 "test262",
