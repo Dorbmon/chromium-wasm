@@ -76,6 +76,11 @@ class COMPONENT_EXPORT(NET_EXTRAS) SQLitePersistentCookieStore
   void SetBeforeCommitCallback(base::RepeatingClosure callback) override;
   void Flush(base::OnceClosure callback) override;
 
+  // Test-only close fence for owners that have already stopped all cookie
+  // activity and need proof that the SQLite backend has closed on its own
+  // sequence. Ordinary lifetime remains destructor-driven.
+  void CloseForTesting(base::OnceClosure callback);
+
   // Returns how many operations are currently queued. For test use only;
   // and the background thread needs to be wedged for accessing this to be
   // non-racey. Also requires the client thread to be current.

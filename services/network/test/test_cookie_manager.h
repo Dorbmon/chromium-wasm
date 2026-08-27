@@ -6,6 +6,7 @@
 #define SERVICES_NETWORK_TEST_TEST_COOKIE_MANAGER_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
@@ -54,6 +55,10 @@ class TestCookieManager : public network::mojom::CookieManager {
   void CloneInterface(mojo::PendingReceiver<network::mojom::CookieManager>
                           new_interface) override {}
   void FlushCookieStore(FlushCookieStoreCallback callback) override {}
+  void CloseCookieStoreForTesting(
+      CloseCookieStoreForTestingCallback callback) override {
+    std::move(callback).Run(false);
+  }
   void AllowFileSchemeCookies(
       bool allow,
       AllowFileSchemeCookiesCallback callback) override {}

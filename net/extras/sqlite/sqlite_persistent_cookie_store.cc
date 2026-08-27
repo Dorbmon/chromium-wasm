@@ -1551,6 +1551,10 @@ void SQLitePersistentCookieStore::Flush(base::OnceClosure callback) {
   backend_->Flush(std::move(callback));
 }
 
+void SQLitePersistentCookieStore::CloseForTesting(base::OnceClosure callback) {
+  backend_->Close(std::move(callback));
+}
+
 size_t SQLitePersistentCookieStore::GetQueueLengthForTesting() {
   return backend_->GetQueueLengthForTesting();
 }

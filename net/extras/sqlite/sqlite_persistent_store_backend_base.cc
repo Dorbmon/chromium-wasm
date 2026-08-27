@@ -59,14 +59,22 @@ void SQLitePersistentStoreBackendBase::Flush(base::OnceClosure callback) {
 }
 
 void SQLitePersistentStoreBackendBase::Close() {
+  Close(base::OnceClosure());
+}
+
+void SQLitePersistentStoreBackendBase::Close(base::OnceClosure callback) {
   if (background_task_runner_->RunsTasksInCurrentSequence()) {
     DoCloseInBackground();
+    if (callback) {
+      PostClientTask(FROM_HERE, std::move(callback));
+    }
   } else {
     // Must close the backend on the background runner.
     PostBackgroundTask(
         FROM_HERE,
-        base::BindOnce(&SQLitePersistentStoreBackendBase::DoCloseInBackground,
-                       this));
+        base::BindOnce(
+            &SQLitePersistentStoreBackendBase::CloseAndNotifyInBackground,
+            this, std::move(callback)));
   }
 }
 
@@ -236,6 +244,14 @@ void SQLitePersistentStoreBackendBase::DoCloseInBackground() {
 
   meta_table_.Reset();
   db_.reset();
+}
+
+void SQLitePersistentStoreBackendBase::CloseAndNotifyInBackground(
+    base::OnceClosure callback) {
+  DoCloseInBackground();
+  if (callback) {
+    PostClientTask(FROM_HERE, std::move(callback));
+  }
 }
 
 void SQLitePersistentStoreBackendBase::DatabaseErrorCallback(

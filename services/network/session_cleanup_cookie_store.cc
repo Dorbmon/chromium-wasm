@@ -6,6 +6,7 @@
 
 #include <list>
 #include <memory>
+#include <utility>
 
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -125,6 +126,20 @@ void SessionCleanupCookieStore::SetBeforeCommitCallback(
 
 void SessionCleanupCookieStore::Flush(base::OnceClosure callback) {
   persistent_store_->Flush(std::move(callback));
+}
+
+void SessionCleanupCookieStore::ClosePersistentStoreForTesting(
+    base::OnceCallback<void(bool)> callback) {
+  if (!persistent_store_ || persistent_store_closed_for_testing_) {
+    std::move(callback).Run(false);
+    return;
+  }
+  persistent_store_closed_for_testing_ = true;
+  persistent_store_->CloseForTesting(base::BindOnce(
+      [](base::OnceCallback<void(bool)> callback) {
+        std::move(callback).Run(true);
+      },
+      std::move(callback)));
 }
 
 void SessionCleanupCookieStore::OnLoad(

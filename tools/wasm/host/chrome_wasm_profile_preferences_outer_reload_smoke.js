@@ -2,19 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Three-outer-document Preferences and core HistoryService handoff witness.
-// Chromium owns the profile, registered preference, fixed Browser close,
+// Three-outer-document Preferences, CookieManager, and core HistoryService
+// handoff witness. Chromium owns the profile, registered preference, fixed
+// Browser close, CookieManager flush/reopen and SQLite backend close,
 // History/Favicons database close, lifecycle fence, backend drain, and
 // cooperative lease. The host receives one runner-escrowed argument bundle per
 // document; it neither opens profile storage nor retains raw preference values
 // in a receipt. This is intentionally an orderly-reload witness, not a crash
-// or recovery claim.
+// or recovery claim. Cookie markers prove only this narrow Chromium-side
+// persistence path, not full cookie-service or profile persistence.
 
 const HOST_PROTOCOL = 1;
 const CASE = "chrome_profile_preferences_three_outer_document_reload_m7";
 const SCOPE =
-    "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-and-" +
-    "history-test-modules-orderly-reload-only";
+    "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-" +
+    "cookie-manager-and-history-test-modules-orderly-reload-only";
 const PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_preferences_test";
 const M7_MARKER_PREFIX = "CHROMIUM_WASM_M7_PREFS:";
 const SUPPRESSED_NATIVE_OUTPUT = "<suppressed-native-output>";
@@ -325,6 +327,8 @@ function expectedMarkers(ordinal, tokenEvidence) {
       `${M7_MARKER_PREFIX}READY`,
       `${M7_MARKER_PREFIX}WRITE_ACCEPTED sha256=${tokenEvidence.tokenA}`,
       `${M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED`,
+      `${M7_MARKER_PREFIX}COOKIE_A_WRITE_FLUSHED sha256=${tokenEvidence.tokenA}`,
+      `${M7_MARKER_PREFIX}COOKIE_BACKEND_CLOSED`,
       `${M7_MARKER_PREFIX}HISTORY_A_WRITE_ACCEPTED`,
       `${M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED`,
       `${M7_MARKER_PREFIX}FENCE_OK sha256=${tokenEvidence.tokenA}`,
@@ -337,6 +341,9 @@ function expectedMarkers(ordinal, tokenEvidence) {
       `${M7_MARKER_PREFIX}READ_A_OK sha256=${tokenEvidence.tokenA}`,
       `${M7_MARKER_PREFIX}WRITE_ACCEPTED sha256=${tokenEvidence.tokenB}`,
       `${M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED`,
+      `${M7_MARKER_PREFIX}COOKIE_A_READ_OK sha256=${tokenEvidence.tokenA}`,
+      `${M7_MARKER_PREFIX}COOKIE_B_WRITE_FLUSHED sha256=${tokenEvidence.tokenB}`,
+      `${M7_MARKER_PREFIX}COOKIE_BACKEND_CLOSED`,
       `${M7_MARKER_PREFIX}HISTORY_A_READ_OK`,
       `${M7_MARKER_PREFIX}HISTORY_B_WRITE_ACCEPTED`,
       `${M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED`,
@@ -349,6 +356,8 @@ function expectedMarkers(ordinal, tokenEvidence) {
       `${M7_MARKER_PREFIX}READY`,
       `${M7_MARKER_PREFIX}READ_B_OK sha256=${tokenEvidence.tokenB}`,
       `${M7_MARKER_PREFIX}BROWSER_SMOKE_CLOSED`,
+      `${M7_MARKER_PREFIX}COOKIE_B_READ_OK sha256=${tokenEvidence.tokenB}`,
+      `${M7_MARKER_PREFIX}COOKIE_BACKEND_CLOSED`,
       `${M7_MARKER_PREFIX}HISTORY_A_READ_OK`,
       `${M7_MARKER_PREFIX}HISTORY_B_READ_OK`,
       `${M7_MARKER_PREFIX}HISTORY_BACKEND_CLOSED`,
@@ -1028,6 +1037,7 @@ class PreferencesOuterReloadHost {
         "--wasm-profile-preferences-smoke=write",
         `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
         "--wasm-profile-preferences-browser-smoke",
+        "--wasm-profile-preferences-cookie-smoke",
         "--wasm-profile-preferences-history-smoke",
       ];
     } else if (run.ordinal === 2) {
@@ -1036,6 +1046,7 @@ class PreferencesOuterReloadHost {
         `--wasm-profile-preferences-token-a=${this.rawTokens.tokenA}`,
         `--wasm-profile-preferences-token-b=${this.rawTokens.tokenB}`,
         "--wasm-profile-preferences-browser-smoke",
+        "--wasm-profile-preferences-cookie-smoke",
         "--wasm-profile-preferences-history-smoke",
       ];
     } else if (run.ordinal === 3) {
@@ -1043,6 +1054,7 @@ class PreferencesOuterReloadHost {
         "--wasm-profile-preferences-smoke=verify-b",
         `--wasm-profile-preferences-token-b=${this.rawTokens.tokenB}`,
         "--wasm-profile-preferences-browser-smoke",
+        "--wasm-profile-preferences-cookie-smoke",
         "--wasm-profile-preferences-history-smoke",
       ];
     } else {

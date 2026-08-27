@@ -341,6 +341,19 @@ void CookieManager::FlushCookieStore(FlushCookieStoreCallback callback) {
   cookie_store_->FlushStore(std::move(callback));
 }
 
+void CookieManager::CloseCookieStoreForTesting(
+    CloseCookieStoreForTestingCallback callback) {
+  // SessionCleanupCookieStore is present only when NetworkContext selected an
+  // actual persistent cookie database. Do not report success for an in-memory
+  // store: Wasm's profile-drain acceptance needs a real SQLite close fence.
+  if (!session_cleanup_cookie_store_) {
+    std::move(callback).Run(false);
+    return;
+  }
+  session_cleanup_cookie_store_->ClosePersistentStoreForTesting(
+      std::move(callback));
+}
+
 void CookieManager::AllowFileSchemeCookies(
     bool allow,
     AllowFileSchemeCookiesCallback callback) {

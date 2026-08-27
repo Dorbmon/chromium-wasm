@@ -63,6 +63,12 @@ class SQLitePersistentStoreBackendBase
   // before the object is destroyed.
   void Close();
 
+  // Commits pending operations, closes the database on its background
+  // sequence, then runs |callback| on the client sequence. This is useful for
+  // test-only owners that must wait for an actual SQLite close before releasing
+  // an externally managed filesystem lease.
+  void Close(base::OnceClosure callback);
+
   // Set the callback that will be run at the beginning of Commit.
   void SetBeforeCommitCallback(base::RepeatingClosure callback);
 
@@ -158,6 +164,10 @@ class SQLitePersistentStoreBackendBase
 
   // Close the database on the background runner.
   void DoCloseInBackground();
+
+  // Close the database on the background runner, then acknowledge that close
+  // on the client runner.
+  void CloseAndNotifyInBackground(base::OnceClosure callback);
 
   // Error-handling callback. On errors, the error number (and statement, if
   // available) will be passed to the callback.
