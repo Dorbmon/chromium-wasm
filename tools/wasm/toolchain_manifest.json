@@ -389,9 +389,9 @@
     "emsdk_ref": "upstream/5.0.6",
     "sdk_version": "5.0.6",
     "release_bundle": "1724b50443d92e23ef2a56abf0dc501206839cef",
-    "source_revision": "387e1252703c5ad11b1a7218c2a6e90fdaf8a49c",
+    "source_revision": "430186825b4729913a4dc4acd277bdfa2580156f",
     "source_remote": "https://github.com/Dorbmon/REmscripten.git",
-    "source_ref": "387e1252703c5ad11b1a7218c2a6e90fdaf8a49c",
+    "source_ref": "430186825b4729913a4dc4acd277bdfa2580156f",
     "source_version": "5.0.6-git",
     "source_file_sha256": {
       "src/lib/libdylink.js": "99352fe4b47999827f8122dd6f92de319ae83b41556a886cbf93bc75da9c0e5d",
