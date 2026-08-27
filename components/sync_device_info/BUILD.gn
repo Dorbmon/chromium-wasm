@@ -77,6 +77,10 @@ static_library("sync_device_info") {
     sources += [ "local_device_info_util_linux.cc" ]
   }
 
+  if (is_wasm) {
+    sources += [ "local_device_info_util_wasm.cc" ]
+  }
+
   if (is_fuchsia) {
     sources += [ "local_device_info_util_fuchsia.cc" ]
   }

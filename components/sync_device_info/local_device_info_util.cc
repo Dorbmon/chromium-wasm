@@ -119,6 +119,10 @@ DeviceInfo::OsType GetLocalDeviceOSType() {
   return DeviceInfo::OsType::kWindows;
 #elif BUILDFLAG(IS_FUCHSIA)
   return DeviceInfo::OsType::kFuchsia;
+#elif BUILDFLAG(IS_WASM)
+  // Sync's wire enum has no WebAssembly value. The Wasm target must not claim
+  // to be Linux merely because its build host is Linux.
+  return DeviceInfo::OsType::kUnknown;
 #else
 #error Please handle your new device OS here.
 #endif
