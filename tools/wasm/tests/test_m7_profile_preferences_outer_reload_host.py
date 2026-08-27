@@ -94,8 +94,10 @@ if (!globalThis.crypto || !globalThis.crypto.subtle) {
 }
 const ordinal = Number(process.argv[1]);
 const scenario = process.argv[2];
+const timeoutMs = process.argv[3];
 if ((ordinal !== 1 && ordinal !== 2 && ordinal !== 3) ||
-    (scenario !== "pass" && scenario !== "leak")) {
+    (scenario !== "pass" && scenario !== "leak") ||
+    !/^(?:2000|300000|300001)$/.test(timeoutMs)) {
   throw new Error("test input is invalid");
 }
 globalThis.__scenario = scenario;
@@ -175,7 +177,7 @@ const query = new URLSearchParams({
   resultToken: "fake-outer-reload-result-capability-123456",
   session: "fake-outer-reload-session-capability-123456",
   module: artifact.module_name,
-  timeoutMs: "2000",
+  timeoutMs,
   versions: JSON.stringify({
     chromium: "0".repeat(40), v8: "1".repeat(40), emscripten: "2".repeat(40),
   }),
@@ -281,10 +283,12 @@ if (scenario === "pass") {
 
 
 class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
-    def run_fake_host(self, ordinal: int, scenario: str) -> subprocess.CompletedProcess[str]:
+    def run_fake_host(
+        self, ordinal: int, scenario: str, timeout_ms: str = "2000"
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["node", "--input-type=module", "--eval", fake_host_script(),
-             str(ordinal), scenario],
+             str(ordinal), scenario, timeout_ms],
             check=False,
             capture_output=True,
             text=True,
@@ -312,6 +316,13 @@ class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
         opaque = "a" * 64
         self.assertFalse(opaque in completed.stdout, "raw token reached stdout")
         self.assertFalse(opaque in completed.stderr, "raw token reached stderr")
+
+    def test_accepts_cold_start_timeout_and_rejects_a_larger_timeout(self) -> None:
+        accepted = self.run_fake_host(1, "pass", "300000")
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        rejected = self.run_fake_host(1, "pass", "300001")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("outer-reload timeout is invalid", rejected.stderr)
 
     def test_host_neither_uses_outer_storage_nor_self_navigates(self) -> None:
         source = HOST_PATH.read_text(encoding="utf-8")

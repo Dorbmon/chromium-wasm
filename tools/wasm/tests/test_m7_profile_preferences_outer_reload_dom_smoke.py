@@ -793,6 +793,29 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
             self.assertFalse(escrow.token_a in url, "raw token A reached URL")
             self.assertFalse(escrow.token_b in url, "raw token B reached URL")
 
+    def test_url_allows_cold_start_timeout_and_preserves_its_cap(self) -> None:
+        with temporary_server() as (server, _escrow):
+            url = smoke.smoke_url(
+                server,
+                RESULT_CAPABILITY,
+                SESSION_CAPABILITY,
+                VERSIONS,
+                artifact=smoke.artifact_identity(server),
+                capture_harness=smoke.capture_harness_identity(server),
+                timeout_seconds=300.0,
+            )
+            self.assertEqual(parse_qs(urlsplit(url).query)["timeoutMs"], ["300000"])
+            with self.assertRaisesRegex(M0Error, "outer-reload URL timeout is invalid"):
+                smoke.smoke_url(
+                    server,
+                    RESULT_CAPABILITY,
+                    SESSION_CAPABILITY,
+                    VERSIONS,
+                    artifact=smoke.artifact_identity(server),
+                    capture_harness=smoke.capture_harness_identity(server),
+                    timeout_seconds=300.001,
+                )
+
     def test_failure_diagnostics_and_success_sentinel_keep_nonclaims_and_redact(self) -> None:
         escrow = smoke.new_token_escrow()
         with tempfile.TemporaryDirectory() as temporary:

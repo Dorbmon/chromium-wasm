@@ -94,6 +94,7 @@ MAX_OUTPUT_LINES = 128
 MAX_BROWSER_STDERR_LINES = 300
 FINAL_QUIESCENCE_MS = 50
 MIN_TIMEOUT_SECONDS = 20.0
+MAX_TIMEOUT_MS = 300_000
 
 CAPABILITY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1089,7 +1090,7 @@ def smoke_url(
     ):
         raise M0Error("outer-reload URL inputs are invalid")
     timeout_ms = int(float(timeout_seconds) * 1000)
-    if timeout_ms < 1000 or timeout_ms > 120000:
+    if timeout_ms < 1000 or timeout_ms > MAX_TIMEOUT_MS:
         raise M0Error("outer-reload URL timeout is invalid")
     host, port = server.server_address[:2]
     query = urlencode(
