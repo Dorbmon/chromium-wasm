@@ -57,10 +57,10 @@ class WasmProfileStorageState {
       return state_ == State::kMounted && mount_ == mount;
     }
 
-    // Leased OPFS backend construction cannot run on the browser main thread,
-    // and the scoped backend drain cannot run on Emscripten's runtime main
-    // thread. The Chrome application pthread avoids both restrictions; fail
-    // rather than reaching either blocking API from an unsupported thread.
+    // V4 leased-OPFS filesystem construction cannot run on the browser main
+    // thread, and its scoped backend drain cannot run on Emscripten's runtime
+    // main thread. The Chrome application pthread avoids both restrictions;
+    // fail rather than reaching either blocking API from an unsupported thread.
     if (emscripten_is_main_browser_thread() ||
         emscripten_is_main_runtime_thread()) {
       initialization_error_ = -EAGAIN;
@@ -85,7 +85,7 @@ class WasmProfileStorageState {
 
     errno = 0;
     backend_t backend =
-        wasmfs_create_opfs_backend_with_profile_lease(kProfileLeaseName);
+        wasmfs_create_opfs_profile_log_v4_filesystem_backend(kProfileLeaseName);
     if (!backend) {
       initialization_error_ = NegativeErrnoOrEio();
       state_ = State::kMountFailed;
@@ -289,7 +289,7 @@ class WasmProfileStorageState {
 
     // The dedicated Preferences probe stores only Default/Preferences. Keep
     // its containing user-data directory on WasmFS's default memory backend
-    // rather than creating /profile from the leased OPFS backend. EEXIST is
+    // rather than creating /profile from the leased V4 OPFS backend. EEXIST is
     // acceptable only after the identity check below; it is never a fallback
     // to an unknown existing mount.
     const int create_profile_root_result = wasmfs_create_directory(
@@ -320,7 +320,7 @@ class WasmProfileStorageState {
       backend_t profile_root_backend,
       backend_t leased_backend) {
     // Verify the parent again after mounting Default: the parent must remain
-    // on the WasmFS memory root and must never be the leased OPFS backend,
+    // on the WasmFS memory root and must never be the leased V4 OPFS backend,
     // while Default must resolve to the exact backend whose lease we drain.
     const backend_t parent_backend =
         wasmfs_get_backend_by_path(kProfileRootPath);

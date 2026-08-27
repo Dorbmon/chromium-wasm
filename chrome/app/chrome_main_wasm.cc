@@ -159,24 +159,24 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       GetInitialCommandLineStorage() = *command_line;
     }
 
-    // The experimental M7 profile-storage backend must mount before Content's
+    // The experimental M7 V4 profile filesystem must mount before Content's
     // delegate can register or resolve /profile. The dedicated Preferences
-    // artifact scopes its leased backend to /profile/Default; normal Chrome
-    // deliberately uses the volatile configured profile path until the full
-    // backend is pinned and its durability lifecycle is proven.
+    // artifact scopes its lease to /profile/Default; normal Chrome deliberately
+    // keeps its configured profile path volatile rather than selecting this
+    // isolated persistence acceptance backend.
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
     if (!preferences_smoke_requested || !preferences_smoke_enabled) {
       // The dedicated artifact must never fall through to ordinary Chrome
-      // startup with a leased profile mount: only its known Preferences owner
-      // participates in the M7 test storage-I/O epoch. Invalid test input
-      // already emitted its fixed redacted failure marker.
+      // startup with a V4 leased profile mount: only its known Preferences
+      // owner participates in the M7 test storage-I/O epoch. Invalid test
+      // input already emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
 #elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
     if (!database_smoke_requested || !database_smoke_enabled) {
       // The dedicated artifact must never fall through to ordinary Chrome
-      // startup with a leased profile mount: only its known database and
+      // startup with a V4 leased profile mount: only its known database and
       // Preferences owners participate in the M7 test storage-I/O epoch.
       // Invalid test input already emitted its fixed redacted failure marker.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
@@ -210,7 +210,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     }
 #else
     // The normal and M6 targets use /profile on the volatile filesystem. Do
-    // not select the unpinned experimental OPFS/WasmFS backend merely to boot
+    // not select the M7-only V4 OPFS/WasmFS backend merely to boot
     // Chrome; path setup remains owned by the Wasm Chrome paths component.
     base::PoissonAllocationSampler::Init();
     result = content::ContentMain(std::move(params));
@@ -231,7 +231,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
   }
 #endif
 
-  // The dedicated M7 probes seal and drain their exact leased OPFS backend
+  // The dedicated M7 probes seal and drain their exact V4 leased OPFS backend
   // only after ContentMain and its delegate have both returned, when no
   // Content teardown can issue another profile operation. A failed mount can
   // also require cleanup if leased-backend construction partially succeeded.

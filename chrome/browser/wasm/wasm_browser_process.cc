@@ -100,8 +100,9 @@ const ui::UnownedUserDataHost& WasmBrowserProcess::GetUnownedUserDataHost()
 
 void WasmBrowserProcess::EndSession() {
   CheckOnBrowserSequence();
-  // `local_state_` is deliberately volatile in M6. Profile persistence is not
-  // available until M7's OPFS backend is installed, so there is no fake flush.
+  // `local_state_` remains deliberately volatile in normal Chrome and M6. The
+  // dedicated M7 V4 profile mount does not make this process-global state
+  // persistent, so there is no fake flush.
   is_shutting_down_ = true;
 }
 

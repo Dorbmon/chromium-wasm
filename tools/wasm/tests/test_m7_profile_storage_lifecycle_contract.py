@@ -178,7 +178,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             'constexpr char kProfileRootPath[] = "/profile";',
             'constexpr char kProfileDefaultPath[] = "/profile/Default";',
             'constexpr char kProfileLeaseName[] = "chromium-wasm-profile-v1";',
-            "wasmfs_create_opfs_backend_with_profile_lease(kProfileLeaseName)",
+            "wasmfs_create_opfs_profile_log_v4_filesystem_backend(kProfileLeaseName)",
             "bool InitializeWasmProfilePreferencesStorage()",
             "ProfileStorageMount::kDefaultProfile",
             "emscripten_is_main_browser_thread()",
@@ -189,6 +189,9 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 self.assertIn(token, self.storage)
 
         self.assertNotIn("wasmfs_create_opfs_backend()", self.storage)
+        self.assertNotIn(
+            "wasmfs_create_opfs_backend_with_profile_lease(", self.storage
+        )
         self.assertNotIn("wasmfs_unmount(", self.storage)
         self.assertNotIn("wasmfs_terminal_drain(", self.storage)
 
@@ -222,7 +225,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
 
         self.assertIn(
             "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)\n"
-            "// Mounts the Preferences acceptance probe's leased OPFS backend only at",
+            "// Mounts the Preferences acceptance probe's leased V4 OPFS backend only at",
             self.storage_header,
         )
         self.assertIn(

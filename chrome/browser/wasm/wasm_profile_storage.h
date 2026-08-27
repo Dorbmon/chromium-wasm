@@ -12,23 +12,23 @@
 
 namespace chrome {
 
-// Mounts the database acceptance probe's profile root on the leased OPFS
-// WasmFS backend. This must run on Chromium's application pthread before
-// ContentMain can register or resolve DIR_USER_DATA.
+// Mounts the database acceptance probe's profile root on the V4 leased-OPFS
+// WasmFS filesystem backend. It must run on Chromium's application pthread
+// before ContentMain can register or resolve DIR_USER_DATA.
 bool InitializeWasmProfileStorage();
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-// Mounts the Preferences acceptance probe's leased OPFS backend only at
+// Mounts the Preferences acceptance probe's leased V4 OPFS backend only at
 // /profile/Default. Its /profile parent remains on WasmFS's default memory
 // backend, which the initializer validates before and after the child mount.
 // This is available only in the dedicated Preferences test artifact.
 bool InitializeWasmProfilePreferencesStorage();
 #endif
 
-// Returns true only while the exact leased OPFS mount remains available.
+// Returns true only while the exact V4 leased-OPFS mount remains available.
 bool IsWasmProfileStorageMounted();
 
-// Returns true when ChromeMain must drain the exact leased backend after its
+// Returns true when ChromeMain must drain the exact V4 leased backend after its
 // ContentMain delegate scope is gone. This is also true after a failed mount
 // if backend construction acquired the lease: cleanup must not race startup
 // object destruction.
@@ -49,10 +49,10 @@ bool NotifyWasmProfileStorageProfileShutdown();
 std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
 TryAcquireWasmProfileStorageProfileIO();
 
-// Attempts to permanently seal only Chrome's leased OPFS backend, release its
-// profile lease, and retire its dedicated worker. After a profile was created,
-// it first requires an explicit shutdown quiescence observation and its
-// one-shot post-ContentMain permit. ChromeMain calls this only after
+// Attempts to permanently seal Chrome's V4 leased OPFS filesystem backend,
+// release its profile lease, and retire its dedicated worker. After a profile
+// was created, it first requires an explicit shutdown quiescence observation
+// and its one-shot post-ContentMain permit. ChromeMain calls this only after
 // ContentMain returns, because the profile backend must be quiesced after all
 // Content teardown. Unrelated WasmFS operations and the normal Emscripten exit
 // tail remain usable.

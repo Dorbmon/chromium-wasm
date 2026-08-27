@@ -6,7 +6,7 @@
 """Contracts for normal volatile profile startup and experimental M7 storage.
 
 Normal Chrome owns a file-backed Preferences store beneath /profile, but does
-not claim durable OPFS persistence. The unpinned WasmFS/OPFS backend remains
+not claim durable OPFS persistence. The pinned V4 WasmFS/OPFS backend remains
 available only to the dedicated M7 experiment configurations.
 """
 
@@ -814,7 +814,7 @@ executable("m7_wasmfs_conditional_testonly") {
     def test_normal_chrome_and_m6_do_not_select_experimental_wasmfs_storage(
         self,
     ) -> None:
-        """Only dedicated M7 artifacts select the unpinned storage backend."""
+        """Only dedicated M7 artifacts select the pinned V4 storage backend."""
 
         chrome_assets = _gn_target_body(
             self.chrome_build, "config", "chrome_wasm_assets"

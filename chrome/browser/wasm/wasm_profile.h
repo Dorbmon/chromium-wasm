@@ -78,9 +78,10 @@ class PrefRegistrySyncable;
 //
 // Its path resides at Chrome's configured user-data location. User preferences
 // use a real JsonPrefStore at the canonical Preferences path; normal Wasm
-// Chrome keeps that location volatile until the OPFS backend has the required
-// pin, durability, locking, and recovery evidence. The Chrome-process Local
-// State and all other profile stores remain independently scoped.
+// Chrome deliberately keeps that location volatile. The pinned V4 OPFS
+// filesystem is source-selected only for dedicated M7 acceptance artifacts.
+// The Chrome-process Local State and all other profile stores remain
+// independently scoped.
 class WasmProfile final : public Profile {
  public:
   explicit WasmProfile(base::FilePath profile_path);

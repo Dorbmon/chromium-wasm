@@ -513,10 +513,10 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ]
   }
 
-  # The experimental M7 profile-storage target owns its own WasmFS link
-  # setting. Normal Chrome and the controlled M6 executable retain their
-  # volatile /profile path until an OPFS backend has an immutable pin and the
-  # required locking, durability, and recovery evidence.
+  # The experimental M7 V4 profile-storage target owns its own WasmFS link
+  # setting. Normal Chrome and the controlled M6 executable deliberately
+  # retain their volatile /profile path; the pinned persistence backend remains
+  # source-selected only for the dedicated M7 acceptance artifacts.
   config("chrome_wasm_profile_storage") {
     ldflags = [ "-sWASMFS=1" ]
   }
