@@ -11,7 +11,8 @@
     "v8": {
       "path": "v8",
       "upstream_revision": "49df3678d1b6a1511167b15a6b7499d3ab37a638",
-      "revision": "142840453bc4fb82ab0924d5ecb8de5e769f13c0"
+      "revision": "d1a3c6fb2bc383e080f41fac348542f0b0d5138b",
+      "remote": "https://github.com/Dorbmon/v8.git"
     },
     "skia": {
       "path": "third_party/skia",

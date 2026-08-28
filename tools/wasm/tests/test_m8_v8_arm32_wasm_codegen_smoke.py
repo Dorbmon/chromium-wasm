@@ -72,6 +72,31 @@ def failed_runtime_output(detail: str = "runtime aborted") -> str:
 
 
 class M8V8Arm32CodegenProfileTest(unittest.TestCase):
+    def test_manifest_and_checkout_pin_the_published_v8_receipt(self) -> None:
+        v8 = manifest()["git_dependencies"]["v8"]
+        self.assertEqual(v8["path"], "v8")
+        self.assertEqual(v8["revision"], smoke.EXPECTED_NESTED_V8_COMMIT)
+        self.assertEqual(v8["remote"], "https://github.com/Dorbmon/v8.git")
+
+        deps = (TOOLS_DIR.parents[1] / "DEPS").read_text(encoding="utf-8")
+        self.assertIn(
+            f"'v8_revision': '{smoke.EXPECTED_NESTED_V8_COMMIT}',", deps
+        )
+        self.assertIn(
+            "  'src/v8':\n"
+            "    'https://github.com/Dorbmon/v8.git' + '@' +  "
+            "Var('v8_revision'),",
+            deps,
+        )
+
+        gitmodules = (TOOLS_DIR.parents[1] / ".gitmodules").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            '[submodule "v8"]\n\tpath = v8\n\turl = https://github.com/Dorbmon/v8.git',
+            gitmodules,
+        )
+
     def test_manifest_profile_is_explicitly_standalone_and_non_debug(self) -> None:
         profile = smoke.validate_profile(manifest())
         self.assertIn("dcheck_always_on = false", profile)
