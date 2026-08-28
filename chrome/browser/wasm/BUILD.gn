@@ -2040,6 +2040,12 @@ if (enable_chromium_wasm_m7_profile_database_test) {
       defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST=1" ]
     }
 
+    if (enable_chromium_wasm_m7_profile_database_lock_test) {
+      # The lock probe must not accept the ordinary database modes: it is a
+      # distinct, source-selected LevelDB contention/release receipt.
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST=1" ]
+    }
+
     deps = [
       "//base",
       "//crypto",

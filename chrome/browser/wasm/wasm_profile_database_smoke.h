@@ -10,10 +10,10 @@
 
 namespace chrome {
 
-// Fixed, test-only protocol for the three-fresh-module SQLite and LevelDB
-// graceful close/reopen acceptance. Only
-// chrome_wasm_m7_profile_database_test enables this capability. Its host
-// supplies exactly one of these complete argument sets:
+// Fixed, test-only protocol for source-selected SQLite and LevelDB acceptances.
+// chrome_wasm_m7_profile_database_test enables the three-fresh-module graceful
+// close/reopen capability. Its host supplies exactly one of these complete
+// argument sets:
 //
 //   --wasm-profile-database-smoke=write-a
 //   --wasm-profile-database-token-a=<64 lowercase hex>
@@ -24,6 +24,12 @@ namespace chrome {
 //
 //   --wasm-profile-database-smoke=verify-b
 //   --wasm-profile-database-token-b=<64 lowercase hex>
+//
+// chrome_wasm_m7_profile_database_lock_test is a separate source-selected
+// artifact. It accepts only this complete argument set:
+//
+//   --wasm-profile-database-smoke=lock-contention
+//   --wasm-profile-database-token-a=<64 lowercase hex>
 //
 // The distinct write-interruption diagnostic and bounded recovery artifacts
 // additionally accept their own private modes. They are rejected by the
@@ -59,6 +65,8 @@ namespace chrome {
 //   CHROMIUM_WASM_M7_DATABASE:LEVELDB_READ_B_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:SQLITE_WRITE_ACCEPTED sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:LEVELDB_WRITE_ACCEPTED sha256=<digest>
+//   CHROMIUM_WASM_M7_DATABASE:LEVELDB_LOCK_CONTENDER_REJECTED
+//   CHROMIUM_WASM_M7_DATABASE:LEVELDB_LOCK_RELEASE_REOPEN_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:DATABASES_CLOSED sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:FENCE_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:LEASE_RELEASED
@@ -71,6 +79,20 @@ namespace chrome {
 // both READ_B_OK(B) markers, DATABASES_CLOSED(B), FENCE_OK(B), and
 // LEASE_RELEASED. A failure emits at most one fixed FAIL line and no raw token,
 // database status, or profile path.
+
+// The lock artifact writes and independently closes/reopens SQLite A as a
+// control. It then uses Chromium's real leveldb_env::OpenDB path to write A
+// synchronously while holding the LevelDB database lock, requires a second
+// same-process OpenDB to fail with no returned database and Chromium's
+// LockFile/FILE_ERROR_IN_USE status, destroys that holder, and requires a
+// create-if-missing=false paranoid checksum reopen to read A.
+// Its clean marker sequence is READY, SQLITE_WRITE_ACCEPTED(A),
+// LEVELDB_LOCK_CONTENDER_REJECTED, LEVELDB_LOCK_RELEASE_REOPEN_OK(A),
+// DATABASES_CLOSED(A), FENCE_OK(A), and LEASE_RELEASED. This proves only the
+// Chromium single-process LevelDB lock-table path; it does not prove direct V4
+// fcntl range-lock behavior, SQLite locking, a concurrent full Chrome profile,
+// an external OPFS writer, directory durability, normal-profile persistence,
+// or M7 completion.
 //
 // The write-interruption artifact is a controlled write-interruption
 // diagnostic, not an M7 acceptance. It does not establish crash recovery,

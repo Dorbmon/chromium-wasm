@@ -50,6 +50,9 @@ constexpr char kTokenBSwitch[] = "wasm-profile-database-token-b";
 constexpr char kWriteAMode[] = "write-a";
 constexpr char kVerifyAWriteBMode[] = "verify-a-write-b";
 constexpr char kVerifyBMode[] = "verify-b";
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+constexpr char kLockContentionMode[] = "lock-contention";
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 constexpr char kInterruptLevelDBWriteBMode[] = "interrupt-leveldb-write-b";
@@ -76,6 +79,9 @@ enum class SmokeMode {
   kWriteA,
   kVerifyAWriteB,
   kVerifyB,
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+  kLockContention,
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   kInterruptLevelDBWriteB,
@@ -1175,6 +1181,77 @@ bool ReadLevelDBTokenAndVerifyAfterClose(const base::FilePath& database_path,
          ReadLevelDBToken(database_path, token, options);
 }
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+bool WriteLevelDBTokenWithContenderAndReopen(
+    const base::FilePath& database_path,
+    std::string_view token,
+    const leveldb_env::Options& options) {
+  // This is Chromium's actual LevelDB lock path: leveldb_env::OpenDB() asks
+  // ChromiumEnv to acquire LOCK through storage::FilesystemProxy. The holder
+  // and final reopen traverse the V4-backed path; its same-process LockTable
+  // rejects the overlapping contender before it reaches the V4 fcntl layer.
+  std::unique_ptr<leveldb::DB> holder;
+  if (!leveldb_env::OpenDB(options, database_path.AsUTF8Unsafe(), &holder)
+           .ok() ||
+      !holder) {
+    return false;
+  }
+
+  leveldb::WriteOptions write_options;
+  write_options.sync = true;
+  const leveldb::Slice token_slice(token.data(), token.size());
+  if (!holder->Put(write_options, kDatabaseKey, token_slice).ok()) {
+    holder.reset();
+    return false;
+  }
+
+  leveldb_env::Options existing_options = options;
+  existing_options.create_if_missing = false;
+  existing_options.paranoid_checks = true;
+  std::unique_ptr<leveldb::DB> contender;
+  const leveldb::Status contender_status = leveldb_env::OpenDB(
+      existing_options, database_path.AsUTF8Unsafe(), &contender);
+  leveldb_env::MethodID contender_method;
+  base::File::Error contender_error = base::File::FILE_ERROR_MAX;
+  // Do not treat an arbitrary OpenDB failure as lock evidence. ChromiumEnv
+  // encodes its FilesystemProxy LockFile failure with this exact method/error
+  // pair. The same-process contender is rejected by that lock table before
+  // any V4 fcntl operation, so an unrelated OpenDB error cannot pass here.
+  const bool contender_rejected =
+      !contender_status.ok() && !contender &&
+      leveldb_env::ParseMethodAndError(contender_status, &contender_method,
+                                       &contender_error) ==
+          leveldb_env::METHOD_AND_BFE &&
+      contender_method == leveldb_env::kLockFile &&
+      contender_error == base::File::FILE_ERROR_IN_USE;
+  contender.reset();
+
+  // Destroy the exact holder before the final open. A failed contender alone
+  // could be a permanent or unrelated failure; this release/reopen pair is
+  // the evidence that the same LevelDB path observed normal lock teardown.
+  holder.reset();
+  if (!contender_rejected) {
+    return false;
+  }
+
+  std::unique_ptr<leveldb::DB> reopened;
+  if (!leveldb_env::OpenDB(existing_options, database_path.AsUTF8Unsafe(),
+                           &reopened)
+           .ok() ||
+      !reopened) {
+    return false;
+  }
+  leveldb::ReadOptions read_options;
+  read_options.verify_checksums = true;
+  std::string value;
+  const bool success =
+      reopened->Get(read_options, kDatabaseKey, &value).ok() &&
+      std::string_view(value) == token;
+  reopened.reset();
+  return success;
+}
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+
 DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
   const bool emit_task_phases =
@@ -1187,9 +1264,12 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
   }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+  // The lock artifact has a closed seven-marker receipt. Database-task phase
+  // telemetry belongs only to the distinct diagnostic artifacts.
 #else
   EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // M7 diagnostic or lock artifact.
   const base::FilePath sqlite_path =
       input.profile_path.AppendASCII(kSQLiteFilename);
   const base::FilePath leveldb_path =
@@ -1200,6 +1280,17 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
   std::optional<RecoveredLevelDBValue> recovered_leveldb_value;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   switch (input.mode) {
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+    case SmokeMode::kLockContention:
+      // SQLite remains an independently closed/reopened control for this
+      // lock-specific LevelDB acceptance. It is not presented as SQLite lock
+      // evidence; only the subsequent real LevelDB holder/contender/reopen is.
+      if (WriteSqliteTokenAndVerifyAfterClose(sqlite_path, input.token_a)) {
+        success = WriteLevelDBTokenWithContenderAndReopen(
+            leveldb_path, input.token_a, input.leveldb_options);
+      }
+      break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
     case SmokeMode::kWriteA:
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kSQLiteWrite);
       if (WriteSqliteTokenAndVerifyAfterClose(sqlite_path, input.token_a)) {
@@ -1295,9 +1386,11 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);
   }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+  // The lock receipt exposes no diagnostic task phases.
 #else
   EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#endif  // M7 diagnostic or lock artifact.
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   if (success && recovered_leveldb_value == RecoveredLevelDBValue::kA) {
     return DatabaseTaskResult::kRecoveryA;
@@ -1334,6 +1427,15 @@ class WasmProfileDatabaseSmokeState {
     }
 
     const std::string mode = command_line->GetSwitchValueASCII(kSmokeSwitch);
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+    // The separate lock artifact must never silently become a generic
+    // graceful-close database executable. Its one mode owns the exact
+    // holder/contender/release marker grammar below.
+    if (mode != kLockContentionMode) {
+      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+      return false;
+    }
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     // A recovery artifact cannot be used as a generic graceful-close test.
     // Its source-selected protocol has exactly one seed, one controlled
@@ -1344,7 +1446,24 @@ class WasmProfileDatabaseSmokeState {
       return false;
     }
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+    if (mode == kLockContentionMode) {
+      if (!has_token_a || has_token_b) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      token_a_ = command_line->GetSwitchValueASCII(kTokenASwitch);
+      if (!IsOpaqueToken(token_a_)) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      mode_ = SmokeMode::kLockContention;
+      token_a_digest_ = DigestToken(token_a_);
+      expected_digest_ = token_a_digest_;
+    } else if (mode == kWriteAMode) {
+#else
     if (mode == kWriteAMode) {
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
       if (!has_token_a || has_token_b) {
         ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
         return false;
@@ -1484,9 +1603,11 @@ class WasmProfileDatabaseSmokeState {
     if (!IsDatabaseRecoveryMode(mode_)) {
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
     }
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+    // The lock artifact's strict success receipt has no task-phase telemetry.
 #else
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#endif  // M7 diagnostic or lock artifact.
     if (!task_runner_->PostTaskAndReplyWithResult(
         FROM_HERE, base::BindOnce(&RunDatabaseTask, std::move(input)),
         base::BindOnce(&WasmProfileDatabaseSmokeState::OnDatabaseTaskComplete,
@@ -1610,6 +1731,13 @@ class WasmProfileDatabaseSmokeState {
     } else {
       database_succeeded_ = true;
       switch (mode_) {
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+        case SmokeMode::kLockContention:
+          EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
+          EmitMarker("LEVELDB_LOCK_CONTENDER_REJECTED");
+          EmitDigestMarker("LEVELDB_LOCK_RELEASE_REOPEN_OK", token_a_digest_);
+          break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
         case SmokeMode::kWriteA:
           EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
           EmitDigestMarker("LEVELDB_WRITE_ACCEPTED", token_a_digest_);

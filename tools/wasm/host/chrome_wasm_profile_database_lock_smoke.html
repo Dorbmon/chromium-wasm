@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 LevelDB lock contention smoke</title>
+<main id="m7-profile-database-lock-root" data-state="starting">
+  <h1>Chromium Wasm M7 LevelDB lock contention smoke</h1>
+  <dl id="m7-profile-database-lock-versions"></dl>
+  <canvas id="m7-profile-database-lock-canvas" width="1" height="1" tabindex="0"
+      aria-label="Chromium Wasm LevelDB lock contention smoke canvas"></canvas>
+  <pre id="m7-profile-database-lock-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmProfileDatabaseLockFromQuery} from
+      "./chrome_wasm_profile_database_lock_smoke.js";
+
+  // The runner receives a fixed failure receipt from the module; do not echo
+  // a JavaScript exception because it could contain the private database token.
+  runChromeWasmProfileDatabaseLockFromQuery();
+</script>

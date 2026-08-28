@@ -603,6 +603,11 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         # Its fresh output prevents its controlled abort/reopen protocol from
         # changing the ordinary M7 database graceful-close artifact.
         output_name = "chrome_wasm_m7_profile_database_recovery_test"
+      } else if (enable_chromium_wasm_m7_profile_database_lock_test) {
+        # This one-process LevelDB lock probe has its own source-selected
+        # marker grammar. It does not change the ordinary graceful-close
+        # artifact or make any claim about a full-profile contender.
+        output_name = "chrome_wasm_m7_profile_database_lock_test"
       }
     }
     if (enable_chromium_wasm_m7_profile_preferences_test ||

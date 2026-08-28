@@ -278,10 +278,15 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
             task.count("EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);"),
         )
 
-        # The separate write-interruption diagnostic has an intentionally
-        # different, redacted read-marker grammar.  Retain this legacy
-        # normal-mode assertion over the ordinary switch cases only.
-        normal_cases = task[: task.index("case SmokeMode::kInterruptLevelDBWriteB:")]
+        # The source-selected lock receipt has no phase telemetry, and the
+        # separate write-interruption diagnostic has an intentionally
+        # different, redacted read-marker grammar. Retain this legacy
+        # normal-mode assertion over only the three ordinary switch cases.
+        normal_cases = task[
+            task.index("case SmokeMode::kWriteA:") : task.index(
+                "case SmokeMode::kInterruptLevelDBWriteB:"
+            )
+        ]
 
         def assert_phase_immediately_precedes(phase: str, call: str) -> None:
             matches = re.findall(
@@ -1057,10 +1062,11 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
         )
         self.assertNotIn("LevelDBOptionsForSmoke", task)
         # The original four normal-mode uses retain the UI-created options;
-        # the source-selected interruption diagnostic adds three more and the
-        # bounded recovery probe adds its strict double-reopen consumer,
+        # the source-selected interruption diagnostic adds three more, the
+        # bounded recovery probe adds its strict double-reopen consumer, and
+        # the separate lock receipt adds its holder/contender/reopen consumer,
         # without constructing options on its worker.
-        self.assertEqual(8, task.count("input.leveldb_options"))
+        self.assertEqual(9, task.count("input.leveldb_options"))
 
         for signature in (
             "bool ReadLevelDBToken(const base::FilePath& database_path,",
