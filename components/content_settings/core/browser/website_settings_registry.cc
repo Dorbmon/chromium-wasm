@@ -92,6 +92,12 @@ const WebsiteSettingsInfo* WebsiteSettingsRegistry::Register(
 #elif BUILDFLAG(IS_FUCHSIA)
   if (!(platform & PLATFORM_FUCHSIA))
     return nullptr;
+#elif BUILDFLAG(IS_WASM)
+  // Chrome Sync and desktop permission or hardware capability assumptions do
+  // not apply to the WebAssembly host. Keep only explicitly shared settings.
+  if (!(platform & PLATFORM_WASM))
+    return nullptr;
+  sync_status = WebsiteSettingsInfo::UNSYNCABLE;
 #else
 #error "Unsupported platform"
 #endif
