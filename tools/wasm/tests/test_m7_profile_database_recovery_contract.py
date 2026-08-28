@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 from pathlib import Path
 import sys
@@ -174,6 +175,7 @@ class M7ProfileDatabaseRecoveryContractTest(unittest.TestCase):
         self.assertIn("RECOVERY_SQLITE_A_INTEGRITY_MARKER", self.host)
         self.assertIn("recovered.digest !== expectedDigest", self.host)
         self.assertIn("run.markerIndex !== 2", self.host)
+        self.assertIn("const MAX_TIMEOUT_MS = 300000;", self.host)
         self.assertIn("m7GateComplete: false", self.host)
         self.assertIn('if (this.#bootstrap.ordinal === 3) return "recovered";', self.host)
 
@@ -241,6 +243,22 @@ class M7ProfileDatabaseRecoveryContractTest(unittest.TestCase):
         self.assertIn("bounded-leveldb-post-sync-recovery", self.host)
         self.assertIn("m7GateComplete\": False", self.runner_source)
         self.assertIn("CHROMIUM_WASM_M7_CHROME_PROFILE_DATABASE_RECOVERY_DOM", self.runner_source)
+
+    def test_cli_timeout_allows_the_cold_start_cap(self) -> None:
+        self.assertEqual(
+            self.runner.DEFAULT_GN_ARGUMENTS,
+            'import("//out/wasm-chrome-m6/args.gn") '
+            "enable_chromium_wasm_m7_profile_database_test=true "
+            "enable_chromium_wasm_m7_profile_database_recovery_test=true",
+        )
+        self.assertEqual(self.runner.MAX_TIMEOUT_MS, 300_000)
+        self.assertEqual(self.runner.parse_recovery_timeout("300"), 300.0)
+        for value in ("0", "nan", "inf", "300.001"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    argparse.ArgumentTypeError, "timeout must be finite"
+                ):
+                    self.runner.parse_recovery_timeout(value)
 
 
 if __name__ == "__main__":

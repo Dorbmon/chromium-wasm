@@ -56,7 +56,7 @@ import time
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from m0_common import M0Error, REPO_ROOT, load_manifest, parse_timeout
+from m0_common import M0Error, REPO_ROOT, load_manifest
 from m4_cdp import unused_loopback_port, wait_for_page_client
 from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
@@ -75,7 +75,7 @@ PRODUCT_GN_ENABLE_ARGUMENT = (
 )
 DEFAULT_OUT_DIR = Path("out/wasm-chrome-m7-profile-database-recovery")
 DEFAULT_GN_ARGUMENTS = (
-    'import("//out/wasm-chrome-m7-profile-database/args.gn") '
+    'import("//out/wasm-chrome-m6/args.gn") '
     "enable_chromium_wasm_m7_profile_database_test=true "
     + PRODUCT_GN_ENABLE_ARGUMENT
 )
@@ -89,9 +89,29 @@ MAX_BOOTSTRAP_DOCUMENT_BYTES = 8 * 1024
 MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_BROWSER_STDERR_LINES = 300
 MIN_TIMEOUT_SECONDS = 20.0
+MAX_TIMEOUT_MS = 300_000
 CLEAN_SETTLE_MS = 50
 INTERRUPTION_SETTLE_MS = 75
 FINAL_QUIESCENCE_MS = 50
+
+
+def parse_recovery_timeout(value: str) -> float:
+    """Parses the deliberately larger cap needed for a cold Wasm module."""
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("timeout must be a number") from exc
+    if (
+        not math.isfinite(timeout)
+        or timeout <= 0
+        or timeout > MAX_TIMEOUT_MS / 1000
+    ):
+        raise argparse.ArgumentTypeError(
+            "timeout must be finite and in "
+            f"(0, {MAX_TIMEOUT_MS / 1000:g}]"
+        )
+    return timeout
+
 
 CAPABILITY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1146,7 +1166,7 @@ def smoke_url(
     if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool):
         raise M0Error("recovery URL timeout is invalid")
     timeout_ms = int(float(timeout_seconds) * 1000)
-    if timeout_ms < 1000 or timeout_ms > 120000:
+    if timeout_ms < 1000 or timeout_ms > MAX_TIMEOUT_MS:
         raise M0Error("recovery URL timeout is invalid")
     host, port = server.server_address[:2]
     query = urlencode(
@@ -1835,7 +1855,7 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
-    parser.add_argument("--timeout", type=parse_timeout, default=120.0)
+    parser.add_argument("--timeout", type=parse_recovery_timeout, default=120.0)
     args = parser.parse_args()
     if args.timeout < MIN_TIMEOUT_SECONDS:
         parser.error(f"--timeout must be at least {MIN_TIMEOUT_SECONDS:g} seconds")
