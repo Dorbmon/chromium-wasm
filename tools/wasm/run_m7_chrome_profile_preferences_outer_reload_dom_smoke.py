@@ -52,7 +52,7 @@ import time
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from m0_common import M0Error, REPO_ROOT, load_manifest, parse_timeout
+from m0_common import M0Error, REPO_ROOT, load_manifest
 from m4_cdp import unused_loopback_port, wait_for_page_client
 from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
@@ -105,6 +105,24 @@ M7_GN_ENABLE_ASSIGNMENT_RE = re.compile(
     r"[ \t]*(true|false)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
+
+
+def parse_outer_reload_timeout(value: str) -> float:
+    """Parses the deliberately larger cap needed for a cold Wasm module."""
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("timeout must be a number") from exc
+    if (
+        not math.isfinite(timeout)
+        or timeout <= 0
+        or timeout > MAX_TIMEOUT_MS / 1000
+    ):
+        raise argparse.ArgumentTypeError(
+            "timeout must be finite and in "
+            f"(0, {MAX_TIMEOUT_MS / 1000:g}]"
+        )
+    return timeout
 
 _BYTE_IDENTITY_FIELDS = frozenset(("bytes", "sha256"))
 _ARTIFACT_FIELDS = frozenset(
@@ -1783,7 +1801,7 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--diagnostics-dir", type=Path)
     parser.add_argument("--no-sandbox", action="store_true")
-    parser.add_argument("--timeout", type=parse_timeout, default=120.0)
+    parser.add_argument("--timeout", type=parse_outer_reload_timeout, default=120.0)
     args = parser.parse_args()
     if args.timeout < MIN_TIMEOUT_SECONDS:
         parser.error(f"--timeout must be at least {MIN_TIMEOUT_SECONDS:g} seconds")

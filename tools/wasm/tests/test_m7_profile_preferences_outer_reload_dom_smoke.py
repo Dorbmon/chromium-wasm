@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import copy
 from collections import deque
@@ -815,6 +816,15 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                     capture_harness=smoke.capture_harness_identity(server),
                     timeout_seconds=300.001,
                 )
+
+    def test_cli_timeout_allows_cold_start_cap(self) -> None:
+        self.assertEqual(smoke.parse_outer_reload_timeout("300"), 300.0)
+        for value in ("0", "nan", "inf", "300.001"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    argparse.ArgumentTypeError, "timeout must be finite"
+                ):
+                    smoke.parse_outer_reload_timeout(value)
 
     def test_failure_diagnostics_and_success_sentinel_keep_nonclaims_and_redact(self) -> None:
         escrow = smoke.new_token_escrow()
