@@ -390,9 +390,9 @@
     "emsdk_ref": "upstream/5.0.6",
     "sdk_version": "5.0.6",
     "release_bundle": "1724b50443d92e23ef2a56abf0dc501206839cef",
-    "source_revision": "50244e6f4789b51c22fdcb2527d37c160f6da70c",
+    "source_revision": "1938127de891bf13ad0149fa3f3b9380bacb4af8",
     "source_remote": "https://github.com/Dorbmon/REmscripten.git",
-    "source_ref": "50244e6f4789b51c22fdcb2527d37c160f6da70c",
+    "source_ref": "1938127de891bf13ad0149fa3f3b9380bacb4af8",
     "source_version": "5.0.6-git",
     "source_file_sha256": {
       "src/lib/libdylink.js": "99352fe4b47999827f8122dd6f92de319ae83b41556a886cbf93bc75da9c0e5d",
@@ -402,7 +402,7 @@
       "src/lib/libwasmfs.js": "ffb1c39a87d208716faa761c07a986b8208f34b52eb1545b83ace03e376318db",
       "src/lib/libwasmfs_node.js": "84c9cbba206847c0ca2da8b135d078354096d6f3930c0b76a282f9d6ca5061fa",
       "src/lib/libwasmfs_opfs.js": "ce02db6b7d65f3209007c42ced3f252ab5e1284c96c729f50e07b1f8ae40995b",
-      "src/settings.js": "ffff2d9d06566177ba7bd7bbb80b77fbdd88bf2e85e10711983d02dd4a4e74cb",
+      "src/settings.js": "682040f9d4675ce443ef76c28813ebd11620a6b372d03a514b2535db73dc92c4",
       "system/include/emscripten/wasmfs.h": "0a58066f70a0c8d6e4a8f17b5495539218e262b34d00778067ec01b2932623e4",
       "system/include/emscripten/wasmfs_opfs_profile_drain.h": "cd035d9cb1a7409aa9faf3d04ccb363355b2241efef9f37879a03acb0ac11aa2",
       "system/include/emscripten/wasmfs_terminal_drain.h": "2c19322603bc5e10f7cb58ee23649e1346e465d1ab6d136e308cdb204b0f7abd",
@@ -414,7 +414,7 @@
       "system/lib/wasmfs/backends/js_file_backend.cpp": "0f7fb876031a78dc1d4ce825b82f55c1110eb976750b2c8e163c2c0d265dd065",
       "system/lib/wasmfs/backends/memory_backend.cpp": "f9f0dabfa8727e4cdb9c329271eac852b721859a1c08d200db4b1cbd0a972b7f",
       "system/lib/wasmfs/backends/node_backend.cpp": "3117020c032f5e1171dd396a6b8b426a197446bb50e6ffe51b31a99c5795a6ea",
-      "system/lib/wasmfs/backends/opfs_backend.cpp": "a6e306fc0d0a82f3d7302dae3384cb72297ac7a75dab3eac6e95833d646fbeee",
+      "system/lib/wasmfs/backends/opfs_backend.cpp": "c1a43d47e6fc5258af786c78bf896c58a230fa78589b28c85bc87c4fd853bb70",
       "system/lib/wasmfs/backends/opfs_backend.h": "ba0629c29938a36431901444731f39cbcc6483dfa3f366065af1cd8561536ec5",
       "system/lib/wasmfs/emscripten.cpp": "ff953f9ab0118fff2c5dc00ceb3715049a85dc729c9664660923dfafdd95267a",
       "system/lib/wasmfs/file.cpp": "8007587a4ba73bda757b959d061dcbb5e4e36f9551422effef98c2dec0c93a58",
@@ -432,7 +432,7 @@
       "system/lib/wasmfs/wasmfs.h": "8599500d3a6ecf0994e99527f9ea894fd11eaf530eaf193141e8abd808f27a09",
       "tools/emscripten.py": "ea336c61e07a5eb6d94281eae8f79cd080baf27a594fc52f6814db6c7e527db1",
       "tools/link.py": "3da3e63cc21cf4db360dbfc385a83bc58444f9bf1841716873f759a568bdd5e9",
-      "tools/system_libs.py": "e74cabc7cc281b7b98071fbabf3032d27400bcbab8c36ecdc037b6fdc5636239"
+      "tools/system_libs.py": "af9cb9f3605dd7bbdf06e7e20d1b3ecce805b83421f0649e46dec942fd152bd8"
     },
     "source_npm_tree_sha256": "a8fa3d3fa1c47360b757c93af09e02fea4932f366367c706dd59b0c5af6dec50",
     "llvm_revision": "bbeae6932d653b8a71a3a985af0ccf97e13e2e08",
