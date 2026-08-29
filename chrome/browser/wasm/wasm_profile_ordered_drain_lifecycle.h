@@ -17,9 +17,10 @@
 //
 //   1. close explicit profile-I/O admission;
 //   2. await every already admitted operation;
-//   3. reject the handoff if any operation in this epoch failed or was
+//   3. reject a clean handoff if any operation in this epoch failed or was
 //      abandoned, including one that finished before admission closed; and
-//   4. issue one move-only permit for the outer, post-ContentMain drain seam.
+//   4. issue either one move-only clean-drain permit or one distinct terminal
+//      failure-retirement permit for the outer, post-ContentMain seam.
 //
 // This type deliberately does not invoke or acknowledge the backend
 // transaction. The narrowly source-selected M7 test storage adapter accepts
@@ -34,7 +35,8 @@
 // all Chrome profile I/O use admission handles and it does not establish full
 // profile persistence, durability, recovery, or lock semantics. A clean result
 // means only that its explicitly admitted epoch is ready to be handed to the
-// outer drain seam; it is never a storage success claim.
+// outer drain seam; it is never a storage success claim. A non-clean result can
+// authorize only terminal backend retirement, never a clean profile handoff.
 class WasmProfileOrderedDrainLifecycle {
  public:
   enum class ProfileIOCompletion {
@@ -80,6 +82,8 @@ class WasmProfileOrderedDrainLifecycle {
     kAbortedBeforePostContentDrain,
     kPostContentDrainPermitClaimed,
     kPostContentDrainPermitRetired,
+    kPostContentFailureRetirementPermitClaimed,
+    kPostContentFailureRetirementPermitRetired,
   };
 
   struct Result {
@@ -154,6 +158,42 @@ class WasmProfileOrderedDrainLifecycle {
     ProfileIOQuiesceResult profile_io_;
   };
 
+  // A move-only proof that every registered profile operation has reached a
+  // terminal non-clean outcome. It permits the outer storage adapter to seal
+  // and perform fail-closed backend teardown after ContentMain returns,
+  // preventing raw WasmFS destruction from owning live OPFS file handles. It
+  // never authorizes a clean persistence result: the adapter must preserve the
+  // registered-I/O failure in its returned storage result even if physical
+  // teardown works.
+  class PostContentFailureRetirementPermit {
+   public:
+    PostContentFailureRetirementPermit(
+        PostContentFailureRetirementPermit&& other) noexcept;
+    PostContentFailureRetirementPermit& operator=(
+        PostContentFailureRetirementPermit&& other) noexcept;
+    ~PostContentFailureRetirementPermit();
+
+    PostContentFailureRetirementPermit(
+        const PostContentFailureRetirementPermit&) = delete;
+    PostContentFailureRetirementPermit& operator=(
+        const PostContentFailureRetirementPermit&) = delete;
+
+    // Returns the fixed non-clean registered-I/O result. A moved-from permit
+    // returns nullopt.
+    std::optional<ProfileIOQuiesceResult> GetProfileIOQuiesceResult() const;
+
+   private:
+    friend class Observation;
+
+    PostContentFailureRetirementPermit(
+        scoped_refptr<Observation> observation,
+        ProfileIOQuiesceResult profile_io);
+    void Reset();
+
+    scoped_refptr<Observation> observation_;
+    ProfileIOQuiesceResult profile_io_;
+  };
+
   // A thread-safe, ref-counted epoch that the outer ChromeMain path retains
   // across ContentMain/delegate destruction. It contains no task runner or
   // callback, so a discarded shutdown task cannot strand the state or destroy
@@ -166,11 +206,18 @@ class WasmProfileOrderedDrainLifecycle {
     // It does not invoke or report the backend drain itself.
     std::optional<PostContentDrainPermit> ClaimPostContentDrain();
 
+    // Claims the one terminal-retirement permit only after registered I/O has
+    // quiesced with a failed or abandoned operation. It does not turn that
+    // failure into a clean handoff and does not invoke the backend itself.
+    std::optional<PostContentFailureRetirementPermit>
+    ClaimPostContentFailureRetirement();
+
    private:
     friend class base::RefCountedThreadSafe<Observation>;
     friend class WasmProfileOrderedDrainLifecycle;
     friend class ProfileIOHold;
     friend class PostContentDrainPermit;
+    friend class PostContentFailureRetirementPermit;
 
     enum class ProfileIOHoldDisposition {
       kSucceeded,
@@ -187,6 +234,7 @@ class WasmProfileOrderedDrainLifecycle {
     bool AbortBeforePostContentDrain();
     void ReleaseProfileIOHold(ProfileIOHoldDisposition disposition);
     void RetirePostContentDrainPermit();
+    void RetirePostContentFailureRetirementPermit();
 
     void UpdateQuiesceStatusLocked() EXCLUSIVE_LOCKS_REQUIRED(lock_);
     ProfileIOQuiesceResult BuildProfileIOQuiesceResultLocked() const

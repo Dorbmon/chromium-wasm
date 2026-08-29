@@ -381,7 +381,10 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         storage_handoff = finish.index(
             "NotifyWasmProfileStorageProfileShutdown();"
         )
-        self.assertLess(history_guard, storage_handoff)
+        # A failing history holder is completed before it asks for shutdown.
+        # FinishShutdown must publish that terminal result to the outer
+        # fail-closed retirement seam before it emits the smoke receipt.
+        self.assertLess(storage_handoff, history_guard)
 
     def test_cookie_manager_probe_closes_its_sqlite_backend_before_handoff(self) -> None:
         for token in (
@@ -480,7 +483,10 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         )
         cookie_guard = finish.index("IsWasmProfilePreferencesCookieSmokeEnabled()")
         storage_handoff = finish.index("NotifyWasmProfileStorageProfileShutdown();")
-        self.assertLess(cookie_guard, storage_handoff)
+        # The CookieManager completion above is terminal before shutdown. Its
+        # result must reach the outer failure-retirement seam before the smoke
+        # receipt selects a clean or failed lifecycle marker.
+        self.assertLess(storage_handoff, cookie_guard)
 
     def test_test_pref_is_capability_gated_before_prefservice_construction(self) -> None:
         register = _body_after_signature(

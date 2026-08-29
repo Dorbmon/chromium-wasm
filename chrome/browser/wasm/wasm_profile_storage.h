@@ -41,6 +41,14 @@ bool NeedsWasmProfileStorageBackendDrain();
 bool NotifyWasmProfileStorageProfileCreated();
 bool NotifyWasmProfileStorageProfileShutdown();
 
+// Records terminal profile destruction after the UI-loop shutdown path could
+// not certify a complete profile handoff. This still closes profile-I/O
+// admission and requires quiescence, but it permanently selects WasmFS's
+// fail-closed retirement instead of releasing the profile lease. It is only
+// for BrowserMainParts' foundation fallback; normal shutdown must use the
+// ordinary notification above.
+bool NotifyWasmProfileStorageProfileShutdownFailClosed();
+
 // Admits one known profile-storage operation while the mounted test profile is
 // live. Every returned hold must report a terminal result. Once profile
 // shutdown begins, new admissions are refused and the post-ContentMain backend
@@ -50,13 +58,16 @@ bool NotifyWasmProfileStorageProfileShutdown();
 std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
 TryAcquireWasmProfileStorageProfileIO();
 
-// Attempts to permanently seal Chrome's V4 leased OPFS filesystem backend,
-// release its profile lease, and retire its dedicated worker. After a profile
-// was created, it first requires an explicit shutdown quiescence observation
-// and its one-shot post-ContentMain permit. ChromeMain calls this only after
-// ContentMain returns, because the profile backend must be quiesced after all
-// Content teardown. Unrelated WasmFS operations and the normal Emscripten exit
-// tail remain usable.
+// Attempts to permanently seal Chrome's V4 leased OPFS filesystem backend.
+// After a profile was created, it first requires an explicit shutdown
+// quiescence observation and one one-shot post-ContentMain permit. A clean
+// epoch uses the normal WasmFS drain, releases its profile lease, and retires
+// its dedicated worker. A failed or abandoned epoch, or a foundation-fallback
+// notification, uses WasmFS's explicit fail-closed retirement instead: it
+// closes private OPFS handles but retains the lease and reports a non-success
+// result. ChromeMain calls this only after ContentMain returns, because the
+// profile backend must be quiesced after all Content teardown. Unrelated
+// WasmFS operations and the normal Emscripten exit tail remain usable.
 WasmProfileStorageDrainResult DrainAndReleaseWasmProfileStorageBackend();
 
 }  // namespace chrome

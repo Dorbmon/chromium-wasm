@@ -46,6 +46,11 @@ enum class ProfileStorageMount {
 #endif
 };
 
+enum class ProfileShutdownDisposition {
+  kCleanHandoff,
+  kFailClosed,
+};
+
 class WasmProfileStorageState {
  public:
   WasmProfileStorageState() = default;
@@ -161,11 +166,18 @@ class WasmProfileStorageState {
     return profile_io_lifecycle_->TryAcquireProfileIO();
   }
 
-  bool NotifyProfileShutdown() {
+  bool NotifyProfileShutdown(ProfileShutdownDisposition disposition) {
     base::AutoLock lock(lock_);
     if (state_ != State::kMounted || backend_drain_attempted_ ||
         profile_shutdown_) {
       return false;
+    }
+    // An owner-loss fallback has destroyed the Profile without a complete
+    // Preferences/smoke lifecycle receipt. Keep that terminal disposition
+    // sticky before closing admission so no later retry can mistake a clean
+    // registered-I/O result for authority to release the profile lease.
+    if (disposition == ProfileShutdownDisposition::kFailClosed) {
+      force_fail_closed_ = true;
     }
     // A Content startup failure can reach BrowserMainParts teardown without
     // constructing a profile. In that case there is no live profile service
@@ -185,8 +197,12 @@ class WasmProfileStorageState {
 
   WasmProfileStorageDrainResult DrainAndReleaseBackend() {
     backend_t backend = nullptr;
+    bool force_fail_closed = false;
     std::optional<WasmProfileOrderedDrainLifecycle::PostContentDrainPermit>
         profile_io_drain_permit;
+    std::optional<
+        WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit>
+        profile_io_failure_retirement_permit;
     {
       base::AutoLock lock(lock_);
       if (backend_drain_attempted_) {
@@ -226,33 +242,74 @@ class WasmProfileStorageState {
           return result;
         }
 
-        profile_io_drain_permit =
-            profile_io_observation_->ClaimPostContentDrain();
-        if (!profile_io_drain_permit) {
-          const WasmProfileOrderedDrainLifecycle::Result profile_io_result =
-              profile_io_observation_->GetResult();
-          WasmProfileStorageDrainResult result;
-          result.error =
-              profile_io_result.status ==
-                      WasmProfileOrderedDrainLifecycle::Status::
-                          kWaitingForRegisteredProfileIO
-                  ? -EBUSY
-                  : -EIO;
-          return result;
+        const WasmProfileOrderedDrainLifecycle::Result profile_io_result =
+            profile_io_observation_->GetResult();
+        std::optional<
+            WasmProfileOrderedDrainLifecycle::ProfileIOQuiesceResult>
+            profile_io_quiesce_result;
+        switch (profile_io_result.status) {
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kReadyForPostContentDrain:
+            profile_io_drain_permit =
+                profile_io_observation_->ClaimPostContentDrain();
+            if (profile_io_drain_permit) {
+              profile_io_quiesce_result =
+                  profile_io_drain_permit->GetProfileIOQuiesceResult();
+            }
+            break;
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kRegisteredProfileIONotClean:
+            profile_io_failure_retirement_permit =
+                profile_io_observation_->ClaimPostContentFailureRetirement();
+            if (profile_io_failure_retirement_permit) {
+              profile_io_quiesce_result =
+                  profile_io_failure_retirement_permit
+                      ->GetProfileIOQuiesceResult();
+            }
+            break;
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kWaitingForRegisteredProfileIO: {
+            WasmProfileStorageDrainResult result;
+            result.error = -EBUSY;
+            return result;
+          }
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kAcceptingRegisteredProfileIO:
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kAbortedBeforePostContentDrain:
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kPostContentDrainPermitClaimed:
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kPostContentDrainPermitRetired:
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kPostContentFailureRetirementPermitClaimed:
+          case WasmProfileOrderedDrainLifecycle::Status::
+              kPostContentFailureRetirementPermitRetired: {
+            WasmProfileStorageDrainResult result;
+            result.error = -EIO;
+            return result;
+          }
         }
 
-        const std::optional<
-            WasmProfileOrderedDrainLifecycle::ProfileIOQuiesceResult>
-            profile_io_quiesce_result =
-                profile_io_drain_permit->GetProfileIOQuiesceResult();
+        const bool clean_profile_io = profile_io_drain_permit.has_value();
         if (!profile_io_quiesce_result ||
-            profile_io_quiesce_result->admitted_operations == 0 ||
-            !profile_io_quiesce_result->Succeeded()) {
+            profile_io_quiesce_result->Succeeded() != clean_profile_io) {
+          WasmProfileStorageDrainResult result;
+          result.error = -EIO;
+          return result;
+        }
+        // An ordinary handoff still needs a positive registered-I/O witness.
+        // The foundation fallback deliberately has no complete profile
+        // lifecycle receipt, so it may use a zero-operation observation only
+        // to prove quiescence for explicit fail-closed retirement.
+        if (!force_fail_closed_ &&
+            profile_io_quiesce_result->admitted_operations == 0) {
           WasmProfileStorageDrainResult result;
           result.error = -EIO;
           return result;
         }
       }
+      force_fail_closed = force_fail_closed_;
       backend_drain_attempted_ = true;
       state_ = State::kDraining;
       backend = backend_;
@@ -261,7 +318,12 @@ class WasmProfileStorageState {
     // Do not hold Chrome's lifecycle lock while this waits for the OPFS
     // worker. The primitive seals and drains only |backend|; global WasmFS,
     // stdout/stderr, and the ordinary Emscripten exit tail stay live.
-    WasmProfileStorageDrainResult result = DrainBackend(backend);
+    const bool fail_closed_retirement =
+        force_fail_closed || profile_io_failure_retirement_permit.has_value();
+    WasmProfileStorageDrainResult result =
+        fail_closed_retirement
+            ? FailClosedRetireBackend(backend)
+            : DrainBackend(backend);
 
     base::AutoLock lock(lock_);
     backend_drain_result_ = result;
@@ -340,11 +402,9 @@ class WasmProfileStorageState {
 
   static int NormalizeError(int error) { return error < 0 ? error : -EIO; }
 
-  static WasmProfileStorageDrainResult DrainBackend(backend_t backend) {
-    wasmfs_opfs_profile_drain_result wasmfs_result{};
-    const int drain_result =
-        wasmfs_drain_opfs_profile_backend(backend, &wasmfs_result);
-
+  static WasmProfileStorageDrainResult BuildDrainResult(
+      int drain_result,
+      const wasmfs_opfs_profile_drain_result& wasmfs_result) {
     WasmProfileStorageDrainResult result;
     result.error = drain_result != 0 ? NormalizeError(drain_result)
                    : wasmfs_result.error == 0
@@ -376,6 +436,21 @@ class WasmProfileStorageState {
     return result;
   }
 
+  static WasmProfileStorageDrainResult DrainBackend(backend_t backend) {
+    wasmfs_opfs_profile_drain_result wasmfs_result{};
+    return BuildDrainResult(
+        wasmfs_drain_opfs_profile_backend(backend, &wasmfs_result),
+        wasmfs_result);
+  }
+
+  static WasmProfileStorageDrainResult FailClosedRetireBackend(
+      backend_t backend) {
+    wasmfs_opfs_profile_drain_result wasmfs_result{};
+    return BuildDrainResult(
+        wasmfs_fail_closed_opfs_profile_backend(backend, &wasmfs_result),
+        wasmfs_result);
+  }
+
   base::Lock lock_;
   State state_ GUARDED_BY(lock_) = State::kUninitialized;
   ProfileStorageMount mount_ GUARDED_BY(lock_) =
@@ -384,6 +459,7 @@ class WasmProfileStorageState {
   backend_t backend_ GUARDED_BY(lock_) = nullptr;
   bool profile_created_ GUARDED_BY(lock_) = false;
   bool profile_shutdown_ GUARDED_BY(lock_) = false;
+  bool force_fail_closed_ GUARDED_BY(lock_) = false;
   std::unique_ptr<WasmProfileOrderedDrainLifecycle> profile_io_lifecycle_
       GUARDED_BY(lock_);
   scoped_refptr<WasmProfileOrderedDrainLifecycle::Observation>
@@ -425,7 +501,13 @@ bool NotifyWasmProfileStorageProfileCreated() {
 }
 
 bool NotifyWasmProfileStorageProfileShutdown() {
-  return GetWasmProfileStorageState().NotifyProfileShutdown();
+  return GetWasmProfileStorageState().NotifyProfileShutdown(
+      ProfileShutdownDisposition::kCleanHandoff);
+}
+
+bool NotifyWasmProfileStorageProfileShutdownFailClosed() {
+  return GetWasmProfileStorageState().NotifyProfileShutdown(
+      ProfileShutdownDisposition::kFailClosed);
 }
 
 std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>

@@ -53,6 +53,8 @@ bool WasmProfileOrderedDrainLifecycle::Observation::
     case Status::kAbortedBeforePostContentDrain:
     case Status::kPostContentDrainPermitClaimed:
     case Status::kPostContentDrainPermitRetired:
+    case Status::kPostContentFailureRetirementPermitClaimed:
+    case Status::kPostContentFailureRetirementPermitRetired:
       return false;
   }
   return false;
@@ -100,11 +102,36 @@ WasmProfileOrderedDrainLifecycle::Observation::ClaimPostContentDrain() {
                                  std::move(profile_io));
 }
 
+std::optional<
+    WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit>
+WasmProfileOrderedDrainLifecycle::Observation::
+    ClaimPostContentFailureRetirement() {
+  base::AutoLock lock(lock_);
+  if (status_ != Status::kRegisteredProfileIONotClean) {
+    return std::nullopt;
+  }
+
+  ProfileIOQuiesceResult profile_io = BuildProfileIOQuiesceResultLocked();
+  CHECK(!profile_io.Succeeded());
+  CHECK_NE(profile_io.status, ProfileIOQuiesceStatus::kWaiting);
+  status_ = Status::kPostContentFailureRetirementPermitClaimed;
+  return PostContentFailureRetirementPermit(base::WrapRefCounted(this),
+                                             std::move(profile_io));
+}
+
 void WasmProfileOrderedDrainLifecycle::Observation::
     RetirePostContentDrainPermit() {
   base::AutoLock lock(lock_);
   if (status_ == Status::kPostContentDrainPermitClaimed) {
     status_ = Status::kPostContentDrainPermitRetired;
+  }
+}
+
+void WasmProfileOrderedDrainLifecycle::Observation::
+    RetirePostContentFailureRetirementPermit() {
+  base::AutoLock lock(lock_);
+  if (status_ == Status::kPostContentFailureRetirementPermitClaimed) {
+    status_ = Status::kPostContentFailureRetirementPermitRetired;
   }
 }
 
@@ -229,6 +256,50 @@ void WasmProfileOrderedDrainLifecycle::PostContentDrainPermit::Reset() {
   }
   scoped_refptr<Observation> observation = std::move(observation_);
   observation->RetirePostContentDrainPermit();
+}
+
+WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit::
+    PostContentFailureRetirementPermit(scoped_refptr<Observation> observation,
+                                       ProfileIOQuiesceResult profile_io)
+    : observation_(std::move(observation)),
+      profile_io_(std::move(profile_io)) {}
+
+WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit::
+    PostContentFailureRetirementPermit(
+        PostContentFailureRetirementPermit&& other) noexcept = default;
+
+WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit&
+WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit::
+operator=(PostContentFailureRetirementPermit&& other) noexcept {
+  if (this != &other) {
+    Reset();
+    observation_ = std::move(other.observation_);
+    profile_io_ = std::move(other.profile_io_);
+  }
+  return *this;
+}
+
+WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit::
+    ~PostContentFailureRetirementPermit() {
+  Reset();
+}
+
+std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOQuiesceResult>
+WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit::
+    GetProfileIOQuiesceResult() const {
+  if (!observation_) {
+    return std::nullopt;
+  }
+  return profile_io_;
+}
+
+void WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit::
+    Reset() {
+  if (!observation_) {
+    return;
+  }
+  scoped_refptr<Observation> observation = std::move(observation_);
+  observation->RetirePostContentFailureRetirementPermit();
 }
 
 WasmProfileOrderedDrainLifecycle::WasmProfileOrderedDrainLifecycle()

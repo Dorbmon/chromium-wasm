@@ -25,6 +25,7 @@ namespace {
 using Lifecycle = WasmProfileOrderedDrainLifecycle;
 using Observation = Lifecycle::Observation;
 using Permit = Lifecycle::PostContentDrainPermit;
+using FailureRetirementPermit = Lifecycle::PostContentFailureRetirementPermit;
 using ProfileIOCompletion = Lifecycle::ProfileIOCompletion;
 using ProfileIOQuiesceStatus = Lifecycle::ProfileIOQuiesceStatus;
 using Status = Lifecycle::Status;
@@ -86,6 +87,49 @@ TEST(WasmProfileOrderedDrainLifecycleTest,
 }
 
 TEST(WasmProfileOrderedDrainLifecycleTest,
+     FailedEpochIssuesOneTerminalFailureRetirementPermit) {
+  std::unique_ptr<Lifecycle> lifecycle = CreateLifecycle();
+  std::optional<Lifecycle::ProfileIOHold> hold =
+      lifecycle->TryAcquireProfileIO();
+  ASSERT_TRUE(hold.has_value());
+  EXPECT_TRUE(hold->Complete(ProfileIOCompletion::kFailed));
+
+  scoped_refptr<Observation> observation = lifecycle->BeginQuiesce();
+  ASSERT_TRUE(observation);
+  EXPECT_EQ(observation->GetResult().status,
+            Status::kRegisteredProfileIONotClean);
+  EXPECT_FALSE(observation->ClaimPostContentDrain().has_value());
+
+  std::optional<FailureRetirementPermit> permit =
+      observation->ClaimPostContentFailureRetirement();
+  ASSERT_TRUE(permit.has_value());
+  EXPECT_EQ(observation->GetResult().status,
+            Status::kPostContentFailureRetirementPermitClaimed);
+  std::optional<Lifecycle::ProfileIOQuiesceResult> permit_result =
+      permit->GetProfileIOQuiesceResult();
+  ASSERT_TRUE(permit_result.has_value());
+  EXPECT_FALSE(permit_result->Succeeded());
+  EXPECT_EQ(permit_result->status,
+            ProfileIOQuiesceStatus::kRegisteredOperationFailed);
+  EXPECT_FALSE(observation->ClaimPostContentFailureRetirement().has_value());
+
+  permit.reset();
+  EXPECT_EQ(observation->GetResult().status,
+            Status::kPostContentFailureRetirementPermitRetired);
+  EXPECT_FALSE(observation->ClaimPostContentDrain().has_value());
+}
+
+TEST(WasmProfileOrderedDrainLifecycleTest,
+     CleanEpochRejectsFailureRetirementPermit) {
+  std::unique_ptr<Lifecycle> lifecycle = CreateLifecycle();
+  scoped_refptr<Observation> observation = lifecycle->BeginQuiesce();
+  ASSERT_TRUE(observation);
+
+  EXPECT_TRUE(observation->GetResult().ReadyForPostContentDrain());
+  EXPECT_FALSE(observation->ClaimPostContentFailureRetirement().has_value());
+}
+
+TEST(WasmProfileOrderedDrainLifecycleTest,
      HistoricAbandonmentBeforeQuiesceRejectsTheWholeEpoch) {
   std::unique_ptr<Lifecycle> lifecycle = CreateLifecycle();
   std::optional<Lifecycle::ProfileIOHold> hold =
@@ -101,6 +145,18 @@ TEST(WasmProfileOrderedDrainLifecycleTest,
             ProfileIOQuiesceStatus::kRegisteredOperationAbandoned);
   EXPECT_EQ(result.profile_io.abandoned_operations, 1u);
   EXPECT_FALSE(observation->ClaimPostContentDrain().has_value());
+
+  std::optional<FailureRetirementPermit> permit =
+      observation->ClaimPostContentFailureRetirement();
+  ASSERT_TRUE(permit.has_value());
+  std::optional<Lifecycle::ProfileIOQuiesceResult> permit_result =
+      permit->GetProfileIOQuiesceResult();
+  ASSERT_TRUE(permit_result.has_value());
+  EXPECT_EQ(permit_result->status,
+            ProfileIOQuiesceStatus::kRegisteredOperationAbandoned);
+  permit.reset();
+  EXPECT_EQ(observation->GetResult().status,
+            Status::kPostContentFailureRetirementPermitRetired);
 }
 
 TEST(WasmProfileOrderedDrainLifecycleTest,

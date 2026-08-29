@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <cerrno>
 #include <optional>
 #include <stdio.h>
 #include <utility>
@@ -71,6 +72,29 @@ bool IsNormalChromeMainResult(int result) {
   return result == content::RESULT_CODE_NORMAL_EXIT ||
          IsNormalResultCode(static_cast<ResultCode>(result));
 }
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+constexpr char kWasmM7ProfileFailureRetirementMarker[] =
+    "CHROMIUM_WASM_M7_PROFILE_FAILURE_RETIREMENT:SEALED_LEASE_RETAINED";
+
+// The explicit WasmFS failure disposition intentionally returns ESHUTDOWN
+// after local descriptor cleanup. It is neither a clean profile handoff nor a
+// generic failed drain: the backend is sealed and its Web Lock and worker
+// tombstone deliberately remain retained. Keep the browser-test receipt exact
+// so it cannot be emitted for a pre-drain lifecycle refusal or an ordinary
+// post-release retirement error.
+bool IsWasmM7ProfileFailureRetirement(
+    const chrome::WasmProfileStorageDrainResult& result) {
+  return result.error == -ESHUTDOWN && result.libc_flush_failed == 0 &&
+         result.data_flush_failures == 0 && result.data_close_failures == 0 &&
+         result.prior_close_failures == 0 &&
+         result.lease_release_failures == 0 &&
+         result.backend_retire_failures == 0 && result.backend_sealed &&
+         !result.lease_released && !result.backend_retired;
+}
+#endif
 
 #if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
 constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
@@ -284,6 +308,11 @@ extern "C" int ChromeMain(int argc, const char** argv) {
   if (chrome::NeedsWasmProfileStorageBackendDrain()) {
     const chrome::WasmProfileStorageDrainResult drain_result =
         chrome::DrainAndReleaseWasmProfileStorageBackend();
+    if (IsWasmM7ProfileFailureRetirement(drain_result)) {
+      fputs(kWasmM7ProfileFailureRetirementMarker, stderr);
+      fputc('\n', stderr);
+      fflush(stderr);
+    }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
     chrome::NotifyWasmProfilePreferencesSmokeBackendDrain(
         drain_result.Succeeded());

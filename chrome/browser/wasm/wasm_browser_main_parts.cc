@@ -1645,83 +1645,77 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    // The profile and every M7-admitted I/O holder are terminal now. Always
+    // close profile-I/O admission after the Profile is destroyed, including
+    // after a failed operation. This notification publishes a quiescence
+    // observation only; it never acknowledges a clean backend handoff. A
+    // non-clean observation makes the outer ChromeMain seam select WasmFS's
+    // explicit fail-closed retirement rather than the normal lease release.
+    profile_.reset();
+    const bool profile_shutdown_notified =
+        chrome::NotifyWasmProfileStorageProfileShutdown();
+    bool smoke_allows_storage_lifecycle =
+        prefs_shutdown_fence_succeeded && profile_shutdown_notified;
     if (!prefs_shutdown_fence_succeeded) {
-      // ShutdownFoundation intentionally withholds the storage lifecycle
-      // acknowledgement. ChromeMain's scoped backend drain will then
-      // retain the lease and turn this otherwise normal Content result into a
-      // non-normal process exit.
-      LOG(ERROR) << "chrome_wasm will retain its OPFS profile lease after a "
-                    "failed Preferences shutdown write/readback fence";
-    } else {
-      // Complete the Chrome-owned profile handoff before quitting the UI loop.
-      // PostMainMessageLoopRun must never be the first place that releases
-      // this Profile or acknowledges its storage lifecycle: ContentMain's
-      // outer scoped drain follows that hook and needs this ordering.
-      profile_.reset();
-      bool smoke_allows_storage_lifecycle = true;
+      // The failed preference holder is now visible to the outer failure
+      // retirement permit. Do not report a smoke lifecycle success or let a
+      // normal lease-release drain run.
+      LOG(ERROR) << "chrome_wasm will fail-close its OPFS profile backend "
+                    "after a failed Preferences shutdown write/readback "
+                    "fence";
+      smoke_allows_storage_lifecycle = false;
+    }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-      if (chrome::IsWasmProfilePreferencesCookieSmokeEnabled() &&
-          (!chrome::DidWasmProfilePreferencesCookieSmokeSucceed() ||
-           !chrome::DidWasmProfileCookieSmokeSucceed())) {
-        // The CookieManager probe has a real SQLite backend-close fence. Do
-        // not hand V4's lease to its drain unless that callback completed
-        // before this Profile and its StoragePartition were destroyed.
-        chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(false);
-        smoke_allows_storage_lifecycle = false;
-      }
-      if (chrome::IsWasmProfilePreferencesHistorySmokeEnabled() &&
-          !chrome::DidWasmProfilePreferencesHistorySmokeSucceed()) {
-        // This direct, test-only HistoryService is outside WasmProfile's
-        // keyed-service graph. Its backend-destroy callback must have closed
-        // History and Favicons before the V4 lease can be handed off.
-        chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(false);
-        smoke_allows_storage_lifecycle = false;
-      }
+    if (chrome::IsWasmProfilePreferencesCookieSmokeEnabled() &&
+        (!chrome::DidWasmProfilePreferencesCookieSmokeSucceed() ||
+         !chrome::DidWasmProfileCookieSmokeSucceed())) {
+      // The CookieManager probe has a real SQLite backend-close fence. Its
+      // failed hold stays visible to the outer failure-retirement permit.
+      smoke_allows_storage_lifecycle = false;
+    }
+    if (chrome::IsWasmProfilePreferencesHistorySmokeEnabled() &&
+        !chrome::DidWasmProfilePreferencesHistorySmokeSucceed()) {
+      // This direct, test-only HistoryService is outside WasmProfile's
+      // keyed-service graph. Its backend-destroy callback must have closed
+      // History and Favicons before a clean handoff can be considered.
+      smoke_allows_storage_lifecycle = false;
+    }
 #endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
-      if (chrome::IsWasmProfileDatabaseSmokeEnabled() &&
-          !chrome::DidWasmProfileDatabaseSmokeSucceed()) {
-        // A database task failure has already requested normal shutdown, but
-        // must not turn into a storage handoff. Retain the created-but-not-
-        // shutdown lifecycle state so ChromeMain's scoped drain fails closed,
-        // converts the otherwise normal result, and emits no LEASE_RELEASED.
-        chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(false);
-        smoke_allows_storage_lifecycle = false;
-      }
+    if (chrome::IsWasmProfileDatabaseSmokeEnabled() &&
+        !chrome::DidWasmProfileDatabaseSmokeSucceed()) {
+      // A database task failure has already requested normal shutdown. Its
+      // terminal failed hold must select failure retirement, never a clean
+      // handoff or LEASE_RELEASED receipt.
+      smoke_allows_storage_lifecycle = false;
+    }
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-      if (chrome::IsWasmProfileLocalStorageSmokeEnabled() &&
-          !chrome::DidWasmProfileLocalStorageSmokeSucceed()) {
-        // A LocalStorage close result failure must not become a V4 storage
-        // handoff. Retain the lifecycle state so the outer drain fails closed
-        // and cannot emit a lease-success marker.
-        chrome::NotifyWasmProfileLocalStorageSmokeStorageLifecycle(false);
-        smoke_allows_storage_lifecycle = false;
-      }
+    if (chrome::IsWasmProfileLocalStorageSmokeEnabled() &&
+        !chrome::DidWasmProfileLocalStorageSmokeSucceed()) {
+      // A LocalStorage close result failure must select failure retirement;
+      // it cannot become a V4 storage handoff or lease-success marker.
+      smoke_allows_storage_lifecycle = false;
+    }
 #endif
-      if (smoke_allows_storage_lifecycle) {
-        const bool storage_lifecycle_notified =
-            chrome::NotifyWasmProfileStorageProfileShutdown();
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-        chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(
-            storage_lifecycle_notified);
+    chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(
+        smoke_allows_storage_lifecycle);
 #endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
-        chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(
-            storage_lifecycle_notified);
+    chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(
+        smoke_allows_storage_lifecycle);
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-        chrome::NotifyWasmProfileLocalStorageSmokeStorageLifecycle(
-            storage_lifecycle_notified);
+    chrome::NotifyWasmProfileLocalStorageSmokeStorageLifecycle(
+        smoke_allows_storage_lifecycle);
 #endif
-        if (!storage_lifecycle_notified) {
-          // Do not synthesize a clean handoff. The outer scoped drain observes
-          // this missing acknowledgement, retains the lease, and changes the
-          // process result to non-normal.
-          LOG(ERROR) << "chrome_wasm could not complete its profile storage "
-                        "lifecycle";
-        }
-      }
+    if (!profile_shutdown_notified) {
+      // Do not synthesize a clean handoff. The outer scoped drain observes
+      // this missing acknowledgement, retains the lease, and changes the
+      // process result to non-normal.
+      LOG(ERROR) << "chrome_wasm could not complete its profile storage "
+                    "lifecycle";
     }
 #else
     // Normal Chrome's profile path is volatile. The completed fence verifies
@@ -1765,8 +1759,19 @@ void WasmBrowserMainParts::ShutdownFoundation() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-    LOG(ERROR) << "chrome_wasm retains its OPFS profile lease because "
-                  "Preferences did not pass their shutdown fence";
+    // The UI loop is already gone, so this fallback cannot await or certify
+    // the Preferences/smoke lifecycle. Destroy Profile-owned services first,
+    // then publish a quiescence-only failure disposition. ChromeMain will
+    // close private OPFS handles but retain the lease rather than allowing a
+    // clean handoff from a merely terminal registered-I/O result.
+    profile_.reset();
+    if (!chrome::NotifyWasmProfileStorageProfileShutdownFailClosed()) {
+      LOG(ERROR) << "chrome_wasm could not publish its fail-closed profile "
+                    "shutdown; its OPFS profile lease remains retained";
+    } else {
+      LOG(ERROR) << "chrome_wasm will fail-close its incomplete OPFS profile "
+                    "shutdown";
+    }
 #else
     chrome::RecordWasmProfileShutdownFailure();
     LOG(ERROR) << "chrome_wasm releases its incomplete volatile profile "

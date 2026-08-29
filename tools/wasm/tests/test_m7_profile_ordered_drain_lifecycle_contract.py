@@ -164,6 +164,48 @@ class M7ProfileOrderedDrainLifecycleContractTest(unittest.TestCase):
         )
         self.assertIn("observation->RetirePostContentDrainPermit();", reset)
 
+    def test_nonclean_epoch_issues_one_fail_closed_retirement_permit(self) -> None:
+        for token in (
+            "class PostContentFailureRetirementPermit",
+            "ClaimPostContentFailureRetirement()",
+            "kRegisteredProfileIONotClean",
+            "kPostContentFailureRetirementPermitClaimed",
+            "kPostContentFailureRetirementPermitRetired",
+            "RetirePostContentFailureRetirementPermit()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.header + self.implementation)
+
+        claim = _body_after_signature(
+            self.implementation,
+            "Observation::\n    ClaimPostContentFailureRetirement()",
+        )
+        for token in (
+            "if (status_ != Status::kRegisteredProfileIONotClean)",
+            "CHECK(!profile_io.Succeeded());",
+            "CHECK_NE(profile_io.status, ProfileIOQuiesceStatus::kWaiting);",
+            "Status::kPostContentFailureRetirementPermitClaimed",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, claim)
+
+        retire = _body_after_signature(
+            self.implementation, "RetirePostContentFailureRetirementPermit()"
+        )
+        self.assertIn(
+            "Status::kPostContentFailureRetirementPermitClaimed", retire
+        )
+        self.assertIn(
+            "Status::kPostContentFailureRetirementPermitRetired", retire
+        )
+
+        reset = _body_after_signature(
+            self.implementation, "PostContentFailureRetirementPermit::\n    Reset()"
+        )
+        self.assertIn(
+            "observation->RetirePostContentFailureRetirementPermit();", reset
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

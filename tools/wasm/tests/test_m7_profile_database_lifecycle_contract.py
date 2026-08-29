@@ -106,11 +106,13 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
                 'import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")',
                 build,
             )
-            self.assertIn(
-                "!enable_chromium_wasm_m7_profile_preferences_test", build
+            self.assertRegex(
+                build,
+                r"!\(enable_chromium_wasm_m7_profile_database_test\s*&&\s*"
+                r"enable_chromium_wasm_m7_profile_preferences_test\)",
             )
             self.assertIn(
-                "M7 database and Preferences acceptances require separate fresh output configurations",
+                "M7 persistence acceptances require separate fresh output configurations",
                 build,
             )
 
@@ -233,7 +235,7 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
         storage_notify = finish.index("chrome::NotifyWasmProfileStorageProfileShutdown();")
         lifecycle_marker = finish.index(
             "chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(\n"
-            "            storage_lifecycle_notified);"
+            "        smoke_allows_storage_lifecycle);"
         )
         self.assertLess(fence_begin, fence_marker)
         self.assertLess(fence_marker, fence_reentry)
@@ -251,19 +253,25 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
         self.assertLess(drain, drain_marker)
         self.assertLess(drain_marker, process_exit)
 
-    def test_database_failure_withholds_lifecycle_and_converts_normal_result(self) -> None:
+    def test_database_failure_publishes_terminal_shutdown_then_fails_closed(self) -> None:
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
         )
         failed = finish.index("!chrome::DidWasmProfileDatabaseSmokeSucceed()")
-        withheld = finish.index(
-            "chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(false);"
+        storage_notify = finish.index(
+            "chrome::NotifyWasmProfileStorageProfileShutdown();"
         )
-        storage_notify = finish.index("chrome::NotifyWasmProfileStorageProfileShutdown();")
-        self.assertLess(failed, withheld)
-        self.assertLess(withheld, storage_notify)
-        self.assertIn("created-but-not-\n        // shutdown lifecycle state", finish)
-        self.assertIn("emits no LEASE_RELEASED", finish)
+        lifecycle_marker = finish.index(
+            "chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(\n"
+            "        smoke_allows_storage_lifecycle);"
+        )
+        profile_reset = finish.index("profile_.reset();")
+        self.assertLess(profile_reset, storage_notify)
+        self.assertLess(storage_notify, failed)
+        self.assertLess(failed, lifecycle_marker)
+        self.assertLess(storage_notify, lifecycle_marker)
+        self.assertIn("terminal failed hold must select failure retirement", finish)
+        self.assertIn("handoff or LEASE_RELEASED receipt", finish)
 
         self.assertIn("if (!drain_result.Succeeded())", self.chrome_main)
         self.assertIn(

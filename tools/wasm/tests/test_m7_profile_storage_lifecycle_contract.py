@@ -344,17 +344,16 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "profile_io_lifecycle_->TryAcquireProfileIO()",
             "profile_io_lifecycle_->BeginQuiesce()",
             "profile_io_observation_->ClaimPostContentDrain()",
+            "profile_io_observation_->ClaimPostContentFailureRetirement()",
             "profile_io_drain_permit->GetProfileIOQuiesceResult()",
             "profile_io_quiesce_result->admitted_operations == 0",
-            "!profile_io_quiesce_result->Succeeded()",
+            "const bool clean_profile_io = profile_io_drain_permit.has_value();",
+            "profile_io_quiesce_result->Succeeded() != clean_profile_io",
+            "wasmfs_fail_closed_opfs_profile_backend(backend, &wasmfs_result)",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, self.storage)
-        self.assertIn(
-            "WasmProfileOrderedDrainLifecycle::Status::\n"
-            "                          kWaitingForRegisteredProfileIO",
-            self.storage,
-        )
+        self.assertIn("kWaitingForRegisteredProfileIO", self.storage)
         self.assertIn(
             "if (emscripten_is_main_browser_thread() ||\n"
             "          emscripten_is_main_runtime_thread()) {\n"
@@ -365,7 +364,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertLess(
             self.storage.index("backend_drain_attempted_ = true;"),
             self.storage.index(
-                "WasmProfileStorageDrainResult result = DrainBackend(backend);"
+                "const bool fail_closed_retirement =\n"
+                "        force_fail_closed || profile_io_failure_retirement_permit.has_value();"
             ),
         )
         self.assertIn(
@@ -375,6 +375,97 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "    return backend_drain_result_;",
             self.storage,
         )
+
+    def test_foundation_fallback_never_converts_an_uncertified_epoch_to_handoff(
+        self,
+    ) -> None:
+        for token in (
+            "enum class ProfileShutdownDisposition",
+            "kCleanHandoff",
+            "kFailClosed",
+            "bool NotifyProfileShutdown(ProfileShutdownDisposition disposition)",
+            "bool NotifyWasmProfileStorageProfileShutdownFailClosed()",
+            "force_fail_closed_",
+            "if (!force_fail_closed_ &&\n"
+            "            profile_io_quiesce_result->admitted_operations == 0)",
+            "const bool fail_closed_retirement =\n"
+            "        force_fail_closed || profile_io_failure_retirement_permit.has_value();",
+            "fail_closed_retirement\n"
+            "            ? FailClosedRetireBackend(backend)\n"
+            "            : DrainBackend(backend);",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.storage)
+
+        foundation = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::ShutdownFoundation()"
+        )
+        profile_shutdown = foundation.index("profile_->Shutdown();")
+        profile_reset = foundation.index("profile_.reset();")
+        fail_closed_notify = foundation.index(
+            "chrome::NotifyWasmProfileStorageProfileShutdownFailClosed()"
+        )
+        self.assertLess(profile_shutdown, profile_reset)
+        self.assertLess(profile_reset, fail_closed_notify)
+        self.assertIn("clean handoff from a merely terminal", foundation)
+
+    def test_nonclean_profile_io_uses_failure_retirement_not_clean_handoff(
+        self,
+    ) -> None:
+        storage_drain = _body_after_signature(
+            self.storage, "WasmProfileStorageDrainResult DrainAndReleaseBackend()"
+        )
+        for token in (
+            "WasmProfileOrderedDrainLifecycle::PostContentFailureRetirementPermit",
+            "Status::\n              kRegisteredProfileIONotClean:",
+            "profile_io_observation_->ClaimPostContentFailureRetirement()",
+            "profile_io_failure_retirement_permit\n                      ->GetProfileIOQuiesceResult()",
+            "const bool clean_profile_io = profile_io_drain_permit.has_value();",
+            "profile_io_quiesce_result->Succeeded() != clean_profile_io",
+            "const bool fail_closed_retirement =\n"
+            "        force_fail_closed || profile_io_failure_retirement_permit.has_value();",
+            "fail_closed_retirement\n"
+            "            ? FailClosedRetireBackend(backend)\n"
+            "            : DrainBackend(backend);",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, storage_drain)
+
+        clean_claim = storage_drain.index(
+            "profile_io_observation_->ClaimPostContentDrain()"
+        )
+        failure_claim = storage_drain.index(
+            "profile_io_observation_->ClaimPostContentFailureRetirement()"
+        )
+        quiesce_validation = storage_drain.index(
+            "profile_io_quiesce_result->Succeeded() != clean_profile_io"
+        )
+        attempt = storage_drain.index("backend_drain_attempted_ = true;")
+        dispatch = storage_drain.index("? FailClosedRetireBackend(backend)")
+        self.assertLess(clean_claim, quiesce_validation)
+        self.assertLess(failure_claim, quiesce_validation)
+        self.assertLess(quiesce_validation, attempt)
+        self.assertLess(attempt, dispatch)
+
+        normal_drain = _body_after_signature(
+            self.storage,
+            "static WasmProfileStorageDrainResult DrainBackend(backend_t backend)",
+        )
+        self.assertIn(
+            "wasmfs_drain_opfs_profile_backend(backend, &wasmfs_result)",
+            normal_drain,
+        )
+        self.assertNotIn("wasmfs_fail_closed_opfs_profile_backend", normal_drain)
+
+        failure_retirement = _body_after_signature(
+            self.storage,
+            "static WasmProfileStorageDrainResult FailClosedRetireBackend(",
+        )
+        self.assertIn(
+            "wasmfs_fail_closed_opfs_profile_backend(backend, &wasmfs_result)",
+            failure_retirement,
+        )
+        self.assertNotIn("wasmfs_drain_opfs_profile_backend", failure_retirement)
 
     def test_known_test_profile_operations_must_quiesce_before_backend_drain(
         self,
@@ -390,7 +481,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
 
         storage_shutdown = _body_after_signature(
-            self.storage, "bool NotifyProfileShutdown()"
+            self.storage,
+            "bool NotifyProfileShutdown(ProfileShutdownDisposition disposition)",
         )
         self.assertIn("if (profile_created_)", storage_shutdown)
         self.assertIn("profile_io_lifecycle_->BeginQuiesce()", storage_shutdown)
@@ -412,7 +504,16 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         self.assertLess(
             storage_drain.index("profile_io_drain_permit"),
-            storage_drain.index("WasmProfileStorageDrainResult result = DrainBackend(backend);"),
+            storage_drain.index(
+                "const bool fail_closed_retirement =\n"
+                "        force_fail_closed || profile_io_failure_retirement_permit.has_value();"
+            ),
+        )
+        self.assertLess(
+            storage_drain.index(
+                "profile_io_observation_->ClaimPostContentFailureRetirement()"
+            ),
+            storage_drain.index("? FailClosedRetireBackend(backend)"),
         )
 
         profile = source("chrome/browser/wasm/wasm_profile.cc")
@@ -507,6 +608,50 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertLess(
             self.chrome_main.index("chromium_wasm_report_process_exit(exit_code)"),
             self.chrome_main.index("fputs(\"CHROMIUM_WASM: host rejected"),
+        )
+
+    def test_failure_retirement_receipt_is_exact_and_never_a_handoff(self) -> None:
+        for token in (
+            "#include <cerrno>",
+            "CHROMIUM_WASM_M7_PROFILE_FAILURE_RETIREMENT:SEALED_LEASE_RETAINED",
+            "bool IsWasmM7ProfileFailureRetirement(",
+            "result.error == -ESHUTDOWN",
+            "result.libc_flush_failed == 0",
+            "result.data_flush_failures == 0",
+            "result.data_close_failures == 0",
+            "result.prior_close_failures == 0",
+            "result.lease_release_failures == 0",
+            "result.backend_retire_failures == 0",
+            "result.backend_sealed",
+            "!result.lease_released",
+            "!result.backend_retired",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.chrome_main)
+
+        marker = self.chrome_main.index(
+            "CHROMIUM_WASM_M7_PROFILE_FAILURE_RETIREMENT:SEALED_LEASE_RETAINED"
+        )
+        marker_emit = self.chrome_main.index(
+            "if (IsWasmM7ProfileFailureRetirement(drain_result))"
+        )
+        backend_drain = self.chrome_main.index(
+            "chrome::DrainAndReleaseWasmProfileStorageBackend()"
+        )
+        backend_receipt = self.chrome_main.index(
+            "chrome::NotifyWasmProfilePreferencesSmokeBackendDrain("
+        )
+        process_exit = self.chrome_main.index(
+            "chromium_wasm_report_process_exit(exit_code)"
+        )
+        self.assertLess(marker, marker_emit)
+        self.assertLess(backend_drain, marker_emit)
+        self.assertLess(marker_emit, backend_receipt)
+        self.assertLess(marker_emit, process_exit)
+        _assert_only_in_m7_storage_blocks(
+            self,
+            self.chrome_main,
+            "IsWasmM7ProfileFailureRetirement",
         )
 
     def test_dedicated_artifacts_reject_unowned_profile_startup_before_mount(
