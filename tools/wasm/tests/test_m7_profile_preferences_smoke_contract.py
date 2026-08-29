@@ -79,6 +79,39 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "chrome/browser/wasm/wasm_profile_preferences_smoke.cc"
         )
         self.history = source("chrome/browser/wasm/wasm_profile_history_smoke.cc")
+        self.cookie = source("chrome/browser/wasm/wasm_profile_cookie_smoke.cc")
+        self.cookie_header = source(
+            "chrome/browser/wasm/wasm_profile_cookie_smoke.h"
+        )
+        self.content_client = source(
+            "chrome/browser/wasm/wasm_content_browser_client.cc"
+        )
+        self.sqlite_backend = source(
+            "net/extras/sqlite/sqlite_persistent_store_backend_base.cc"
+        )
+        self.sqlite_backend_header = source(
+            "net/extras/sqlite/sqlite_persistent_store_backend_base.h"
+        )
+        self.sqlite_cookie_store = source(
+            "net/extras/sqlite/sqlite_persistent_cookie_store.cc"
+        )
+        self.sqlite_cookie_store_header = source(
+            "net/extras/sqlite/sqlite_persistent_cookie_store.h"
+        )
+        self.session_cookie_store = source(
+            "services/network/session_cleanup_cookie_store.cc"
+        )
+        self.session_cookie_store_header = source(
+            "services/network/session_cleanup_cookie_store.h"
+        )
+        self.cookie_manager = source("services/network/cookie_manager.cc")
+        self.cookie_manager_header = source("services/network/cookie_manager.h")
+        self.cookie_manager_mojom = source(
+            "services/network/public/mojom/cookie_manager.mojom"
+        )
+        self.test_cookie_manager = source(
+            "services/network/test/test_cookie_manager.h"
+        )
         self.profile = source("chrome/browser/wasm/wasm_profile.cc")
         self.main_parts = source(
             "chrome/browser/wasm/wasm_browser_main_parts.cc"
@@ -97,6 +130,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             'constexpr char kTokenBSwitch[] = "wasm-profile-preferences-token-b";',
             '"wasm-profile-preferences-browser-smoke"',
             '"wasm-profile-preferences-history-smoke"',
+            '"wasm-profile-preferences-cookie-smoke"',
             'constexpr char kWriteMode[] = "write";',
             'constexpr char kVerifyAndWriteMode[] = "verify-and-write";',
             'constexpr char kVerifyBMode[] = "verify-b";',
@@ -122,7 +156,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertIn("if (has_token_a || !has_token_b)", self.smoke)
         self.assertIn("where |digest| is exactly 64 lowercase hexadecimal", self.header)
         self.assertIn(
-            "arguments, capability, storage, profile, browser, history,",
+            "arguments, capability, storage, profile, browser, cookie,",
             self.header,
         )
 
@@ -256,6 +290,15 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertIn(
             "history_smoke_required_ && !history_smoke_completed_", fence
         )
+        cookie = _body_after_signature(
+            self.smoke, "void NotifyCookieSmokeResult(bool success)"
+        )
+        self.assertIn("cookie_smoke_required_", cookie)
+        self.assertIn("!browser_smoke_completed_", cookie)
+        self.assertIn("cookie_smoke_completed_ = true;", cookie)
+        self.assertIn(
+            "cookie_smoke_required_ && !cookie_smoke_completed_", fence
+        )
 
     def test_history_service_probe_is_direct_and_closed_before_storage_handoff(self) -> None:
         for token in (
@@ -340,6 +383,105 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         )
         self.assertLess(history_guard, storage_handoff)
 
+    def test_cookie_manager_probe_closes_its_sqlite_backend_before_handoff(self) -> None:
+        for token in (
+            "GetDefaultStoragePartition()",
+            "GetCookieManagerForBrowserProcess()",
+            "GetCookieList(",
+            "SetCanonicalCookie(",
+            "DeleteCanonicalCookie(",
+            "FlushCookieStore(",
+            "CloseCookieStoreForTesting(",
+            "net::CanonicalCookie::Create(",
+            '"COOKIE_A_WRITE_FLUSHED"',
+            '"COOKIE_A_READ_OK"',
+            '"COOKIE_B_WRITE_FLUSHED"',
+            '"COOKIE_B_READ_OK"',
+            "COOKIE_BACKEND_CLOSED",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.cookie)
+
+        for sensitive in (
+            "input_.token_a.c_str()",
+            "input_.token_b.c_str()",
+            "expected_value.c_str()",
+            "kCookieUrl);",
+        ):
+            with self.subTest(sensitive=sensitive):
+                self.assertNotIn(sensitive, self.cookie)
+
+        close = _body_after_signature(self.cookie, "void CloseAndFinish()")
+        closed = _body_after_signature(self.cookie, "void OnBackendClosed(bool success)")
+        self.assertIn("CloseCookieStoreForTesting", close)
+        self.assertIn('"%sCOOKIE_BACKEND_CLOSED\\n"', closed)
+        self.assertLess(closed.index("COOKIE_BACKEND_CLOSED"), closed.index("Finish(true)"))
+        self.assertIn("DeleteAndFlush(*expected_cookie);", self.cookie)
+
+        # Normal Wasm Chrome remains deliberately volatile. This source-selected
+        # artifact configures only the default in-memory partition's cookie file.
+        self.assertIn(
+            "IsWasmProfilePreferencesCookieSmokeEnabled()", self.content_client
+        )
+        self.assertIn("!in_memory || !relative_partition_path.empty()", self.content_client)
+        self.assertIn("profile_path.AppendASCII(kWasmNetworkDataDirectory)", self.content_client)
+        self.assertIn('FILE_PATH_LITERAL("Cookies")', self.content_client)
+        self.assertIn("enable_encrypted_cookies = false;", self.content_client)
+        self.assertIn("http_cache_enabled = false;", self.content_client)
+        self.assertIn("restore_old_session_cookies = false;", self.content_client)
+        self.assertIn("persist_session_cookies = false;", self.content_client)
+        profile_policy = _body_after_signature(
+            self.profile, "bool WasmProfile::ShouldUseInMemoryDefaultStoragePartition()"
+        )
+        self.assertIn("return true;", profile_policy)
+
+        # The close acknowledgement crosses the real cookie stack and is
+        # delivered only after the SQLite database is reset on its background
+        # runner. A false result is explicit for an in-memory/test stub path.
+        self.assertIn("void Close(base::OnceClosure callback);", self.sqlite_backend_header)
+        self.assertIn("CloseAndNotifyInBackground", self.sqlite_backend_header)
+        backend_close = _body_after_signature(
+            self.sqlite_backend,
+            "void SQLitePersistentStoreBackendBase::Close(base::OnceClosure callback)",
+        )
+        self.assertIn("CloseAndNotifyInBackground", backend_close)
+        backend_notify = _body_after_signature(
+            self.sqlite_backend,
+            "void SQLitePersistentStoreBackendBase::CloseAndNotifyInBackground(",
+        )
+        self.assertLess(backend_notify.index("DoCloseInBackground();"), backend_notify.index("PostClientTask"))
+        self.assertIn("CloseForTesting(base::OnceClosure callback)", self.sqlite_cookie_store_header)
+        self.assertIn("backend_->Close(std::move(callback));", self.sqlite_cookie_store)
+        self.assertIn("ClosePersistentStoreForTesting", self.session_cookie_store_header)
+        self.assertIn("persistent_store_->CloseForTesting", self.session_cookie_store)
+        self.assertIn("CloseCookieStoreForTesting() => (bool success);", self.cookie_manager_mojom)
+        self.assertIn(
+            "[AllowedContext=sandbox.mojom.Context.kBrowser]", self.cookie_manager_mojom
+        )
+        self.assertIn("CloseCookieStoreForTestingCallback callback", self.cookie_manager_header)
+        self.assertIn("ClosePersistentStoreForTesting", self.cookie_manager)
+        self.assertIn("std::move(callback).Run(false);", self.test_cookie_manager)
+
+        start_cookie = _body_after_signature(
+            self.main_parts,
+            "void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown()",
+        )
+        self.assertIn("TakeWasmProfilePreferencesCookieSmokeInput", start_cookie)
+        self.assertIn("TryAcquireWasmProfileStorageProfileIO", start_cookie)
+        self.assertIn("StartWasmProfileCookieSmoke", start_cookie)
+        self.assertIn("StartWasmProfileHistorySmokeOrShutdown", start_cookie)
+        cookie_complete = start_cookie.index("(*profile_io_hold)->Complete(")
+        history_after_cookie = start_cookie.index(
+            "StartWasmProfileHistorySmokeOrShutdown", cookie_complete
+        )
+        self.assertLess(cookie_complete, history_after_cookie)
+        finish = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
+        )
+        cookie_guard = finish.index("IsWasmProfilePreferencesCookieSmokeEnabled()")
+        storage_handoff = finish.index("NotifyWasmProfileStorageProfileShutdown();")
+        self.assertLess(cookie_guard, storage_handoff)
+
     def test_test_pref_is_capability_gated_before_prefservice_construction(self) -> None:
         register = _body_after_signature(
             self.smoke,
@@ -404,10 +546,12 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         browser_complete = browser_branch.index(
             "chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(true);"
         )
-        browser_shutdown = browser_branch.index("RequestShutdown();")
+        browser_cookie_or_history = browser_branch.index(
+            "StartWasmProfileCookieSmokeOrHistoryOrShutdown();"
+        )
         self.assertLess(browser_run, browser_failure)
         self.assertLess(browser_failure, browser_complete)
-        self.assertLess(browser_complete, browser_shutdown)
+        self.assertLess(browser_complete, browser_cookie_or_history)
 
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"

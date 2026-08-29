@@ -5,6 +5,9 @@
 #ifndef CHROME_BROWSER_WASM_WASM_PROFILE_PREFERENCES_SMOKE_H_
 #define CHROME_BROWSER_WASM_WASM_PROFILE_PREFERENCES_SMOKE_H_
 
+#include <optional>
+#include <string>
+
 namespace user_prefs {
 class PrefRegistrySyncable;
 }
@@ -12,6 +15,23 @@ class PrefRegistrySyncable;
 class PrefService;
 
 namespace chrome {
+
+// The raw token bundle is transferred exactly once from the Preferences
+// protocol to the optional CookieManager probe after the bounded Browser
+// lifecycle. Its fields must never be placed in a marker or diagnostic.
+struct WasmProfilePreferencesCookieSmokeInput {
+  enum class Mode {
+    kWrite,
+    kVerifyAndWrite,
+    kVerifyB,
+  };
+
+  Mode mode = Mode::kWrite;
+  std::string token_a;
+  std::string token_b;
+  std::string token_a_digest;
+  std::string token_b_digest;
+};
 
 // Fixed, test-only protocol for the three-fresh-module Preferences acceptance.
 //
@@ -22,25 +42,28 @@ namespace chrome {
 //   --wasm-profile-preferences-token-a=<64 lowercase hex>
 //   [--wasm-profile-preferences-browser-smoke]
 //   [--wasm-profile-preferences-history-smoke]
+//   [--wasm-profile-preferences-cookie-smoke]
 //
 //   --wasm-profile-preferences-smoke=verify-and-write
 //   --wasm-profile-preferences-token-a=<64 lowercase hex>
 //   --wasm-profile-preferences-token-b=<64 lowercase hex>
 //   [--wasm-profile-preferences-browser-smoke]
 //   [--wasm-profile-preferences-history-smoke]
+//   [--wasm-profile-preferences-cookie-smoke]
 //
 //   --wasm-profile-preferences-smoke=verify-b
 //   --wasm-profile-preferences-token-b=<64 lowercase hex>
 //   [--wasm-profile-preferences-browser-smoke]
 //   [--wasm-profile-preferences-history-smoke]
+//   [--wasm-profile-preferences-cookie-smoke]
 //
 // In verify-and-write mode token B must differ from token A.
 //
 // The raw tokens are written through PrefService but never leave this process
 // in a marker or diagnostic. The host may consume only the following stderr
 // grammar, where |digest| is exactly 64 lowercase hexadecimal characters and
-// |stage| is one of arguments, capability, storage, profile, browser, history,
-// read, fence, lifecycle, content, or drain:
+// |stage| is one of arguments, capability, storage, profile, browser, cookie,
+// history, read, fence, lifecycle, content, or drain:
 //
 //   CHROMIUM_WASM_M7_PREFS:READY
 //   CHROMIUM_WASM_M7_PREFS:READ_A_OK sha256=<64 lowercase hex>
@@ -52,6 +75,11 @@ namespace chrome {
 //   CHROMIUM_WASM_M7_PREFS:HISTORY_B_WRITE_ACCEPTED
 //   CHROMIUM_WASM_M7_PREFS:HISTORY_B_READ_OK
 //   CHROMIUM_WASM_M7_PREFS:HISTORY_BACKEND_CLOSED
+//   CHROMIUM_WASM_M7_PREFS:COOKIE_A_WRITE_FLUSHED sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:COOKIE_A_READ_OK sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:COOKIE_B_WRITE_FLUSHED sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:COOKIE_B_READ_OK sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:COOKIE_BACKEND_CLOSED
 //   CHROMIUM_WASM_M7_PREFS:FENCE_OK sha256=<64 lowercase hex>
 //   CHROMIUM_WASM_M7_PREFS:LEASE_RELEASED
 //   CHROMIUM_WASM_M7_PREFS:FAIL stage=<fixed lowercase stage>
@@ -74,6 +102,16 @@ namespace chrome {
 // before the Preferences fence. This is a test-only core-service witness, not
 // a claim that desktop navigation, History UI, bookmarks, or every normal
 // profile store has been made persistent.
+
+// The bare Cookie switch also requires the Browser switch. It enables only the
+// default in-memory StoragePartition's CookieManager to select a persistent
+// Cookie database under the V4-mounted Default profile. All other
+// StoragePartition stores remain in memory. The probe writes or reads one
+// persistent HttpOnly cookie, validates it through CookieManager, then waits
+// for FlushCookieStore and the dedicated test-only SQLite backend-close fence
+// before profile shutdown. It is deliberately an unencrypted, test-only
+// persistence witness: it does not claim persistent session cookies, HTTP
+// cache, DOM storage, service workers, or general profile-service coverage.
 //
 // A History database-open failure or query-validation failure additionally
 // emits the fixed, redacted HISTORY_DATABASE_PROFILE_ERROR or
@@ -105,6 +143,17 @@ bool IsWasmProfilePreferencesBrowserSmokeEnabled();
 // only together with the bounded Browser lifecycle switch.
 bool IsWasmProfilePreferencesHistorySmokeEnabled();
 
+// Whether this validated Preferences test run must complete the test-only
+// CookieManager write/read, FlushCookieStore, and SQLite backend-close witness.
+// It is valid only together with the bounded Browser lifecycle switch.
+bool IsWasmProfilePreferencesCookieSmokeEnabled();
+
+// Transfers the opaque raw inputs to the optional CookieManager probe exactly
+// once after Preferences has used them. Returning no value is a fixed
+// capability failure. No caller may log the returned values.
+std::optional<WasmProfilePreferencesCookieSmokeInput>
+TakeWasmProfilePreferencesCookieSmokeInput();
+
 // Registers the one dedicated non-default user preference only while this
 // test capability is enabled. This must run before PrefService construction.
 void RegisterWasmProfilePreferencesSmokePref(
@@ -129,6 +178,17 @@ void NotifyWasmProfilePreferencesHistorySmokeResult(bool success);
 // True only when the optional HistoryService probe closed successfully.
 bool DidWasmProfilePreferencesHistorySmokeSucceed();
 
+// Records the terminal result from the test-only CookieManager probe. The
+// probe itself emits the redacted fixed/digest cookie markers after its local
+// validation, FlushCookieStore callback, and backend-close fence. A failed
+// path reports the redacted cookie failure stage.
+void NotifyWasmProfilePreferencesCookieSmokeResult(bool success);
+
+// True only when the optional CookieManager probe completed its local
+// validation, FlushCookieStore callback, and SQLite backend-close callback
+// successfully.
+bool DidWasmProfilePreferencesCookieSmokeSucceed();
+
 // These result-bearing lifecycle notifications complete the fixed marker
 // sequence. Callers supply only fixed booleans, never an underlying error or
 // token, so the smoke cannot expose Preferences content through diagnostics.
@@ -144,6 +204,7 @@ enum class WasmProfilePreferencesSmokeFailureStage {
   kStorage,
   kProfile,
   kBrowser,
+  kCookie,
   kHistory,
   kRead,
   kFence,

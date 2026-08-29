@@ -290,6 +290,7 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
             smoke.DEFAULT_OUT_DIR, Path("out/wasm-chrome-m7-profile-preferences")
         )
         self.assertIn("orderly-reload-only", smoke.SCOPE)
+        self.assertIn("cookie-manager", smoke.SCOPE)
         self.assertNotIn("recovery", smoke.SCOPE)
         self.assertEqual(smoke.ARTIFACT_SOURCE_PROVENANCE, "unverified")
 
@@ -390,6 +391,62 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
                         result_token=RESULT_CAPABILITY,
                         session=SESSION_CAPABILITY,
                     )
+
+    def test_rejects_missing_or_reordered_cookie_markers(self) -> None:
+        escrow = smoke.new_token_escrow()
+        expected_documents = {
+            1: smoke.DocumentEvidence("navigate", 100.0),
+            2: smoke.DocumentEvidence("reload", 101.0),
+            3: smoke.DocumentEvidence("reload", 102.0),
+        }
+        marker_names = {
+            1: ("COOKIE_A_WRITE_FLUSHED", "COOKIE_BACKEND_CLOSED"),
+            2: (
+                "COOKIE_A_READ_OK",
+                "COOKIE_B_WRITE_FLUSHED",
+                "COOKIE_BACKEND_CLOSED",
+            ),
+            3: ("COOKIE_B_READ_OK", "COOKIE_BACKEND_CLOSED"),
+        }
+        for ordinal, names in marker_names.items():
+            for marker_name in names:
+                for mutation in ("missing", "reordered"):
+                    with self.subTest(
+                        ordinal=ordinal, marker_name=marker_name, mutation=mutation
+                    ):
+                        receipt = passing_result(ordinal, escrow, 99.0 + ordinal)
+                        run = receipt["run"]
+                        markers = list(run["markers"])
+                        marker_prefix = f"{smoke.M7_MARKER_PREFIX}{marker_name}"
+                        marker_index = next(
+                            index
+                            for index, marker in enumerate(markers)
+                            if marker == marker_prefix
+                            or marker.startswith(f"{marker_prefix} sha256=")
+                        )
+                        if mutation == "missing":
+                            markers.pop(marker_index)
+                        else:
+                            markers[marker_index], markers[marker_index + 1] = (
+                                markers[marker_index + 1],
+                                markers[marker_index],
+                            )
+                        run["markers"] = markers
+                        run["stderr"] = markers
+                        run["markerCount"] = len(markers)
+                        with self.assertRaises(M0Error):
+                            smoke.validate_phase_result(
+                                receipt,
+                                ordinal=ordinal,
+                                expected_versions=VERSIONS,
+                                expected_artifact_identity=ARTIFACT_IDENTITY,
+                                expected_capture_harness_identity=CAPTURE_HARNESS_IDENTITY,
+                                expected_origin=ORIGIN,
+                                expected_document=expected_documents[ordinal],
+                                escrow=escrow,
+                                result_token=RESULT_CAPABILITY,
+                                session=SESSION_CAPABILITY,
+                            )
 
     def test_rejects_boolean_redaction_count_and_open_output_grammar(self) -> None:
         escrow = smoke.new_token_escrow()
@@ -843,9 +900,23 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
         diagnostic = json.loads(contents)
         self.assertIn("not_m7_gate_complete", diagnostic["nonclaims"])
         self.assertIn("not_crash_recovery", diagnostic["nonclaims"])
+        self.assertIn(
+            "not_general_http_cookie_or_encrypted_session_cookie_coverage",
+            diagnostic["nonclaims"],
+        )
+        self.assertIn(
+            "not_full_cookie_service_or_profile_persistence_coverage",
+            diagnostic["nonclaims"],
+        )
         source = Path(smoke.__file__).read_text(encoding="utf-8")
         self.assertTrue("\"m7GateComplete\": False" in source,
                         "success sentinel lacks nonclaim")
+        self.assertTrue(
+            "\"cookieManagerFlushReopenAndBackendClose\": True" in source
+        )
+        self.assertTrue(
+            "\"cookieManagerFullServicePersistenceProven\": False" in source
+        )
 
 
 if __name__ == "__main__":

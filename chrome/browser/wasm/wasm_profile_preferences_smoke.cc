@@ -31,6 +31,8 @@ constexpr char kBrowserSmokeSwitch[] =
     "wasm-profile-preferences-browser-smoke";
 constexpr char kHistorySmokeSwitch[] =
     "wasm-profile-preferences-history-smoke";
+constexpr char kCookieSmokeSwitch[] =
+    "wasm-profile-preferences-cookie-smoke";
 constexpr char kWriteMode[] = "write";
 constexpr char kVerifyAndWriteMode[] = "verify-and-write";
 constexpr char kVerifyBMode[] = "verify-b";
@@ -70,6 +72,8 @@ class WasmProfilePreferencesSmokeState {
         command_line->HasSwitch(kBrowserSmokeSwitch);
     const bool has_history_smoke =
         command_line->HasSwitch(kHistorySmokeSwitch);
+    const bool has_cookie_smoke =
+        command_line->HasSwitch(kCookieSmokeSwitch);
     if (!has_mode) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
@@ -82,6 +86,12 @@ class WasmProfilePreferencesSmokeState {
     if (has_history_smoke &&
         (!has_browser_smoke ||
          !command_line->GetSwitchValueASCII(kHistorySmokeSwitch).empty())) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+      return false;
+    }
+    if (has_cookie_smoke &&
+        (!has_browser_smoke ||
+         !command_line->GetSwitchValueASCII(kCookieSmokeSwitch).empty())) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
     }
@@ -135,6 +145,7 @@ class WasmProfilePreferencesSmokeState {
     }
     browser_smoke_required_ = has_browser_smoke;
     history_smoke_required_ = has_history_smoke;
+    cookie_smoke_required_ = has_cookie_smoke;
     enabled_ = true;
     return true;
   }
@@ -147,6 +158,10 @@ class WasmProfilePreferencesSmokeState {
 
   bool history_smoke_required() const {
     return enabled_ && history_smoke_required_;
+  }
+
+  bool cookie_smoke_required() const {
+    return enabled_ && cookie_smoke_required_;
   }
 
   bool Start(PrefService* prefs) {
@@ -187,9 +202,46 @@ class WasmProfilePreferencesSmokeState {
     }
 
     // The pref store now owns the raw value. Retain only its digest for the
-    // asynchronous fence marker; no later diagnostic needs the token itself.
-    ClearRawTokens();
+    // asynchronous fence marker unless the separately opt-in CookieManager
+    // probe must take the same opaque inputs after the Browser lifecycle.
+    if (!cookie_smoke_required_) {
+      ClearRawTokens();
+    }
     return true;
+  }
+
+  std::optional<WasmProfilePreferencesCookieSmokeInput>
+  TakeCookieSmokeInput() {
+    if (!enabled_ || failure_reported_ || !started_ ||
+        !cookie_smoke_required_ || cookie_smoke_input_taken_ ||
+        !browser_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCapability);
+      return std::nullopt;
+    }
+
+    cookie_smoke_input_taken_ = true;
+    WasmProfilePreferencesCookieSmokeInput input;
+    switch (mode_) {
+      case SmokeMode::kWrite:
+        input.mode = WasmProfilePreferencesCookieSmokeInput::Mode::kWrite;
+        break;
+      case SmokeMode::kVerifyAndWrite:
+        input.mode =
+            WasmProfilePreferencesCookieSmokeInput::Mode::kVerifyAndWrite;
+        break;
+      case SmokeMode::kVerifyB:
+        input.mode = WasmProfilePreferencesCookieSmokeInput::Mode::kVerifyB;
+        break;
+      case SmokeMode::kNone:
+        ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCapability);
+        return std::nullopt;
+    }
+    input.token_a = std::move(token_a_);
+    input.token_b = std::move(token_b_);
+    input.token_a_digest = token_a_digest_;
+    input.token_b_digest = token_b_digest_;
+    ClearRawTokens();
+    return input;
   }
 
   void NotifyBrowserSmokeResult(bool success) {
@@ -210,7 +262,9 @@ class WasmProfilePreferencesSmokeState {
       return;
     }
     if (!success || !started_ || !history_smoke_required_ ||
-        !browser_smoke_completed_ || history_smoke_completed_) {
+        !browser_smoke_completed_ ||
+        (cookie_smoke_required_ && !cookie_smoke_completed_) ||
+        history_smoke_completed_) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kHistory);
       return;
     }
@@ -223,12 +277,34 @@ class WasmProfilePreferencesSmokeState {
            !failure_reported_;
   }
 
+  void NotifyCookieSmokeResult(bool success) {
+    if (!enabled_ || failure_reported_) {
+      return;
+    }
+    if (!success || !started_ || !cookie_smoke_required_ ||
+        !browser_smoke_completed_ || !cookie_smoke_input_taken_ ||
+        cookie_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCookie);
+      return;
+    }
+    cookie_smoke_completed_ = true;
+  }
+
+  bool cookie_smoke_succeeded() const {
+    return enabled_ && cookie_smoke_required_ && cookie_smoke_completed_ &&
+           !failure_reported_;
+  }
+
   void NotifyFenceResult(bool success) {
     if (!enabled_ || failure_reported_) {
       return;
     }
     if (browser_smoke_required_ && !browser_smoke_completed_) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kBrowser);
+      return;
+    }
+    if (cookie_smoke_required_ && !cookie_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCookie);
       return;
     }
     if (history_smoke_required_ && !history_smoke_completed_) {
@@ -319,6 +395,8 @@ class WasmProfilePreferencesSmokeState {
         return "profile";
       case WasmProfilePreferencesSmokeFailureStage::kBrowser:
         return "browser";
+      case WasmProfilePreferencesSmokeFailureStage::kCookie:
+        return "cookie";
       case WasmProfilePreferencesSmokeFailureStage::kHistory:
         return "history";
       case WasmProfilePreferencesSmokeFailureStage::kRead:
@@ -356,6 +434,9 @@ class WasmProfilePreferencesSmokeState {
   bool started_ = false;
   bool browser_smoke_required_ = false;
   bool browser_smoke_completed_ = false;
+  bool cookie_smoke_required_ = false;
+  bool cookie_smoke_input_taken_ = false;
+  bool cookie_smoke_completed_ = false;
   bool history_smoke_required_ = false;
   bool history_smoke_completed_ = false;
   bool fence_succeeded_ = false;
@@ -383,7 +464,8 @@ bool HasWasmProfilePreferencesSmokeArguments() {
          command_line->HasSwitch(kTokenASwitch) ||
          command_line->HasSwitch(kTokenBSwitch) ||
          command_line->HasSwitch(kBrowserSmokeSwitch) ||
-         command_line->HasSwitch(kHistorySmokeSwitch);
+         command_line->HasSwitch(kHistorySmokeSwitch) ||
+         command_line->HasSwitch(kCookieSmokeSwitch);
 }
 
 bool EnableWasmProfilePreferencesSmokeTestMode() {
@@ -400,6 +482,15 @@ bool IsWasmProfilePreferencesBrowserSmokeEnabled() {
 
 bool IsWasmProfilePreferencesHistorySmokeEnabled() {
   return GetWasmProfilePreferencesSmokeState().history_smoke_required();
+}
+
+bool IsWasmProfilePreferencesCookieSmokeEnabled() {
+  return GetWasmProfilePreferencesSmokeState().cookie_smoke_required();
+}
+
+std::optional<WasmProfilePreferencesCookieSmokeInput>
+TakeWasmProfilePreferencesCookieSmokeInput() {
+  return GetWasmProfilePreferencesSmokeState().TakeCookieSmokeInput();
 }
 
 void RegisterWasmProfilePreferencesSmokePref(
@@ -424,6 +515,14 @@ void NotifyWasmProfilePreferencesHistorySmokeResult(bool success) {
 
 bool DidWasmProfilePreferencesHistorySmokeSucceed() {
   return GetWasmProfilePreferencesSmokeState().history_smoke_succeeded();
+}
+
+void NotifyWasmProfilePreferencesCookieSmokeResult(bool success) {
+  GetWasmProfilePreferencesSmokeState().NotifyCookieSmokeResult(success);
+}
+
+bool DidWasmProfilePreferencesCookieSmokeSucceed() {
+  return GetWasmProfilePreferencesSmokeState().cookie_smoke_succeeded();
 }
 
 void NotifyWasmProfilePreferencesSmokeFenceResult(bool success) {

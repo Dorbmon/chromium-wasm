@@ -35,15 +35,17 @@ def _matching_closing_brace(
 _M7_STORAGE_MACROS = (
     "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST",
     "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST",
+    "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST",
 )
 _M7_STORAGE_GN_FLAGS = (
     "enable_chromium_wasm_m7_profile_preferences_test",
     "enable_chromium_wasm_m7_profile_database_test",
+    "enable_chromium_wasm_m7_default_partition_local_storage_test",
 )
 
 
 def _is_in_m7_storage_macro_block(text: str, position: int) -> bool:
-    """Returns whether |position| is under either M7 storage capability."""
+    """Returns whether |position| is under an M7 storage capability."""
 
     active_stack: list[bool] = []
     offset = 0
@@ -224,8 +226,9 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 self.assertIn(token, mount_identity)
 
         self.assertIn(
-            "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)\n"
-            "// Mounts the Preferences acceptance probe's leased V4 OPFS backend only at",
+            "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \\\n"
+            "    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)\n"
+            "// Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend",
             self.storage_header,
         )
         self.assertIn(
@@ -234,6 +237,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
 
         self.assertIn(
             "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)\n"
+            "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
+            "#elif defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
             "#else\n"
             "    } else if (!chrome::InitializeWasmProfileStorage()) {\n"
@@ -515,7 +520,15 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.chrome_main,
             "if (!database_smoke_requested || !database_smoke_enabled)",
         )
-        for capability in (preferences_capability, database_capability):
+        local_storage_capability = _body_after_signature(
+            self.chrome_main,
+            "if (!local_storage_smoke_requested || !local_storage_smoke_enabled)",
+        )
+        for capability in (
+            preferences_capability,
+            database_capability,
+            local_storage_capability,
+        ):
             self.assertIn(
                 "result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", capability
             )
@@ -526,6 +539,9 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         database_capability_start = self.chrome_main.index(
             "if (!database_smoke_requested || !database_smoke_enabled)"
         )
+        local_storage_capability_start = self.chrome_main.index(
+            "if (!local_storage_smoke_requested || !local_storage_smoke_enabled)"
+        )
         preferences_mount = self.chrome_main.index(
             "chrome::InitializeWasmProfilePreferencesStorage()"
         )
@@ -534,6 +550,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         self.assertLess(preferences_capability_start, preferences_mount)
         self.assertLess(database_capability_start, database_mount)
+        self.assertLess(local_storage_capability_start, preferences_mount)
 
     def test_experimental_main_parts_admits_and_completes_profile_lifecycle_before_drain(
         self,

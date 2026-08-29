@@ -7,10 +7,20 @@
 #include <memory>
 #include <string>
 
+#include "base/files/file_path.h"
 #include "build/build_config.h"
 #include "chrome/browser/wasm/wasm_browser_main_parts.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
+#endif
 #include "components/embedder_support/user_agent_utils.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/common/url_constants.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "services/network/public/mojom/network_context.mojom.h"  // nogncheck
+#endif
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -26,6 +36,7 @@ constexpr char kWasmHistoryHost[] = "history";
 constexpr char kWasmDownloadsHost[] = "downloads";
 constexpr char kWasmThemeHost[] = "theme";
 constexpr char kWasmResourcesHost[] = "resources";
+constexpr char kWasmNetworkDataDirectory[] = "Network";
 
 bool IsWasmRootChromeUrl(const GURL& url, const char* host) {
   return url.SchemeIs(content::kChromeUIScheme) && url.host() == host &&
@@ -74,6 +85,53 @@ bool WasmContentBrowserClient::AllowCompressionDictionaryTransport(
   // This service owns profile-backed dictionary state. Keep it disabled until
   // it has durable backing and a result-bearing terminal drain at shutdown.
   return false;
+}
+
+void WasmContentBrowserClient::ConfigureNetworkContextParams(
+    content::BrowserContext* context,
+    bool in_memory,
+    const base::FilePath& relative_partition_path,
+    network::mojom::NetworkContextParams* network_context_params,
+    cert_verifier::mojom::CertVerifierCreationParams*
+        cert_verifier_creation_params) {
+  content::ContentBrowserClient::ConfigureNetworkContextParams(
+      context, in_memory, relative_partition_path, network_context_params,
+      cert_verifier_creation_params);
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // The normal Wasm profile deliberately keeps every StoragePartition store
+  // in memory. This optional capability changes only the default in-memory
+  // partition's CookieManager: its actual Cookies SQLite database uses
+  // Chromium's canonical Default/Network/Cookies layout under the V4-mounted
+  // profile, while every other network file path and every non-network
+  // partition service remains memory-backed.
+  if (!chrome::IsWasmProfilePreferencesCookieSmokeEnabled() || !context ||
+      !in_memory || !relative_partition_path.empty()) {
+    return;
+  }
+
+  const base::FilePath profile_path = context->GetPath();
+  if (profile_path.empty() || network_context_params->file_paths) {
+    // The source-selected Wasm client owns no other persistent NetworkContext
+    // paths. Refuse to overlay another owner rather than broadening the
+    // Cookie-only acceptance capability.
+    return;
+  }
+  network_context_params->file_paths =
+      network::mojom::NetworkContextFilePaths::New();
+  network_context_params->file_paths->data_directory =
+      profile_path.AppendASCII(kWasmNetworkDataDirectory);
+  network_context_params->file_paths->cookie_database_name =
+      base::FilePath(FILE_PATH_LITERAL("Cookies"));
+  // NetworkContext defaults this to true and requires an OS crypto provider
+  // on non-mobile platforms. The M7 probe has no such provider, so it proves
+  // only an explicitly unencrypted test cookie database, never production
+  // cookie-at-rest protection.
+  network_context_params->enable_encrypted_cookies = false;
+  network_context_params->restore_old_session_cookies = false;
+  network_context_params->persist_session_cookies = false;
+  network_context_params->http_cache_enabled = false;
+#endif
 }
 
 bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {

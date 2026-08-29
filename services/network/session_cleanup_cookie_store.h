@@ -55,6 +55,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) SessionCleanupCookieStore
   void SetBeforeCommitCallback(base::RepeatingClosure callback) override;
   void Flush(base::OnceClosure callback) override;
 
+  // Test-only close fence for a persistent cookie store. The callback runs
+  // only after its SQLite backend has closed on its background sequence.
+  void ClosePersistentStoreForTesting(base::OnceCallback<void(bool)> callback);
+
   // Should be called at the end of a session. Deletes all cookies that
   // |delete_cookie_predicate| returns true for.
   void DeleteSessionCookies(DeleteCookiePredicate delete_cookie_predicate);
@@ -73,6 +77,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) SessionCleanupCookieStore
   CookiesPerOriginMap cookies_per_origin_;
 
   scoped_refptr<net::SQLitePersistentCookieStore> persistent_store_;
+  bool persistent_store_closed_for_testing_ = false;
 
   // When set to true, DeleteSessionCookies will be a no-op, and all cookies
   // will be kept.

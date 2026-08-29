@@ -2017,6 +2017,25 @@ if (enable_chromium_wasm_m7_profile_preferences_test) {
       "//url",
     ]
   }
+  # The optional CookieManager witness remains inside the dedicated M7
+  # Preferences artifact. It drives the default in-memory StoragePartition's
+  # real CookieManager path while ContentBrowserClient persistently selects
+  # only its Cookies database under the V4-mounted Default profile.
+  source_set("wasm_profile_cookie_smoke") {
+    public = [ "wasm_profile_cookie_smoke.h" ]
+
+    sources = [ "wasm_profile_cookie_smoke.cc" ]
+
+    deps = [
+      ":wasm_profile",
+      ":wasm_profile_preferences_smoke",
+      "//base",
+      "//content/public/browser",
+      "//net",
+      "//services/network/public/mojom",
+      "//url",
+    ]
+  }
 }
 
 # The test-only M7 database protocol is linked into the source-selected M7
@@ -2293,6 +2312,7 @@ source_set("wasm_browser_main_parts") {
   if (enable_chromium_wasm_m7_profile_preferences_test) {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     deps += [
+      ":wasm_profile_cookie_smoke",
       ":wasm_profile_history_smoke",
       ":wasm_profile_preferences_smoke",
     ]
@@ -2331,6 +2351,14 @@ source_set("wasm_content_browser_client") {
     "//content/public/common",
     "//url",
   ]
+
+  if (enable_chromium_wasm_m7_profile_preferences_test) {
+    defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
+    deps += [
+      ":wasm_profile_preferences_smoke",
+      "//services/network/public/mojom",
+    ]
+  }
 }
 
 # The ContentMain entry delegate for the browser-only Wasm module. Keep its

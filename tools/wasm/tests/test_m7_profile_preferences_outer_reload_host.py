@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Node contracts for the M7 three-outer-document Preferences witness host."""
+"""Node contracts for the M7 Preferences/CookieManager/History witness host."""
 
 from __future__ import annotations
 
@@ -30,6 +30,10 @@ export default async function(options) {
   if (!options.arguments.includes(
       "--wasm-profile-preferences-history-smoke")) {
     throw new Error("History smoke capability is missing");
+  }
+  if (!options.arguments.includes(
+      "--wasm-profile-preferences-cookie-smoke")) {
+    throw new Error("CookieManager smoke capability is missing");
   }
   const tokenAArgument = options.arguments.find((argument) =>
       argument.startsWith("--wasm-profile-preferences-token-a="));
@@ -58,6 +62,8 @@ export default async function(options) {
   if (globalThis.__ordinal === 1) {
     options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestA);
     options.printErr(marker + "BROWSER_SMOKE_CLOSED");
+    options.printErr(marker + "COOKIE_A_WRITE_FLUSHED sha256=" + digestA);
+    options.printErr(marker + "COOKIE_BACKEND_CLOSED");
     options.printErr(marker + "HISTORY_A_WRITE_ACCEPTED");
     options.printErr(marker + "HISTORY_BACKEND_CLOSED");
     options.printErr(marker + "FENCE_OK sha256=" + digestA);
@@ -65,6 +71,9 @@ export default async function(options) {
     options.printErr(marker + "READ_A_OK sha256=" + digestA);
     options.printErr(marker + "WRITE_ACCEPTED sha256=" + digestB);
     options.printErr(marker + "BROWSER_SMOKE_CLOSED");
+    options.printErr(marker + "COOKIE_A_READ_OK sha256=" + digestA);
+    options.printErr(marker + "COOKIE_B_WRITE_FLUSHED sha256=" + digestB);
+    options.printErr(marker + "COOKIE_BACKEND_CLOSED");
     options.printErr(marker + "HISTORY_A_READ_OK");
     options.printErr(marker + "HISTORY_B_WRITE_ACCEPTED");
     options.printErr(marker + "HISTORY_BACKEND_CLOSED");
@@ -72,6 +81,8 @@ export default async function(options) {
   } else {
     options.printErr(marker + "READ_B_OK sha256=" + digestB);
     options.printErr(marker + "BROWSER_SMOKE_CLOSED");
+    options.printErr(marker + "COOKIE_B_READ_OK sha256=" + digestB);
+    options.printErr(marker + "COOKIE_BACKEND_CLOSED");
     options.printErr(marker + "HISTORY_A_READ_OK");
     options.printErr(marker + "HISTORY_B_READ_OK");
     options.printErr(marker + "HISTORY_BACKEND_CLOSED");
@@ -210,7 +221,7 @@ const bootstrap = {
   protocol: 1,
   case: "chrome_profile_preferences_three_outer_document_reload_m7",
   scope:
-      "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-and-history-test-modules-orderly-reload-only",
+      "same-origin-three-outer-documents-chrome-wasm-m7-profile-preferences-cookie-manager-and-history-test-modules-orderly-reload-only",
   ordinal,
   mode: ordinal === 1 ? "write" : ordinal === 2 ? "verify-and-write" : "verify-b",
   tokenA: ordinal === 3 ? null : rawA,
@@ -347,8 +358,14 @@ class M7ProfilePreferencesOuterReloadHostTest(unittest.TestCase):
         self.assertIn("--wasm-profile-preferences-smoke=verify-and-write", source)
         self.assertIn("--wasm-profile-preferences-smoke=verify-b", source)
         self.assertIn("--wasm-profile-preferences-browser-smoke", source)
+        self.assertIn("--wasm-profile-preferences-cookie-smoke", source)
         self.assertIn("--wasm-profile-preferences-history-smoke", source)
         self.assertIn("BROWSER_SMOKE_CLOSED", source)
+        self.assertIn("COOKIE_A_WRITE_FLUSHED", source)
+        self.assertIn("COOKIE_A_READ_OK", source)
+        self.assertIn("COOKIE_B_WRITE_FLUSHED", source)
+        self.assertIn("COOKIE_B_READ_OK", source)
+        self.assertIn("COOKIE_BACKEND_CLOSED", source)
         self.assertIn("HISTORY_BACKEND_CLOSED", source)
         self.assertIn("HISTORY_A_READ_OK", source)
         self.assertIn("HISTORY_B_READ_OK", source)

@@ -511,6 +511,12 @@ interface CookieManager {
   // Flush the backing store (if any) to disk.
   FlushCookieStore() => ();
 
+  // Test-only: close the persistent cookie backend after callers have stopped
+  // cookie activity. Completion means its SQLite background sequence has
+  // finished closing the database, not merely that a write was queued.
+  [AllowedContext=sandbox.mojom.Context.kBrowser]
+  CloseCookieStoreForTesting() => (bool success);
+
   // Configure this CookieManager to allow/disallow setting cookies for file://
   // URLs. If this is not called, the CookieManager follows
   // CookieManagerParams.allow_file_scheme_cookies. This should be called before

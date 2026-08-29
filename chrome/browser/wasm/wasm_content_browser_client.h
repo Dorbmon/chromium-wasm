@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 
+#include "base/files/file_path.h"
 #include "content/public/browser/content_browser_client.h"
 
 class GURL;
@@ -19,6 +20,14 @@ struct UserAgentMetadata;
 namespace content {
 class BrowserContext;
 class BrowserMainParts;
+}
+
+namespace cert_verifier::mojom {
+class CertVerifierCreationParams;
+}
+
+namespace network::mojom {
+class NetworkContextParams;
 }
 
 // Chrome's browser-side Content client for the source-selected Wasm process.
@@ -46,6 +55,13 @@ class WasmContentBrowserClient final : public content::ContentBrowserClient {
   blink::UserAgentMetadata GetUserAgentMetadata() override;
   bool AllowCompressionDictionaryTransport(
       content::BrowserContext* context) override;
+  void ConfigureNetworkContextParams(
+      content::BrowserContext* context,
+      bool in_memory,
+      const base::FilePath& relative_partition_path,
+      network::mojom::NetworkContextParams* network_context_params,
+      cert_verifier::mojom::CertVerifierCreationParams*
+          cert_verifier_creation_params) override;
   bool IsHandledURL(const GURL& url) override;
   bool ShouldEnableBtm(content::BrowserContext* browser_context) override;
 };
