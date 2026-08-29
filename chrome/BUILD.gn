@@ -617,9 +617,11 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       }
     }
     if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
-      # This third M7 artifact admits only the default-profile LocalStorage
-      # LevelDB path and its result-bearing close receipt. It never changes
-      # normal chrome_wasm's in-memory default StoragePartition policy.
+      # This isolated M7 artifact admits only the default-profile LocalStorage
+      # LevelDB path and its result-bearing close receipt. Its renderer modes
+      # use one transient chrome://m7-local-storage page before the same close
+      # fence. It never changes normal chrome_wasm's in-memory default
+      # StoragePartition policy.
       output_name = "chrome_wasm_m7_default_partition_local_storage_test"
       defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
     }

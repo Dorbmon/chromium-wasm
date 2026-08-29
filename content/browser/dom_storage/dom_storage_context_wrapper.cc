@@ -463,6 +463,20 @@ void DOMStorageContextWrapper::BindWasmLocalStorageTestApi(
   partition_->GetStorageService()->BindTestApi(receiver.PassPipe());
 }
 
+bool DOMStorageContextWrapper::
+    ResetLocalStorageConnectionsForWasmProfileTest() {
+  if (!partition_ || local_storage_rebind_sealed_for_wasm_profile_test_) {
+    return false;
+  }
+
+  // Use StoragePartition's existing renderer broadcast rather than touching
+  // a LocalStorage implementation directly. Blink's process-global
+  // StorageController owns the cached renderer StorageArea and turns this
+  // reset request into its real Mojo disconnect.
+  partition_->ResetLocalStorageConnections();
+  return true;
+}
+
 bool DOMStorageContextWrapper::SealLocalStorageForWasmProfileTest() {
   if (!partition_ || local_storage_rebind_sealed_for_wasm_profile_test_) {
     return false;

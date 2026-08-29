@@ -6,11 +6,14 @@ import("//build/config/wasm.gni")
 
 # The low-level argument is declared in //build/config/wasm.gni because the
 # Content and Storage source closures need it without depending on //chrome.
-# This Chrome-facing guard confines the capability to one fresh artifact.
+# This Chrome-facing guard confines the capability to one fresh artifact. Its
+# direct modes prove a browser-side StorageArea receipt; its renderer modes
+# additionally source-select one test WebUI origin through window.localStorage
+# while retaining the same narrow Content/Storage bridge.
 if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
   assert(
       get_path_info(root_out_dir, "name") ==
           "wasm-chrome-m7-default-partition-local-storage",
-      "M7 default-partition LocalStorage acceptance must use " +
-          "out/wasm-chrome-m7-default-partition-local-storage")
+      "M7 default-partition LocalStorage acceptance must use its dedicated " +
+          "output directory")
 }

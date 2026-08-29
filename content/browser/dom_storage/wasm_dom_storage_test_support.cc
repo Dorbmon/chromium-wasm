@@ -25,6 +25,15 @@ bool BindWasmLocalStorageTestApi(
   return true;
 }
 
+bool ResetWasmLocalStorageConnectionsForTest(DOMStorageContext* context) {
+  if (!context) {
+    return false;
+  }
+
+  auto* const wrapper = static_cast<DOMStorageContextWrapper*>(context);
+  return wrapper->ResetLocalStorageConnectionsForWasmProfileTest();
+}
+
 bool SealWasmLocalStorageForTest(DOMStorageContext* context) {
   if (!context) {
     return false;

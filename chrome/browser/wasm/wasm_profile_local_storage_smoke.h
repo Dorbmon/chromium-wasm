@@ -12,16 +12,24 @@ namespace content {
 class StoragePartition;
 }
 
+class WasmProfile;
+
 namespace chrome {
 
 // Fixed, test-only protocol for the two-fresh-module default-partition Local
-// Storage acceptance. Only chrome_wasm_m7_default_partition_local_storage_test
-// recognizes these switches:
+// Storage acceptance. The isolated artifact
+// chrome_wasm_m7_default_partition_local_storage_test recognizes:
 //
 //   --wasm-profile-local-storage-smoke=write
 //   --wasm-profile-local-storage-token=<64 lowercase hex>
 //
 //   --wasm-profile-local-storage-smoke=verify
+//   --wasm-profile-local-storage-token=<64 lowercase hex>
+//
+//   --wasm-profile-local-storage-smoke=renderer-write
+//   --wasm-profile-local-storage-token=<64 lowercase hex>
+//
+//   --wasm-profile-local-storage-smoke=renderer-verify
 //   --wasm-profile-local-storage-token=<64 lowercase hex>
 //
 // The first module writes the token through Chromium's privileged
@@ -31,11 +39,14 @@ namespace chrome {
 // follows the same sequence after its bounded close-fence mutation.
 // Each module only reports a SHA-256 digest of the opaque token.
 //
-// This proves an ordered commit -> LocalStorage destruction -> V4 backend
-// drain -> fresh-module replay boundary. Local Storage's normal LevelDB write
-// does not use sync writes, so this is not a power-loss, physical-crash, or
-// directory-durability claim. It also does not prove renderer
-// window.localStorage, SessionStorage, or other StoragePartition services.
+// The browser-side modes prove an ordered commit -> LocalStorage destruction
+// -> V4 backend drain -> fresh-module replay boundary. The renderer modes use
+// one transient chrome://m7-local-storage/ WebContents and its external script
+// to perform the equivalent operation through window.localStorage. They prove
+// only that one test Chrome origin reopens through that renderer path; neither
+// mode makes normal Wasm profiles persistent or proves SessionStorage,
+// IndexedDB, Cache Storage, Service Workers, physical-crash recovery, or
+// directory durability.
 //
 // The host may consume only this fixed stderr grammar, where |digest| is 64
 // lowercase hexadecimal characters and |stage| is one of arguments,
@@ -45,6 +56,8 @@ namespace chrome {
 //   CHROMIUM_WASM_M7_LOCAL_STORAGE:READY
 //   CHROMIUM_WASM_M7_LOCAL_STORAGE:WRITE_ACCEPTED sha256=<digest>
 //   CHROMIUM_WASM_M7_LOCAL_STORAGE:REOPEN_READ_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_LOCAL_STORAGE:RENDERER_WRITE_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_LOCAL_STORAGE:RENDERER_REOPEN_READ_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_LOCAL_STORAGE:ON_DISK_COMMIT_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_LOCAL_STORAGE:DB_CLOSE_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_LOCAL_STORAGE:FENCE_OK sha256=<digest>
@@ -66,6 +79,11 @@ bool EnableWasmProfileLocalStorageSmokeTestMode();
 // Whether the dedicated executable enabled a valid LocalStorage smoke request.
 bool IsWasmProfileLocalStorageSmokeEnabled();
 
+// True only for the renderer-owned modes. These modes create one transient
+// WebContents, derive their StorageKey from its committed RenderFrameHost, and
+// destroy that owner before arming the existing close fence.
+bool IsWasmProfileRendererLocalStorageSmokeEnabled();
+
 // Starts the real browser-side LocalStorage operation after the profile storage
 // lifecycle admitted the profile. `completion` runs only after the test bridge
 // received either a result-bearing database-close receipt or a terminal
@@ -75,6 +93,12 @@ bool StartWasmProfileLocalStorageSmoke(
     content::StoragePartition* storage_partition,
     const base::FilePath& profile_path,
     base::OnceClosure completion);
+
+// Starts the renderer-owned LocalStorage path. `profile` remains owned by
+// WasmBrowserMainParts until `completion`; the helper never retains it after
+// the transient WebContents and close-fence API handles are released.
+bool StartWasmProfileRendererLocalStorageSmoke(WasmProfile* profile,
+                                               base::OnceClosure completion);
 
 // True only after the selected LocalStorage mode reached its on-disk map-update
 // and same-runner FIFO database-close receipt. BrowserMainParts uses this to

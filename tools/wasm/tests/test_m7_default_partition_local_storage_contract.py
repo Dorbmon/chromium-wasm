@@ -125,9 +125,6 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         self.assertIn(
             '"wasm-chrome-m7-default-partition-local-storage"', artifact_gate
         )
-        self.assertIn(
-            "out/wasm-chrome-m7-default-partition-local-storage", artifact_gate
-        )
 
         self.assertIn(
             "!(enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic &&\n"
@@ -151,10 +148,11 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
             'source_set("wasm_profile_local_storage_smoke")',
         )
         for expected in (
-            'sources = [ "wasm_profile_local_storage_smoke.cc" ]',
+            '"wasm_profile_local_storage_smoke.cc"',
+            '"wasm_profile_renderer_local_storage_ui.cc"',
             f'defines = [ "{_MACRO}=1" ]',
             '"//components/services/storage/public/mojom:wasm_local_storage_test_api",',
-            '"//content/public/browser",',
+            'public_deps = [ "//content/public/browser" ]',
             '"//third_party/blink/public/mojom:mojom_platform",',
         ):
             with self.subTest(expected=expected):

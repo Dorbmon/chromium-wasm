@@ -6,12 +6,16 @@
 
 #include <algorithm>
 #include <cstdio>
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#include <memory>
+#endif
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/command_line.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -32,6 +36,20 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#include "base/strings/stringprintf.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "chrome/browser/wasm/wasm_profile.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
+#endif
+
 #if !BUILDFLAG(IS_WASM)
 #error "wasm_profile_local_storage_smoke.cc must only be built for WebAssembly"
 #endif
@@ -44,24 +62,46 @@ constexpr char kSmokeSwitch[] = "wasm-profile-local-storage-smoke";
 constexpr char kTokenSwitch[] = "wasm-profile-local-storage-token";
 constexpr char kWriteMode[] = "write";
 constexpr char kVerifyMode[] = "verify";
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+constexpr char kRendererWriteMode[] = "renderer-write";
+constexpr char kRendererVerifyMode[] = "renderer-verify";
+constexpr base::TimeDelta kRendererOperationTimeout = base::Seconds(10);
+#endif
 constexpr size_t kOpaqueTokenLength = 64;
 
 constexpr char kStorageOrigin[] = "https://m7-local-storage.test";
 constexpr char kTokenKey[] = "m7-profile-local-storage-token-v1";
 constexpr char kCloseFenceKey[] = "m7-profile-local-storage-close-fence-v1";
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+constexpr char kRendererLocalStoragePageURL[] =
+    "chrome://m7-local-storage/";
+constexpr char16_t kRendererWriteTitle[] =
+    u"m7-local-storage-renderer-write-ok";
+constexpr char16_t kRendererVerifyTitle[] =
+    u"m7-local-storage-renderer-verify-ok";
+constexpr char16_t kRendererFailureTitle[] = u"m7-local-storage-failed";
+#endif
 constexpr char kMarkerPrefix[] = "CHROMIUM_WASM_M7_LOCAL_STORAGE:";
 
 enum class SmokeMode {
   kNone,
   kWrite,
   kVerify,
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  kRendererWrite,
+  kRendererVerify,
+#endif
 };
 
 std::vector<uint8_t> ToBytes(std::string_view value) {
   return std::vector<uint8_t>(value.begin(), value.end());
 }
 
-class WasmProfileLocalStorageSmokeState {
+class WasmProfileLocalStorageSmokeState final
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    : public content::WebContentsObserver
+#endif
+{
  public:
   WasmProfileLocalStorageSmokeState() = default;
   WasmProfileLocalStorageSmokeState(const WasmProfileLocalStorageSmokeState&) =
@@ -95,6 +135,12 @@ class WasmProfileLocalStorageSmokeState {
       mode_ = SmokeMode::kWrite;
     } else if (mode == kVerifyMode) {
       mode_ = SmokeMode::kVerify;
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    } else if (mode == kRendererWriteMode) {
+      mode_ = SmokeMode::kRendererWrite;
+    } else if (mode == kRendererVerifyMode) {
+      mode_ = SmokeMode::kRendererVerify;
+#endif
     } else {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kArguments);
       return false;
@@ -107,12 +153,20 @@ class WasmProfileLocalStorageSmokeState {
   }
 
   bool enabled() const { return enabled_; }
+  bool renderer_enabled() const {
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    return mode_ == SmokeMode::kRendererWrite ||
+           mode_ == SmokeMode::kRendererVerify;
+#else
+    return false;
+#endif
+  }
 
   bool Start(content::StoragePartition* storage_partition,
              const base::FilePath& profile_path,
              base::OnceClosure completion) {
     if (!enabled_ || started_ || !storage_partition || profile_path.empty() ||
-        !completion) {
+        !completion || renderer_enabled()) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
       return false;
     }
@@ -160,6 +214,79 @@ class WasmProfileLocalStorageSmokeState {
       return false;
     }
     return true;
+  }
+
+  bool StartRenderer(WasmProfile* profile, base::OnceClosure completion) {
+#if !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    static_cast<void>(profile);
+    static_cast<void>(completion);
+    ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
+    return false;
+#else
+    if (!enabled_ || started_ || !renderer_enabled() || !profile ||
+        profile->GetPath().empty() || !completion) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
+      return false;
+    }
+
+    content::StoragePartition* const storage_partition =
+        profile->GetDefaultStoragePartition();
+    if (!storage_partition) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
+      return false;
+    }
+
+    started_ = true;
+    renderer_primary_commit_seen_ = false;
+    renderer_page_completed_ = false;
+    completion_ = std::move(completion);
+    profile_path_ = profile->GetPath();
+    renderer_profile_ = profile;
+    renderer_storage_partition_ = storage_partition;
+    dom_storage_context_ = storage_partition->GetDOMStorageContext();
+    if (!dom_storage_context_) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
+      return false;
+    }
+    if (!content::BindWasmLocalStorageTestApi(
+            dom_storage_context_, test_api_.BindNewPipeAndPassReceiver())) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kCapability);
+      return false;
+    }
+    test_api_.set_disconnect_handler(base::BindOnce(
+        &WasmProfileLocalStorageSmokeState::OnTestApiDisconnected,
+        weak_ptr_factory_.GetWeakPtr()));
+
+    content::WebContents::CreateParams create_params(profile);
+    renderer_web_contents_ = content::WebContents::Create(create_params);
+    if (!renderer_web_contents_) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kContent);
+      return false;
+    }
+    Observe(renderer_web_contents_.get());
+
+    const char* const mode = mode_ == SmokeMode::kRendererWrite
+                                 ? kRendererWriteMode
+                                 : kRendererVerifyMode;
+    renderer_page_url_ = GURL(base::StringPrintf(
+        "%s?mode=%s&token=%s", kRendererLocalStoragePageURL, mode,
+        token_.c_str()));
+    if (!renderer_page_url_.is_valid()) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kContent);
+      return false;
+    }
+
+    EmitMarker("READY");
+    renderer_operation_timeout_.Start(
+        FROM_HERE, kRendererOperationTimeout,
+        base::BindOnce(
+            &WasmProfileLocalStorageSmokeState::OnRendererOperationTimeout,
+            weak_ptr_factory_.GetWeakPtr()));
+    content::NavigationController::LoadURLParams load_params(
+        renderer_page_url_);
+    renderer_web_contents_->GetController().LoadURLWithParams(load_params);
+    return true;
+#endif
   }
 
   bool succeeded() const { return close_succeeded_ && !failure_reported_; }
@@ -211,10 +338,50 @@ class WasmProfileLocalStorageSmokeState {
     std::fprintf(stderr, "%sFAIL stage=%s\n", kMarkerPrefix,
                  FailureStageName(stage));
     std::fflush(stderr);
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    if (renderer_observer_callback_active_) {
+      // WebContents can continue notifying its observers after a title or
+      // navigation callback returns. Do not destroy the observed object from
+      // within that callback; defer its teardown to the next UI task.
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&WasmProfileLocalStorageSmokeState::FinishOperation,
+                         weak_ptr_factory_.GetWeakPtr()));
+      return;
+    }
+#endif
     FinishOperation();
   }
 
  private:
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  bool IsRendererExpectedTitle(const std::u16string& title) const {
+    return (mode_ == SmokeMode::kRendererWrite &&
+            title == kRendererWriteTitle) ||
+           (mode_ == SmokeMode::kRendererVerify &&
+            title == kRendererVerifyTitle);
+  }
+
+  const char* RendererSuccessMarker() const {
+    return mode_ == SmokeMode::kRendererWrite ? "RENDERER_WRITE_OK"
+                                               : "RENDERER_REOPEN_READ_OK";
+  }
+
+  static bool IsRetryableRendererPrepareResult(
+      storage::mojom::WasmLocalStorageTestResult result) {
+    return result ==
+               storage::mojom::WasmLocalStorageTestResult::kStorageNotFound ||
+           result == storage::mojom::WasmLocalStorageTestResult::
+                         kStorageAreaNotBound ||
+           result ==
+               storage::mojom::WasmLocalStorageTestResult::kDatabaseNotReady ||
+           result == storage::mojom::WasmLocalStorageTestResult::
+                         kSnapshotConnectionNotReady ||
+           result == storage::mojom::WasmLocalStorageTestResult::
+                         kSnapshotNotCommitted;
+  }
+#endif
+
   static bool IsOpaqueToken(std::string_view value) {
     if (value.size() != kOpaqueTokenLength) {
       return false;
@@ -322,6 +489,145 @@ class WasmProfileLocalStorageSmokeState {
     PrepareCloseFence();
   }
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // content::WebContentsObserver:
+  void TitleWasSet(content::NavigationEntry* entry) override {
+    base::AutoReset<bool> observer_callback(
+        &renderer_observer_callback_active_, true);
+    if (failure_reported_ || !renderer_enabled() ||
+        !renderer_web_contents_ ||
+        web_contents() != renderer_web_contents_.get() || !entry ||
+        entry->GetURL() != renderer_page_url_) {
+      return;
+    }
+    MaybeCompleteRendererPage();
+  }
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    base::AutoReset<bool> observer_callback(
+        &renderer_observer_callback_active_, true);
+    if (failure_reported_ || !renderer_enabled() || !navigation_handle ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        navigation_handle->GetURL() != renderer_page_url_) {
+      return;
+    }
+    if (!navigation_handle->HasCommitted() ||
+        navigation_handle->IsErrorPage()) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kContent);
+      return;
+    }
+    renderer_primary_commit_seen_ = true;
+    // TitleWasSet can precede this commit callback. Sample the current title
+    // after the exact primary commit as well, so the external renderer script
+    // cannot be lost to that observer ordering.
+    MaybeCompleteRendererPage();
+  }
+
+  void MaybeCompleteRendererPage() {
+    if (failure_reported_ || renderer_page_completed_ ||
+        !renderer_primary_commit_seen_ || !renderer_web_contents_ ||
+        renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_) {
+      return;
+    }
+    const std::u16string title = renderer_web_contents_->GetTitle();
+    if (title == kRendererFailureTitle) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kContent);
+      return;
+    }
+    if (!IsRendererExpectedTitle(title)) {
+      return;
+    }
+    renderer_page_completed_ = true;
+    if (!ValidateRendererStorageBoundary()) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
+      return;
+    }
+    EmitDigestMarker(RendererSuccessMarker());
+    PrepareRendererCloseFence();
+  }
+
+  void OnRendererOperationTimeout() {
+    if (!failure_reported_ && !operation_finished_) {
+      ReportFailure(renderer_page_completed_
+                        ? WasmProfileLocalStorageSmokeFailureStage::kClose
+                        : WasmProfileLocalStorageSmokeFailureStage::kContent);
+    }
+  }
+
+  bool ValidateRendererStorageBoundary() {
+    if (!renderer_profile_ || !renderer_storage_partition_ ||
+        !renderer_web_contents_ || !renderer_primary_commit_seen_ ||
+        renderer_web_contents_->GetBrowserContext() != renderer_profile_ ||
+        renderer_profile_->GetDefaultStoragePartition() !=
+            renderer_storage_partition_ ||
+        renderer_web_contents_->GetBrowserContext()
+                ->GetDefaultStoragePartition() !=
+            renderer_storage_partition_ ||
+        renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_) {
+      return false;
+    }
+    content::RenderFrameHost* const render_frame_host =
+        renderer_web_contents_->GetPrimaryMainFrame();
+    if (!render_frame_host || !render_frame_host->IsRenderFrameLive() ||
+        render_frame_host->GetLastCommittedURL() != renderer_page_url_) {
+      return false;
+    }
+    const blink::StorageKey actual_storage_key =
+        render_frame_host->GetStorageKey();
+    const blink::StorageKey expected_storage_key =
+        blink::StorageKey::CreateFirstParty(
+            url::Origin::Create(GURL(kRendererLocalStoragePageURL)));
+    if (actual_storage_key.origin().opaque() ||
+        actual_storage_key.top_level_site().opaque() ||
+        actual_storage_key != expected_storage_key) {
+      return false;
+    }
+    storage_key_ = actual_storage_key;
+    return true;
+  }
+
+  void PrepareRendererCloseFence() {
+    if (failure_reported_ || !renderer_web_contents_ || !test_api_ ||
+        !storage_key_) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kCommit);
+      return;
+    }
+    test_api_->PrepareCommitCloseFence(
+        profile_path_, *storage_key_,
+        base::BindOnce(
+            &WasmProfileLocalStorageSmokeState::OnRendererCloseFencePrepared,
+            weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void OnRendererCloseFencePrepared(
+      storage::mojom::WasmLocalStorageTestResult result) {
+    if (failure_reported_) {
+      return;
+    }
+    if (result == storage::mojom::WasmLocalStorageTestResult::kSuccess) {
+      EmitDigestMarker("ON_DISK_COMMIT_OK");
+      DestroyRendererWebContentsThenArmCloseFence();
+      return;
+    }
+    // Title assignment follows renderer-side localStorage.setItem(), but the
+    // renderer Mojo message can arrive later on a cold storage connection.
+    // Retain the real page while it converges. A successful snapshot remains
+    // the authoritative disk receipt.
+    if (IsRetryableRendererPrepareResult(result) &&
+        renderer_operation_timeout_.IsRunning()) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(
+              &WasmProfileLocalStorageSmokeState::PrepareRendererCloseFence,
+              weak_ptr_factory_.GetWeakPtr()),
+          base::Milliseconds(10));
+      return;
+    }
+    ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kCommit);
+  }
+#endif
+
   void PrepareCloseFence() {
     if (failure_reported_ || !storage_area_ || !test_api_ || !storage_key_) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kCommit);
@@ -344,6 +650,37 @@ class WasmProfileLocalStorageSmokeState {
 
     ReleaseAreaThenArmCloseFence();
   }
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  void DestroyRendererWebContentsThenArmCloseFence() {
+    if (failure_reported_ || !renderer_web_contents_ || !test_api_) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kClose);
+      return;
+    }
+
+    // The only renderer-owned StorageArea belongs to this WebContents. Detach
+    // before destruction so no observer destruction callback can become a
+    // second lifecycle signal. Blink's process-global StorageController can
+    // retain a CachedStorageArea after the LocalDOMWindow is gone, so use
+    // StoragePartition's real reset broadcast to make that renderer-owned
+    // remote disconnect. Arm remains the result-bearing wait for its final
+    // cross-pipe unbind; do not shut the renderer down first, because that
+    // would race delivery of the reset request.
+    Observe(nullptr);
+    renderer_web_contents_.reset();
+    if (!content::ResetWasmLocalStorageConnectionsForTest(
+            dom_storage_context_)) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kClose);
+      return;
+    }
+    renderer_profile_ = nullptr;
+    renderer_storage_partition_ = nullptr;
+    renderer_page_url_ = GURL();
+    test_api_->ArmCommitCloseFence(
+        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnCloseFenceArmed,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+#endif
 
   void ReleaseAreaThenArmCloseFence() {
     if (failure_reported_ || !storage_area_ || !test_api_) {
@@ -409,6 +746,16 @@ class WasmProfileLocalStorageSmokeState {
       return;
     }
     operation_finished_ = true;
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    // Failure can arrive before the renderer-owned close path. Do not depend
+    // on WebContentsDestroyed: detach first and make its destruction local.
+    Observe(nullptr);
+    renderer_operation_timeout_.Stop();
+    renderer_web_contents_.reset();
+    renderer_profile_ = nullptr;
+    renderer_storage_partition_ = nullptr;
+    renderer_page_url_ = GURL();
+#endif
     storage_area_.reset();
     test_api_.reset();
     dom_storage_context_ = nullptr;
@@ -445,6 +792,11 @@ class WasmProfileLocalStorageSmokeState {
   bool storage_lifecycle_succeeded_ = false;
   bool lease_released_ = false;
   bool failure_reported_ = false;
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  bool renderer_observer_callback_active_ = false;
+  bool renderer_primary_commit_seen_ = false;
+  bool renderer_page_completed_ = false;
+#endif
   SmokeMode mode_ = SmokeMode::kNone;
   std::string token_;
   std::string token_digest_;
@@ -452,6 +804,13 @@ class WasmProfileLocalStorageSmokeState {
   base::FilePath profile_path_;
   std::optional<blink::StorageKey> storage_key_;
   raw_ptr<content::DOMStorageContext> dom_storage_context_ = nullptr;
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  raw_ptr<WasmProfile> renderer_profile_ = nullptr;
+  raw_ptr<content::StoragePartition> renderer_storage_partition_ = nullptr;
+  std::unique_ptr<content::WebContents> renderer_web_contents_;
+  GURL renderer_page_url_;
+  base::OneShotTimer renderer_operation_timeout_;
+#endif
   mojo::Remote<blink::mojom::StorageArea> storage_area_;
   mojo::Remote<storage::mojom::WasmLocalStorageTestApi> test_api_;
   base::OnceClosure completion_;
@@ -480,12 +839,22 @@ bool IsWasmProfileLocalStorageSmokeEnabled() {
   return GetWasmProfileLocalStorageSmokeState().enabled();
 }
 
+bool IsWasmProfileRendererLocalStorageSmokeEnabled() {
+  return GetWasmProfileLocalStorageSmokeState().renderer_enabled();
+}
+
 bool StartWasmProfileLocalStorageSmoke(
     content::StoragePartition* storage_partition,
     const base::FilePath& profile_path,
     base::OnceClosure completion) {
   return GetWasmProfileLocalStorageSmokeState().Start(
       storage_partition, profile_path, std::move(completion));
+}
+
+bool StartWasmProfileRendererLocalStorageSmoke(WasmProfile* profile,
+                                               base::OnceClosure completion) {
+  return GetWasmProfileLocalStorageSmokeState().StartRenderer(
+      profile, std::move(completion));
 }
 
 bool DidWasmProfileLocalStorageSmokeSucceed() {

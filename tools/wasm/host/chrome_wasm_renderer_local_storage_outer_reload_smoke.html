@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 renderer LocalStorage outer-reload smoke</title>
+<main id="m7-renderer-local-storage-outer-reload-root" data-state="starting">
+  <h1>Chromium Wasm M7 renderer LocalStorage outer-reload smoke</h1>
+  <p>
+    This test proves only a renderer-owned LocalStorage write and graceful
+    close followed by a second outer document that reopens the same dedicated
+    test Chrome origin. It does not make normal profiles persistent and does
+    not claim crash, power-loss, or general web-storage durability.
+  </p>
+  <dl id="m7-renderer-local-storage-outer-reload-versions"></dl>
+  <canvas id="m7-renderer-local-storage-outer-reload-canvas" width="1"
+      height="1" tabindex="0"
+      aria-label="Chromium Wasm renderer LocalStorage smoke canvas"></canvas>
+  <pre id="m7-renderer-local-storage-outer-reload-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmRendererLocalStorageOuterReloadFromQuery} from
+      "./chrome_wasm_renderer_local_storage_outer_reload_smoke.js";
+
+  runChromeWasmRendererLocalStorageOuterReloadFromQuery().catch(() => {
+    const root = document.querySelector(
+        "#m7-renderer-local-storage-outer-reload-root");
+    const status = document.querySelector(
+        "#m7-renderer-local-storage-outer-reload-status");
+    if (root instanceof HTMLElement) {
+      root.dataset.state = "fail";
+    }
+    if (status instanceof HTMLElement) {
+      status.textContent = "renderer LocalStorage outer-reload smoke failed";
+    }
+  });
+</script>

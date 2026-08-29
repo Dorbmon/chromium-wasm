@@ -24,6 +24,14 @@ CONTENT_EXPORT bool BindWasmLocalStorageTestApi(
     DOMStorageContext* context,
     mojo::PendingReceiver<storage::mojom::WasmLocalStorageTestApi> receiver);
 
+// Asks the real StoragePartition to reset its renderer-side LocalStorage
+// connections. This reaches Blink's StorageController and releases cached
+// StorageAreas that can outlive a destroyed LocalDOMWindow in an in-process
+// renderer. It is deliberately only a reset request: callers must still wait
+// for their result-bearing close fence before treating the area as unbound.
+CONTENT_EXPORT bool ResetWasmLocalStorageConnectionsForTest(
+    DOMStorageContext* context);
+
 // Seals the same real DOMStorageContext before its LocalStorage control remote
 // is closed. Once sealed, a Storage Service disconnect cannot create a new
 // LocalStorage binding during the close-fence receipt.

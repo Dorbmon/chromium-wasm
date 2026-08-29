@@ -66,6 +66,12 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+// This source-selected test-only WebUI is registered before its transient
+// renderer WebContents exists. GN's include checker does not evaluate this
+// target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_renderer_local_storage_ui.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
@@ -374,6 +380,12 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   chrome::EnsureWasmSettingsWebUIConfigRegistered();
   chrome::EnsureWasmHistoryWebUIConfigRegistered();
   chrome::EnsureWasmDownloadsWebUIConfigRegistered();
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // The renderer LocalStorage witness is source-selected into the isolated M7
+  // LocalStorage artifact. Register its exact test Chrome origin before any
+  // WebContents is created; normal chrome_wasm has no such route.
+  chrome::EnsureWasmProfileRendererLocalStorageWebUIConfigRegistered();
+#endif
 
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.
@@ -453,10 +465,12 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #endif
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-  // This source-selected probe starts after the profile lifecycle admission
-  // but before host input, Browser, WebContents, or BrowserWindow setup. Its
-  // completion owns a real StorageArea map-update snapshot and a same-runner
-  // database-close receipt before it releases its profile-I/O hold.
+  // This source-selected probe starts after profile lifecycle admission but
+  // before host input, Browser, or BrowserWindow setup. Browser-side modes
+  // bind a privileged StorageArea; renderer modes create one transient test
+  // WebContents whose external chrome:// script owns the StorageArea. Both
+  // require a real map-update snapshot and same-runner database-close receipt
+  // before releasing the profile-I/O hold.
   if (chrome::IsWasmProfileLocalStorageSmokeEnabled()) {
     auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
     if (!profile_io_hold) {
@@ -464,32 +478,38 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       RequestShutdown();
       return content::RESULT_CODE_NORMAL_EXIT;
     }
-    if (!chrome::StartWasmProfileLocalStorageSmoke(
-            profile_->GetDefaultStoragePartition(), profile_->GetPath(),
-            base::BindOnce(
-                [](std::optional<
-                       WasmProfileOrderedDrainLifecycle::ProfileIOHold>
-                       profile_io_hold,
-                   base::WeakPtr<WasmBrowserMainParts> main_parts) {
-                  CHECK(profile_io_hold);
-                  const bool local_storage_succeeded =
-                      chrome::DidWasmProfileLocalStorageSmokeSucceed();
-                  const bool profile_io_completed = profile_io_hold->Complete(
-                      local_storage_succeeded
-                          ? WasmProfileOrderedDrainLifecycle::
-                                ProfileIOCompletion::kSucceeded
-                          : WasmProfileOrderedDrainLifecycle::
-                                ProfileIOCompletion::kFailed);
-                  if (!profile_io_completed) {
-                    LOG(ERROR) << "chrome_wasm could not complete its profile "
-                                  "LocalStorage I/O admission";
-                  }
-                  if (main_parts) {
-                    main_parts->RequestShutdown();
-                  }
-                },
-                std::move(profile_io_hold),
-                weak_ptr_factory_.GetWeakPtr()))) {
+    auto local_storage_completion = base::BindOnce(
+        [](std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+               profile_io_hold,
+           base::WeakPtr<WasmBrowserMainParts> main_parts) {
+          CHECK(profile_io_hold);
+          const bool local_storage_succeeded =
+              chrome::DidWasmProfileLocalStorageSmokeSucceed();
+          const bool profile_io_completed = profile_io_hold->Complete(
+              local_storage_succeeded
+                  ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                        kSucceeded
+                  : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                        kFailed);
+          if (!profile_io_completed) {
+            LOG(ERROR) << "chrome_wasm could not complete its profile "
+                          "LocalStorage I/O admission";
+          }
+          if (main_parts) {
+            main_parts->RequestShutdown();
+          }
+        },
+        std::move(profile_io_hold), weak_ptr_factory_.GetWeakPtr());
+    bool local_storage_started = false;
+    if (chrome::IsWasmProfileRendererLocalStorageSmokeEnabled()) {
+      local_storage_started = chrome::StartWasmProfileRendererLocalStorageSmoke(
+          profile_.get(), std::move(local_storage_completion));
+    } else {
+      local_storage_started = chrome::StartWasmProfileLocalStorageSmoke(
+          profile_->GetDefaultStoragePartition(), profile_->GetPath(),
+          std::move(local_storage_completion));
+    }
+    if (!local_storage_started) {
       RequestShutdown();
     }
     return content::RESULT_CODE_NORMAL_EXIT;

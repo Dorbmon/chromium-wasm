@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/files/file_path.h"
 #include "build/build_config.h"
@@ -36,7 +37,25 @@ constexpr char kWasmHistoryHost[] = "history";
 constexpr char kWasmDownloadsHost[] = "downloads";
 constexpr char kWasmThemeHost[] = "theme";
 constexpr char kWasmResourcesHost[] = "resources";
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 constexpr char kWasmNetworkDataDirectory[] = "Network";
+#endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+constexpr char kWasmM7RendererLocalStorageHost[] = "m7-local-storage";
+
+bool IsWasmM7RendererLocalStorageToken(std::string_view token) {
+  if (token.size() != 64) {
+    return false;
+  }
+  for (const char character : token) {
+    if (!((character >= '0' && character <= '9') ||
+          (character >= 'a' && character <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+#endif
 
 bool IsWasmRootChromeUrl(const GURL& url, const char* host) {
   return url.SchemeIs(content::kChromeUIScheme) && url.host() == host &&
@@ -44,6 +63,35 @@ bool IsWasmRootChromeUrl(const GURL& url, const char* host) {
          !url.has_password() && !url.has_port() && !url.has_query() &&
          !url.has_ref();
 }
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+bool IsWasmM7RendererLocalStorageURL(const GURL& url) {
+  if (!url.SchemeIs(content::kChromeUIScheme) ||
+      url.host() != kWasmM7RendererLocalStorageHost || url.has_username() ||
+      url.has_password() || url.has_port() || url.has_ref()) {
+    return false;
+  }
+  // The root is the only navigable test document, and only its private
+  // renderer mode/token query is permitted. Its external script is the sole
+  // additional resource needed by the test WebUI; arbitrary subpaths remain
+  // external protocols.
+  if (url.path().empty() || url.path() == "/") {
+    const std::string_view query = url.query();
+    constexpr std::string_view kWritePrefix = "mode=renderer-write&token=";
+    constexpr std::string_view kVerifyPrefix = "mode=renderer-verify&token=";
+    if (query.starts_with(kWritePrefix)) {
+      return IsWasmM7RendererLocalStorageToken(
+          query.substr(kWritePrefix.size()));
+    }
+    if (query.starts_with(kVerifyPrefix)) {
+      return IsWasmM7RendererLocalStorageToken(
+          query.substr(kVerifyPrefix.size()));
+    }
+    return false;
+  }
+  return url.path() == "/m7_local_storage_renderer.js" && !url.has_query();
+}
+#endif
 
 }  // namespace
 
@@ -141,14 +189,19 @@ bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
   // The M6 foundation supports ordinary web navigation and empty documents.
   // It source-selects VersionUI plus bounded static Settings/History/Downloads
   // roots. Theme and resources remain dependency-only subresource origins
-  // rather than general user-navigable Chrome routes.
+  // rather than general user-navigable Chrome routes. The renderer M7 build
+  // additionally permits only its exact root document and external script.
   return url.SchemeIsHTTPOrHTTPS() || url.SchemeIs(url::kAboutScheme) ||
          url.SchemeIs(url::kDataScheme) || url.SchemeIs(url::kBlobScheme) ||
          (url.SchemeIs(content::kChromeUIScheme) &&
           (url.host() == kWasmVersionHost || url.host() == kWasmSettingsHost ||
            IsWasmRootChromeUrl(url, kWasmHistoryHost) ||
            IsWasmRootChromeUrl(url, kWasmDownloadsHost) ||
-           url.host() == kWasmThemeHost || url.host() == kWasmResourcesHost));
+           url.host() == kWasmThemeHost || url.host() == kWasmResourcesHost
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+           || IsWasmM7RendererLocalStorageURL(url)
+#endif
+           ));
 }
 
 bool WasmContentBrowserClient::ShouldEnableBtm(

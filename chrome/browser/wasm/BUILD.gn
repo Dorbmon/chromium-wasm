@@ -2085,27 +2085,37 @@ if (enable_chromium_wasm_m7_profile_database_test) {
 }
 
 # The test-only LocalStorage protocol is linked only into the dedicated
-# default-profile artifact. Its Chrome-side action uses the real privileged
-# StorageArea interface; Content and Storage independently source-select the
-# tiny path exception and close-fence bridge under the same low-level flag.
+# default-profile artifact. Its browser-side modes use the privileged
+# StorageArea interface. Its renderer modes add one transient
+# chrome://m7-local-storage WebContents and observe its renderer-owned
+# StorageArea through the same close-fence bridge. Content and Storage
+# independently source-select the tiny path exception under the same flag.
 if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
   source_set("wasm_profile_local_storage_smoke") {
-    public = [ "wasm_profile_local_storage_smoke.h" ]
+    public = [
+      "wasm_profile_local_storage_smoke.h",
+      "wasm_profile_renderer_local_storage_ui.h",
+    ]
 
-    sources = [ "wasm_profile_local_storage_smoke.cc" ]
+    sources = [
+      "wasm_profile_local_storage_smoke.cc",
+      "wasm_profile_renderer_local_storage_ui.cc",
+    ]
 
     defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
 
     deps = [
+      ":wasm_profile",
       "//base",
       "//components/services/storage/public/mojom:mojom",
       "//components/services/storage/public/mojom:wasm_local_storage_test_api",
-      "//content/public/browser",
+      "//content/public/common",
       "//crypto",
       "//third_party/blink/public/common",
       "//third_party/blink/public/mojom:mojom_platform",
       "//url",
     ]
+    public_deps = [ "//content/public/browser" ]
   }
 }
 
@@ -2358,6 +2368,10 @@ source_set("wasm_content_browser_client") {
       ":wasm_profile_preferences_smoke",
       "//services/network/public/mojom",
     ]
+  }
+
+  if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+    defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
   }
 }
 

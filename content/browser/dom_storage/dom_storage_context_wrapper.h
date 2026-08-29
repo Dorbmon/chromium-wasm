@@ -139,6 +139,11 @@ class CONTENT_EXPORT DOMStorageContextWrapper
   void BindWasmLocalStorageTestApi(
       mojo::PendingReceiver<storage::mojom::WasmLocalStorageTestApi> receiver);
 
+  // Requests a renderer-side reset of cached LocalStorage areas through the
+  // owning StoragePartition. The M7 close fence remains responsible for
+  // observing the later, actual last-area unbind.
+  bool ResetLocalStorageConnectionsForWasmProfileTest();
+
   // Permanently prevents this wrapper from reconnecting LocalStorage and then
   // drops its control remote. The seal is set before reset so a concurrent
   // disconnect cannot manufacture a replacement LocalStorage instance.
