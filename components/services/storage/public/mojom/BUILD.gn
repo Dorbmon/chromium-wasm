@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//mojo/public/tools/bindings/mojom.gni")
+import("//build/config/wasm.gni")
 
 mojom("mojom") {
   cpp_only = true
@@ -48,6 +49,30 @@ mojom("mojom") {
 mojom("test_api") {
   testonly = true
   sources = [ "test_api.test-mojom" ]
+}
+
+# StorageService.BindTestApi() normally carries a raw test pipe specifically
+# so production StorageService code has no dependency on test interfaces. The
+# source-selected M7 artifact is the sole exception: it links this small
+# private endpoint into the StorageService implementation to prove one
+# LocalStorage close receipt. Keep the target absent from all normal builds.
+if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+  mojom("wasm_local_storage_test_api") {
+    cpp_only = true
+
+    # This private pipe is bound only by C++ StorageService and Chrome test
+    # code; it is neither renderer-vended nor JavaScript-fuzzable.
+    enable_js_fuzzing = false
+
+    sources = [ "wasm_local_storage_test_api.mojom" ]
+
+    public_deps = [
+      "//mojo/public/mojom/base",
+      "//third_party/blink/public/mojom/storage_key",
+    ]
+    overridden_deps = [ "//third_party/blink/public/mojom/storage_key" ]
+    component_deps = [ "//third_party/blink/public/common" ]
+  }
 }
 
 source_set("tests") {

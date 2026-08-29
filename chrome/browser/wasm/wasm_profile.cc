@@ -28,7 +28,8 @@
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_storage.h"  // nogncheck
 #endif
@@ -118,7 +119,8 @@ void VerifyPersistentPrefsAndReplyOnFileSequence(
 }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
 void CompletePersistentPrefsWithProfileStorageHold(
     WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
     base::OnceCallback<void(bool success)> completion,
@@ -273,7 +275,8 @@ bool WasmProfile::StartPrefsShutdownFence(
   CHECK(json_pref_store_);
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
       profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
   if (!profile_io_hold) {

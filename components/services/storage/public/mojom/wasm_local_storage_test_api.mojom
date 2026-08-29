@@ -1,0 +1,57 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module storage.mojom;
+
+import "mojo/public/mojom/base/file_path.mojom";
+import "third_party/blink/public/mojom/storage_key/storage_key.mojom";
+
+// Result values for the source-selected M7 LocalStorage close-fence test API.
+// This interface is bound only through StorageService.BindTestApi() in the
+// dedicated Wasm artifact. It is not a production LocalStorageControl API.
+enum WasmLocalStorageTestResult {
+  kSuccess,
+  kInvalidProfilePath,
+  kFenceAlreadyArmed,
+  kStorageNotFound,
+  kStorageAreaNotBound,
+  kOpaqueStorageKey,
+  kNotLevelDb,
+  kDatabaseNotReady,
+  kSnapshotConnectionNotReady,
+  kSnapshotNotOnDisk,
+  kSnapshotUnexpectedAreaCount,
+  kSnapshotStorageKeyMismatch,
+  kSnapshotNotCommitted,
+  kStorageDisconnected,
+  kStorageRebound,
+  kNoPreparedFence,
+  kFenceNotPrepared,
+  kFenceNotArmed,
+  kWaitAlreadyPending,
+  kDatabaseFencePostFailed,
+};
+
+// A deliberately small, three-stage receipt for one on-disk LocalStorage
+// instance. PrepareCommitCloseFence() admits exactly one *bound* StorageKey,
+// proves its immediate UpdateMaps result, and captures its database sequence.
+// The browser side then drops that StorageArea, and ArmCommitCloseFence()
+// retains its result callback until the same instance's final
+// StorageAreaHolder reports OnNoBindings() (including a latched earlier
+// notification from the independently ordered StorageArea pipe). It then
+// rechecks that instance's mapping, generation, and rebind state before
+// replying. The browser then closes and suppresses rebinds for its control
+// remote.
+// WaitForCloseFence() reports success only after StorageService has removed
+// that same instance and a FIFO no-op has run after its destruction task on
+// the captured database sequence.
+interface WasmLocalStorageTestApi {
+  PrepareCommitCloseFence(mojo_base.mojom.FilePath profile_path,
+                          blink.mojom.StorageKey storage_key)
+      => (WasmLocalStorageTestResult result);
+
+  ArmCommitCloseFence() => (WasmLocalStorageTestResult result);
+
+  WaitForCloseFence() => (WasmLocalStorageTestResult result);
+};

@@ -16,6 +16,11 @@ declare_args() {
   # pinned dependency closure are available.
   enable_chromium_wasm_devtools_resources = false
 
+  # Selects the source-only M7 default-partition LocalStorage acceptance.
+  # This is not a normal-profile persistence feature: it admits only the
+  # LocalStorage LevelDB path in its dedicated Wasm Chrome test artifact.
+  enable_chromium_wasm_m7_default_partition_local_storage_test = false
+
   # Linear-memory bounds shared by the Emscripten link and Chromium's M3
   # in-process memory-budget policy.
   chromium_wasm_initial_memory_bytes = 67108864
@@ -33,3 +38,11 @@ assert(chromium_wasm_initial_memory_bytes > 0 &&
            chromium_wasm_initial_memory_bytes <=
                chromium_wasm_maximum_memory_bytes,
        "Chromium Wasm linear-memory bounds are invalid")
+
+# `wasm.gni` is also evaluated in host-toolchain dependency graphs. Validate
+# the source-selected target only in the default Wasm toolchain.
+if (current_toolchain == default_toolchain) {
+  assert(!enable_chromium_wasm_m7_default_partition_local_storage_test ||
+             (is_wasm && enable_chromium_wasm_chrome),
+         "M7 default-partition LocalStorage acceptance requires Wasm Chrome")
+}

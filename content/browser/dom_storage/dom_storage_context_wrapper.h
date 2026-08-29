@@ -15,6 +15,9 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#include "components/services/storage/public/mojom/wasm_local_storage_test_api.mojom.h"
+#endif
 #include "components/services/storage/public/mojom/session_storage_control.mojom.h"
 #include "components/services/storage/public/mojom/storage_usage_info.mojom.h"
 #include "content/browser/child_process_security_policy_impl.h"
@@ -129,6 +132,19 @@ class CONTENT_EXPORT DOMStorageContextWrapper
   // Resets LocalStorage related StorageAreas after disconnection.
   void OnLocalStorageDisconnected();
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // Binds the dedicated M7 LocalStorage test protocol to the same Storage
+  // Service instance that owns this partition's LocalStorage control. This is
+  // intentionally unavailable from normal Content builds.
+  void BindWasmLocalStorageTestApi(
+      mojo::PendingReceiver<storage::mojom::WasmLocalStorageTestApi> receiver);
+
+  // Permanently prevents this wrapper from reconnecting LocalStorage and then
+  // drops its control remote. The seal is set before reset so a concurrent
+  // disconnect cannot manufacture a replacement LocalStorage instance.
+  bool SealLocalStorageForWasmProfileTest();
+#endif
+
  private:
   friend class DOMStorageContextWrapperTest;
   friend class base::RefCountedThreadSafe<DOMStorageContextWrapper>;
@@ -189,6 +205,12 @@ class CONTENT_EXPORT DOMStorageContextWrapper
   // within the Storage Service.
   mojo::Remote<storage::mojom::SessionStorageControl> session_storage_control_;
   mojo::Remote<storage::mojom::LocalStorageControl> local_storage_control_;
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // One-way test lifecycle admission. Normal Content builds do not contain
+  // this state or the LocalStorage-only persistent-path exception.
+  bool local_storage_rebind_sealed_for_wasm_profile_test_ = false;
+#endif
 
   std::optional<storage::StoragePolicyObserver> storage_policy_observer_;
 };

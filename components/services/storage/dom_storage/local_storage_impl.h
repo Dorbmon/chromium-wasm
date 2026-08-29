@@ -147,6 +147,26 @@ class LocalStorageImpl : public base::trace_event::MemoryDumpProvider,
   // is not yet open.
   AsyncDomStorageDatabase* GetDatabaseForTesting() { return database_.get(); }
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // Returns whether |storage_key| is the only materialized StorageArea and it
+  // still has a live Mojo binding. This is only an admission check for the M7
+  // close-fence snapshot; it is not a close or durability result.
+  bool HasExactlyOneBoundStorageAreaForTesting(
+      const blink::StorageKey& storage_key) const;
+
+  // Returns whether any currently materialized StorageArea still has a live
+  // Mojo binding. This is intentionally a narrow test inspection: callers
+  // must not treat an unbound holder as a database-close or durability result.
+  bool HasBoundStorageAreasForTesting() const;
+
+  // Runs |callback| after this exact LocalStorageImpl has observed that none
+  // of its materialized StorageAreas has a live Mojo binding. The notification
+  // is backed by a latch maintained from StorageAreaHolder::OnNoBindings(), so
+  // it also covers a cross-pipe area disconnect that arrived before this
+  // request. It is not a database-close or durability signal.
+  void RunWhenNoStorageAreasBoundForTesting(base::OnceClosure callback);
+#endif
+
   // Wait for the database to be opened, or for opening to fail. If the database
   // is already opened, |callback| is invoked immediately.
   void SetDatabaseOpenCallbackForTesting(base::OnceClosure callback);
@@ -206,6 +226,14 @@ class LocalStorageImpl : public base::trace_event::MemoryDumpProvider,
       StatusOr<DomStorageDatabase::Metadata> all_metadata);
   void OnReceiverDisconnected();
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // Test-only bookkeeping called by the exact StorageAreaHolder that changed
+  // binding state. The no-binding latch makes the Arm receipt independent of
+  // delivery ordering between the StorageArea and test-API Mojo pipes.
+  void OnStorageAreaBoundForTesting();
+  void OnStorageAreaNoBindingsForTesting();
+#endif
+
   // Passed in by the StorageServiceImpl that owns this object. Used to signal
   // that this LocalStorageImpl can be destructed when the Receiver is
   // disconnected.
@@ -255,6 +283,16 @@ class LocalStorageImpl : public base::trace_event::MemoryDumpProvider,
   // restore has taken place, otherwise we might fail to record current usage.
   // See crbug.com/40281870 for more info.
   base::TimeDelta delete_stale_storage_areas_delay_{base::Minutes(1)};
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // A persistent latch is necessary because the StorageArea disconnect and
+  // ArmCommitCloseFence request use different Mojo pipes. It is cleared by
+  // every new area binding and set only after the last holder reports
+  // OnNoBindings().
+  bool no_storage_area_bindings_latched_for_testing_ = false;
+  std::vector<base::OnceClosure>
+      on_no_storage_area_bindings_callbacks_for_testing_;
+#endif
 
   // Maps between a StorageKey and its view of the map's key/value pairs in the
   // database.  Declared near the bottom of this class so it destructs

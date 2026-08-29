@@ -6,6 +6,7 @@
 # normal-profile Preferences readback into a failed shutdown fence. It proves
 # the normal volatile-profile result path fails closed without selecting
 # WasmFS, OPFS, or either experimental M7 profile-storage acceptance.
+import("//build/config/wasm.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 
@@ -20,6 +21,11 @@ assert(!enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic ||
            (!enable_chromium_wasm_m7_profile_preferences_test &&
             !enable_chromium_wasm_m7_profile_database_test),
        "M7 normal-profile fence diagnostic requires its own fresh output configuration")
+assert(
+    !(enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic &&
+      enable_chromium_wasm_m7_default_partition_local_storage_test),
+    "M7 normal-profile fence diagnostic and default-partition LocalStorage " +
+        "acceptance require separate fresh output configurations")
 
 if (enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic) {
   assert(

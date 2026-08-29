@@ -4,6 +4,11 @@
 
 import("//testing/test.gni")
 import("//third_party/protobuf/proto_library.gni")
+import("//build/config/wasm.gni")
+
+config("wasm_m7_default_partition_local_storage_test") {
+  defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+}
 
 source_set("storage") {
   sources = [
@@ -138,6 +143,17 @@ source_set("storage") {
     "//storage/browser",
     "//storage/common",
   ]
+
+  if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+    # This config also reaches all consumers of storage_service_impl.h so the
+    # source-selected test interface cannot create a mismatched C++ class
+    # layout in a static Wasm link.
+    configs += [ ":wasm_m7_default_partition_local_storage_test" ]
+    public_configs = [ ":wasm_m7_default_partition_local_storage_test" ]
+    public_deps += [
+      "//components/services/storage/public/mojom:wasm_local_storage_test_api",
+    ]
+  }
 }
 
 # This is its own component target because it exposes global state to multiple

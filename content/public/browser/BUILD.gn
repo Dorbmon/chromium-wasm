@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/config/ui.gni")
+import("//build/config/wasm.gni")
 import("//content/common/features.gni")
 import("//content/public/common/features.gni")
 import("//device/vr/buildflags/buildflags.gni")
@@ -12,6 +13,10 @@ import("//third_party/webrtc/webrtc.gni")
 
 if (is_android) {
   import("//build/config/android/rules.gni")
+}
+
+config("wasm_m7_default_partition_local_storage_test") {
+  defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
 }
 
 # See //content/BUILD.gn for how this works.
@@ -660,6 +665,17 @@ source_set("browser_sources") {
       "plugin_service.h",
       "plugin_service_filter.h",
     ]
+  }
+
+  if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+    # Export the source-selected public bridge with its generated test API so
+    # the dedicated Chrome helper can stay on StoragePartition's public
+    # DOMStorageContext boundary.
+    public_configs = [ ":wasm_m7_default_partition_local_storage_test" ]
+    public_deps += [
+      "//components/services/storage/public/mojom:wasm_local_storage_test_api",
+    ]
+    sources += [ "wasm_dom_storage_test_support.h" ]
   }
 
   if (is_posix || is_fuchsia) {

@@ -18,10 +18,16 @@ import("//build/toolchain/toolchain.gni")
 import("//chrome/browser/buildflags.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
-assert(!enable_chromium_wasm_m7_profile_database_test ||
-           !enable_chromium_wasm_m7_profile_preferences_test,
-       "M7 database and Preferences acceptances require separate fresh output configurations")
+assert(
+    !(enable_chromium_wasm_m7_profile_database_test &&
+      enable_chromium_wasm_m7_profile_preferences_test) &&
+        !(enable_chromium_wasm_m7_default_partition_local_storage_test &&
+          enable_chromium_wasm_m7_profile_preferences_test) &&
+        !(enable_chromium_wasm_m7_default_partition_local_storage_test &&
+          enable_chromium_wasm_m7_profile_database_test),
+    "M7 persistence acceptances require separate fresh output configurations")
 import("//chrome/chrome_paks.gni")
 import("//chrome/common/features.gni")
 import("//chrome/process_version_rc_template.gni")
@@ -610,8 +616,16 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         output_name = "chrome_wasm_m7_profile_database_lock_test"
       }
     }
+    if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+      # This third M7 artifact admits only the default-profile LocalStorage
+      # LevelDB path and its result-bearing close receipt. It never changes
+      # normal chrome_wasm's in-memory default StoragePartition policy.
+      output_name = "chrome_wasm_m7_default_partition_local_storage_test"
+      defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
-        enable_chromium_wasm_m7_profile_database_test) {
+        enable_chromium_wasm_m7_profile_database_test ||
+        enable_chromium_wasm_m7_default_partition_local_storage_test) {
       configs += [ ":chrome_wasm_profile_storage" ]
     }
     deps = [
@@ -632,8 +646,12 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     if (enable_chromium_wasm_m7_profile_database_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_database_smoke" ]
     }
+    if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+      deps += [ "//chrome/browser/wasm:wasm_profile_local_storage_smoke" ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
-        enable_chromium_wasm_m7_profile_database_test) {
+        enable_chromium_wasm_m7_profile_database_test ||
+        enable_chromium_wasm_m7_default_partition_local_storage_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_storage" ]
     } else {
       deps += [ "//chrome/browser/wasm:wasm_profile_shutdown_failure_latch" ]

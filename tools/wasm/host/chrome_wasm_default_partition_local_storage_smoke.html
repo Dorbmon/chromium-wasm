@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 default-partition LocalStorage smoke</title>
+<main id="m7-default-partition-local-storage-root" data-state="starting">
+  <h1>Chromium Wasm M7 default-partition LocalStorage smoke</h1>
+  <p>
+    This test proves only an ordered Chromium LocalStorage commit, close,
+    backend drain, and fresh-module reopen. It does not claim renderer
+    JavaScript, crash, power-loss, or full-profile persistence semantics.
+  </p>
+  <dl id="m7-default-partition-local-storage-versions"></dl>
+  <canvas id="m7-default-partition-local-storage-canvas" width="1" height="1"
+      tabindex="0"
+      aria-label="Chromium Wasm default-partition LocalStorage smoke canvas">
+  </canvas>
+  <pre id="m7-default-partition-local-storage-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmDefaultPartitionLocalStorageFromQuery} from
+      "./chrome_wasm_default_partition_local_storage_smoke.js";
+
+  runChromeWasmDefaultPartitionLocalStorageFromQuery().catch(() => {
+    const root = document.querySelector(
+        "#m7-default-partition-local-storage-root");
+    const status = document.querySelector(
+        "#m7-default-partition-local-storage-status");
+    if (root instanceof HTMLElement) {
+      root.dataset.state = "fail";
+    }
+    if (status instanceof HTMLElement) {
+      status.textContent = "default-partition LocalStorage smoke failed";
+    }
+  });
+</script>

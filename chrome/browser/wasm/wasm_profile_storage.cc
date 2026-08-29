@@ -28,7 +28,8 @@ namespace {
 constexpr char kProfileRootPath[] = "/profile";
 constexpr char kProfileLeaseName[] = "chromium-wasm-profile-v1";
 
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
 constexpr char kWasmFsRootPath[] = "/";
 constexpr char kProfileDefaultPath[] = "/profile/Default";
 #endif
@@ -39,7 +40,8 @@ int NegativeErrnoOrEio() {
 
 enum class ProfileStorageMount {
   kProfileRoot,
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   kDefaultProfile,
 #endif
 };
@@ -69,7 +71,8 @@ class WasmProfileStorageState {
     }
 
     const char* mount_path = kProfileRootPath;
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     backend_t profile_root_backend = nullptr;
     if (mount == ProfileStorageMount::kDefaultProfile) {
       const int profile_root_result =
@@ -108,7 +111,8 @@ class WasmProfileStorageState {
 
     bool has_expected_mount_identity =
         HasExpectedProfileRootMountIdentity(backend);
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     if (mount == ProfileStorageMount::kDefaultProfile) {
       has_expected_mount_identity =
           HasExpectedDefaultProfileMountIdentity(profile_root_backend, backend);
@@ -276,7 +280,8 @@ class WasmProfileStorageState {
     kDrainFailed,
   };
 
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   static int PrepareVolatileProfileRoot(backend_t* profile_root_backend) {
     CHECK(profile_root_backend);
 
@@ -315,7 +320,8 @@ class WasmProfileStorageState {
     return wasmfs_get_backend_by_path(kProfileRootPath) == leased_backend;
   }
 
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   static bool HasExpectedDefaultProfileMountIdentity(
       backend_t profile_root_backend,
       backend_t leased_backend) {
@@ -398,7 +404,8 @@ bool InitializeWasmProfileStorage() {
       ProfileStorageMount::kProfileRoot);
 }
 
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
 bool InitializeWasmProfilePreferencesStorage() {
   return GetWasmProfileStorageState().Initialize(
       ProfileStorageMount::kDefaultProfile);

@@ -5,7 +5,10 @@
 #ifndef COMPONENTS_SERVICES_STORAGE_STORAGE_SERVICE_IMPL_H_
 #define COMPONENTS_SERVICES_STORAGE_STORAGE_SERVICE_IMPL_H_
 
+#include <cstdint>
+#include <map>
 #include <memory>
+#include <optional>
 #include <set>
 
 #include "base/containers/unique_ptr_adapters.h"
@@ -20,6 +23,11 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#include "components/services/storage/public/mojom/wasm_local_storage_test_api.mojom.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#endif
+
 namespace storage {
 
 class LocalStorageImpl;
@@ -27,7 +35,11 @@ class SessionStorageImpl;
 // Implementation of the main StorageService Mojo interface. This is the root
 // owner of all Storage service instance state, managing the set of active
 // persistent and in-memory local and session storage instances.
-class StorageServiceImpl : public mojom::StorageService {
+class StorageServiceImpl : public mojom::StorageService
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+                         , public mojom::WasmLocalStorageTestApi
+#endif
+{
  public:
   // NOTE: |io_task_runner| is only used in sandboxed environments and can be
   // null otherwise. If non-null, it should specify a task runner that will
@@ -56,6 +68,14 @@ class StorageServiceImpl : public mojom::StorageService {
       bool clear_on_open,
       mojo::PendingReceiver<mojom::SessionStorageControl> receiver) override;
   void BindTestApi(mojo::ScopedMessagePipeHandle test_api_receiver) override;
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  void PrepareCommitCloseFence(
+      const base::FilePath& profile_path,
+      const blink::StorageKey& storage_key,
+      PrepareCommitCloseFenceCallback callback) override;
+  void ArmCommitCloseFence(ArmCommitCloseFenceCallback callback) override;
+  void WaitForCloseFence(WaitForCloseFenceCallback callback) override;
+#endif
 
   // These transfer ownership of the storage instance to a DeferredDeleter when
   // performing ShutDown. This allows the storage instance to be deleted after
@@ -66,6 +86,22 @@ class StorageServiceImpl : public mojom::StorageService {
   void ShutDownAndRemoveLocalStorage(LocalStorageImpl* storage);
 
  private:
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  class WasmLocalStorageCloseFence;
+
+  void OnWasmLocalStorageCloseFenceSnapshot(
+      uint64_t generation,
+      mojom::WasmLocalStorageTestResult result);
+  void OnWasmLocalStorageCloseFenceAreasUnbound(uint64_t generation);
+  void MaybeStartWasmLocalStorageCloseFence();
+  void OnWasmLocalStorageCloseFenceNoOpComplete(uint64_t generation);
+  void CompleteWasmLocalStoragePrepareFence(
+      mojom::WasmLocalStorageTestResult result);
+  void CompleteWasmLocalStorageArmFence(
+      mojom::WasmLocalStorageTestResult result);
+  void CompleteWasmLocalStorageWaitFence(
+      mojom::WasmLocalStorageTestResult result);
+#endif
 #if !BUILDFLAG(IS_ANDROID)
   // Binds a Directory receiver to the same remote implementation to which
   // |remote_data_directory_| is bound. It is invalid to call this when
@@ -100,6 +136,17 @@ class StorageServiceImpl : public mojom::StorageService {
       persistent_local_storage_map_;
   std::map<base::FilePath, raw_ptr<SessionStorageImpl, CtnExperimental>>
       persistent_session_storage_map_;
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // These members are compiled only into the source-selected M7 test
+  // artifact. They identify one persistent LocalStorage instance while its
+  // close receipt is armed and prevent it from being silently rebound.
+  mojo::ReceiverSet<mojom::WasmLocalStorageTestApi>
+      wasm_local_storage_test_api_receivers_;
+  std::map<base::FilePath, uint64_t> persistent_local_storage_generations_;
+  uint64_t next_persistent_local_storage_generation_ = 0;
+  std::unique_ptr<WasmLocalStorageCloseFence> wasm_local_storage_close_fence_;
+#endif
 
   base::WeakPtrFactory<StorageServiceImpl> weak_ptr_factory_{this};
 };

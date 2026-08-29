@@ -11,10 +11,16 @@
 import("//chrome/common/features.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
-assert(!enable_chromium_wasm_m7_profile_database_test ||
-           !enable_chromium_wasm_m7_profile_preferences_test,
-       "M7 database and Preferences acceptances require separate fresh output configurations")
+assert(
+    !(enable_chromium_wasm_m7_profile_database_test &&
+      enable_chromium_wasm_m7_profile_preferences_test) &&
+        !(enable_chromium_wasm_m7_default_partition_local_storage_test &&
+          enable_chromium_wasm_m7_profile_preferences_test) &&
+        !(enable_chromium_wasm_m7_default_partition_local_storage_test &&
+          enable_chromium_wasm_m7_profile_database_test),
+    "M7 persistence acceptances require separate fresh output configurations")
 import("//tools/grit/grit_rule.gni")
 import("//testing/test.gni")
 
@@ -1894,7 +1900,8 @@ source_set("wasm_profile") {
   ]
 
   if (enable_chromium_wasm_m7_profile_preferences_test ||
-      enable_chromium_wasm_m7_profile_database_test) {
+      enable_chromium_wasm_m7_profile_database_test ||
+      enable_chromium_wasm_m7_default_partition_local_storage_test) {
     deps += [ ":wasm_profile_storage" ]
   }
   if (enable_chromium_wasm_m7_profile_preferences_test) {
@@ -1903,6 +1910,9 @@ source_set("wasm_profile") {
   }
   if (enable_chromium_wasm_m7_profile_database_test) {
     defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
+  }
+  if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+    defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
   }
   if (enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic) {
     defines = [ "CHROME_WASM_M7_NORMAL_PROFILE_FENCE_FAILURE_DIAGNOSTIC=1" ]
@@ -2055,6 +2065,31 @@ if (enable_chromium_wasm_m7_profile_database_test) {
   }
 }
 
+# The test-only LocalStorage protocol is linked only into the dedicated
+# default-profile artifact. Its Chrome-side action uses the real privileged
+# StorageArea interface; Content and Storage independently source-select the
+# tiny path exception and close-fence bridge under the same low-level flag.
+if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+  source_set("wasm_profile_local_storage_smoke") {
+    public = [ "wasm_profile_local_storage_smoke.h" ]
+
+    sources = [ "wasm_profile_local_storage_smoke.cc" ]
+
+    defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+
+    deps = [
+      "//base",
+      "//components/services/storage/public/mojom:mojom",
+      "//components/services/storage/public/mojom:wasm_local_storage_test_api",
+      "//content/public/browser",
+      "//crypto",
+      "//third_party/blink/public/common",
+      "//third_party/blink/public/mojom:mojom_platform",
+      "//url",
+    ]
+  }
+}
+
 # This owns only the pure, fail-closed classification for the result of a
 # scoped storage drain. It has no OPFS/WasmFS implementation dependency, so
 # its test can prove result handling without activating a profile backend.
@@ -2080,11 +2115,14 @@ source_set("wasm_profile_storage") {
 
   deps = [ "//base" ]
 
-  # The scoped Default mount is physically absent from the database and normal
-  # Chrome source graphs. Only the dedicated Preferences artifact can name its
-  # initializer in the public storage header.
+  # The scoped Default mount is physically absent from normal Chrome. The two
+  # explicit M7 probes that use it remain separate target artifacts and do not
+  # make any other profile store persistent.
   if (enable_chromium_wasm_m7_profile_preferences_test) {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
+  }
+  if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+    defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
   }
 }
 
@@ -2263,8 +2301,13 @@ source_set("wasm_browser_main_parts") {
     defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
     deps += [ ":wasm_profile_database_smoke" ]
   }
+  if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+    defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+    deps += [ ":wasm_profile_local_storage_smoke" ]
+  }
   if (enable_chromium_wasm_m7_profile_preferences_test ||
-      enable_chromium_wasm_m7_profile_database_test) {
+      enable_chromium_wasm_m7_profile_database_test ||
+      enable_chromium_wasm_m7_default_partition_local_storage_test) {
     deps += [ ":wasm_profile_storage" ]
   } else {
     deps += [ ":wasm_profile_shutdown_failure_latch" ]

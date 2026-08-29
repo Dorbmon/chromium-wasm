@@ -9,6 +9,7 @@ import("//build/config/features.gni")
 import("//build/config/linux/pangocairo/pangocairo.gni")
 import("//build/config/ozone.gni")
 import("//build/config/ui.gni")
+import("//build/config/wasm.gni")
 import("//components/viz/common/debugger/viz_debugger.gni")
 import("//components/vrp_flags/features.gni")
 import("//content/browser/devtools/features.gni")
@@ -2827,6 +2828,7 @@ source_set("browser") {
       "child_process_launcher_helper_wasm.cc",
       "speech/tts_wasm.cc",
     ]
+
     # The native DevTools pipe transport requires inherited process file
     # descriptors and blocking OS I/O threads. The public API rejects it on
     # Wasm until a host-backed transport is available.
@@ -2863,6 +2865,20 @@ source_set("browser") {
       "child_process_launcher_helper_posix.h",
       "posix_file_descriptor_info_impl.cc",
       "posix_file_descriptor_info_impl.h",
+    ]
+  }
+
+  if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
+    # This source-selected bridge is the only Content-side admission for the
+    # M7 default-partition LocalStorage close receipt. It must not leak into
+    # ordinary Wasm Chrome or another platform's DOM-storage graph.
+    defines += [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+    sources += [
+      "../public/browser/wasm_dom_storage_test_support.h",
+      "dom_storage/wasm_dom_storage_test_support.cc",
+    ]
+    deps += [
+      "//components/services/storage/public/mojom:wasm_local_storage_test_api",
     ]
   }
 

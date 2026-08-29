@@ -248,6 +248,13 @@ class LocalStorageImpl::StorageAreaHolder final
     // deletion will happen under memory pressure or when another localstorage
     // area is opened.
     storage_area()->ScheduleImmediateCommit();
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    // This is the authoritative binding transition for the M7 close-fence
+    // test. It intentionally follows ScheduleImmediateCommit(): the test's
+    // earlier snapshot was admitted while this holder was bound, and Arm only
+    // observes that the cross-pipe receiver has now gone away.
+    context_->OnStorageAreaNoBindingsForTesting();
+#endif
   }
 
   std::optional<DomStorageDatabase::MapBatchUpdate::Usage>
@@ -276,6 +283,9 @@ class LocalStorageImpl::StorageAreaHolder final
   void DidCommit(DbStatus status) override { context_->OnCommitResult(status); }
   void Bind(mojo::PendingReceiver<blink::mojom::StorageArea> receiver) {
     has_bindings_ = true;
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    context_->OnStorageAreaBoundForTesting();
+#endif
     storage_area()->Bind(std::move(receiver));
   }
 
@@ -592,6 +602,63 @@ bool LocalStorageImpl::OnMemoryDump(
 const base::FilePath& LocalStorageImpl::GetStoragePartitionDirectory() const {
   return storage_partition_directory_;
 }
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+bool LocalStorageImpl::HasExactlyOneBoundStorageAreaForTesting(
+    const blink::StorageKey& storage_key) const {
+  if (areas_.size() != 1u) {
+    return false;
+  }
+
+  const auto area = areas_.find(storage_key);
+  return area != areas_.end() && area->second->has_bindings();
+}
+
+bool LocalStorageImpl::HasBoundStorageAreasForTesting() const {
+  for (const auto& area : areas_) {
+    if (area.second->has_bindings()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void LocalStorageImpl::RunWhenNoStorageAreasBoundForTesting(
+    base::OnceClosure callback) {
+  DCHECK(callback);
+
+  // The latch is set by StorageAreaHolder::OnNoBindings(), rather than by a
+  // one-shot inspection here. That preserves the event when the area receiver
+  // closes before an independently ordered test-API Arm request arrives.
+  if (no_storage_area_bindings_latched_for_testing_) {
+    std::move(callback).Run();
+    return;
+  }
+  on_no_storage_area_bindings_callbacks_for_testing_.push_back(
+      std::move(callback));
+}
+
+void LocalStorageImpl::OnStorageAreaBoundForTesting() {
+  // A later Arm receipt must wait for a fresh last-unbind transition. This
+  // prevents a stale latch from accepting a StorageArea rebound on another
+  // Mojo pipe.
+  no_storage_area_bindings_latched_for_testing_ = false;
+}
+
+void LocalStorageImpl::OnStorageAreaNoBindingsForTesting() {
+  if (HasBoundStorageAreasForTesting()) {
+    return;
+  }
+
+  no_storage_area_bindings_latched_for_testing_ = true;
+  auto callbacks =
+      std::move(on_no_storage_area_bindings_callbacks_for_testing_);
+  on_no_storage_area_bindings_callbacks_for_testing_.clear();
+  for (auto& callback : callbacks) {
+    std::move(callback).Run();
+  }
+}
+#endif
 
 void LocalStorageImpl::SetDatabaseOpenCallbackForTesting(
     base::OnceClosure callback) {

@@ -40,7 +40,8 @@
 #include "chrome/browser/wasm/wasm_version_ui.h"
 #include "chrome/browser/wasm/wasm_profile.h"
 #if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
-    !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
+    !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
 // The normal source-selected configuration alone supplies this target. GN's
 // include checker does not evaluate target-specific definitions.
 #include "chrome/browser/wasm/wasm_profile_shutdown_failure_latch.h"  // nogncheck
@@ -57,8 +58,13 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_database_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
 // The experimental M7 target alone supplies this header and dependency. GN's
 // include checker does not evaluate target-specific definitions.
 #include "chrome/browser/wasm/wasm_profile_storage.h"  // nogncheck
@@ -329,7 +335,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   if (!chrome::IsWasmProfileStorageMounted()) {
     LOG(ERROR) << "chrome_wasm experimental profile storage is not mounted";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
@@ -371,7 +378,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   if (!chrome::NotifyWasmProfileStorageProfileCreated()) {
     LOG(ERROR) << "chrome_wasm could not admit its profile storage lifecycle";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
@@ -427,6 +435,50 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                   if (!profile_io_completed) {
                     LOG(ERROR) << "chrome_wasm could not complete its profile "
                                   "database I/O admission";
+                  }
+                  if (main_parts) {
+                    main_parts->RequestShutdown();
+                  }
+                },
+                std::move(profile_io_hold),
+                weak_ptr_factory_.GetWeakPtr()))) {
+      RequestShutdown();
+    }
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+#endif
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // This source-selected probe starts after the profile lifecycle admission
+  // but before host input, Browser, WebContents, or BrowserWindow setup. Its
+  // completion owns a real StorageArea map-update snapshot and a same-runner
+  // database-close receipt before it releases its profile-I/O hold.
+  if (chrome::IsWasmProfileLocalStorageSmokeEnabled()) {
+    auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+    if (!profile_io_hold) {
+      LOG(ERROR) << "chrome_wasm could not admit its profile LocalStorage I/O";
+      RequestShutdown();
+      return content::RESULT_CODE_NORMAL_EXIT;
+    }
+    if (!chrome::StartWasmProfileLocalStorageSmoke(
+            profile_->GetDefaultStoragePartition(), profile_->GetPath(),
+            base::BindOnce(
+                [](std::optional<
+                       WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+                       profile_io_hold,
+                   base::WeakPtr<WasmBrowserMainParts> main_parts) {
+                  CHECK(profile_io_hold);
+                  const bool local_storage_succeeded =
+                      chrome::DidWasmProfileLocalStorageSmokeSucceed();
+                  const bool profile_io_completed = profile_io_hold->Complete(
+                      local_storage_succeeded
+                          ? WasmProfileOrderedDrainLifecycle::
+                                ProfileIOCompletion::kSucceeded
+                          : WasmProfileOrderedDrainLifecycle::
+                                ProfileIOCompletion::kFailed);
+                  if (!profile_io_completed) {
+                    LOG(ERROR) << "chrome_wasm could not complete its profile "
+                                  "LocalStorage I/O admission";
                   }
                   if (main_parts) {
                     main_parts->RequestShutdown();
@@ -1449,6 +1501,9 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
                 chrome::NotifyWasmProfileDatabaseSmokeFenceResult(false);
 #endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+                chrome::NotifyWasmProfileLocalStorageSmokeFenceResult(false);
+#endif
                 return;
               }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
@@ -1456,6 +1511,9 @@ void WasmBrowserMainParts::FinishShutdown() {
 #endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
               chrome::NotifyWasmProfileDatabaseSmokeFenceResult(success);
+#endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+              chrome::NotifyWasmProfileLocalStorageSmokeFenceResult(success);
 #endif
               if (!success) {
                 LOG(ERROR) << "chrome_wasm Preferences shutdown write/readback "
@@ -1477,7 +1535,8 @@ void WasmBrowserMainParts::FinishShutdown() {
                     "failed";
     }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     if (!prefs_shutdown_fence_succeeded) {
       // ShutdownFoundation intentionally withholds the storage lifecycle
       // acknowledgement. ChromeMain's scoped backend drain will then
@@ -1513,6 +1572,16 @@ void WasmBrowserMainParts::FinishShutdown() {
         smoke_allows_storage_lifecycle = false;
       }
 #endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+      if (chrome::IsWasmProfileLocalStorageSmokeEnabled() &&
+          !chrome::DidWasmProfileLocalStorageSmokeSucceed()) {
+        // A LocalStorage close result failure must not become a V4 storage
+        // handoff. Retain the lifecycle state so the outer drain fails closed
+        // and cannot emit a lease-success marker.
+        chrome::NotifyWasmProfileLocalStorageSmokeStorageLifecycle(false);
+        smoke_allows_storage_lifecycle = false;
+      }
+#endif
       if (smoke_allows_storage_lifecycle) {
         const bool storage_lifecycle_notified =
             chrome::NotifyWasmProfileStorageProfileShutdown();
@@ -1522,6 +1591,10 @@ void WasmBrowserMainParts::FinishShutdown() {
 #endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
         chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(
+            storage_lifecycle_notified);
+#endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+        chrome::NotifyWasmProfileLocalStorageSmokeStorageLifecycle(
             storage_lifecycle_notified);
 #endif
         if (!storage_lifecycle_notified) {
@@ -1573,7 +1646,8 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     // loop. Reaching this fallback means startup or the write/readback fence
     // failed before that terminal handoff.
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     LOG(ERROR) << "chrome_wasm retains its OPFS profile lease because "
                   "Preferences did not pass their shutdown fence";
 #else

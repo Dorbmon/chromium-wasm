@@ -17,11 +17,12 @@ namespace chrome {
 // before ContentMain can register or resolve DIR_USER_DATA.
 bool InitializeWasmProfileStorage();
 
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-// Mounts the Preferences acceptance probe's leased V4 OPFS backend only at
-// /profile/Default. Its /profile parent remains on WasmFS's default memory
-// backend, which the initializer validates before and after the child mount.
-// This is available only in the dedicated Preferences test artifact.
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+// Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend
+// only at /profile/Default. Its /profile parent remains on WasmFS's default
+// memory backend, which the initializer validates before and after the child
+// mount. This is unavailable from normal Chrome.
 bool InitializeWasmProfilePreferencesStorage();
 #endif
 

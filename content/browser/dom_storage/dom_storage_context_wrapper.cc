@@ -35,6 +35,10 @@
 #include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/storage_partition_impl.h"
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/storage_partition_config.h"
+#endif
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
@@ -53,13 +57,39 @@ namespace content {
 
 namespace {
 
-std::optional<base::FilePath> GetDOMStoragePath(
+std::optional<base::FilePath> GetLocalStoragePath(
     StoragePartitionImpl* partition) {
 #if BUILDFLAG(IS_WASM)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // The M7 LocalStorage acceptance intentionally leaves the partition itself
+  // in memory. It supplies the browser-context path only to LocalStorage so
+  // no other partition-owned store gains an implicit persistence claim. The
+  // source-selected test uses the default partition, whose relative path is
+  // empty and therefore exactly identifies the browser profile directory.
+  if (!partition->GetConfig().is_default()) {
+    return std::nullopt;
+  }
+  BrowserContext* const browser_context = partition->browser_context();
+  return browser_context
+             ? std::optional<base::FilePath>(browser_context->GetPath())
+             : std::nullopt;
+#else
   // The regular Wasm profile has no durable StoragePartition lifecycle yet.
-  // Bind both DOM-storage implementations without a path so their real
-  // in-memory backends remain available, rather than creating LevelDB stores
-  // which cannot report a terminal, result-bearing drain to WasmProfile.
+  // Keep LocalStorage in memory rather than creating a LevelDB store which
+  // cannot report a terminal, result-bearing drain to WasmProfile.
+  static_cast<void>(partition);
+  return std::nullopt;
+#endif
+#else
+  return partition->GetStoragePartitionPath();
+#endif
+}
+
+std::optional<base::FilePath> GetSessionStoragePath(
+    StoragePartitionImpl* partition) {
+#if BUILDFLAG(IS_WASM)
+  // SessionStorage remains in memory even in the dedicated LocalStorage
+  // acceptance. It has no result-bearing persistent shutdown protocol.
   static_cast<void>(partition);
   return std::nullopt;
 #else
@@ -130,7 +160,7 @@ DOMStorageContextWrapper::DOMStorageContextWrapper(
 
   // Report on disk LocalStorage db size.
   if (const std::optional<base::FilePath> dom_storage_path =
-          GetDOMStoragePath(partition_)) {
+          GetLocalStoragePath(partition_)) {
     // Path to the LocalStorage leveldb directory.
     base::FilePath db_path = storage::GetLocalStorageDatabasePath(
         *dom_storage_path);
@@ -292,6 +322,15 @@ void DOMStorageContextWrapper::OpenLocalStorage(
     mojo::PendingReceiver<blink::mojom::StorageArea> receiver,
     ChildProcessSecurityPolicyImpl::Handle security_policy_handle,
     mojo::ReportBadMessageCallback bad_message_callback) {
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // The dedicated close receipt has sealed new LocalStorage admission. Do not
+  // bind a new area to a control remote that the close path has already
+  // detached.
+  if (local_storage_rebind_sealed_for_wasm_profile_test_ ||
+      !local_storage_control_) {
+    return;
+  }
+#endif
   if (!IsRequestValid(StorageType::kLocalStorage, storage_key,
                       local_frame_token, std::move(security_policy_handle),
                       std::move(bad_message_callback))) {
@@ -393,7 +432,7 @@ void DOMStorageContextWrapper::MaybeBindSessionStorageControl(
     return;
   session_storage_control_.reset();
   partition_->GetStorageService()->BindSessionStorageControl(
-      GetDOMStoragePath(partition_), clear_on_open,
+      GetSessionStoragePath(partition_), clear_on_open,
       session_storage_control_.BindNewPipeAndPassReceiver());
   session_storage_control_.set_disconnect_handler(
       base::BindOnce(&DOMStorageContextWrapper::OnSessionStorageDisconnected,
@@ -401,19 +440,56 @@ void DOMStorageContextWrapper::MaybeBindSessionStorageControl(
 }
 
 void DOMStorageContextWrapper::OnLocalStorageDisconnected() {
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  if (local_storage_rebind_sealed_for_wasm_profile_test_) {
+    return;
+  }
+#endif
   DCHECK(partition_);
 
   MaybeBindLocalStorageControl();
   partition_->ResetLocalStorageConnections();
 }
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+void DOMStorageContextWrapper::BindWasmLocalStorageTestApi(
+    mojo::PendingReceiver<storage::mojom::WasmLocalStorageTestApi> receiver) {
+  if (!partition_ || local_storage_rebind_sealed_for_wasm_profile_test_) {
+    return;
+  }
+
+  // StorageService deliberately exposes test APIs through an untyped pipe so
+  // production StorageService does not depend on a source-selected interface.
+  partition_->GetStorageService()->BindTestApi(receiver.PassPipe());
+}
+
+bool DOMStorageContextWrapper::SealLocalStorageForWasmProfileTest() {
+  if (!partition_ || local_storage_rebind_sealed_for_wasm_profile_test_) {
+    return false;
+  }
+
+  // Set the seal before closing the remote. A peer disconnect can otherwise
+  // run OnLocalStorageDisconnected() and immediately bind a replacement
+  // LocalStorageImpl while the test waits for the old instance's close fence.
+  local_storage_rebind_sealed_for_wasm_profile_test_ = true;
+  const bool had_control = local_storage_control_.is_bound();
+  local_storage_control_.reset();
+  return had_control;
+}
+#endif
+
 void DOMStorageContextWrapper::MaybeBindLocalStorageControl() {
   if (!partition_) {
     return;
   }
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  if (local_storage_rebind_sealed_for_wasm_profile_test_) {
+    return;
+  }
+#endif
   local_storage_control_.reset();
   partition_->GetStorageService()->BindLocalStorageControl(
-      GetDOMStoragePath(partition_),
+      GetLocalStoragePath(partition_),
       local_storage_control_.BindNewPipeAndPassReceiver());
   local_storage_control_.set_disconnect_handler(
       base::BindOnce(&DOMStorageContextWrapper::OnLocalStorageDisconnected,

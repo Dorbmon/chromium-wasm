@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Contracts for in-memory DOM storage and blob paging on Wasm."""
+"""Contracts for Wasm DOM-storage containment and blob paging."""
 
 from __future__ import annotations
 
@@ -29,27 +29,79 @@ def _body_after_signature(text: str, signature: str) -> str:
 
 
 class M7VolatileProfileDomStorageBlobBoundaryContractTest(unittest.TestCase):
-    def test_dom_storage_uses_its_in_memory_backend_on_wasm(self) -> None:
+    def test_dom_storage_paths_are_contained_on_wasm(self) -> None:
         implementation = source(
             "content/browser/dom_storage/dom_storage_context_wrapper.cc"
         )
 
-        path_helper = _body_after_signature(
+        local_storage_path_helper = _body_after_signature(
             implementation,
-            "std::optional<base::FilePath> GetDOMStoragePath(",
+            "std::optional<base::FilePath> GetLocalStoragePath(",
         )
-        self.assertIn("#if BUILDFLAG(IS_WASM)", path_helper)
-        self.assertIn("return std::nullopt;", path_helper)
-        self.assertIn("return partition->GetStoragePartitionPath();", path_helper)
+        self.assertIn("#if BUILDFLAG(IS_WASM)", local_storage_path_helper)
+        self.assertIn(
+            "#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)",
+            local_storage_path_helper,
+        )
+        self.assertIn(
+            "if (!partition->GetConfig().is_default()) {\n"
+            "    return std::nullopt;\n"
+            "  }",
+            local_storage_path_helper,
+        )
+        self.assertIn(
+            "BrowserContext* const browser_context = partition->browser_context();",
+            local_storage_path_helper,
+        )
+        self.assertIn("browser_context->GetPath()", local_storage_path_helper)
 
-        for signature in (
+        normal_wasm_local_storage = local_storage_path_helper.split(
+            "#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)", 1
+        )[1].split("#else", 1)[1]
+        self.assertIn(
+            "static_cast<void>(partition);\n  return std::nullopt;",
+            normal_wasm_local_storage,
+        )
+        self.assertNotIn("browser_context", normal_wasm_local_storage)
+        self.assertNotIn("GetPath()", normal_wasm_local_storage)
+        self.assertIn(
+            "return partition->GetStoragePartitionPath();", local_storage_path_helper
+        )
+
+        session_storage_path_helper = _body_after_signature(
+            implementation,
+            "std::optional<base::FilePath> GetSessionStoragePath(",
+        )
+        self.assertIn("#if BUILDFLAG(IS_WASM)", session_storage_path_helper)
+        self.assertIn(
+            "static_cast<void>(partition);\n  return std::nullopt;",
+            session_storage_path_helper,
+        )
+        self.assertNotIn(
+            "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST",
+            session_storage_path_helper,
+        )
+        self.assertNotIn("browser_context", session_storage_path_helper)
+        self.assertNotIn("GetPath()", session_storage_path_helper)
+        self.assertIn(
+            "return partition->GetStoragePartitionPath();", session_storage_path_helper
+        )
+
+        session_bind_body = _body_after_signature(
+            implementation,
             "void DOMStorageContextWrapper::MaybeBindSessionStorageControl(",
+        )
+        self.assertIn("GetSessionStoragePath(partition_)", session_bind_body)
+        self.assertNotIn("GetLocalStoragePath(partition_)", session_bind_body)
+        self.assertNotIn("GetStoragePartitionPath()", session_bind_body)
+
+        local_bind_body = _body_after_signature(
+            implementation,
             "void DOMStorageContextWrapper::MaybeBindLocalStorageControl()",
-        ):
-            with self.subTest(signature=signature):
-                body = _body_after_signature(implementation, signature)
-                self.assertIn("GetDOMStoragePath(partition_)", body)
-                self.assertNotIn("GetStoragePartitionPath()", body)
+        )
+        self.assertIn("GetLocalStoragePath(partition_)", local_bind_body)
+        self.assertNotIn("GetSessionStoragePath(partition_)", local_bind_body)
+        self.assertNotIn("GetStoragePartitionPath()", local_bind_body)
 
     def test_blob_storage_does_not_enable_file_paging_on_wasm(self) -> None:
         implementation = source(
