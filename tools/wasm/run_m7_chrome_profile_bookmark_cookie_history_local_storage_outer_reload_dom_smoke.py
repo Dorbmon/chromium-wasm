@@ -11,24 +11,29 @@ writes one separately escrowed token through a real renderer's
 backend, History/Favicons SQLite backends, renderer LocalStorage database,
 Preferences fence, and the one shared V4 drain have completed may both
 protocol-specific ``LEASE_RELEASED`` receipts appear. The runner then issues
-exactly one DevTools ``Page.reload``. Document two reads preference A,
-Bookmark A, Cookie A, and History A before writing preference B, Bookmark B,
-Cookie B, and History B, and reopens the same LocalStorage token through Blink.
-It must reach the same ordered close/fence/drain boundary.
+the first DevTools ``Page.reload``. Document two reads preference A, Bookmark
+A, Cookie A, and History A before writing preference B, Bookmark B, Cookie B,
+and History B, and reopens the same LocalStorage token through Blink. After the
+same ordered close/fence/drain boundary, a second ``Page.reload`` creates
+document three. It reopens preference B, Bookmark B, Cookie B, both History
+rows, and renderer LocalStorage; removes Bookmark B with a result-bearing
+cleanup flush; and reaches the same shared drain again.
 
-The retained CDP client requires the reload to keep the root frame and replace
-its loader. The two receipts must also carry increasing ``timeOrigin`` values,
-``navigate`` then ``reload`` navigation types, distinct loader identities, and
-distinct Wasm module identities. No host JavaScript self-navigates.
+The retained CDP client requires both reloads to keep the root frame and
+replace its loader. The three receipts must also carry increasing
+``timeOrigin`` values, ``navigate`` then ``reload``/``reload`` navigation
+types, pairwise-distinct loader identities, and pairwise-distinct Wasm module
+identities. No host JavaScript self-navigates.
 
-This is a source-selected orderly-reload witness only. It does not prove
-Bookmark B reopen/cleanup, the full Bookmark service, crash/power-loss
-durability, full-profile persistence, normal navigation history or the History
-UI, the general Cookie request path, or a generally persistent
-StoragePartition. Raw preference A, preference B, and LocalStorage values exist
-only in this process's in-memory escrow and one-shot bootstrap bodies. They are
-scanned out of browser stderr and excluded from every receipt and final result;
-only SHA-256 digests leave the escrow boundary.
+This is a source-selected orderly-reload witness only. It proves Bookmark B
+reopen plus a returned cleanup write, not a fourth reopen of that cleanup or
+the full Bookmark service. It does not prove crash/power-loss durability,
+full-profile persistence, normal navigation history or the History UI, the
+general Cookie request path, or a generally persistent StoragePartition. Raw
+preference A, preference B, and LocalStorage values exist only in this
+process's in-memory escrow and one-shot bootstrap bodies. They are scanned out
+of browser stderr and excluded from every receipt and final result; only
+SHA-256 digests leave the escrow boundary.
 """
 
 from __future__ import annotations
@@ -61,9 +66,9 @@ from run_browser_smoke import browser_command, find_browser, stop_browser
 
 
 SENTINEL = "CHROMIUM_WASM_M7_CHROME_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_OUTER_RELOAD_DOM"
-CASE = "chrome_profile_bookmark_cookie_history_local_storage_two_outer_document_reload_m7"
+CASE = "chrome_profile_bookmark_cookie_history_local_storage_three_outer_document_reload_m7"
 SCOPE = (
-    "same-origin-two-outer-documents-chrome-wasm-m7-preferences-bookmark-model-cookie-manager-"
+    "same-origin-three-outer-documents-chrome-wasm-m7-preferences-bookmark-model-cookie-manager-"
     "history-service-renderer-local-storage-one-shared-drain-per-module-"
     "orderly-reload-only"
 )
@@ -394,6 +399,8 @@ def _phase_mode(ordinal: int) -> str:
         return "write"
     if ordinal == 2:
         return "verify-and-write"
+    if ordinal == 3:
+        return "verify-b"
     raise M0Error("outer-reload phase ordinal is invalid")
 
 
@@ -442,9 +449,12 @@ class OuterReloadSession:
         self._ready: set[int] = set()
         self._phase_one: DocumentEvidence | None = None
         self._phase_two: DocumentEvidence | None = None
+        self._phase_three: DocumentEvidence | None = None
         self._pending: tuple[int, DocumentEvidence] | None = None
         self._phase_one_validated_time: float | None = None
+        self._phase_two_validated_time: float | None = None
         self._phase_two_armed = False
+        self._phase_three_armed = False
         self._top_level_reload_seen_for: int | None = None
 
     def matches_result_token(self, value: object) -> bool:
@@ -484,7 +494,19 @@ class OuterReloadSession:
                     raise ProtocolStateError("outer-reload document state conflict")
                 self._pending = (2, evidence)
                 return True
-            raise ProtocolStateError("outer-reload document state conflict")
+            if (
+                not self._phase_three_armed
+                or self._top_level_reload_seen_for != 3
+                or self._phase_three is not None
+                or self._pending is not None
+                or 3 in self._bootstrap_served
+                or evidence.navigation_type != "reload"
+                or self._phase_two_validated_time is None
+                or evidence.time_origin <= self._phase_two_validated_time
+            ):
+                raise ProtocolStateError("outer-reload document state conflict")
+            self._pending = (3, evidence)
+            return True
 
     def acknowledge_document(self, session: str) -> None:
         if not self.matches_session(session):
@@ -497,6 +519,8 @@ class OuterReloadSession:
                 self._phase_one = evidence
             elif ordinal == 2 and self._phase_two is None:
                 self._phase_two = evidence
+            elif ordinal == 3 and self._phase_three is None:
+                self._phase_three = evidence
             else:
                 raise ProtocolStateError("outer-reload acknowledgement conflict")
             self._pending = None
@@ -512,6 +536,8 @@ class OuterReloadSession:
                     ordinal = 1
                 elif self._phase_two is not None and 2 not in self._bootstrap_served:
                     ordinal = 2
+                elif self._phase_three is not None and 3 not in self._bootstrap_served:
+                    ordinal = 3
                 else:
                     raise ProtocolStateError("outer-reload bootstrap state conflict")
                 self._bootstrap_served.add(ordinal)
@@ -521,12 +547,16 @@ class OuterReloadSession:
             "scope": SCOPE,
             "ordinal": ordinal,
             "mode": _phase_mode(ordinal),
-            "preferenceTokenA": self.escrow.preference_a,
+            "preferenceTokenA": (
+                None if ordinal == 3 else self.escrow.preference_a
+            ),
             "preferenceTokenB": (
                 None if ordinal == 1 else self.escrow.preference_b
             ),
             "localStorageToken": self.escrow.local_storage,
-            "preferenceTokenADigest": self.escrow.preference_a_digest,
+            "preferenceTokenADigest": (
+                None if ordinal == 3 else self.escrow.preference_a_digest
+            ),
             "preferenceTokenBDigest": (
                 None if ordinal == 1 else self.escrow.preference_b_digest
             ),
@@ -557,6 +587,15 @@ class OuterReloadSession:
             ):
                 self._top_level_reload_seen_for = 2
                 return True
+            if (
+                self._phase_three_armed
+                and self._top_level_reload_seen_for is None
+                and self._phase_three is None
+                and self._pending is None
+                and 3 not in self._bootstrap_served
+            ):
+                self._top_level_reload_seen_for = 3
+                return True
             return False
 
     def document_evidence(self, ordinal: int) -> DocumentEvidence:
@@ -565,6 +604,8 @@ class OuterReloadSession:
                 evidence = self._phase_one
             elif ordinal == 2:
                 evidence = self._phase_two
+            elif ordinal == 3:
+                evidence = self._phase_three
             else:
                 raise ProtocolStateError("outer-reload document evidence is unavailable")
             if evidence is None:
@@ -576,7 +617,7 @@ class OuterReloadSession:
             return False
         with self._lock:
             if (
-                ordinal not in (1, 2)
+                ordinal not in (1, 2, 3)
                 or ordinal not in self._bootstrap_served
                 or ordinal in self._results
             ):
@@ -591,7 +632,7 @@ class OuterReloadSession:
             if (
                 ordinal not in self._results
                 or ordinal in self._ready
-                or ordinal not in (1, 2)
+                or ordinal not in (1, 2, 3)
             ):
                 raise ProtocolStateError("outer-reload ready state conflict")
             self._ready.add(ordinal)
@@ -620,6 +661,31 @@ class OuterReloadSession:
                 raise ProtocolStateError("outer-reload phase authorization conflict")
             self._phase_one_validated_time = float(phase_one_time_origin)
             self._phase_two_armed = True
+
+    def arm_phase_three(self, phase_two_time_origin: float) -> None:
+        if (
+            not isinstance(phase_two_time_origin, (int, float))
+            or isinstance(phase_two_time_origin, bool)
+            or not math.isfinite(float(phase_two_time_origin))
+            or float(phase_two_time_origin) <= 0
+        ):
+            raise M0Error("outer-reload phase-two document time is invalid")
+        with self._lock:
+            if (
+                self._phase_two is None
+                or 2 not in self._bootstrap_served
+                or 2 not in self._results
+                or 2 not in self._ready
+                or self._phase_three_armed
+                or self._phase_three is not None
+                or self._pending is not None
+                or self._top_level_reload_seen_for != 2
+                or self._phase_two.time_origin != float(phase_two_time_origin)
+            ):
+                raise ProtocolStateError("outer-reload phase authorization conflict")
+            self._phase_two_validated_time = float(phase_two_time_origin)
+            self._phase_three_armed = True
+            self._top_level_reload_seen_for = None
 
 class ChromeProfileBookmarkCookieHistoryLocalStorageOuterReloadServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -781,7 +847,7 @@ class ChromeProfileBookmarkCookieHistoryLocalStorageOuterReloadRequestHandler(Ba
             not separator
             or "/" in ordinal_text
             or not CAPABILITY_RE.fullmatch(token)
-            or ordinal_text not in ("1", "2")
+            or ordinal_text not in ("1", "2", "3")
         ):
             return None
         return token, int(ordinal_text)
@@ -1035,8 +1101,8 @@ def create_server(
     server.host_js = host_files[HOST_JS_NAME]
     server.module_name = PRODUCT_MODULE_NAME
     server.runner_source = runner_source
-    server.result_queue = queue.Queue(maxsize=2)
-    server.ready_queue = queue.Queue(maxsize=2)
+    server.result_queue = queue.Queue(maxsize=3)
+    server.ready_queue = queue.Queue(maxsize=3)
     server.receipt_lock = threading.Lock()
     server.session = OuterReloadSession(result_token, session, escrow)
     # ``smoke_url`` installs the one exact navigated query before browser
@@ -1328,6 +1394,36 @@ def expected_markers(ordinal: int, escrow: TokenEscrow) -> list[str]:
             f"{M7_PREFS_MARKER_PREFIX}LEASE_RELEASED",
             f"{M7_LOCAL_STORAGE_MARKER_PREFIX}LEASE_RELEASED",
         ]
+    if ordinal == 3:
+        return [
+            f"{M7_PREFS_MARKER_PREFIX}READY",
+            f"{M7_PREFS_MARKER_PREFIX}READ_B_OK "
+            f"sha256={escrow.preference_b_digest}",
+            f"{M7_PREFS_MARKER_PREFIX}BROWSER_SMOKE_CLOSED",
+            f"{M7_PREFS_MARKER_PREFIX}BOOKMARK_B_READ_OK "
+            f"sha256={escrow.preference_b_digest}",
+            f"{M7_PREFS_MARKER_PREFIX}BOOKMARK_CLEANUP_FLUSHED",
+            f"{M7_PREFS_MARKER_PREFIX}BOOKMARK_MODEL_CLOSED",
+            f"{M7_PREFS_MARKER_PREFIX}COOKIE_B_READ_OK "
+            f"sha256={escrow.preference_b_digest}",
+            f"{M7_PREFS_MARKER_PREFIX}COOKIE_BACKEND_CLOSED",
+            f"{M7_PREFS_MARKER_PREFIX}HISTORY_A_READ_OK",
+            f"{M7_PREFS_MARKER_PREFIX}HISTORY_B_READ_OK",
+            f"{M7_PREFS_MARKER_PREFIX}HISTORY_BACKEND_CLOSED",
+            f"{M7_LOCAL_STORAGE_MARKER_PREFIX}READY",
+            f"{M7_LOCAL_STORAGE_MARKER_PREFIX}RENDERER_REOPEN_READ_OK "
+            f"sha256={escrow.local_storage_digest}",
+            f"{M7_LOCAL_STORAGE_MARKER_PREFIX}ON_DISK_COMMIT_OK "
+            f"sha256={escrow.local_storage_digest}",
+            f"{M7_LOCAL_STORAGE_MARKER_PREFIX}DB_CLOSE_OK "
+            f"sha256={escrow.local_storage_digest}",
+            f"{M7_PREFS_MARKER_PREFIX}FENCE_OK "
+            f"sha256={escrow.preference_b_digest}",
+            f"{M7_LOCAL_STORAGE_MARKER_PREFIX}FENCE_OK "
+            f"sha256={escrow.local_storage_digest}",
+            f"{M7_PREFS_MARKER_PREFIX}LEASE_RELEASED",
+            f"{M7_LOCAL_STORAGE_MARKER_PREFIX}LEASE_RELEASED",
+        ]
     raise M0Error("outer-reload marker ordinal is invalid")
 
 
@@ -1421,9 +1517,11 @@ def _validate_run(run: object, ordinal: int, escrow: TokenEscrow) -> tuple[str, 
 
 def _validate_token_evidence(value: object, ordinal: int, escrow: TokenEscrow) -> None:
     evidence = _require_exact_fields(value, _TOKEN_EVIDENCE_FIELDS, "token evidence")
-    expected_a = escrow.preference_a_digest
+    expected_a: str | None = (
+        None if ordinal == 3 else escrow.preference_a_digest
+    )
     expected_b: str | None = None if ordinal == 1 else escrow.preference_b_digest
-    expected_distinct: bool | None = True if ordinal == 2 else None
+    expected_distinct: bool | None = True if ordinal in (2, 3) else None
     if (
         evidence.get("algorithm") != "SHA-256"
         or evidence.get("preferenceA") != expected_a
@@ -1618,18 +1716,30 @@ def validate_ready_receipt(value: dict[str, Any], expected: PhaseResult) -> None
         raise M0Error("outer-reload ready receipt is invalid")
 
 
-def validate_outer_document_transitions(first: PhaseResult, second: PhaseResult) -> None:
+def validate_outer_document_transitions(
+    first: PhaseResult, second: PhaseResult, third: PhaseResult
+) -> None:
     if (
         first.ordinal != 1
         or second.ordinal != 2
+        or third.ordinal != 3
         or first.origin != second.origin
+        or second.origin != third.origin
         or first.navigation_type != "navigate"
         or second.navigation_type != "reload"
+        or third.navigation_type != "reload"
         or second.time_origin <= first.time_origin
-        or first.module_identity == second.module_identity
-        or first.loader_identity == second.loader_identity
+        or third.time_origin <= second.time_origin
+        or len(
+            {first.module_identity, second.module_identity, third.module_identity}
+        )
+        != 3
+        or len(
+            {first.loader_identity, second.loader_identity, third.loader_identity}
+        )
+        != 3
     ):
-        raise M0Error("outer-reload two-document transition is invalid")
+        raise M0Error("outer-reload three-document transition is invalid")
 
 
 def _wait_for_receipt(
@@ -1803,7 +1913,7 @@ def write_failure_diagnostics(
         "stage": stage,
         "nonclaims": [
             "not_m7_gate_complete",
-            "not_bookmark_b_reopen_or_cleanup",
+            "not_bookmark_cleanup_fourth_reopen",
             "not_full_bookmark_service_persistence_coverage",
             "not_crash_recovery",
             "not_power_loss_durability",
@@ -1854,8 +1964,8 @@ def _stop_server(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Run two aggregate Bookmark + Cookie + History + renderer LocalStorage Chrome Wasm "
-            "documents separated by one real DevTools Page.reload."
+            "Run three aggregate Bookmark + Cookie + History + renderer LocalStorage Chrome Wasm "
+            "documents separated by two real DevTools Page.reload calls."
         ),
         epilog=(
             "Build the normal artifact with: buildtools/linux64/gn gen "
@@ -1991,7 +2101,7 @@ def main() -> int:
         stage = "arm-phase-two-document-evidence"
         server.session.arm_phase_two(first.time_origin)
         stage = "reload-outer-document-phase-two"
-        reload_outer_document(
+        root_frame = reload_outer_document(
             client,
             browser,
             browser_stderr,
@@ -2020,8 +2130,42 @@ def main() -> int:
         ready_ordinals.add(2)
         stage = "validate-phase-two-ready"
         validate_ready_receipt(second_ready, second)
-        stage = "validate-two-document-transition"
-        validate_outer_document_transitions(first, second)
+        stage = "prepare-cdp-outer-reload-phase-three"
+        root_frame = prepare_outer_document_reload(client)
+        stage = "arm-phase-three-document-evidence"
+        server.session.arm_phase_three(second.time_origin)
+        stage = "reload-outer-document-phase-three"
+        reload_outer_document(
+            client,
+            browser,
+            browser_stderr,
+            root_frame,
+            expected_page_url_prefix,
+            deadline,
+        )
+        stage = "wait-phase-three-result"
+        third_result = wait_for_phase_result(browser, browser_stderr, server, 3, deadline)
+        result_ordinals.add(3)
+        stage = "validate-phase-three-result"
+        third = validate_phase_result(
+            third_result,
+            ordinal=3,
+            expected_versions=versions,
+            expected_artifact_identity=artifact,
+            expected_capture_harness_identity=capture_harness,
+            expected_origin=expected_origin,
+            expected_document=server.session.document_evidence(3),
+            escrow=escrow,
+            result_token=result_token,
+            session=session,
+        )
+        stage = "wait-phase-three-ready"
+        third_ready = wait_for_ready_receipt(browser, browser_stderr, server, 3, deadline)
+        ready_ordinals.add(3)
+        stage = "validate-phase-three-ready"
+        validate_ready_receipt(third_ready, third)
+        stage = "validate-three-document-transition"
+        validate_outer_document_transitions(first, second, third)
         successful = True
     except Exception as error:
         if args.diagnostics_dir is not None:
@@ -2071,15 +2215,16 @@ def main() -> int:
         + json.dumps(
             {
                 "case": CASE,
-                "documents": 2,
-                "freshLoaders": 2,
-                "freshModules": 2,
+                "documents": 3,
+                "freshLoaders": 3,
+                "freshModules": 3,
                 "m7GateComplete": False,
                 "outerDocumentReload": True,
-                "pageReloadCount": 1,
+                "pageReloadCount": 2,
                 "bookmarkModelAReopenReadAndBWriteWithModelClose": True,
                 "bookmarkTransportModeFeatureDisabled": True,
-                "bookmarkBReopenOrCleanupProven": False,
+                "bookmarkBReopenAndCleanupWriteFlushed": True,
+                "bookmarkCleanupFourthReopenProven": False,
                 "bookmarkModelFullServicePersistenceProven": False,
                 "cookieManagerFlushReopenAndBackendClose": True,
                 "cookieManagerFullServicePersistenceProven": False,

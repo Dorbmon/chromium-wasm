@@ -126,6 +126,29 @@ class M7RendererLocalStorageContractTest(unittest.TestCase):
         self.assertIn('"text/javascript"', self.ui)
         self.assertIn("globalThis.localStorage.setItem(tokenKey, token);", self.ui)
         self.assertIn("globalThis.localStorage.getItem(tokenKey) === token", self.ui)
+        self.assertIn(
+            'const fenceValueA = "m7-renderer-local-storage-close-fence-value-a";',
+            self.ui,
+        )
+        self.assertIn(
+            'const fenceValueB = "m7-renderer-local-storage-close-fence-value-b";',
+            self.ui,
+        )
+        self.assertIn(
+            "const previousFenceValue = globalThis.localStorage.getItem(fenceKey);",
+            self.ui,
+        )
+        self.assertIn(
+            "previousFenceValue === fenceValueA ?\n"
+            "          fenceValueB : fenceValueA",
+            self.ui,
+        )
+        self.assertIn(
+            "globalThis.localStorage.setItem(fenceKey, nextFenceValue);", self.ui
+        )
+        self.assertNotIn(
+            "globalThis.localStorage.setItem(fenceKey, token);", self.ui
+        )
         self.assertIn('mode === "renderer-write"', self.ui)
         self.assertIn('mode === "renderer-verify"', self.ui)
         self.assertIn("m7-local-storage-renderer-write-ok", self.ui)

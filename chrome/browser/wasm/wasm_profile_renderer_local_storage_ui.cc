@@ -97,6 +97,8 @@ constexpr char kRendererLocalStorageScript[] = R"JS((() => {
   const tokenPattern = /^[0-9a-f]{64}$/;
   const tokenKey = "m7-renderer-local-storage-token-v1";
   const fenceKey = "m7-renderer-local-storage-close-fence-v1";
+  const fenceValueA = "m7-renderer-local-storage-close-fence-value-a";
+  const fenceValueB = "m7-renderer-local-storage-close-fence-value-b";
   const fail = () => { document.title = "m7-local-storage-failed"; };
 
   if (!tokenPattern.test(token || "")) {
@@ -111,9 +113,13 @@ constexpr char kRendererLocalStorageScript[] = R"JS((() => {
     }
     if (mode === "renderer-verify" &&
         globalThis.localStorage.getItem(tokenKey) === token) {
-      // A distinct mutation guarantees an UpdateMaps candidate for the second
-      // module's close fence without making the stored token itself a no-op.
-      globalThis.localStorage.setItem(fenceKey, token);
+      // Toggle between private fixed values so every fresh verify contributes
+      // a distinct UpdateMaps candidate without copying the token into the
+      // close-fence value or exposing it outside this renderer operation.
+      const previousFenceValue = globalThis.localStorage.getItem(fenceKey);
+      const nextFenceValue = previousFenceValue === fenceValueA ?
+          fenceValueB : fenceValueA;
+      globalThis.localStorage.setItem(fenceKey, nextFenceValue);
       document.title = "m7-local-storage-renderer-verify-ok";
       return;
     }

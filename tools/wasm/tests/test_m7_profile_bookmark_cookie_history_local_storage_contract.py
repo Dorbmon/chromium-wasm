@@ -206,11 +206,51 @@ class M7ProfileBookmarkCookieHistoryLocalStorageContractTest(
         for phase in (
             "WasmProfilePreferencesSmokeMode::kWrite",
             "WasmProfilePreferencesSmokeMode::kVerifyAndWrite",
+            "WasmProfilePreferencesSmokeMode::kVerifyB",
             "kRendererWrite",
             "kRendererVerify",
         ):
             with self.subTest(phase=phase):
                 self.assertIn(phase, validation)
+        phase_expression = validation.split(
+            "const bool phases_match =", 1
+        )[1].split("aggregate_smoke_enabled =", 1)[0]
+        expected_pairs = (
+            ("kWrite", "kRendererWrite"),
+            ("kVerifyAndWrite", "kRendererVerify"),
+            ("kVerifyB", "kRendererVerify"),
+        )
+        for preferences_phase, local_storage_phase in expected_pairs:
+            with self.subTest(
+                preferences_phase=preferences_phase,
+                local_storage_phase=local_storage_phase,
+            ):
+                self.assertRegex(
+                    phase_expression,
+                    re.compile(
+                        r"\(preferences_mode\s*==\s*"
+                        r"chrome::WasmProfilePreferencesSmokeMode::"
+                        + preferences_phase
+                        + r"\s*&&\s*local_storage_mode\s*==\s*"
+                        r"chrome::WasmProfileLocalStorageSmokeInput::Mode::\s*"
+                        + local_storage_phase
+                        + r"\)",
+                    ),
+                )
+        self.assertEqual(
+            len(re.findall(r"\(preferences_mode\s*==", phase_expression)), 3
+        )
+        self.assertEqual(
+            len(re.findall(r"local_storage_mode\s*==", phase_expression)), 3
+        )
+        verify_b = phase_expression.index(
+            "WasmProfilePreferencesSmokeMode::kVerifyB"
+        )
+        verify_b_guard = phase_expression.rfind(
+            f"#if defined({_MACRO})", 0, verify_b
+        )
+        self.assertGreaterEqual(verify_b_guard, 0)
+        self.assertLess(verify_b, phase_expression.index("#endif", verify_b))
         for owner in (
             "IsWasmProfilePreferencesBrowserSmokeEnabled()",
             "IsWasmProfilePreferencesBookmarkSmokeEnabled()",

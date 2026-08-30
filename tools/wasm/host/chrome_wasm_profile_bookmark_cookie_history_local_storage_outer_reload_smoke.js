@@ -2,20 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Two-outer-document aggregate preference, BookmarkModel, CookieManager,
+// Three-outer-document aggregate preference, BookmarkModel, CookieManager,
 // HistoryService, and renderer LocalStorage handoff witness. Chromium owns
 // every profile operation, close fence, the one shared backend drain in each
 // fresh module, and both protocol lease receipts. The host only supplies
 // runner-escrowed arguments and parses exact stderr. It never opens OPFS, Web
 // Locks, DOM storage, Wasm memory, or a native export. This is orderly-reload
-// evidence, not Bookmark B reopen/cleanup, the full Bookmark service,
-// crash/power-loss, normal-navigation History/UI, full-profile, general Cookie,
-// or general StoragePartition persistence.
+// evidence. It proves Bookmark B reopen and a returned cleanup write, not a
+// fourth cleanup reopen, the full Bookmark service, crash/power-loss,
+// normal-navigation History/UI, full-profile, general Cookie, or general
+// StoragePartition persistence.
 
 const HOST_PROTOCOL = 1;
-const CASE = "chrome_profile_bookmark_cookie_history_local_storage_two_outer_document_reload_m7";
+const CASE = "chrome_profile_bookmark_cookie_history_local_storage_three_outer_document_reload_m7";
 const SCOPE =
-    "same-origin-two-outer-documents-chrome-wasm-m7-preferences-bookmark-model-cookie-manager-" +
+    "same-origin-three-outer-documents-chrome-wasm-m7-preferences-bookmark-model-cookie-manager-" +
     "history-service-renderer-local-storage-one-shared-drain-per-module-" +
     "orderly-reload-only";
 const PRODUCT_MODULE_NAME = "chrome_wasm_m7_profile_bookmark_cookie_history_local_storage_test";
@@ -379,6 +380,31 @@ function expectedMarkers(ordinal, tokenEvidence) {
       `${M7_LOCAL_STORAGE_MARKER_PREFIX}LEASE_RELEASED`,
     ]);
   }
+  if (ordinal === 3) {
+    return Object.freeze([
+      `${M7_PREFS_MARKER_PREFIX}READY`,
+      `${M7_PREFS_MARKER_PREFIX}READ_B_OK sha256=${tokenEvidence.preferenceB}`,
+      `${M7_PREFS_MARKER_PREFIX}BROWSER_SMOKE_CLOSED`,
+      `${M7_PREFS_MARKER_PREFIX}BOOKMARK_B_READ_OK ` +
+          `sha256=${tokenEvidence.preferenceB}`,
+      `${M7_PREFS_MARKER_PREFIX}BOOKMARK_CLEANUP_FLUSHED`,
+      `${M7_PREFS_MARKER_PREFIX}BOOKMARK_MODEL_CLOSED`,
+      `${M7_PREFS_MARKER_PREFIX}COOKIE_B_READ_OK sha256=${tokenEvidence.preferenceB}`,
+      `${M7_PREFS_MARKER_PREFIX}COOKIE_BACKEND_CLOSED`,
+      `${M7_PREFS_MARKER_PREFIX}HISTORY_A_READ_OK`,
+      `${M7_PREFS_MARKER_PREFIX}HISTORY_B_READ_OK`,
+      `${M7_PREFS_MARKER_PREFIX}HISTORY_BACKEND_CLOSED`,
+      `${M7_LOCAL_STORAGE_MARKER_PREFIX}READY`,
+      `${M7_LOCAL_STORAGE_MARKER_PREFIX}RENDERER_REOPEN_READ_OK ` +
+          `sha256=${tokenEvidence.localStorage}`,
+      `${M7_LOCAL_STORAGE_MARKER_PREFIX}ON_DISK_COMMIT_OK sha256=${tokenEvidence.localStorage}`,
+      `${M7_LOCAL_STORAGE_MARKER_PREFIX}DB_CLOSE_OK sha256=${tokenEvidence.localStorage}`,
+      `${M7_PREFS_MARKER_PREFIX}FENCE_OK sha256=${tokenEvidence.preferenceB}`,
+      `${M7_LOCAL_STORAGE_MARKER_PREFIX}FENCE_OK sha256=${tokenEvidence.localStorage}`,
+      `${M7_PREFS_MARKER_PREFIX}LEASE_RELEASED`,
+      `${M7_LOCAL_STORAGE_MARKER_PREFIX}LEASE_RELEASED`,
+    ]);
+  }
   throw new Error("outer-reload ordinal is invalid");
 }
 
@@ -464,21 +490,25 @@ async function fetchBootstrap(context) {
                                        "outer-reload bootstrap");
   const first = bootstrap.ordinal === 1;
   const second = bootstrap.ordinal === 2;
+  const third = bootstrap.ordinal === 3;
   if (bootstrap.protocol !== HOST_PROTOCOL || bootstrap.case !== CASE ||
       bootstrap.scope !== SCOPE ||
       !((first && bootstrap.mode === "write") ||
-        (second && bootstrap.mode === "verify-and-write")) ||
-      typeof bootstrap.preferenceTokenA !== "string" ||
-      !SHA256_RE.test(bootstrap.preferenceTokenA) ||
-      typeof bootstrap.preferenceTokenADigest !== "string" ||
-      !SHA256_RE.test(bootstrap.preferenceTokenADigest) ||
+        (second && bootstrap.mode === "verify-and-write") ||
+        (third && bootstrap.mode === "verify-b")) ||
+      ((!third && (typeof bootstrap.preferenceTokenA !== "string" ||
+                   !SHA256_RE.test(bootstrap.preferenceTokenA) ||
+                   typeof bootstrap.preferenceTokenADigest !== "string" ||
+                   !SHA256_RE.test(bootstrap.preferenceTokenADigest))) ||
+       (third && (bootstrap.preferenceTokenA !== null ||
+                  bootstrap.preferenceTokenADigest !== null))) ||
       typeof bootstrap.localStorageToken !== "string" ||
       !SHA256_RE.test(bootstrap.localStorageToken) ||
       typeof bootstrap.localStorageTokenDigest !== "string" ||
       !SHA256_RE.test(bootstrap.localStorageTokenDigest) ||
       (first && (bootstrap.preferenceTokenB !== null ||
                  bootstrap.preferenceTokenBDigest !== null)) ||
-      (second && (typeof bootstrap.preferenceTokenB !== "string" ||
+      (!first && (typeof bootstrap.preferenceTokenB !== "string" ||
                   !SHA256_RE.test(bootstrap.preferenceTokenB) ||
                   typeof bootstrap.preferenceTokenBDigest !== "string" ||
                   !SHA256_RE.test(bootstrap.preferenceTokenBDigest))) ||
@@ -487,11 +517,12 @@ async function fetchBootstrap(context) {
         bootstrap.preferenceTokenB,
         bootstrap.localStorageToken,
       ]).size !== 3) ||
+      (third && bootstrap.preferenceTokenB === bootstrap.localStorageToken) ||
       (first && bootstrap.preferenceTokenA === bootstrap.localStorageToken)) {
     throw new Error("outer-reload bootstrap is invalid");
   }
   const encoder = new TextEncoder();
-  const preferenceA = await sha256Hex(
+  const preferenceA = third ? null : await sha256Hex(
       encoder.encode(bootstrap.preferenceTokenA),
       "outer-reload preference token A");
   const preferenceB = first ? null : await sha256Hex(
@@ -500,7 +531,8 @@ async function fetchBootstrap(context) {
   const localStorage = await sha256Hex(
       encoder.encode(bootstrap.localStorageToken),
       "outer-reload LocalStorage token");
-  if (preferenceA !== bootstrap.preferenceTokenADigest ||
+  if ((!third && preferenceA !== bootstrap.preferenceTokenADigest) ||
+      (third && preferenceA !== null) ||
       (!first && preferenceB !== bootstrap.preferenceTokenBDigest) ||
       localStorage !== bootstrap.localStorageTokenDigest) {
     throw new Error("outer-reload bootstrap token identity is invalid");
@@ -518,7 +550,7 @@ async function fetchBootstrap(context) {
       preferenceA,
       preferenceB,
       localStorage,
-      distinct: second ? true : null,
+      distinct: (second || third) ? true : null,
       rawTokensExcluded: true,
       rawTokenLeakDetected: false,
       rawTokenRedactionCount: 0,
@@ -1100,6 +1132,18 @@ class ProfileBookmarkCookieHistoryLocalStorageOuterReloadHost {
         "--wasm-profile-local-storage-smoke=renderer-verify",
         `--wasm-profile-local-storage-token=${this.rawTokens.localStorage}`,
       ];
+    } else if (run.ordinal === 3) {
+      moduleArguments = [
+        "--wasm-profile-preferences-smoke=verify-b",
+        `--wasm-profile-preferences-token-b=${this.rawTokens.preferenceB}`,
+        "--wasm-profile-preferences-browser-smoke",
+        "--wasm-profile-preferences-bookmark-smoke",
+        "--disable-features=SyncEnableBookmarksInTransportMode",
+        "--wasm-profile-preferences-cookie-smoke",
+        "--wasm-profile-preferences-history-smoke",
+        "--wasm-profile-local-storage-smoke=renderer-verify",
+        `--wasm-profile-local-storage-token=${this.rawTokens.localStorage}`,
+      ];
     } else {
       this.recordFatal("run-ordinal-invalid");
       return;
@@ -1395,7 +1439,7 @@ class ProfileBookmarkCookieHistoryLocalStorageOuterReloadHost {
       }
       if (!((this.bootstrap.ordinal === 1 &&
              this.document.navigationType === "navigate") ||
-            (this.bootstrap.ordinal === 2 &&
+            ((this.bootstrap.ordinal === 2 || this.bootstrap.ordinal === 3) &&
              this.document.navigationType === "reload"))) {
         throw new Error("outer-reload document navigation is invalid");
       }
@@ -1529,9 +1573,10 @@ export async function runChromeWasmProfileBookmarkCookieHistoryLocalStorageOuter
     }, "outer-reload ready");
     return result;
   } finally {
-    // Keep only phase one alive until the runner performs its one real reload.
-    // Phase two is final and can release its verified loader resources.
-    if (result === undefined || result.status !== "pass" || result.ordinal === 2) {
+    // Keep phases one and two alive until the runner performs each real
+    // reload. Phase three is final and can release its verified loader
+    // resources.
+    if (result === undefined || result.status !== "pass" || result.ordinal === 3) {
       host.dispose();
     }
   }

@@ -94,12 +94,14 @@ def passing_result(
         "versions": copy.deepcopy(VERSIONS),
         "tokenEvidence": {
             "algorithm": "SHA-256",
-            "preferenceA": escrow.preference_a_digest,
+            "preferenceA": (
+                None if ordinal == 3 else escrow.preference_a_digest
+            ),
             "preferenceB": (
                 None if ordinal == 1 else escrow.preference_b_digest
             ),
             "localStorage": escrow.local_storage_digest,
-            "distinct": True if ordinal == 2 else None,
+            "distinct": True if ordinal in (2, 3) else None,
             "rawTokensExcluded": True,
             "rawTokenLeakDetected": False,
             "rawTokenRedactionCount": 0,
@@ -225,15 +227,15 @@ class FakeCdpClient:
 
 
 class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest.TestCase):
-    def test_uses_a_dedicated_two_document_aggregate_artifact(self) -> None:
+    def test_uses_a_dedicated_three_document_aggregate_artifact(self) -> None:
         self.assertEqual(
             smoke.CASE,
             "chrome_profile_bookmark_cookie_history_local_storage_"
-            "two_outer_document_reload_m7",
+            "three_outer_document_reload_m7",
         )
         self.assertEqual(
             smoke.SCOPE,
-            "same-origin-two-outer-documents-chrome-wasm-m7-preferences-"
+            "same-origin-three-outer-documents-chrome-wasm-m7-preferences-"
             "bookmark-model-cookie-manager-history-service-renderer-local-"
             "storage-one-shared-drain-per-module-orderly-reload-only",
         )
@@ -254,12 +256,34 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
             smoke.DEFAULT_OUT_DIR,
             Path("out/wasm-chrome-m7-profile-bookmark-cookie-history-local-storage"),
         )
-        self.assertIn("two-outer-documents", smoke.SCOPE)
+        self.assertIn("three-outer-documents", smoke.SCOPE)
         self.assertIn("bookmark-model", smoke.SCOPE)
         self.assertIn("history-service", smoke.SCOPE)
         self.assertIn("one-shared-drain-per-module", smoke.SCOPE)
         self.assertIn("orderly-reload-only", smoke.SCOPE)
         self.assertEqual(smoke.MAX_TIMEOUT_MS, 600_000)
+
+    def test_http_receipt_path_admits_all_three_documents_only(self) -> None:
+        handler = (
+            smoke.ChromeProfileBookmarkCookieHistoryLocalStorageOuterReloadRequestHandler
+        )
+        runner_source = Path(smoke.__file__).read_text(encoding="utf-8")
+        self.assertEqual(runner_source.count("queue.Queue(maxsize=3)"), 2)
+        for kind in ("result", "ready"):
+            prefix = f"{smoke.HOST_ROOT}/{kind}/"
+            for ordinal in (1, 2, 3):
+                with self.subTest(kind=kind, ordinal=ordinal):
+                    self.assertEqual(
+                        handler._receipt_path(
+                            f"{prefix}{RESULT_CAPABILITY}/{ordinal}", prefix
+                        ),
+                        (RESULT_CAPABILITY, ordinal),
+                    )
+            self.assertIsNone(
+                handler._receipt_path(
+                    f"{prefix}{RESULT_CAPABILITY}/4", prefix
+                )
+            )
 
     def test_escrows_three_distinct_values_and_exposes_only_digests(self) -> None:
         escrow = smoke.new_token_escrow()
@@ -278,14 +302,17 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
         self.assertNotIn(escrow.preference_b, repr(escrow))
         self.assertNotIn(escrow.local_storage, repr(escrow))
 
-    def test_accepts_both_strict_aggregate_marker_sequences(self) -> None:
+    def test_accepts_all_three_strict_aggregate_marker_sequences(self) -> None:
         escrow = smoke.new_token_escrow()
         first = validate_result(passing_result(1, escrow, 100.0), 1, escrow, 100.0)
         second = validate_result(
             passing_result(2, escrow, 101.0), 2, escrow, 101.0
         )
-        smoke.validate_outer_document_transitions(first, second)
-        for ordinal in (1, 2):
+        third = validate_result(
+            passing_result(3, escrow, 102.0), 3, escrow, 102.0
+        )
+        smoke.validate_outer_document_transitions(first, second, third)
+        for ordinal in (1, 2, 3):
             markers = smoke.expected_markers(ordinal, escrow)
             self.assertEqual(markers[-2:], [
                 f"{smoke.M7_PREFS_MARKER_PREFIX}LEASE_RELEASED",
@@ -311,7 +338,7 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
                 history_progress = [
                     f"{smoke.M7_PREFS_MARKER_PREFIX}HISTORY_A_WRITE_ACCEPTED",
                 ]
-            else:
+            elif ordinal == 2:
                 bookmark_progress = [
                     f"{smoke.M7_PREFS_MARKER_PREFIX}BOOKMARK_A_READ_OK "
                     f"sha256={escrow.preference_a_digest}",
@@ -321,6 +348,16 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
                 history_progress = [
                     f"{smoke.M7_PREFS_MARKER_PREFIX}HISTORY_A_READ_OK",
                     f"{smoke.M7_PREFS_MARKER_PREFIX}HISTORY_B_WRITE_ACCEPTED",
+                ]
+            else:
+                bookmark_progress = [
+                    f"{smoke.M7_PREFS_MARKER_PREFIX}BOOKMARK_B_READ_OK "
+                    f"sha256={escrow.preference_b_digest}",
+                    f"{smoke.M7_PREFS_MARKER_PREFIX}BOOKMARK_CLEANUP_FLUSHED",
+                ]
+                history_progress = [
+                    f"{smoke.M7_PREFS_MARKER_PREFIX}HISTORY_A_READ_OK",
+                    f"{smoke.M7_PREFS_MARKER_PREFIX}HISTORY_B_READ_OK",
                 ]
             browser_close = markers.index(
                 f"{smoke.M7_PREFS_MARKER_PREFIX}BROWSER_SMOKE_CLOSED"
@@ -445,9 +482,10 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
 
     def test_rejects_reused_loader_or_module_and_nonincreasing_time(self) -> None:
         first = smoke.PhaseResult(1, ORIGIN, "navigate", 100.0, "1" * 32, "2" * 32)
-        valid = smoke.PhaseResult(2, ORIGIN, "reload", 101.0, "3" * 32, "4" * 32)
-        smoke.validate_outer_document_transitions(first, valid)
-        for second in (
+        second = smoke.PhaseResult(2, ORIGIN, "reload", 101.0, "3" * 32, "4" * 32)
+        valid = smoke.PhaseResult(3, ORIGIN, "reload", 102.0, "5" * 32, "6" * 32)
+        smoke.validate_outer_document_transitions(first, second, valid)
+        for invalid_second in (
             smoke.PhaseResult(2, ORIGIN, "reload", 101.0, "1" * 32, "4" * 32),
             smoke.PhaseResult(2, ORIGIN, "reload", 101.0, "3" * 32, "2" * 32),
             smoke.PhaseResult(2, ORIGIN, "reload", 100.0, "3" * 32, "4" * 32),
@@ -455,10 +493,24 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
                 2, "http://other.test", "reload", 101.0, "3" * 32, "4" * 32
             ),
         ):
-            with self.subTest(second=second), self.assertRaises(M0Error):
-                smoke.validate_outer_document_transitions(first, second)
+            with self.subTest(second=invalid_second), self.assertRaises(M0Error):
+                smoke.validate_outer_document_transitions(
+                    first, invalid_second, valid
+                )
+        for third in (
+            smoke.PhaseResult(3, ORIGIN, "reload", 102.0, "1" * 32, "6" * 32),
+            smoke.PhaseResult(3, ORIGIN, "reload", 102.0, "3" * 32, "6" * 32),
+            smoke.PhaseResult(3, ORIGIN, "reload", 102.0, "5" * 32, "2" * 32),
+            smoke.PhaseResult(3, ORIGIN, "reload", 102.0, "5" * 32, "4" * 32),
+            smoke.PhaseResult(3, ORIGIN, "reload", 101.0, "5" * 32, "6" * 32),
+            smoke.PhaseResult(
+                3, "http://other.test", "reload", 102.0, "5" * 32, "6" * 32
+            ),
+        ):
+            with self.subTest(third=third), self.assertRaises(M0Error):
+                smoke.validate_outer_document_transitions(first, second, third)
 
-    def test_session_authorizes_exactly_one_real_reload_and_no_third_phase(self) -> None:
+    def test_session_authorizes_exactly_two_real_reloads_and_three_phases(self) -> None:
         escrow = smoke.new_token_escrow()
         session = smoke.OuterReloadSession(
             RESULT_CAPABILITY, SESSION_CAPABILITY, escrow
@@ -494,12 +546,33 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
         self.assertEqual(
             second_bootstrap["preferenceTokenB"], escrow.preference_b
         )
+        self.assertTrue(session.accept_result(RESULT_CAPABILITY, 2))
+        self.assertTrue(session.accept_ready(RESULT_CAPABILITY, 2))
+        session.arm_phase_three(101.0)
+        self.assertTrue(
+            session.observe_top_level_root_navigation(
+                RESULT_CAPABILITY,
+                SESSION_CAPABILITY,
+                "document",
+                "navigate",
+            )
+        )
+        third_evidence = smoke.DocumentEvidence("reload", 102.0)
+        self.assertTrue(session.accept_document(SESSION_CAPABILITY, third_evidence))
+        session.acknowledge_document(SESSION_CAPABILITY)
+        third_bootstrap = session.bootstrap_payload(SESSION_CAPABILITY)
+        self.assertEqual(third_bootstrap["ordinal"], 3)
+        self.assertIsNone(third_bootstrap["preferenceTokenA"])
+        self.assertEqual(third_bootstrap["preferenceTokenB"], escrow.preference_b)
+        self.assertEqual(third_bootstrap["localStorageToken"], escrow.local_storage)
         with self.assertRaises(smoke.ProtocolStateError):
             session.accept_document(
-                SESSION_CAPABILITY, smoke.DocumentEvidence("reload", 102.0)
+                SESSION_CAPABILITY, smoke.DocumentEvidence("reload", 103.0)
             )
+        self.assertTrue(session.accept_result(RESULT_CAPABILITY, 3))
+        self.assertTrue(session.accept_ready(RESULT_CAPABILITY, 3))
         with self.assertRaises(smoke.ProtocolStateError):
-            session.accept_result(RESULT_CAPABILITY, 3)
+            session.accept_result(RESULT_CAPABILITY, 4)
 
     def test_cdp_issues_only_page_reload_and_requires_a_new_root_loader(self) -> None:
         client = FakeCdpClient()
@@ -564,10 +637,11 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, host)
         self.assertEqual(runner.count('client.call("Page.reload"'), 1)
+        self.assertEqual(runner.count("reload_outer_document("), 3)
         self.assertEqual(runner.count("wait_for_page_client("), 1)
         self.assertNotIn("Page.navigate", runner)
-        self.assertNotIn("ordinal == 3", runner)
-        self.assertNotIn("ordinal === 3", host)
+        self.assertIn("ordinal == 3", runner)
+        self.assertIn("ordinal === 3", host)
 
     def test_browser_stderr_scans_all_three_raw_escrow_values(self) -> None:
         escrow = smoke.new_token_escrow()
@@ -609,7 +683,8 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadDomSmokeTest(unittest
             '"generalStoragePartitionPersistenceProven": False',
             '"bookmarkModelAReopenReadAndBWriteWithModelClose": True',
             '"bookmarkTransportModeFeatureDisabled": True',
-            '"bookmarkBReopenOrCleanupProven": False',
+            '"bookmarkBReopenAndCleanupWriteFlushed": True',
+            '"bookmarkCleanupFourthReopenProven": False',
             '"bookmarkModelFullServicePersistenceProven": False',
             '"generalCookieRequestPathProven": False',
             '"historyServiceFlushReopenAndBackendClose": True',

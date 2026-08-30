@@ -234,10 +234,11 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
-    // These aggregate artifacts admit exactly two paired outer-document
-    // phases. Validate both protocols before the V4 backend can be mounted.
-    // Bookmark is selected only by the four-store aggregate; History is
-    // selected by both aggregates whose names include it.
+    // These aggregate artifacts admit two paired outer-document phases. The
+    // Bookmark aggregate additionally admits verify-B so it can prove a third
+    // reopen and cleanup. Validate both protocols before the V4 backend can be
+    // mounted. Bookmark is selected only by the four-store aggregate; History
+    // is selected by both aggregates whose names include it.
     if (preferences_smoke_enabled && local_storage_smoke_enabled) {
       const chrome::WasmProfilePreferencesSmokeMode preferences_mode =
           chrome::GetWasmProfilePreferencesSmokeMode();
@@ -253,7 +254,16 @@ extern "C" int ChromeMain(int argc, const char** argv) {
                chrome::WasmProfilePreferencesSmokeMode::kVerifyAndWrite &&
            local_storage_mode ==
                chrome::WasmProfileLocalStorageSmokeInput::Mode::
-                   kRendererVerify);
+                   kRendererVerify)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+          ||
+          (preferences_mode ==
+               chrome::WasmProfilePreferencesSmokeMode::kVerifyB &&
+           local_storage_mode ==
+               chrome::WasmProfileLocalStorageSmokeInput::Mode::
+                   kRendererVerify)
+#endif
+          ;
       aggregate_smoke_enabled =
           phases_match &&
           chrome::IsWasmProfilePreferencesBrowserSmokeEnabled() &&

@@ -48,14 +48,21 @@ export default async function(options) {
   const localStorage = argumentValue("--wasm-profile-local-storage-token=");
   const expectedPreferenceMode = globalThis.__ordinal === 1 ?
       "--wasm-profile-preferences-smoke=write" :
-      "--wasm-profile-preferences-smoke=verify-and-write";
+      (globalThis.__ordinal === 2 ?
+       "--wasm-profile-preferences-smoke=verify-and-write" :
+       "--wasm-profile-preferences-smoke=verify-b");
   const expectedLocalStorageMode = globalThis.__ordinal === 1 ?
       "--wasm-profile-local-storage-smoke=renderer-write" :
       "--wasm-profile-local-storage-smoke=renderer-verify";
   if (!options.arguments.includes(expectedPreferenceMode) ||
       !options.arguments.includes(expectedLocalStorageMode) ||
-      preferenceA === null || localStorage === null ||
-      (globalThis.__ordinal === 1) !== (preferenceB === null)) {
+      localStorage === null ||
+      (globalThis.__ordinal === 1 &&
+       (preferenceA === null || preferenceB !== null)) ||
+      (globalThis.__ordinal === 2 &&
+       (preferenceA === null || preferenceB === null)) ||
+      (globalThis.__ordinal === 3 &&
+       (preferenceA !== null || preferenceB === null))) {
     throw new Error("aggregate module arguments are invalid");
   }
   if (globalThis.__scenario === "leak") {
@@ -65,7 +72,8 @@ export default async function(options) {
   const digest = async (token) => Array.from(new Uint8Array(
       await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))),
       (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const preferenceADigest = await digest(preferenceA);
+  const preferenceADigest =
+      preferenceA === null ? null : await digest(preferenceA);
   const preferenceBDigest =
       preferenceB === null ? null : await digest(preferenceB);
   const localStorageDigest = await digest(localStorage);
@@ -87,7 +95,7 @@ export default async function(options) {
     options.printErr(prefs + "BOOKMARK_MODEL_CLOSED");
     options.printErr(
         prefs + "COOKIE_A_WRITE_FLUSHED sha256=" + preferenceADigest);
-  } else {
+  } else if (globalThis.__ordinal === 2) {
     options.printErr(prefs + "READ_A_OK sha256=" + preferenceADigest);
     options.printErr(prefs + "WRITE_ACCEPTED sha256=" + preferenceBDigest);
     options.printErr(prefs + "BROWSER_SMOKE_CLOSED");
@@ -99,13 +107,24 @@ export default async function(options) {
     options.printErr(prefs + "COOKIE_A_READ_OK sha256=" + preferenceADigest);
     options.printErr(
         prefs + "COOKIE_B_WRITE_FLUSHED sha256=" + preferenceBDigest);
+  } else {
+    options.printErr(prefs + "READ_B_OK sha256=" + preferenceBDigest);
+    options.printErr(prefs + "BROWSER_SMOKE_CLOSED");
+    options.printErr(
+        prefs + "BOOKMARK_B_READ_OK sha256=" + preferenceBDigest);
+    options.printErr(prefs + "BOOKMARK_CLEANUP_FLUSHED");
+    options.printErr(prefs + "BOOKMARK_MODEL_CLOSED");
+    options.printErr(prefs + "COOKIE_B_READ_OK sha256=" + preferenceBDigest);
   }
   options.printErr(prefs + "COOKIE_BACKEND_CLOSED");
   if (globalThis.__ordinal === 1) {
     options.printErr(prefs + "HISTORY_A_WRITE_ACCEPTED");
-  } else {
+  } else if (globalThis.__ordinal === 2) {
     options.printErr(prefs + "HISTORY_A_READ_OK");
     options.printErr(prefs + "HISTORY_B_WRITE_ACCEPTED");
+  } else {
+    options.printErr(prefs + "HISTORY_A_READ_OK");
+    options.printErr(prefs + "HISTORY_B_READ_OK");
   }
   options.printErr(prefs + "HISTORY_BACKEND_CLOSED");
   options.printErr(storage + "READY");
@@ -137,7 +156,7 @@ if (!globalThis.crypto || !globalThis.crypto.subtle) {
 const ordinal = Number(process.argv[1]);
 const scenario = process.argv[2];
 const timeoutMs = process.argv[3];
-if ((ordinal !== 1 && ordinal !== 2) ||
+if ((ordinal !== 1 && ordinal !== 2 && ordinal !== 3) ||
     (scenario !== "pass" && scenario !== "leak") ||
     !/^(?:2000|600000|600001)$/.test(timeoutMs)) {
   throw new Error("test input is invalid");
@@ -252,17 +271,19 @@ function headers(contentType = null) {
 }
 const bootstrap = {
   protocol: 1,
-  case: "chrome_profile_bookmark_cookie_history_local_storage_two_outer_document_reload_m7",
+  case: "chrome_profile_bookmark_cookie_history_local_storage_three_outer_document_reload_m7",
   scope:
-      "same-origin-two-outer-documents-chrome-wasm-m7-preferences-bookmark-" +
+      "same-origin-three-outer-documents-chrome-wasm-m7-preferences-bookmark-" +
       "model-cookie-manager-history-service-renderer-local-storage-one-" +
       "shared-drain-per-module-orderly-reload-only",
   ordinal,
-  mode: ordinal === 1 ? "write" : "verify-and-write",
-  preferenceTokenA: rawA,
+  mode: ordinal === 1 ? "write" :
+      (ordinal === 2 ? "verify-and-write" : "verify-b"),
+  preferenceTokenA: ordinal === 3 ? null : rawA,
   preferenceTokenB: ordinal === 1 ? null : rawB,
   localStorageToken: rawLocalStorage,
-  preferenceTokenADigest: await digest(new TextEncoder().encode(rawA)),
+  preferenceTokenADigest:
+      ordinal === 3 ? null : await digest(new TextEncoder().encode(rawA)),
   preferenceTokenBDigest:
       ordinal === 1 ? null : await digest(new TextEncoder().encode(rawB)),
   localStorageTokenDigest:
@@ -361,6 +382,11 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadHostTest(unittest.Tes
         self.assertTrue(completed.returncode == 0, "verify fake host failed")
         self.assertEqual(completed.stdout, "pass\n")
 
+    def test_accepts_verify_b_cleanup_document(self) -> None:
+        completed = self.run_fake_host(3, "pass")
+        self.assertTrue(completed.returncode == 0, "verify-b fake host failed")
+        self.assertEqual(completed.stdout, "pass\n")
+
     def test_rejects_raw_local_storage_leak_without_echo(self) -> None:
         completed = self.run_fake_host(1, "leak")
         self.assertNotEqual(completed.returncode, 0)
@@ -396,6 +422,7 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadHostTest(unittest.Tes
         self.assertIn("await fetchBootstrap(context)", source)
         self.assertIn("--wasm-profile-preferences-smoke=write", source)
         self.assertIn("--wasm-profile-preferences-smoke=verify-and-write", source)
+        self.assertIn("--wasm-profile-preferences-smoke=verify-b", source)
         self.assertIn("--wasm-profile-preferences-browser-smoke", source)
         self.assertIn("--wasm-profile-preferences-bookmark-smoke", source)
         self.assertIn(
@@ -410,14 +437,18 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadHostTest(unittest.Tes
         self.assertIn("BOOKMARK_A_WRITE_FLUSHED", source)
         self.assertIn("BOOKMARK_A_READ_OK", source)
         self.assertIn("BOOKMARK_B_WRITE_FLUSHED", source)
+        self.assertIn("BOOKMARK_B_READ_OK", source)
+        self.assertIn("BOOKMARK_CLEANUP_FLUSHED", source)
         self.assertIn("BOOKMARK_MODEL_CLOSED", source)
         self.assertIn("COOKIE_A_WRITE_FLUSHED", source)
         self.assertIn("COOKIE_A_READ_OK", source)
         self.assertIn("COOKIE_B_WRITE_FLUSHED", source)
+        self.assertIn("COOKIE_B_READ_OK", source)
         self.assertIn("COOKIE_BACKEND_CLOSED", source)
         self.assertIn("HISTORY_A_WRITE_ACCEPTED", source)
         self.assertIn("HISTORY_A_READ_OK", source)
         self.assertIn("HISTORY_B_WRITE_ACCEPTED", source)
+        self.assertIn("HISTORY_B_READ_OK", source)
         self.assertIn("HISTORY_BACKEND_CLOSED", source)
         self.assertIn("RENDERER_WRITE_OK", source)
         self.assertIn("RENDERER_REOPEN_READ_OK", source)
@@ -427,7 +458,6 @@ class M7ProfileBookmarkCookieHistoryLocalStorageOuterReloadHostTest(unittest.Tes
         self.assertNotIn("BOOKMARK_A_WRITE_ACCEPTED", source)
         self.assertNotIn("BOOKMARK_B_WRITE_ACCEPTED", source)
         self.assertNotIn("BOOKMARK_BACKEND_CLOSED", source)
-        self.assertNotIn("verify-b", source)
         self.assertIn("<suppressed-native-output>", source)
 
 
