@@ -31,8 +31,10 @@ class WasmSessionNavigationJournal;
 
 namespace chrome {
 class WasmProfileBookmarkLifetimeParticipant;
+class WasmProfileCookieLifetimeParticipant;
 class WasmProfileHistoryLifetimeParticipant;
 struct WasmProfilePreferencesBookmarkSmokeInput;
+struct WasmProfilePreferencesCookieSmokeInput;
 }
 
 namespace base {
@@ -133,6 +135,18 @@ class WasmProfile final : public Profile {
   bool HasActiveBookmarkSmoke() const;
   void CancelBookmarkSmokeForShutdown();
   void QuarantineBookmarkSmokeForFailureShutdown();
+
+  // Starts the CookieManager persistence witness as a profile-owned lifetime.
+  // The participant owns a cloned Mojo connection and the transferred I/O hold
+  // through the real SQLite backend-close receipt.
+  bool StartCookieSmoke(
+      chrome::WasmProfilePreferencesCookieSmokeInput input,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+      base::OnceCallback<void(bool success)> completion);
+  bool HasActiveCookieSmoke() const;
+  bool DidCookieSmokeSucceed() const;
+  void CancelCookieSmokeForShutdown();
+  void QuarantineCookieSmokeForFailureShutdown();
 
   // Starts the source-selected direct HistoryService witness as an explicit
   // profile-owned lifetime. The admitted I/O hold stays pending until the
@@ -298,6 +312,13 @@ class WasmProfile final : public Profile {
   // teardown until this participant is terminal.
   std::unique_ptr<chrome::WasmProfileBookmarkLifetimeParticipant>
       bookmark_lifetime_participant_;
+
+  // The default partition owns CookieManager's NetworkContext, but this cloned
+  // connection and its admitted profile operation are owned by the Profile.
+  // BrowserMainParts cannot tear the partition down before the participant is
+  // terminal or explicitly quarantined for fail-closed foundation teardown.
+  std::unique_ptr<chrome::WasmProfileCookieLifetimeParticipant>
+      cookie_lifetime_participant_;
 
   // This direct core HistoryService is not a keyed service because its
   // History/Favicons close receipt is asynchronous. BrowserMainParts defers

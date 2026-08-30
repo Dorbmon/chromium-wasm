@@ -27,6 +27,8 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_bookmark_smoke.h"  // nogncheck
 // GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_cookie_smoke.h"  // nogncheck
+// GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_history_smoke.h"  // nogncheck
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
@@ -47,6 +49,12 @@
 #include "components/profile_metrics/browser_profile_type.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/render_process_host.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// The source-selected Cookie participant clones the default partition's
+// browser-process CookieManager before any asynchronous probe work begins.
+#include "content/public/browser/storage_partition.h"  // nogncheck
+#include "services/network/public/mojom/cookie_manager.mojom.h"  // nogncheck
+#endif
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -203,6 +211,12 @@ WasmProfile::~WasmProfile() {
   // loss occurs after the UI loop can no longer wait for its terminal result.
   if (bookmark_lifetime_participant_) {
     QuarantineBookmarkSmokeForFailureShutdown();
+  }
+  // CookieManager belongs to the default StoragePartition. Keep its cloned
+  // connection and admission alive if owner loss races the SQLite close
+  // receipt; the outer V4 transaction must then refuse.
+  if (cookie_lifetime_participant_) {
+    QuarantineCookieSmokeForFailureShutdown();
   }
   // BrowserMainParts normally retains this profile until the direct History
   // witness has its backend-destroy receipt. A fallback owner loss must retain
@@ -369,6 +383,67 @@ void WasmProfile::QuarantineBookmarkSmokeForFailureShutdown() {
       !bookmark_lifetime_participant_->QuarantineForFailureShutdown()) {
     LOG(ERROR) << "chrome_wasm could not quarantine an active BookmarkModel "
                   "operation for fail-closed shutdown";
+  }
+}
+
+bool WasmProfile::StartCookieSmoke(
+    chrome::WasmProfilePreferencesCookieSmokeInput input,
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> completion) {
+  if (shutdown_ || cookie_lifetime_participant_ || !completion) {
+    (void)profile_io_hold.Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    return false;
+  }
+
+  content::StoragePartition* storage_partition = GetDefaultStoragePartition();
+  network::mojom::CookieManager* cookie_manager =
+      storage_partition
+          ? storage_partition->GetCookieManagerForBrowserProcess()
+          : nullptr;
+  if (!cookie_manager) {
+    (void)profile_io_hold.Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    return false;
+  }
+
+  mojo::PendingRemote<network::mojom::CookieManager> participant_remote;
+  cookie_manager->CloneInterface(
+      participant_remote.InitWithNewPipeAndPassReceiver());
+  cookie_lifetime_participant_ =
+      std::make_unique<chrome::WasmProfileCookieLifetimeParticipant>(
+          std::move(participant_remote), std::move(input),
+          std::move(profile_io_hold));
+  if (!cookie_lifetime_participant_->Start(std::move(completion))) {
+    // Start() has already retired the transferred admission as failed. Drop
+    // the inert owner so a retry cannot reinterpret that terminal result.
+    cookie_lifetime_participant_.reset();
+    return false;
+  }
+  return true;
+}
+
+bool WasmProfile::HasActiveCookieSmoke() const {
+  return cookie_lifetime_participant_ &&
+         cookie_lifetime_participant_->IsActive();
+}
+
+bool WasmProfile::DidCookieSmokeSucceed() const {
+  return cookie_lifetime_participant_ &&
+         cookie_lifetime_participant_->DidSucceed();
+}
+
+void WasmProfile::CancelCookieSmokeForShutdown() {
+  if (cookie_lifetime_participant_) {
+    cookie_lifetime_participant_->Cancel();
+  }
+}
+
+void WasmProfile::QuarantineCookieSmokeForFailureShutdown() {
+  if (cookie_lifetime_participant_ &&
+      !cookie_lifetime_participant_->QuarantineForFailureShutdown()) {
+    LOG(ERROR) << "chrome_wasm could not quarantine an active CookieManager "
+                  "close for fail-closed shutdown";
   }
 }
 

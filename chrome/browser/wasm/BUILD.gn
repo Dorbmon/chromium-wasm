@@ -1876,9 +1876,10 @@ source_set("wasm_browser_process") {
 # Chrome browser process. Other Chrome-owned stores, including process Local
 # State, retain their independent lifecycles.
 config("wasm_profile_m7_preferences_smoke_config") {
-  # WasmProfile's public class layout has the History/Favicons lifetime owner
-  # only in this acceptance artifact. Propagate the define to every direct
-  # consumer of wasm_profile so no translation unit sees a different layout.
+  # WasmProfile's public class layout has the Bookmark, Cookie, and
+  # History/Favicons lifetime owners only in this acceptance artifact.
+  # Propagate the define to every direct consumer of wasm_profile so no
+  # translation unit sees a different layout.
   defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
 }
 
@@ -1914,6 +1915,7 @@ source_set("wasm_profile") {
     public_configs = [ ":wasm_profile_m7_preferences_smoke_config" ]
     deps += [
       ":wasm_profile_bookmark_smoke",
+      ":wasm_profile_cookie_smoke",
       ":wasm_profile_history_smoke",
       ":wasm_profile_preferences_smoke",
     ]
@@ -2103,14 +2105,39 @@ if (enable_chromium_wasm_m7_profile_preferences_test) {
 
     sources = [ "wasm_profile_cookie_smoke.cc" ]
 
+    public_deps = [
+      ":wasm_profile_ordered_drain_lifecycle",
+      ":wasm_profile_preferences_smoke",
+      "//mojo/public/cpp/bindings",
+      "//services/network/public/mojom",
+    ]
+
     deps = [
-      ":wasm_profile",
+      "//base",
+      "//net",
+      "//url",
+    ]
+  }
+
+  # Drives a controllable CookieManager pipe through cancellation, quarantine,
+  # and its terminal backend-close receipt. No test path may release the
+  # profile-I/O admission merely because the Mojo owner disconnected.
+  test("wasm_profile_cookie_lifetime_participant_unittests") {
+    sources = [ "wasm_profile_cookie_lifetime_participant_unittest.cc" ]
+
+    deps = [
+      ":wasm_profile_cookie_smoke",
+      ":wasm_profile_ordered_drain_lifecycle",
       ":wasm_profile_preferences_smoke",
       "//base",
-      "//content/public/browser",
+      "//base/test:run_all_unittests",
+      "//base/test:test_support",
+      "//mojo/core/embedder",
+      "//mojo/public/cpp/bindings",
       "//net",
+      "//services/network:test_support",
       "//services/network/public/mojom",
-      "//url",
+      "//testing/gtest",
     ]
   }
 }
@@ -2429,7 +2456,6 @@ source_set("wasm_browser_main_parts") {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     deps += [
       ":wasm_profile_bookmark_smoke",
-      ":wasm_profile_cookie_smoke",
       ":wasm_profile_preferences_smoke",
     ]
   }

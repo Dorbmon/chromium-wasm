@@ -52,10 +52,6 @@
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
-#include "chrome/browser/wasm/wasm_profile_cookie_smoke.h"  // nogncheck
-#endif
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-// GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
@@ -1192,6 +1188,14 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
     return;
   }
 
+  // CookieManager belongs to the profile's default StoragePartition. Its
+  // profile-owned participant must receive the SQLite backend-close result
+  // before synchronous Profile teardown can destroy that partition.
+  if (profile_ && profile_->HasActiveCookieSmoke()) {
+    profile_->CancelCookieSmokeForShutdown();
+    return;
+  }
+
   // The direct source-selected HistoryService is profile-owned but closes its
   // History/Favicons backends asynchronously. Do not enter synchronous
   // Profile teardown until its backend-destroy receipt has made the admitted
@@ -1659,68 +1663,55 @@ void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown() {
     return;
   }
 
-  // CookieManager is outside WasmProfile's keyed-service graph. Retain the
-  // profile-storage admission until its local read/write validation,
-  // FlushCookieStore callback, and real SQLite backend-close fence have
-  // completed, then sequence History (if selected) before profile shutdown.
+  // CookieManager is outside WasmProfile's keyed-service graph. Transfer its
+  // cloned connection and admission into the profile-owned participant before
+  // any asynchronous read/write begins. It retains both through the real
+  // SQLite backend-close receipt, then sequences History before shutdown.
   std::optional<chrome::WasmProfilePreferencesCookieSmokeInput> cookie_input =
       chrome::TakeWasmProfilePreferencesCookieSmokeInput();
-  auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
-  if (!cookie_input || !profile_io_hold) {
-    if (!profile_io_hold) {
-      chrome::ReportWasmProfilePreferencesSmokeFailure(
-          chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
-    }
+  if (!cookie_input) {
     chrome::NotifyWasmProfilePreferencesCookieSmokeResult(false);
     RequestShutdown();
     return;
   }
 
-  auto cookie_profile_io_hold = std::make_shared<std::optional<
-      WasmProfileOrderedDrainLifecycle::ProfileIOHold>>(
-      std::move(*profile_io_hold));
-  auto cookie_completion = base::BindOnce(
-      [](std::shared_ptr<std::optional<
-             WasmProfileOrderedDrainLifecycle::ProfileIOHold>>
-             profile_io_hold,
-         base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
-        CHECK(profile_io_hold);
-        CHECK(*profile_io_hold);
-        chrome::NotifyWasmProfilePreferencesCookieSmokeResult(success);
-        const bool cookie_succeeded =
-            success && chrome::DidWasmProfileCookieSmokeSucceed() &&
-            chrome::DidWasmProfilePreferencesCookieSmokeSucceed();
-        const bool profile_io_completed = (*profile_io_hold)->Complete(
-            cookie_succeeded
-                ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                      kSucceeded
-                : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                      kFailed);
-        if (!profile_io_completed) {
-          LOG(ERROR) << "chrome_wasm could not complete its profile cookie "
-                        "I/O admission";
-        }
-        if (!main_parts) {
-          return;
-        }
-        if (cookie_succeeded && profile_io_completed) {
-          main_parts->StartWasmProfileHistorySmokeOrShutdown();
-        } else {
-          main_parts->RequestShutdown();
-        }
-      },
-      cookie_profile_io_hold, weak_ptr_factory_.GetWeakPtr());
-  if (!chrome::StartWasmProfileCookieSmoke(profile_.get(),
-                                            std::move(*cookie_input),
-                                            std::move(cookie_completion))) {
+  auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!profile_io_hold) {
+    chrome::ReportWasmProfilePreferencesSmokeFailure(
+        chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
     chrome::NotifyWasmProfilePreferencesCookieSmokeResult(false);
-    CHECK(*cookie_profile_io_hold);
-    const bool profile_io_completed = (*cookie_profile_io_hold)->Complete(
-        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
-    if (!profile_io_completed) {
-      LOG(ERROR) << "chrome_wasm could not complete its profile cookie I/O "
-                    "admission after startup failure";
-    }
+    RequestShutdown();
+    return;
+  }
+
+  if (!profile_->StartCookieSmoke(
+          std::move(*cookie_input), std::move(*profile_io_hold),
+          base::BindOnce(
+              &WasmBrowserMainParts::OnWasmProfileCookieSmokeComplete,
+              weak_ptr_factory_.GetWeakPtr()))) {
+    chrome::NotifyWasmProfilePreferencesCookieSmokeResult(false);
+    RequestShutdown();
+  }
+}
+
+void WasmBrowserMainParts::OnWasmProfileCookieSmokeComplete(bool success) {
+  const bool cookie_succeeded =
+      success && profile_ && profile_->DidCookieSmokeSucceed();
+  chrome::NotifyWasmProfilePreferencesCookieSmokeResult(cookie_succeeded);
+  if (!cookie_succeeded) {
+    LOG(ERROR) << "chrome_wasm CookieManager close witness failed";
+  }
+
+  // A host/foundation shutdown can arrive while a CookieManager operation or
+  // SQLite close is pending. Resume the deferred state machine only after the
+  // profile-owned participant has delivered its terminal receipt.
+  if (shutdown_requested_) {
+    MaybeStartShutdown();
+    return;
+  }
+  if (cookie_succeeded) {
+    StartWasmProfileHistorySmokeOrShutdown();
+  } else {
     RequestShutdown();
   }
 }
@@ -1780,6 +1771,10 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
   if (profile_ && profile_->HasActiveBookmarkSmoke()) {
     profile_->CancelBookmarkSmokeForShutdown();
+    return;
+  }
+  if (profile_ && profile_->HasActiveCookieSmoke()) {
+    profile_->CancelCookieSmokeForShutdown();
     return;
   }
   // Browser lifecycle completions can enter here directly. Preserve the same
@@ -1876,8 +1871,7 @@ void WasmBrowserMainParts::FinishShutdown() {
       smoke_allows_storage_lifecycle = false;
     }
     if (chrome::IsWasmProfilePreferencesCookieSmokeEnabled() &&
-        (!chrome::DidWasmProfilePreferencesCookieSmokeSucceed() ||
-         !chrome::DidWasmProfileCookieSmokeSucceed())) {
+        !chrome::DidWasmProfilePreferencesCookieSmokeSucceed()) {
       // The CookieManager probe has a real SQLite backend-close fence. Its
       // failed hold stays visible to the outer failure-retirement permit.
       smoke_allows_storage_lifecycle = false;
@@ -1976,6 +1970,9 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     // the resulting outstanding admission and refuse before touching V4.
     if (profile_->HasActiveBookmarkSmoke()) {
       profile_->QuarantineBookmarkSmokeForFailureShutdown();
+    }
+    if (profile_->HasActiveCookieSmoke()) {
+      profile_->QuarantineCookieSmokeForFailureShutdown();
     }
     if (profile_->HasActiveHistorySmoke()) {
       profile_->QuarantineHistorySmokeForFailureShutdown();

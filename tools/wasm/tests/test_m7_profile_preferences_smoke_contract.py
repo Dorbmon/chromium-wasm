@@ -108,6 +108,9 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.cookie_header = source(
             "chrome/browser/wasm/wasm_profile_cookie_smoke.h"
         )
+        self.cookie_lifetime_unittest = source(
+            "chrome/browser/wasm/wasm_profile_cookie_lifetime_participant_unittest.cc"
+        )
         self.content_client = source(
             "chrome/browser/wasm/wasm_content_browser_client.cc"
         )
@@ -871,8 +874,6 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
 
     def test_cookie_manager_probe_closes_its_sqlite_backend_before_handoff(self) -> None:
         for token in (
-            "GetDefaultStoragePartition()",
-            "GetCookieManagerForBrowserProcess()",
             "GetCookieList(",
             "SetCanonicalCookie(",
             "DeleteCanonicalCookie(",
@@ -897,12 +898,109 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             with self.subTest(sensitive=sensitive):
                 self.assertNotIn(sensitive, self.cookie)
 
-        close = _body_after_signature(self.cookie, "void CloseAndFinish()")
-        closed = _body_after_signature(self.cookie, "void OnBackendClosed(bool success)")
+        for token in (
+            "GetDefaultStoragePartition()",
+            "GetCookieManagerForBrowserProcess()",
+            "CloneInterface(",
+        ):
+            with self.subTest(profile_cookie_boundary=token):
+                self.assertIn(token, self.profile)
+
+        close = _body_after_signature(self.cookie, "void BeginBackendClose()")
+        closed = _body_after_signature(
+            self.cookie, "void OnBackendClosed(bool success)"
+        )
         self.assertIn("CloseCookieStoreForTesting", close)
+        self.assertIn("success && probe_succeeded_ && !failed_", closed)
+        self.assertIn("if (operation_succeeded)", closed)
         self.assertIn('"%sCOOKIE_BACKEND_CLOSED\\n"', closed)
-        self.assertLess(closed.index("COOKIE_BACKEND_CLOSED"), closed.index("Finish(true)"))
+        self.assertLess(
+            closed.index("COOKIE_BACKEND_CLOSED"),
+            closed.index("ScheduleCompletion(operation_succeeded)"),
+        )
         self.assertIn("DeleteAndFlush(*expected_cookie);", self.cookie)
+
+        for forbidden in (
+            "raw_ptr<WasmProfile>",
+            "GetWasmProfileCookieSmokeState",
+            "WasmProfileCookieSmokeState",
+            "StartWasmProfileCookieSmoke(",
+            "DidWasmProfileCookieSmokeSucceed",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.cookie)
+
+        self.assertIn(
+            "class WasmProfileCookieLifetimeParticipant", self.cookie_header
+        )
+        self.assertIn(
+            "WasmProfileOrderedDrainLifecycle::ProfileIOHold",
+            self.cookie_header,
+        )
+        self.assertIn("bool QuarantineForFailureShutdown();", self.cookie_header)
+        participant_destructor = _body_after_signature(
+            self.cookie, "~WasmProfileCookieLifetimeParticipant()"
+        )
+        self.assertIn("QuarantineForFailureShutdown();", participant_destructor)
+        quarantine = _body_after_signature(
+            self.cookie,
+            "bool WasmProfileCookieLifetimeParticipant::QuarantineForFailureShutdown()",
+        )
+        self.assertIn("state_->Cancel();", quarantine)
+        self.assertIn(
+            "base::NoDestructor<std::vector<std::unique_ptr<State>>>",
+            quarantine,
+        )
+        self.assertIn(
+            "quarantined_states->push_back(std::move(state_));", quarantine
+        )
+
+        disconnect = _body_after_signature(
+            self.cookie, "void OnCookieManagerDisconnected()"
+        )
+        self.assertIn("leave the admission non-terminal", disconnect)
+        self.assertNotIn("ScheduleCompletion", disconnect)
+        self.assertNotIn("profile_io_hold_->Complete", disconnect)
+
+        delivery = _body_after_signature(self.cookie, "void DeliverCompletion()")
+        self.assertLess(
+            delivery.index("profile_io_hold_->Complete("),
+            delivery.index("completed_ = true;"),
+        )
+        self.assertLess(
+            delivery.index("completed_ = true;"),
+            delivery.index("std::move(completion).Run(succeeded);"),
+        )
+
+        self.assertIn(
+            "std::unique_ptr<chrome::WasmProfileCookieLifetimeParticipant>",
+            self.profile_header,
+        )
+        self.assertIn("bool StartCookieSmoke(", self.profile_header)
+        self.assertIn("bool HasActiveCookieSmoke() const;", self.profile_header)
+        self.assertIn(
+            "void CancelCookieSmokeForShutdown();", self.profile_header
+        )
+        self.assertIn(
+            "void QuarantineCookieSmokeForFailureShutdown();",
+            self.profile_header,
+        )
+        profile_start = _body_after_signature(
+            self.profile, "bool WasmProfile::StartCookieSmoke("
+        )
+        self.assertIn("CloneInterface(", profile_start)
+        self.assertIn(
+            "std::make_unique<chrome::WasmProfileCookieLifetimeParticipant>",
+            profile_start,
+        )
+        self.assertIn("std::move(profile_io_hold)", profile_start)
+        self.assertIn("cookie_lifetime_participant_->Start", profile_start)
+        profile_destructor = _body_after_signature(
+            self.profile, "WasmProfile::~WasmProfile()"
+        )
+        self.assertIn(
+            "QuarantineCookieSmokeForFailureShutdown();", profile_destructor
+        )
 
         # Normal Wasm Chrome remains deliberately volatile. This source-selected
         # artifact configures only the default in-memory partition's cookie file.
@@ -954,22 +1052,89 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         )
         self.assertIn("TakeWasmProfilePreferencesCookieSmokeInput", start_cookie)
         self.assertIn("TryAcquireWasmProfileStorageProfileIO", start_cookie)
-        self.assertIn("StartWasmProfileCookieSmoke", start_cookie)
-        self.assertIn("StartWasmProfileHistorySmokeOrShutdown", start_cookie)
-        cookie_complete = start_cookie.index("(*profile_io_hold)->Complete(")
-        history_after_cookie = start_cookie.index(
-            "StartWasmProfileHistorySmokeOrShutdown", cookie_complete
+        self.assertLess(
+            start_cookie.index("TakeWasmProfilePreferencesCookieSmokeInput"),
+            start_cookie.index("TryAcquireWasmProfileStorageProfileIO"),
         )
-        self.assertLess(cookie_complete, history_after_cookie)
+        self.assertIn("profile_->StartCookieSmoke(", start_cookie)
+        self.assertIn("std::move(*profile_io_hold)", start_cookie)
+        self.assertNotIn("std::shared_ptr<std::optional", start_cookie)
+        self.assertNotIn("->Complete(", start_cookie)
+
+        cookie_completion = _body_after_signature(
+            self.main_parts,
+            "void WasmBrowserMainParts::OnWasmProfileCookieSmokeComplete(",
+        )
+        self.assertIn(
+            "NotifyWasmProfilePreferencesCookieSmokeResult(cookie_succeeded)",
+            cookie_completion,
+        )
+        self.assertIn("if (shutdown_requested_)", cookie_completion)
+        self.assertIn("MaybeStartShutdown();", cookie_completion)
+        self.assertIn(
+            "StartWasmProfileHistorySmokeOrShutdown();", cookie_completion
+        )
+
+        maybe_shutdown = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::MaybeStartShutdown()"
+        )
+        self.assertLess(
+            maybe_shutdown.index("profile_->HasActiveCookieSmoke()"),
+            maybe_shutdown.index("FinishShutdown();"),
+        )
+        self.assertIn("profile_->CancelCookieSmokeForShutdown();", maybe_shutdown)
+
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
         )
+        self.assertLess(
+            finish.index("profile_->HasActiveCookieSmoke()"),
+            finish.index("profile_->Shutdown();"),
+        )
+        self.assertIn("profile_->CancelCookieSmokeForShutdown();", finish)
         cookie_guard = finish.index("IsWasmProfilePreferencesCookieSmokeEnabled()")
         storage_handoff = finish.index("NotifyWasmProfileStorageProfileShutdown();")
         # The CookieManager completion above is terminal before shutdown. Its
         # result must reach the outer failure-retirement seam before the smoke
         # receipt selects a clean or failed lifecycle marker.
         self.assertLess(storage_handoff, cookie_guard)
+
+        foundation = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::ShutdownFoundation()"
+        )
+        self.assertLess(
+            foundation.index(
+                "profile_->QuarantineCookieSmokeForFailureShutdown();"
+            ),
+            foundation.index("profile_->Shutdown();"),
+        )
+
+        self.assertIn(
+            'test("wasm_profile_cookie_lifetime_participant_unittests")',
+            self.wasm_build,
+        )
+        for token in (
+            "std::make_unique<WasmProfileCookieLifetimeParticipant>",
+            "ControllableCookieManager",
+            "successful_cookie_manager.ReplyFlush();",
+            "successful_cookie_manager.ReplyClose(/*success=*/true);",
+            "successful_participant->IsActive()",
+            "rejected_close_cookie_manager.ReplyClose(/*success=*/false);",
+            "rejected_close_result.profile_io.failed_operations, 1u",
+            "rejected_close_result.profile_io.abandoned_operations, 0u",
+            "cancelled_participant->Cancel();",
+            "cancelled_participant->QuarantineForFailureShutdown()",
+            "cancelled_participant.reset();",
+            "disconnected_cookie_manager.reset();",
+            "Lifecycle::Status::kWaitingForRegisteredProfileIO",
+            "Lifecycle::Status::kRegisteredProfileIONotClean",
+            "ClaimPostContentDrain().has_value()",
+            "ClaimPostContentFailureRetirement()",
+            "cancelled_result.profile_io.failed_operations, 1u",
+            "cancelled_result.profile_io.abandoned_operations, 0u",
+        ):
+            with self.subTest(runtime_token=token):
+                self.assertIn(token, self.cookie_lifetime_unittest)
 
     def test_test_pref_is_capability_gated_before_prefservice_construction(self) -> None:
         register = _body_after_signature(

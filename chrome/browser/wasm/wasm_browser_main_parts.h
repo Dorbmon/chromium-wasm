@@ -72,6 +72,7 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   void StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown();
   void OnWasmProfileBookmarkSmokeComplete(bool success);
   void StartWasmProfileCookieSmokeOrHistoryOrShutdown();
+  void OnWasmProfileCookieSmokeComplete(bool success);
   void StartWasmProfileHistorySmokeOrShutdown();
   void OnWasmProfileHistorySmokeComplete(bool success);
 #endif

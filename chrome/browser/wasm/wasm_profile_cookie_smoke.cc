@@ -9,15 +9,16 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
-#include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/wasm/wasm_profile.h"
-#include "content/public/browser/storage_partition.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_access_result.h"
 #include "net/cookies/cookie_inclusion_status.h"
@@ -82,28 +83,39 @@ bool HasAnyTestCookie(const net::CookieAccessResultList& cookies) {
   return false;
 }
 
-class WasmProfileCookieSmokeState {
- public:
-  WasmProfileCookieSmokeState() = default;
-  WasmProfileCookieSmokeState(const WasmProfileCookieSmokeState&) = delete;
-  WasmProfileCookieSmokeState& operator=(const WasmProfileCookieSmokeState&) =
-      delete;
-  ~WasmProfileCookieSmokeState() = default;
+}  // namespace
 
-  bool Start(WasmProfile* profile,
-             WasmProfilePreferencesCookieSmokeInput input,
-             base::OnceCallback<void(bool success)> completion) {
-    if (!IsWasmProfilePreferencesCookieSmokeEnabled() || !profile ||
-        !completion || started_) {
+class WasmProfileCookieLifetimeParticipant::State {
+ public:
+  State(mojo::PendingRemote<network::mojom::CookieManager> cookie_manager,
+        WasmProfilePreferencesCookieSmokeInput input,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold)
+      : cookie_manager_(std::move(cookie_manager)),
+        input_(std::move(input)),
+        profile_io_hold_(std::move(profile_io_hold)) {}
+  State(const State&) = delete;
+  State& operator=(const State&) = delete;
+  ~State() = default;
+
+  bool Start(base::OnceCallback<void(bool success)> completion) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (started_ || completed_) {
+      return false;
+    }
+    if (!profile_io_hold_ || !completion) {
+      CompleteBeforeStartAsFailed();
       return false;
     }
 
     started_ = true;
-    profile_ = profile;
-    input_ = std::move(input);
     completion_ = std::move(completion);
-    if (!HasValidInput()) {
-      Finish(false);
+    if (cookie_manager_.is_bound()) {
+      cookie_manager_.set_disconnect_handler(base::BindOnce(
+          &State::OnCookieManagerDisconnected, base::Unretained(this)));
+    }
+    if (!IsWasmProfilePreferencesCookieSmokeEnabled() ||
+        !cookie_manager_.is_bound() || !HasValidInput()) {
+      FailAndClose();
       return true;
     }
 
@@ -121,20 +133,37 @@ class WasmProfileCookieSmokeState {
     return true;
   }
 
-  bool DidSucceed() const { return started_ && completed_ && succeeded_; }
-
- private:
-  network::mojom::CookieManager* GetCookieManager() const {
-    if (!profile_) {
-      return nullptr;
+  void Cancel() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_ || completion_delivery_pending_) {
+      return;
     }
-    content::StoragePartition* storage_partition =
-        profile_->GetDefaultStoragePartition();
-    return storage_partition
-               ? storage_partition->GetCookieManagerForBrowserProcess()
-               : nullptr;
+    failed_ = true;
+    ReportFailure();
+    if (!started_) {
+      CompleteBeforeStartAsFailed();
+      return;
+    }
+    if (operation_pending_ || close_started_) {
+      return;
+    }
+    BeginBackendClose();
   }
 
+  bool IsActive() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return started_ && !completed_;
+  }
+  bool HasCompleted() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return completed_;
+  }
+  bool DidSucceed() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return started_ && completed_ && succeeded_;
+  }
+
+ private:
   bool HasValidInput() const {
     switch (input_.mode) {
       case WasmProfilePreferencesCookieSmokeInput::Mode::kWrite:
@@ -151,23 +180,48 @@ class WasmProfileCookieSmokeState {
     return false;
   }
 
+  bool BeginOperationReply() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (!operation_pending_ || completed_ || completion_delivery_pending_ ||
+        close_started_) {
+      FailAndClose();
+      return false;
+    }
+    operation_pending_ = false;
+    if (failed_) {
+      BeginBackendClose();
+      return false;
+    }
+    return true;
+  }
+
+  bool CanIssueOperation() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (!cookie_manager_.is_bound() || cookie_manager_disconnected_ ||
+        operation_pending_ || close_started_ || completed_ ||
+        completion_delivery_pending_) {
+      FailAndClose();
+      return false;
+    }
+    operation_pending_ = true;
+    return true;
+  }
+
   void ReadInitial(std::optional<std::string> expected_value) {
-    network::mojom::CookieManager* cookie_manager = GetCookieManager();
-    if (!cookie_manager) {
-      Finish(false);
+    if (!CanIssueOperation()) {
       return;
     }
-    cookie_manager->GetCookieList(
+    cookie_manager_->GetCookieList(
         GURL(kCookieUrl), net::CookieOptions::MakeAllInclusive(),
         net::CookiePartitionKeyCollection(),
-        base::BindOnce(&WasmProfileCookieSmokeState::OnInitialRead,
-                       base::Unretained(this), std::move(expected_value)));
+        base::BindOnce(&State::OnInitialRead, base::Unretained(this),
+                       std::move(expected_value)));
   }
 
   void OnInitialRead(std::optional<std::string> expected_value,
                      const net::CookieAccessResultList& included,
                      const net::CookieAccessResultList& excluded) {
-    if (completed_) {
+    if (!BeginOperationReply()) {
       return;
     }
     const net::CanonicalCookie* expected_cookie =
@@ -176,7 +230,7 @@ class WasmProfileCookieSmokeState {
     const bool has_expected = expected_cookie != nullptr;
     const bool has_any = HasAnyTestCookie(included) || HasAnyTestCookie(excluded);
     if ((expected_value && !has_expected) || (!expected_value && has_any)) {
-      Finish(false);
+      FailAndClose();
       return;
     }
 
@@ -195,6 +249,7 @@ class WasmProfileCookieSmokeState {
         DeleteAndFlush(*expected_cookie);
         return;
     }
+    FailAndClose();
   }
 
   void WriteAndValidate(std::string expected_value,
@@ -209,19 +264,18 @@ class WasmProfileCookieSmokeState {
         base::Time::Now(), /*server_time=*/std::nullopt,
         /*cookie_partition_key=*/std::nullopt, net::CookieSourceType::kOther,
         &syntax_status);
-    network::mojom::CookieManager* cookie_manager = GetCookieManager();
     if (!pending_cookie_ || !syntax_status.IsInclude() ||
-        !pending_cookie_->IsPersistent() || !cookie_manager) {
-      Finish(false);
+        !pending_cookie_->IsPersistent() || !CanIssueOperation()) {
+      FailAndClose();
       return;
     }
 
-    cookie_manager->SetCanonicalCookie(
+    cookie_manager_->SetCanonicalCookie(
         *pending_cookie_, GURL(kCookieUrl),
         net::CookieOptions::MakeAllInclusive(),
-        base::BindOnce(&WasmProfileCookieSmokeState::OnSetCookie,
-                       base::Unretained(this), std::move(expected_value),
-                       std::move(expected_digest), flushed_marker));
+        base::BindOnce(&State::OnSetCookie, base::Unretained(this),
+                       std::move(expected_value), std::move(expected_digest),
+                       flushed_marker));
   }
 
   void OnSetCookie(std::string expected_value,
@@ -229,22 +283,20 @@ class WasmProfileCookieSmokeState {
                    const char* flushed_marker,
                    net::CookieAccessResult access_result) {
     pending_cookie_.reset();
-    if (completed_ || !access_result.status.IsInclude()) {
-      Finish(false);
+    if (!BeginOperationReply()) {
+      return;
+    }
+    if (!access_result.status.IsInclude() || !CanIssueOperation()) {
+      FailAndClose();
       return;
     }
 
-    network::mojom::CookieManager* cookie_manager = GetCookieManager();
-    if (!cookie_manager) {
-      Finish(false);
-      return;
-    }
-    cookie_manager->GetCookieList(
+    cookie_manager_->GetCookieList(
         GURL(kCookieUrl), net::CookieOptions::MakeAllInclusive(),
         net::CookiePartitionKeyCollection(),
-        base::BindOnce(&WasmProfileCookieSmokeState::OnWriteReadback,
-                       base::Unretained(this), std::move(expected_value),
-                       std::move(expected_digest), flushed_marker));
+        base::BindOnce(&State::OnWriteReadback, base::Unretained(this),
+                       std::move(expected_value), std::move(expected_digest),
+                       flushed_marker));
   }
 
   void OnWriteReadback(std::string expected_value,
@@ -252,133 +304,273 @@ class WasmProfileCookieSmokeState {
                        const char* flushed_marker,
                        const net::CookieAccessResultList& included,
                        const net::CookieAccessResultList& excluded) {
-    if (completed_ || !HasExpectedCookie(included, expected_value) ||
+    if (!BeginOperationReply()) {
+      return;
+    }
+    if (!HasExpectedCookie(included, expected_value) ||
         HasAnyTestCookie(excluded)) {
-      Finish(false);
+      FailAndClose();
       return;
     }
     FlushAndEmit(flushed_marker, std::move(expected_digest));
   }
 
   void DeleteAndFlush(const net::CanonicalCookie& cookie) {
-    network::mojom::CookieManager* cookie_manager = GetCookieManager();
-    if (!cookie_manager) {
-      Finish(false);
+    if (!CanIssueOperation()) {
       return;
     }
-    // Delete the fixed test cookie only after the third fresh process has
-    // observed it. A clean terminal state makes a subsequent independent
-    // outer-reload run reject neither leaked state nor a false write success.
-    cookie_manager->DeleteCanonicalCookie(
-        cookie, base::BindOnce(&WasmProfileCookieSmokeState::OnDeleted,
-                               base::Unretained(this)));
+    cookie_manager_->DeleteCanonicalCookie(
+        cookie,
+        base::BindOnce(&State::OnDeleted, base::Unretained(this)));
   }
 
   void OnDeleted(bool success) {
-    if (completed_ || !success) {
-      Finish(false);
+    if (!BeginOperationReply()) {
       return;
     }
-    FlushAndClose();
-  }
-
-  void FlushAndClose() {
-    network::mojom::CookieManager* cookie_manager = GetCookieManager();
-    if (!cookie_manager) {
-      Finish(false);
+    if (!success) {
+      FailAndClose();
       return;
     }
-    cookie_manager->FlushCookieStore(base::BindOnce(
-        &WasmProfileCookieSmokeState::OnFlushed, base::Unretained(this),
-        /*marker=*/nullptr, std::string()));
+    FlushAndEmit(/*marker=*/nullptr, std::string());
   }
 
   void FlushAndEmit(const char* marker, std::string digest) {
-    network::mojom::CookieManager* cookie_manager = GetCookieManager();
-    if (!cookie_manager || !marker || digest.empty()) {
-      Finish(false);
+    if ((marker && digest.empty()) || (!marker && !digest.empty()) ||
+        !CanIssueOperation()) {
+      FailAndClose();
       return;
     }
-    cookie_manager->FlushCookieStore(base::BindOnce(
-        &WasmProfileCookieSmokeState::OnFlushed, base::Unretained(this),
-        marker, std::move(digest)));
+    cookie_manager_->FlushCookieStore(base::BindOnce(
+        &State::OnFlushed, base::Unretained(this), marker, std::move(digest)));
   }
 
   void OnFlushed(const char* marker, std::string digest) {
-    if (completed_) {
+    if (!BeginOperationReply()) {
       return;
     }
     if (marker) {
       EmitDigestMarker(marker, digest);
     }
-    CloseAndFinish();
+    probe_succeeded_ = true;
+    BeginBackendClose();
   }
 
-  void CloseAndFinish() {
-    network::mojom::CookieManager* cookie_manager = GetCookieManager();
-    if (!cookie_manager) {
-      Finish(false);
+  void FailAndClose() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_ || completion_delivery_pending_) {
       return;
     }
-    // This test-only Mojo method is a true close fence: it calls the real
-    // SQLitePersistentCookieStore backend close and returns only from its
-    // background-sequence completion. No profile storage lease may be handed
-    // off before this callback.
-    cookie_manager->CloseCookieStoreForTesting(base::BindOnce(
-        &WasmProfileCookieSmokeState::OnBackendClosed,
-        base::Unretained(this)));
+    failed_ = true;
+    ReportFailure();
+    pending_cookie_.reset();
+    if (!started_) {
+      CompleteBeforeStartAsFailed();
+      return;
+    }
+    if (operation_pending_ || close_started_) {
+      return;
+    }
+    if (!cookie_manager_.is_bound()) {
+      ScheduleCompletion(/*operation_succeeded=*/false);
+      return;
+    }
+    BeginBackendClose();
+  }
+
+  void BeginBackendClose() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_ || completion_delivery_pending_ || operation_pending_ ||
+        close_started_) {
+      return;
+    }
+    if (!cookie_manager_.is_bound() || cookie_manager_disconnected_) {
+      // There is no backend-close receipt. Keep the hold outstanding so the
+      // outer V4 transaction cannot race NetworkContext destruction.
+      failed_ = true;
+      ReportFailure();
+      return;
+    }
+
+    close_started_ = true;
+    input_ = WasmProfilePreferencesCookieSmokeInput();
+    cookie_manager_->CloseCookieStoreForTesting(base::BindOnce(
+        &State::OnBackendClosed, base::Unretained(this)));
   }
 
   void OnBackendClosed(bool success) {
-    if (completed_ || !success) {
-      Finish(false);
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (!close_started_ || completed_ || completion_delivery_pending_) {
       return;
     }
-    std::fprintf(stderr, "%sCOOKIE_BACKEND_CLOSED\n", kMarkerPrefix);
-    std::fflush(stderr);
-    Finish(true);
+    close_receipt_received_ = true;
+    const bool operation_succeeded = success && probe_succeeded_ && !failed_;
+    if (operation_succeeded) {
+      std::fprintf(stderr, "%sCOOKIE_BACKEND_CLOSED\n", kMarkerPrefix);
+      std::fflush(stderr);
+    }
+    cookie_manager_.reset();
+    ScheduleCompletion(operation_succeeded);
   }
 
-  void Finish(bool success) {
+  void OnCookieManagerDisconnected() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    cookie_manager_disconnected_ = true;
+    operation_pending_ = false;
+    if (completed_ || completion_delivery_pending_ || close_receipt_received_) {
+      return;
+    }
+    // The connection does not own NetworkContext. A disconnect cannot stand in
+    // for its SQLite close receipt, so leave the admission non-terminal.
+    failed_ = true;
+    ReportFailure();
+  }
+
+  void ScheduleCompletion(bool operation_succeeded) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_ || completion_delivery_pending_) {
+      return;
+    }
+    CHECK(started_);
+    CHECK(!operation_pending_);
+    completion_delivery_pending_ = true;
+    pending_operation_succeeded_ = operation_succeeded;
+    pending_cookie_.reset();
+    input_ = WasmProfilePreferencesCookieSmokeInput();
+    CHECK(base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&State::DeliverCompletion, base::Unretained(this))));
+  }
+
+  void DeliverCompletion() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    CHECK(completion_delivery_pending_);
+    CHECK(!completed_);
+
+    bool profile_io_completed = false;
+    if (profile_io_hold_) {
+      profile_io_completed = profile_io_hold_->Complete(
+          pending_operation_succeeded_
+              ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                    kSucceeded
+              : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+      profile_io_hold_.reset();
+    }
+    completion_delivery_pending_ = false;
+    completed_ = true;
+    succeeded_ = pending_operation_succeeded_ && profile_io_completed;
+    if (!succeeded_) {
+      ReportFailure();
+    }
+    CHECK(completion_);
+    base::OnceCallback<void(bool success)> completion = std::move(completion_);
+    const bool succeeded = succeeded_;
+    // The callback may synchronously destroy this profile-owned or quarantined
+    // State. Do not access members after returning control to its owner.
+    std::move(completion).Run(succeeded);
+  }
+
+  void CompleteBeforeStartAsFailed() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (completed_) {
       return;
     }
-    completed_ = true;
-    succeeded_ = success;
-    pending_cookie_.reset();
-    input_.token_a.clear();
-    input_.token_b.clear();
-    if (completion_) {
-      std::move(completion_).Run(success);
+    if (profile_io_hold_) {
+      (void)profile_io_hold_->Complete(
+          WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+      profile_io_hold_.reset();
     }
+    completed_ = true;
+    failed_ = true;
+    input_ = WasmProfilePreferencesCookieSmokeInput();
+    ReportFailure();
+  }
+
+  void ReportFailure() {
+    if (failure_reported_) {
+      return;
+    }
+    failure_reported_ = true;
+    ReportWasmProfilePreferencesSmokeFailure(
+        WasmProfilePreferencesSmokeFailureStage::kCookie);
   }
 
   bool started_ = false;
+  bool operation_pending_ = false;
+  bool close_started_ = false;
+  bool close_receipt_received_ = false;
+  bool cookie_manager_disconnected_ = false;
+  bool failed_ = false;
+  bool failure_reported_ = false;
+  bool probe_succeeded_ = false;
+  bool completion_delivery_pending_ = false;
+  bool pending_operation_succeeded_ = false;
   bool completed_ = false;
   bool succeeded_ = false;
-  raw_ptr<WasmProfile> profile_ = nullptr;
+  mojo::Remote<network::mojom::CookieManager> cookie_manager_;
   WasmProfilePreferencesCookieSmokeInput input_;
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      profile_io_hold_;
   std::unique_ptr<net::CanonicalCookie> pending_cookie_;
   base::OnceCallback<void(bool success)> completion_;
+  SEQUENCE_CHECKER(sequence_checker_);
 };
 
-WasmProfileCookieSmokeState& GetWasmProfileCookieSmokeState() {
-  static base::NoDestructor<WasmProfileCookieSmokeState> state;
-  return *state;
-}
-
-}  // namespace
-
-bool StartWasmProfileCookieSmoke(
-    WasmProfile* profile,
+WasmProfileCookieLifetimeParticipant::WasmProfileCookieLifetimeParticipant(
+    mojo::PendingRemote<network::mojom::CookieManager> cookie_manager,
     WasmProfilePreferencesCookieSmokeInput input,
-    base::OnceCallback<void(bool success)> completion) {
-  return GetWasmProfileCookieSmokeState().Start(
-      profile, std::move(input), std::move(completion));
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold)
+    : state_(std::make_unique<State>(std::move(cookie_manager), std::move(input),
+                                     std::move(profile_io_hold))) {}
+
+WasmProfileCookieLifetimeParticipant::~WasmProfileCookieLifetimeParticipant() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  (void)QuarantineForFailureShutdown();
 }
 
-bool DidWasmProfileCookieSmokeSucceed() {
-  return GetWasmProfileCookieSmokeState().DidSucceed();
+bool WasmProfileCookieLifetimeParticipant::Start(
+    base::OnceCallback<void(bool success)> completion) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->Start(std::move(completion));
+}
+
+void WasmProfileCookieLifetimeParticipant::Cancel() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (state_) {
+    state_->Cancel();
+  }
+}
+
+bool WasmProfileCookieLifetimeParticipant::QuarantineForFailureShutdown() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!state_) {
+    return true;
+  }
+
+  state_->Cancel();
+  if (!state_->IsActive()) {
+    return true;
+  }
+
+  static base::NoDestructor<std::vector<std::unique_ptr<State>>>
+      quarantined_states;
+  quarantined_states->push_back(std::move(state_));
+  return true;
+}
+
+bool WasmProfileCookieLifetimeParticipant::IsActive() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->IsActive();
+}
+
+bool WasmProfileCookieLifetimeParticipant::HasCompleted() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->HasCompleted();
+}
+
+bool WasmProfileCookieLifetimeParticipant::DidSucceed() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->DidSucceed();
 }
 
 }  // namespace chrome
