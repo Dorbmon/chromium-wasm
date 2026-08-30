@@ -236,11 +236,15 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
             'source_set("wasm_profile_local_storage_smoke")'
         )
         smoke_gate_start = self.wasm_browser_build.rfind(
-            f"if ({_FLAG})", 0, smoke_target_start
+            f"if ({_FLAG} ||", 0, smoke_target_start
         )
         self.assertGreaterEqual(smoke_gate_start, 0)
         smoke_gate = _body_after_marker(
-            self.wasm_browser_build[smoke_gate_start:], f"if ({_FLAG})"
+            self.wasm_browser_build[smoke_gate_start:], f"if ({_FLAG} ||"
+        )
+        self.assertIn(
+            "enable_chromium_wasm_m7_profile_cookie_local_storage_test",
+            smoke_gate,
         )
         self.assertIn(
             'source_set("wasm_profile_local_storage_smoke")', smoke_gate
@@ -249,9 +253,12 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         content_browser = _body_after_marker(
             self.content_browser_build, 'source_set("browser")'
         )
-        content_gate = _body_after_marker(content_browser, f"if ({_FLAG})")
+        content_gate = _body_after_marker(
+            content_browser, f"if ({_FLAG} ||"
+        )
         for expected in (
             f'defines += [ "{_MACRO}=1" ]',
+            "enable_chromium_wasm_m7_profile_cookie_local_storage_test",
             '"dom_storage/wasm_dom_storage_test_support.cc",',
             '"//components/services/storage/public/mojom:wasm_local_storage_test_api",',
         ):
@@ -261,7 +268,17 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         storage_target = _body_after_marker(
             self.storage_build, 'source_set("storage")'
         )
-        storage_gate = _body_after_marker(storage_target, f"if ({_FLAG})")
+        storage_gate = _body_after_marker(
+            storage_target, f"if ({_FLAG} ||"
+        )
+        self.assertIn(
+            "enable_chromium_wasm_m7_profile_cookie_local_storage_test",
+            storage_gate,
+        )
+        self.assertIn(
+            'configs += [ ":wasm_m7_default_partition_local_storage_test" ]',
+            storage_gate,
+        )
         self.assertIn("public_deps += [", storage_gate)
         self.assertIn(
             '"//components/services/storage/public/mojom:'

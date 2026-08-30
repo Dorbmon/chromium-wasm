@@ -43,12 +43,7 @@ constexpr size_t kOpaqueTokenLength = 64;
 
 constexpr char kMarkerPrefix[] = "CHROMIUM_WASM_M7_PREFS:";
 
-enum class SmokeMode {
-  kNone,
-  kWrite,
-  kVerifyAndWrite,
-  kVerifyB,
-};
+using SmokeMode = WasmProfilePreferencesSmokeMode;
 
 class WasmProfilePreferencesSmokeState {
  public:
@@ -162,6 +157,8 @@ class WasmProfilePreferencesSmokeState {
   }
 
   bool enabled() const { return enabled_; }
+
+  SmokeMode mode() const { return enabled_ ? mode_ : SmokeMode::kNone; }
 
   bool browser_smoke_required() const {
     return enabled_ && browser_smoke_required_;
@@ -552,6 +549,10 @@ bool EnableWasmProfilePreferencesSmokeTestMode() {
 
 bool IsWasmProfilePreferencesSmokeEnabled() {
   return GetWasmProfilePreferencesSmokeState().enabled();
+}
+
+WasmProfilePreferencesSmokeMode GetWasmProfilePreferencesSmokeMode() {
+  return GetWasmProfilePreferencesSmokeState().mode();
 }
 
 bool IsWasmProfilePreferencesBrowserSmokeEnabled() {

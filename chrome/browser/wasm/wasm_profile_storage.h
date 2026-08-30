@@ -18,7 +18,8 @@ namespace chrome {
 bool InitializeWasmProfileStorage();
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 // Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend
 // only at /profile/Default. Its /profile parent remains on WasmFS's default
 // memory backend, which the initializer validates before and after the child

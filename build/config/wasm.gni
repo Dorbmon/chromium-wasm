@@ -21,6 +21,11 @@ declare_args() {
   # LocalStorage LevelDB path in its dedicated Wasm Chrome test artifact.
   enable_chromium_wasm_m7_default_partition_local_storage_test = false
 
+  # Selects the aggregate M7 Cookie + renderer LocalStorage acceptance. This
+  # remains a dedicated test artifact: it reuses neither legacy acceptance's
+  # macro and does not change normal Chrome's in-memory StoragePartition.
+  enable_chromium_wasm_m7_profile_cookie_local_storage_test = false
+
   # Linear-memory bounds shared by the Emscripten link and Chromium's M3
   # in-process memory-budget policy.
   chromium_wasm_initial_memory_bytes = 67108864
@@ -45,4 +50,7 @@ if (current_toolchain == default_toolchain) {
   assert(!enable_chromium_wasm_m7_default_partition_local_storage_test ||
              (is_wasm && enable_chromium_wasm_chrome),
          "M7 default-partition LocalStorage acceptance requires Wasm Chrome")
+  assert(!enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+             (is_wasm && enable_chromium_wasm_chrome),
+         "M7 Cookie + LocalStorage acceptance requires Wasm Chrome")
 }

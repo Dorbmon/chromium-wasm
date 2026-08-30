@@ -45,27 +45,51 @@ def _bracket_body_after(text: str, marker: str) -> str:
     raise AssertionError(f"missing closing bracket for {marker}")
 
 
-def _m7_macro_blocks(text: str) -> list[re.Match[str]]:
-    return list(
-        re.finditer(
-            r"#if defined\(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST\)"
-            r".*?#endif",
-            text,
-            re.DOTALL,
+_M7_PREFERENCES_MACROS = (
+    "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST",
+    "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST",
+)
+
+
+def _is_in_m7_preferences_macro_block(text: str, position: int) -> bool:
+    """Returns whether |position| is under a positive M7 prefs capability."""
+
+    active_stack: list[bool] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if offset <= position < offset + len(line):
+            return any(active_stack)
+
+        directive = line.lstrip()
+        grants_capability = any(
+            f"defined({macro})" in directive
+            and f"!defined({macro})" not in directive
+            for macro in _M7_PREFERENCES_MACROS
         )
-    )
+        if re.match(r"#\s*(if|ifdef|ifndef)\b", directive):
+            active_stack.append(grants_capability)
+        elif re.match(r"#\s*elif\b", directive):
+            if active_stack:
+                active_stack[-1] = grants_capability
+        elif re.match(r"#\s*else\b", directive):
+            if active_stack:
+                active_stack[-1] = False
+        elif re.match(r"#\s*endif\b", directive):
+            if active_stack:
+                active_stack.pop()
+        offset += len(line)
+    return False
 
 
 def _assert_only_in_m7_blocks(
     testcase: unittest.TestCase, text: str, token: str
 ) -> None:
-    blocks = _m7_macro_blocks(text)
     positions = [match.start() for match in re.finditer(re.escape(token), text)]
     testcase.assertTrue(positions, f"missing {token}")
     for position in positions:
         with testcase.subTest(token=token, position=position):
             testcase.assertTrue(
-                any(block.start() <= position < block.end() for block in blocks),
+                _is_in_m7_preferences_macro_block(text, position),
                 f"{token} is not M7-config-gated",
             )
 
@@ -1258,12 +1282,16 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             normal_result,
         )
 
-        content_failure = self.chrome_main[
-            self.chrome_main.index("if (preferences_smoke_enabled &&") : self.chrome_main.index(
-                "#endif", self.chrome_main.index("if (preferences_smoke_enabled &&")
-            )
-        ]
-        self.assertIn("!IsNormalChromeMainResult(result)", content_failure)
+        content_failure = _body_after_signature(
+            self.chrome_main,
+            "if (preferences_smoke_enabled &&\n"
+            "      !IsNormalChromeMainResult(result))",
+        )
+        self.assertIn(
+            "if (preferences_smoke_enabled &&\n"
+            "      !IsNormalChromeMainResult(result))",
+            self.chrome_main,
+        )
         self.assertIn(
             "WasmProfilePreferencesSmokeFailureStage::kContent", content_failure
         )
@@ -1383,10 +1411,12 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
                 self.assertIn('":wasm_profile_preferences_smoke",', target)
                 self.assertNotIn('":wasm_profile_history_smoke",', target)
 
-        helper_start = self.wasm_build.index(
-            'if (enable_chromium_wasm_m7_profile_preferences_test) {\n'
+        helper_gate = (
+            "if (enable_chromium_wasm_m7_profile_preferences_test ||\n"
+            "    enable_chromium_wasm_m7_profile_cookie_local_storage_test) {\n"
             '  source_set("wasm_profile_preferences_smoke")'
         )
+        helper_start = self.wasm_build.index(helper_gate)
         self.assertGreater(helper_start, 0)
         self.assertIn("//crypto", self.wasm_build[helper_start:])
 

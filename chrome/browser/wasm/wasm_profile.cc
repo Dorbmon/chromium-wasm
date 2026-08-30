@@ -26,14 +26,23 @@
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_bookmark_smoke.h"  // nogncheck
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_cookie_smoke.h"  // nogncheck
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_history_smoke.h"  // nogncheck
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
 #endif
@@ -53,7 +62,8 @@
 #include "components/profile_metrics/browser_profile_type.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/render_process_host.h"
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 // The source-selected Cookie participant clones the default partition's
 // browser-process CookieManager before any asynchronous probe work begins.
 #include "content/public/browser/storage_partition.h"  // nogncheck
@@ -153,7 +163,8 @@ WasmProfile::WasmProfile(
   CHECK(io_task_runner_);
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   // The M7 caller must have transferred the construction-start admission
   // before the synchronous JsonPrefStore/PrefService read below can begin.
   CHECK(prefs_lifetime_profile_io_participant_);
@@ -168,7 +179,8 @@ WasmProfile::WasmProfile(
                                       kDevToolsAvailabilityDisallowed);
   pref_registry_->RegisterStringPref(kWasmPersistentPrefsFenceUuid,
                                      std::string());
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   // This narrow pref exists only in the dedicated two-module M7 acceptance
   // artifact. The helper registers it before PrefService construction and
   // keeps its opaque test value out of normal Chrome profiles and diagnostics.
@@ -216,12 +228,17 @@ WasmProfile::~WasmProfile() {
   if (bookmark_lifetime_participant_) {
     QuarantineBookmarkSmokeForFailureShutdown();
   }
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   // CookieManager belongs to the default StoragePartition. Keep its cloned
   // connection and admission alive if owner loss races the SQLite close
   // receipt; the outer V4 transaction must then refuse.
   if (cookie_lifetime_participant_) {
     QuarantineCookieSmokeForFailureShutdown();
   }
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
   // BrowserMainParts normally retains this profile until the direct History
   // witness has its backend-destroy receipt. A fallback owner loss must retain
   // an active close as outstanding so the outer V4 drain refuses before it can
@@ -230,7 +247,8 @@ WasmProfile::~WasmProfile() {
     QuarantineHistorySmokeForFailureShutdown();
   }
 #endif
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   if (local_storage_lifetime_participant_) {
     QuarantineLocalStorageSmokeForFailureShutdown();
   }
@@ -318,7 +336,8 @@ bool WasmProfile::StartPrefsShutdownFence(
   CHECK(json_pref_store_);
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   // A source-selected strict fence is not independently admissible. Its
   // profile-lifetime holder must remain live until this callback reports the
   // bounded write/readback result to the outer storage lifecycle.
@@ -394,7 +413,10 @@ void WasmProfile::QuarantineBookmarkSmokeForFailureShutdown() {
                   "operation for fail-closed shutdown";
   }
 }
+#endif
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 bool WasmProfile::StartCookieSmoke(
     chrome::WasmProfilePreferencesCookieSmokeInput input,
     WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
@@ -455,7 +477,9 @@ void WasmProfile::QuarantineCookieSmokeForFailureShutdown() {
                   "close for fail-closed shutdown";
   }
 }
+#endif
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 bool WasmProfile::StartHistorySmoke(
     WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
     base::OnceCallback<void(bool success)> completion) {
@@ -497,7 +521,8 @@ void WasmProfile::QuarantineHistorySmokeForFailureShutdown() {
 }
 #endif
 
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 bool WasmProfile::StartLocalStorageSmoke(
     chrome::WasmProfileLocalStorageSmokeInput input,
     WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
@@ -550,7 +575,8 @@ void WasmProfile::OnPrefsShutdownFenceComplete(
   CHECK_EQ(prefs_shutdown_fence_controller_->DidSucceed(), success);
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   // The outer M7 admission remains active until the inner controller has
   // observed the strict JsonPrefStore write/readback result. A missing or
   // previously completed participant is an explicit failure, never a clean

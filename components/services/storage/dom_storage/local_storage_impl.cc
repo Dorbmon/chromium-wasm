@@ -248,7 +248,8 @@ class LocalStorageImpl::StorageAreaHolder final
     // deletion will happen under memory pressure or when another localstorage
     // area is opened.
     storage_area()->ScheduleImmediateCommit();
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
     // This is the authoritative binding transition for the M7 close-fence
     // test. It intentionally follows ScheduleImmediateCommit(): the test's
     // earlier snapshot was admitted while this holder was bound, and Arm only
@@ -283,7 +284,8 @@ class LocalStorageImpl::StorageAreaHolder final
   void DidCommit(DbStatus status) override { context_->OnCommitResult(status); }
   void Bind(mojo::PendingReceiver<blink::mojom::StorageArea> receiver) {
     has_bindings_ = true;
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
     context_->OnStorageAreaBoundForTesting();
 #endif
     storage_area()->Bind(std::move(receiver));
@@ -603,7 +605,8 @@ const base::FilePath& LocalStorageImpl::GetStoragePartitionDirectory() const {
   return storage_partition_directory_;
 }
 
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 bool LocalStorageImpl::HasExactlyOneBoundStorageAreaForTesting(
     const blink::StorageKey& storage_key) const {
   if (areas_.size() != 1u) {

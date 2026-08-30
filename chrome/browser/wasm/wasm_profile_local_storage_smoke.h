@@ -129,6 +129,11 @@ bool EnableWasmProfileLocalStorageSmokeTestMode();
 // Whether the dedicated executable enabled a valid LocalStorage smoke request.
 bool IsWasmProfileLocalStorageSmokeEnabled();
 
+// Returns the validated phase without transferring or exposing the opaque
+// token. A combined artifact uses this before mounting the profile backend to
+// reject mismatched Preferences/LocalStorage documents.
+WasmProfileLocalStorageSmokeInput::Mode GetWasmProfileLocalStorageSmokeMode();
+
 // True only for the renderer-owned modes. These modes create one transient
 // WebContents, derive their StorageKey from its committed RenderFrameHost, and
 // destroy that owner before arming the existing close fence.

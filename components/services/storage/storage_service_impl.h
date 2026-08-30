@@ -23,7 +23,8 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
 #include "components/services/storage/public/mojom/wasm_local_storage_test_api.mojom.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #endif
@@ -36,7 +37,8 @@ class SessionStorageImpl;
 // owner of all Storage service instance state, managing the set of active
 // persistent and in-memory local and session storage instances.
 class StorageServiceImpl : public mojom::StorageService
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
                          , public mojom::WasmLocalStorageTestApi
 #endif
 {
@@ -68,7 +70,8 @@ class StorageServiceImpl : public mojom::StorageService
       bool clear_on_open,
       mojo::PendingReceiver<mojom::SessionStorageControl> receiver) override;
   void BindTestApi(mojo::ScopedMessagePipeHandle test_api_receiver) override;
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   void PrepareCommitCloseFence(
       const base::FilePath& profile_path,
       const blink::StorageKey& storage_key,
@@ -86,7 +89,8 @@ class StorageServiceImpl : public mojom::StorageService
   void ShutDownAndRemoveLocalStorage(LocalStorageImpl* storage);
 
  private:
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   class WasmLocalStorageCloseFence;
 
   void OnWasmLocalStorageCloseFenceSnapshot(
@@ -137,7 +141,8 @@ class StorageServiceImpl : public mojom::StorageService
   std::map<base::FilePath, raw_ptr<SessionStorageImpl, CtnExperimental>>
       persistent_session_storage_map_;
 
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
   // These members are compiled only into the source-selected M7 test
   // artifact. They identify one persistent LocalStorage instance while its
   // close receipt is armed and prevent it from being silently rebound.

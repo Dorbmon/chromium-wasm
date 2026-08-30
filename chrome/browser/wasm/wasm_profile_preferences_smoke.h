@@ -16,6 +16,16 @@ class PrefService;
 
 namespace chrome {
 
+// The parsed phase is exposed without any token material so a combined
+// source-selected artifact can validate its cross-store phase before mounting
+// the persistent profile backend.
+enum class WasmProfilePreferencesSmokeMode {
+  kNone,
+  kWrite,
+  kVerifyAndWrite,
+  kVerifyB,
+};
+
 // The raw token bundle is transferred exactly once from the Preferences
 // protocol to the optional CookieManager probe after the bounded Browser
 // lifecycle. Its fields must never be placed in a marker or diagnostic.
@@ -165,6 +175,10 @@ bool EnableWasmProfilePreferencesSmokeTestMode();
 
 // Whether the dedicated test executable enabled a valid smoke configuration.
 bool IsWasmProfilePreferencesSmokeEnabled();
+
+// Returns the validated phase without transferring or exposing either opaque
+// token. Before successful enablement this returns kNone.
+WasmProfilePreferencesSmokeMode GetWasmProfilePreferencesSmokeMode();
 
 // Whether this validated Preferences test run must complete the bounded real
 // Browser lifecycle before its durable Preferences shutdown fence.
