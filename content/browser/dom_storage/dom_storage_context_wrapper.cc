@@ -36,7 +36,8 @@
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/storage_partition_impl.h"
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition_config.h"
 #endif
@@ -62,7 +63,8 @@ std::optional<base::FilePath> GetLocalStoragePath(
     StoragePartitionImpl* partition) {
 #if BUILDFLAG(IS_WASM)
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   // The M7 LocalStorage acceptance intentionally leaves the partition itself
   // in memory. It supplies the browser-context path only to LocalStorage so
   // no other partition-owned store gains an implicit persistence claim. The
@@ -325,7 +327,8 @@ void DOMStorageContextWrapper::OpenLocalStorage(
     ChildProcessSecurityPolicyImpl::Handle security_policy_handle,
     mojo::ReportBadMessageCallback bad_message_callback) {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   // The dedicated close receipt has sealed new LocalStorage admission. Do not
   // bind a new area to a control remote that the close path has already
   // detached.
@@ -444,7 +447,8 @@ void DOMStorageContextWrapper::MaybeBindSessionStorageControl(
 
 void DOMStorageContextWrapper::OnLocalStorageDisconnected() {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   if (local_storage_rebind_sealed_for_wasm_profile_test_) {
     return;
   }
@@ -456,7 +460,8 @@ void DOMStorageContextWrapper::OnLocalStorageDisconnected() {
 }
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
 void DOMStorageContextWrapper::BindWasmLocalStorageTestApi(
     mojo::PendingReceiver<storage::mojom::WasmLocalStorageTestApi> receiver) {
   if (!partition_ || local_storage_rebind_sealed_for_wasm_profile_test_) {
@@ -502,7 +507,8 @@ void DOMStorageContextWrapper::MaybeBindLocalStorageControl() {
     return;
   }
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   if (local_storage_rebind_sealed_for_wasm_profile_test_) {
     return;
   }

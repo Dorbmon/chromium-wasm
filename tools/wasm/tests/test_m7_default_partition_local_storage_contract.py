@@ -247,6 +247,10 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
             smoke_gate,
         )
         self.assertIn(
+            "enable_chromium_wasm_m7_profile_cookie_history_local_storage_test",
+            smoke_gate,
+        )
+        self.assertIn(
             'source_set("wasm_profile_local_storage_smoke")', smoke_gate
         )
 
@@ -259,6 +263,7 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         for expected in (
             f'defines += [ "{_MACRO}=1" ]',
             "enable_chromium_wasm_m7_profile_cookie_local_storage_test",
+            "enable_chromium_wasm_m7_profile_cookie_history_local_storage_test",
             '"dom_storage/wasm_dom_storage_test_support.cc",',
             '"//components/services/storage/public/mojom:wasm_local_storage_test_api",',
         ):
@@ -273,6 +278,10 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         )
         self.assertIn(
             "enable_chromium_wasm_m7_profile_cookie_local_storage_test",
+            storage_gate,
+        )
+        self.assertIn(
+            "enable_chromium_wasm_m7_profile_cookie_history_local_storage_test",
             storage_gate,
         )
         self.assertIn(

@@ -14,6 +14,11 @@ config("wasm_m7_profile_cookie_local_storage_test") {
   defines = [ "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST=1" ]
 }
 
+config("wasm_m7_profile_cookie_history_local_storage_test") {
+  defines =
+      [ "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST=1" ]
+}
+
 source_set("storage") {
   sources = [
     "dom_storage/async_dom_storage_database.cc",
@@ -149,7 +154,8 @@ source_set("storage") {
   ]
 
   if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
-      enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+      enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+      enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
     # This config also reaches all consumers of storage_service_impl.h so the
     # source-selected test interface cannot create a mismatched C++ class
     # layout in a static Wasm link.
@@ -160,6 +166,11 @@ source_set("storage") {
     if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
       configs += [ ":wasm_m7_profile_cookie_local_storage_test" ]
       public_configs = [ ":wasm_m7_profile_cookie_local_storage_test" ]
+    }
+    if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+      configs += [ ":wasm_m7_profile_cookie_history_local_storage_test" ]
+      public_configs =
+          [ ":wasm_m7_profile_cookie_history_local_storage_test" ]
     }
     public_deps += [
       "//components/services/storage/public/mojom:wasm_local_storage_test_api",

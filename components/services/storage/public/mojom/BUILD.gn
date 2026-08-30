@@ -57,7 +57,8 @@ mojom("test_api") {
 # private endpoint into the StorageService implementation to prove one
 # LocalStorage close receipt. Keep the target absent from all normal builds.
 if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
-    enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+    enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
   mojom("wasm_local_storage_test_api") {
     cpp_only = true
 

@@ -19,6 +19,7 @@ import("//chrome/browser/buildflags.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_cookie_history_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
 assert(
@@ -644,10 +645,20 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       output_name = "chrome_wasm_m7_profile_cookie_local_storage_test"
       defines = [ "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST=1" ]
     }
+    if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+      # This aggregate has its own macro and fresh artifact. It extends the
+      # proven Cookie + renderer LocalStorage ordering with the real direct
+      # History/Favicons backend-close participant between them.
+      output_name =
+          "chrome_wasm_m7_profile_cookie_history_local_storage_test"
+      defines =
+          [ "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST=1" ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test ||
         enable_chromium_wasm_m7_default_partition_local_storage_test ||
-        enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+        enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+        enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
       configs += [ ":chrome_wasm_profile_storage" ]
     }
     deps = [
@@ -678,10 +689,19 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         "//chrome/browser/wasm:wasm_profile_preferences_smoke",
       ]
     }
+    if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+      deps += [
+        "//chrome/browser/wasm:wasm_profile_cookie_smoke",
+        "//chrome/browser/wasm:wasm_profile_history_smoke",
+        "//chrome/browser/wasm:wasm_profile_local_storage_smoke",
+        "//chrome/browser/wasm:wasm_profile_preferences_smoke",
+      ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test ||
         enable_chromium_wasm_m7_default_partition_local_storage_test ||
-        enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+        enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+        enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_storage" ]
     } else {
       deps += [ "//chrome/browser/wasm:wasm_profile_shutdown_failure_latch" ]

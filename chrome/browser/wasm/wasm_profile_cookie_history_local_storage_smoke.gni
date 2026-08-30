@@ -1,0 +1,26 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/wasm.gni")
+import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
+import(
+    "//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
+
+# This aggregate is a separate source-selected acceptance, not a request to
+# combine legacy M7 macros. Its fresh output proves Cookie, History/Favicons,
+# and renderer LocalStorage share one profile-I/O shutdown epoch and V4 drain.
+if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+  assert(!enable_chromium_wasm_m7_profile_preferences_test &&
+             !enable_chromium_wasm_m7_profile_database_test &&
+             !enable_chromium_wasm_m7_default_partition_local_storage_test &&
+             !enable_chromium_wasm_m7_profile_cookie_local_storage_test &&
+             !enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic,
+         "M7 Cookie + History + LocalStorage acceptance requires its own " +
+             "fresh output configuration")
+  assert(get_path_info(root_out_dir, "name") ==
+             "wasm-chrome-m7-profile-cookie-history-local-storage",
+         "M7 Cookie + History + LocalStorage acceptance must use " +
+             "out/wasm-chrome-m7-profile-cookie-history-local-storage")
+}

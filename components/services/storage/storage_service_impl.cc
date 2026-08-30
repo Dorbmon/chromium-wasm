@@ -72,7 +72,8 @@ SessionStorageImpl::BackingMode GetSessionStorageBackingMode(
 }
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
 
 using WasmLocalStorageTestResult = mojom::WasmLocalStorageTestResult;
 
@@ -124,7 +125,8 @@ WasmLocalStorageTestResult ClassifyWasmLocalStorageSnapshot(
 }  // namespace
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
 
 class StorageServiceImpl::WasmLocalStorageCloseFence {
  public:
@@ -218,7 +220,8 @@ void StorageServiceImpl::BindLocalStorageControl(
     }
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
     if (wasm_local_storage_close_fence_ &&
         wasm_local_storage_close_fence_->profile_path == *path) {
       // A prepared close fence is tied to the old instance. Replacing it here
@@ -253,7 +256,8 @@ void StorageServiceImpl::BindLocalStorageControl(
   if (path.has_value()) {
     persistent_local_storage_map_[*path] = new_local_storage.get();
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
     persistent_local_storage_generations_[*path] =
         ++next_persistent_local_storage_generation_;
 #endif
@@ -295,7 +299,8 @@ void StorageServiceImpl::BindSessionStorageControl(
 void StorageServiceImpl::BindTestApi(
     mojo::ScopedMessagePipeHandle test_api_receiver) {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   // The source-selected close receipt is instance-bound: it observes this
   // StorageServiceImpl's actual LocalStorage owner set rather than a process
   // global test singleton.
@@ -308,7 +313,8 @@ void StorageServiceImpl::BindTestApi(
 }
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
 
 void StorageServiceImpl::PrepareCommitCloseFence(
     const base::FilePath& profile_path,
@@ -673,7 +679,8 @@ void StorageServiceImpl::ShutDownAndRemoveSessionStorage(
 void StorageServiceImpl::ShutDownAndRemoveLocalStorage(
     LocalStorageImpl* storage) {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   const base::FilePath storage_partition_directory =
       storage->GetStoragePartitionDirectory();
   bool removed_fenced_storage = false;
@@ -703,19 +710,22 @@ void StorageServiceImpl::ShutDownAndRemoveLocalStorage(
 
   auto it = local_storages_.find(storage);
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   bool storage_erased = false;
 #endif
   if (it != local_storages_.end()) {
     local_storages_.erase(it);
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
     storage_erased = true;
 #endif
   }
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
   if (removed_fenced_storage && storage_erased &&
       wasm_local_storage_close_fence_) {
     if (wasm_local_storage_close_fence_->phase ==

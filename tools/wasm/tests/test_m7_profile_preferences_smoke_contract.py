@@ -48,6 +48,7 @@ def _bracket_body_after(text: str, marker: str) -> str:
 _M7_PREFERENCES_MACROS = (
     "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST",
     "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST",
+    "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
 )
 
 
@@ -530,7 +531,14 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             self.main_parts,
             "void WasmBrowserMainParts::OnWasmProfileHistorySmokeComplete(bool success)",
         )
-        self.assertIn("NotifyWasmProfilePreferencesHistorySmokeResult(success)", completion)
+        self.assertIn(
+            "success && profile_ && profile_->DidHistorySmokeSucceed()",
+            completion,
+        )
+        self.assertIn(
+            "NotifyWasmProfilePreferencesHistorySmokeResult(history_succeeded)",
+            completion,
+        )
         self.assertIn("if (shutdown_requested_)", completion)
         self.assertIn("MaybeStartShutdown();", completion)
         self.assertIn("RequestShutdown();", completion)
@@ -1409,11 +1417,18 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
                 )
                 self.assertIn('":wasm_profile_bookmark_smoke",', target)
                 self.assertIn('":wasm_profile_preferences_smoke",', target)
-                self.assertNotIn('":wasm_profile_history_smoke",', target)
+                preferences_gate = _body_after_signature(
+                    target,
+                    "if (enable_chromium_wasm_m7_profile_preferences_test)",
+                )
+                self.assertNotIn(
+                    '":wasm_profile_history_smoke",', preferences_gate
+                )
 
         helper_gate = (
             "if (enable_chromium_wasm_m7_profile_preferences_test ||\n"
-            "    enable_chromium_wasm_m7_profile_cookie_local_storage_test) {\n"
+            "    enable_chromium_wasm_m7_profile_cookie_local_storage_test ||\n"
+            "    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {\n"
             '  source_set("wasm_profile_preferences_smoke")'
         )
         helper_start = self.wasm_build.index(helper_gate)

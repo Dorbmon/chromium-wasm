@@ -12,6 +12,7 @@ import("//chrome/common/features.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_cookie_history_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
 assert(
@@ -1897,6 +1898,14 @@ config("wasm_profile_m7_cookie_local_storage_smoke_config") {
   defines = [ "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST=1" ]
 }
 
+config("wasm_profile_m7_cookie_history_local_storage_smoke_config") {
+  # This aggregate adds the direct History/Favicons lifetime participant
+  # between Cookie and renderer LocalStorage. Propagate the distinct macro to
+  # every consumer of WasmProfile's source-selected class layout.
+  defines =
+      [ "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST=1" ]
+}
+
 source_set("wasm_profile") {
   sources = [
     "wasm_profile.cc",
@@ -1945,6 +1954,16 @@ source_set("wasm_profile") {
     public_configs = [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
     deps += [
       ":wasm_profile_cookie_smoke",
+      ":wasm_profile_local_storage_smoke",
+      ":wasm_profile_preferences_smoke",
+    ]
+  }
+  if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+    public_configs =
+        [ ":wasm_profile_m7_cookie_history_local_storage_smoke_config" ]
+    deps += [
+      ":wasm_profile_cookie_smoke",
+      ":wasm_profile_history_smoke",
       ":wasm_profile_local_storage_smoke",
       ":wasm_profile_preferences_smoke",
     ]
@@ -2018,11 +2037,12 @@ test("wasm_storage_partition_config_unittests") {
 }
 
 # The test-only M7 Preferences protocol is linked into the source-selected
-# Preferences and Cookie + LocalStorage aggregate artifacts only. The normal
-# chrome_wasm configuration neither compiles this target nor recognizes its
-# runtime switches.
+# Preferences, Cookie + LocalStorage, and Cookie + History + LocalStorage
+# aggregate artifacts only. The normal chrome_wasm configuration neither
+# compiles this target nor recognizes its runtime switches.
 if (enable_chromium_wasm_m7_profile_preferences_test ||
-    enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+    enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
   source_set("wasm_profile_preferences_smoke") {
     public = [ "wasm_profile_preferences_smoke.h" ]
 
@@ -2037,11 +2057,12 @@ if (enable_chromium_wasm_m7_profile_preferences_test ||
   }
 }
 
-if (enable_chromium_wasm_m7_profile_preferences_test) {
-  # The optional HistoryService witness is linked only into the same dedicated
-  # M7 Preferences artifact. It owns one core HistoryService directly rather
-  # than admitting the desktop history/bookmark factory graph or changing the
-  # normal StoragePartition policy.
+if (enable_chromium_wasm_m7_profile_preferences_test ||
+    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+  # The optional HistoryService witness is linked only into the dedicated M7
+  # Preferences artifact and the Cookie + History + LocalStorage aggregate. It
+  # owns one core HistoryService directly rather than admitting the desktop
+  # history/bookmark factory graph or changing normal StoragePartition policy.
   source_set("wasm_profile_history_smoke") {
     public = [ "wasm_profile_history_smoke.h" ]
 
@@ -2078,59 +2099,62 @@ if (enable_chromium_wasm_m7_profile_preferences_test) {
     ]
   }
 
-  # The optional BookmarkModel witness is linked only into the same dedicated
-  # M7 Preferences artifact. It owns one core BookmarkModel directly rather
-  # than admitting BookmarkModelFactory, sync, encryption, or normal profile
-  # service persistence.
-  source_set("wasm_profile_bookmark_smoke") {
-    public = [ "wasm_profile_bookmark_smoke.h" ]
+  if (enable_chromium_wasm_m7_profile_preferences_test) {
+    # The optional BookmarkModel witness is linked only into the same dedicated
+    # M7 Preferences artifact. It owns one core BookmarkModel directly rather
+    # than admitting BookmarkModelFactory, sync, encryption, or normal profile
+    # service persistence.
+    source_set("wasm_profile_bookmark_smoke") {
+      public = [ "wasm_profile_bookmark_smoke.h" ]
 
-    sources = [ "wasm_profile_bookmark_smoke.cc" ]
+      sources = [ "wasm_profile_bookmark_smoke.cc" ]
 
-    public_deps = [
-      ":wasm_profile_ordered_drain_lifecycle",
-      ":wasm_profile_preferences_smoke",
-    ]
+      public_deps = [
+        ":wasm_profile_ordered_drain_lifecycle",
+        ":wasm_profile_preferences_smoke",
+      ]
 
-    deps = [
-      "//base",
-      "//components/bookmarks/browser",
-      "//components/bookmarks/common",
-      "//components/signin/public/base",
-      "//url",
-    ]
-  }
+      deps = [
+        "//base",
+        "//components/bookmarks/browser",
+        "//components/bookmarks/common",
+        "//components/signin/public/base",
+        "//url",
+      ]
+    }
 
-  # Exercises cancellation and owner-loss quarantine against the real direct
-  # BookmarkModel load/write path. The admitted profile operation must remain
-  # non-terminal until the model/storage owner reaches its close point.
-  test("wasm_profile_bookmark_lifetime_participant_unittests") {
-    sources = [ "wasm_profile_bookmark_lifetime_participant_unittest.cc" ]
+    # Exercises cancellation and owner-loss quarantine against the real direct
+    # BookmarkModel load/write path. The admitted profile operation must remain
+    # non-terminal until the model/storage owner reaches its close point.
+    test("wasm_profile_bookmark_lifetime_participant_unittests") {
+      sources = [ "wasm_profile_bookmark_lifetime_participant_unittest.cc" ]
 
-    deps = [
-      ":wasm_profile_bookmark_smoke",
-      ":wasm_profile_ordered_drain_lifecycle",
-      ":wasm_profile_preferences_smoke",
-      "//base",
-      "//base/test:run_all_unittests",
-      "//base/test:test_support",
-      "//components/bookmarks/common",
-      "//components/signin/public/base",
-      "//testing/gmock",
-      "//testing/gtest",
-      "//ui/base",
-      "//ui/base:test_support",
-    ]
+      deps = [
+        ":wasm_profile_bookmark_smoke",
+        ":wasm_profile_ordered_drain_lifecycle",
+        ":wasm_profile_preferences_smoke",
+        "//base",
+        "//base/test:run_all_unittests",
+        "//base/test:test_support",
+        "//components/bookmarks/common",
+        "//components/signin/public/base",
+        "//testing/gmock",
+        "//testing/gtest",
+        "//ui/base",
+        "//ui/base:test_support",
+      ]
+    }
   }
 }
 
 if (enable_chromium_wasm_m7_profile_preferences_test ||
-    enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
-  # The CookieManager witness is available to both its original Preferences
-  # artifact and the dedicated Cookie + renderer LocalStorage aggregate. It
-  # drives the default in-memory StoragePartition's real CookieManager path
-  # while ContentBrowserClient persistently selects only its Cookies database
-  # under the V4-mounted Default profile.
+    enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+  # The CookieManager witness is available to its original Preferences
+  # artifact and both Cookie + renderer LocalStorage aggregates. It drives the
+  # default in-memory StoragePartition's real CookieManager path while
+  # ContentBrowserClient persistently selects only its Cookies database under
+  # the V4-mounted Default profile.
   source_set("wasm_profile_cookie_smoke") {
     public = [ "wasm_profile_cookie_smoke.h" ]
 
@@ -2220,13 +2244,14 @@ if (enable_chromium_wasm_m7_profile_database_test) {
 }
 
 # The test-only LocalStorage protocol is linked only into the dedicated
-# default-profile artifact. Its browser-side modes use the privileged
-# StorageArea interface. Its renderer modes add one transient
+# default-profile and aggregate artifacts. Its browser-side modes use the
+# privileged StorageArea interface. Its renderer modes add one transient
 # chrome://m7-local-storage WebContents and observe its renderer-owned
 # StorageArea through the same close-fence bridge. Content and Storage
 # independently source-select the tiny path exception under the same flag.
 if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
-    enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+    enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
   source_set("wasm_profile_local_storage_smoke") {
     public = [
       "wasm_profile_local_storage_smoke.h",
@@ -2244,6 +2269,12 @@ if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
     if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
       configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
       public_configs = [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
+    }
+    if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+      configs +=
+          [ ":wasm_profile_m7_cookie_history_local_storage_smoke_config" ]
+      public_configs =
+          [ ":wasm_profile_m7_cookie_history_local_storage_smoke_config" ]
     }
 
     deps = [
@@ -2298,6 +2329,10 @@ source_set("wasm_profile_storage") {
   }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
+  }
+  if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+    configs +=
+        [ ":wasm_profile_m7_cookie_history_local_storage_smoke_config" ]
   }
   if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
     defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST=1" ]
@@ -2549,10 +2584,21 @@ source_set("wasm_browser_main_parts") {
       ":wasm_profile_preferences_smoke",
     ]
   }
+  if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+    configs +=
+        [ ":wasm_profile_m7_cookie_history_local_storage_smoke_config" ]
+    deps += [
+      ":wasm_profile_cookie_smoke",
+      ":wasm_profile_history_smoke",
+      ":wasm_profile_local_storage_smoke",
+      ":wasm_profile_preferences_smoke",
+    ]
+  }
   if (enable_chromium_wasm_m7_profile_preferences_test ||
       enable_chromium_wasm_m7_profile_database_test ||
       enable_chromium_wasm_m7_default_partition_local_storage_test ||
-      enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+      enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+      enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
     deps += [
       ":wasm_profile_persistent_prefs_lifetime_participant",
       ":wasm_profile_storage",
@@ -2594,6 +2640,14 @@ source_set("wasm_content_browser_client") {
 
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
+    deps += [
+      ":wasm_profile_preferences_smoke",
+      "//services/network/public/mojom",
+    ]
+  }
+  if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+    configs +=
+        [ ":wasm_profile_m7_cookie_history_local_storage_smoke_config" ]
     deps += [
       ":wasm_profile_preferences_smoke",
       "//services/network/public/mojom",

@@ -2869,7 +2869,8 @@ source_set("browser") {
   }
 
   if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
-      enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
+      enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
+      enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
     # This source-selected bridge is the only Content-side admission for the
     # M7 default-partition LocalStorage close receipt. It must not leak into
     # ordinary Wasm Chrome or another platform's DOM-storage graph.
@@ -2878,6 +2879,10 @@ source_set("browser") {
     }
     if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
       defines += [ "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST=1" ]
+    }
+    if (enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {
+      defines +=
+          [ "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST=1" ]
     }
     sources += [
       "../public/browser/wasm_dom_storage_test_support.h",
