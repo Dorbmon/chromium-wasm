@@ -543,6 +543,9 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             self.profile,
         )
         self.assertIn(
+            "WasmProfilePersistentPrefsLifetimeParticipant", self.profile
+        )
+        self.assertNotIn(
             "CompletePersistentPrefsWithProfileStorageHold", self.profile
         )
 
@@ -592,11 +595,16 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
             "prefs_->CommitPendingWrite(",
             "base::OnceClosure()",
             "json_pref_store_->GetValues()",
+            "CHECK(prefs_lifetime_profile_io_participant_)",
+            "prefs_lifetime_profile_io_participant_->IsPending()",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, starter_body)
         self.assertNotIn(
             "WasmProfile::OnPrefsShutdownFenceComplete", starter_body
+        )
+        self.assertNotIn(
+            "TryAcquireWasmProfileStorageProfileIO", starter_body
         )
         for forbidden in ("base::RunLoop", "WaitableEvent", ".Wait("):
             with self.subTest(forbidden=forbidden):
@@ -605,6 +613,76 @@ class M7ProfilePersistenceBoundaryContractTest(unittest.TestCase):
         self.assertLess(
             self.profile.index("void WasmProfile::BeginPrefsShutdownFence"),
             self.profile.index("bool WasmProfile::StartPrefsShutdownFence"),
+        )
+
+        lifetime_admission = re.search(
+            r"bool WasmProfile::StartPrefsLifetimeProfileIOAdmission\(\)\s*\{",
+            self.profile,
+        )
+        self.assertIsNotNone(lifetime_admission)
+        lifetime_admission_body = _balanced_body(
+            self.profile,
+            self.profile.find("{", lifetime_admission.start()),
+            "WasmProfile::StartPrefsLifetimeProfileIOAdmission",
+        )
+        for required in (
+            "CHECK(!shutdown_)",
+            "CHECK(!prefs_lifetime_profile_io_participant_)",
+            "chrome::TryAcquireWasmProfileStorageProfileIO()",
+            "WasmProfilePersistentPrefsLifetimeParticipant",
+            "std::move(*profile_io_hold)",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, lifetime_admission_body)
+        self.assertLess(
+            lifetime_admission_body.index(
+                "chrome::TryAcquireWasmProfileStorageProfileIO()"
+            ),
+            lifetime_admission_body.index(
+                "WasmProfilePersistentPrefsLifetimeParticipant"
+            ),
+        )
+        _assert_only_in_m7_storage_blocks(
+            self,
+            self.profile,
+            "StartPrefsLifetimeProfileIOAdmission",
+        )
+
+        completion = re.search(
+            r"void WasmProfile::OnPrefsShutdownFenceComplete\(\s*"
+            r"base::OnceCallback<void\(bool success\)> completion,\s*"
+            r"bool success\)\s*\{",
+            self.profile,
+        )
+        self.assertIsNotNone(completion)
+        completion_body = _balanced_body(
+            self.profile,
+            self.profile.find("{", completion.start()),
+            "WasmProfile::OnPrefsShutdownFenceComplete",
+        )
+        for required in (
+            "prefs_lifetime_profile_io_participant_",
+            "CompleteAfterStrictFence(",
+            "success = false;",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, completion_body)
+        self.assertLess(
+            completion_body.index("CompleteAfterStrictFence("),
+            completion_body.index("prefs_shutdown_fence_state_ = success"),
+        )
+
+        destructor = re.search(r"WasmProfile::~WasmProfile\(\)\s*\{", self.profile)
+        self.assertIsNotNone(destructor)
+        destructor_body = _balanced_body(
+            self.profile,
+            self.profile.find("{", destructor.start()),
+            "WasmProfile::~WasmProfile",
+        )
+        self.assertIn("prefs_lifetime_profile_io_participant_->Cancel();", destructor_body)
+        self.assertLess(
+            destructor_body.index("prefs_lifetime_profile_io_participant_->Cancel();"),
+            destructor_body.index("prefs_shutdown_fence_controller_->Cancel();"),
         )
 
         verify = re.search(
@@ -810,6 +888,96 @@ executable("m7_wasmfs_conditional_testonly") {
             self.main_parts,
             "chrome::NotifyWasmProfileStorageProfileCreated()",
         )
+        _assert_only_in_m7_storage_blocks(
+            self,
+            self.main_parts,
+            "profile_->StartPrefsLifetimeProfileIOAdmission()",
+        )
+        self.assertLess(
+            body.index("profile_ = std::make_unique<WasmProfile>(profile_path);"),
+            body.index("chrome::NotifyWasmProfileStorageProfileCreated()"),
+        )
+        self.assertLess(
+            body.index("chrome::NotifyWasmProfileStorageProfileCreated()"),
+            body.index("profile_->StartPrefsLifetimeProfileIOAdmission()"),
+        )
+
+    def test_startup_admission_denial_reaches_fail_closed_foundation_cleanup(
+        self,
+    ) -> None:
+        """A rejected M7 admission retains the profile for fail-closed teardown."""
+
+        pre_main = re.search(
+            r"int WasmBrowserMainParts::PreMainMessageLoopRun\(\) " r"\{",
+            self.main_parts,
+        )
+        self.assertIsNotNone(pre_main)
+        pre_main_body = _balanced_body(
+            self.main_parts,
+            self.main_parts.find("{", pre_main.start()),
+            "WasmBrowserMainParts::PreMainMessageLoopRun",
+        )
+        admission_denial = re.search(
+            r"if \(!profile_->StartPrefsLifetimeProfileIOAdmission\(\)\)\s*\{",
+            pre_main_body,
+        )
+        self.assertIsNotNone(admission_denial)
+        admission_denial_body = _balanced_body(
+            pre_main_body,
+            pre_main_body.find("{", admission_denial.start()),
+            "WasmProfile Preferences admission denial",
+        )
+        self.assertIn(
+            "return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;", admission_denial_body
+        )
+        self.assertNotIn("profile_.reset();", admission_denial_body)
+
+        destructor = re.search(
+            r"WasmBrowserMainParts::~WasmBrowserMainParts\(\)\s*\{",
+            self.main_parts,
+        )
+        self.assertIsNotNone(destructor)
+        destructor_body = _balanced_body(
+            self.main_parts,
+            self.main_parts.find("{", destructor.start()),
+            "WasmBrowserMainParts::~WasmBrowserMainParts",
+        )
+        self.assertIn("ShutdownFoundation();", destructor_body)
+
+        foundation = re.search(
+            r"void WasmBrowserMainParts::ShutdownFoundation\(\)\s*\{",
+            self.main_parts,
+        )
+        self.assertIsNotNone(foundation)
+        foundation_body = _balanced_body(
+            self.main_parts,
+            self.main_parts.find("{", foundation.start()),
+            "WasmBrowserMainParts::ShutdownFoundation",
+        )
+        self.assertLess(
+            foundation_body.index("profile_->Shutdown();"),
+            foundation_body.index(
+                "ResetProfileThenFailCloseM7ProfileStorage(profile_);"
+            ),
+        )
+
+        fail_closed_reset = re.search(
+            r"void ResetProfileThenFailCloseM7ProfileStorage\(\s*"
+            r"std::unique_ptr<WasmProfile>& profile\)\s*\{",
+            self.main_parts,
+        )
+        self.assertIsNotNone(fail_closed_reset)
+        fail_closed_reset_body = _balanced_body(
+            self.main_parts,
+            self.main_parts.find("{", fail_closed_reset.start()),
+            "ResetProfileThenFailCloseM7ProfileStorage",
+        )
+        self.assertLess(
+            fail_closed_reset_body.index("profile.reset();"),
+            fail_closed_reset_body.index(
+                "chrome::NotifyWasmProfileStorageProfileShutdownFailClosed()"
+            ),
+        )
 
     def test_normal_chrome_and_m6_do_not_select_experimental_wasmfs_storage(
         self,
@@ -834,6 +1002,16 @@ executable("m7_wasmfs_conditional_testonly") {
         chrome_profile_storage = _gn_target_body(
             self.wasm_browser_build, "source_set", "wasm_profile_storage"
         )
+        prefs_lifetime_participant = _gn_target_body(
+            self.wasm_browser_build,
+            "source_set",
+            "wasm_profile_persistent_prefs_lifetime_participant",
+        )
+        prefs_lifetime_participant_unittests = _gn_target_body(
+            self.wasm_browser_build,
+            "test",
+            "wasm_profile_persistent_prefs_lifetime_participant_unittests",
+        )
         main_parts = _gn_target_body(
             self.wasm_browser_build, "source_set", "wasm_browser_main_parts"
         )
@@ -851,6 +1029,24 @@ executable("m7_wasmfs_conditional_testonly") {
         _assert_only_in_m7_storage_gn_blocks(
             self, main_parts, '":wasm_profile_storage"'
         )
+        self.assertIn(
+            '":wasm_profile_persistent_prefs_lifetime_participant",',
+            chrome_profile,
+        )
+        self.assertIn(
+            'public_deps = [ ":wasm_profile_ordered_drain_lifecycle" ]',
+            prefs_lifetime_participant,
+        )
+        for token in (
+            "wasm_profile_persistent_prefs_lifetime_participant_unittest.cc",
+            '":wasm_profile_persistent_prefs_lifetime_participant",',
+            '"//base/test:run_all_unittests",',
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, prefs_lifetime_participant_unittests)
+        for forbidden in ("wasm_profile_storage", "wasmfs", "emscripten"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, prefs_lifetime_participant)
         for token in (
             '":chrome_wasm_profile_storage"',
             '"//chrome/browser/wasm:wasm_profile_storage"',

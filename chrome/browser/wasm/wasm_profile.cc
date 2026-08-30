@@ -27,6 +27,7 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
+#include "chrome/browser/wasm/wasm_profile_persistent_prefs_lifetime_participant.h"
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
@@ -118,22 +119,6 @@ void VerifyPersistentPrefsAndReplyOnFileSequence(
   std::move(reply).Run(readback_succeeded);
 }
 
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-void CompletePersistentPrefsWithProfileStorageHold(
-    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
-    base::OnceCallback<void(bool success)> completion,
-    bool success) {
-  const bool profile_io_completed = profile_io_hold.Complete(
-      success ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                    kSucceeded
-              : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                    kFailed);
-  std::move(completion).Run(success && profile_io_completed);
-}
-#endif
-
 }  // namespace
 
 WasmProfile::WasmProfile(base::FilePath profile_path)
@@ -198,6 +183,12 @@ WasmProfile::WasmProfile(base::FilePath profile_path)
 }
 
 WasmProfile::~WasmProfile() {
+  // Do not let destruction classify the source-selected profile admission as
+  // abandoned. An owner loss before the strict JsonPrefStore fence is a
+  // failed profile operation, not a clean storage handoff.
+  if (prefs_lifetime_profile_io_participant_) {
+    prefs_lifetime_profile_io_participant_->Cancel();
+  }
   if (prefs_shutdown_fence_controller_) {
     prefs_shutdown_fence_controller_->Cancel();
   }
@@ -273,32 +264,24 @@ bool WasmProfile::StartPrefsShutdownFence(
   CHECK_EQ(prefs_shutdown_fence_state_, PrefsShutdownFenceState::kPending);
   CHECK(prefs_);
   CHECK(json_pref_store_);
-
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
-      profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
-  if (!profile_io_hold) {
-    return false;
-  }
-  auto completion_after_profile_io = base::BindOnce(
-      &CompletePersistentPrefsWithProfileStorageHold,
-      std::move(*profile_io_hold), std::move(completion));
-#else
-  auto completion_after_profile_io = std::move(completion);
+  // A source-selected strict fence is not independently admissible. Its
+  // profile-lifetime holder must remain live until this callback reports the
+  // bounded write/readback result to the outer storage lifecycle.
+  CHECK(prefs_lifetime_profile_io_participant_);
+  CHECK(prefs_lifetime_profile_io_participant_->IsPending());
 #endif
 
   // Bind the result back to the UI sequence before handing it to the
-  // JsonPrefStore file runner. The registered participant receives it there
-  // and releases its hold; the M7 test profile's outer storage admission also
-  // completes there only after the bounded file-sequence readback. The
-  // controller invokes the profile completion only after that terminal result
-  // has been aggregated. The file runner merely owns the completion callback
-  // while it verifies the file.
+  // JsonPrefStore file runner. The registered participant receives it there,
+  // then the profile completes its source-selected lifetime admission only
+  // after that terminal result has been aggregated. The file runner merely
+  // owns the completion callback while it verifies the file.
   auto complete_on_ui = base::BindPostTask(
       base::SequencedTaskRunner::GetCurrentDefault(),
-      std::move(completion_after_profile_io));
+      std::move(completion));
   prefs_->CommitPendingWrite(
       base::OnceClosure(),
       base::BindOnce(&VerifyPersistentPrefsAndReplyOnFileSequence,
@@ -320,6 +303,25 @@ bool WasmProfile::DidPrefsShutdownFenceSucceed() const {
   return prefs_shutdown_fence_state_ == PrefsShutdownFenceState::kSucceeded;
 }
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+bool WasmProfile::StartPrefsLifetimeProfileIOAdmission() {
+  CHECK(!shutdown_);
+  CHECK(!prefs_lifetime_profile_io_participant_);
+
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!profile_io_hold) {
+    return false;
+  }
+  prefs_lifetime_profile_io_participant_ =
+      std::make_unique<WasmProfilePersistentPrefsLifetimeParticipant>(
+          std::move(*profile_io_hold));
+  return true;
+}
+#endif
+
 void WasmProfile::OnPrefsShutdownFenceComplete(
     base::OnceCallback<void(bool success)> completion,
     bool success) {
@@ -327,6 +329,19 @@ void WasmProfile::OnPrefsShutdownFenceComplete(
   CHECK(prefs_shutdown_fence_controller_);
   CHECK(prefs_shutdown_fence_controller_->HasCompleted());
   CHECK_EQ(prefs_shutdown_fence_controller_->DidSucceed(), success);
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // The outer M7 admission remains active until the inner controller has
+  // observed the strict JsonPrefStore write/readback result. A missing or
+  // previously completed participant is an explicit failure, never a clean
+  // profile-storage handoff.
+  if (!prefs_lifetime_profile_io_participant_ ||
+      !prefs_lifetime_profile_io_participant_->CompleteAfterStrictFence(
+          success)) {
+    success = false;
+  }
+#endif
   prefs_shutdown_fence_state_ = success ? PrefsShutdownFenceState::kSucceeded
                                         : PrefsShutdownFenceState::kFailed;
   std::move(completion).Run(success);

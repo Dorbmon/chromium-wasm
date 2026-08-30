@@ -25,6 +25,7 @@ class JsonPrefStore;
 class PrefService;
 class ProfileKey;
 class WasmProfilePrefsFenceController;
+class WasmProfilePersistentPrefsLifetimeParticipant;
 class WasmSessionNavigationJournal;
 
 namespace base {
@@ -105,6 +106,16 @@ class WasmProfile final : public Profile {
   bool IsPrefsShutdownFencePending() const;
   bool HasPrefsShutdownFenceCompleted() const;
   bool DidPrefsShutdownFenceSucceed() const;
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // Begins the one source-selected Preferences admission immediately after
+  // the outer storage owner has recorded this successfully constructed
+  // profile. The admission is retained until the strict write/readback fence
+  // reports its terminal result or this profile is destroyed.
+  bool StartPrefsLifetimeProfileIOAdmission();
+#endif
 
   // The M6 history bootstrap reads this process-local journal through a weak
   // reference. It is intentionally not HistoryService and becomes inert
@@ -242,6 +253,14 @@ class WasmProfile final : public Profile {
   // must become result-bearing participants before OPFS can be selected.
   std::unique_ptr<WasmProfilePrefsFenceController>
       prefs_shutdown_fence_controller_;
+
+  // The outer storage lifecycle counts this source-selected JsonPrefStore
+  // admission for the full post-construction WasmProfile lifetime when an M7
+  // target selects it. Normal Chrome leaves this null. An admitted operation
+  // completes only after strict Preferences write/readback, or is explicitly
+  // failed when this profile cannot reach that result.
+  std::unique_ptr<WasmProfilePersistentPrefsLifetimeParticipant>
+      prefs_lifetime_profile_io_participant_;
 
   bool shutdown_ = false;
   PrefsShutdownFenceState prefs_shutdown_fence_state_ =

@@ -416,6 +416,14 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     LOG(ERROR) << "chrome_wasm could not admit its profile storage lifecycle";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
+  // Retain the source-selected JsonPrefStore admission for this profile after
+  // the outer owner has observed its successful construction, but before any
+  // dedicated M7 smoke can touch it. It completes only with the strict
+  // Preferences write/readback result during asynchronous shutdown.
+  if (!profile_->StartPrefsLifetimeProfileIOAdmission()) {
+    LOG(ERROR) << "chrome_wasm could not admit its profile Preferences I/O";
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
 #endif
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)

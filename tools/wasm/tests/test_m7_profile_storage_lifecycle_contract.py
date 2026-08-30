@@ -525,20 +525,51 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
 
         profile = source("chrome/browser/wasm/wasm_profile.cc")
-        prefs_fence = _body_after_signature(
-            profile, "bool WasmProfile::StartPrefsShutdownFence("
+        prefs_lifetime_admission = _body_after_signature(
+            profile, "bool WasmProfile::StartPrefsLifetimeProfileIOAdmission()"
         )
         for token in (
             "chrome::TryAcquireWasmProfileStorageProfileIO()",
-            "CompletePersistentPrefsWithProfileStorageHold",
+            "WasmProfilePersistentPrefsLifetimeParticipant",
             "std::move(*profile_io_hold)",
-            "base::BindPostTask",
         ):
             with self.subTest(token=token):
-                self.assertIn(token, prefs_fence)
+                self.assertIn(token, prefs_lifetime_admission)
         self.assertLess(
-            prefs_fence.index("chrome::TryAcquireWasmProfileStorageProfileIO()"),
+            prefs_lifetime_admission.index(
+                "chrome::TryAcquireWasmProfileStorageProfileIO()"
+            ),
+            prefs_lifetime_admission.index(
+                "WasmProfilePersistentPrefsLifetimeParticipant"
+            ),
+        )
+
+        prefs_fence = _body_after_signature(
+            profile, "bool WasmProfile::StartPrefsShutdownFence("
+        )
+        self.assertIn("base::BindPostTask", prefs_fence)
+        self.assertIn("prefs_->CommitPendingWrite(", prefs_fence)
+        self.assertIn(
+            "CHECK(prefs_lifetime_profile_io_participant_)", prefs_fence
+        )
+        self.assertIn(
+            "prefs_lifetime_profile_io_participant_->IsPending()", prefs_fence
+        )
+        self.assertLess(
+            prefs_fence.index("prefs_lifetime_profile_io_participant_->IsPending()"),
             prefs_fence.index("prefs_->CommitPendingWrite("),
+        )
+        self.assertNotIn(
+            "chrome::TryAcquireWasmProfileStorageProfileIO()", prefs_fence
+        )
+
+        prefs_completion = _body_after_signature(
+            profile, "void WasmProfile::OnPrefsShutdownFenceComplete("
+        )
+        self.assertIn("CompleteAfterStrictFence(", prefs_completion)
+        self.assertLess(
+            prefs_completion.index("CompleteAfterStrictFence("),
+            prefs_completion.index("prefs_shutdown_fence_state_ = success"),
         )
 
         database_admission = self.main_parts.index(
