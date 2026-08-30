@@ -19,6 +19,9 @@ _LOCAL_STORAGE_MACRO = "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST"
 _COOKIE_LOCAL_STORAGE_MACRO = (
     "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST"
 )
+_BOOKMARK_AGGREGATE_MACRO = (
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST"
+)
 
 
 def _body_after_marker(text: str, marker: str) -> str:
@@ -112,6 +115,7 @@ class M7ProfileCookieHistoryLocalStorageContractTest(unittest.TestCase):
         self.assertNotIn(_PREFS_MACRO, selected)
         self.assertNotIn(_LOCAL_STORAGE_MACRO, selected)
         self.assertNotIn(_COOKIE_LOCAL_STORAGE_MACRO, selected)
+        self.assertNotIn(_BOOKMARK_AGGREGATE_MACRO, selected)
 
         deps_start = executable.index("deps = [")
         deps_gate = executable[
@@ -174,7 +178,8 @@ class M7ProfileCookieHistoryLocalStorageContractTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, validation)
         self.assertIn(
-            f"#if defined({_MACRO})\n"
+            f"#if defined({_MACRO}) || \\\n"
+            f"    defined({_BOOKMARK_AGGREGATE_MACRO})\n"
             "          chrome::IsWasmProfilePreferencesHistorySmokeEnabled() &&\n"
             "#else\n"
             "          !chrome::IsWasmProfilePreferencesHistorySmokeEnabled() &&\n"

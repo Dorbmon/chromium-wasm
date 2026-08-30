@@ -250,7 +250,8 @@ class LocalStorageImpl::StorageAreaHolder final
     storage_area()->ScheduleImmediateCommit();
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
     // This is the authoritative binding transition for the M7 close-fence
     // test. It intentionally follows ScheduleImmediateCommit(): the test's
     // earlier snapshot was admitted while this holder was bound, and Arm only
@@ -287,7 +288,8 @@ class LocalStorageImpl::StorageAreaHolder final
     has_bindings_ = true;
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
     context_->OnStorageAreaBoundForTesting();
 #endif
     storage_area()->Bind(std::move(receiver));
@@ -609,7 +611,8 @@ const base::FilePath& LocalStorageImpl::GetStoragePartitionDirectory() const {
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
 bool LocalStorageImpl::HasExactlyOneBoundStorageAreaForTesting(
     const blink::StorageKey& storage_key) const {
   if (areas_.size() != 1u) {

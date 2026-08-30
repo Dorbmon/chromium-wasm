@@ -49,6 +49,7 @@ _M7_PREFERENCES_MACROS = (
     "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST",
     "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
 )
 
 
@@ -829,7 +830,11 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "void WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete(",
         )
         self.assertIn(
-            "NotifyWasmProfilePreferencesBookmarkSmokeResult(success)",
+            "profile_->DidBookmarkSmokeSucceed()",
+            bookmark_completion,
+        )
+        self.assertIn(
+            "NotifyWasmProfilePreferencesBookmarkSmokeResult(bookmark_succeeded)",
             bookmark_completion,
         )
         self.assertIn("if (shutdown_requested_)", bookmark_completion)
@@ -1428,7 +1433,8 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         helper_gate = (
             "if (enable_chromium_wasm_m7_profile_preferences_test ||\n"
             "    enable_chromium_wasm_m7_profile_cookie_local_storage_test ||\n"
-            "    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test) {\n"
+            "    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||\n"
+            "    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {\n"
             '  source_set("wasm_profile_preferences_smoke")'
         )
         helper_start = self.wasm_build.index(helper_gate)

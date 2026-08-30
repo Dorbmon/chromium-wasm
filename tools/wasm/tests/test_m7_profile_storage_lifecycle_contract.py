@@ -38,6 +38,7 @@ _M7_STORAGE_MACROS = (
     "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
 )
 _M7_STORAGE_GN_FLAGS = (
     "enable_chromium_wasm_m7_profile_preferences_test",
@@ -45,6 +46,7 @@ _M7_STORAGE_GN_FLAGS = (
     "enable_chromium_wasm_m7_default_partition_local_storage_test",
     "enable_chromium_wasm_m7_profile_cookie_local_storage_test",
     "enable_chromium_wasm_m7_profile_cookie_history_local_storage_test",
+    "enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test",
 )
 
 
@@ -235,7 +237,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \\\n"
-            "    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)\n"
+            "    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
+            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)\n"
             "// Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend",
             self.storage_header,
         )
@@ -246,7 +249,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertIn(
             "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \\\n"
-            "    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)\n"
+            "    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
+            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
             "#elif defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
