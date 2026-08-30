@@ -1883,6 +1883,12 @@ config("wasm_profile_m7_preferences_smoke_config") {
   defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
 }
 
+config("wasm_profile_m7_local_storage_smoke_config") {
+  # WasmProfile owns the source-selected LocalStorage lifetime participant in
+  # this artifact. Keep every consumer's public class layout identical.
+  defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+}
+
 source_set("wasm_profile") {
   sources = [
     "wasm_profile.cc",
@@ -1924,7 +1930,8 @@ source_set("wasm_profile") {
     defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
   }
   if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
-    defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+    public_configs = [ ":wasm_profile_m7_local_storage_smoke_config" ]
+    deps += [ ":wasm_profile_local_storage_smoke" ]
   }
   if (enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic) {
     defines = [ "CHROME_WASM_M7_NORMAL_PROFILE_FENCE_FAILURE_DIAGNOSTIC=1" ]
@@ -2209,7 +2216,8 @@ if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
     defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
 
     deps = [
-      ":wasm_profile",
+      ":wasm_profile_local_storage_close_receipt_lifetime",
+      ":wasm_profile_ordered_drain_lifecycle",
       "//base",
       "//components/services/storage/public/mojom:mojom",
       "//components/services/storage/public/mojom:wasm_local_storage_test_api",
@@ -2298,6 +2306,35 @@ source_set("wasm_profile_ordered_drain_lifecycle") {
   sources = [ "wasm_profile_ordered_drain_lifecycle.cc" ]
 
   deps = [ "//base" ]
+}
+
+# Keeps the LocalStorage profile-I/O admission live through its exact backend
+# close receipt and the following owner-sequence delivery. It is base-only so
+# cancellation and fail-closed quarantine can be tested without constructing
+# BrowserContext, WebContents, or Mojo storage owners.
+source_set("wasm_profile_local_storage_close_receipt_lifetime") {
+  public = [ "wasm_profile_local_storage_close_receipt_lifetime.h" ]
+
+  sources = [ "wasm_profile_local_storage_close_receipt_lifetime.cc" ]
+
+  public_deps = [ ":wasm_profile_ordered_drain_lifecycle" ]
+
+  deps = [ "//base" ]
+}
+
+test("wasm_profile_local_storage_close_receipt_lifetime_unittests") {
+  sources = [
+    "wasm_profile_local_storage_close_receipt_lifetime_unittest.cc",
+  ]
+
+  deps = [
+    ":wasm_profile_local_storage_close_receipt_lifetime",
+    ":wasm_profile_ordered_drain_lifecycle",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//testing/gtest",
+  ]
 }
 
 test("wasm_profile_ordered_drain_lifecycle_unittests") {

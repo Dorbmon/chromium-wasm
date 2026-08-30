@@ -85,12 +85,13 @@ class M7RendererLocalStorageContractTest(unittest.TestCase):
             '"wasm_profile_renderer_local_storage_ui.cc"',
             '"wasm_profile_renderer_local_storage_ui.h"',
             f'"{_BASE_MACRO}=1"',
-            '":wasm_profile"',
+            '":wasm_profile_ordered_drain_lifecycle"',
             '"//content/public/common"',
             'public_deps = [ "//content/public/browser" ]',
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, smoke_target)
+        self.assertNotIn('":wasm_profile"', smoke_target)
 
         self.assertIn(
             f"#if defined({_BASE_MACRO})", self.main_parts
@@ -174,7 +175,7 @@ class M7RendererLocalStorageContractTest(unittest.TestCase):
             self.smoke, "bool ValidateRendererStorageBoundary()"
         )
         for expected in (
-            "renderer_profile_->GetDefaultStoragePartition()",
+            "renderer_browser_context_->GetDefaultStoragePartition()",
             "renderer_web_contents_->GetBrowserContext()\n"
             "                ->GetDefaultStoragePartition()",
             "renderer_web_contents_->GetPrimaryMainFrame()",
@@ -185,15 +186,15 @@ class M7RendererLocalStorageContractTest(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, boundary)
+        self.assertNotIn("renderer_profile_", boundary)
+        self.assertNotIn("WasmProfile", boundary)
 
     def test_navigation_is_commit_gated_and_bounded(self) -> None:
         title = _body_after_marker(self.smoke, "void TitleWasSet(")
         self.assertIn("entry->GetURL() != renderer_page_url_", title)
         self.assertIn("MaybeCompleteRendererPage();", title)
-        self.assertIn("base::AutoReset<bool> observer_callback", title)
         navigation = _body_after_marker(self.smoke, "void DidFinishNavigation(")
         for expected in (
-            "base::AutoReset<bool> observer_callback",
             "navigation_handle->GetURL() != renderer_page_url_",
             "!navigation_handle->HasCommitted()",
             "navigation_handle->IsErrorPage()",
@@ -207,10 +208,18 @@ class M7RendererLocalStorageContractTest(unittest.TestCase):
         timeout = _body_after_marker(self.smoke, "void OnRendererOperationTimeout()")
         self.assertIn("ReportFailure", timeout)
 
-        failure = _body_after_marker(self.smoke, "void ReportFailure(")
-        self.assertIn("renderer_observer_callback_active_", failure)
-        self.assertIn("PostTask(", failure)
-        self.assertIn("FinishOperation", failure)
+        state_start = self.smoke.index(
+            "class WasmProfileLocalStorageLifetimeParticipant::State"
+        )
+        failure = _body_after_marker(
+            self.smoke[state_start:], "void ReportFailure("
+        )
+        self.assertIn(
+            "close_receipt_lifetime_.FailBeforeExactCloseReceipt(", failure
+        )
+        self.assertIn("CleanupProfileBoundResources", failure)
+        self.assertNotIn("PostTask(", failure)
+        self.assertNotIn("profile_io_hold_->Complete", failure)
 
         retry = _body_after_marker(
             self.smoke, "static bool IsRetryableRendererPrepareResult("

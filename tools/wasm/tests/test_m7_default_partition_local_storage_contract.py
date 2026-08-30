@@ -86,12 +86,29 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         self.wasm_browser_build = source("chrome/browser/wasm/BUILD.gn")
         self.content_browser_build = source("content/browser/BUILD.gn")
         self.storage_build = source("components/services/storage/BUILD.gn")
+        self.main_parts = source(
+            "chrome/browser/wasm/wasm_browser_main_parts.cc"
+        )
+        self.wasm_profile_header = source(
+            "chrome/browser/wasm/wasm_profile.h"
+        )
         self.wasm_profile = source("chrome/browser/wasm/wasm_profile.cc")
+        self.local_storage_smoke_header = source(
+            "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"
+        )
         self.dom_storage = source(
             "content/browser/dom_storage/dom_storage_context_wrapper.cc"
         )
         self.local_storage_smoke = source(
             "chrome/browser/wasm/wasm_profile_local_storage_smoke.cc"
+        )
+        self.close_receipt_lifetime_header = source(
+            "chrome/browser/wasm/"
+            "wasm_profile_local_storage_close_receipt_lifetime.h"
+        )
+        self.close_receipt_lifetime = source(
+            "chrome/browser/wasm/"
+            "wasm_profile_local_storage_close_receipt_lifetime.cc"
         )
         self.local_storage_impl = source(
             "components/services/storage/dom_storage/local_storage_impl.cc"
@@ -150,6 +167,7 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         for expected in (
             '"wasm_profile_local_storage_smoke.cc"',
             '"wasm_profile_renderer_local_storage_ui.cc"',
+            '":wasm_profile_local_storage_close_receipt_lifetime",',
             f'defines = [ "{_MACRO}=1" ]',
             '"//components/services/storage/public/mojom:wasm_local_storage_test_api",',
             'public_deps = [ "//content/public/browser" ]',
@@ -157,6 +175,62 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, selected_smoke)
+
+        profile_layout_config = _body_after_marker(
+            self.wasm_browser_build,
+            'config("wasm_profile_m7_local_storage_smoke_config")',
+        )
+        self.assertIn(f'defines = [ "{_MACRO}=1" ]', profile_layout_config)
+        profile_target = _body_after_marker(
+            self.wasm_browser_build, 'source_set("wasm_profile")'
+        )
+        profile_gate = _body_after_marker(profile_target, f"if ({_FLAG})")
+        self.assertIn(
+            'public_configs = [ ":wasm_profile_m7_local_storage_smoke_config" ]',
+            profile_gate,
+        )
+        self.assertIn(
+            'deps += [ ":wasm_profile_local_storage_smoke" ]', profile_gate
+        )
+        self.assertNotIn('":wasm_profile"', selected_smoke)
+        self.assertNotIn('"wasm_profile.cc"', selected_smoke)
+
+        close_receipt_target = _body_after_marker(
+            self.wasm_browser_build,
+            'source_set("wasm_profile_local_storage_close_receipt_lifetime")',
+        )
+        for expected in (
+            'public = [ "wasm_profile_local_storage_close_receipt_lifetime.h" ]',
+            'sources = [ "wasm_profile_local_storage_close_receipt_lifetime.cc" ]',
+            'public_deps = [ ":wasm_profile_ordered_drain_lifecycle" ]',
+            'deps = [ "//base" ]',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, close_receipt_target)
+        for forbidden in (
+            "//chrome/browser/profiles",
+            "//content",
+            "//mojo",
+            "//components/services/storage",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, close_receipt_target)
+        self.assertEqual(close_receipt_target.count('"//'), 1)
+
+        close_receipt_test = _body_after_marker(
+            self.wasm_browser_build,
+            'test("wasm_profile_local_storage_close_receipt_lifetime_unittests")',
+        )
+        for expected in (
+            '"wasm_profile_local_storage_close_receipt_lifetime_unittest.cc",',
+            '":wasm_profile_local_storage_close_receipt_lifetime",',
+            '":wasm_profile_ordered_drain_lifecycle",',
+            '"//base/test:run_all_unittests",',
+            '"//base/test:test_support",',
+            '"//testing/gtest",',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, close_receipt_test)
 
         smoke_target_start = self.wasm_browser_build.index(
             'source_set("wasm_profile_local_storage_smoke")'
@@ -225,9 +299,10 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
     ) -> None:
         start = _body_after_marker(
             self.local_storage_smoke,
-            "bool Start(content::StoragePartition* storage_partition,",
+            "bool Start(base::OnceCallback<void(bool)> completion)",
         )
         for expected in (
+            "browser_context_->GetDefaultStoragePartition()",
             "storage_partition->GetDOMStorageContext()",
             "content::BindWasmLocalStorageTestApi(",
             "storage_partition->GetLocalStorageControl()",
@@ -250,6 +325,279 @@ class M7DefaultPartitionLocalStorageContractTest(unittest.TestCase):
             for forbidden in ("EM_JS", "EM_ASM", "emscripten::", "ccall"):
                 with self.subTest(forbidden=forbidden):
                     self.assertNotIn(forbidden, body)
+
+    def test_profile_owns_local_storage_state_and_consumes_input_before_io(
+        self,
+    ) -> None:
+        participant = _body_after_marker(
+            self.local_storage_smoke_header,
+            "class WasmProfileLocalStorageLifetimeParticipant",
+        )
+        for expected in (
+            "content::BrowserContext* browser_context",
+            "WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold",
+            "bool Start(base::OnceCallback<void(bool success)> completion);",
+            "void Cancel();",
+            "bool QuarantineForFailureShutdown();",
+            "bool IsActive() const;",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, participant)
+        self.assertNotIn("WasmProfile*", participant)
+        self.assertNotIn("wasm_profile.h", self.local_storage_smoke_header)
+        self.assertNotIn("wasm_profile.h", self.local_storage_smoke)
+        self.assertIn(
+            "raw_ptr<content::BrowserContext> browser_context_ = nullptr;",
+            self.local_storage_smoke,
+        )
+        self.assertIn(
+            "WasmProfileLocalStorageCloseReceiptLifetime "
+            "close_receipt_lifetime_;",
+            self.local_storage_smoke,
+        )
+        self.assertNotIn("raw_ptr<WasmProfile>", self.local_storage_smoke)
+        self.assertIn(
+            "std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>\n"
+            "      profile_io_hold_;",
+            self.close_receipt_lifetime_header,
+        )
+
+        protocol = _body_after_marker(
+            self.local_storage_smoke,
+            "class WasmProfileLocalStorageProtocolState",
+        )
+        for profile_bound_state in (
+            "raw_ptr",
+            "BrowserContext",
+            "ProfileIOHold",
+            "WebContents",
+            "mojo::Remote",
+            "profile_path",
+        ):
+            with self.subTest(profile_bound_state=profile_bound_state):
+                self.assertNotIn(profile_bound_state, protocol)
+
+        self.assertIn(
+            "std::unique_ptr<chrome::WasmProfileLocalStorageLifetimeParticipant>\n"
+            "      local_storage_lifetime_participant_;",
+            self.wasm_profile_header,
+        )
+        profile_start = _body_after_marker(
+            self.wasm_profile, "bool WasmProfile::StartLocalStorageSmoke("
+        )
+        self.assertIn(
+            "local_storage_lifetime_participant_ = std::make_unique<",
+            profile_start,
+        )
+        self.assertIn("this, profile_path_", profile_start)
+        self.assertIn(
+            "local_storage_lifetime_participant_->Start(std::move(completion))",
+            profile_start,
+        )
+
+        protocol_take = _body_after_marker(
+            self.local_storage_smoke,
+            "std::optional<WasmProfileLocalStorageSmokeInput> TakeInput()",
+        )
+        self.assertIn("input_taken_", protocol_take)
+        self.assertIn("input_taken_ = true;", protocol_take)
+        self.assertIn("result.token = std::move(input_.token);", protocol_take)
+        self.assertIn("result.token_digest = input_.token_digest;", protocol_take)
+        self.assertNotIn("std::move(input_.token_digest)", protocol_take)
+
+        startup = _body_after_marker(
+            self.main_parts, "int WasmBrowserMainParts::PreMainMessageLoopRun()"
+        )
+        take = startup.index("chrome::TakeWasmProfileLocalStorageSmokeInput()")
+        acquire = startup.index("chrome::TryAcquireWasmProfileStorageProfileIO()", take)
+        transfer = startup.index("profile_->StartLocalStorageSmoke(", acquire)
+        self.assertLess(take, acquire)
+        self.assertLess(acquire, transfer)
+        self.assertIn("std::move(*local_storage_input)", startup[transfer:])
+        self.assertIn("std::move(*profile_io_hold)", startup[transfer:])
+
+    def test_close_result_is_deferred_and_pre_receipt_failure_is_quarantined(
+        self,
+    ) -> None:
+        close_ready = _body_after_marker(
+            self.local_storage_smoke, "void OnCloseFenceReady("
+        )
+        close_receipt = close_ready.index("close_succeeded_ = true;")
+        complete = close_ready.index(
+            "close_receipt_lifetime_.CompleteAfterExactCloseReceipt("
+        )
+        self.assertLess(close_receipt, complete)
+        self.assertIn('EmitDigestMarker("DB_CLOSE_OK")', close_ready)
+        self.assertIn("CleanupProfileBoundResources", close_ready[complete:])
+
+        complete_after_receipt = _body_after_marker(
+            self.close_receipt_lifetime,
+            "CompleteAfterExactCloseReceipt(base::OnceClosure cleanup)",
+        )
+        mark_receipt = complete_after_receipt.index(
+            "exact_close_receipt_received_ = true;"
+        )
+        cleanup = complete_after_receipt.index("std::move(cleanup).Run();")
+        post = complete_after_receipt.index("PostTask(")
+        deliver = complete_after_receipt.index("DeliverCloseReceipt", post)
+        self.assertLess(mark_receipt, cleanup)
+        self.assertLess(cleanup, post)
+        self.assertLess(post, deliver)
+
+        cleanup_resources = _body_after_marker(
+            self.local_storage_smoke, "void CleanupProfileBoundResources()"
+        )
+        for cleared_owner in (
+            "weak_ptr_factory_.InvalidateWeakPtrs();",
+            "Observe(nullptr);",
+            "renderer_web_contents_.reset();",
+            "storage_area_.reset();",
+            "test_api_.reset();",
+            "dom_storage_context_ = nullptr;",
+            "browser_context_ = nullptr;",
+            "profile_path_.clear();",
+            "ClearRawToken();",
+        ):
+            with self.subTest(cleared_owner=cleared_owner):
+                self.assertIn(cleared_owner, cleanup_resources)
+        self.assertNotIn("PostTask(", cleanup_resources)
+        self.assertNotIn("profile_io_hold_", cleanup_resources)
+
+        deliver_receipt = _body_after_marker(
+            self.close_receipt_lifetime,
+            "void WasmProfileLocalStorageCloseReceiptLifetime::"
+            "DeliverCloseReceipt()",
+        )
+        complete_hold = deliver_receipt.index("profile_io_hold_->Complete(")
+        reset_hold = deliver_receipt.index("profile_io_hold_.reset();")
+        deliver_owner = deliver_receipt.index(
+            "std::move(completion).Run(succeeded);"
+        )
+        self.assertLess(complete_hold, reset_hold)
+        self.assertLess(reset_hold, deliver_owner)
+        self.assertIn("!cancel_requested_", deliver_receipt)
+
+        state_start = self.local_storage_smoke.index(
+            "class WasmProfileLocalStorageLifetimeParticipant::State"
+        )
+        state_source = self.local_storage_smoke[state_start:]
+        failure = _body_after_marker(state_source, "void ReportFailure(")
+        for expected in (
+            "ClearRawToken();",
+            "close_receipt_lifetime_.FailBeforeExactCloseReceipt(",
+            "CleanupProfileBoundResources",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, failure)
+        self.assertNotIn("profile_io_hold_->Complete", failure)
+        self.assertNotIn("ProfileIOCompletion::", failure)
+
+        fail_before_receipt = _body_after_marker(
+            self.close_receipt_lifetime,
+            "FailBeforeExactCloseReceipt(base::OnceClosure cleanup)",
+        )
+        fail_cleanup = fail_before_receipt.index("std::move(cleanup).Run();")
+        fail_post = fail_before_receipt.index("PostTask(")
+        quarantine_delivery = fail_before_receipt.index(
+            "DeliverQuarantineRequest", fail_post
+        )
+        self.assertLess(fail_cleanup, fail_post)
+        self.assertLess(fail_post, quarantine_delivery)
+        self.assertIn("cancel_requested_ = true;", fail_before_receipt)
+        self.assertNotIn("profile_io_hold_->Complete", fail_before_receipt)
+        self.assertNotIn("profile_io_hold_.reset", fail_before_receipt)
+        self.assertNotIn("ProfileIOCompletion::", fail_before_receipt)
+
+        controller_quarantine = _body_after_marker(
+            self.close_receipt_lifetime,
+            "DeliverQuarantineRequest()",
+        )
+        copy_owner_callback = controller_quarantine.index(
+            "base::OnceClosure quarantine_callback ="
+        )
+        copy_completion_callback = controller_quarantine.index(
+            "base::OnceCallback<void(bool)> completion ="
+        )
+        owner_callback = controller_quarantine.index(
+            "std::move(quarantine_callback).Run();"
+        )
+        completion_callback = controller_quarantine.index(
+            "std::move(completion).Run(false);"
+        )
+        self.assertLess(copy_owner_callback, owner_callback)
+        self.assertLess(copy_completion_callback, owner_callback)
+        self.assertLess(owner_callback, completion_callback)
+        self.assertNotIn("profile_io_hold_->Complete", controller_quarantine)
+        self.assertNotIn("profile_io_hold_.reset", controller_quarantine)
+        self.assertNotIn("ProfileIOCompletion::", controller_quarantine)
+
+        quarantine = _body_after_marker(
+            self.local_storage_smoke,
+            "bool WasmProfileLocalStorageLifetimeParticipant::\n"
+            "    QuarantineForFailureShutdown()",
+        )
+        retain = quarantine.index("RetainQuarantinedState(std::move(state_));")
+        outstanding = quarantine.index("state_->HasOutstandingAdmission()")
+        prepare = quarantine.index("state_->PrepareForOwnerQuarantine()")
+        self.assertLess(outstanding, prepare)
+        self.assertLess(prepare, retain)
+        self.assertNotIn("profile_io_hold_->Complete", quarantine)
+        self.assertNotIn("profile_io_hold_.reset", quarantine)
+        self.assertNotIn("ProfileIOCompletion::", quarantine)
+        owner_quarantine = _body_after_marker(
+            self.local_storage_smoke,
+            "OnOperationRequiresQuarantine()",
+        )
+        self.assertIn(
+            "RetainQuarantinedState(std::move(state_));", owner_quarantine
+        )
+        retained_state = _body_after_marker(
+            self.local_storage_smoke,
+            "void WasmProfileLocalStorageLifetimeParticipant::RetainQuarantinedState(",
+        )
+        self.assertIn("base::NoDestructor", retained_state)
+        self.assertIn(
+            "quarantined_states->push_back(std::move(state));", retained_state
+        )
+
+    def test_active_operation_gates_every_profile_teardown_path(self) -> None:
+        maybe_shutdown = _body_after_marker(
+            self.main_parts, "void WasmBrowserMainParts::MaybeStartShutdown()"
+        )
+        finish_shutdown = _body_after_marker(
+            self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
+        )
+        for body in (maybe_shutdown, finish_shutdown):
+            with self.subTest(path="profile teardown gate"):
+                active = body.index("profile_->HasActiveLocalStorageSmoke()")
+                cancel = body.index("profile_->CancelLocalStorageSmokeForShutdown()")
+                early_return = body.index("return;", cancel)
+                self.assertLess(active, cancel)
+                self.assertLess(cancel, early_return)
+
+        foundation = _body_after_marker(
+            self.main_parts, "void WasmBrowserMainParts::ShutdownFoundation()"
+        )
+        foundation_active = foundation.index(
+            "profile_->HasActiveLocalStorageSmoke()"
+        )
+        foundation_quarantine = foundation.index(
+            "profile_->QuarantineLocalStorageSmokeForFailureShutdown()"
+        )
+        profile_shutdown = foundation.index("profile_->Shutdown();")
+        self.assertLess(foundation_active, foundation_quarantine)
+        self.assertLess(foundation_quarantine, profile_shutdown)
+
+        destructor = _body_after_marker(
+            self.wasm_profile, "WasmProfile::~WasmProfile()"
+        )
+        owner = destructor.index("if (local_storage_lifetime_participant_)")
+        quarantine_owner = destructor.index(
+            "QuarantineLocalStorageSmokeForFailureShutdown()"
+        )
+        shutdown = destructor.index("\n  Shutdown();")
+        self.assertLess(owner, quarantine_owner)
+        self.assertLess(quarantine_owner, shutdown)
 
     def test_snapshot_requires_every_area_one_exact_on_disk_committed_map_update(
         self,

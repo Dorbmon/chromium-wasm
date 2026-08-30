@@ -588,6 +588,13 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // require a real map-update snapshot and same-runner database-close receipt
   // before releasing the profile-I/O hold.
   if (chrome::IsWasmProfileLocalStorageSmokeEnabled()) {
+    auto local_storage_input =
+        chrome::TakeWasmProfileLocalStorageSmokeInput();
+    if (!local_storage_input) {
+      LOG(ERROR) << "chrome_wasm could not consume its LocalStorage request";
+      RequestShutdown();
+      return content::RESULT_CODE_NORMAL_EXIT;
+    }
     auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
     if (!profile_io_hold) {
       LOG(ERROR) << "chrome_wasm could not admit its profile LocalStorage I/O";
@@ -595,36 +602,28 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       return content::RESULT_CODE_NORMAL_EXIT;
     }
     auto local_storage_completion = base::BindOnce(
-        [](std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
-               profile_io_hold,
-           base::WeakPtr<WasmBrowserMainParts> main_parts) {
-          CHECK(profile_io_hold);
-          const bool local_storage_succeeded =
-              chrome::DidWasmProfileLocalStorageSmokeSucceed();
-          const bool profile_io_completed = profile_io_hold->Complete(
-              local_storage_succeeded
-                  ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                        kSucceeded
-                  : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                        kFailed);
-          if (!profile_io_completed) {
-            LOG(ERROR) << "chrome_wasm could not complete its profile "
-                          "LocalStorage I/O admission";
+        [](base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
+          const bool participant_succeeded =
+              success && main_parts && main_parts->profile_ &&
+              main_parts->profile_->DidLocalStorageSmokeSucceed();
+          chrome::NotifyWasmProfileLocalStorageSmokeOperationResult(
+              participant_succeeded);
+          if (!participant_succeeded) {
+            LOG(ERROR) << "chrome_wasm LocalStorage close did not complete "
+                          "cleanly";
           }
           if (main_parts) {
             main_parts->RequestShutdown();
+            // RequestShutdown() is intentionally idempotent. If cancellation
+            // deferred an already-requested shutdown, explicitly resume its
+            // profile-owner gate after the terminal close delivery.
+            main_parts->MaybeStartShutdown();
           }
         },
-        std::move(profile_io_hold), weak_ptr_factory_.GetWeakPtr());
-    bool local_storage_started = false;
-    if (chrome::IsWasmProfileRendererLocalStorageSmokeEnabled()) {
-      local_storage_started = chrome::StartWasmProfileRendererLocalStorageSmoke(
-          profile_.get(), std::move(local_storage_completion));
-    } else {
-      local_storage_started = chrome::StartWasmProfileLocalStorageSmoke(
-          profile_->GetDefaultStoragePartition(), profile_->GetPath(),
-          std::move(local_storage_completion));
-    }
+        weak_ptr_factory_.GetWeakPtr());
+    const bool local_storage_started = profile_->StartLocalStorageSmoke(
+        std::move(*local_storage_input), std::move(*profile_io_hold),
+        std::move(local_storage_completion));
     if (!local_storage_started) {
       RequestShutdown();
     }
@@ -1207,6 +1206,13 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
   }
 #endif
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  if (profile_ && profile_->HasActiveLocalStorageSmoke()) {
+    profile_->CancelLocalStorageSmokeForShutdown();
+    return;
+  }
+#endif
+
   FinishShutdown();
 }
 
@@ -1785,6 +1791,13 @@ void WasmBrowserMainParts::FinishShutdown() {
   }
 #endif
 
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  if (profile_ && profile_->HasActiveLocalStorageSmoke()) {
+    profile_->CancelLocalStorageSmokeForShutdown();
+    return;
+  }
+#endif
+
   if (profile_) {
     // Browser/Core destruction completed before this method can run. Shut the
     // profile's keyed services down first, then keep the UI loop alive until
@@ -1976,6 +1989,11 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     }
     if (profile_->HasActiveHistorySmoke()) {
       profile_->QuarantineHistorySmokeForFailureShutdown();
+    }
+#endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    if (profile_->HasActiveLocalStorageSmoke()) {
+      profile_->QuarantineLocalStorageSmokeForFailureShutdown();
     }
 #endif
     profile_->Shutdown();

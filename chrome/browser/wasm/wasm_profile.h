@@ -33,8 +33,10 @@ namespace chrome {
 class WasmProfileBookmarkLifetimeParticipant;
 class WasmProfileCookieLifetimeParticipant;
 class WasmProfileHistoryLifetimeParticipant;
+class WasmProfileLocalStorageLifetimeParticipant;
 struct WasmProfilePreferencesBookmarkSmokeInput;
 struct WasmProfilePreferencesCookieSmokeInput;
+struct WasmProfileLocalStorageSmokeInput;
 }
 
 namespace base {
@@ -158,6 +160,17 @@ class WasmProfile final : public Profile {
   bool HasActiveHistorySmoke() const;
   void CancelHistorySmokeForShutdown();
   void QuarantineHistorySmokeForFailureShutdown();
+#endif
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  bool StartLocalStorageSmoke(
+      chrome::WasmProfileLocalStorageSmokeInput input,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+      base::OnceCallback<void(bool success)> completion);
+  bool HasActiveLocalStorageSmoke() const;
+  bool DidLocalStorageSmokeSucceed() const;
+  void CancelLocalStorageSmokeForShutdown();
+  void QuarantineLocalStorageSmokeForFailureShutdown();
 #endif
 
   // The M6 history bootstrap reads this process-local journal through a weak
@@ -325,6 +338,13 @@ class WasmProfile final : public Profile {
   // profile teardown until this participant is terminal.
   std::unique_ptr<chrome::WasmProfileHistoryLifetimeParticipant>
       history_lifetime_participant_;
+#endif
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // LocalStorage's WebContents, Mojo endpoints, and admitted operation cannot
+  // outlive this profile unless first detached into fail-closed quarantine.
+  std::unique_ptr<chrome::WasmProfileLocalStorageLifetimeParticipant>
+      local_storage_lifetime_participant_;
 #endif
 
   bool shutdown_ = false;

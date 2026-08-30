@@ -6,16 +6,13 @@
 
 #include <algorithm>
 #include <cstdio>
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
 #include <memory>
-#endif
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "base/auto_reset.h"
 #include "base/command_line.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -24,6 +21,7 @@
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
+#include "chrome/browser/wasm/wasm_profile_local_storage_close_receipt_lifetime.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
 #include "components/services/storage/public/mojom/wasm_local_storage_test_api.mojom.h"
 #include "content/public/browser/dom_storage_context.h"
@@ -41,7 +39,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/wasm/wasm_profile.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
@@ -83,76 +81,199 @@ constexpr char16_t kRendererFailureTitle[] = u"m7-local-storage-failed";
 #endif
 constexpr char kMarkerPrefix[] = "CHROMIUM_WASM_M7_LOCAL_STORAGE:";
 
-enum class SmokeMode {
-  kNone,
-  kWrite,
-  kVerify,
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-  kRendererWrite,
-  kRendererVerify,
-#endif
-};
+using SmokeMode = WasmProfileLocalStorageSmokeInput::Mode;
 
 std::vector<uint8_t> ToBytes(std::string_view value) {
   return std::vector<uint8_t>(value.begin(), value.end());
 }
 
-class WasmProfileLocalStorageSmokeState final
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-    : public content::WebContentsObserver
-#endif
-{
- public:
-  WasmProfileLocalStorageSmokeState() = default;
-  WasmProfileLocalStorageSmokeState(const WasmProfileLocalStorageSmokeState&) =
-      delete;
-  WasmProfileLocalStorageSmokeState& operator=(
-      const WasmProfileLocalStorageSmokeState&) = delete;
-  ~WasmProfileLocalStorageSmokeState() = default;
+bool IsOpaqueToken(std::string_view token) {
+  return token.size() == kOpaqueTokenLength &&
+         std::ranges::all_of(token, [](char c) {
+           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+         });
+}
 
+const char* FailureStageName(WasmProfileLocalStorageSmokeFailureStage stage) {
+  switch (stage) {
+    case WasmProfileLocalStorageSmokeFailureStage::kArguments:
+      return "arguments";
+    case WasmProfileLocalStorageSmokeFailureStage::kCapability:
+      return "capability";
+    case WasmProfileLocalStorageSmokeFailureStage::kStorage:
+      return "storage";
+    case WasmProfileLocalStorageSmokeFailureStage::kProfile:
+      return "profile";
+    case WasmProfileLocalStorageSmokeFailureStage::kRead:
+      return "read";
+    case WasmProfileLocalStorageSmokeFailureStage::kCommit:
+      return "commit";
+    case WasmProfileLocalStorageSmokeFailureStage::kClose:
+      return "close";
+    case WasmProfileLocalStorageSmokeFailureStage::kFence:
+      return "fence";
+    case WasmProfileLocalStorageSmokeFailureStage::kLifecycle:
+      return "lifecycle";
+    case WasmProfileLocalStorageSmokeFailureStage::kContent:
+      return "content";
+    case WasmProfileLocalStorageSmokeFailureStage::kDrain:
+      return "drain";
+  }
+  return "drain";
+}
+
+class WasmProfileLocalStorageProtocolState {
+ public:
   bool EnableFromCommandLine() {
     if (configured_) {
       return enabled_;
     }
     configured_ = true;
-
     const base::CommandLine* command_line =
         base::CommandLine::ForCurrentProcess();
-    const bool has_mode = command_line->HasSwitch(kSmokeSwitch);
-    const bool has_token = command_line->HasSwitch(kTokenSwitch);
-    if (!has_mode || !has_token) {
+    if (!command_line->HasSwitch(kSmokeSwitch) ||
+        !command_line->HasSwitch(kTokenSwitch)) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kArguments);
       return false;
     }
-
     const std::string mode = command_line->GetSwitchValueASCII(kSmokeSwitch);
-    token_ = command_line->GetSwitchValueASCII(kTokenSwitch);
-    if (!IsOpaqueToken(token_)) {
+    input_.token = command_line->GetSwitchValueASCII(kTokenSwitch);
+    if (!IsOpaqueToken(input_.token)) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kArguments);
       return false;
     }
     if (mode == kWriteMode) {
-      mode_ = SmokeMode::kWrite;
+      input_.mode = SmokeMode::kWrite;
     } else if (mode == kVerifyMode) {
-      mode_ = SmokeMode::kVerify;
+      input_.mode = SmokeMode::kVerify;
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     } else if (mode == kRendererWriteMode) {
-      mode_ = SmokeMode::kRendererWrite;
+      input_.mode = SmokeMode::kRendererWrite;
     } else if (mode == kRendererVerifyMode) {
-      mode_ = SmokeMode::kRendererVerify;
+      input_.mode = SmokeMode::kRendererVerify;
 #endif
     } else {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kArguments);
       return false;
     }
-
-    token_digest_ = base::HexEncodeLower(crypto::hash::Sha256(token_));
-    token_bytes_ = ToBytes(token_);
+    input_.token_digest = base::HexEncodeLower(crypto::hash::Sha256(input_.token));
     enabled_ = true;
     return true;
   }
 
   bool enabled() const { return enabled_; }
+  bool renderer_enabled() const {
+    return input_.mode == SmokeMode::kRendererWrite ||
+           input_.mode == SmokeMode::kRendererVerify;
+  }
+  std::optional<WasmProfileLocalStorageSmokeInput> TakeInput() {
+    if (!enabled_ || input_taken_ || input_.mode == SmokeMode::kNone ||
+        input_.token.empty()) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kArguments);
+      return std::nullopt;
+    }
+    input_taken_ = true;
+    WasmProfileLocalStorageSmokeInput result;
+    result.mode = input_.mode;
+    result.token = std::move(input_.token);
+    result.token_digest = input_.token_digest;
+    return result;
+  }
+  void RecordCloseResult(bool success) {
+    if (!success) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kClose);
+      return;
+    }
+    close_succeeded_ = true;
+  }
+  bool succeeded() const { return close_succeeded_ && !failure_reported_; }
+  void NotifyFenceResult(bool success) {
+    if (!enabled_ || failure_reported_) return;
+    if (!success || !close_succeeded_ || fence_succeeded_) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kFence);
+      return;
+    }
+    fence_succeeded_ = true;
+    EmitDigestMarker("FENCE_OK");
+  }
+  void NotifyStorageLifecycle(bool success) {
+    if (!enabled_ || failure_reported_) return;
+    if (!success || !close_succeeded_ || !fence_succeeded_ ||
+        storage_lifecycle_succeeded_) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
+      return;
+    }
+    storage_lifecycle_succeeded_ = true;
+  }
+  void NotifyBackendDrain(bool success) {
+    if (!enabled_ || failure_reported_) return;
+    if (!success || !close_succeeded_ || !fence_succeeded_ ||
+        !storage_lifecycle_succeeded_ || lease_released_) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kDrain);
+      return;
+    }
+    lease_released_ = true;
+    EmitMarker("LEASE_RELEASED");
+  }
+  void ReportFailure(WasmProfileLocalStorageSmokeFailureStage stage) {
+    if (failure_reported_) return;
+    failure_reported_ = true;
+    input_.token.clear();
+    std::fprintf(stderr, "%sFAIL stage=%s\n", kMarkerPrefix,
+                 FailureStageName(stage));
+    std::fflush(stderr);
+  }
+  void EmitMarker(const char* marker) {
+    std::fprintf(stderr, "%s%s\n", kMarkerPrefix, marker);
+    std::fflush(stderr);
+  }
+  void EmitDigestMarker(const char* marker) {
+    std::fprintf(stderr, "%s%s sha256=%s\n", kMarkerPrefix, marker,
+                 input_.token_digest.c_str());
+    std::fflush(stderr);
+  }
+
+ private:
+  bool configured_ = false;
+  bool enabled_ = false;
+  bool input_taken_ = false;
+  bool close_succeeded_ = false;
+  bool fence_succeeded_ = false;
+  bool storage_lifecycle_succeeded_ = false;
+  bool lease_released_ = false;
+  bool failure_reported_ = false;
+  WasmProfileLocalStorageSmokeInput input_;
+};
+
+WasmProfileLocalStorageProtocolState& GetWasmProfileLocalStorageProtocolState() {
+  static base::NoDestructor<WasmProfileLocalStorageProtocolState> state;
+  return *state;
+}
+
+}  // namespace
+
+class WasmProfileLocalStorageLifetimeParticipant::State final
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    : public content::WebContentsObserver
+#endif
+{
+ public:
+  State(content::BrowserContext* browser_context,
+        base::FilePath profile_path,
+        WasmProfileLocalStorageSmokeInput input,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+        base::OnceClosure quarantine_callback)
+      : mode_(input.mode),
+        browser_context_(browser_context),
+        close_receipt_lifetime_(std::move(profile_io_hold),
+                                std::move(quarantine_callback)),
+        token_(std::move(input.token)),
+        token_digest_(std::move(input.token_digest)),
+        token_bytes_(ToBytes(token_)),
+        profile_path_(std::move(profile_path)) {}
+
+  ~State() = default;
+
   bool renderer_enabled() const {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     return mode_ == SmokeMode::kRendererWrite ||
@@ -162,38 +283,54 @@ class WasmProfileLocalStorageSmokeState final
 #endif
   }
 
-  bool Start(content::StoragePartition* storage_partition,
-             const base::FilePath& profile_path,
-             base::OnceClosure completion) {
-    if (!enabled_ || started_ || !storage_partition || profile_path.empty() ||
-        !completion || renderer_enabled()) {
-      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
+  bool Start(base::OnceCallback<void(bool)> completion) {
+    // A duplicate start is inert even if its new callback is invalid. Never
+    // let a second caller clean up or retire the admission already in flight.
+    if (close_receipt_lifetime_.IsActive() ||
+        close_receipt_lifetime_.HasCompleted()) {
       return false;
     }
-    started_ = true;
-    completion_ = std::move(completion);
-    profile_path_ = profile_path;
+    if (!browser_context_ || profile_path_.empty() || !completion) {
+      GetWasmProfileLocalStorageProtocolState().ReportFailure(
+          WasmProfileLocalStorageSmokeFailureStage::kProfile);
+      CleanupProfileBoundResources();
+      (void)close_receipt_lifetime_.RejectBeforeStart();
+      return false;
+    }
+    if (!close_receipt_lifetime_.Start(std::move(completion))) {
+      return false;
+    }
+    if (renderer_enabled()) {
+      return StartRenderer();
+    }
+    content::StoragePartition* storage_partition =
+        browser_context_->GetDefaultStoragePartition();
+    if (!storage_partition) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
+      return true;
+    }
     dom_storage_context_ = storage_partition->GetDOMStorageContext();
     if (!dom_storage_context_) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
-      return false;
+      return true;
     }
 
     if (!content::BindWasmLocalStorageTestApi(
             dom_storage_context_,
             test_api_.BindNewPipeAndPassReceiver())) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kCapability);
-      return false;
+      return true;
     }
     test_api_.set_disconnect_handler(base::BindOnce(
-        &WasmProfileLocalStorageSmokeState::OnTestApiDisconnected,
+        &WasmProfileLocalStorageLifetimeParticipant::State::
+            OnTestApiDisconnected,
         weak_ptr_factory_.GetWeakPtr()));
 
     storage::mojom::LocalStorageControl* local_storage_control =
         storage_partition->GetLocalStorageControl();
     if (!local_storage_control) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
-      return false;
+      return true;
     }
 
     storage_key_ = blink::StorageKey::CreateFirstParty(
@@ -201,7 +338,8 @@ class WasmProfileLocalStorageSmokeState final
     local_storage_control->BindStorageArea(
         *storage_key_, storage_area_.BindNewPipeAndPassReceiver());
     storage_area_.set_disconnect_handler(base::BindOnce(
-        &WasmProfileLocalStorageSmokeState::OnStorageAreaDisconnected,
+        &WasmProfileLocalStorageLifetimeParticipant::State::
+            OnStorageAreaDisconnected,
         weak_ptr_factory_.GetWeakPtr()));
 
     EmitMarker("READY");
@@ -211,57 +349,52 @@ class WasmProfileLocalStorageSmokeState final
       ReadTokenForVerify();
     } else {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
-      return false;
+      return true;
     }
     return true;
   }
 
-  bool StartRenderer(WasmProfile* profile, base::OnceClosure completion) {
+  bool StartRenderer() {
 #if !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-    static_cast<void>(profile);
-    static_cast<void>(completion);
     ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
-    return false;
+    return true;
 #else
-    if (!enabled_ || started_ || !renderer_enabled() || !profile ||
-        profile->GetPath().empty() || !completion) {
+    if (!renderer_enabled() || !browser_context_) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kProfile);
-      return false;
+      return true;
     }
 
     content::StoragePartition* const storage_partition =
-        profile->GetDefaultStoragePartition();
+        browser_context_->GetDefaultStoragePartition();
     if (!storage_partition) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
-      return false;
+      return true;
     }
 
-    started_ = true;
     renderer_primary_commit_seen_ = false;
     renderer_page_completed_ = false;
-    completion_ = std::move(completion);
-    profile_path_ = profile->GetPath();
-    renderer_profile_ = profile;
+    renderer_browser_context_ = browser_context_;
     renderer_storage_partition_ = storage_partition;
     dom_storage_context_ = storage_partition->GetDOMStorageContext();
     if (!dom_storage_context_) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kStorage);
-      return false;
+      return true;
     }
     if (!content::BindWasmLocalStorageTestApi(
             dom_storage_context_, test_api_.BindNewPipeAndPassReceiver())) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kCapability);
-      return false;
+      return true;
     }
     test_api_.set_disconnect_handler(base::BindOnce(
-        &WasmProfileLocalStorageSmokeState::OnTestApiDisconnected,
+        &WasmProfileLocalStorageLifetimeParticipant::State::
+            OnTestApiDisconnected,
         weak_ptr_factory_.GetWeakPtr()));
 
-    content::WebContents::CreateParams create_params(profile);
+    content::WebContents::CreateParams create_params(browser_context_);
     renderer_web_contents_ = content::WebContents::Create(create_params);
     if (!renderer_web_contents_) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kContent);
-      return false;
+      return true;
     }
     Observe(renderer_web_contents_.get());
 
@@ -273,14 +406,15 @@ class WasmProfileLocalStorageSmokeState final
         token_.c_str()));
     if (!renderer_page_url_.is_valid()) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kContent);
-      return false;
+      return true;
     }
 
     EmitMarker("READY");
     renderer_operation_timeout_.Start(
         FROM_HERE, kRendererOperationTimeout,
         base::BindOnce(
-            &WasmProfileLocalStorageSmokeState::OnRendererOperationTimeout,
+            &WasmProfileLocalStorageLifetimeParticipant::State::
+                OnRendererOperationTimeout,
             weak_ptr_factory_.GetWeakPtr()));
     content::NavigationController::LoadURLParams load_params(
         renderer_page_url_);
@@ -289,43 +423,55 @@ class WasmProfileLocalStorageSmokeState final
 #endif
   }
 
-  bool succeeded() const { return close_succeeded_ && !failure_reported_; }
-
-  void NotifyFenceResult(bool success) {
-    if (!enabled_ || failure_reported_) {
-      return;
-    }
-    if (!success || !close_succeeded_ || fence_succeeded_) {
-      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kFence);
-      return;
-    }
-    fence_succeeded_ = true;
-    EmitDigestMarker("FENCE_OK");
+  void Cancel() {
+    close_receipt_lifetime_.Cancel();
   }
 
-  void NotifyStorageLifecycle(bool success) {
-    if (!enabled_ || failure_reported_) {
-      return;
-    }
-    if (!success || !close_succeeded_ || !fence_succeeded_ ||
-        storage_lifecycle_succeeded_) {
-      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
-      return;
-    }
-    storage_lifecycle_succeeded_ = true;
+  bool IsActive() const { return close_receipt_lifetime_.IsActive(); }
+  bool DidSucceed() const { return close_receipt_lifetime_.DidSucceed(); }
+  bool HasOutstandingAdmission() const {
+    return close_receipt_lifetime_.HasOutstandingAdmission();
   }
 
-  void NotifyBackendDrain(bool success) {
-    if (!enabled_ || failure_reported_) {
+  void PrepareForOwnerQuarantine() {
+    close_receipt_lifetime_.Cancel();
+    if (IsActive() &&
+        !close_receipt_lifetime_.HasExactCloseReceipt()) {
+      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kClose);
       return;
     }
-    if (!success || !close_succeeded_ || !fence_succeeded_ ||
-        !storage_lifecycle_succeeded_ || lease_released_) {
-      ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kDrain);
+    CleanupProfileBoundResources();
+  }
+
+  void CleanupProfileBoundResources() {
+    if (profile_bound_cleanup_completed_) {
       return;
     }
-    lease_released_ = true;
-    EmitMarker("LEASE_RELEASED");
+    profile_bound_cleanup_completed_ = true;
+    operation_finished_ = true;
+    weak_ptr_factory_.InvalidateWeakPtrs();
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    Observe(nullptr);
+    renderer_operation_timeout_.Stop();
+    renderer_web_contents_.reset();
+    if (dom_storage_context_) {
+      (void)content::ResetWasmLocalStorageConnectionsForTest(
+          dom_storage_context_);
+    }
+    renderer_browser_context_ = nullptr;
+    renderer_storage_partition_ = nullptr;
+    renderer_page_url_ = GURL();
+#endif
+    storage_area_.reset();
+    if (dom_storage_context_) {
+      (void)content::SealWasmLocalStorageForTest(dom_storage_context_);
+    }
+    test_api_.reset();
+    dom_storage_context_ = nullptr;
+    browser_context_ = nullptr;
+    profile_path_.clear();
+    storage_key_.reset();
+    ClearRawToken();
   }
 
   void ReportFailure(WasmProfileLocalStorageSmokeFailureStage stage) {
@@ -335,22 +481,11 @@ class WasmProfileLocalStorageSmokeState final
     failure_reported_ = true;
     close_succeeded_ = false;
     ClearRawToken();
-    std::fprintf(stderr, "%sFAIL stage=%s\n", kMarkerPrefix,
-                 FailureStageName(stage));
-    std::fflush(stderr);
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-    if (renderer_observer_callback_active_) {
-      // WebContents can continue notifying its observers after a title or
-      // navigation callback returns. Do not destroy the observed object from
-      // within that callback; defer its teardown to the next UI task.
-      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-          FROM_HERE,
-          base::BindOnce(&WasmProfileLocalStorageSmokeState::FinishOperation,
-                         weak_ptr_factory_.GetWeakPtr()));
-      return;
-    }
-#endif
-    FinishOperation();
+    GetWasmProfileLocalStorageProtocolState().ReportFailure(stage);
+    close_receipt_lifetime_.FailBeforeExactCloseReceipt(base::BindOnce(
+        &WasmProfileLocalStorageLifetimeParticipant::State::
+            CleanupProfileBoundResources,
+        base::Unretained(this)));
   }
 
  private:
@@ -382,54 +517,13 @@ class WasmProfileLocalStorageSmokeState final
   }
 #endif
 
-  static bool IsOpaqueToken(std::string_view value) {
-    if (value.size() != kOpaqueTokenLength) {
-      return false;
-    }
-    for (const char character : value) {
-      if (!((character >= '0' && character <= '9') ||
-            (character >= 'a' && character <= 'f'))) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  static const char* FailureStageName(
-      WasmProfileLocalStorageSmokeFailureStage stage) {
-    switch (stage) {
-      case WasmProfileLocalStorageSmokeFailureStage::kArguments:
-        return "arguments";
-      case WasmProfileLocalStorageSmokeFailureStage::kCapability:
-        return "capability";
-      case WasmProfileLocalStorageSmokeFailureStage::kStorage:
-        return "storage";
-      case WasmProfileLocalStorageSmokeFailureStage::kProfile:
-        return "profile";
-      case WasmProfileLocalStorageSmokeFailureStage::kRead:
-        return "read";
-      case WasmProfileLocalStorageSmokeFailureStage::kCommit:
-        return "commit";
-      case WasmProfileLocalStorageSmokeFailureStage::kClose:
-        return "close";
-      case WasmProfileLocalStorageSmokeFailureStage::kFence:
-        return "fence";
-      case WasmProfileLocalStorageSmokeFailureStage::kLifecycle:
-        return "lifecycle";
-      case WasmProfileLocalStorageSmokeFailureStage::kContent:
-        return "content";
-      case WasmProfileLocalStorageSmokeFailureStage::kDrain:
-        return "drain";
-    }
-    return "drain";
-  }
-
   void PutTokenForWrite() {
     DCHECK(storage_area_.is_bound());
     storage_area_->Put(
         ToBytes(kTokenKey), token_bytes_, /*client_old_value=*/std::nullopt,
         /*source=*/nullptr,
-        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnTokenWritten,
+        base::BindOnce(&WasmProfileLocalStorageLifetimeParticipant::State::
+                           OnTokenWritten,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -437,7 +531,8 @@ class WasmProfileLocalStorageSmokeState final
     DCHECK(storage_area_.is_bound());
     storage_area_->GetAll(
         /*new_observer=*/mojo::NullRemote(),
-        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnTokenRead,
+        base::BindOnce(&WasmProfileLocalStorageLifetimeParticipant::State::
+                           OnTokenRead,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -477,7 +572,8 @@ class WasmProfileLocalStorageSmokeState final
     storage_area_->Put(
         ToBytes(kCloseFenceKey), token_bytes_, /*client_old_value=*/std::nullopt,
         /*source=*/nullptr,
-        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnCloseFenceWritten,
+        base::BindOnce(&WasmProfileLocalStorageLifetimeParticipant::State::
+                           OnCloseFenceWritten,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -492,8 +588,6 @@ class WasmProfileLocalStorageSmokeState final
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   // content::WebContentsObserver:
   void TitleWasSet(content::NavigationEntry* entry) override {
-    base::AutoReset<bool> observer_callback(
-        &renderer_observer_callback_active_, true);
     if (failure_reported_ || !renderer_enabled() ||
         !renderer_web_contents_ ||
         web_contents() != renderer_web_contents_.get() || !entry ||
@@ -505,8 +599,6 @@ class WasmProfileLocalStorageSmokeState final
 
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override {
-    base::AutoReset<bool> observer_callback(
-        &renderer_observer_callback_active_, true);
     if (failure_reported_ || !renderer_enabled() || !navigation_handle ||
         !navigation_handle->IsInPrimaryMainFrame() ||
         navigation_handle->GetURL() != renderer_page_url_) {
@@ -556,10 +648,11 @@ class WasmProfileLocalStorageSmokeState final
   }
 
   bool ValidateRendererStorageBoundary() {
-    if (!renderer_profile_ || !renderer_storage_partition_ ||
+    if (!renderer_browser_context_ || !renderer_storage_partition_ ||
         !renderer_web_contents_ || !renderer_primary_commit_seen_ ||
-        renderer_web_contents_->GetBrowserContext() != renderer_profile_ ||
-        renderer_profile_->GetDefaultStoragePartition() !=
+        renderer_web_contents_->GetBrowserContext() !=
+            renderer_browser_context_ ||
+        renderer_browser_context_->GetDefaultStoragePartition() !=
             renderer_storage_partition_ ||
         renderer_web_contents_->GetBrowserContext()
                 ->GetDefaultStoragePartition() !=
@@ -596,7 +689,8 @@ class WasmProfileLocalStorageSmokeState final
     test_api_->PrepareCommitCloseFence(
         profile_path_, *storage_key_,
         base::BindOnce(
-            &WasmProfileLocalStorageSmokeState::OnRendererCloseFencePrepared,
+            &WasmProfileLocalStorageLifetimeParticipant::State::
+                OnRendererCloseFencePrepared,
             weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -619,7 +713,8 @@ class WasmProfileLocalStorageSmokeState final
       base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
           FROM_HERE,
           base::BindOnce(
-              &WasmProfileLocalStorageSmokeState::PrepareRendererCloseFence,
+              &WasmProfileLocalStorageLifetimeParticipant::State::
+                  PrepareRendererCloseFence,
               weak_ptr_factory_.GetWeakPtr()),
           base::Milliseconds(10));
       return;
@@ -635,7 +730,8 @@ class WasmProfileLocalStorageSmokeState final
     }
     test_api_->PrepareCommitCloseFence(
         profile_path_, *storage_key_,
-        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnCloseFencePrepared,
+        base::BindOnce(&WasmProfileLocalStorageLifetimeParticipant::State::
+                           OnCloseFencePrepared,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -673,11 +769,12 @@ class WasmProfileLocalStorageSmokeState final
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kClose);
       return;
     }
-    renderer_profile_ = nullptr;
+    renderer_browser_context_ = nullptr;
     renderer_storage_partition_ = nullptr;
     renderer_page_url_ = GURL();
     test_api_->ArmCommitCloseFence(
-        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnCloseFenceArmed,
+        base::BindOnce(&WasmProfileLocalStorageLifetimeParticipant::State::
+                           OnCloseFenceArmed,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 #endif
@@ -694,7 +791,8 @@ class WasmProfileLocalStorageSmokeState final
     // and test-API Mojo-pipe ordering after this reset.
     storage_area_.reset();
     test_api_->ArmCommitCloseFence(
-        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnCloseFenceArmed,
+        base::BindOnce(&WasmProfileLocalStorageLifetimeParticipant::State::
+                           OnCloseFenceArmed,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -714,7 +812,8 @@ class WasmProfileLocalStorageSmokeState final
       return;
     }
     test_api_->WaitForCloseFence(
-        base::BindOnce(&WasmProfileLocalStorageSmokeState::OnCloseFenceReady,
+        base::BindOnce(&WasmProfileLocalStorageLifetimeParticipant::State::
+                           OnCloseFenceReady,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -726,7 +825,10 @@ class WasmProfileLocalStorageSmokeState final
     }
     close_succeeded_ = true;
     EmitDigestMarker("DB_CLOSE_OK");
-    FinishOperation();
+    close_receipt_lifetime_.CompleteAfterExactCloseReceipt(base::BindOnce(
+        &WasmProfileLocalStorageLifetimeParticipant::State::
+            CleanupProfileBoundResources,
+        base::Unretained(this)));
   }
 
   void OnStorageAreaDisconnected() {
@@ -738,32 +840,6 @@ class WasmProfileLocalStorageSmokeState final
   void OnTestApiDisconnected() {
     if (!failure_reported_ && !close_succeeded_) {
       ReportFailure(WasmProfileLocalStorageSmokeFailureStage::kCapability);
-    }
-  }
-
-  void FinishOperation() {
-    if (operation_finished_) {
-      return;
-    }
-    operation_finished_ = true;
-#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-    // Failure can arrive before the renderer-owned close path. Do not depend
-    // on WebContentsDestroyed: detach first and make its destruction local.
-    Observe(nullptr);
-    renderer_operation_timeout_.Stop();
-    renderer_web_contents_.reset();
-    renderer_profile_ = nullptr;
-    renderer_storage_partition_ = nullptr;
-    renderer_page_url_ = GURL();
-#endif
-    storage_area_.reset();
-    test_api_.reset();
-    dom_storage_context_ = nullptr;
-    profile_path_.clear();
-    storage_key_.reset();
-    ClearRawToken();
-    if (completion_) {
-      std::move(completion_).Run();
     }
   }
 
@@ -783,21 +859,17 @@ class WasmProfileLocalStorageSmokeState final
     std::fflush(stderr);
   }
 
-  bool configured_ = false;
-  bool enabled_ = false;
-  bool started_ = false;
   bool operation_finished_ = false;
   bool close_succeeded_ = false;
-  bool fence_succeeded_ = false;
-  bool storage_lifecycle_succeeded_ = false;
-  bool lease_released_ = false;
   bool failure_reported_ = false;
+  bool profile_bound_cleanup_completed_ = false;
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-  bool renderer_observer_callback_active_ = false;
   bool renderer_primary_commit_seen_ = false;
   bool renderer_page_completed_ = false;
 #endif
   SmokeMode mode_ = SmokeMode::kNone;
+  raw_ptr<content::BrowserContext> browser_context_ = nullptr;
+  WasmProfileLocalStorageCloseReceiptLifetime close_receipt_lifetime_;
   std::string token_;
   std::string token_digest_;
   std::vector<uint8_t> token_bytes_;
@@ -805,7 +877,7 @@ class WasmProfileLocalStorageSmokeState final
   std::optional<blink::StorageKey> storage_key_;
   raw_ptr<content::DOMStorageContext> dom_storage_context_ = nullptr;
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-  raw_ptr<WasmProfile> renderer_profile_ = nullptr;
+  raw_ptr<content::BrowserContext> renderer_browser_context_ = nullptr;
   raw_ptr<content::StoragePartition> renderer_storage_partition_ = nullptr;
   std::unique_ptr<content::WebContents> renderer_web_contents_;
   GURL renderer_page_url_;
@@ -813,17 +885,72 @@ class WasmProfileLocalStorageSmokeState final
 #endif
   mojo::Remote<blink::mojom::StorageArea> storage_area_;
   mojo::Remote<storage::mojom::WasmLocalStorageTestApi> test_api_;
-  base::OnceClosure completion_;
-  base::WeakPtrFactory<WasmProfileLocalStorageSmokeState> weak_ptr_factory_{
-      this};
+  base::WeakPtrFactory<State> weak_ptr_factory_{this};
 };
 
-WasmProfileLocalStorageSmokeState& GetWasmProfileLocalStorageSmokeState() {
-  static base::NoDestructor<WasmProfileLocalStorageSmokeState> state;
-  return *state;
+WasmProfileLocalStorageLifetimeParticipant::
+    WasmProfileLocalStorageLifetimeParticipant(
+        content::BrowserContext* browser_context,
+        base::FilePath profile_path,
+        WasmProfileLocalStorageSmokeInput input,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold) {
+  state_ = std::make_unique<State>(
+      browser_context, std::move(profile_path), std::move(input),
+      std::move(profile_io_hold),
+      base::BindOnce(
+          &WasmProfileLocalStorageLifetimeParticipant::
+              OnOperationRequiresQuarantine,
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
-}  // namespace
+WasmProfileLocalStorageLifetimeParticipant::
+    ~WasmProfileLocalStorageLifetimeParticipant() {
+  (void)QuarantineForFailureShutdown();
+}
+
+bool WasmProfileLocalStorageLifetimeParticipant::Start(
+    base::OnceCallback<void(bool)> completion) {
+  return state_ && state_->Start(std::move(completion));
+}
+
+void WasmProfileLocalStorageLifetimeParticipant::Cancel() {
+  if (state_) {
+    state_->Cancel();
+  }
+}
+
+bool WasmProfileLocalStorageLifetimeParticipant::
+    QuarantineForFailureShutdown() {
+  if (!state_ || !state_->HasOutstandingAdmission()) {
+    return true;
+  }
+  state_->PrepareForOwnerQuarantine();
+  RetainQuarantinedState(std::move(state_));
+  return true;
+}
+
+bool WasmProfileLocalStorageLifetimeParticipant::IsActive() const {
+  return state_ && state_->IsActive();
+}
+
+bool WasmProfileLocalStorageLifetimeParticipant::DidSucceed() const {
+  return state_ && state_->DidSucceed();
+}
+
+void WasmProfileLocalStorageLifetimeParticipant::
+    OnOperationRequiresQuarantine() {
+  if (!state_ || !state_->IsActive()) {
+    return;
+  }
+  RetainQuarantinedState(std::move(state_));
+}
+
+void WasmProfileLocalStorageLifetimeParticipant::RetainQuarantinedState(
+    std::unique_ptr<State> state) {
+  static base::NoDestructor<std::vector<std::unique_ptr<State>>>
+      quarantined_states;
+  quarantined_states->push_back(std::move(state));
+}
 
 bool HasWasmProfileLocalStorageSmokeArguments() {
   const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -832,50 +959,45 @@ bool HasWasmProfileLocalStorageSmokeArguments() {
 }
 
 bool EnableWasmProfileLocalStorageSmokeTestMode() {
-  return GetWasmProfileLocalStorageSmokeState().EnableFromCommandLine();
+  return GetWasmProfileLocalStorageProtocolState().EnableFromCommandLine();
 }
 
 bool IsWasmProfileLocalStorageSmokeEnabled() {
-  return GetWasmProfileLocalStorageSmokeState().enabled();
+  return GetWasmProfileLocalStorageProtocolState().enabled();
 }
 
 bool IsWasmProfileRendererLocalStorageSmokeEnabled() {
-  return GetWasmProfileLocalStorageSmokeState().renderer_enabled();
+  return GetWasmProfileLocalStorageProtocolState().renderer_enabled();
 }
 
-bool StartWasmProfileLocalStorageSmoke(
-    content::StoragePartition* storage_partition,
-    const base::FilePath& profile_path,
-    base::OnceClosure completion) {
-  return GetWasmProfileLocalStorageSmokeState().Start(
-      storage_partition, profile_path, std::move(completion));
-}
-
-bool StartWasmProfileRendererLocalStorageSmoke(WasmProfile* profile,
-                                               base::OnceClosure completion) {
-  return GetWasmProfileLocalStorageSmokeState().StartRenderer(
-      profile, std::move(completion));
+std::optional<WasmProfileLocalStorageSmokeInput>
+TakeWasmProfileLocalStorageSmokeInput() {
+  return GetWasmProfileLocalStorageProtocolState().TakeInput();
 }
 
 bool DidWasmProfileLocalStorageSmokeSucceed() {
-  return GetWasmProfileLocalStorageSmokeState().succeeded();
+  return GetWasmProfileLocalStorageProtocolState().succeeded();
+}
+
+void NotifyWasmProfileLocalStorageSmokeOperationResult(bool success) {
+  GetWasmProfileLocalStorageProtocolState().RecordCloseResult(success);
 }
 
 void NotifyWasmProfileLocalStorageSmokeFenceResult(bool success) {
-  GetWasmProfileLocalStorageSmokeState().NotifyFenceResult(success);
+  GetWasmProfileLocalStorageProtocolState().NotifyFenceResult(success);
 }
 
 void NotifyWasmProfileLocalStorageSmokeStorageLifecycle(bool success) {
-  GetWasmProfileLocalStorageSmokeState().NotifyStorageLifecycle(success);
+  GetWasmProfileLocalStorageProtocolState().NotifyStorageLifecycle(success);
 }
 
 void NotifyWasmProfileLocalStorageSmokeBackendDrain(bool success) {
-  GetWasmProfileLocalStorageSmokeState().NotifyBackendDrain(success);
+  GetWasmProfileLocalStorageProtocolState().NotifyBackendDrain(success);
 }
 
 void ReportWasmProfileLocalStorageSmokeFailure(
     WasmProfileLocalStorageSmokeFailureStage stage) {
-  GetWasmProfileLocalStorageSmokeState().ReportFailure(stage);
+  GetWasmProfileLocalStorageProtocolState().ReportFailure(stage);
 }
 
 }  // namespace chrome

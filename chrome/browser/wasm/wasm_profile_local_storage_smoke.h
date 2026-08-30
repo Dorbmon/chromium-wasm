@@ -5,16 +5,66 @@
 #ifndef CHROME_BROWSER_WASM_WASM_PROFILE_LOCAL_STORAGE_SMOKE_H_
 #define CHROME_BROWSER_WASM_WASM_PROFILE_LOCAL_STORAGE_SMOKE_H_
 
+#include <memory>
+#include <optional>
+#include <string>
+
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
+#include "chrome/browser/wasm/wasm_profile_ordered_drain_lifecycle.h"
 
 namespace content {
-class StoragePartition;
+class BrowserContext;
 }
 
-class WasmProfile;
-
 namespace chrome {
+
+struct WasmProfileLocalStorageSmokeInput {
+  enum class Mode {
+    kNone,
+    kWrite,
+    kVerify,
+    kRendererWrite,
+    kRendererVerify,
+  };
+
+  Mode mode = Mode::kNone;
+  std::string token;
+  std::string token_digest;
+};
+
+// Owns every profile-bound object used by the LocalStorage acceptance. The
+// transferred admission remains live until the exact LocalStorage owner and
+// its database sequence have crossed WaitForCloseFence. A failure without
+// that receipt is quarantined process-wide instead of retiring the admission.
+class WasmProfileLocalStorageLifetimeParticipant {
+ public:
+  WasmProfileLocalStorageLifetimeParticipant(
+      content::BrowserContext* browser_context,
+      base::FilePath profile_path,
+      WasmProfileLocalStorageSmokeInput input,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold);
+  WasmProfileLocalStorageLifetimeParticipant(
+      const WasmProfileLocalStorageLifetimeParticipant&) = delete;
+  WasmProfileLocalStorageLifetimeParticipant& operator=(
+      const WasmProfileLocalStorageLifetimeParticipant&) = delete;
+  ~WasmProfileLocalStorageLifetimeParticipant();
+
+  bool Start(base::OnceCallback<void(bool success)> completion);
+  void Cancel();
+  bool QuarantineForFailureShutdown();
+  bool IsActive() const;
+  bool DidSucceed() const;
+
+ private:
+  class State;
+  void OnOperationRequiresQuarantine();
+  static void RetainQuarantinedState(std::unique_ptr<State> state);
+  std::unique_ptr<State> state_;
+  base::WeakPtrFactory<WasmProfileLocalStorageLifetimeParticipant>
+      weak_ptr_factory_{this};
+};
 
 // Fixed, test-only protocol for the two-fresh-module default-partition Local
 // Storage acceptance. The isolated artifact
@@ -84,26 +134,17 @@ bool IsWasmProfileLocalStorageSmokeEnabled();
 // destroy that owner before arming the existing close fence.
 bool IsWasmProfileRendererLocalStorageSmokeEnabled();
 
-// Starts the real browser-side LocalStorage operation after the profile storage
-// lifecycle admitted the profile. `completion` runs only after the test bridge
-// received either a result-bearing database-close receipt or a terminal
-// failure. It always runs asynchronously after a successful start so the
-// caller can complete its profile-I/O hold before requesting normal shutdown.
-bool StartWasmProfileLocalStorageSmoke(
-    content::StoragePartition* storage_partition,
-    const base::FilePath& profile_path,
-    base::OnceClosure completion);
-
-// Starts the renderer-owned LocalStorage path. `profile` remains owned by
-// WasmBrowserMainParts until `completion`; the helper never retains it after
-// the transient WebContents and close-fence API handles are released.
-bool StartWasmProfileRendererLocalStorageSmoke(WasmProfile* profile,
-                                               base::OnceClosure completion);
+// Moves the validated one-shot request out of the process-global protocol
+// latch. The returned input is then owned exclusively by WasmProfile's
+// lifetime participant.
+std::optional<WasmProfileLocalStorageSmokeInput>
+TakeWasmProfileLocalStorageSmokeInput();
 
 // True only after the selected LocalStorage mode reached its on-disk map-update
 // and same-runner FIFO database-close receipt. BrowserMainParts uses this to
 // withhold profile storage lifecycle acknowledgement on a failed close.
 bool DidWasmProfileLocalStorageSmokeSucceed();
+void NotifyWasmProfileLocalStorageSmokeOperationResult(bool success);
 
 // Result-bearing profile lifecycle notifications. These use fixed booleans so
 // no raw LocalStorage data or backing-store diagnostics escape the process.

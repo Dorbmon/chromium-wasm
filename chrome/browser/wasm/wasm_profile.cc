@@ -33,6 +33,10 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_persistent_prefs_lifetime_participant.h"
 #include "chrome/browser/wasm/wasm_profile_prefs_fence_controller.h"
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
@@ -224,6 +228,11 @@ WasmProfile::~WasmProfile() {
   // race History/Favicons file ownership.
   if (history_lifetime_participant_) {
     QuarantineHistorySmokeForFailureShutdown();
+  }
+#endif
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  if (local_storage_lifetime_participant_) {
+    QuarantineLocalStorageSmokeForFailureShutdown();
   }
 #endif
   // Do not let destruction classify the source-selected profile admission as
@@ -484,6 +493,50 @@ void WasmProfile::QuarantineHistorySmokeForFailureShutdown() {
       !history_lifetime_participant_->QuarantineForFailureShutdown()) {
     LOG(ERROR) << "chrome_wasm could not quarantine an active History/Favicons "
                   "close for fail-closed shutdown";
+  }
+}
+#endif
+
+#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+bool WasmProfile::StartLocalStorageSmoke(
+    chrome::WasmProfileLocalStorageSmokeInput input,
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> completion) {
+  if (shutdown_ || local_storage_lifetime_participant_ || !completion) {
+    (void)profile_io_hold.Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    return false;
+  }
+  local_storage_lifetime_participant_ = std::make_unique<
+      chrome::WasmProfileLocalStorageLifetimeParticipant>(
+      this, profile_path_, std::move(input), std::move(profile_io_hold));
+  if (!local_storage_lifetime_participant_->Start(std::move(completion))) {
+    local_storage_lifetime_participant_.reset();
+    return false;
+  }
+  return true;
+}
+
+bool WasmProfile::HasActiveLocalStorageSmoke() const {
+  return local_storage_lifetime_participant_ &&
+         local_storage_lifetime_participant_->IsActive();
+}
+
+bool WasmProfile::DidLocalStorageSmokeSucceed() const {
+  return local_storage_lifetime_participant_ &&
+         local_storage_lifetime_participant_->DidSucceed();
+}
+
+void WasmProfile::CancelLocalStorageSmokeForShutdown() {
+  if (local_storage_lifetime_participant_) {
+    local_storage_lifetime_participant_->Cancel();
+  }
+}
+
+void WasmProfile::QuarantineLocalStorageSmokeForFailureShutdown() {
+  if (local_storage_lifetime_participant_ &&
+      !local_storage_lifetime_participant_->QuarantineForFailureShutdown()) {
+    LOG(ERROR) << "chrome_wasm could not quarantine active LocalStorage I/O";
   }
 }
 #endif
