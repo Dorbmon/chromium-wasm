@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
@@ -119,20 +121,38 @@ class WasmProfileHistorySmokeClient final : public history::HistoryClient {
   base::RepeatingClosure on_error_;
 };
 
-class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
- public:
-  WasmProfileHistorySmokeState() = default;
-  WasmProfileHistorySmokeState(const WasmProfileHistorySmokeState&) = delete;
-  WasmProfileHistorySmokeState& operator=(
-      const WasmProfileHistorySmokeState&) = delete;
-  ~WasmProfileHistorySmokeState() = default;
+}  // namespace
 
-  bool Start(base::FilePath profile_path,
-             base::OnceCallback<void(bool success)> completion) {
-    if (!IsWasmProfilePreferencesHistorySmokeEnabled() || started_ ||
-        profile_path.empty() || !completion) {
-      ReportFailure();
+class WasmProfileHistoryLifetimeParticipant::State final
+    : public history::HistoryServiceObserver {
+ public:
+  State(base::FilePath profile_path,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold)
+      : profile_path_(std::move(profile_path)),
+        profile_io_hold_(std::move(profile_io_hold)) {}
+  State(const State&) = delete;
+  State& operator=(const State&) = delete;
+
+  ~State() override = default;
+
+  bool Start(base::OnceCallback<void(bool success)> completion) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    // A duplicate request cannot replace the retained completion or release a
+    // hold that still covers an active History/Favicons backend.
+    if (started_ || completed_) {
       return false;
+    }
+    if (!profile_io_hold_ || !completion) {
+      CompleteAfterBackendClose(/*operation_succeeded=*/false);
+      return false;
+    }
+
+    started_ = true;
+    completion_ = std::move(completion);
+    if (!IsWasmProfilePreferencesHistorySmokeEnabled() ||
+        profile_path_.empty()) {
+      FinishWithoutBackendClose();
+      return true;
     }
 
     const base::CommandLine* command_line =
@@ -146,21 +166,18 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
     } else if (mode == kVerifyBMode) {
       mode_ = SmokeMode::kVerifyB;
     } else {
-      ReportFailure();
-      return false;
+      FinishWithoutBackendClose();
+      return true;
     }
 
-    started_ = true;
-    completion_ = std::move(completion);
     history_service_ = std::make_unique<history::HistoryService>(
         std::make_unique<WasmProfileHistorySmokeClient>(base::BindRepeating(
-            &WasmProfileHistorySmokeState::OnProfileError,
-            base::Unretained(this))),
+            &State::OnProfileError, weak_ptr_factory_.GetWeakPtr())),
         /*visit_delegate=*/nullptr,
         /*device_info_tracker=*/nullptr,
         /*local_device_info_provider=*/nullptr);
     if (!history_service_->Init(history::HistoryDatabaseParamsForPath(
-            profile_path, version_info::Channel::UNKNOWN))) {
+            profile_path_, version_info::Channel::UNKNOWN))) {
       history_service_.reset();
       FinishWithoutBackendClose();
       return true;
@@ -169,7 +186,40 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
     return true;
   }
 
-  bool DidSucceed() const { return started_ && succeeded_ && completed_; }
+  void Cancel() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_) {
+      return;
+    }
+    failed_ = true;
+    task_tracker_.TryCancelAll();
+    // Close() has already transferred History/Favicons destruction to the
+    // backend sequence. Its HistoryService owner is reset before that
+    // destruction receipt reaches this sequence, so a repeated cancellation
+    // must not mistake the null owner for a synchronous close and release the
+    // ProfileIOHold ahead of HistoryBackend::CloseAllDatabases().
+    if (closing_) {
+      return;
+    }
+    if (!history_service_) {
+      FinishWithoutBackendClose();
+      return;
+    }
+    Close();
+  }
+
+  bool IsActive() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return started_ && !completed_;
+  }
+  bool HasCompleted() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return completed_;
+  }
+  bool DidSucceed() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return started_ && succeeded_ && completed_;
+  }
 
  private:
   // HistoryService construction starts database initialization asynchronously.
@@ -177,6 +227,7 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
   // observer is the core service's own UI-sequence readiness notification.
   void OnHistoryServiceLoaded(
       history::HistoryService* history_service) override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (history_service != history_service_.get() || operations_started_ ||
         closing_ || failed_) {
       FailAndClose();
@@ -187,26 +238,28 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
       case SmokeMode::kWrite:
         WriteAndVerify(GURL(kHistoryAUrl), kHistoryATitle,
                        "HISTORY_A_WRITE_ACCEPTED",
-                       base::BindOnce(&WasmProfileHistorySmokeState::Close,
-                                      base::Unretained(this)));
+                       base::BindOnce(&State::Close,
+                                      weak_ptr_factory_.GetWeakPtr()));
         break;
       case SmokeMode::kVerifyAndWrite:
         Verify(GURL(kHistoryAUrl), kHistoryATitle, "HISTORY_A_READ_OK",
-               base::BindOnce(&WasmProfileHistorySmokeState::WriteAndVerify,
-                              base::Unretained(this), GURL(kHistoryBUrl),
+               base::BindOnce(&State::WriteAndVerify,
+                              weak_ptr_factory_.GetWeakPtr(),
+                              GURL(kHistoryBUrl),
                               kHistoryBTitle, "HISTORY_B_WRITE_ACCEPTED",
                               base::BindOnce(
-                                  &WasmProfileHistorySmokeState::Close,
-                                  base::Unretained(this))));
+                                  &State::Close,
+                                  weak_ptr_factory_.GetWeakPtr())));
         break;
       case SmokeMode::kVerifyB:
         Verify(GURL(kHistoryAUrl), kHistoryATitle, "HISTORY_A_READ_OK",
-               base::BindOnce(&WasmProfileHistorySmokeState::Verify,
-                              base::Unretained(this), GURL(kHistoryBUrl),
+               base::BindOnce(&State::Verify,
+                              weak_ptr_factory_.GetWeakPtr(),
+                              GURL(kHistoryBUrl),
                               kHistoryBTitle, "HISTORY_B_READ_OK",
                               base::BindOnce(
-                                  &WasmProfileHistorySmokeState::Close,
-                                  base::Unretained(this))));
+                                  &State::Close,
+                                  weak_ptr_factory_.GetWeakPtr())));
         break;
       case SmokeMode::kNone:
         FinishWithoutBackendClose();
@@ -238,6 +291,7 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
 
   void OnURLVisited(history::HistoryService* history_service,
                     const history::VisitedURLInfo& visited_url_info) override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (history_service != history_service_.get() || !waiting_for_visit_ ||
         closing_ || failed_ || visited_url_info.url_row.url() != pending_url_) {
       FailAndClose();
@@ -247,7 +301,7 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
     waiting_for_visit_ = false;
     history_service_->SetPageTitle(pending_url_, pending_title_);
     history_service_->FlushForTest(base::BindOnce(
-        &WasmProfileHistorySmokeState::Verify, base::Unretained(this),
+        &State::Verify, weak_ptr_factory_.GetWeakPtr(),
         std::move(pending_url_), std::move(pending_title_), pending_marker_,
         std::move(pending_next_)));
     pending_marker_ = nullptr;
@@ -264,9 +318,9 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
     // Construct the callback before passing |url| to the query. Moving the
     // same object into a later function argument would leave evaluation order
     // unspecified and can submit a moved-from URL to HistoryService.
-    auto on_query = base::BindOnce(&WasmProfileHistorySmokeState::OnQuery,
-                                   base::Unretained(this), url, title, marker,
-                                   std::move(next));
+    auto on_query = base::BindOnce(&State::OnQuery,
+                                   weak_ptr_factory_.GetWeakPtr(), url, title,
+                                   marker, std::move(next));
     history_service_->QueryURLAndVisits(
         url, history::VisitQuery404sPolicy::kInclude404s,
         std::move(on_query),
@@ -278,6 +332,7 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
                const char* marker,
                base::OnceClosure next,
                history::QueryURLAndVisitsResult result) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (!result.success || result.row.url() != expected_url ||
         result.row.title() != expected_title || result.visits.empty()) {
       if (!result.success) {
@@ -301,11 +356,17 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
     std::move(next).Run();
   }
 
-  void OnProfileError() { FailAndClose(); }
+  void OnProfileError() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    FailAndClose();
+  }
 
   void Close() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (!history_service_ || closing_) {
-      FailAndClose();
+      if (!closing_) {
+        FailAndClose();
+      }
       return;
     }
     closing_ = true;
@@ -314,14 +375,15 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
     pending_next_.Reset();
     history_service_->RemoveObserver(this);
     history_service_->SetOnBackendDestroyTask(base::BindOnce(
-        &WasmProfileHistorySmokeState::OnBackendDestroyed,
-        base::Unretained(this)));
+        &State::OnBackendDestroyed, weak_ptr_factory_.GetWeakPtr()));
     history_service_->Shutdown();
     history_service_.reset();
   }
 
   void FailAndClose() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     failed_ = true;
+    task_tracker_.TryCancelAll();
     if (closing_) {
       return;
     }
@@ -333,27 +395,42 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
   }
 
   void OnBackendDestroyed() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (!closing_ || completed_) {
       ReportFailure();
       return;
     }
+    CompleteAfterBackendClose(/*operation_succeeded=*/!failed_);
+  }
+
+  void FinishWithoutBackendClose() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    failed_ = true;
+    CompleteAfterBackendClose(/*operation_succeeded=*/false);
+  }
+
+  void CompleteAfterBackendClose(bool operation_succeeded) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_) {
+      return;
+    }
+
+    bool profile_io_completed = false;
+    if (profile_io_hold_) {
+      profile_io_completed = profile_io_hold_->Complete(
+          operation_succeeded
+              ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                    kSucceeded
+              : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+      profile_io_hold_.reset();
+    }
     completed_ = true;
-    succeeded_ = !failed_;
+    succeeded_ = operation_succeeded && profile_io_completed;
     if (!succeeded_) {
       ReportFailure();
     }
     if (completion_) {
       std::move(completion_).Run(succeeded_);
-    }
-  }
-
-  void FinishWithoutBackendClose() {
-    failed_ = true;
-    completed_ = true;
-    succeeded_ = false;
-    ReportFailure();
-    if (completion_) {
-      std::move(completion_).Run(false);
     }
   }
 
@@ -374,6 +451,9 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
   bool operations_started_ = false;
   bool waiting_for_visit_ = false;
   SmokeMode mode_ = SmokeMode::kNone;
+  base::FilePath profile_path_;
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      profile_io_hold_;
   std::unique_ptr<history::HistoryService> history_service_;
   base::CancelableTaskTracker task_tracker_;
   GURL pending_url_;
@@ -381,24 +461,74 @@ class WasmProfileHistorySmokeState : public history::HistoryServiceObserver {
   const char* pending_marker_ = nullptr;
   base::OnceClosure pending_next_;
   base::OnceCallback<void(bool success)> completion_;
+  SEQUENCE_CHECKER(sequence_checker_);
+  base::WeakPtrFactory<State> weak_ptr_factory_{this};
 };
 
-WasmProfileHistorySmokeState& GetWasmProfileHistorySmokeState() {
-  static base::NoDestructor<WasmProfileHistorySmokeState> state;
-  return *state;
+WasmProfileHistoryLifetimeParticipant::
+    WasmProfileHistoryLifetimeParticipant(
+        base::FilePath profile_path,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold)
+    : state_(std::make_unique<State>(std::move(profile_path),
+                                     std::move(profile_io_hold))) {}
+
+WasmProfileHistoryLifetimeParticipant::~WasmProfileHistoryLifetimeParticipant() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Direct destruction is only a foundation-fallback path. Never let the
+  // ProfileIOHold destructor turn an active History/Favicons close into a
+  // terminal abandoned result that could authorize failure retirement first.
+  (void)QuarantineForFailureShutdown();
 }
 
-}  // namespace
-
-bool StartWasmProfileHistorySmoke(
-    base::FilePath profile_path,
+bool WasmProfileHistoryLifetimeParticipant::Start(
     base::OnceCallback<void(bool success)> completion) {
-  return GetWasmProfileHistorySmokeState().Start(std::move(profile_path),
-                                                 std::move(completion));
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->Start(std::move(completion));
 }
 
-bool DidWasmProfileHistorySmokeSucceed() {
-  return GetWasmProfileHistorySmokeState().DidSucceed();
+void WasmProfileHistoryLifetimeParticipant::Cancel() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (state_) {
+    state_->Cancel();
+  }
+}
+
+bool WasmProfileHistoryLifetimeParticipant::QuarantineForFailureShutdown() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!state_ || !state_->IsActive()) {
+    return true;
+  }
+
+  // Start the normal failed close before separating this holder from
+  // WasmProfile. If the UI loop remains able to run its backend-destroy task,
+  // that receipt will still complete the hold as failed. Otherwise the
+  // process-lifetime holder deliberately keeps it outstanding, so ChromeMain
+  // refuses before either an ordinary drain or failure-retirement transaction
+  // can race History/Favicons file ownership.
+  state_->Cancel();
+  if (!state_->IsActive()) {
+    return true;
+  }
+
+  static base::NoDestructor<std::vector<std::unique_ptr<State>>>
+      quarantined_states;
+  quarantined_states->push_back(std::move(state_));
+  return true;
+}
+
+bool WasmProfileHistoryLifetimeParticipant::IsActive() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->IsActive();
+}
+
+bool WasmProfileHistoryLifetimeParticipant::HasCompleted() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->HasCompleted();
+}
+
+bool WasmProfileHistoryLifetimeParticipant::DidSucceed() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->DidSucceed();
 }
 
 }  // namespace chrome

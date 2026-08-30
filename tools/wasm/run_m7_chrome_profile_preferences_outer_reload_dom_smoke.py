@@ -24,8 +24,9 @@ flush/reopen and backend-close probe before profile teardown, and a direct
 core HistoryService History/Favicons SQLite probe within the dedicated profile
 mount. It does not prove full cookie-service or profile persistence. The
 private A/B values exist only in this process's in-memory escrow and in each
-one-shot bootstrap response body; no URL, page receipt, diagnostic, browser
-stderr, or stdout contains them.
+one-shot bootstrap response body; no URL, page receipt, diagnostic, or stdout
+contains them. Browser stderr is scanned for the raw values and any occurrence
+fails the run without retaining or echoing the value.
 
 Each later bootstrap requires all of: validated predecessor ready state,
 runner arming, a fresh top-level Fetch-Metadata document navigation, and a
@@ -60,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from m0_common import M0Error, REPO_ROOT, load_manifest
 from m4_cdp import unused_loopback_port, wait_for_page_client
 from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
-from run_browser_smoke import browser_command, drain_stream, find_browser, stop_browser
+from run_browser_smoke import browser_command, find_browser, stop_browser
 
 
 SENTINEL = "CHROMIUM_WASM_M7_CHROME_PROFILE_PREFERENCES_OUTER_RELOAD_DOM"
@@ -100,6 +101,7 @@ MAX_BROWSER_STDERR_LINES = 300
 FINAL_QUIESCENCE_MS = 50
 MIN_TIMEOUT_SECONDS = 20.0
 MAX_TIMEOUT_MS = 300_000
+SUPPRESSED_BROWSER_STDERR_TOKEN = "<suppressed-browser-stderr-token>"
 
 CAPABILITY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -236,7 +238,7 @@ _HOST_BOUNDARY_FIELDS = frozenset(
         "hostOpfsAccessAttempted",
         "hostWebLocksAccessAttempted",
         "nativeCallAttempted",
-        "wasmDataInspectionAttempted",
+        "wasmProfileDataInspectionAttempted",
         "sessionStorageAccessAttempted",
         "localStorageAccessAttempted",
         "indexedDbAccessAttempted",
@@ -294,6 +296,25 @@ class TokenEscrow:
     token_b: str = field(repr=False)
     token_a_digest: str
     token_b_digest: str
+
+
+def drain_browser_stderr(
+    stream: Any,
+    destination: deque[str],
+    escrow: TokenEscrow,
+    raw_token_seen: threading.Event,
+) -> None:
+    """Suppresses browser stderr while detecting raw escrow-token leakage."""
+
+    for line in stream:
+        normalized = line.rstrip()
+        if escrow.token_a in normalized or escrow.token_b in normalized:
+            raw_token_seen.set()
+            # Keep diagnostics and error paths structurally useful without
+            # ever retaining a value whose presence already fails the run.
+            destination.append(SUPPRESSED_BROWSER_STDERR_TOKEN)
+        else:
+            destination.append(normalized)
 
 
 @dataclass(frozen=True)
@@ -1822,6 +1843,7 @@ def main() -> int:
 
     browser: subprocess.Popen[str] | None = None
     browser_stderr: deque[str] = deque(maxlen=MAX_BROWSER_STDERR_LINES)
+    browser_stderr_raw_token_seen = threading.Event()
     stderr_thread: threading.Thread | None = None
     client: Any | None = None
     outer_profile: tempfile.TemporaryDirectory[str] | None = None
@@ -1832,6 +1854,7 @@ def main() -> int:
     ready_ordinals: set[int] = set()
     stage = "initialize"
     successful = False
+    failure_reported = False
 
     try:
         stage = "load-manifest"
@@ -1890,8 +1913,13 @@ def main() -> int:
         )
         assert browser.stderr is not None
         stderr_thread = threading.Thread(
-            target=drain_stream,
-            args=(browser.stderr, browser_stderr),
+            target=drain_browser_stderr,
+            args=(
+                browser.stderr,
+                browser_stderr,
+                escrow,
+                browser_stderr_raw_token_seen,
+            ),
             name="chromium-wasm-m7-profile-preferences-outer-reload-browser-stderr",
             daemon=True,
         )
@@ -2008,6 +2036,7 @@ def main() -> int:
             except OSError:
                 pass
         print(f"{SENTINEL}:FAIL stage={stage}", file=sys.stderr, flush=True)
+        failure_reported = True
     finally:
         if client is not None:
             client.close()
@@ -2015,6 +2044,8 @@ def main() -> int:
             stop_browser(browser)
         if stderr_thread is not None:
             stderr_thread.join(timeout=3)
+        if browser_stderr_raw_token_seen.is_set():
+            successful = False
         try:
             _stop_server(server, server_thread, server_thread_started)
         except M0Error:
@@ -2022,6 +2053,14 @@ def main() -> int:
         if outer_profile is not None:
             outer_profile.cleanup()
 
+    if browser_stderr_raw_token_seen.is_set():
+        if not failure_reported:
+            print(
+                f"{SENTINEL}:FAIL stage=browser-stderr-token-hygiene",
+                file=sys.stderr,
+                flush=True,
+            )
+        return 1
     if not successful:
         return 1
     print(
@@ -2035,7 +2074,7 @@ def main() -> int:
                 "outerDocumentReload": True,
                 "cookieManagerFlushReopenAndBackendClose": True,
                 "cookieManagerFullServicePersistenceProven": False,
-                "rawPreferencesTokensSerialized": False,
+                "rawPreferencesTokensSerializedInPassResult": False,
             },
             sort_keys=True,
             separators=(",", ":"),

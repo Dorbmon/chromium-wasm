@@ -85,7 +85,7 @@ const QUIESCENCE_FIELDS = Object.freeze([
 ]);
 const HOST_BOUNDARY_FIELDS = Object.freeze([
   "hostOpfsAccessAttempted", "hostWebLocksAccessAttempted",
-  "nativeCallAttempted", "wasmDataInspectionAttempted",
+  "nativeCallAttempted", "wasmProfileDataInspectionAttempted",
   "sessionStorageAccessAttempted", "localStorageAccessAttempted",
   "indexedDbAccessAttempted", "cookieAccessAttempted",
   "historyStateAccessAttempted", "windowNameAccessAttempted",
@@ -1136,7 +1136,9 @@ class PreferencesOuterReloadHost {
       hostOpfsAccessAttempted: false,
       hostWebLocksAccessAttempted: false,
       nativeCallAttempted: false,
-      wasmDataInspectionAttempted: false,
+      // The runner snapshots and hashes the artifact it serves. This field is
+      // narrower: the host never inspects the Wasm profile data or memory.
+      wasmProfileDataInspectionAttempted: false,
       sessionStorageAccessAttempted: false,
       localStorageAccessAttempted: false,
       indexedDbAccessAttempted: false,

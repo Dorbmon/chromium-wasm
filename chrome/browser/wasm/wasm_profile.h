@@ -16,6 +16,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "chrome/browser/wasm/wasm_profile_ordered_drain_lifecycle.h"
 #include "chrome/browser/profiles/profile.h"
 
 class ChromeZoomLevelPrefs;
@@ -27,6 +28,10 @@ class ProfileKey;
 class WasmProfilePrefsFenceController;
 class WasmProfilePersistentPrefsLifetimeParticipant;
 class WasmSessionNavigationJournal;
+
+namespace chrome {
+class WasmProfileHistoryLifetimeParticipant;
+}
 
 namespace base {
 class SequencedTaskRunner;
@@ -114,6 +119,19 @@ class WasmProfile final : public Profile {
   bool IsPrefsShutdownFencePending() const;
   bool HasPrefsShutdownFenceCompleted() const;
   bool DidPrefsShutdownFenceSucceed() const;
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // Starts the source-selected direct HistoryService witness as an explicit
+  // profile-owned lifetime. The admitted I/O hold stays pending until the
+  // HistoryBackend destruction receipt has closed both History and Favicons.
+  // This intentionally does not admit the desktop HistoryServiceFactory graph.
+  bool StartHistorySmoke(
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+      base::OnceCallback<void(bool success)> completion);
+  bool HasActiveHistorySmoke() const;
+  void CancelHistorySmokeForShutdown();
+  void QuarantineHistorySmokeForFailureShutdown();
+#endif
 
   // The M6 history bootstrap reads this process-local journal through a weak
   // reference. It is intentionally not HistoryService and becomes inert
@@ -260,6 +278,14 @@ class WasmProfile final : public Profile {
   // or is explicitly failed when this profile cannot reach that result.
   std::unique_ptr<WasmProfilePersistentPrefsLifetimeParticipant>
       prefs_lifetime_profile_io_participant_;
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // This direct core HistoryService is not a keyed service because its
+  // History/Favicons close receipt is asynchronous. BrowserMainParts defers
+  // profile teardown until this participant is terminal.
+  std::unique_ptr<chrome::WasmProfileHistoryLifetimeParticipant>
+      history_lifetime_participant_;
+#endif
 
   bool shutdown_ = false;
   PrefsShutdownFenceState prefs_shutdown_fence_state_ =

@@ -79,6 +79,12 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "chrome/browser/wasm/wasm_profile_preferences_smoke.cc"
         )
         self.history = source("chrome/browser/wasm/wasm_profile_history_smoke.cc")
+        self.history_header = source(
+            "chrome/browser/wasm/wasm_profile_history_smoke.h"
+        )
+        self.history_lifetime_unittest = source(
+            "chrome/browser/wasm/wasm_profile_history_lifetime_participant_unittest.cc"
+        )
         self.cookie = source("chrome/browser/wasm/wasm_profile_cookie_smoke.cc")
         self.cookie_header = source(
             "chrome/browser/wasm/wasm_profile_cookie_smoke.h"
@@ -113,6 +119,10 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "services/network/test/test_cookie_manager.h"
         )
         self.profile = source("chrome/browser/wasm/wasm_profile.cc")
+        self.profile_header = source("chrome/browser/wasm/wasm_profile.h")
+        self.profile_storage = source(
+            "chrome/browser/wasm/wasm_profile_storage.cc"
+        )
         self.main_parts = source(
             "chrome/browser/wasm/wasm_browser_main_parts.cc"
         )
@@ -300,7 +310,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "cookie_smoke_required_ && !cookie_smoke_completed_", fence
         )
 
-    def test_history_service_probe_is_direct_and_closed_before_storage_handoff(self) -> None:
+    def test_history_service_probe_is_profile_owned_and_blocks_early_handoff(self) -> None:
         for token in (
             '#include "components/history/core/browser/history_service.h"',
             "std::make_unique<history::HistoryService>(",
@@ -335,56 +345,234 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.history)
 
+        self.assertIn(
+            "class WasmProfileHistoryLifetimeParticipant", self.history_header
+        )
+        self.assertIn(
+            "WasmProfileOrderedDrainLifecycle::ProfileIOHold", self.history_header
+        )
+        self.assertIn(
+            "std::unique_ptr<chrome::WasmProfileHistoryLifetimeParticipant>",
+            self.profile_header,
+        )
+        self.assertIn("bool StartHistorySmoke(", self.profile_header)
+        self.assertIn("bool HasActiveHistorySmoke() const;", self.profile_header)
+        self.assertIn("void CancelHistorySmokeForShutdown();", self.profile_header)
+        self.assertIn(
+            "void QuarantineHistorySmokeForFailureShutdown();",
+            self.profile_header,
+        )
+        self.assertIn("bool QuarantineForFailureShutdown();", self.history_header)
+
         close = _body_after_signature(self.history, "void Close()")
         backend_destroy = _body_after_signature(
             self.history, "void OnBackendDestroyed()"
         )
+        terminal = _body_after_signature(
+            self.history,
+            "void CompleteAfterBackendClose(bool operation_succeeded)",
+        )
         self.assertLess(
             close.index("SetOnBackendDestroyTask"), close.index("Shutdown();")
         )
-        self.assertLess(close.index("Shutdown();"), close.index("history_service_.reset();"))
-        self.assertIn("completed_ = true;", backend_destroy)
-        self.assertIn("std::move(completion_).Run(succeeded_);", backend_destroy)
+        self.assertLess(
+            close.index("Shutdown();"), close.index("history_service_.reset();")
+        )
+        self.assertIn("CompleteAfterBackendClose", backend_destroy)
+        self.assertLess(
+            terminal.index("profile_io_hold_->Complete("),
+            terminal.index("completed_ = true;"),
+        )
+        self.assertLess(
+            terminal.index("completed_ = true;"),
+            terminal.index("std::move(completion_).Run(succeeded_);"),
+        )
+        self.assertIn("task_tracker_.TryCancelAll();", self.history)
+        state_start = _body_after_signature(
+            self.history, "bool Start(base::OnceCallback<void(bool success)> completion)"
+        )
+        duplicate_start = state_start.index("if (started_ || completed_)")
+        invalid_start = state_start.index("if (!profile_io_hold_ || !completion)")
+        self.assertLess(duplicate_start, invalid_start)
+        self.assertNotIn(
+            "CompleteAfterBackendClose", state_start[duplicate_start:invalid_start]
+        )
+        self.assertIn("CompleteAfterBackendClose", state_start[invalid_start:])
+        cancel_state = _body_after_signature(self.history, "void Cancel()")
+        self.assertLess(
+            cancel_state.index("if (closing_)"),
+            cancel_state.index("if (!history_service_)"),
+        )
+        self.assertIn("return;", cancel_state[cancel_state.index("if (closing_)") :])
+        self.assertIn("base::WeakPtrFactory<State> weak_ptr_factory_{this};", self.history)
+        self.assertNotIn("base::Unretained(this)", self.history)
+
+        participant_destructor = _body_after_signature(
+            self.history,
+            "WasmProfileHistoryLifetimeParticipant::~WasmProfileHistoryLifetimeParticipant()",
+        )
+        self.assertIn("QuarantineForFailureShutdown();", participant_destructor)
+        quarantine = _body_after_signature(
+            self.history,
+            "bool WasmProfileHistoryLifetimeParticipant::QuarantineForFailureShutdown()",
+        )
+        self.assertIn("state_->Cancel();", quarantine)
+        self.assertIn(
+            "base::NoDestructor<std::vector<std::unique_ptr<State>>>", quarantine
+        )
+        self.assertIn("quarantined_states->push_back(std::move(state_));", quarantine)
+        self.assertLess(
+            quarantine.index("state_->Cancel();"),
+            quarantine.index("quarantined_states->push_back"),
+        )
+        self.assertNotIn("CompleteAfterBackendClose(", quarantine)
+        self.assertIn("~State() override = default;", self.history)
 
         verify = _body_after_signature(self.history, "void Verify(GURL url,")
         callback = verify.index("auto on_query =")
         query = verify.index("history_service_->QueryURLAndVisits(")
         self.assertLess(callback, query)
-        self.assertIn("base::Unretained(this), url, title, marker,", verify)
+        self.assertIn("weak_ptr_factory_.GetWeakPtr()", verify)
         self.assertIn("std::move(on_query)", verify)
 
-        browser_manager = self.main_parts.index(
-            "BrowserManagerServiceFactory::GetForProfile(profile_.get())"
+        profile_start = _body_after_signature(
+            self.profile, "bool WasmProfile::StartHistorySmoke("
         )
-        history_hold = self.main_parts.index(
-            "chrome::TryAcquireWasmProfileStorageProfileIO()", browser_manager
+        self.assertIn(
+            "std::make_unique<chrome::WasmProfileHistoryLifetimeParticipant>",
+            profile_start,
         )
-        history_complete = self.main_parts.index(
-            "(*profile_io_hold)->Complete(", history_hold
+        self.assertIn("std::move(profile_io_hold)", profile_start)
+        self.assertIn("history_lifetime_participant_->Start", profile_start)
+        self.assertIn("ProfileIOCompletion::kFailed", profile_start)
+
+        destructor = _body_after_signature(
+            self.profile, "WasmProfile::~WasmProfile()"
         )
-        history_start = self.main_parts.index(
-            "chrome::StartWasmProfileHistorySmoke(profile_->GetPath()",
-            history_complete,
+        self.assertLess(
+            destructor.index("QuarantineHistorySmokeForFailureShutdown();"),
+            destructor.index("prefs_lifetime_profile_io_participant_->Cancel();"),
         )
-        self.assertLess(history_hold, history_start)
-        self.assertLess(history_hold, history_complete)
-        self.assertLess(history_complete, history_start)
-        completion_callback = self.main_parts[history_complete:history_start]
-        self.assertIn("main_parts->RequestShutdown();", completion_callback)
+
+        start_history = _body_after_signature(
+            self.main_parts,
+            "void WasmBrowserMainParts::StartWasmProfileHistorySmokeOrShutdown()",
+        )
+        self.assertIn("chrome::TryAcquireWasmProfileStorageProfileIO()", start_history)
+        self.assertIn("profile_->StartHistorySmoke(", start_history)
+        self.assertIn("std::move(*profile_io_hold)", start_history)
+        self.assertNotIn("std::shared_ptr<std::optional", start_history)
+        self.assertNotIn("->Complete(", start_history)
+
+        completion = _body_after_signature(
+            self.main_parts,
+            "void WasmBrowserMainParts::OnWasmProfileHistorySmokeComplete(bool success)",
+        )
+        self.assertIn("NotifyWasmProfilePreferencesHistorySmokeResult(success)", completion)
+        self.assertIn("if (shutdown_requested_)", completion)
+        self.assertIn("MaybeStartShutdown();", completion)
+        self.assertIn("RequestShutdown();", completion)
+
+        maybe_shutdown = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::MaybeStartShutdown()"
+        )
+        history_guard = maybe_shutdown.index("profile_->HasActiveHistorySmoke()")
+        finish_call = maybe_shutdown.index("FinishShutdown();")
+        self.assertLess(history_guard, finish_call)
+        self.assertIn("profile_->CancelHistorySmokeForShutdown();", maybe_shutdown)
 
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
         )
-        history_guard = finish.index(
-            "IsWasmProfilePreferencesHistorySmokeEnabled()"
+        self.assertIn("profile_->HasActiveHistorySmoke()", finish)
+        self.assertIn("profile_->CancelHistorySmokeForShutdown();", finish)
+        self.assertLess(
+            finish.index("profile_->HasActiveHistorySmoke()"),
+            finish.index("profile_->Shutdown();"),
         )
-        storage_handoff = finish.index(
-            "NotifyWasmProfileStorageProfileShutdown();"
+
+        foundation = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::ShutdownFoundation()"
         )
-        # A failing history holder is completed before it asks for shutdown.
-        # FinishShutdown must publish that terminal result to the outer
-        # fail-closed retirement seam before it emits the smoke receipt.
-        self.assertLess(storage_handoff, history_guard)
+        self.assertIn("profile_->QuarantineHistorySmokeForFailureShutdown();", foundation)
+        self.assertLess(
+            foundation.index("profile_->QuarantineHistorySmokeForFailureShutdown();"),
+            foundation.index("profile_->Shutdown();"),
+        )
+
+        storage_drain = _body_after_signature(
+            self.profile_storage,
+            "WasmProfileStorageDrainResult DrainAndReleaseBackend()",
+        )
+        waiting = storage_drain.index("kWaitingForRegisteredProfileIO")
+        refused_return = storage_drain.index("return result;", waiting)
+        transaction = storage_drain.index("backend_drain_attempted_ = true;")
+        waiting_body = storage_drain[waiting:refused_return]
+        self.assertIn("result.error = -EBUSY;", waiting_body)
+        self.assertIn("result.refused_for_outstanding_profile_io = true;", waiting_body)
+        # The fallback quarantine leaves its hold live. ChromeMain must see
+        # this refusal before selecting either backend operation, including
+        # fail-closed retirement.
+        self.assertLess(waiting, refused_return)
+        self.assertLess(refused_return, transaction)
+
+        # Exercise the production HistoryService shutdown path rather than
+        # treating the source ordering as the only evidence. Before its actual
+        # HistoryBackend destroy receipt, cancellation must leave the explicit
+        # admission live and make both outer backend operations unavailable.
+        self.assertIn(
+            'test("wasm_profile_history_lifetime_participant_unittests")',
+            self.wasm_build,
+        )
+        for token in (
+            "base::test::TaskEnvironment task_environment;",
+            "EnableWasmProfilePreferencesSmokeTestMode()",
+            "std::make_unique<WasmProfileHistoryLifetimeParticipant>",
+            "EXPECT_FALSE(participant->Start(base::BindOnce([](bool) {})));",
+            "participant->Cancel();",
+            "participant.reset();",
+            "backend_destroyed_loop.Run();",
+            "Lifecycle::Status::kWaitingForRegisteredProfileIO",
+            "Lifecycle::Status::kRegisteredProfileIONotClean",
+            "ClaimPostContentDrain().has_value()",
+            "ClaimPostContentFailureRetirement().has_value()",
+            "result.profile_io.failed_operations, 1u",
+            "result.profile_io.abandoned_operations, 0u",
+        ):
+            with self.subTest(runtime_token=token):
+                self.assertIn(token, self.history_lifetime_unittest)
+
+        cancel = _body_after_signature(
+            self.history_lifetime_unittest,
+            "FoundationFallbackQuarantineRetainsProfileIOUntilBackendDestroyReceipt)",
+        )
+        cancel_call = cancel.index("participant->Cancel();")
+        quarantine_call = cancel.index("participant->QuarantineForFailureShutdown()")
+        owner_reset = cancel.index("participant.reset();")
+        backend_receipt = cancel.index("backend_destroyed_loop.Run();")
+        self.assertLess(cancel_call, backend_receipt)
+        self.assertLess(cancel_call, quarantine_call)
+        self.assertLess(quarantine_call, backend_receipt)
+        self.assertLess(quarantine_call, owner_reset)
+        self.assertLess(owner_reset, backend_receipt)
+        pre_receipt = cancel[cancel_call:quarantine_call]
+        self.assertIn("EXPECT_TRUE(participant->IsActive());", pre_receipt)
+        self.assertIn("EXPECT_FALSE(completion_called);", pre_receipt)
+        self.assertIn("kWaitingForRegisteredProfileIO", pre_receipt)
+        self.assertEqual(pre_receipt.count("ClaimPostContentDrain().has_value()"), 1)
+        self.assertEqual(
+            pre_receipt.count("ClaimPostContentFailureRetirement().has_value()"),
+            1,
+        )
+        quarantine = cancel[quarantine_call:backend_receipt]
+        self.assertIn("EXPECT_FALSE(participant->IsActive());", quarantine)
+        self.assertIn("EXPECT_FALSE(completion_called);", quarantine)
+        self.assertIn("kWaitingForRegisteredProfileIO", quarantine)
+        self.assertEqual(quarantine.count("ClaimPostContentDrain().has_value()"), 2)
+        self.assertEqual(
+            quarantine.count("ClaimPostContentFailureRetirement().has_value()"),
+            2,
+        )
 
     def test_cookie_manager_probe_closes_its_sqlite_backend_before_handoff(self) -> None:
         for token in (
@@ -700,6 +888,15 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, target)
 
+        profile_layout_config = _body_after_signature(
+            self.wasm_build,
+            'config("wasm_profile_m7_preferences_smoke_config")',
+        )
+        self.assertIn(
+            'defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]',
+            profile_layout_config,
+        )
+
         for source_set in ("wasm_profile", "wasm_browser_main_parts"):
             target = _body_after_signature(
                 self.wasm_build, f'source_set("{source_set}")'
@@ -709,17 +906,20 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             self.assertIn(
                 "if (enable_chromium_wasm_m7_profile_preferences_test)", target
             )
-            self.assertIn(
-                'defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]',
-                target,
-            )
             if source_set == "wasm_profile":
                 self.assertIn(
-                    'deps += [ ":wasm_profile_preferences_smoke" ]', target
+                    'public_configs = [ ":wasm_profile_m7_preferences_smoke_config" ]',
+                    target,
                 )
-            else:
                 self.assertIn('":wasm_profile_preferences_smoke",', target)
                 self.assertIn('":wasm_profile_history_smoke",', target)
+            else:
+                self.assertIn(
+                    'defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]',
+                    target,
+                )
+                self.assertIn('":wasm_profile_preferences_smoke",', target)
+                self.assertNotIn('":wasm_profile_history_smoke",', target)
 
         helper_start = self.wasm_build.index(
             'if (enable_chromium_wasm_m7_profile_preferences_test) {\n'

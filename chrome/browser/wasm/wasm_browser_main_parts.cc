@@ -52,10 +52,6 @@
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
-#include "chrome/browser/wasm/wasm_profile_history_smoke.h"  // nogncheck
-#endif
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-// GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
@@ -288,8 +284,8 @@ void ResetProfileThenFailCloseM7ProfileStorage(
     LOG(ERROR) << "chrome_wasm could not publish its fail-closed profile "
                   "shutdown; its OPFS profile lease remains retained";
   } else {
-    LOG(ERROR) << "chrome_wasm will fail-close its incomplete OPFS profile "
-                  "shutdown";
+    LOG(ERROR) << "chrome_wasm selected fail-closed profile shutdown; its "
+                  "OPFS lease remains retained without a clean drain";
   }
 }
 #endif
@@ -1183,6 +1179,18 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
     return;
   }
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // The direct source-selected HistoryService is profile-owned but closes its
+  // History/Favicons backends asynchronously. Do not enter synchronous
+  // Profile teardown until its backend-destroy receipt has made the admitted
+  // profile I/O terminal. Its callback re-enters this method instead of a
+  // duplicate RequestShutdown(), which is intentionally idempotent.
+  if (profile_ && profile_->HasActiveHistorySmoke()) {
+    profile_->CancelHistorySmokeForShutdown();
+    return;
+  }
+#endif
+
   FinishShutdown();
 }
 
@@ -1664,46 +1672,34 @@ void WasmBrowserMainParts::StartWasmProfileHistorySmokeOrShutdown() {
     return;
   }
 
-  auto history_profile_io_hold = std::make_shared<std::optional<
-      WasmProfileOrderedDrainLifecycle::ProfileIOHold>>(
-      std::move(*profile_io_hold));
-  auto history_completion = base::BindOnce(
-      [](std::shared_ptr<std::optional<
-             WasmProfileOrderedDrainLifecycle::ProfileIOHold>>
-             profile_io_hold,
-         base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
-        CHECK(profile_io_hold);
-        CHECK(*profile_io_hold);
-        chrome::NotifyWasmProfilePreferencesHistorySmokeResult(success);
-        const bool history_succeeded =
-            success && chrome::DidWasmProfilePreferencesHistorySmokeSucceed();
-        const bool profile_io_completed = (*profile_io_hold)->Complete(
-            history_succeeded
-                ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                      kSucceeded
-                : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
-                      kFailed);
-        if (!profile_io_completed) {
-          LOG(ERROR) << "chrome_wasm could not complete its profile history "
-                        "I/O admission";
-        }
-        if (main_parts) {
-          main_parts->RequestShutdown();
-        }
-      },
-      history_profile_io_hold, weak_ptr_factory_.GetWeakPtr());
-  if (!chrome::StartWasmProfileHistorySmoke(profile_->GetPath(),
-                                             std::move(history_completion))) {
+  // Transfer the admission into WasmProfile before the direct HistoryService
+  // starts. Its participant owns the service, task tracker, and hold through
+  // the HistoryBackend destruction receipt, rather than letting BrowserMain
+  // retain a process-global test singleton or a detached I/O holder.
+  if (!profile_->StartHistorySmoke(
+          std::move(*profile_io_hold),
+          base::BindOnce(&WasmBrowserMainParts::OnWasmProfileHistorySmokeComplete,
+                         weak_ptr_factory_.GetWeakPtr()))) {
     chrome::NotifyWasmProfilePreferencesHistorySmokeResult(false);
-    CHECK(*history_profile_io_hold);
-    const bool profile_io_completed = (*history_profile_io_hold)->Complete(
-        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
-    if (!profile_io_completed) {
-      LOG(ERROR) << "chrome_wasm could not complete its profile history I/O "
-                    "admission after startup failure";
-    }
     RequestShutdown();
   }
+}
+
+void WasmBrowserMainParts::OnWasmProfileHistorySmokeComplete(bool success) {
+  chrome::NotifyWasmProfilePreferencesHistorySmokeResult(success);
+  if (!success) {
+    LOG(ERROR) << "chrome_wasm History/Favicons close witness failed";
+  }
+
+  // A shutdown can arrive while the History backend is still closing. A
+  // second RequestShutdown() would be intentionally ignored, so resume the
+  // deferred state machine directly only after the profile-owned participant
+  // has delivered its terminal close receipt.
+  if (shutdown_requested_) {
+    MaybeStartShutdown();
+    return;
+  }
+  RequestShutdown();
 }
 #endif
 
@@ -1711,6 +1707,15 @@ void WasmBrowserMainParts::FinishShutdown() {
   CHECK(shutdown_requested_);
   CHECK(!browser_lifecycle_);
   CHECK(!browser_window_lifecycle_);
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // Browser lifecycle completions can enter here directly. Preserve the same
+  // no-profile-teardown-before-backend-close rule as MaybeStartShutdown().
+  if (profile_ && profile_->HasActiveHistorySmoke()) {
+    profile_->CancelHistorySmokeForShutdown();
+    return;
+  }
+#endif
 
   if (profile_) {
     // Browser/Core destruction completed before this method can run. Shut the
@@ -1884,6 +1889,15 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     browser_process_->EndSession();
   }
   if (profile_) {
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    // The normal UI-loop path waits in MaybeStartShutdown() for this receipt.
+    // This fallback has no loop left to service it, so retain an active direct
+    // History/Favicons close and its ProfileIOHold. ChromeMain must observe the
+    // resulting outstanding admission and refuse before touching V4.
+    if (profile_->HasActiveHistorySmoke()) {
+      profile_->QuarantineHistorySmokeForFailureShutdown();
+    }
+#endif
     profile_->Shutdown();
     // A normal FinishShutdown() releases the profile before it quits the UI
     // loop. Reaching this fallback means startup or the write/readback fence
@@ -1892,10 +1906,13 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     // The UI loop is already gone, so this fallback cannot await or certify
-    // the Preferences/smoke lifecycle. ChromeMain will close private OPFS
-    // handles. chrome_wasm retains its OPFS profile lease because it has only
-    // closed private handles. A clean handoff from a merely terminal
-    // registered-I/O result is not justified.
+    // the Preferences/smoke lifecycle.
+    // It must never derive a clean handoff from a merely terminal profile epoch.
+    // Once all admitted I/O is terminal,
+    // ChromeMain may close private OPFS handles while retaining the lease.
+    // chrome_wasm retains its OPFS profile lease because an outstanding
+    // History/Favicons close instead makes ChromeMain refuse before any
+    // backend transaction. Neither outcome is a clean handoff.
     ResetProfileThenFailCloseM7ProfileStorage(profile_);
 #else
     chrome::RecordWasmProfileShutdownFailure();

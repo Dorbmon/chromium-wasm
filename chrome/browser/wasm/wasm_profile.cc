@@ -25,6 +25,8 @@
 #include "chrome/browser/profiles/profile_key.h"
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_history_smoke.h"  // nogncheck
+// GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
 #include "chrome/browser/wasm/wasm_profile_persistent_prefs_lifetime_participant.h"
@@ -194,6 +196,15 @@ WasmProfile::WasmProfile(
 }
 
 WasmProfile::~WasmProfile() {
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // BrowserMainParts normally retains this profile until the direct History
+  // witness has its backend-destroy receipt. A fallback owner loss must retain
+  // an active close as outstanding so the outer V4 drain refuses before it can
+  // race History/Favicons file ownership.
+  if (history_lifetime_participant_) {
+    QuarantineHistorySmokeForFailureShutdown();
+  }
+#endif
   // Do not let destruction classify the source-selected profile admission as
   // abandoned. An owner loss before the strict JsonPrefStore fence is a
   // failed profile operation, not a clean storage handoff.
@@ -313,6 +324,48 @@ bool WasmProfile::HasPrefsShutdownFenceCompleted() const {
 bool WasmProfile::DidPrefsShutdownFenceSucceed() const {
   return prefs_shutdown_fence_state_ == PrefsShutdownFenceState::kSucceeded;
 }
+
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+bool WasmProfile::StartHistorySmoke(
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> completion) {
+  if (shutdown_ || history_lifetime_participant_ || !completion) {
+    (void)profile_io_hold.Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    return false;
+  }
+
+  history_lifetime_participant_ =
+      std::make_unique<chrome::WasmProfileHistoryLifetimeParticipant>(
+          profile_path_, std::move(profile_io_hold));
+  if (!history_lifetime_participant_->Start(std::move(completion))) {
+    // Start() has already retired the transferred admission as failed. Drop
+    // the inert owner so a retry cannot reinterpret that terminal result.
+    history_lifetime_participant_.reset();
+    return false;
+  }
+  return true;
+}
+
+bool WasmProfile::HasActiveHistorySmoke() const {
+  return history_lifetime_participant_ &&
+         history_lifetime_participant_->IsActive();
+}
+
+void WasmProfile::CancelHistorySmokeForShutdown() {
+  if (history_lifetime_participant_) {
+    history_lifetime_participant_->Cancel();
+  }
+}
+
+void WasmProfile::QuarantineHistorySmokeForFailureShutdown() {
+  if (history_lifetime_participant_ &&
+      !history_lifetime_participant_->QuarantineForFailureShutdown()) {
+    LOG(ERROR) << "chrome_wasm could not quarantine an active History/Favicons "
+                  "close for fail-closed shutdown";
+  }
+}
+#endif
 
 void WasmProfile::OnPrefsShutdownFenceComplete(
     base::OnceCallback<void(bool success)> completion,

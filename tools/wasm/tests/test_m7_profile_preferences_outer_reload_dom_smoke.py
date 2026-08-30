@@ -14,6 +14,7 @@ from collections import deque
 from contextlib import contextmanager
 from http import HTTPStatus
 import http.client
+import io
 import json
 from pathlib import Path
 import secrets
@@ -163,7 +164,7 @@ def passing_result(
             "hostOpfsAccessAttempted": False,
             "hostWebLocksAccessAttempted": False,
             "nativeCallAttempted": False,
-            "wasmDataInspectionAttempted": False,
+            "wasmProfileDataInspectionAttempted": False,
             "sessionStorageAccessAttempted": False,
             "localStorageAccessAttempted": False,
             "indexedDbAccessAttempted": False,
@@ -851,6 +852,26 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
             self.assertFalse(escrow.token_a in url, "raw token A reached URL")
             self.assertFalse(escrow.token_b in url, "raw token B reached URL")
 
+    def test_browser_stderr_scanner_rejects_raw_tokens_without_retaining_them(
+        self,
+    ) -> None:
+        escrow = smoke.new_token_escrow()
+        captured: deque[str] = deque()
+        raw_token_seen = threading.Event()
+        smoke.drain_browser_stderr(
+            io.StringIO(f"ordinary browser line\n{escrow.token_a}\n"),
+            captured,
+            escrow,
+            raw_token_seen,
+        )
+        self.assertTrue(raw_token_seen.is_set())
+        self.assertNotIn(escrow.token_a, captured)
+        self.assertNotIn(escrow.token_b, captured)
+        self.assertEqual(
+            list(captured),
+            ["ordinary browser line", smoke.SUPPRESSED_BROWSER_STDERR_TOKEN],
+        )
+
     def test_url_allows_cold_start_timeout_and_preserves_its_cap(self) -> None:
         with temporary_server() as (server, _escrow):
             url = smoke.smoke_url(
@@ -916,6 +937,9 @@ class M7ProfilePreferencesOuterReloadDomSmokeTest(unittest.TestCase):
         )
         self.assertTrue(
             "\"cookieManagerFullServicePersistenceProven\": False" in source
+        )
+        self.assertTrue(
+            "\"rawPreferencesTokensSerializedInPassResult\": False" in source
         )
 
 
