@@ -41,7 +41,7 @@ class M7ProfileOrderedDrainLifecycleContractTest(unittest.TestCase):
             "chrome/browser/wasm/wasm_browser_main_parts.cc"
         )
 
-    def test_target_is_base_only_and_only_m7_storage_consumes_it(self) -> None:
+    def test_target_is_base_only_and_m7_storage_owns_runtime_admission(self) -> None:
         target = _body_after_signature(
             self.build, 'source_set("wasm_profile_ordered_drain_lifecycle")'
         )
@@ -72,9 +72,22 @@ class M7ProfileOrderedDrainLifecycleContractTest(unittest.TestCase):
         profile_target = _body_after_signature(
             self.build, 'source_set("wasm_profile")'
         )
-        self.assertIn('":wasm_profile_storage"', profile_target)
+        self.assertNotIn('":wasm_profile_storage"', profile_target)
+        self.assertIn(
+            '":wasm_profile_persistent_prefs_lifetime_participant",',
+            profile_target,
+        )
         self.assertIn(
             '"CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1"', profile_target
+        )
+
+        main_parts_target = _body_after_signature(
+            self.build, 'source_set("wasm_browser_main_parts")'
+        )
+        self.assertIn('":wasm_profile_storage",', main_parts_target)
+        self.assertIn(
+            '":wasm_profile_persistent_prefs_lifetime_participant",',
+            main_parts_target,
         )
 
         chrome_target = _body_after_signature(

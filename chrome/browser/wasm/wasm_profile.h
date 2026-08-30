@@ -86,6 +86,14 @@ class PrefRegistrySyncable;
 class WasmProfile final : public Profile {
  public:
   explicit WasmProfile(base::FilePath profile_path);
+  // Takes a pre-construction source-selected Preferences admission when an
+  // M7 caller has one. The member owns it before this constructor body can
+  // synchronously create JsonPrefStore/PrefService; ordinary callers use the
+  // delegating one-argument overload and remain volatile.
+  WasmProfile(
+      base::FilePath profile_path,
+      std::unique_ptr<WasmProfilePersistentPrefsLifetimeParticipant>
+          prefs_lifetime_profile_io_participant);
   WasmProfile(const WasmProfile&) = delete;
   WasmProfile& operator=(const WasmProfile&) = delete;
   ~WasmProfile() override;
@@ -106,16 +114,6 @@ class WasmProfile final : public Profile {
   bool IsPrefsShutdownFencePending() const;
   bool HasPrefsShutdownFenceCompleted() const;
   bool DidPrefsShutdownFenceSucceed() const;
-
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-  // Begins the one source-selected Preferences admission immediately after
-  // the outer storage owner has recorded this successfully constructed
-  // profile. The admission is retained until the strict write/readback fence
-  // reports its terminal result or this profile is destroyed.
-  bool StartPrefsLifetimeProfileIOAdmission();
-#endif
 
   // The M6 history bootstrap reads this process-local journal through a weak
   // reference. It is intentionally not HistoryService and becomes inert
@@ -255,10 +253,11 @@ class WasmProfile final : public Profile {
       prefs_shutdown_fence_controller_;
 
   // The outer storage lifecycle counts this source-selected JsonPrefStore
-  // admission for the full post-construction WasmProfile lifetime when an M7
-  // target selects it. Normal Chrome leaves this null. An admitted operation
-  // completes only after strict Preferences write/readback, or is explicitly
-  // failed when this profile cannot reach that result.
+  // admission from before PrefService's synchronous construction read through
+  // the strict Preferences write/readback fence when an M7 target selects it.
+  // Normal Chrome leaves this null. An admitted operation completes only
+  // after strict Preferences write/readback, or is explicitly failed when
+  // this profile cannot reach that result.
   std::unique_ptr<WasmProfilePersistentPrefsLifetimeParticipant>
       prefs_lifetime_profile_io_participant_;
 

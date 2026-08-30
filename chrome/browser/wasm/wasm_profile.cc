@@ -28,12 +28,6 @@
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
 #include "chrome/browser/wasm/wasm_profile_persistent_prefs_lifetime_participant.h"
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-// GN's include checker does not evaluate this target-specific definition.
-#include "chrome/browser/wasm/wasm_profile_storage.h"  // nogncheck
-#endif
 #include "chrome/browser/wasm/wasm_profile_prefs_fence_controller.h"
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
 #include "chrome/common/chrome_constants.h"
@@ -122,6 +116,12 @@ void VerifyPersistentPrefsAndReplyOnFileSequence(
 }  // namespace
 
 WasmProfile::WasmProfile(base::FilePath profile_path)
+    : WasmProfile(std::move(profile_path), nullptr) {}
+
+WasmProfile::WasmProfile(
+    base::FilePath profile_path,
+    std::unique_ptr<WasmProfilePersistentPrefsLifetimeParticipant>
+        prefs_lifetime_profile_io_participant)
     : Profile(/*otr_profile_id=*/nullptr),
       profile_path_(std::move(profile_path)),
       creation_time_(base::Time::Now()),
@@ -129,9 +129,20 @@ WasmProfile::WasmProfile(base::FilePath profile_path)
       io_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN})),
       pref_registry_(base::MakeRefCounted<user_prefs::PrefRegistrySyncable>()),
-      session_navigation_journal_(std::make_unique<WasmSessionNavigationJournal>()) {
+      session_navigation_journal_(
+          std::make_unique<WasmSessionNavigationJournal>()),
+      prefs_lifetime_profile_io_participant_(
+          std::move(prefs_lifetime_profile_io_participant)) {
   CHECK(!profile_path_.empty());
   CHECK(io_task_runner_);
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // The M7 caller must have transferred the construction-start admission
+  // before the synchronous JsonPrefStore/PrefService read below can begin.
+  CHECK(prefs_lifetime_profile_io_participant_);
+  CHECK(prefs_lifetime_profile_io_participant_->IsPending());
+#endif
 
   // These are Chrome's base profile preferences. Register the sole Browser
   // constructor pref now, then let every already-registered keyed-service
@@ -302,25 +313,6 @@ bool WasmProfile::HasPrefsShutdownFenceCompleted() const {
 bool WasmProfile::DidPrefsShutdownFenceSucceed() const {
   return prefs_shutdown_fence_state_ == PrefsShutdownFenceState::kSucceeded;
 }
-
-#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-bool WasmProfile::StartPrefsLifetimeProfileIOAdmission() {
-  CHECK(!shutdown_);
-  CHECK(!prefs_lifetime_profile_io_participant_);
-
-  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
-      profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
-  if (!profile_io_hold) {
-    return false;
-  }
-  prefs_lifetime_profile_io_participant_ =
-      std::make_unique<WasmProfilePersistentPrefsLifetimeParticipant>(
-          std::move(*profile_io_hold));
-  return true;
-}
-#endif
 
 void WasmProfile::OnPrefsShutdownFenceComplete(
     base::OnceCallback<void(bool success)> completion,

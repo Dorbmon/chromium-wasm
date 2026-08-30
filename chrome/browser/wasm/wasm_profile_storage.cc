@@ -145,14 +145,53 @@ class WasmProfileStorageState {
     return backend_ != nullptr && !backend_drain_attempted_;
   }
 
-  bool NotifyProfileCreated() {
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+  BeginProfileConstruction() {
+    base::AutoLock lock(lock_);
+    if (state_ != State::kMounted || backend_drain_attempted_ ||
+        profile_construction_started_ || profile_created_ ||
+        profile_shutdown_ || profile_io_lifecycle_ ||
+        profile_io_observation_) {
+      return std::nullopt;
+    }
+    profile_io_lifecycle_ =
+        std::make_unique<WasmProfileOrderedDrainLifecycle>();
+    profile_construction_started_ = true;
+    return profile_io_lifecycle_->TryAcquireProfileIO();
+  }
+
+  bool AbortProfileConstructionFailClosed() {
     base::AutoLock lock(lock_);
     if (state_ != State::kMounted || backend_drain_attempted_ ||
         profile_created_ || profile_shutdown_) {
       return false;
     }
-    profile_io_lifecycle_ =
-        std::make_unique<WasmProfileOrderedDrainLifecycle>();
+
+    // Construction never reached ProfileCreated(), so it cannot yield a
+    // clean profile handoff. If admission started, retain its terminal
+    // observation for ChromeMain's later failure retirement.
+    force_fail_closed_ = true;
+    if (profile_construction_started_) {
+      if (!profile_io_lifecycle_ || profile_io_observation_) {
+        return false;
+      }
+      profile_io_observation_ = profile_io_lifecycle_->BeginQuiesce();
+      if (!profile_io_observation_) {
+        return false;
+      }
+    }
+    profile_shutdown_ = true;
+    return true;
+  }
+
+  bool NotifyProfileCreated() {
+    base::AutoLock lock(lock_);
+    if (state_ != State::kMounted || backend_drain_attempted_ ||
+        !profile_construction_started_ || profile_created_ ||
+        profile_shutdown_ || !profile_io_lifecycle_ ||
+        profile_io_observation_) {
+      return false;
+    }
     profile_created_ = true;
     return true;
   }
@@ -207,6 +246,13 @@ class WasmProfileStorageState {
         profile_shutdown_) {
       return false;
     }
+    // A normal profile handoff is valid only after construction completed and
+    // BrowserMainParts recorded that fact. The precreation path has its own
+    // explicit fail-closed retirement API.
+    if (disposition == ProfileShutdownDisposition::kCleanHandoff &&
+        !profile_created_) {
+      return false;
+    }
     // An owner-loss fallback has destroyed the Profile without a complete
     // Preferences/smoke lifecycle receipt. Keep that terminal disposition
     // sticky before closing admission so no later retry can mistake a clean
@@ -214,11 +260,11 @@ class WasmProfileStorageState {
     if (disposition == ProfileShutdownDisposition::kFailClosed) {
       force_fail_closed_ = true;
     }
-    // A Content startup failure can reach BrowserMainParts teardown without
-    // constructing a profile. In that case there is no live profile service
-    // to wait for, and this records that fact before ChromeMain later drains.
-    if (profile_created_) {
-      if (!profile_io_lifecycle_) {
+    // A construction-start admission exists before ProfileCreated(). Whether
+    // the profile reached that post-construction state or lost its owner
+    // afterward, close this exact lifecycle before ChromeMain later drains.
+    if (profile_construction_started_) {
+      if (!profile_io_lifecycle_ || profile_io_observation_) {
         return false;
       }
       profile_io_observation_ = profile_io_lifecycle_->BeginQuiesce();
@@ -265,7 +311,14 @@ class WasmProfileStorageState {
         result.error = -EAGAIN;
         return result;
       }
-      if (state_ == State::kMounted && profile_created_) {
+      // A mounted profile backend that never reached the post-construction
+      // notification has no evidence that Chrome handed its profile services
+      // off cleanly. This includes startup failures before construction can
+      // begin, so do not let a later generic teardown release its lease.
+      if (state_ == State::kMounted && !profile_created_) {
+        force_fail_closed_ = true;
+      }
+      if (state_ == State::kMounted && profile_construction_started_) {
         if (!profile_shutdown_) {
           WasmProfileStorageDrainResult result;
           result.error = -EBUSY;
@@ -502,6 +555,7 @@ class WasmProfileStorageState {
       ProfileStorageMount::kProfileRoot;
   int initialization_error_ GUARDED_BY(lock_) = 0;
   backend_t backend_ GUARDED_BY(lock_) = nullptr;
+  bool profile_construction_started_ GUARDED_BY(lock_) = false;
   bool profile_created_ GUARDED_BY(lock_) = false;
   bool profile_shutdown_ GUARDED_BY(lock_) = false;
   bool force_fail_closed_ GUARDED_BY(lock_) = false;
@@ -548,6 +602,15 @@ bool IsWasmProfileStorageMounted() {
 
 bool NeedsWasmProfileStorageBackendDrain() {
   return GetWasmProfileStorageState().NeedsBackendDrain();
+}
+
+std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+BeginWasmProfileStorageProfileConstruction() {
+  return GetWasmProfileStorageState().BeginProfileConstruction();
+}
+
+bool AbortWasmProfileStorageProfileConstructionFailClosed() {
+  return GetWasmProfileStorageState().AbortProfileConstructionFailClosed();
 }
 
 bool NotifyWasmProfileStorageProfileCreated() {

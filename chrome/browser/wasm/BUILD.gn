@@ -1900,11 +1900,6 @@ source_set("wasm_profile") {
     "//url",
   ]
 
-  if (enable_chromium_wasm_m7_profile_preferences_test ||
-      enable_chromium_wasm_m7_profile_database_test ||
-      enable_chromium_wasm_m7_default_partition_local_storage_test) {
-    deps += [ ":wasm_profile_storage" ]
-  }
   if (enable_chromium_wasm_m7_profile_preferences_test) {
     defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     deps += [ ":wasm_profile_preferences_smoke" ]
@@ -2209,10 +2204,10 @@ test("wasm_profile_ordered_drain_lifecycle_unittests") {
   ]
 }
 
-# Holds one source-selected JsonPrefStore admission from successful
-# post-construction profile registration through its strict write/readback
-# result. The primitive is separate from WasmProfile so its terminal failure
-# behavior can be tested without constructing a Profile or selecting storage.
+# Holds one source-selected JsonPrefStore admission from before WasmProfile's
+# synchronous PrefService construction through its strict write/readback result.
+# The primitive is separate from WasmProfile so its terminal failure behavior
+# can be tested without constructing a Profile or selecting storage.
 source_set("wasm_profile_persistent_prefs_lifetime_participant") {
   public = [ "wasm_profile_persistent_prefs_lifetime_participant.h" ]
 
@@ -2371,7 +2366,10 @@ source_set("wasm_browser_main_parts") {
   if (enable_chromium_wasm_m7_profile_preferences_test ||
       enable_chromium_wasm_m7_profile_database_test ||
       enable_chromium_wasm_m7_default_partition_local_storage_test) {
-    deps += [ ":wasm_profile_storage" ]
+    deps += [
+      ":wasm_profile_persistent_prefs_lifetime_participant",
+      ":wasm_profile_storage",
+    ]
   } else {
     deps += [ ":wasm_profile_shutdown_failure_latch" ]
   }

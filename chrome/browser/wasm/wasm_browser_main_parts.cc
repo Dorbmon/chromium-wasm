@@ -75,6 +75,10 @@
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+// The experimental M7 target alone constructs this base-only admission
+// participant before WasmProfile begins its synchronous Preferences read.
+// GN's include checker does not evaluate target-specific definitions.
+#include "chrome/browser/wasm/wasm_profile_persistent_prefs_lifetime_participant.h"  // nogncheck
 // The experimental M7 target alone supplies this header and dependency. GN's
 // include checker does not evaluate target-specific definitions.
 #include "chrome/browser/wasm/wasm_profile_storage.h"  // nogncheck
@@ -250,6 +254,16 @@ constexpr char kRequiredAssets[][24] = {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+void FailCloseM7ProfileConstruction() {
+  if (!chrome::AbortWasmProfileStorageProfileConstructionFailClosed()) {
+    LOG(ERROR) << "chrome_wasm could not publish its fail-closed profile "
+                  "construction abort; its OPFS profile lease remains retained";
+  } else {
+    LOG(ERROR) << "chrome_wasm will fail-close its incomplete OPFS profile "
+                  "construction";
+  }
+}
+
 void ResetProfileThenFailCloseM7ProfileStorage(
     std::unique_ptr<WasmProfile>& profile) {
   profile.reset();
@@ -405,8 +419,39 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // Create and admit the construction lifetime before WasmProfile can enter
+  // its synchronous JsonPrefStore/PrefService read. The participant moves
+  // into WasmProfile's member initializer, so it remains pending throughout
+  // construction and until the strict shutdown write/readback fence.
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      preconstruction_profile_io_hold =
+          chrome::BeginWasmProfileStorageProfileConstruction();
+  if (!preconstruction_profile_io_hold) {
+    LOG(ERROR) << "chrome_wasm could not admit its profile Preferences "
+                  "construction I/O";
+    FailCloseM7ProfileConstruction();
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+  auto prefs_lifetime_profile_io_participant =
+      std::make_unique<WasmProfilePersistentPrefsLifetimeParticipant>(
+          std::move(*preconstruction_profile_io_hold));
+  profile_ = std::make_unique<WasmProfile>(
+      profile_path, std::move(prefs_lifetime_profile_io_participant));
+#else
   profile_ = std::make_unique<WasmProfile>(profile_path);
+#endif
   if (!profile_) {
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    // This path does not publish ProfileCreated(). The local constructor
+    // participant, if still present, records failure while unwinding after
+    // the precreation lifecycle has been closed.
+    FailCloseM7ProfileConstruction();
+#endif
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
@@ -414,14 +459,11 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   if (!chrome::NotifyWasmProfileStorageProfileCreated()) {
     LOG(ERROR) << "chrome_wasm could not admit its profile storage lifecycle";
-    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
-  }
-  // Retain the source-selected JsonPrefStore admission for this profile after
-  // the outer owner has observed its successful construction, but before any
-  // dedicated M7 smoke can touch it. It completes only with the strict
-  // Preferences write/readback result during asynchronous shutdown.
-  if (!profile_->StartPrefsLifetimeProfileIOAdmission()) {
-    LOG(ERROR) << "chrome_wasm could not admit its profile Preferences I/O";
+    // No ProfileCreated event was published. Destroy the constructor-held
+    // admission before using the distinct precreation abort, so this path can
+    // only retire the lease fail-closed rather than report normal shutdown.
+    profile_.reset();
+    FailCloseM7ProfileConstruction();
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
   }
 #endif

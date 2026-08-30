@@ -35,9 +35,25 @@ bool IsWasmProfileStorageMounted();
 // object destruction.
 bool NeedsWasmProfileStorageBackendDrain();
 
-// Marks the lifetime of Chrome's profile services. Browser main parts calls
-// these around WasmProfile construction and shutdown; a live profile's lease
-// cannot be released before its shutdown completes.
+// Starts the source-selected profile construction epoch before WasmProfile can
+// synchronously read Preferences. It creates the registered-I/O lifecycle and
+// returns the one construction admission; BrowserMainParts must transfer that
+// hold into WasmProfile before JsonPrefStore/PrefService construction begins.
+// ProfileCreated remains a distinct post-construction notification.
+std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+BeginWasmProfileStorageProfileConstruction();
+
+// Permanently selects fail-closed retirement when construction cannot acquire
+// its admission or cannot reach post-construction ProfileCreated(). This is
+// only for the precreation path; it closes admission, retains the profile
+// lease, and never authorizes a clean backend handoff.
+// A mounted backend that reaches final drain without ProfileCreated() takes
+// the same fail-closed retirement path even if construction never began.
+bool AbortWasmProfileStorageProfileConstructionFailClosed();
+
+// Marks the lifetime of successfully constructed Chrome profile services.
+// Browser main parts calls this only after WasmProfile construction succeeds;
+// a live profile's lease cannot be released before its shutdown completes.
 bool NotifyWasmProfileStorageProfileCreated();
 bool NotifyWasmProfileStorageProfileShutdown();
 
@@ -78,19 +94,20 @@ bool CompleteWasmProfileStorageOutstandingIORefusalAsFailedForTest();
 #endif
 
 // Attempts to permanently seal Chrome's V4 leased OPFS filesystem backend.
-// After a profile was created, it first requires an explicit shutdown
+// After construction starts, it first requires an explicit shutdown
 // quiescence observation and one one-shot post-ContentMain permit. A clean
 // epoch uses the normal WasmFS drain, releases its profile lease, and retires
-// its dedicated worker. A failed or abandoned epoch, or a foundation-fallback
-// notification, uses WasmFS's explicit fail-closed retirement instead: it
-// closes private OPFS handles but retains the lease and reports a non-success
-// result. An outstanding admitted epoch refuses before either outer backend
-// drain/retirement transaction and leaves that individual transaction
-// unstarted. The source-selected refusal diagnostic may later complete its
-// retained admission as failed and make a separate fail-closed cleanup call.
-// ChromeMain calls this only after ContentMain returns, because the profile
-// backend must be quiesced after all Content teardown. Unrelated WasmFS
-// operations and the normal Emscripten exit tail remain usable.
+// its dedicated worker. A failed or abandoned epoch, a precreation abort, or
+// a foundation-fallback notification uses WasmFS's explicit fail-closed
+// retirement instead: it closes private OPFS handles but retains the lease
+// and reports a non-success result. An outstanding admitted epoch refuses
+// before either outer backend drain/retirement transaction and leaves that
+// individual transaction unstarted. The source-selected refusal diagnostic
+// may later complete its retained admission as failed and make a separate
+// fail-closed cleanup call. ChromeMain calls this only after ContentMain
+// returns, because the profile backend must be quiesced after all Content
+// teardown. Unrelated WasmFS operations and the normal Emscripten exit tail
+// remain usable.
 WasmProfileStorageDrainResult DrainAndReleaseWasmProfileStorageBackend();
 
 }  // namespace chrome

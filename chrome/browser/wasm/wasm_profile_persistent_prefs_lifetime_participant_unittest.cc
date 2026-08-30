@@ -51,6 +51,38 @@ TEST(WasmProfilePersistentPrefsLifetimeParticipantTest,
 }
 
 TEST(WasmProfilePersistentPrefsLifetimeParticipantTest,
+     UniqueOwnerTransferPreservesTheConstructionAdmission) {
+  std::unique_ptr<Lifecycle> lifecycle = CreateLifecycle();
+  std::optional<Lifecycle::ProfileIOHold> profile_io_hold =
+      lifecycle->TryAcquireProfileIO();
+  ASSERT_TRUE(profile_io_hold.has_value());
+
+  // BrowserMainParts owns this participant before WasmProfile construction,
+  // then moves its unique owner into WasmProfile's member initializer before
+  // JsonPrefStore/PrefService can synchronously read Preferences.
+  std::unique_ptr<Participant> construction_owner =
+      std::make_unique<Participant>(std::move(*profile_io_hold));
+  ASSERT_TRUE(construction_owner->IsPending());
+  std::unique_ptr<Participant> profile_owner = std::move(construction_owner);
+  EXPECT_FALSE(construction_owner);
+  EXPECT_TRUE(profile_owner->IsPending());
+
+  scoped_refptr<Lifecycle::Observation> observation =
+      lifecycle->BeginQuiesce();
+  ASSERT_TRUE(observation);
+  EXPECT_EQ(observation->GetResult().status,
+            Lifecycle::Status::kWaitingForRegisteredProfileIO);
+
+  EXPECT_TRUE(profile_owner->CompleteAfterStrictFence(/*succeeded=*/true));
+  const Lifecycle::Result result = observation->GetResult();
+  EXPECT_EQ(result.status, Lifecycle::Status::kReadyForPostContentDrain);
+  EXPECT_EQ(result.profile_io.admitted_operations, 1u);
+  EXPECT_EQ(result.profile_io.succeeded_operations, 1u);
+  EXPECT_EQ(result.profile_io.failed_operations, 0u);
+  EXPECT_EQ(result.profile_io.abandoned_operations, 0u);
+}
+
+TEST(WasmProfilePersistentPrefsLifetimeParticipantTest,
      StrictFenceFailureSelectsFailureRetirement) {
   std::unique_ptr<Lifecycle> lifecycle = CreateLifecycle();
   std::optional<Lifecycle::ProfileIOHold> profile_io_hold =

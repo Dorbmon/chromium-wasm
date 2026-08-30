@@ -160,6 +160,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 (
                     '#include "chrome/browser/wasm/wasm_profile_storage.h"',
                     "chrome::IsWasmProfileStorageMounted()",
+                    "chrome::BeginWasmProfileStorageProfileConstruction()",
+                    "chrome::AbortWasmProfileStorageProfileConstructionFailClosed()",
                     "chrome::NotifyWasmProfileStorageProfileCreated()",
                     "chrome::NotifyWasmProfileStorageProfileShutdown()",
                     "chrome::TryAcquireWasmProfileStorageProfileIO()",
@@ -478,21 +480,70 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
     def test_known_test_profile_operations_must_quiesce_before_backend_drain(
         self,
     ) -> None:
+        for declaration in (
+            "BeginWasmProfileStorageProfileConstruction()",
+            "AbortWasmProfileStorageProfileConstructionFailClosed()",
+        ):
+            with self.subTest(declaration=declaration):
+                self.assertIn(declaration, self.storage_header)
+
+        construction_start = _body_after_signature(
+            self.storage,
+            "BeginProfileConstruction()",
+        )
+        for token in (
+            "std::make_unique<WasmProfileOrderedDrainLifecycle>()",
+            "profile_construction_started_ = true;",
+            "profile_io_lifecycle_->TryAcquireProfileIO()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, construction_start)
+        self.assertLess(
+            construction_start.index(
+                "std::make_unique<WasmProfileOrderedDrainLifecycle>()"
+            ),
+            construction_start.index("profile_construction_started_ = true;"),
+        )
+        self.assertLess(
+            construction_start.index("profile_construction_started_ = true;"),
+            construction_start.index("profile_io_lifecycle_->TryAcquireProfileIO()"),
+        )
+
         storage_created = _body_after_signature(
             self.storage, "bool NotifyProfileCreated()"
         )
+        self.assertIn("!profile_construction_started_", storage_created)
+        self.assertIn("!profile_io_lifecycle_", storage_created)
+        self.assertIn("profile_created_ = true;", storage_created)
+        self.assertNotIn(
+            "std::make_unique<WasmProfileOrderedDrainLifecycle>()", storage_created
+        )
+
+        construction_abort = _body_after_signature(
+            self.storage, "bool AbortProfileConstructionFailClosed()"
+        )
+        for token in (
+            "force_fail_closed_ = true;",
+            "profile_construction_started_",
+            "profile_io_lifecycle_->BeginQuiesce()",
+            "profile_shutdown_ = true;",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, construction_abort)
+        self.assertNotIn("kCleanHandoff", construction_abort)
+        self.assertNotIn("NotifyProfileCreated", construction_abort)
+        self.assertNotIn("NotifyProfileShutdown", construction_abort)
         self.assertLess(
-            storage_created.index(
-                "std::make_unique<WasmProfileOrderedDrainLifecycle>()"
-            ),
-            storage_created.index("profile_created_ = true;"),
+            construction_abort.index("profile_io_lifecycle_->BeginQuiesce()"),
+            construction_abort.index("profile_shutdown_ = true;"),
         )
 
         storage_shutdown = _body_after_signature(
             self.storage,
             "bool NotifyProfileShutdown(ProfileShutdownDisposition disposition)",
         )
-        self.assertIn("if (profile_created_)", storage_shutdown)
+        self.assertIn("!profile_created_", storage_shutdown)
+        self.assertIn("if (profile_construction_started_)", storage_shutdown)
         self.assertIn("profile_io_lifecycle_->BeginQuiesce()", storage_shutdown)
         self.assertLess(
             storage_shutdown.index("profile_io_lifecycle_->BeginQuiesce()"),
@@ -501,6 +552,36 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
 
         storage_drain = _body_after_signature(
             self.storage, "WasmProfileStorageDrainResult DrainAndReleaseBackend()"
+        )
+        self.assertIn(
+            "state_ == State::kMounted && profile_construction_started_",
+            storage_drain,
+        )
+        self.assertIn(
+            "state_ == State::kMounted && !profile_created_", storage_drain
+        )
+        no_created_start = storage_drain.index(
+            "if (state_ == State::kMounted && !profile_created_)"
+        )
+        no_created = storage_drain[
+            no_created_start : storage_drain.index(
+                "if (state_ == State::kMounted && profile_construction_started_)",
+                no_created_start,
+            )
+        ]
+        self.assertIn("force_fail_closed_ = true;", no_created)
+        self.assertNotIn("DrainBackend", no_created)
+        self.assertNotIn("ClaimPostContentDrain", no_created)
+        self.assertNotIn("State::kMountFailed", no_created)
+        self.assertLess(
+            storage_drain.index("state_ == State::kMounted && !profile_created_"),
+            storage_drain.index(
+                "state_ == State::kMounted && profile_construction_started_"
+            ),
+        )
+        self.assertLess(
+            storage_drain.index("force_fail_closed_ = true;"),
+            storage_drain.index("backend_drain_attempted_ = true;"),
         )
         self.assertLess(
             storage_drain.index("profile_io_observation_->ClaimPostContentDrain()"),
@@ -523,25 +604,51 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             ),
             storage_drain.index("? FailClosedRetireBackend(backend)"),
         )
+        self.assertLess(
+            storage_drain.index("force_fail_closed ||"),
+            storage_drain.index("? FailClosedRetireBackend(backend)"),
+        )
+        self.assertIn(
+            "const bool fail_closed_retirement =\n"
+            "        force_fail_closed || profile_io_failure_retirement_permit.has_value();",
+            storage_drain,
+        )
+        self.assertIn(
+            "fail_closed_retirement\n"
+            "            ? FailClosedRetireBackend(backend)\n"
+            "            : DrainBackend(backend);",
+            storage_drain,
+        )
 
         profile = source("chrome/browser/wasm/wasm_profile.cc")
-        prefs_lifetime_admission = _body_after_signature(
-            profile, "bool WasmProfile::StartPrefsLifetimeProfileIOAdmission()"
+        self.assertNotIn("StartPrefsLifetimeProfileIOAdmission", profile)
+        pre_main = _body_after_signature(
+            self.main_parts, "int WasmBrowserMainParts::PreMainMessageLoopRun()"
         )
         for token in (
-            "chrome::TryAcquireWasmProfileStorageProfileIO()",
+            "chrome::BeginWasmProfileStorageProfileConstruction()",
             "WasmProfilePersistentPrefsLifetimeParticipant",
-            "std::move(*profile_io_hold)",
+            "std::move(*preconstruction_profile_io_hold)",
+            "profile_ = std::make_unique<WasmProfile>(",
+            "chrome::NotifyWasmProfileStorageProfileCreated()",
         ):
             with self.subTest(token=token):
-                self.assertIn(token, prefs_lifetime_admission)
+                self.assertIn(token, pre_main)
         self.assertLess(
-            prefs_lifetime_admission.index(
-                "chrome::TryAcquireWasmProfileStorageProfileIO()"
+            pre_main.index(
+                "chrome::BeginWasmProfileStorageProfileConstruction()"
             ),
-            prefs_lifetime_admission.index(
+            pre_main.index(
                 "WasmProfilePersistentPrefsLifetimeParticipant"
             ),
+        )
+        self.assertLess(
+            pre_main.index("WasmProfilePersistentPrefsLifetimeParticipant"),
+            pre_main.index("profile_ = std::make_unique<WasmProfile>("),
+        )
+        self.assertLess(
+            pre_main.index("profile_ = std::make_unique<WasmProfile>("),
+            pre_main.index("chrome::NotifyWasmProfileStorageProfileCreated()"),
         )
 
         prefs_fence = _body_after_signature(
@@ -743,8 +850,12 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         user_data = self.main_parts.index(
             "base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)"
         )
+        construction_start = self.main_parts.index(
+            "chrome::BeginWasmProfileStorageProfileConstruction()"
+        )
         profile = self.main_parts.index(
-            "profile_ = std::make_unique<WasmProfile>(profile_path);"
+            "profile_ = std::make_unique<WasmProfile>(\n"
+            "      profile_path, std::move(prefs_lifetime_profile_io_participant));"
         )
         admitted = self.main_parts.index(
             "chrome::NotifyWasmProfileStorageProfileCreated()"
@@ -755,6 +866,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
 
         self.assertLess(mounted, user_data)
+        self.assertLess(user_data, construction_start)
+        self.assertLess(construction_start, profile)
         self.assertLess(profile, admitted)
         self.assertLess(shutdown, complete)
         self.assertNotIn("wasmfs_terminal_drain", self.main_parts)
