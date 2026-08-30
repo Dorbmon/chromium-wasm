@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "base/check.h"
 #include "base/no_destructor.h"
@@ -166,6 +167,40 @@ class WasmProfileStorageState {
     return profile_io_lifecycle_->TryAcquireProfileIO();
   }
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+  bool RetainOutstandingIOForRefusalTest(
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold) {
+    base::AutoLock lock(lock_);
+    if (state_ != State::kMounted || backend_drain_attempted_ ||
+        !profile_created_ || profile_shutdown_ || !profile_io_lifecycle_ ||
+        outstanding_profile_io_hold_for_refusal_test_ ||
+        outstanding_profile_io_refusal_observed_) {
+      return false;
+    }
+    outstanding_profile_io_hold_for_refusal_test_.emplace(
+        std::move(profile_io_hold));
+    return true;
+  }
+
+  bool CompleteOutstandingIORefusalAsFailedForTest() {
+    std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+        profile_io_hold;
+    {
+      base::AutoLock lock(lock_);
+      if (state_ != State::kMounted || backend_drain_attempted_ ||
+          !profile_shutdown_ || !outstanding_profile_io_hold_for_refusal_test_ ||
+          !outstanding_profile_io_refusal_observed_) {
+        return false;
+      }
+      profile_io_hold =
+          std::move(outstanding_profile_io_hold_for_refusal_test_);
+      outstanding_profile_io_hold_for_refusal_test_.reset();
+    }
+    return profile_io_hold->Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+  }
+#endif
+
   bool NotifyProfileShutdown(ProfileShutdownDisposition disposition) {
     base::AutoLock lock(lock_);
     if (state_ != State::kMounted || backend_drain_attempted_ ||
@@ -271,6 +306,16 @@ class WasmProfileStorageState {
               kWaitingForRegisteredProfileIO: {
             WasmProfileStorageDrainResult result;
             result.error = -EBUSY;
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+            // This fixture must complete its retained admission only after
+            // the storage seam has observed this exact refusal. The latch
+            // prevents test code from silently completing it early and
+            // turning the required pre-transaction proof into a clean drain.
+            if (outstanding_profile_io_hold_for_refusal_test_) {
+              outstanding_profile_io_refusal_observed_ = true;
+            }
+#endif
+            result.refused_for_outstanding_profile_io = true;
             return result;
           }
           case WasmProfileOrderedDrainLifecycle::Status::
@@ -464,6 +509,15 @@ class WasmProfileStorageState {
       GUARDED_BY(lock_);
   scoped_refptr<WasmProfileOrderedDrainLifecycle::Observation>
       profile_io_observation_ GUARDED_BY(lock_);
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+  // This is an admission-only test fixture. The database task has already
+  // destroyed its SQLite/LevelDB resources before it arrives here. ChromeMain
+  // completes it as failed only after observing the first refusal, so it can
+  // make one explicit, separate fail-closed cleanup before runtime teardown.
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      outstanding_profile_io_hold_for_refusal_test_ GUARDED_BY(lock_);
+  bool outstanding_profile_io_refusal_observed_ GUARDED_BY(lock_) = false;
+#endif
   bool backend_drain_attempted_ GUARDED_BY(lock_) = false;
   WasmProfileStorageDrainResult backend_drain_result_ GUARDED_BY(lock_);
 };
@@ -514,6 +568,19 @@ std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
 TryAcquireWasmProfileStorageProfileIO() {
   return GetWasmProfileStorageState().TryAcquireProfileIO();
 }
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+bool RetainWasmProfileStorageOutstandingIOForRefusalTest(
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold) {
+  return GetWasmProfileStorageState().RetainOutstandingIOForRefusalTest(
+      std::move(profile_io_hold));
+}
+
+bool CompleteWasmProfileStorageOutstandingIORefusalAsFailedForTest() {
+  return GetWasmProfileStorageState()
+      .CompleteOutstandingIORefusalAsFailedForTest();
+}
+#endif
 
 WasmProfileStorageDrainResult DrainAndReleaseWasmProfileStorageBackend() {
   return GetWasmProfileStorageState().DrainAndReleaseBackend();

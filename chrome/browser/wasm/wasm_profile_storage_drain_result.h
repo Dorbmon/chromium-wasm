@@ -29,12 +29,18 @@ struct WasmProfileStorageDrainResult {
   uint32_t prior_close_failures = 0;
   uint32_t lease_release_failures = 0;
   uint32_t backend_retire_failures = 0;
+  // True only when the post-ContentMain drain observed an admitted profile
+  // operation that had not reached a terminal completion. This is a refusal
+  // before an outer backend-drain or retirement transaction, not a
+  // backend-drain failure.
+  bool refused_for_outstanding_profile_io = false;
   bool backend_sealed = false;
   bool lease_released = false;
   bool backend_retired = false;
 
   bool Succeeded() const {
-    return error == 0 && libc_flush_failed == 0 && data_flush_failures == 0 &&
+    return error == 0 && !refused_for_outstanding_profile_io &&
+           libc_flush_failed == 0 && data_flush_failures == 0 &&
            data_close_failures == 0 && prior_close_failures == 0 &&
            lease_release_failures == 0 && backend_retire_failures == 0 &&
            backend_sealed && lease_released && backend_retired;

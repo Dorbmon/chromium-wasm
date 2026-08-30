@@ -96,6 +96,26 @@ bool IsWasmM7ProfileFailureRetirement(
 }
 #endif
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+constexpr char kWasmM7ProfileOutstandingIORefusalMarker[] =
+    "CHROMIUM_WASM_M7_PROFILE_DRAIN_REFUSED:OUTSTANDING_IO";
+
+// EBUSY has other meanings in the storage adapter, including a duplicate drain
+// attempt. The test receipt accepts only the explicit pre-outer-drain refusal
+// for an admitted profile-I/O admission that has not reached terminal
+// completion.
+bool IsWasmM7ProfileOutstandingIORefusal(
+    const chrome::WasmProfileStorageDrainResult& result) {
+  return result.error == -EBUSY && result.refused_for_outstanding_profile_io &&
+         result.detached_descriptors == 0 && result.data_file_states == 0 &&
+         result.libc_flush_failed == 0 && result.data_flush_failures == 0 &&
+         result.data_close_failures == 0 && result.prior_close_failures == 0 &&
+         result.lease_release_failures == 0 &&
+         result.backend_retire_failures == 0 && !result.backend_sealed &&
+         !result.lease_released && !result.backend_retired;
+}
+#endif
+
 #if defined(CHROME_WASM_M6_CONTROLLED_HTTPS_TEST)
 constexpr char kWasmBrowserControlledHttpsSmokeSwitch[] =
     "wasm-browser-controlled-https-smoke";
@@ -306,8 +326,27 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
   if (chrome::NeedsWasmProfileStorageBackendDrain()) {
-    const chrome::WasmProfileStorageDrainResult drain_result =
+    chrome::WasmProfileStorageDrainResult drain_result =
         chrome::DrainAndReleaseWasmProfileStorageBackend();
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+    if (IsWasmM7ProfileOutstandingIORefusal(drain_result)) {
+      fputs(kWasmM7ProfileOutstandingIORefusalMarker, stderr);
+      fputc('\n', stderr);
+      fflush(stderr);
+
+      // The first result is the test's required pre-transaction refusal: it
+      // returned before the storage owner selected either backend operation.
+      // The retained admission belongs to a task that already emitted its
+      // database failure and released SQLite/LevelDB resources, so finish it
+      // as failed—not successfully or by destruction—before requesting one
+      // separate fail-closed cleanup. That cleanup makes the later ordinary
+      // Emscripten exit destructor-safe without converting this failure into
+      // a clean profile handoff.
+      if (chrome::CompleteWasmProfileStorageOutstandingIORefusalAsFailedForTest()) {
+        drain_result = chrome::DrainAndReleaseWasmProfileStorageBackend();
+      }
+    }
+#endif
     if (IsWasmM7ProfileFailureRetirement(drain_result)) {
       fputs(kWasmM7ProfileFailureRetirementMarker, stderr);
       fputc('\n', stderr);

@@ -247,6 +247,22 @@ constexpr char kRequiredAssets[][24] = {
     "Roboto-Regular.ttf",
 };
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+void ResetProfileThenFailCloseM7ProfileStorage(
+    std::unique_ptr<WasmProfile>& profile) {
+  profile.reset();
+  if (!chrome::NotifyWasmProfileStorageProfileShutdownFailClosed()) {
+    LOG(ERROR) << "chrome_wasm could not publish its fail-closed profile "
+                  "shutdown; its OPFS profile lease remains retained";
+  } else {
+    LOG(ERROR) << "chrome_wasm will fail-close its incomplete OPFS profile "
+                  "shutdown";
+  }
+}
+#endif
+
 }  // namespace
 
 WasmBrowserMainParts::WasmBrowserMainParts(bool /*is_integration_test*/) {}
@@ -440,6 +456,20 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                        profile_io_hold,
                    base::WeakPtr<WasmBrowserMainParts> main_parts) {
                   CHECK(profile_io_hold);
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+                  // The database callback runs only after its task has
+                  // released any storage resources it opened. Preserve the
+                  // admission, not a live storage operation, so ChromeMain
+                  // first proves it refuses to drain a profile whose I/O
+                  // epoch has not quiesced. Its source-selected storage owner
+                  // later completes this admission as failed for explicit
+                  // fail-closed cleanup.
+                  if (!chrome::RetainWasmProfileStorageOutstandingIOForRefusalTest(
+                          std::move(*profile_io_hold))) {
+                    LOG(ERROR) << "chrome_wasm could not retain its "
+                                  "outstanding profile-I/O admission";
+                  }
+#else
                   const bool database_succeeded =
                       chrome::DidWasmProfileDatabaseSmokeSucceed();
                   const bool profile_io_completed = profile_io_hold->Complete(
@@ -452,6 +482,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
                     LOG(ERROR) << "chrome_wasm could not complete its profile "
                                   "database I/O admission";
                   }
+#endif
                   if (main_parts) {
                     main_parts->RequestShutdown();
                   }
@@ -1645,12 +1676,16 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-    // The profile and every M7-admitted I/O holder are terminal now. Always
-    // close profile-I/O admission after the Profile is destroyed, including
-    // after a failed operation. This notification publishes a quiescence
-    // observation only; it never acknowledges a clean backend handoff. A
-    // non-clean observation makes the outer ChromeMain seam select WasmFS's
-    // explicit fail-closed retirement rather than the normal lease release.
+    // Destroy the Profile before closing new profile-I/O admission. In ordinary
+    // M7 artifacts every admitted I/O holder is terminal at this point. The
+    // dedicated outstanding-I/O refusal artifact instead deliberately keeps
+    // the admission for its completed database task live, so BeginQuiesce()
+    // must report waiting rather than select either outer drain operation.
+    // Only ChromeMain may complete that source-selected admission after it
+    // records the first refusal, and it then selects explicit fail-closed
+    // cleanup rather than a clean handoff.
+    // This notification publishes a quiescence observation only; it never
+    // acknowledges a clean backend handoff.
     profile_.reset();
     const bool profile_shutdown_notified =
         chrome::NotifyWasmProfileStorageProfileShutdown();
@@ -1684,10 +1719,18 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
     if (chrome::IsWasmProfileDatabaseSmokeEnabled() &&
         !chrome::DidWasmProfileDatabaseSmokeSucceed()) {
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+      // The controlled verify-b task has returned and closed its own database
+      // resources, but this diagnostic intentionally preserves its admission.
+      // The outer seam must refuse before a backend-drain or retirement
+      // transaction; it must not misclassify this hold as terminal failure.
+      smoke_allows_storage_lifecycle = false;
+#else
       // A database task failure has already requested normal shutdown. Its
       // terminal failed hold must select failure retirement, never a clean
       // handoff or LEASE_RELEASED receipt.
       smoke_allows_storage_lifecycle = false;
+#endif
     }
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
@@ -1760,18 +1803,11 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
     // The UI loop is already gone, so this fallback cannot await or certify
-    // the Preferences/smoke lifecycle. Destroy Profile-owned services first,
-    // then publish a quiescence-only failure disposition. ChromeMain will
-    // close private OPFS handles but retain the lease rather than allowing a
-    // clean handoff from a merely terminal registered-I/O result.
-    profile_.reset();
-    if (!chrome::NotifyWasmProfileStorageProfileShutdownFailClosed()) {
-      LOG(ERROR) << "chrome_wasm could not publish its fail-closed profile "
-                    "shutdown; its OPFS profile lease remains retained";
-    } else {
-      LOG(ERROR) << "chrome_wasm will fail-close its incomplete OPFS profile "
-                    "shutdown";
-    }
+    // the Preferences/smoke lifecycle. ChromeMain will close private OPFS
+    // handles. chrome_wasm retains its OPFS profile lease because it has only
+    // closed private handles. A clean handoff from a merely terminal
+    // registered-I/O result is not justified.
+    ResetProfileThenFailCloseM7ProfileStorage(profile_);
 #else
     chrome::RecordWasmProfileShutdownFailure();
     LOG(ERROR) << "chrome_wasm releases its incomplete volatile profile "

@@ -215,6 +215,20 @@ TEST(WasmProfileOrderedDrainLifecycleTest,
             ProfileIOQuiesceStatus::kRegisteredOperationFailed);
   EXPECT_EQ(result.profile_io.outstanding_at_begin, 1u);
   EXPECT_FALSE(observation->ClaimPostContentDrain().has_value());
+
+  std::optional<FailureRetirementPermit> failure_retirement_permit =
+      observation->ClaimPostContentFailureRetirement();
+  ASSERT_TRUE(failure_retirement_permit.has_value());
+  std::optional<Lifecycle::ProfileIOQuiesceResult> failure_result =
+      failure_retirement_permit->GetProfileIOQuiesceResult();
+  ASSERT_TRUE(failure_result.has_value());
+  EXPECT_EQ(failure_result->status,
+            ProfileIOQuiesceStatus::kRegisteredOperationFailed);
+  EXPECT_FALSE(failure_result->Succeeded());
+  EXPECT_FALSE(observation->ClaimPostContentDrain().has_value());
+  failure_retirement_permit.reset();
+  EXPECT_EQ(observation->GetResult().status,
+            Status::kPostContentFailureRetirementPermitRetired);
 }
 
 TEST(WasmProfileOrderedDrainLifecycleTest,

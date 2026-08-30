@@ -33,6 +33,16 @@ declare_args() {
   # explicit destruction releases the lock for a paranoid checksum reopen. It
   # is neither a full-profile contender nor a normal Chrome feature.
   enable_chromium_wasm_m7_profile_database_lock_test = false
+
+  # This source-selected refusal probe completes its real database work, then
+  # intentionally retains only the Chrome profile-I/O admission through
+  # shutdown. The first outer drain must reject that still-outstanding
+  # admission before it calls either WasmFS backend-drain operation. The
+  # source-selected ChromeMain tail then completes the admission as failed and
+  # performs an explicit fail-closed cleanup before ordinary runtime exit. It
+  # is not a running SQLite/LevelDB task, a durability test, or a normal
+  # Chrome feature.
+  enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test = false
 }
 
 assert(!enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic ||
@@ -49,6 +59,10 @@ assert(!enable_chromium_wasm_m7_profile_database_lock_test ||
            enable_chromium_wasm_m7_profile_database_test,
        "M7 database lock probe requires the M7 database smoke configuration")
 assert(
+    !enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test ||
+        enable_chromium_wasm_m7_profile_database_test,
+    "M7 outstanding-I/O refusal probe requires the M7 database smoke configuration")
+assert(
     !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
       enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic) &&
         !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
@@ -60,7 +74,15 @@ assert(
         !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
           enable_chromium_wasm_m7_profile_database_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_recovery_test &&
-          enable_chromium_wasm_m7_profile_database_lock_test),
+          enable_chromium_wasm_m7_profile_database_lock_test) &&
+        !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
+        !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
+        !(enable_chromium_wasm_m7_profile_database_recovery_test &&
+          enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
+        !(enable_chromium_wasm_m7_profile_database_lock_test &&
+          enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test),
     "M7 database diagnostics require separate fresh output configurations; " +
         "the recovery and lock probes require their own fresh output configurations")
 
@@ -91,6 +113,12 @@ if (enable_chromium_wasm_m7_profile_database_test) {
     _m7_database_output_message =
         "M7 database lock probe must use " +
         "out/wasm-chrome-m7-profile-database-lock"
+  } else if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
+    _m7_database_output_dir =
+        "wasm-chrome-m7-profile-database-outstanding-io-refusal"
+    _m7_database_output_message =
+        "M7 outstanding-I/O refusal probe must use " +
+        "out/wasm-chrome-m7-profile-database-outstanding-io-refusal"
   }
   assert(get_path_info(root_out_dir, "name") == _m7_database_output_dir,
          _m7_database_output_message)

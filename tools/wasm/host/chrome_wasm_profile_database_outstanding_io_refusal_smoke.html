@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 outstanding profile-I/O refusal probe</title>
+<main id="m7-profile-database-outstanding-io-refusal-root" data-state="starting">
+  <h1>Chromium Wasm M7 outstanding profile-I/O refusal probe</h1>
+  <canvas id="m7-profile-database-outstanding-io-refusal-canvas" width="1"
+      height="1" tabindex="0"
+      aria-label="Chromium Wasm M7 outstanding profile-I/O refusal probe canvas"></canvas>
+  <pre id="m7-profile-database-outstanding-io-refusal-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmProfileDatabaseOutstandingIORefusalFromQuery} from
+      "./chrome_wasm_profile_database_outstanding_io_refusal_smoke.js";
+
+  runChromeWasmProfileDatabaseOutstandingIORefusalFromQuery().catch((_error) => {
+    const root = document.querySelector(
+        "#m7-profile-database-outstanding-io-refusal-root");
+    const status = document.querySelector(
+        "#m7-profile-database-outstanding-io-refusal-status");
+    if (root instanceof HTMLElement) root.dataset.state = "fail";
+    if (status instanceof HTMLElement) status.textContent = "failed";
+  });
+</script>

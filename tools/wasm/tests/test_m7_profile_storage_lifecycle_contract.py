@@ -303,7 +303,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.assertIn("bool backend_retired = false;", self.storage_result_header)
         for token in (
             "bool Succeeded() const {",
-            "return error == 0 && libc_flush_failed == 0 &&",
+            "return error == 0 && !refused_for_outstanding_profile_io &&",
             "backend_retire_failures == 0",
             "backend_sealed && lease_released && backend_retired;",
         ):
@@ -401,13 +401,21 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.main_parts, "void WasmBrowserMainParts::ShutdownFoundation()"
         )
         profile_shutdown = foundation.index("profile_->Shutdown();")
-        profile_reset = foundation.index("profile_.reset();")
-        fail_closed_notify = foundation.index(
+        fail_closed_reset = foundation.index(
+            "ResetProfileThenFailCloseM7ProfileStorage(profile_);"
+        )
+        self.assertLess(profile_shutdown, fail_closed_reset)
+        self.assertIn("clean handoff from a merely terminal", foundation)
+
+        helper = _body_after_signature(
+            self.main_parts,
+            "void ResetProfileThenFailCloseM7ProfileStorage(",
+        )
+        profile_reset = helper.index("profile.reset();")
+        fail_closed_notify = helper.index(
             "chrome::NotifyWasmProfileStorageProfileShutdownFailClosed()"
         )
-        self.assertLess(profile_shutdown, profile_reset)
         self.assertLess(profile_reset, fail_closed_notify)
-        self.assertIn("clean handoff from a merely terminal", foundation)
 
     def test_nonclean_profile_io_uses_failure_retirement_not_clean_handoff(
         self,

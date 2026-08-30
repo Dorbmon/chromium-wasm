@@ -49,6 +49,13 @@ TEST(WasmProfileStorageDrainResultTest, PositiveErrorFailsADrain) {
   EXPECT_FALSE(result.Succeeded());
 }
 
+TEST(WasmProfileStorageDrainResultTest, OutstandingProfileIORefusalFailsADrain) {
+  WasmProfileStorageDrainResult result = CompleteDrainResult();
+  result.refused_for_outstanding_profile_io = true;
+
+  EXPECT_FALSE(result.Succeeded());
+}
+
 TEST(WasmProfileStorageDrainResultTest, LibcFlushFailureFailsADrain) {
   WasmProfileStorageDrainResult result = CompleteDrainResult();
   result.libc_flush_failed = 1;

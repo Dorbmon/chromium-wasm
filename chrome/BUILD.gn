@@ -614,6 +614,17 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         # marker grammar. It does not change the ordinary graceful-close
         # artifact or make any claim about a full-profile contender.
         output_name = "chrome_wasm_m7_profile_database_lock_test"
+      } else if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
+        # This dedicated artifact retains only the profile-I/O admission of a
+        # completed database task. It proves the first outer drain rejects
+        # that unresolved epoch before initiating either WasmFS backend-drain
+        # operation, then source-selects a separate fail-closed cleanup so
+        # Emscripten's normal exit does not own live OPFS wrappers.
+        output_name =
+            "chrome_wasm_m7_profile_database_outstanding_io_refusal_test"
+      }
+      if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
+        defines += [ "CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST=1" ]
       }
     }
     if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
