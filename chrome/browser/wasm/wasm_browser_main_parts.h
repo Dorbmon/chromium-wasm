@@ -69,6 +69,8 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   void OnBrowserWindowLifecycleSmokeShutdownTimer();
   void OnBrowserWindowLifecycleShutdownComplete();
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  void StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown();
+  void OnWasmProfileBookmarkSmokeComplete(bool success);
   void StartWasmProfileCookieSmokeOrHistoryOrShutdown();
   void StartWasmProfileHistorySmokeOrShutdown();
   void OnWasmProfileHistorySmokeComplete(bool success);

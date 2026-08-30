@@ -30,7 +30,9 @@ class WasmProfilePersistentPrefsLifetimeParticipant;
 class WasmSessionNavigationJournal;
 
 namespace chrome {
+class WasmProfileBookmarkLifetimeParticipant;
 class WasmProfileHistoryLifetimeParticipant;
+struct WasmProfilePreferencesBookmarkSmokeInput;
 }
 
 namespace base {
@@ -121,6 +123,17 @@ class WasmProfile final : public Profile {
   bool DidPrefsShutdownFenceSucceed() const;
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // Starts the direct BookmarkModel witness as a profile-owned lifetime. The
+  // transferred I/O hold remains active through the result-bearing local write
+  // and synchronous destruction of the model/storage owner.
+  bool StartBookmarkSmoke(
+      chrome::WasmProfilePreferencesBookmarkSmokeInput input,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+      base::OnceCallback<void(bool success)> completion);
+  bool HasActiveBookmarkSmoke() const;
+  void CancelBookmarkSmokeForShutdown();
+  void QuarantineBookmarkSmokeForFailureShutdown();
+
   // Starts the source-selected direct HistoryService witness as an explicit
   // profile-owned lifetime. The admitted I/O hold stays pending until the
   // HistoryBackend destruction receipt has closed both History and Favicons.
@@ -280,6 +293,12 @@ class WasmProfile final : public Profile {
       prefs_lifetime_profile_io_participant_;
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // This direct core BookmarkModel is not a keyed service because its load and
+  // ImportantFileWriter work are asynchronous. BrowserMainParts defers profile
+  // teardown until this participant is terminal.
+  std::unique_ptr<chrome::WasmProfileBookmarkLifetimeParticipant>
+      bookmark_lifetime_participant_;
+
   // This direct core HistoryService is not a keyed service because its
   // History/Favicons close receipt is asynchronous. BrowserMainParts defers
   // profile teardown until this participant is terminal.

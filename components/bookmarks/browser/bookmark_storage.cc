@@ -318,6 +318,18 @@ void BookmarkStorage::SaveNowIfScheduledForTesting() {
   SaveNowIfScheduled();
 }
 
+bool BookmarkStorage::FlushPendingWriteForTesting(
+    base::OnceCallback<void(bool success)> completion) {
+  if (completion.is_null() || !writer_.HasPendingWrite()) {
+    return false;
+  }
+
+  writer_.RegisterOnNextWriteCallbacks(base::DoNothing(),
+                                        std::move(completion));
+  writer_.DoScheduledWrite();
+  return true;
+}
+
 void BookmarkStorage::SaveNowIfScheduled() {
   if (writer_.HasPendingWrite()) {
     writer_.DoScheduledWrite();

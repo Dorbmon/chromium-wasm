@@ -104,6 +104,8 @@ class WriteCallbacksObserver {
       ImportantFileWriter* writer,
       base::OnceClosure after_write_closure = base::DoNothing());
 
+  bool before_write_called() const { return before_write_called_; }
+
   // Returns the |WriteCallbackObservationState| which was observed, then resets
   // it to |NOT_CALLED|.
   WriteCallbackObservationState GetAndResetObservationState();
@@ -139,9 +141,10 @@ void WriteCallbacksObserver::ObserveNextWriteCallbacks(
 
 WriteCallbackObservationState
 WriteCallbacksObserver::GetAndResetObservationState() {
-  EXPECT_EQ(after_write_observation_state_ != NOT_CALLED, before_write_called_)
-      << "The before-write callback should always be called before the "
-         "after-write callback";
+  EXPECT_TRUE(!before_write_called_ ||
+              after_write_observation_state_ != NOT_CALLED)
+      << "A before-write callback must be followed by an after-write "
+         "callback";
 
   WriteCallbackObservationState state = after_write_observation_state_;
   before_write_called_ = false;
@@ -366,11 +369,15 @@ TEST_F(ImportantFileWriterTest, DoScheduledWrite_FailToSerialize) {
   FailingDataSerializer serializer;
   writer.ScheduleWrite(&serializer);
   EXPECT_TRUE(writer.HasPendingWrite());
+  write_callback_observer_.ObserveNextWriteCallbacks(&writer);
 
   writer.DoScheduledWrite();
   EXPECT_FALSE(timer.IsRunning());
   EXPECT_FALSE(writer.HasPendingWrite());
   RunLoop().RunUntilIdle();
+  EXPECT_FALSE(write_callback_observer_.before_write_called());
+  EXPECT_EQ(CALLED_WITH_ERROR,
+            write_callback_observer_.GetAndResetObservationState());
   EXPECT_FALSE(PathExists(writer.path()));
   // We don't record metrics in case the serialization fails.
   histogram_tester.ExpectTotalCount("ImportantFile.SerializationDuration", 0);
@@ -441,12 +448,16 @@ TEST_F(ImportantFileWriterTest,
   EXPECT_TRUE(writer.HasPendingWrite());
   EXPECT_FALSE(serializer.producer_callback_obtained());
   EXPECT_TRUE(timer.IsRunning());
+  write_callback_observer_.ObserveNextWriteCallbacks(&writer);
 
   timer.Fire();
   EXPECT_FALSE(timer.IsRunning());
   EXPECT_TRUE(serializer.producer_callback_obtained());
   EXPECT_FALSE(writer.HasPendingWrite());
   file_writer_thread.FlushForTesting();
+  EXPECT_FALSE(write_callback_observer_.before_write_called());
+  EXPECT_EQ(CALLED_WITH_ERROR,
+            write_callback_observer_.GetAndResetObservationState());
   EXPECT_FALSE(PathExists(writer.path()));
   // We record the foreground serialization metric despite later failure in
   // background sequence.

@@ -48,6 +48,10 @@
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_bookmark_smoke.h"  // nogncheck
+#endif
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_cookie_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
@@ -696,7 +700,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
     chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(true);
-    StartWasmProfileCookieSmokeOrHistoryOrShutdown();
+    StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown();
     return content::RESULT_CODE_NORMAL_EXIT;
   }
 #endif
@@ -1180,6 +1184,14 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
   }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // BookmarkModel load and ImportantFileWriter work are profile-owned but
+  // asynchronous. Cancellation must reach a terminal model-owner result
+  // before Profile teardown; its callback resumes this state machine.
+  if (profile_ && profile_->HasActiveBookmarkSmoke()) {
+    profile_->CancelBookmarkSmokeForShutdown();
+    return;
+  }
+
   // The direct source-selected HistoryService is profile-owned but closes its
   // History/Favicons backends asynchronously. Do not enter synchronous
   // Profile teardown until its backend-destroy receipt has made the admitted
@@ -1583,6 +1595,63 @@ void WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete() {
 }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+void WasmBrowserMainParts::
+    StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown() {
+  CHECK(profile_);
+  if (!chrome::IsWasmProfilePreferencesBookmarkSmokeEnabled()) {
+    StartWasmProfileCookieSmokeOrHistoryOrShutdown();
+    return;
+  }
+
+  // BookmarkModel is deliberately outside WasmProfile's keyed-service graph.
+  // Transfer both its model and admission into the profile-owned participant
+  // before any asynchronous load or write begins.
+  std::optional<chrome::WasmProfilePreferencesBookmarkSmokeInput>
+      bookmark_input = chrome::TakeWasmProfilePreferencesBookmarkSmokeInput();
+  if (!bookmark_input) {
+    chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
+    RequestShutdown();
+    return;
+  }
+
+  auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!profile_io_hold) {
+    chrome::ReportWasmProfilePreferencesSmokeFailure(
+        chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
+    chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
+    RequestShutdown();
+    return;
+  }
+
+  if (!profile_->StartBookmarkSmoke(
+          std::move(*bookmark_input), std::move(*profile_io_hold),
+          base::BindOnce(
+              &WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete,
+              weak_ptr_factory_.GetWeakPtr()))) {
+    chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
+    RequestShutdown();
+  }
+}
+
+void WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete(bool success) {
+  chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(success);
+  const bool bookmark_succeeded =
+      success && chrome::DidWasmProfilePreferencesBookmarkSmokeSucceed();
+  if (!bookmark_succeeded) {
+    LOG(ERROR) << "chrome_wasm BookmarkModel close witness failed";
+  }
+
+  if (shutdown_requested_) {
+    MaybeStartShutdown();
+    return;
+  }
+  if (bookmark_succeeded) {
+    StartWasmProfileCookieSmokeOrHistoryOrShutdown();
+  } else {
+    RequestShutdown();
+  }
+}
+
 void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown() {
   CHECK(profile_);
   if (!chrome::IsWasmProfilePreferencesCookieSmokeEnabled()) {
@@ -1709,6 +1778,10 @@ void WasmBrowserMainParts::FinishShutdown() {
   CHECK(!browser_window_lifecycle_);
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  if (profile_ && profile_->HasActiveBookmarkSmoke()) {
+    profile_->CancelBookmarkSmokeForShutdown();
+    return;
+  }
   // Browser lifecycle completions can enter here directly. Preserve the same
   // no-profile-teardown-before-backend-close rule as MaybeStartShutdown().
   if (profile_ && profile_->HasActiveHistorySmoke()) {
@@ -1795,6 +1868,13 @@ void WasmBrowserMainParts::FinishShutdown() {
       smoke_allows_storage_lifecycle = false;
     }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+    if (chrome::IsWasmProfilePreferencesBookmarkSmokeEnabled() &&
+        !chrome::DidWasmProfilePreferencesBookmarkSmokeSucceed()) {
+      // This profile-owned direct BookmarkModel must have received its local
+      // write result, destroyed its model/storage owner, and completed its
+      // admitted I/O before a clean handoff can be considered.
+      smoke_allows_storage_lifecycle = false;
+    }
     if (chrome::IsWasmProfilePreferencesCookieSmokeEnabled() &&
         (!chrome::DidWasmProfilePreferencesCookieSmokeSucceed() ||
          !chrome::DidWasmProfileCookieSmokeSucceed())) {
@@ -1890,10 +1970,13 @@ void WasmBrowserMainParts::ShutdownFoundation() {
   }
   if (profile_) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
-    // The normal UI-loop path waits in MaybeStartShutdown() for this receipt.
-    // This fallback has no loop left to service it, so retain an active direct
-    // History/Favicons close and its ProfileIOHold. ChromeMain must observe the
-    // resulting outstanding admission and refuse before touching V4.
+    // The normal UI-loop path waits for each profile-owned participant. This
+    // fallback has no loop left to service them, so retain any active model or
+    // backend close together with its ProfileIOHold. ChromeMain must observe
+    // the resulting outstanding admission and refuse before touching V4.
+    if (profile_->HasActiveBookmarkSmoke()) {
+      profile_->QuarantineBookmarkSmokeForFailureShutdown();
+    }
     if (profile_->HasActiveHistorySmoke()) {
       profile_->QuarantineHistorySmokeForFailureShutdown();
     }

@@ -17,6 +17,7 @@
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -459,6 +460,13 @@ class BookmarkModel : public BookmarkUndoProvider,
   // Returns whether pending writes are pending/scheduled.
   bool LocalOrSyncableStorageHasPendingWriteForTest() const;
   bool AccountStorageHasPendingWriteForTest() const;
+
+  // Starts the one pending local-or-syncable write and runs |completion| with
+  // its result on the storage task runner. Returns false without invoking
+  // |completion| if the model is not loaded or no local write is pending. The
+  // caller must keep this model alive until completion runs.
+  bool FlushLocalOrSyncablePendingWriteForTesting(
+      base::OnceCallback<void(bool success)> completion);
 
  private:
   friend class BookmarkCodecTest;

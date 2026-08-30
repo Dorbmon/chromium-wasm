@@ -103,6 +103,13 @@ class BookmarkStorage
   // If there is a pending write, performs it immediately.
   void SaveNowIfScheduledForTesting();
 
+  // Starts the one pending write and runs |completion| with its result on the
+  // storage task runner. Returns false without invoking |completion| if no
+  // write is pending. The caller must keep this storage alive until completion
+  // runs.
+  bool FlushPendingWriteForTesting(
+      base::OnceCallback<void(bool success)> completion);
+
   // Saves the given `json_content` to the clear text or encrypted file right
   // away based on `encryption_type`. The 'json_content' should be a clear text
   // JSON string coming from a bookmarks file that was properly loaded. It will

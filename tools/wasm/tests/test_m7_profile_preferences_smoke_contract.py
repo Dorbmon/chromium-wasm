@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Source contracts for the M7 three-module Preferences acceptance helper."""
+"""Source contracts for the M7 Preferences acceptance helper and probes."""
 
 from __future__ import annotations
 
@@ -85,6 +85,25 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.history_lifetime_unittest = source(
             "chrome/browser/wasm/wasm_profile_history_lifetime_participant_unittest.cc"
         )
+        self.bookmark = source("chrome/browser/wasm/wasm_profile_bookmark_smoke.cc")
+        self.bookmark_header = source(
+            "chrome/browser/wasm/wasm_profile_bookmark_smoke.h"
+        )
+        self.bookmark_model = source(
+            "components/bookmarks/browser/bookmark_model.cc"
+        )
+        self.bookmark_model_header = source(
+            "components/bookmarks/browser/bookmark_model.h"
+        )
+        self.bookmark_storage = source(
+            "components/bookmarks/browser/bookmark_storage.cc"
+        )
+        self.bookmark_storage_header = source(
+            "components/bookmarks/browser/bookmark_storage.h"
+        )
+        self.bookmark_lifetime_unittest = source(
+            "chrome/browser/wasm/wasm_profile_bookmark_lifetime_participant_unittest.cc"
+        )
         self.cookie = source("chrome/browser/wasm/wasm_profile_cookie_smoke.cc")
         self.cookie_header = source(
             "chrome/browser/wasm/wasm_profile_cookie_smoke.h"
@@ -141,6 +160,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             '"wasm-profile-preferences-browser-smoke"',
             '"wasm-profile-preferences-history-smoke"',
             '"wasm-profile-preferences-cookie-smoke"',
+            '"wasm-profile-preferences-bookmark-smoke"',
             'constexpr char kWriteMode[] = "write";',
             'constexpr char kVerifyAndWriteMode[] = "verify-and-write";',
             'constexpr char kVerifyBMode[] = "verify-b";',
@@ -161,6 +181,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "--wasm-profile-preferences-smoke=verify-and-write", self.header
         )
         self.assertIn("--wasm-profile-preferences-smoke=verify-b", self.header)
+        self.assertIn("--wasm-profile-preferences-bookmark-smoke", self.header)
         self.assertIn("token_b_ == token_a_", self.smoke)
         self.assertIn("token B must differ from token A", self.header)
         self.assertIn("if (has_token_a || !has_token_b)", self.smoke)
@@ -300,11 +321,25 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertIn(
             "history_smoke_required_ && !history_smoke_completed_", fence
         )
+        bookmark = _body_after_signature(
+            self.smoke, "void NotifyBookmarkSmokeResult(bool success)"
+        )
+        self.assertIn("bookmark_smoke_required_", bookmark)
+        self.assertIn("!browser_smoke_completed_", bookmark)
+        self.assertIn("!bookmark_smoke_input_taken_", bookmark)
+        self.assertIn("bookmark_smoke_completed_ = true;", bookmark)
+        self.assertIn('EmitMarker("BOOKMARK_MODEL_CLOSED")', bookmark)
+        self.assertIn(
+            "bookmark_smoke_required_ && !bookmark_smoke_completed_", fence
+        )
         cookie = _body_after_signature(
             self.smoke, "void NotifyCookieSmokeResult(bool success)"
         )
         self.assertIn("cookie_smoke_required_", cookie)
         self.assertIn("!browser_smoke_completed_", cookie)
+        self.assertIn(
+            "bookmark_smoke_required_ && !bookmark_smoke_completed_", cookie
+        )
         self.assertIn("cookie_smoke_completed_ = true;", cookie)
         self.assertIn(
             "cookie_smoke_required_ && !cookie_smoke_completed_", fence
@@ -574,6 +609,266 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             2,
         )
 
+    def test_bookmark_model_probe_is_direct_and_closed_before_cookie_handoff(self) -> None:
+        for token in (
+            '#include "components/bookmarks/browser/bookmark_model.h"',
+            "std::make_unique<bookmarks::BookmarkModel>(",
+            "model_->Load(profile_path_);",
+            "bookmarks::ScheduleCallbackOnBookmarkModelLoad(",
+            "model_->GetNodesByURL(url)",
+            "model_->AddNewURL(",
+            "model_->Remove(",
+            "FlushLocalOrSyncablePendingWriteForTesting(",
+            "model_.reset();",
+            '"BOOKMARK_A_WRITE_FLUSHED"',
+            '"BOOKMARK_A_READ_OK"',
+            '"BOOKMARK_B_WRITE_FLUSHED"',
+            '"BOOKMARK_B_READ_OK"',
+            '"BOOKMARK_CLEANUP_FLUSHED"',
+            "bookmarks::kEncryptBookmarks",
+            "bookmarks::ShouldWriteBookmarksToSecondaryFileOnDisk()",
+            "bookmarks::ShouldUseEncryptedBookmarksAsPrimarySource()",
+            "switches::kSyncEnableBookmarksInTransportMode",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.bookmark)
+
+        for forbidden in (
+            "BookmarkModelFactory",
+            "ChromeBookmarkClient",
+            "BookmarkMergedSurfaceService",
+            "GetBookmarkModel()",
+            "input_.token_a.c_str()",
+            "input_.token_b.c_str()",
+            "GetWasmProfileBookmarkSmokeState",
+            "WasmProfileBookmarkSmokeState",
+            "DidWasmProfileBookmarkSmokeSucceed",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.bookmark)
+
+        close = _body_after_signature(
+            self.bookmark, "void CloseAndFinish(bool operation_succeeded)"
+        )
+        self.assertLess(
+            close.index("model_.reset();"),
+            close.index("CompleteAfterModelClose(operation_succeeded);"),
+        )
+        on_write_flushed = _body_after_signature(
+            self.bookmark, "void OnWriteFlushed("
+        )
+        self.assertLess(on_write_flushed.index("EmitMarker(marker);"),
+                        on_write_flushed.index("CloseAndFinish("))
+        self.assertLess(
+            on_write_flushed.index("EmitDigestMarker(marker, digest);"),
+            on_write_flushed.index("CloseAndFinish("),
+        )
+        self.assertIn("ImportantFileWriter result", self.bookmark_header)
+
+        terminal = _body_after_signature(
+            self.bookmark,
+            "void CompleteAfterModelClose(bool operation_succeeded)",
+        )
+        self.assertIn("completion_delivery_pending_ = true;", terminal)
+        self.assertIn(
+            "pending_operation_succeeded_ = operation_succeeded;", terminal
+        )
+        self.assertIn(
+            "CHECK(base::SequencedTaskRunner::GetCurrentDefault()->PostTask(",
+            terminal,
+        )
+        self.assertIn("&State::DeliverCompletion", terminal)
+        self.assertNotIn("profile_io_hold_->Complete(", terminal)
+        self.assertLess(
+            terminal.index("completion_delivery_pending_ = true;"),
+            terminal.index(
+                "CHECK(base::SequencedTaskRunner::GetCurrentDefault()->PostTask("
+            ),
+        )
+
+        delivery = _body_after_signature(
+            self.bookmark,
+            "void DeliverCompletion()",
+        )
+        self.assertLess(
+            delivery.index("profile_io_hold_->Complete("),
+            delivery.index("completed_ = true;"),
+        )
+        self.assertLess(
+            delivery.index("completed_ = true;"),
+            delivery.index("std::move(completion).Run(succeeded);"),
+        )
+        self.assertIn("Do not access any member after", delivery)
+        cancel = _body_after_signature(self.bookmark, "void Cancel()")
+        self.assertLess(
+            cancel.index("completed_ || completion_delivery_pending_"),
+            cancel.index("failed_ = true;"),
+        )
+
+        self.assertIn(
+            "class WasmProfileBookmarkLifetimeParticipant",
+            self.bookmark_header,
+        )
+        self.assertIn(
+            "WasmProfileOrderedDrainLifecycle::ProfileIOHold",
+            self.bookmark_header,
+        )
+        self.assertIn("bool QuarantineForFailureShutdown();", self.bookmark_header)
+        participant_destructor = _body_after_signature(
+            self.bookmark,
+            "~WasmProfileBookmarkLifetimeParticipant()",
+        )
+        self.assertIn("QuarantineForFailureShutdown();", participant_destructor)
+        quarantine = _body_after_signature(
+            self.bookmark,
+            "bool WasmProfileBookmarkLifetimeParticipant::QuarantineForFailureShutdown()",
+        )
+        self.assertIn("state_->Cancel();", quarantine)
+        self.assertIn(
+            "base::NoDestructor<std::vector<std::unique_ptr<State>>>",
+            quarantine,
+        )
+        self.assertIn("quarantined_states->push_back(std::move(state_));", quarantine)
+        self.assertNotIn("CompleteAfterModelClose(", quarantine)
+
+        self.assertIn(
+            "std::unique_ptr<chrome::WasmProfileBookmarkLifetimeParticipant>",
+            self.profile_header,
+        )
+        self.assertIn("bool StartBookmarkSmoke(", self.profile_header)
+        self.assertIn("bool HasActiveBookmarkSmoke() const;", self.profile_header)
+        self.assertIn("void CancelBookmarkSmokeForShutdown();", self.profile_header)
+        self.assertIn(
+            "void QuarantineBookmarkSmokeForFailureShutdown();",
+            self.profile_header,
+        )
+        profile_start = _body_after_signature(
+            self.profile, "bool WasmProfile::StartBookmarkSmoke("
+        )
+        self.assertIn(
+            "std::make_unique<chrome::WasmProfileBookmarkLifetimeParticipant>",
+            profile_start,
+        )
+        self.assertIn("std::move(profile_io_hold)", profile_start)
+        self.assertIn("bookmark_lifetime_participant_->Start", profile_start)
+
+        profile_destructor = _body_after_signature(
+            self.profile, "WasmProfile::~WasmProfile()"
+        )
+        self.assertIn(
+            "QuarantineBookmarkSmokeForFailureShutdown();",
+            profile_destructor,
+        )
+
+        self.assertIn(
+            "bool FlushLocalOrSyncablePendingWriteForTesting(",
+            self.bookmark_model_header,
+        )
+        self.assertIn(
+            "return local_or_syncable_store_->FlushPendingWriteForTesting(",
+            self.bookmark_model,
+        )
+        self.assertIn(
+            "bool FlushPendingWriteForTesting(", self.bookmark_storage_header
+        )
+        flush = _body_after_signature(
+            self.bookmark_storage,
+            "bool BookmarkStorage::FlushPendingWriteForTesting(",
+        )
+        self.assertIn("writer_.RegisterOnNextWriteCallbacks", flush)
+        self.assertIn("writer_.DoScheduledWrite();", flush)
+
+        start_bookmark = _body_after_signature(
+            self.main_parts,
+            "StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown() {",
+        )
+        self.assertIn("TakeWasmProfilePreferencesBookmarkSmokeInput", start_bookmark)
+        self.assertIn("TryAcquireWasmProfileStorageProfileIO", start_bookmark)
+        self.assertIn("profile_->StartBookmarkSmoke(", start_bookmark)
+        self.assertIn("std::move(*profile_io_hold)", start_bookmark)
+        self.assertNotIn("std::shared_ptr<std::optional", start_bookmark)
+        self.assertNotIn("->Complete(", start_bookmark)
+
+        bookmark_completion = _body_after_signature(
+            self.main_parts,
+            "void WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete(",
+        )
+        self.assertIn(
+            "NotifyWasmProfilePreferencesBookmarkSmokeResult(success)",
+            bookmark_completion,
+        )
+        self.assertIn("if (shutdown_requested_)", bookmark_completion)
+        self.assertIn("MaybeStartShutdown();", bookmark_completion)
+        self.assertIn(
+            "StartWasmProfileCookieSmokeOrHistoryOrShutdown();",
+            bookmark_completion,
+        )
+
+        maybe_shutdown = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::MaybeStartShutdown()"
+        )
+        self.assertLess(
+            maybe_shutdown.index("profile_->HasActiveBookmarkSmoke()"),
+            maybe_shutdown.index("FinishShutdown();"),
+        )
+        self.assertIn("profile_->CancelBookmarkSmokeForShutdown();", maybe_shutdown)
+
+        finish = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
+        )
+        self.assertLess(
+            finish.index("profile_->HasActiveBookmarkSmoke()"),
+            finish.index("profile_->Shutdown();"),
+        )
+        self.assertIn("profile_->CancelBookmarkSmokeForShutdown();", finish)
+        bookmark_guard = finish.index(
+            "IsWasmProfilePreferencesBookmarkSmokeEnabled()"
+        )
+        storage_handoff = finish.index("NotifyWasmProfileStorageProfileShutdown();")
+        self.assertLess(storage_handoff, bookmark_guard)
+
+        foundation = _body_after_signature(
+            self.main_parts, "void WasmBrowserMainParts::ShutdownFoundation()"
+        )
+        self.assertLess(
+            foundation.index("profile_->QuarantineBookmarkSmokeForFailureShutdown();"),
+            foundation.index("profile_->Shutdown();"),
+        )
+
+        self.assertIn(
+            'test("wasm_profile_bookmark_lifetime_participant_unittests")',
+            self.wasm_build,
+        )
+        for token in (
+            "std::make_unique<WasmProfileBookmarkLifetimeParticipant>",
+            "WasmProfileBookmarkImportantFileWriterTest",
+            "FailingDataSerializer serializer;",
+            "FailingBackgroundDataSerializer serializer;",
+            "writer.RegisterOnNextWriteCallbacks(",
+            "EXPECT_FALSE(before_write_called);",
+            "EXPECT_FALSE(write_succeeded);",
+            "active_during_delayed_completion",
+            "delayed_participant->IsActive()",
+            "delayed_participant->Cancel();",
+            "base::ThreadPoolInstance::Get()->FlushForTesting();",
+            "base::ScopedThreadPoolExecutionFence write_fence;",
+            "base::RunLoop().RunUntilIdle();",
+            "successful_loop.Run();",
+            "successful_participant->DidSucceed()",
+            "cancelled_participant->Cancel();",
+            "cancelled_participant->QuarantineForFailureShutdown()",
+            "cancelled_participant.reset();",
+            "cancelled_loop.Run();",
+            "Lifecycle::Status::kWaitingForRegisteredProfileIO",
+            "Lifecycle::Status::kRegisteredProfileIONotClean",
+            "ClaimPostContentDrain().has_value()",
+            "ClaimPostContentFailureRetirement().has_value()",
+            "cancelled_result.profile_io.failed_operations, 1u",
+            "cancelled_result.profile_io.abandoned_operations, 0u",
+        ):
+            with self.subTest(runtime_token=token):
+                self.assertIn(token, self.bookmark_lifetime_unittest)
+
     def test_cookie_manager_probe_closes_its_sqlite_backend_before_handoff(self) -> None:
         for token in (
             "GetDefaultStoragePartition()",
@@ -740,12 +1035,12 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         browser_complete = browser_branch.index(
             "chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(true);"
         )
-        browser_cookie_or_history = browser_branch.index(
-            "StartWasmProfileCookieSmokeOrHistoryOrShutdown();"
+        browser_bookmark_or_cookie_or_history = browser_branch.index(
+            "StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown();"
         )
         self.assertLess(browser_run, browser_failure)
         self.assertLess(browser_failure, browser_complete)
-        self.assertLess(browser_complete, browser_cookie_or_history)
+        self.assertLess(browser_complete, browser_bookmark_or_cookie_or_history)
 
         finish = _body_after_signature(
             self.main_parts, "void WasmBrowserMainParts::FinishShutdown()"
@@ -911,6 +1206,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
                     'public_configs = [ ":wasm_profile_m7_preferences_smoke_config" ]',
                     target,
                 )
+                self.assertIn('":wasm_profile_bookmark_smoke",', target)
                 self.assertIn('":wasm_profile_preferences_smoke",', target)
                 self.assertIn('":wasm_profile_history_smoke",', target)
             else:
@@ -918,6 +1214,7 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
                     'defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]',
                     target,
                 )
+                self.assertIn('":wasm_profile_bookmark_smoke",', target)
                 self.assertIn('":wasm_profile_preferences_smoke",', target)
                 self.assertNotIn('":wasm_profile_history_smoke",', target)
 

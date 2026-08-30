@@ -1217,6 +1217,16 @@ bool BookmarkModel::AccountStorageHasPendingWriteForTest() const {
   return account_store_->HasScheduledSaveForTesting();  // IN-TEST
 }
 
+bool BookmarkModel::FlushLocalOrSyncablePendingWriteForTesting(
+    base::OnceCallback<void(bool success)> completion) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!loaded_ || !local_or_syncable_store_) {
+    return false;
+  }
+  return local_or_syncable_store_->FlushPendingWriteForTesting(
+      std::move(completion));
+}
+
 void BookmarkModel::RestoreRemovedNode(const BookmarkNode* parent,
                                        size_t index,
                                        std::unique_ptr<BookmarkNode> node) {

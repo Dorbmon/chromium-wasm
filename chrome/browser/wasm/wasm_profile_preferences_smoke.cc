@@ -33,6 +33,8 @@ constexpr char kHistorySmokeSwitch[] =
     "wasm-profile-preferences-history-smoke";
 constexpr char kCookieSmokeSwitch[] =
     "wasm-profile-preferences-cookie-smoke";
+constexpr char kBookmarkSmokeSwitch[] =
+    "wasm-profile-preferences-bookmark-smoke";
 constexpr char kWriteMode[] = "write";
 constexpr char kVerifyAndWriteMode[] = "verify-and-write";
 constexpr char kVerifyBMode[] = "verify-b";
@@ -74,6 +76,8 @@ class WasmProfilePreferencesSmokeState {
         command_line->HasSwitch(kHistorySmokeSwitch);
     const bool has_cookie_smoke =
         command_line->HasSwitch(kCookieSmokeSwitch);
+    const bool has_bookmark_smoke =
+        command_line->HasSwitch(kBookmarkSmokeSwitch);
     if (!has_mode) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
@@ -92,6 +96,12 @@ class WasmProfilePreferencesSmokeState {
     if (has_cookie_smoke &&
         (!has_browser_smoke ||
          !command_line->GetSwitchValueASCII(kCookieSmokeSwitch).empty())) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+      return false;
+    }
+    if (has_bookmark_smoke &&
+        (!has_browser_smoke ||
+         !command_line->GetSwitchValueASCII(kBookmarkSmokeSwitch).empty())) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
     }
@@ -146,6 +156,7 @@ class WasmProfilePreferencesSmokeState {
     browser_smoke_required_ = has_browser_smoke;
     history_smoke_required_ = has_history_smoke;
     cookie_smoke_required_ = has_cookie_smoke;
+    bookmark_smoke_required_ = has_bookmark_smoke;
     enabled_ = true;
     return true;
   }
@@ -162,6 +173,10 @@ class WasmProfilePreferencesSmokeState {
 
   bool cookie_smoke_required() const {
     return enabled_ && cookie_smoke_required_;
+  }
+
+  bool bookmark_smoke_required() const {
+    return enabled_ && bookmark_smoke_required_;
   }
 
   bool Start(PrefService* prefs) {
@@ -244,6 +259,37 @@ class WasmProfilePreferencesSmokeState {
     return input;
   }
 
+  std::optional<WasmProfilePreferencesBookmarkSmokeInput>
+  TakeBookmarkSmokeInput() {
+    if (!enabled_ || failure_reported_ || !started_ ||
+        !bookmark_smoke_required_ || bookmark_smoke_input_taken_ ||
+        !browser_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCapability);
+      return std::nullopt;
+    }
+
+    bookmark_smoke_input_taken_ = true;
+    WasmProfilePreferencesBookmarkSmokeInput input;
+    switch (mode_) {
+      case SmokeMode::kWrite:
+        input.mode = WasmProfilePreferencesBookmarkSmokeInput::Mode::kWrite;
+        break;
+      case SmokeMode::kVerifyAndWrite:
+        input.mode =
+            WasmProfilePreferencesBookmarkSmokeInput::Mode::kVerifyAndWrite;
+        break;
+      case SmokeMode::kVerifyB:
+        input.mode = WasmProfilePreferencesBookmarkSmokeInput::Mode::kVerifyB;
+        break;
+      case SmokeMode::kNone:
+        ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCapability);
+        return std::nullopt;
+    }
+    input.token_a_digest = token_a_digest_;
+    input.token_b_digest = token_b_digest_;
+    return input;
+  }
+
   void NotifyBrowserSmokeResult(bool success) {
     if (!enabled_ || failure_reported_) {
       return;
@@ -263,6 +309,7 @@ class WasmProfilePreferencesSmokeState {
     }
     if (!success || !started_ || !history_smoke_required_ ||
         !browser_smoke_completed_ ||
+        (bookmark_smoke_required_ && !bookmark_smoke_completed_) ||
         (cookie_smoke_required_ && !cookie_smoke_completed_) ||
         history_smoke_completed_) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kHistory);
@@ -277,12 +324,33 @@ class WasmProfilePreferencesSmokeState {
            !failure_reported_;
   }
 
+  void NotifyBookmarkSmokeResult(bool success) {
+    if (!enabled_ || failure_reported_) {
+      return;
+    }
+    if (!success || !started_ || !bookmark_smoke_required_ ||
+        !browser_smoke_completed_ || !bookmark_smoke_input_taken_ ||
+        bookmark_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kBookmark);
+      return;
+    }
+    bookmark_smoke_completed_ = true;
+    EmitMarker("BOOKMARK_MODEL_CLOSED");
+  }
+
+  bool bookmark_smoke_succeeded() const {
+    return enabled_ && bookmark_smoke_required_ &&
+           bookmark_smoke_completed_ && !failure_reported_;
+  }
+
   void NotifyCookieSmokeResult(bool success) {
     if (!enabled_ || failure_reported_) {
       return;
     }
     if (!success || !started_ || !cookie_smoke_required_ ||
-        !browser_smoke_completed_ || !cookie_smoke_input_taken_ ||
+        !browser_smoke_completed_ ||
+        (bookmark_smoke_required_ && !bookmark_smoke_completed_) ||
+        !cookie_smoke_input_taken_ ||
         cookie_smoke_completed_) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCookie);
       return;
@@ -305,6 +373,10 @@ class WasmProfilePreferencesSmokeState {
     }
     if (cookie_smoke_required_ && !cookie_smoke_completed_) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kCookie);
+      return;
+    }
+    if (bookmark_smoke_required_ && !bookmark_smoke_completed_) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kBookmark);
       return;
     }
     if (history_smoke_required_ && !history_smoke_completed_) {
@@ -399,6 +471,8 @@ class WasmProfilePreferencesSmokeState {
         return "cookie";
       case WasmProfilePreferencesSmokeFailureStage::kHistory:
         return "history";
+      case WasmProfilePreferencesSmokeFailureStage::kBookmark:
+        return "bookmark";
       case WasmProfilePreferencesSmokeFailureStage::kRead:
         return "read";
       case WasmProfilePreferencesSmokeFailureStage::kFence:
@@ -437,6 +511,9 @@ class WasmProfilePreferencesSmokeState {
   bool cookie_smoke_required_ = false;
   bool cookie_smoke_input_taken_ = false;
   bool cookie_smoke_completed_ = false;
+  bool bookmark_smoke_required_ = false;
+  bool bookmark_smoke_input_taken_ = false;
+  bool bookmark_smoke_completed_ = false;
   bool history_smoke_required_ = false;
   bool history_smoke_completed_ = false;
   bool fence_succeeded_ = false;
@@ -465,7 +542,8 @@ bool HasWasmProfilePreferencesSmokeArguments() {
          command_line->HasSwitch(kTokenBSwitch) ||
          command_line->HasSwitch(kBrowserSmokeSwitch) ||
          command_line->HasSwitch(kHistorySmokeSwitch) ||
-         command_line->HasSwitch(kCookieSmokeSwitch);
+         command_line->HasSwitch(kCookieSmokeSwitch) ||
+         command_line->HasSwitch(kBookmarkSmokeSwitch);
 }
 
 bool EnableWasmProfilePreferencesSmokeTestMode() {
@@ -488,9 +566,18 @@ bool IsWasmProfilePreferencesCookieSmokeEnabled() {
   return GetWasmProfilePreferencesSmokeState().cookie_smoke_required();
 }
 
+bool IsWasmProfilePreferencesBookmarkSmokeEnabled() {
+  return GetWasmProfilePreferencesSmokeState().bookmark_smoke_required();
+}
+
 std::optional<WasmProfilePreferencesCookieSmokeInput>
 TakeWasmProfilePreferencesCookieSmokeInput() {
   return GetWasmProfilePreferencesSmokeState().TakeCookieSmokeInput();
+}
+
+std::optional<WasmProfilePreferencesBookmarkSmokeInput>
+TakeWasmProfilePreferencesBookmarkSmokeInput() {
+  return GetWasmProfilePreferencesSmokeState().TakeBookmarkSmokeInput();
 }
 
 void RegisterWasmProfilePreferencesSmokePref(
@@ -523,6 +610,14 @@ void NotifyWasmProfilePreferencesCookieSmokeResult(bool success) {
 
 bool DidWasmProfilePreferencesCookieSmokeSucceed() {
   return GetWasmProfilePreferencesSmokeState().cookie_smoke_succeeded();
+}
+
+void NotifyWasmProfilePreferencesBookmarkSmokeResult(bool success) {
+  GetWasmProfilePreferencesSmokeState().NotifyBookmarkSmokeResult(success);
+}
+
+bool DidWasmProfilePreferencesBookmarkSmokeSucceed() {
+  return GetWasmProfilePreferencesSmokeState().bookmark_smoke_succeeded();
 }
 
 void NotifyWasmProfilePreferencesSmokeFenceResult(bool success) {

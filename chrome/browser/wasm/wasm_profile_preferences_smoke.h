@@ -33,6 +33,21 @@ struct WasmProfilePreferencesCookieSmokeInput {
   std::string token_b_digest;
 };
 
+// The BookmarkModel probe receives only digests derived from the opaque
+// Preferences tokens. It never receives or serializes the raw token bundle
+// that is reserved for the optional CookieManager probe.
+struct WasmProfilePreferencesBookmarkSmokeInput {
+  enum class Mode {
+    kWrite,
+    kVerifyAndWrite,
+    kVerifyB,
+  };
+
+  Mode mode = Mode::kWrite;
+  std::string token_a_digest;
+  std::string token_b_digest;
+};
+
 // Fixed, test-only protocol for the three-fresh-module Preferences acceptance.
 //
 // Only chrome_wasm_m7_profile_preferences_test enables this capability. Its
@@ -43,6 +58,7 @@ struct WasmProfilePreferencesCookieSmokeInput {
 //   [--wasm-profile-preferences-browser-smoke]
 //   [--wasm-profile-preferences-history-smoke]
 //   [--wasm-profile-preferences-cookie-smoke]
+//   [--wasm-profile-preferences-bookmark-smoke]
 //
 //   --wasm-profile-preferences-smoke=verify-and-write
 //   --wasm-profile-preferences-token-a=<64 lowercase hex>
@@ -50,12 +66,14 @@ struct WasmProfilePreferencesCookieSmokeInput {
 //   [--wasm-profile-preferences-browser-smoke]
 //   [--wasm-profile-preferences-history-smoke]
 //   [--wasm-profile-preferences-cookie-smoke]
+//   [--wasm-profile-preferences-bookmark-smoke]
 //
 //   --wasm-profile-preferences-smoke=verify-b
 //   --wasm-profile-preferences-token-b=<64 lowercase hex>
 //   [--wasm-profile-preferences-browser-smoke]
 //   [--wasm-profile-preferences-history-smoke]
 //   [--wasm-profile-preferences-cookie-smoke]
+//   [--wasm-profile-preferences-bookmark-smoke]
 //
 // In verify-and-write mode token B must differ from token A.
 //
@@ -63,13 +81,19 @@ struct WasmProfilePreferencesCookieSmokeInput {
 // in a marker or diagnostic. The host may consume only the following stderr
 // grammar, where |digest| is exactly 64 lowercase hexadecimal characters and
 // |stage| is one of arguments, capability, storage, profile, browser, cookie,
-// history, read, fence, lifecycle, content, or drain:
+// history, bookmark, read, fence, lifecycle, content, or drain:
 //
 //   CHROMIUM_WASM_M7_PREFS:READY
 //   CHROMIUM_WASM_M7_PREFS:READ_A_OK sha256=<64 lowercase hex>
 //   CHROMIUM_WASM_M7_PREFS:READ_B_OK sha256=<64 lowercase hex>
 //   CHROMIUM_WASM_M7_PREFS:WRITE_ACCEPTED sha256=<64 lowercase hex>
 //   CHROMIUM_WASM_M7_PREFS:BROWSER_SMOKE_CLOSED
+//   CHROMIUM_WASM_M7_PREFS:BOOKMARK_A_WRITE_FLUSHED sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:BOOKMARK_A_READ_OK sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:BOOKMARK_B_WRITE_FLUSHED sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:BOOKMARK_B_READ_OK sha256=<64 lowercase hex>
+//   CHROMIUM_WASM_M7_PREFS:BOOKMARK_CLEANUP_FLUSHED
+//   CHROMIUM_WASM_M7_PREFS:BOOKMARK_MODEL_CLOSED
 //   CHROMIUM_WASM_M7_PREFS:HISTORY_A_WRITE_ACCEPTED
 //   CHROMIUM_WASM_M7_PREFS:HISTORY_A_READ_OK
 //   CHROMIUM_WASM_M7_PREFS:HISTORY_B_WRITE_ACCEPTED
@@ -102,6 +126,14 @@ struct WasmProfilePreferencesCookieSmokeInput {
 // before the Preferences fence. This is a test-only core-service witness, not
 // a claim that desktop navigation, History UI, bookmarks, or every normal
 // profile store has been made persistent.
+
+// The bare Bookmark switch also requires the Browser switch. It starts one
+// directly owned core BookmarkModel after that Browser lifecycle and uses only
+// digest-derived URL/title values. It rejects account storage and bookmark
+// encryption, waits for a result-bearing local JSON write, then destroys the
+// model before profile shutdown. This is a test-only core-service witness, not
+// a claim that BookmarkModelFactory, sync, encryption, or normal profile
+// service persistence has been enabled.
 
 // The bare Cookie switch also requires the Browser switch. It enables only the
 // default in-memory StoragePartition's CookieManager to select a persistent
@@ -148,11 +180,22 @@ bool IsWasmProfilePreferencesHistorySmokeEnabled();
 // It is valid only together with the bounded Browser lifecycle switch.
 bool IsWasmProfilePreferencesCookieSmokeEnabled();
 
+// Whether this validated Preferences test run must complete the test-only
+// BookmarkModel read/write and model-destruction witness. It is valid only
+// together with the bounded Browser lifecycle switch.
+bool IsWasmProfilePreferencesBookmarkSmokeEnabled();
+
 // Transfers the opaque raw inputs to the optional CookieManager probe exactly
 // once after Preferences has used them. Returning no value is a fixed
 // capability failure. No caller may log the returned values.
 std::optional<WasmProfilePreferencesCookieSmokeInput>
 TakeWasmProfilePreferencesCookieSmokeInput();
+
+// Transfers digest-only inputs to the optional BookmarkModel probe exactly
+// once after the real Browser lifecycle. Returning no value is a fixed
+// capability failure. No caller may reconstruct or log a raw token from it.
+std::optional<WasmProfilePreferencesBookmarkSmokeInput>
+TakeWasmProfilePreferencesBookmarkSmokeInput();
 
 // Registers the one dedicated non-default user preference only while this
 // test capability is enabled. This must run before PrefService construction.
@@ -189,6 +232,16 @@ void NotifyWasmProfilePreferencesCookieSmokeResult(bool success);
 // successfully.
 bool DidWasmProfilePreferencesCookieSmokeSucceed();
 
+// Records the terminal result from the test-only BookmarkModel probe. A
+// successful result emits BOOKMARK_MODEL_CLOSED only after the probe destroyed
+// its direct model after a result-bearing local write. A failed path reports
+// the redacted bookmark failure stage.
+void NotifyWasmProfilePreferencesBookmarkSmokeResult(bool success);
+
+// True only when the optional BookmarkModel probe completed its local
+// validation, result-bearing write, and direct model destruction successfully.
+bool DidWasmProfilePreferencesBookmarkSmokeSucceed();
+
 // These result-bearing lifecycle notifications complete the fixed marker
 // sequence. Callers supply only fixed booleans, never an underlying error or
 // token, so the smoke cannot expose Preferences content through diagnostics.
@@ -206,6 +259,7 @@ enum class WasmProfilePreferencesSmokeFailureStage {
   kBrowser,
   kCookie,
   kHistory,
+  kBookmark,
   kRead,
   kFence,
   kLifecycle,

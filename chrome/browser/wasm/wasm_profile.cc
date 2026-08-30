@@ -25,6 +25,8 @@
 #include "chrome/browser/profiles/profile_key.h"
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_bookmark_smoke.h"  // nogncheck
+// GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_history_smoke.h"  // nogncheck
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
@@ -197,6 +199,11 @@ WasmProfile::WasmProfile(
 
 WasmProfile::~WasmProfile() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+  // Retain an unfinished model load/write and its profile admission if owner
+  // loss occurs after the UI loop can no longer wait for its terminal result.
+  if (bookmark_lifetime_participant_) {
+    QuarantineBookmarkSmokeForFailureShutdown();
+  }
   // BrowserMainParts normally retains this profile until the direct History
   // witness has its backend-destroy receipt. A fallback owner loss must retain
   // an active close as outstanding so the outer V4 drain refuses before it can
@@ -326,6 +333,45 @@ bool WasmProfile::DidPrefsShutdownFenceSucceed() const {
 }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST)
+bool WasmProfile::StartBookmarkSmoke(
+    chrome::WasmProfilePreferencesBookmarkSmokeInput input,
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> completion) {
+  if (shutdown_ || bookmark_lifetime_participant_ || !completion) {
+    (void)profile_io_hold.Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    return false;
+  }
+
+  bookmark_lifetime_participant_ =
+      std::make_unique<chrome::WasmProfileBookmarkLifetimeParticipant>(
+          profile_path_, std::move(input), std::move(profile_io_hold));
+  if (!bookmark_lifetime_participant_->Start(std::move(completion))) {
+    bookmark_lifetime_participant_.reset();
+    return false;
+  }
+  return true;
+}
+
+bool WasmProfile::HasActiveBookmarkSmoke() const {
+  return bookmark_lifetime_participant_ &&
+         bookmark_lifetime_participant_->IsActive();
+}
+
+void WasmProfile::CancelBookmarkSmokeForShutdown() {
+  if (bookmark_lifetime_participant_) {
+    bookmark_lifetime_participant_->Cancel();
+  }
+}
+
+void WasmProfile::QuarantineBookmarkSmokeForFailureShutdown() {
+  if (bookmark_lifetime_participant_ &&
+      !bookmark_lifetime_participant_->QuarantineForFailureShutdown()) {
+    LOG(ERROR) << "chrome_wasm could not quarantine an active BookmarkModel "
+                  "operation for fail-closed shutdown";
+  }
+}
+
 bool WasmProfile::StartHistorySmoke(
     WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
     base::OnceCallback<void(bool success)> completion) {
