@@ -35,7 +35,8 @@ bool IsWasmProfileStorageMounted();
 // object destruction.
 bool NeedsWasmProfileStorageBackendDrain();
 
-// Starts the source-selected profile construction epoch before WasmProfile can
+// Starts the source-selected profile construction epoch before BrowserMainParts
+// resolves /profile or creates Default, and before WasmProfile can
 // synchronously read Preferences. It creates the registered-I/O lifecycle and
 // returns the one construction admission; BrowserMainParts must transfer that
 // hold into WasmProfile before JsonPrefStore/PrefService construction begins.

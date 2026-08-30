@@ -9,11 +9,11 @@
 
 #include "chrome/browser/wasm/wasm_profile_ordered_drain_lifecycle.h"
 
-// Retains one source-selected JsonPrefStore admission from before a
-// WasmProfile synchronously creates PrefService through its strict Preferences
-// write/readback fence terminal result. A lost profile owner is explicitly
-// failed instead of allowing the outer lifecycle to classify the admission as
-// abandoned.
+// Retains one source-selected construction admission from before the profile
+// path is resolved and WasmProfile synchronously creates PrefService through
+// its strict Preferences write/readback fence terminal result. A lost profile
+// owner is explicitly failed instead of allowing the outer lifecycle to
+// classify the admission as abandoned.
 //
 // This is only an admission/result adapter. It does not start PrefService I/O,
 // close profile services, drain descriptors, prove profile-wide quiescence, or

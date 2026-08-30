@@ -252,12 +252,12 @@ class WasmProfile final : public Profile {
   std::unique_ptr<WasmProfilePrefsFenceController>
       prefs_shutdown_fence_controller_;
 
-  // The outer storage lifecycle counts this source-selected JsonPrefStore
-  // admission from before PrefService's synchronous construction read through
-  // the strict Preferences write/readback fence when an M7 target selects it.
-  // Normal Chrome leaves this null. An admitted operation completes only
-  // after strict Preferences write/readback, or is explicitly failed when
-  // this profile cannot reach that result.
+  // The outer storage lifecycle counts this source-selected construction
+  // admission from selected profile-path setup through PrefService's
+  // synchronous construction read and the strict Preferences write/readback
+  // fence when an M7 target selects it. Normal Chrome leaves this null. An
+  // admitted operation completes only after strict Preferences write/readback,
+  // or is explicitly failed when this profile cannot reach that result.
   std::unique_ptr<WasmProfilePersistentPrefsLifetimeParticipant>
       prefs_lifetime_profile_io_participant_;
 

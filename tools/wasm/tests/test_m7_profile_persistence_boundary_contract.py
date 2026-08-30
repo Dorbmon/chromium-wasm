@@ -958,6 +958,14 @@ executable("m7_wasmfs_conditional_testonly") {
         )
         self.assertLess(
             preconstruction_admission,
+            body.index("base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)"),
+        )
+        self.assertLess(
+            preconstruction_admission,
+            body.index("base::CreateDirectory(profile_path)"),
+        )
+        self.assertLess(
+            body.index("base::CreateDirectory(profile_path)"),
             participant,
         )
         self.assertLess(
@@ -1002,6 +1010,43 @@ executable("m7_wasmfs_conditional_testonly") {
         self.assertNotIn("profile_", admission_denial_body)
         self.assertNotIn(
             "NotifyWasmProfileStorageProfileCreated", admission_denial_body
+        )
+
+        for failure_expression in (
+            "!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)",
+            "!base::CreateDirectory(profile_path)",
+        ):
+            with self.subTest(failure_expression=failure_expression):
+                failure = pre_main_body.index(failure_expression)
+                failure_body = _balanced_body(
+                    pre_main_body,
+                    pre_main_body.find("{", failure),
+                    failure_expression,
+                )
+                self.assertLess(
+                    failure_body.index(
+                        "CompleteM7ProfileConstructionAdmissionAsFailed("
+                    ),
+                    failure_body.index("FailCloseM7ProfileConstruction();"),
+                )
+                self.assertIn(
+                    "&preconstruction_profile_io_hold", failure_body
+                )
+
+        completion = re.search(
+            r"void CompleteM7ProfileConstructionAdmissionAsFailed\([^)]*\)\s*\{",
+            self.main_parts,
+        )
+        self.assertIsNotNone(completion)
+        completion_body = _balanced_body(
+            self.main_parts,
+            self.main_parts.find("{", completion.start()),
+            "M7 profile construction admission failure",
+        )
+        self.assertIn("ProfileIOCompletion::kFailed", completion_body)
+        self.assertLess(
+            completion_body.index("ProfileIOCompletion::kFailed"),
+            completion_body.index("profile_io_hold->reset();"),
         )
 
         construction_abort = re.search(

@@ -865,8 +865,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "chrome::NotifyWasmProfileStorageProfileShutdown()"
         )
 
-        self.assertLess(mounted, user_data)
-        self.assertLess(user_data, construction_start)
+        self.assertLess(mounted, construction_start)
+        self.assertLess(construction_start, user_data)
         self.assertLess(construction_start, profile)
         self.assertLess(profile, admitted)
         self.assertLess(shutdown, complete)

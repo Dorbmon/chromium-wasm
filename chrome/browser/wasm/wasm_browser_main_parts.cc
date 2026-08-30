@@ -264,6 +264,23 @@ void FailCloseM7ProfileConstruction() {
   }
 }
 
+void CompleteM7ProfileConstructionAdmissionAsFailed(
+    std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>*
+        profile_io_hold) {
+  bool completed = false;
+  if (profile_io_hold && *profile_io_hold) {
+    completed = profile_io_hold->value().Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    profile_io_hold->reset();
+  }
+  if (!completed) {
+    // A malformed or already-completed local holder must not prevent the
+    // caller from selecting the outer fail-closed retirement path.
+    LOG(ERROR) << "chrome_wasm could not complete its profile construction "
+                  "admission as failed";
+  }
+}
+
 void ResetProfileThenFailCloseM7ProfileStorage(
     std::unique_ptr<WasmProfile>& profile) {
   profile.reset();
@@ -383,9 +400,33 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   }
 #endif
 
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+  // The selected V4 mount can be reached while resolving /profile and
+  // creating Default. Start the construction lifetime before either path
+  // operation, then transfer this same hold into WasmProfile before its
+  // synchronous JsonPrefStore/PrefService read.
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      preconstruction_profile_io_hold =
+          chrome::BeginWasmProfileStorageProfileConstruction();
+  if (!preconstruction_profile_io_hold) {
+    LOG(ERROR) << "chrome_wasm could not admit its profile construction I/O";
+    FailCloseM7ProfileConstruction();
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+#endif
+
   base::FilePath user_data_directory;
   if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_directory)) {
     LOG(ERROR) << "chrome_wasm could not resolve its profile root";
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    CompleteM7ProfileConstructionAdmissionAsFailed(
+        &preconstruction_profile_io_hold);
+    FailCloseM7ProfileConstruction();
+#endif
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
@@ -393,6 +434,13 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       user_data_directory.AppendASCII("Default");
   if (!base::CreateDirectory(profile_path)) {
     LOG(ERROR) << "chrome_wasm could not create its profile path";
+#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    CompleteM7ProfileConstructionAdmissionAsFailed(
+        &preconstruction_profile_io_hold);
+    FailCloseM7ProfileConstruction();
+#endif
     return CHROME_RESULT_CODE_MISSING_DATA;
   }
 
@@ -422,19 +470,10 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
-  // Create and admit the construction lifetime before WasmProfile can enter
-  // its synchronous JsonPrefStore/PrefService read. The participant moves
-  // into WasmProfile's member initializer, so it remains pending throughout
-  // construction and until the strict shutdown write/readback fence.
-  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
-      preconstruction_profile_io_hold =
-          chrome::BeginWasmProfileStorageProfileConstruction();
-  if (!preconstruction_profile_io_hold) {
-    LOG(ERROR) << "chrome_wasm could not admit its profile Preferences "
-                  "construction I/O";
-    FailCloseM7ProfileConstruction();
-    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
-  }
+  // The construction hold has covered profile-path setup. Its participant now
+  // moves into WasmProfile's member initializer, where it remains pending
+  // through the synchronous JsonPrefStore/PrefService read and the strict
+  // Preferences shutdown write/readback fence.
   auto prefs_lifetime_profile_io_participant =
       std::make_unique<WasmProfilePersistentPrefsLifetimeParticipant>(
           std::move(*preconstruction_profile_io_hold));
