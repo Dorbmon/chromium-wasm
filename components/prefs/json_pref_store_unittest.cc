@@ -4,6 +4,7 @@
 
 #include "components/prefs/json_pref_store.h"
 
+#include <atomic>
 #include <stdint.h>
 
 #include <memory>
@@ -1105,5 +1106,29 @@ TEST_F(JsonPrefStoreApiTest, SetPrefServiceOnFilter) {
 
   // Verify that the filter now holds the correct PrefService pointer.
   EXPECT_EQ(&pref_service, raw_filter->get_pref_service_for_testing());
+}
+
+TEST_F(JsonPrefStoreApiTest, SetReplaceFileCallbackForTesting) {
+  // The replacement runs on the file task runner.
+  std::atomic_bool replace_file_callback_called = false;
+  auto pref_store = base::MakeRefCounted<JsonPrefStore>(GetTestFile());
+  pref_store->SetReplaceFileCallbackForTesting(base::BindRepeating(
+      [](std::atomic_bool* callback_called, const base::FilePath& from_path,
+         const base::FilePath& to_path, base::File::Error* error) {
+        callback_called->store(true);
+        return base::ReplaceFile(from_path, to_path, error);
+      },
+      &replace_file_callback_called));
+
+  pref_store->SetValue("pref", base::Value("value"),
+                       WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+  base::RunLoop run_loop;
+  pref_store->CommitPendingWrite(run_loop.QuitClosure());
+  run_loop.Run();
+
+  EXPECT_TRUE(replace_file_callback_called.load());
+  std::string contents;
+  ASSERT_TRUE(base::ReadFileToString(GetTestFile(), &contents));
+  EXPECT_EQ("{\"pref\":\"value\"}", contents);
 }
 }  // namespace base

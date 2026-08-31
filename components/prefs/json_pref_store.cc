@@ -412,6 +412,12 @@ void JsonPrefStore::RegisterOnNextSuccessfulWriteReply(
   }
 }
 
+void JsonPrefStore::SetReplaceFileCallbackForTesting(
+    base::ImportantFileWriter::ReplaceFileCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  writer_.SetReplaceFileCallbackForTesting(std::move(callback));
+}
+
 void JsonPrefStore::RegisterOnNextWriteSynchronousCallbacks(
     OnWriteCallbackPair callbacks) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);

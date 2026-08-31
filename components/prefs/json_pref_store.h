@@ -122,6 +122,11 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   void RegisterOnNextSuccessfulWriteReply(
       base::OnceClosure on_next_successful_write_reply);
 
+  // Allows tests to replace the atomic file-replacement operation used by
+  // |writer_|.
+  void SetReplaceFileCallbackForTesting(
+      base::ImportantFileWriter::ReplaceFileCallback callback);
+
   void OnStoreDeletionFromDisk() override;
 
   base::WeakPtr<JsonPrefStore> AsWeakPtr() {
