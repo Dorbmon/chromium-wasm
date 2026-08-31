@@ -21,6 +21,7 @@
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -32,6 +33,7 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
@@ -57,6 +59,11 @@ constexpr char kRendererVerifyAWriteBMode[] = "renderer-verify-a-write-b";
 constexpr char kRendererVerifyBMode[] = "renderer-verify-b";
 constexpr size_t kOpaqueTokenLength = 64;
 constexpr base::TimeDelta kRendererOperationTimeout = base::Seconds(10);
+// IDBDatabase::close() and the renderer title update use separate Mojo
+// endpoints. Wait briefly for the real close to propagate to IndexedDB's
+// bucket thread, but retain kRendererOperationTimeout as the absolute bound.
+constexpr base::TimeDelta kRendererCloseObservationRetryDelay =
+    base::Milliseconds(20);
 
 constexpr char kRendererIndexedDBPageURL[] = "chrome://m7-indexed-db/";
 constexpr char16_t kRendererWriteTitle[] = u"m7-indexed-db-renderer-write-ok";
@@ -324,19 +331,30 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
       return false;
     }
 
-    renderer_browser_context_ = browser_context_;
-    content::WebContents::CreateParams create_params(browser_context_);
-    renderer_web_contents_ = content::WebContents::Create(create_params);
-    if (!renderer_web_contents_) {
-      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
-      return true;
-    }
-    Observe(renderer_web_contents_.get());
     renderer_page_url_ = BuildRendererPageURL();
     if (!renderer_page_url_.is_valid()) {
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
       return true;
     }
+    const content::StoragePartitionConfig renderer_partition_config =
+        content::StoragePartitionConfig::Create(
+            browser_context_, kIndexedDBPartitionDomain,
+            kIndexedDBPartitionName, /*in_memory=*/false);
+    // Starting from the default initial SiteInstance and then navigating to a
+    // non-default partition violates RenderProcessHost's partition invariant.
+    // The source-selected probe owns this fixed child partition for all of its
+    // transient WebContents lifetime.
+    content::WebContents::CreateParams create_params(
+        browser_context_,
+        content::SiteInstance::CreateForFixedStoragePartition(
+            browser_context_, renderer_page_url_, renderer_partition_config));
+    renderer_web_contents_ = content::WebContents::Create(create_params);
+    if (!renderer_web_contents_) {
+      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
+      return true;
+    }
+    renderer_browser_context_ = browser_context_;
+    Observe(renderer_web_contents_.get());
 
     EmitMarker("READY");
     renderer_operation_timeout_.Start(
@@ -436,6 +454,8 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     operation_finished_ = true;
     weak_ptr_factory_.InvalidateWeakPtrs();
     Observe(nullptr);
+    renderer_completion_check_scheduled_ = false;
+    renderer_close_observation_retry_timer_.Stop();
     renderer_operation_timeout_.Stop();
     renderer_web_contents_.reset();
     renderer_browser_context_ = nullptr;
@@ -476,7 +496,7 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
         entry->GetURL() != renderer_page_url_) {
       return;
     }
-    MaybeCompleteRendererPage();
+    ScheduleRendererPageCompletion();
   }
 
   void DidFinishNavigation(
@@ -488,17 +508,42 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     }
     if (!navigation_handle->HasCommitted() ||
         navigation_handle->IsErrorPage()) {
-      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
+      renderer_primary_navigation_failed_ = true;
+      ScheduleRendererPageCompletion();
       return;
     }
     renderer_primary_commit_seen_ = true;
+    // Do not destroy |renderer_web_contents_| from a WebContentsObserver
+    // notification. The completion path can fail and synchronously retire the
+    // transient WebContents, so evaluate it on the following UI task.
+    ScheduleRendererPageCompletion();
+  }
+
+  void ScheduleRendererPageCompletion() {
+    if (failure_reported_ || !renderer_web_contents_ ||
+        renderer_completion_check_scheduled_) {
+      return;
+    }
+    renderer_completion_check_scheduled_ = true;
+    CHECK(base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&State::RunRendererPageCompletion,
+                       weak_ptr_factory_.GetWeakPtr())));
+  }
+
+  void RunRendererPageCompletion() {
+    renderer_completion_check_scheduled_ = false;
     MaybeCompleteRendererPage();
   }
 
   void MaybeCompleteRendererPage() {
     if (failure_reported_ || renderer_page_completed_ ||
+        renderer_primary_navigation_failed_ ||
         !renderer_primary_commit_seen_ || !renderer_web_contents_ ||
         renderer_web_contents_->GetLastCommittedURL() != renderer_page_url_) {
+      if (!failure_reported_ && renderer_primary_navigation_failed_) {
+        ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
+      }
       return;
     }
     const std::u16string title = renderer_web_contents_->GetTitle();
@@ -595,6 +640,21 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
+  void ScheduleSelectedBucketDetailsRetry() {
+    if (failure_reported_) {
+      return;
+    }
+    if (!renderer_operation_timeout_.IsRunning() ||
+        renderer_close_observation_retry_timer_.IsRunning()) {
+      ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kClose);
+      return;
+    }
+    renderer_close_observation_retry_timer_.Start(
+        FROM_HERE, kRendererCloseObservationRetryDelay,
+        base::BindOnce(&State::RequestSelectedBucketDetails,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+
   void OnSelectedBucketDetails(
       bool incognito,
       std::vector<storage::mojom::IdbOriginMetadataPtr> origin_list) {
@@ -626,9 +686,15 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
                        renderer_storage_partition_->GetPath().IsParent(path);
               });
           if (selected_bucket_id || bucket->paths.empty() ||
-              !paths_are_partition_bound || bucket->clients.empty() ||
-              bucket->connection_count != 0) {
+              !paths_are_partition_bound || bucket->clients.empty()) {
             ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kStorage);
+            return;
+          }
+          if (bucket->connection_count != 0) {
+            // The renderer's database.close() must become observable before
+            // ForceClose. Otherwise ForceClose could be the action that tears
+            // down the live renderer connection rather than a receipt for it.
+            ScheduleSelectedBucketDetailsRetry();
             return;
           }
           selected_bucket_id = bucket->bucket_locator.id;
@@ -666,7 +732,9 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   bool failure_reported_ = false;
   bool profile_bound_cleanup_completed_ = false;
   bool renderer_primary_commit_seen_ = false;
+  bool renderer_primary_navigation_failed_ = false;
   bool renderer_page_completed_ = false;
+  bool renderer_completion_check_scheduled_ = false;
   SmokeMode mode_ = SmokeMode::kNone;
   raw_ptr<content::BrowserContext> browser_context_ = nullptr;
   WasmProfileIndexedDBCloseReceiptLifetime close_receipt_lifetime_;
@@ -681,6 +749,7 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   std::unique_ptr<content::WebContents> renderer_web_contents_;
   GURL renderer_page_url_;
   base::OneShotTimer renderer_operation_timeout_;
+  base::OneShotTimer renderer_close_observation_retry_timer_;
   base::WeakPtrFactory<State> weak_ptr_factory_{this};
 };
 

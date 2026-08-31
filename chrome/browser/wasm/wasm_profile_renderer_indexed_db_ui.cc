@@ -121,7 +121,42 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
   const tokenKey = "m7-renderer-indexed-db-token-v1";
   const fenceKey = "m7-renderer-indexed-db-close-fence-v1";
   const fenceValue = "m7-renderer-indexed-db-close-fence-value-v1";
-  const fail = () => { document.title = "m7-indexed-db-failed"; };
+  // Never surface an exception value or a token. The fixed category is enough
+  // to distinguish a renderer storage failure from a navigation failure in
+  // this source-selected test artifact.
+  const fixedFailureCategories = new Set([
+    "arguments", "fence-abort", "fence-error", "fence-exception",
+    "open-abort", "open-backing-store", "open-blocked", "open-exception",
+    "open-invalid-state", "open-missing-bucket", "open-not-allowed",
+    "open-other", "open-quota", "open-security", "open-unknown",
+    "read-a-mismatch", "read-b-mismatch", "read-error", "read-exception",
+    "unknown", "write-abort", "write-error", "write-exception",
+  ]);
+  const fail = (category = "unknown") => {
+    const fixedCategory = fixedFailureCategories.has(category) ? category :
+        "unknown";
+    console.error(
+        "CHROMIUM_WASM_M7_INDEXED_DB_RENDERER_FAILURE:" + fixedCategory);
+    document.title = "m7-indexed-db-failed";
+  };
+
+  const classifyOpenError = (request) => {
+    switch (request.error && request.error.name) {
+      case "AbortError": return "open-abort";
+      case "InvalidStateError": return "open-invalid-state";
+      case "NotAllowedError": return "open-not-allowed";
+      case "QuotaExceededError": return "open-quota";
+      case "SecurityError": return "open-security";
+      case "UnknownError":
+        if (request.error && request.error.message === "Internal error.") {
+          return "open-missing-bucket";
+        }
+        return request.error && request.error.message ===
+            "Internal error opening backing store for indexedDB.open." ?
+            "open-backing-store" : "open-unknown";
+      default: return "open-other";
+    }
+  };
 
   const hasExactParameters = (expectedNames) => {
     const names = Array.from(parameters.keys());
@@ -134,7 +169,7 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
     try {
       request = globalThis.indexedDB.open(databaseName, 1);
     } catch (_error) {
-      reject();
+      reject("open-exception");
       return;
     }
     request.onupgradeneeded = () => {
@@ -144,8 +179,8 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject();
-    request.onblocked = () => reject();
+    request.onerror = () => reject(classifyOpenError(request));
+    request.onblocked = () => reject("open-blocked");
   });
 
   const readToken = (database) => new Promise((resolve, reject) => {
@@ -154,11 +189,11 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       request = database.transaction(storeName, "readonly")
           .objectStore(storeName).get(tokenKey);
     } catch (_error) {
-      reject();
+      reject("read-exception");
       return;
     }
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject();
+    request.onerror = () => reject("read-error");
   });
 
   const writeToken = (database, token) => new Promise((resolve, reject) => {
@@ -167,12 +202,12 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       transaction = database.transaction(storeName, "readwrite");
       transaction.objectStore(storeName).put(token, tokenKey);
     } catch (_error) {
-      reject();
+      reject("write-exception");
       return;
     }
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject();
-    transaction.onabort = () => reject();
+    transaction.onerror = () => reject("write-error");
+    transaction.onabort = () => reject("write-abort");
   });
 
   const writeFence = (database) => new Promise((resolve, reject) => {
@@ -181,12 +216,12 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       transaction = database.transaction(storeName, "readwrite");
       transaction.objectStore(storeName).put(fenceValue, fenceKey);
     } catch (_error) {
-      reject();
+      reject("fence-exception");
       return;
     }
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject();
-    transaction.onabort = () => reject();
+    transaction.onerror = () => reject("fence-error");
+    transaction.onabort = () => reject("fence-abort");
   });
 
   const complete = async () => {
@@ -210,7 +245,7 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       const database = await openDatabase();
       try {
         if (await readToken(database) !== tokenA) {
-          fail();
+          fail("read-a-mismatch");
           return;
         }
         await writeToken(database, tokenB);
@@ -227,7 +262,7 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       const database = await openDatabase();
       try {
         if (await readToken(database) !== tokenB) {
-          fail();
+          fail("read-b-mismatch");
           return;
         }
         await writeFence(database);
@@ -238,10 +273,10 @@ constexpr char kRendererIndexedDBScript[] = R"JS((() => {
       return;
     }
 
-    fail();
+    fail("arguments");
   };
 
-  complete().catch(() => fail());
+  complete().catch((category) => fail(category));
 })();
 )JS";
 

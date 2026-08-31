@@ -81,6 +81,40 @@ class RendererIndexedDBOuterReloadHostTest(unittest.TestCase):
         self.assertIn("m7-indexed-db-failed", page)
         self.assertIn("m7-renderer-indexed-db-close-fence-v1", page)
         self.assertIn("transaction.oncomplete", page)
+        self.assertIn("const fixedFailureCategories = new Set([", page)
+        self.assertIn("fixedFailureCategories.has(category)", page)
+        self.assertIn('"CHROMIUM_WASM_M7_INDEXED_DB_RENDERER_FAILURE:" + fixedCategory', page)
+        self.assertNotIn('"CHROMIUM_WASM_M7_INDEXED_DB_RENDERER_FAILURE:" + category', page)
+
+    def test_browser_waits_for_renderer_close_before_force_close_receipt(self) -> None:
+        smoke = source("chrome/browser/wasm/wasm_profile_indexed_db_smoke.cc")
+        self.assertIn("CreateForFixedStoragePartition", smoke)
+        self.assertIn("kRendererCloseObservationRetryDelay", smoke)
+        self.assertIn("renderer_close_observation_retry_timer_", smoke)
+        self.assertIn("ScheduleSelectedBucketDetailsRetry();", smoke)
+        self.assertIn("bucket->connection_count != 0", smoke)
+        self.assertLess(
+            smoke.index("ScheduleSelectedBucketDetailsRetry();"),
+            smoke.index("GetIndexedDBControl().ForceClose("),
+        )
+
+    def test_browser_defers_renderer_completion_out_of_observer_notification(self) -> None:
+        smoke = source("chrome/browser/wasm/wasm_profile_indexed_db_smoke.cc")
+        self.assertIn("void ScheduleRendererPageCompletion()", smoke)
+        self.assertIn("void RunRendererPageCompletion()", smoke)
+        self.assertIn("renderer_completion_check_scheduled_", smoke)
+        self.assertIn("renderer_primary_navigation_failed_", smoke)
+        self.assertIn(
+            "base::SequencedTaskRunner::GetCurrentDefault()->PostTask(", smoke
+        )
+        self.assertLess(
+            smoke.index("ScheduleRendererPageCompletion();", smoke.index("void TitleWasSet")),
+            smoke.index("void ScheduleRendererPageCompletion()"),
+        )
+        self.assertLess(
+            smoke.index("void DidFinishNavigation("),
+            smoke.index("void ScheduleRendererPageCompletion()"),
+        )
 
     def test_source_selected_build_contract_is_not_a_generic_renderer_database_target(self) -> None:
         gni = source("chrome/browser/wasm/wasm_profile_indexed_db_smoke.gni")
