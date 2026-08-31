@@ -1,0 +1,31 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/wasm.gni")
+import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
+import(
+    "//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
+
+# The renderer IndexedDB witness is deliberately a standalone, source-selected
+# M7 artifact. Its persistent child StoragePartition is limited to the exact
+# chrome://m7-indexed-db/ origin; do not combine it with existing direct-store
+# or aggregate acceptances until their owner shutdown receipts are integrated.
+if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+  assert(
+      !enable_chromium_wasm_m7_profile_preferences_test &&
+          !enable_chromium_wasm_m7_profile_database_test &&
+          !enable_chromium_wasm_m7_default_partition_local_storage_test &&
+          !enable_chromium_wasm_m7_profile_cookie_local_storage_test &&
+          !enable_chromium_wasm_m7_profile_cookie_history_local_storage_test &&
+          !enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test &&
+          !enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test &&
+          !enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic,
+      "M7 renderer IndexedDB acceptance requires its own fresh output " +
+          "configuration")
+  assert(
+      get_path_info(root_out_dir, "name") == "wasm-chrome-m7-profile-indexed-db",
+      "M7 renderer IndexedDB acceptance must use " +
+          "out/wasm-chrome-m7-profile-indexed-db")
+}

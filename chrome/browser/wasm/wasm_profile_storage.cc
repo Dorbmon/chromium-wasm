@@ -34,7 +34,8 @@ constexpr char kProfileLeaseName[] = "chromium-wasm-profile-v1";
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
 constexpr char kWasmFsRootPath[] = "/";
 constexpr char kProfileDefaultPath[] = "/profile/Default";
 #endif
@@ -50,7 +51,8 @@ enum class ProfileStorageMount {
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   kDefaultProfile,
 #endif
 };
@@ -90,7 +92,8 @@ class WasmProfileStorageState {
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
     backend_t profile_root_backend = nullptr;
     if (mount == ProfileStorageMount::kDefaultProfile) {
       const int profile_root_result =
@@ -134,7 +137,8 @@ class WasmProfileStorageState {
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
     if (mount == ProfileStorageMount::kDefaultProfile) {
       has_expected_mount_identity =
           HasExpectedDefaultProfileMountIdentity(profile_root_backend, backend);
@@ -461,7 +465,8 @@ class WasmProfileStorageState {
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   static int PrepareVolatileProfileRoot(backend_t* profile_root_backend) {
     CHECK(profile_root_backend);
 
@@ -472,11 +477,11 @@ class WasmProfileStorageState {
       return NegativeErrnoOrEio();
     }
 
-    // The dedicated Preferences probe stores only Default/Preferences. Keep
-    // its containing user-data directory on WasmFS's default memory backend
-    // rather than creating /profile from the leased V4 OPFS backend. EEXIST is
-    // acceptable only after the identity check below; it is never a fallback
-    // to an unknown existing mount.
+    // The source-selected Default-profile acceptances keep their containing
+    // user-data directory on WasmFS's default memory backend rather than
+    // creating /profile from the leased V4 OPFS backend. EEXIST is acceptable
+    // only after the identity check below; it is never a fallback to an
+    // unknown existing mount.
     const int create_profile_root_result = wasmfs_create_directory(
         kProfileRootPath, /*mode=*/0700, wasmfs_root_backend);
     if (create_profile_root_result != 0 &&
@@ -505,7 +510,8 @@ class WasmProfileStorageState {
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   static bool HasExpectedDefaultProfileMountIdentity(
       backend_t profile_root_backend,
       backend_t leased_backend) {
@@ -617,7 +623,8 @@ bool InitializeWasmProfileStorage() {
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
 bool InitializeWasmProfilePreferencesStorage() {
   return GetWasmProfileStorageState().Initialize(
       ProfileStorageMount::kDefaultProfile);

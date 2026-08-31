@@ -62,6 +62,9 @@ class WasmContentBrowserClient final : public content::ContentBrowserClient {
       network::mojom::NetworkContextParams* network_context_params,
       cert_verifier::mojom::CertVerifierCreationParams*
           cert_verifier_creation_params) override;
+  content::StoragePartitionConfig GetStoragePartitionConfigForSite(
+      content::BrowserContext* browser_context,
+      const GURL& site) override;
   bool IsHandledURL(const GURL& url) override;
   bool ShouldEnableBtm(content::BrowserContext* browser_context) override;
 };

@@ -21,6 +21,7 @@
 #endif
 #include "components/embedder_support/user_agent_utils.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/common/url_constants.h"
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
@@ -110,6 +111,82 @@ bool IsWasmM7RendererLocalStorageURL(const GURL& url) {
     return false;
   }
   return url.path() == "/m7_local_storage_renderer.js" && !url.has_query();
+}
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+constexpr char kWasmM7RendererIndexedDBHost[] = "m7-indexed-db";
+constexpr char kWasmM7RendererIndexedDBPartitionDomain[] = "wasmindexeddb";
+constexpr char kWasmM7RendererIndexedDBPartitionName[] = "indexeddb";
+
+bool IsWasmM7RendererIndexedDBToken(std::string_view token) {
+  if (token.size() != 64) {
+    return false;
+  }
+  for (const char character : token) {
+    if (!((character >= '0' && character <= '9') ||
+          (character >= 'a' && character <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsWasmM7RendererIndexedDBURL(const GURL& url) {
+  if (!url.SchemeIs(content::kChromeUIScheme) ||
+      url.host() != kWasmM7RendererIndexedDBHost || url.has_username() ||
+      url.has_password() || url.has_port() || url.has_ref()) {
+    return false;
+  }
+  // The root is the only navigable test document, and only its private
+  // renderer mode/token query is permitted. Its external script is the sole
+  // additional resource needed by the test WebUI; arbitrary subpaths remain
+  // external protocols.
+  if (url.path().empty() || url.path() == "/") {
+    const std::string_view query = url.query();
+    constexpr std::string_view kWritePrefix =
+        "mode=renderer-write&token-a=";
+    constexpr std::string_view kVerifyAWriteBPrefix =
+        "mode=renderer-verify-a-write-b&token-a=";
+    constexpr std::string_view kVerifyAWriteBSeparator = "&token-b=";
+    constexpr std::string_view kVerifyBPrefix =
+        "mode=renderer-verify-b&token-b=";
+    if (query.starts_with(kWritePrefix)) {
+      return IsWasmM7RendererIndexedDBToken(
+          query.substr(kWritePrefix.size()));
+    }
+    if (query.starts_with(kVerifyBPrefix)) {
+      return IsWasmM7RendererIndexedDBToken(
+          query.substr(kVerifyBPrefix.size()));
+    }
+    if (!query.starts_with(kVerifyAWriteBPrefix)) {
+      return false;
+    }
+
+    const std::string_view tokens =
+        query.substr(kVerifyAWriteBPrefix.size());
+    const size_t separator = tokens.find(kVerifyAWriteBSeparator);
+    if (separator == std::string_view::npos) {
+      return false;
+    }
+    const std::string_view token_a = tokens.substr(0, separator);
+    const std::string_view token_b =
+        tokens.substr(separator + kVerifyAWriteBSeparator.size());
+    return IsWasmM7RendererIndexedDBToken(token_a) &&
+           IsWasmM7RendererIndexedDBToken(token_b) && token_a != token_b;
+  }
+  return url.path() == "/m7_indexed_db_renderer.js" && !url.has_query();
+}
+
+bool IsWasmM7RendererIndexedDBSite(const GURL& site) {
+  // StoragePartition selection is site-scoped rather than resource-scoped.
+  // The page and its one allowed script must resolve to the same non-default
+  // partition even when Content has canonicalized the supplied site URL.
+  return site.SchemeIs(content::kChromeUIScheme) &&
+         site.host() == kWasmM7RendererIndexedDBHost &&
+         (site.path().empty() || site.path() == "/") &&
+         !site.has_username() && !site.has_password() && !site.has_port() &&
+         !site.has_query() && !site.has_ref();
 }
 #endif
 
@@ -206,6 +283,26 @@ void WasmContentBrowserClient::ConfigureNetworkContextParams(
 #endif
 }
 
+content::StoragePartitionConfig
+WasmContentBrowserClient::GetStoragePartitionConfigForSite(
+    content::BrowserContext* browser_context,
+    const GURL& site) {
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  if (IsWasmM7RendererIndexedDBSite(site)) {
+    // The isolated M7 IndexedDB probe owns one persistent, non-default
+    // StoragePartition. The lowercase domain and name satisfy Chromium's
+    // partition-path contract; normal Wasm sites retain the base default
+    // selection below.
+    return content::StoragePartitionConfig::Create(
+        browser_context, kWasmM7RendererIndexedDBPartitionDomain,
+        kWasmM7RendererIndexedDBPartitionName,
+        /*in_memory=*/false);
+  }
+#endif
+  return content::ContentBrowserClient::GetStoragePartitionConfigForSite(
+      browser_context, site);
+}
+
 bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
   if (!url.is_valid())
     return false;
@@ -228,6 +325,9 @@ bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
            || IsWasmM7RendererLocalStorageURL(url)
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+           || IsWasmM7RendererIndexedDBURL(url)
 #endif
            ));
 }

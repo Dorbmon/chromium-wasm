@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 renderer database outer-reload smoke</title>
+<main id="m7-renderer-indexed-db-outer-reload-root" data-state="starting">
+  <h1>Chromium Wasm M7 renderer database outer-reload smoke</h1>
+  <p>
+    This witness runs three fresh Wasm modules across one initial outer page
+    and two DevTools-driven outer reloads. The browser-owned test page performs
+    the persistent-data operation; this host only relays fixed lifecycle
+    receipts.
+  </p>
+  <dl id="m7-renderer-indexed-db-outer-reload-versions"></dl>
+  <canvas id="m7-renderer-indexed-db-outer-reload-canvas" tabindex="0"
+      width="960" height="640"></canvas>
+  <p id="m7-renderer-indexed-db-outer-reload-status">starting</p>
+</main>
+<script type="module">
+  import {runChromeWasmRendererIndexedDBOuterReloadFromQuery} from
+      "./chrome_wasm_renderer_indexed_db_outer_reload_smoke.js";
+  void runChromeWasmRendererIndexedDBOuterReloadFromQuery();
+</script>

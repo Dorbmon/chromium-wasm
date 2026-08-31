@@ -34,7 +34,9 @@ class WasmProfileBookmarkLifetimeParticipant;
 class WasmProfileCookieLifetimeParticipant;
 class WasmProfileDatabaseLifetimeParticipant;
 class WasmProfileHistoryLifetimeParticipant;
+class WasmProfileIndexedDBLifetimeParticipant;
 class WasmProfileLocalStorageLifetimeParticipant;
+struct WasmProfileIndexedDBSmokeInput;
 struct WasmProfilePreferencesBookmarkSmokeInput;
 struct WasmProfilePreferencesCookieSmokeInput;
 struct WasmProfileLocalStorageSmokeInput;
@@ -206,6 +208,21 @@ class WasmProfile final : public Profile {
   bool DidLocalStorageSmokeSucceed() const;
   void CancelLocalStorageSmokeForShutdown();
   void QuarantineLocalStorageSmokeForFailureShutdown();
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // Starts the source-selected renderer IndexedDB witness as a profile-owned
+  // lifetime. Its transferred I/O hold remains active until the participant
+  // has received its selected persistent child-partition close receipt, or
+  // has been quarantined for fail-closed shutdown.
+  bool StartIndexedDBSmoke(
+      chrome::WasmProfileIndexedDBSmokeInput input,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+      base::OnceCallback<void(bool success)> completion);
+  bool HasActiveIndexedDBSmoke() const;
+  bool DidIndexedDBSmokeSucceed() const;
+  void CancelIndexedDBSmokeForShutdown();
+  void QuarantineIndexedDBSmokeForFailureShutdown();
 #endif
 
   // The M6 history bootstrap reads this process-local journal through a weak
@@ -407,6 +424,15 @@ class WasmProfile final : public Profile {
   // outlive this profile unless first detached into fail-closed quarantine.
   std::unique_ptr<chrome::WasmProfileLocalStorageLifetimeParticipant>
       local_storage_lifetime_participant_;
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // The renderer witness owns a WebContents and the selected child
+  // StoragePartition's IndexedDB close receipt. Profile teardown cannot
+  // destroy that partition while the participant remains active; owner loss
+  // moves an unfinished receipt into fail-closed quarantine instead.
+  std::unique_ptr<chrome::WasmProfileIndexedDBLifetimeParticipant>
+      indexed_db_lifetime_participant_;
 #endif
 
   bool shutdown_ = false;

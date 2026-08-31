@@ -15,6 +15,7 @@ import(
     "//chrome/browser/wasm/wasm_profile_bookmark_cookie_history_database_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_indexed_db_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_history_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
@@ -1934,6 +1935,13 @@ config("wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_con
   ]
 }
 
+config("wasm_profile_m7_indexed_db_smoke_config") {
+  # WasmProfile and WasmBrowserMainParts own the selected renderer IndexedDB
+  # lifetime participant only in this artifact. Propagate the public layout
+  # define to every direct consumer.
+  defines = [ "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST=1" ]
+}
+
 source_set("wasm_profile") {
   sources = [
     "wasm_profile.cc",
@@ -1978,6 +1986,10 @@ source_set("wasm_profile") {
   if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
     public_configs = [ ":wasm_profile_m7_local_storage_smoke_config" ]
     deps += [ ":wasm_profile_local_storage_smoke" ]
+  }
+  if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+    public_configs = [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+    deps += [ ":wasm_profile_indexed_db_smoke" ]
   }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     public_configs = [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
@@ -2391,6 +2403,65 @@ if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
   }
 }
 
+# This source-selected renderer witness uses Chromium's own IndexedDB API in
+# one exact WebUI document, validates its non-default on-disk partition, and
+# holds profile I/O until that live bucket's ForceClose callback completes.
+if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+  # Keep the profile-I/O controller independently testable. It owns no
+  # BrowserContext, WebContents, or IndexedDB remote; the renderer participant
+  # supplies those owners and passes only its selected-bucket close receipt.
+  source_set("wasm_profile_indexed_db_close_receipt_lifetime") {
+    public = [ "wasm_profile_indexed_db_close_receipt_lifetime.h" ]
+
+    sources = [ "wasm_profile_indexed_db_close_receipt_lifetime.cc" ]
+
+    public_deps = [ ":wasm_profile_ordered_drain_lifecycle" ]
+
+    deps = [ "//base" ]
+  }
+
+  source_set("wasm_profile_indexed_db_smoke") {
+    public = [
+      "wasm_profile_indexed_db_smoke.h",
+      "wasm_profile_renderer_indexed_db_ui.h",
+    ]
+
+    sources = [
+      "wasm_profile_indexed_db_smoke.cc",
+      "wasm_profile_renderer_indexed_db_ui.cc",
+    ]
+
+    configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+    public_configs = [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+
+    deps = [
+      ":wasm_profile_indexed_db_close_receipt_lifetime",
+      ":wasm_profile_ordered_drain_lifecycle",
+      "//base",
+      "//components/services/storage/privileged/mojom",
+      "//content/public/common",
+      "//crypto",
+      "//third_party/blink/public/common",
+      "//url",
+    ]
+
+    public_deps = [ "//content/public/browser" ]
+  }
+
+  test("wasm_profile_indexed_db_close_receipt_lifetime_unittests") {
+    sources = [ "wasm_profile_indexed_db_close_receipt_lifetime_unittest.cc" ]
+
+    deps = [
+      ":wasm_profile_indexed_db_close_receipt_lifetime",
+      ":wasm_profile_ordered_drain_lifecycle",
+      "//base",
+      "//base/test:run_all_unittests",
+      "//base/test:test_support",
+      "//testing/gtest",
+    ]
+  }
+}
+
 # This owns only the pure, fail-closed classification for the result of a
 # scoped storage drain. It has no OPFS/WasmFS implementation dependency, so
 # its test can prove result handling without activating a profile backend.
@@ -2424,6 +2495,9 @@ source_set("wasm_profile_storage") {
   }
   if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
     defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+  }
+  if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+    configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
   }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
@@ -2684,6 +2758,10 @@ source_set("wasm_browser_main_parts") {
     defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
     deps += [ ":wasm_profile_local_storage_smoke" ]
   }
+  if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+    configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+    deps += [ ":wasm_profile_indexed_db_smoke" ]
+  }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
     deps += [
@@ -2733,7 +2811,8 @@ source_set("wasm_browser_main_parts") {
       enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
       enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
-      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
+      enable_chromium_wasm_m7_profile_indexed_db_test) {
     deps += [
       ":wasm_profile_persistent_prefs_lifetime_participant",
       ":wasm_profile_storage",
@@ -2771,6 +2850,13 @@ source_set("wasm_content_browser_client") {
 
   if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
     defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+  }
+
+  if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+    # The Content client owns the exact child-partition selection, and it
+    # constructs WasmBrowserMainParts, whose public layout has this same
+    # source-selected participant declaration.
+    configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
   }
 
   if (enable_chromium_wasm_m7_profile_database_test) {

@@ -24,6 +24,7 @@ import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_history_local_storage_smoke.gni")
+import("//chrome/browser/wasm/wasm_profile_indexed_db_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_shutdown_fence_failure_diagnostic.gni")
 assert(
@@ -678,13 +679,21 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST=1",
       ]
     }
+    if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+      # This bounded renderer witness receives a persistent child
+      # StoragePartition only for chrome://m7-indexed-db/. It does not alter
+      # ordinary Chrome's in-memory default StoragePartition.
+      output_name = "chrome_wasm_m7_profile_indexed_db_test"
+      defines = [ "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST=1" ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test ||
         enable_chromium_wasm_m7_default_partition_local_storage_test ||
         enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
         enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
         enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
-        enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
+        enable_chromium_wasm_m7_profile_indexed_db_test) {
       configs += [ ":chrome_wasm_profile_storage" ]
     }
     deps = [
@@ -707,6 +716,9 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     }
     if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_local_storage_smoke" ]
+    }
+    if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+      deps += [ "//chrome/browser/wasm:wasm_profile_indexed_db_smoke" ]
     }
     if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
       deps += [
@@ -748,7 +760,8 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
         enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
         enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
-        enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test ||
+        enable_chromium_wasm_m7_profile_indexed_db_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_storage" ]
     } else {
       deps += [ "//chrome/browser/wasm:wasm_profile_shutdown_failure_latch" ]

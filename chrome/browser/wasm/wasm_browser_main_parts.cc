@@ -42,6 +42,7 @@
 #if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -77,6 +78,13 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+// This source-selected witness owns one real renderer IndexedDB operation in
+// its exact persistent child StoragePartition. GN's include checker does not
+// evaluate target-specific definitions.
+#include "chrome/browser/wasm/wasm_profile_indexed_db_smoke.h"  // nogncheck
+#include "chrome/browser/wasm/wasm_profile_renderer_indexed_db_ui.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -90,6 +98,7 @@
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -273,6 +282,7 @@ constexpr char kRequiredAssets[][24] = {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -417,6 +427,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -430,6 +441,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -454,6 +466,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -472,6 +485,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -507,12 +521,19 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
   // WebContents is created; normal chrome_wasm has no such route.
   chrome::EnsureWasmProfileRendererLocalStorageWebUIConfigRegistered();
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // The isolated IndexedDB document is the only WebUI route that selects the
+  // persistent child partition. Register it before its transient WebContents
+  // is created; normal chrome_wasm has neither this route nor that partition.
+  chrome::EnsureWasmProfileRendererIndexedDBWebUIConfigRegistered();
+#endif
 
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -533,6 +554,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -547,6 +569,7 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -654,6 +677,60 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
         std::move(*local_storage_input), std::move(*profile_io_hold),
         std::move(local_storage_completion));
     if (!local_storage_started) {
+      RequestShutdown();
+    }
+    return content::RESULT_CODE_NORMAL_EXIT;
+  }
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // The standalone renderer IndexedDB witness starts after the V4 Default
+  // mount and profile admission, before ordinary host input or Browser setup.
+  // The renderer itself commits and closes the database; this profile-owned
+  // participant then verifies the actual persistent child partition and waits
+  // for the selected bucket's backing-store close receipt before handoff.
+  if (chrome::IsWasmProfileIndexedDBSmokeEnabled()) {
+    auto indexed_db_input = chrome::TakeWasmProfileIndexedDBSmokeInput();
+    if (!indexed_db_input) {
+      LOG(ERROR) << "chrome_wasm could not consume its IndexedDB request";
+      chrome::NotifyWasmProfileIndexedDBSmokeOperationResult(false);
+      RequestShutdown();
+      return content::RESULT_CODE_NORMAL_EXIT;
+    }
+    auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+    if (!profile_io_hold) {
+      LOG(ERROR) << "chrome_wasm could not admit its IndexedDB profile I/O";
+      chrome::ReportWasmProfileIndexedDBSmokeFailure(
+          chrome::WasmProfileIndexedDBSmokeFailureStage::kStorage);
+      chrome::NotifyWasmProfileIndexedDBSmokeOperationResult(false);
+      RequestShutdown();
+      return content::RESULT_CODE_NORMAL_EXIT;
+    }
+    auto indexed_db_completion = base::BindOnce(
+        [](base::WeakPtr<WasmBrowserMainParts> main_parts, bool success) {
+          const bool participant_succeeded =
+              success && main_parts && main_parts->profile_ &&
+              main_parts->profile_->DidIndexedDBSmokeSucceed();
+          chrome::NotifyWasmProfileIndexedDBSmokeOperationResult(
+              participant_succeeded);
+          if (!participant_succeeded) {
+            LOG(ERROR) << "chrome_wasm IndexedDB backing-store close receipt "
+                          "did not complete cleanly";
+          }
+          if (main_parts) {
+            main_parts->RequestShutdown();
+            // A failed or cancelled close may complete after an earlier
+            // shutdown request; resume the profile-owner gate on its terminal
+            // UI-sequence delivery rather than leaving it deferred.
+            main_parts->MaybeStartShutdown();
+          }
+        },
+        weak_ptr_factory_.GetWeakPtr());
+    const bool indexed_db_started = profile_->StartIndexedDBSmoke(
+        std::move(*indexed_db_input), std::move(*profile_io_hold),
+        std::move(indexed_db_completion));
+    if (!indexed_db_started) {
+      chrome::NotifyWasmProfileIndexedDBSmokeOperationResult(false);
       RequestShutdown();
     }
     return content::RESULT_CODE_NORMAL_EXIT;
@@ -1191,6 +1268,16 @@ void WasmBrowserMainParts::RequestShutdown() {
         chrome::WasmProfileDatabaseSmokeFailureStage::kLifecycle);
   }
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // This dedicated artifact must not make a lifecycle request look clean
+  // before its renderer bucket has delivered its selected close receipt.
+  if (profile_ && chrome::IsWasmProfileIndexedDBSmokeEnabled() &&
+      !profile_->HasActiveIndexedDBSmoke() &&
+      !chrome::DidWasmProfileIndexedDBSmokeSucceed()) {
+    chrome::ReportWasmProfileIndexedDBSmokeFailure(
+        chrome::WasmProfileIndexedDBSmokeFailureStage::kLifecycle);
+  }
+#endif
   StopM9RepeatingTimerSmoke();
   shutdown_requested_ = true;
   // Creation status uses BrowserProcess shutdown state. Set it as soon as
@@ -1345,6 +1432,16 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (profile_ && profile_->HasActiveLocalStorageSmoke()) {
     profile_->CancelLocalStorageSmokeForShutdown();
+    return;
+  }
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // The selected persistent child partition has a real backing store outside
+  // WasmProfile's default in-memory partition. Do not start the Preferences
+  // fence or destroy the profile while its close receipt is still pending.
+  if (profile_ && profile_->HasActiveIndexedDBSmoke()) {
+    profile_->CancelIndexedDBSmokeForShutdown();
     return;
   }
 #endif
@@ -2180,6 +2277,15 @@ void WasmBrowserMainParts::FinishShutdown() {
   }
 #endif
 
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // FinishShutdown() can be reached directly from a browser lifecycle result.
+  // Preserve the same selected-bucket close-receipt gate as MaybeStartShutdown.
+  if (profile_ && profile_->HasActiveIndexedDBSmoke()) {
+    profile_->CancelIndexedDBSmokeForShutdown();
+    return;
+  }
+#endif
+
   if (profile_) {
     // Browser/Core destruction completed before this method can run. Shut the
     // profile's keyed services down first, then keep the UI loop alive until
@@ -2209,6 +2315,9 @@ void WasmBrowserMainParts::FinishShutdown() {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
                 chrome::NotifyWasmProfileLocalStorageSmokeFenceResult(false);
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+                chrome::NotifyWasmProfileIndexedDBSmokeFenceResult(false);
+#endif
                 return;
               }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
@@ -2228,6 +2337,9 @@ void WasmBrowserMainParts::FinishShutdown() {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
               chrome::NotifyWasmProfileLocalStorageSmokeFenceResult(success);
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+              chrome::NotifyWasmProfileIndexedDBSmokeFenceResult(success);
 #endif
               if (!success) {
                 LOG(ERROR) << "chrome_wasm Preferences shutdown write/readback "
@@ -2251,6 +2363,7 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -2344,6 +2457,14 @@ void WasmBrowserMainParts::FinishShutdown() {
       smoke_allows_storage_lifecycle = false;
     }
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    if (chrome::IsWasmProfileIndexedDBSmokeEnabled() &&
+        !chrome::DidWasmProfileIndexedDBSmokeSucceed()) {
+      // A selected-bucket close result failure must select failure retirement;
+      // it cannot become a V4 handoff or a lease-success marker.
+      smoke_allows_storage_lifecycle = false;
+    }
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -2363,6 +2484,10 @@ void WasmBrowserMainParts::FinishShutdown() {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::NotifyWasmProfileLocalStorageSmokeStorageLifecycle(
+        smoke_allows_storage_lifecycle);
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    chrome::NotifyWasmProfileIndexedDBSmokeStorageLifecycle(
         smoke_allows_storage_lifecycle);
 #endif
     if (!profile_shutdown_notified) {
@@ -2450,6 +2575,11 @@ void WasmBrowserMainParts::ShutdownFoundation() {
       profile_->QuarantineLocalStorageSmokeForFailureShutdown();
     }
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    if (profile_->HasActiveIndexedDBSmoke()) {
+      profile_->QuarantineIndexedDBSmokeForFailureShutdown();
+    }
+#endif
     profile_->Shutdown();
     // A normal FinishShutdown() releases the profile before it quits the UI
     // loop. Reaching this fallback means startup or the write/readback fence
@@ -2457,6 +2587,7 @@ void WasmBrowserMainParts::ShutdownFoundation() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \

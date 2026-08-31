@@ -44,6 +44,11 @@ declare_args() {
   enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test =
       false
 
+  # Selects a standalone renderer IndexedDB persistence witness. It creates
+  # one exact persistent child StoragePartition below the M7 V4 Default mount;
+  # normal chrome_wasm and the in-memory default partition remain unchanged.
+  enable_chromium_wasm_m7_profile_indexed_db_test = false
+
   # Linear-memory bounds shared by the Emscripten link and Chromium's M3
   # in-process memory-budget policy.
   chromium_wasm_initial_memory_bytes = 67108864
@@ -82,4 +87,7 @@ if (current_toolchain == default_toolchain) {
       !enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test || (is_wasm && enable_chromium_wasm_chrome),
       "M7 Bookmark + Cookie + History + Database + LocalStorage acceptance " +
           "requires Wasm Chrome")
+  assert(!enable_chromium_wasm_m7_profile_indexed_db_test ||
+             (is_wasm && enable_chromium_wasm_chrome),
+         "M7 renderer IndexedDB acceptance requires Wasm Chrome")
 }

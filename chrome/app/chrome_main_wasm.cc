@@ -16,6 +16,7 @@
 #if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -49,9 +50,15 @@
 // and target. GN's include checker does not evaluate target-specific defines.
 #include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+// The standalone renderer IndexedDB acceptance alone owns this private
+// protocol; ordinary chrome_wasm never parses its switches or links it.
+#include "chrome/browser/wasm/wasm_profile_indexed_db_smoke.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -93,6 +100,7 @@ bool IsNormalChromeMainResult(int result) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -176,6 +184,9 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   bool local_storage_smoke_enabled = false;
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  bool indexed_db_smoke_enabled = false;
+#endif
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -193,6 +204,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
@@ -242,6 +254,16 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     if (local_storage_smoke_requested) {
       local_storage_smoke_enabled =
           chrome::EnableWasmProfileLocalStorageSmokeTestMode();
+    }
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    // This dedicated artifact recognizes only its renderer-owned protocol.
+    // The tokens remain in Chromium and are never forwarded to the outer host.
+    const bool indexed_db_smoke_requested =
+        chrome::HasWasmProfileIndexedDBSmokeArguments();
+    if (indexed_db_smoke_requested) {
+      indexed_db_smoke_enabled =
+          chrome::EnableWasmProfileIndexedDBSmokeTestMode();
     }
 #endif
 
@@ -384,6 +406,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -420,6 +443,11 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       // while /profile/Default is V4-mounted. Its one explicit LocalStorage
       // owner is the only admitted non-Preferences profile store.
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+#elif defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    if (!indexed_db_smoke_requested || !indexed_db_smoke_enabled) {
+      // Keep /profile/Default unmounted unless this one exact renderer-owned
+      // IndexedDB protocol was accepted before Content can create a profile.
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
@@ -428,6 +456,8 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
 #elif defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)
+    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
+#elif defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
     } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {
 #else
     } else if (!chrome::InitializeWasmProfileStorage()) {
@@ -455,6 +485,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
       if (local_storage_smoke_requested) {
         chrome::ReportWasmProfileLocalStorageSmokeFailure(
             chrome::WasmProfileLocalStorageSmokeFailureStage::kStorage);
+      }
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+      if (indexed_db_smoke_requested) {
+        chrome::ReportWasmProfileIndexedDBSmokeFailure(
+            chrome::WasmProfileIndexedDBSmokeFailureStage::kStorage);
       }
 #endif
       // A failed mount can still have acquired a lease. Its scoped cleanup
@@ -506,6 +542,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
         chrome::WasmProfileLocalStorageSmokeFailureStage::kContent);
   }
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  if (indexed_db_smoke_enabled && !IsNormalChromeMainResult(result)) {
+    chrome::ReportWasmProfileIndexedDBSmokeFailure(
+        chrome::WasmProfileIndexedDBSmokeFailureStage::kContent);
+  }
+#endif
 
   // The dedicated M7 probes seal and drain their exact V4 leased OPFS backend
   // only after ContentMain and its delegate have both returned, when no
@@ -514,6 +556,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -566,6 +609,10 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     chrome::NotifyWasmProfileLocalStorageSmokeBackendDrain(
         drain_result.Succeeded());
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+    chrome::NotifyWasmProfileIndexedDBSmokeBackendDrain(
+        drain_result.Succeeded());
+#endif
     if (!drain_result.Succeeded()) {
       // Before acknowledged Web Locks release, a drain failure has no safe
       // handoff. A post-release worker-retirement failure has already released
@@ -607,6 +654,12 @@ extern "C" int ChromeMain(int argc, const char** argv) {
     if (IsNormalChromeMainResult(result)) {
       result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
+#elif defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  } else if (indexed_db_smoke_enabled) {
+    chrome::NotifyWasmProfileIndexedDBSmokeBackendDrain(false);
+    if (IsNormalChromeMainResult(result)) {
+      result = CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+    }
 #endif
   }
 #endif
@@ -614,6 +667,7 @@ extern "C" int ChromeMain(int argc, const char** argv) {
 #if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \

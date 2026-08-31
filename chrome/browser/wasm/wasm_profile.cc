@@ -65,6 +65,10 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_indexed_db_smoke.h"  // nogncheck
+#endif
 #include "chrome/browser/wasm/wasm_profile_persistent_prefs_lifetime_participant.h"
 #include "chrome/browser/wasm/wasm_profile_prefs_fence_controller.h"
 #include "chrome/browser/wasm/wasm_session_navigation_journal.h"
@@ -189,7 +193,8 @@ WasmProfile::WasmProfile(
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   // The M7 caller must have transferred the construction-start admission
   // before the synchronous JsonPrefStore/PrefService read below can begin.
   CHECK(prefs_lifetime_profile_io_participant_);
@@ -301,6 +306,14 @@ WasmProfile::~WasmProfile() {
     QuarantineLocalStorageSmokeForFailureShutdown();
   }
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+  // The renderer participant owns a non-default persistent child partition.
+  // If profile destruction races its selected-bucket close receipt, retain
+  // its admitted I/O as outstanding so the outer V4 backend drain refuses.
+  if (indexed_db_lifetime_participant_) {
+    QuarantineIndexedDBSmokeForFailureShutdown();
+  }
+#endif
   // Do not let destruction classify the source-selected profile admission as
   // abandoned. An owner loss before the strict JsonPrefStore fence is a
   // failed profile operation, not a clean storage handoff.
@@ -388,7 +401,8 @@ bool WasmProfile::StartPrefsShutdownFence(
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   // A source-selected strict fence is not independently admissible. Its
   // profile-lifetime holder must remain live until this callback reports the
   // bounded write/readback result to the outer storage lifecycle.
@@ -686,6 +700,54 @@ void WasmProfile::QuarantineLocalStorageSmokeForFailureShutdown() {
 }
 #endif
 
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+bool WasmProfile::StartIndexedDBSmoke(
+    chrome::WasmProfileIndexedDBSmokeInput input,
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> completion) {
+  if (shutdown_ || indexed_db_lifetime_participant_ || !completion) {
+    (void)profile_io_hold.Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    return false;
+  }
+
+  indexed_db_lifetime_participant_ = std::make_unique<
+      chrome::WasmProfileIndexedDBLifetimeParticipant>(
+      this, profile_path_, std::move(input), std::move(profile_io_hold));
+  if (!indexed_db_lifetime_participant_->Start(std::move(completion))) {
+    // Start() has retired an unstarted admission as failed. Drop the inert
+    // participant so a later shutdown path cannot reinterpret that terminal
+    // result as a selected-bucket close receipt.
+    indexed_db_lifetime_participant_.reset();
+    return false;
+  }
+  return true;
+}
+
+bool WasmProfile::HasActiveIndexedDBSmoke() const {
+  return indexed_db_lifetime_participant_ &&
+         indexed_db_lifetime_participant_->IsActive();
+}
+
+bool WasmProfile::DidIndexedDBSmokeSucceed() const {
+  return indexed_db_lifetime_participant_ &&
+         indexed_db_lifetime_participant_->DidSucceed();
+}
+
+void WasmProfile::CancelIndexedDBSmokeForShutdown() {
+  if (indexed_db_lifetime_participant_) {
+    indexed_db_lifetime_participant_->Cancel();
+  }
+}
+
+void WasmProfile::QuarantineIndexedDBSmokeForFailureShutdown() {
+  if (indexed_db_lifetime_participant_ &&
+      !indexed_db_lifetime_participant_->QuarantineForFailureShutdown()) {
+    LOG(ERROR) << "chrome_wasm could not quarantine active IndexedDB I/O";
+  }
+}
+#endif
+
 void WasmProfile::OnPrefsShutdownFenceComplete(
     base::OnceCallback<void(bool success)> completion,
     bool success) {
@@ -699,7 +761,8 @@ void WasmProfile::OnPrefsShutdownFenceComplete(
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   // The outer M7 admission remains active until the inner controller has
   // observed the strict JsonPrefStore write/readback result. A missing or
   // previously completed participant is an explicit failure, never a clean
