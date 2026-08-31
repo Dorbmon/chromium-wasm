@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- Copyright 2026 The Chromium Authors
+     Use of this source code is governed by a BSD-style license that can be
+     found in the LICENSE file. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chromium Wasm M7 SQLite lock contention smoke</title>
+<main id="m7-profile-database-sqlite-lock-root" data-state="starting">
+  <h1>Chromium Wasm M7 SQLite lock contention smoke</h1>
+  <dl id="m7-profile-database-sqlite-lock-versions"></dl>
+  <canvas id="m7-profile-database-sqlite-lock-canvas" width="1" height="1" tabindex="0"
+      aria-label="Chromium Wasm SQLite lock contention smoke canvas"></canvas>
+  <pre id="m7-profile-database-sqlite-lock-status">starting</pre>
+</main>
+<script type="module">
+  import {runChromeWasmProfileDatabaseSqliteLockFromQuery} from
+      "./chrome_wasm_profile_database_sqlite_lock_smoke.js";
+
+  // The runner receives a fixed failure receipt from the module; do not echo
+  // a JavaScript exception because it could contain the private database token.
+  runChromeWasmProfileDatabaseSqliteLockFromQuery();
+</script>

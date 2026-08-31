@@ -39,6 +39,13 @@ enum class WasmProfileDatabaseSmokeMode {
 //   --wasm-profile-database-smoke=verify-b
 //   --wasm-profile-database-token-b=<64 lowercase hex>
 //
+// chrome_wasm_m7_profile_database_sqlite_lock_test is a separate
+// source-selected artifact. It accepts only this complete argument set:
+//
+//   --wasm-profile-database-smoke=sqlite-lock-contention
+//   --wasm-profile-database-token-a=<64 lowercase hex>
+//   --wasm-profile-database-token-b=<64 lowercase hex>
+//
 // chrome_wasm_m7_profile_database_lock_test is a separate source-selected
 // artifact. It accepts only this complete argument set:
 //
@@ -81,6 +88,10 @@ enum class WasmProfileDatabaseSmokeMode {
 //   CHROMIUM_WASM_M7_DATABASE:LEVELDB_WRITE_ACCEPTED sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:LEVELDB_LOCK_CONTENDER_REJECTED
 //   CHROMIUM_WASM_M7_DATABASE:LEVELDB_LOCK_RELEASE_REOPEN_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_LOCK_HOLDER_WRITE_A_ACCEPTED sha256=<digest>
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_LOCK_CONTENDER_BUSY
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_LOCK_RELEASE_REOPEN_A_INTEGRITY_OK sha256=<digest>
+//   CHROMIUM_WASM_M7_DATABASE:SQLITE_LOCK_POST_RELEASE_WRITE_READ_B_INTEGRITY_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:DATABASES_CLOSED sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:FENCE_OK sha256=<digest>
 //   CHROMIUM_WASM_M7_DATABASE:LEASE_RELEASED
@@ -107,6 +118,26 @@ enum class WasmProfileDatabaseSmokeMode {
 // fcntl range-lock behavior, SQLite locking, a concurrent full Chrome profile,
 // an external OPFS writer, directory durability, normal-profile persistence,
 // or M7 completion.
+//
+// The SQLite lock artifact is a separate source-selected receipt. It seeds one
+// SQLite file in the V4-mounted /profile/Default test-profile directory, opens
+// two real Chromium sql::Database connections before either writes, and keeps
+// the holder's rollback-journal transaction live after a real A write. The
+// contender's B write must fail with primary SQLite BUSY; it is explicitly
+// closed before the holder commits. Fresh handles then reopen and
+// FullIntegrityCheck A, write B, and independently reopen and verify B.
+// Its clean marker sequence is READY, SQLITE_LOCK_HOLDER_WRITE_A_ACCEPTED(A),
+// SQLITE_LOCK_CONTENDER_BUSY,
+// SQLITE_LOCK_RELEASE_REOPEN_A_INTEGRITY_OK(A),
+// SQLITE_LOCK_POST_RELEASE_WRITE_READ_B_INTEGRITY_OK(B),
+// DATABASES_CLOSED(B), FENCE_OK(B), and LEASE_RELEASED.
+//
+// This proves only real same-Wasm-process SQLite connection contention,
+// release, close/reopen, and integrity on one file in that V4-mounted
+// test-profile directory. It does not prove direct V4 fcntl range-lock
+// contention, contention between separate V4 mounts/profiles/documents/processes,
+// WAL or mmap semantics, an external OPFS writer, directory durability, crash
+// or power-loss recovery, normal-profile persistence, or M7 completion.
 //
 // The write-interruption artifact is a controlled write-interruption
 // diagnostic, not an M7 acceptance. It does not establish crash recovery,

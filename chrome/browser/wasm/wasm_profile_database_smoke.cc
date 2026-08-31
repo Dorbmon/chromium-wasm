@@ -35,6 +35,7 @@
 #include "leveldb/env.h"
 #include "leveldb/options.h"
 #include "sql/database.h"
+#include "sql/sqlite_result_code_values.h"
 #include "sql/statement.h"
 #include "sql/transaction.h"
 #include "third_party/leveldatabase/env_chromium.h"
@@ -56,6 +57,9 @@ constexpr char kVerifyBMode[] = "verify-b";
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
 constexpr char kLockContentionMode[] = "lock-contention";
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+constexpr char kSQLiteLockContentionMode[] = "sqlite-lock-contention";
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
 constexpr char kInterruptLevelDBWriteBMode[] = "interrupt-leveldb-write-b";
@@ -94,6 +98,9 @@ enum class SmokeMode {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
   kLockContention,
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+  kSQLiteLockContention,
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
     defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
   kInterruptLevelDBWriteB,
@@ -936,6 +943,131 @@ bool ReadSqliteTokenAndVerifyAfterClose(const base::FilePath& database_path,
          ReadSqliteToken(database_path, token);
 }
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+bool ReadSqliteTextPragma(sql::Database* database,
+                           base::cstring_view pragma,
+                           std::string_view expected_value) {
+  sql::Statement statement(database->GetUniqueStatement(pragma));
+  return statement.is_valid() && statement.Step() &&
+         std::string_view(statement.ColumnString(0)) == expected_value &&
+         !statement.Step() && statement.Succeeded();
+}
+
+bool ReadSqliteIntegerPragma(sql::Database* database,
+                              base::cstring_view pragma,
+                              int64_t expected_value) {
+  sql::Statement statement(database->GetUniqueStatement(pragma));
+  return statement.is_valid() && statement.Step() &&
+         statement.ColumnInt64(0) == expected_value && !statement.Step() &&
+         statement.Succeeded();
+}
+
+bool HasSqliteLockContentionSettings(sql::Database* database) {
+  // The sql::Database open options configure normal rollback-journal
+  // locking. Query the live connection before it enters the holder
+  // transaction, and explicitly clear SQLite's busy handler so the contender
+  // must report an immediate lock result instead of waiting.
+  return database->Execute("PRAGMA busy_timeout=0") &&
+         ReadSqliteTextPragma(database, "PRAGMA locking_mode", "normal") &&
+         ReadSqliteTextPragma(database, "PRAGMA journal_mode", "truncate") &&
+         ReadSqliteIntegerPragma(database, "PRAGMA mmap_size", 0);
+}
+
+bool WriteSqliteTokenOnOpenDatabase(sql::Database* database,
+                                    std::string_view token) {
+  sql::Statement statement(database->GetUniqueStatement(
+      "INSERT OR REPLACE INTO m7_profile_database_smoke (key, value) "
+      "VALUES (?, ?)"));
+  if (!statement.is_valid()) {
+    return false;
+  }
+  statement.BindString(0, kDatabaseKey);
+  statement.BindString(1, token);
+  return statement.Run();
+}
+
+void RecordSqliteError(std::vector<int>* errors,
+                       int error,
+                       sql::Statement*) {
+  errors->push_back(error);
+}
+
+bool WriteSqliteTokensWithContenderAndReopen(
+    const base::FilePath& database_path,
+    std::string_view token_a,
+    std::string_view token_b) {
+  // First create and independently close/reopen the ordinary SQLite database.
+  // The two contender connections below are both opened against this exact
+  // existing V4-backed file before the holder takes its rollback-journal
+  // write lock; no path is recreated while either connection exists.
+  if (!WriteSqliteTokenAndVerifyAfterClose(database_path, token_a)) {
+    return false;
+  }
+
+  sql::Database holder(DatabaseOptionsForSmoke(), sql::Database::Tag("Test"));
+  sql::Database contender(DatabaseOptionsForSmoke(),
+                           sql::Database::Tag("Test"));
+  holder.set_error_callback(base::DoNothing());
+  std::vector<int> contender_errors;
+  contender.set_error_callback(base::BindRepeating(
+      &RecordSqliteError, base::Unretained(&contender_errors)));
+
+  bool contender_rejected = false;
+  bool holder_committed = false;
+  if (holder.Open(database_path) && contender.Open(database_path) &&
+      HasSqliteLockContentionSettings(&holder) &&
+      HasSqliteLockContentionSettings(&contender)) {
+    {
+      // Use BEGIN IMMEDIATE rather than Transaction::Begin(), which is
+      // deferred. The holder must synchronously own SQLite's normal
+      // rollback-journal RESERVED lock before the contender's real B write
+      // attempts to acquire it.
+      const bool holder_transaction_started = holder.Execute("BEGIN IMMEDIATE");
+      if (holder_transaction_started) {
+        const bool holder_wrote =
+            WriteSqliteTokenOnOpenDatabase(&holder, token_a);
+        if (holder_wrote) {
+          // Ignore setup diagnostics and require exactly one callback for the
+          // deliberate contending B write. This is a real SQLite BUSY result,
+          // not acceptance of an arbitrary failed SQL statement.
+          contender_errors.clear();
+          const bool contender_wrote =
+              WriteSqliteTokenOnOpenDatabase(&contender, token_b);
+          contender_rejected =
+              !contender_wrote && contender_errors.size() == 1 &&
+              sql::ToPrimaryErrorCode(static_cast<sql::SqliteErrorCode>(
+                  contender_errors.front())) == sql::SqliteErrorCode::kBusy;
+          // SQLite's VFS can defer this close while the holder owns a lock.
+          // Close the unsuccessful contender before committing the holder to
+          // cover that normal connection-lifetime behavior.
+          contender.Close();
+          if (contender_rejected) {
+            holder_committed = holder.Execute("COMMIT");
+          }
+        }
+        if (!holder_committed) {
+          std::ignore = holder.Execute("ROLLBACK");
+        }
+      }
+    }
+  }
+  // The transaction and every statement have been destroyed before either
+  // close. This keeps SQLite's own deferred-close handling in charge of the
+  // V4-backed file-descriptor lifetime.
+  contender.Close();
+  holder.Close();
+
+  if (!contender_rejected || !holder_committed) {
+    return false;
+  }
+
+  // Fresh handles first verify the committed holder value with full integrity,
+  // then write and independently reopen B after lock release.
+  return ReadSqliteTokenAndVerifyAfterClose(database_path, token_a) &&
+         WriteSqliteTokenAndVerifyAfterClose(database_path, token_b);
+}
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+
 leveldb_env::Options LevelDBOptionsForSmoke() {
   leveldb_env::Options options;
   options.env = leveldb::Env::Default();
@@ -1279,8 +1411,9 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
   }
-#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
-  // The lock artifact has a closed seven-marker receipt. Database-task phase
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+  // The lock artifacts have closed success receipts. Database-task phase
   // telemetry belongs only to the distinct diagnostic artifacts.
 #else
   EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskStarted);
@@ -1306,6 +1439,12 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
       }
       break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+    case SmokeMode::kSQLiteLockContention:
+      success = WriteSqliteTokensWithContenderAndReopen(
+          sqlite_path, input.token_a, input.token_b);
+      break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
     case SmokeMode::kWriteA:
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kSQLiteWrite);
       if (WriteSqliteTokenAndVerifyAfterClose(sqlite_path, input.token_a)) {
@@ -1401,8 +1540,9 @@ DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input) {
   if (emit_task_phases) {
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);
   }
-#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
-  // The lock receipt exposes no diagnostic task phases.
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+  // The lock receipts expose no diagnostic task phases.
 #else
   EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskComplete);
 #endif  // M7 diagnostic or lock artifact.
@@ -1451,6 +1591,15 @@ class WasmProfileDatabaseSmokeState {
       return false;
     }
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+    // The separate SQLite lock artifact must never silently become a generic
+    // graceful-close database executable. Its one mode owns the exact
+    // two-connection holder/contender/release marker grammar below.
+    if (mode != kSQLiteLockContentionMode) {
+      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+      return false;
+    }
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     // A recovery artifact cannot be used as a generic graceful-close test.
     // Its source-selected protocol has exactly one seed, one controlled
@@ -1475,6 +1624,24 @@ class WasmProfileDatabaseSmokeState {
       mode_ = SmokeMode::kLockContention;
       token_a_digest_ = DigestToken(token_a_);
       expected_digest_ = token_a_digest_;
+    } else if (mode == kWriteAMode) {
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+    if (mode == kSQLiteLockContentionMode) {
+      if (!has_token_a || !has_token_b) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      token_a_ = command_line->GetSwitchValueASCII(kTokenASwitch);
+      token_b_ = command_line->GetSwitchValueASCII(kTokenBSwitch);
+      if (!IsOpaqueToken(token_a_) || !IsOpaqueToken(token_b_) ||
+          token_a_ == token_b_) {
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kArguments);
+        return false;
+      }
+      mode_ = SmokeMode::kSQLiteLockContention;
+      token_a_digest_ = DigestToken(token_a_);
+      token_b_digest_ = DigestToken(token_b_);
+      expected_digest_ = token_b_digest_;
     } else if (mode == kWriteAMode) {
 #else
     if (mode == kWriteAMode) {
@@ -1622,8 +1789,9 @@ class WasmProfileDatabaseSmokeState {
     if (!IsDatabaseRecoveryMode(mode_)) {
       EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
     }
-#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
-    // The lock artifact's strict success receipt has no task-phase telemetry.
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+    // The lock artifacts' strict success receipts have no task-phase telemetry.
 #else
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
 #endif  // M7 diagnostic or lock artifact.
@@ -1655,6 +1823,17 @@ class WasmProfileDatabaseSmokeState {
         EmitDigestMarker("LEVELDB_LOCK_RELEASE_REOPEN_OK", token_a_digest_);
         break;
 #endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
+      case SmokeMode::kSQLiteLockContention:
+        EmitDigestMarker("SQLITE_LOCK_HOLDER_WRITE_A_ACCEPTED",
+                         token_a_digest_);
+        EmitMarker("SQLITE_LOCK_CONTENDER_BUSY");
+        EmitDigestMarker("SQLITE_LOCK_RELEASE_REOPEN_A_INTEGRITY_OK",
+                         token_a_digest_);
+        EmitDigestMarker("SQLITE_LOCK_POST_RELEASE_WRITE_READ_B_INTEGRITY_OK",
+                         token_b_digest_);
+        break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST)
       case SmokeMode::kWriteA:
         EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
         EmitDigestMarker("LEVELDB_WRITE_ACCEPTED", token_a_digest_);

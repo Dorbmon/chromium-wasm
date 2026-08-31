@@ -621,6 +621,11 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         # marker grammar. It does not change the ordinary graceful-close
         # artifact or make any claim about a full-profile contender.
         output_name = "chrome_wasm_m7_profile_database_lock_test"
+      } else if (enable_chromium_wasm_m7_profile_database_sqlite_lock_test) {
+        # This one-process SQLite lock probe has its own source-selected
+        # marker grammar. It verifies real Chromium SQLite connection
+        # contention/release on one file in /profile/Default's V4 mount.
+        output_name = "chrome_wasm_m7_profile_database_sqlite_lock_test"
       } else if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
         # This dedicated artifact retains only the profile-I/O admission of a
         # completed database task. It proves the first outer drain rejects

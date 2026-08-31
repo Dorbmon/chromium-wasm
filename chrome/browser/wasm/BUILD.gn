@@ -2318,6 +2318,12 @@ if (enable_chromium_wasm_m7_profile_database_test ||
       defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST=1" ]
     }
 
+    if (enable_chromium_wasm_m7_profile_database_sqlite_lock_test) {
+      # The SQLite lock probe has a distinct artifact and marker grammar. It
+      # uses two real sql::Database connections, not LevelDB's LockTable path.
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SQLITE_LOCK_TEST=1" ]
+    }
+
     if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
       # Admission retention moved into the profile-owned database participant.
       # Select the diagnostic only here and give it the narrow storage-owner

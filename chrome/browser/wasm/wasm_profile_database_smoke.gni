@@ -34,6 +34,15 @@ declare_args() {
   # is neither a full-profile contender nor a normal Chrome feature.
   enable_chromium_wasm_m7_profile_database_lock_test = false
 
+  # This source-selected acceptance opens two real Chromium SQLite connections
+  # on one SQLite file in the V4-mounted /profile/Default test-profile
+  # directory. One connection holds an actual rollback-journal write
+  # transaction while the second receives primary SQLite BUSY; after release,
+  # fresh handles reopen, verify A, write B, and verify full integrity. It does
+  # not claim direct fcntl contention, a second profile mount, WAL/mmap
+  # behavior, or normal profile persistence.
+  enable_chromium_wasm_m7_profile_database_sqlite_lock_test = false
+
   # This source-selected refusal probe completes its real database work, then
   # intentionally retains only the Chrome profile-I/O admission through
   # shutdown. The first outer drain must reject that still-outstanding
@@ -58,6 +67,9 @@ assert(!enable_chromium_wasm_m7_profile_database_recovery_test ||
 assert(!enable_chromium_wasm_m7_profile_database_lock_test ||
            enable_chromium_wasm_m7_profile_database_test,
        "M7 database lock probe requires the M7 database smoke configuration")
+assert(!enable_chromium_wasm_m7_profile_database_sqlite_lock_test ||
+           enable_chromium_wasm_m7_profile_database_test,
+       "M7 SQLite lock probe requires the M7 database smoke configuration")
 assert(
     !enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test ||
         enable_chromium_wasm_m7_profile_database_test,
@@ -76,12 +88,22 @@ assert(
         !(enable_chromium_wasm_m7_profile_database_recovery_test &&
           enable_chromium_wasm_m7_profile_database_lock_test) &&
         !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
+        !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
+          enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
+        !(enable_chromium_wasm_m7_profile_database_recovery_test &&
+          enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
+        !(enable_chromium_wasm_m7_profile_database_lock_test &&
+          enable_chromium_wasm_m7_profile_database_sqlite_lock_test) &&
+        !(enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic &&
           enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
         !(enable_chromium_wasm_m7_profile_database_write_interruption_diagnostic &&
           enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
         !(enable_chromium_wasm_m7_profile_database_recovery_test &&
           enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
         !(enable_chromium_wasm_m7_profile_database_lock_test &&
+          enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) &&
+        !(enable_chromium_wasm_m7_profile_database_sqlite_lock_test &&
           enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test),
     "M7 database diagnostics require separate fresh output configurations; " +
         "the recovery and lock probes require their own fresh output configurations")
@@ -113,6 +135,11 @@ if (enable_chromium_wasm_m7_profile_database_test) {
     _m7_database_output_message =
         "M7 database lock probe must use " +
         "out/wasm-chrome-m7-profile-database-lock"
+  } else if (enable_chromium_wasm_m7_profile_database_sqlite_lock_test) {
+    _m7_database_output_dir = "wasm-chrome-m7-profile-database-sqlite-lock"
+    _m7_database_output_message =
+        "M7 SQLite lock probe must use " +
+        "out/wasm-chrome-m7-profile-database-sqlite-lock"
   } else if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
     _m7_database_output_dir =
         "wasm-chrome-m7-profile-database-outstanding-io-refusal"
