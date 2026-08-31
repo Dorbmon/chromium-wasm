@@ -15,6 +15,10 @@ const SCOPE =
     "test-modules-orderly-close-reopen-only";
 const MODULE_NAME = "chrome_wasm_m7_profile_indexed_db_test";
 const MARKER_PREFIX = "CHROMIUM_WASM_M7_INDEXED_DB:";
+const ARTIFACT_SOURCE_PROVENANCE = new Set([
+  "unverified",
+  "local_top_level_clean_build_emscripten_only_attested",
+]);
 const MAX_TIMEOUT_MS = 300000;
 const MIN_TIMEOUT_MS = 20000;
 const MAX_OUTPUT_LINES = 128;
@@ -105,7 +109,7 @@ function parseArtifact(value) {
   const artifact = exactFields(parseJson(value, "artifact"), ARTIFACT_FIELDS,
                                "artifact");
   if (artifact.artifact_delivery !== "immutable-in-memory-server-snapshot" ||
-      artifact.artifact_source_provenance !== "unverified" ||
+      !ARTIFACT_SOURCE_PROVENANCE.has(artifact.artifact_source_provenance) ||
       artifact.build_config_provenance !==
           "selected-out-dir-args-gn-immutable-snapshot" ||
       artifact.module_name !== MODULE_NAME) {

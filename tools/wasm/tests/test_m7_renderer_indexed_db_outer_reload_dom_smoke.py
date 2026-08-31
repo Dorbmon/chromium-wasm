@@ -172,13 +172,20 @@ class RendererIndexedDBOuterReloadDomSmokeTest(unittest.TestCase):
         smoke.validate_m7_output_configuration(good, smoke.DEFAULT_OUT_DIR)
         with self.assertRaisesRegex(M0Error, "isolated output"):
             smoke.validate_m7_output_configuration(good, Path("out/not-indexed-db"))
-        with self.assertRaisesRegex(M0Error, "dedicated test opt-in"):
+        with self.assertRaisesRegex(M0Error, "arguments are invalid"):
             smoke.validate_m7_output_configuration(b"", smoke.DEFAULT_OUT_DIR)
-        with self.assertRaisesRegex(M0Error, "another M7 artifact"):
-            smoke.validate_m7_output_configuration(
-                good + b"enable_chromium_wasm_m7_profile_database_test = true\n",
-                smoke.DEFAULT_OUT_DIR,
-            )
+        for invalid in (
+            good + b"enable_chromium_wasm_m7_profile_database_test = true\n",
+            good + b"enable_chromium_wasm_m7_profile_database_test = !false\n",
+            good + b"enable_chromium_wasm_m7_profile_database_test = true || false\n",
+            good + b"# enable_chromium_wasm_m7_profile_database_test = true\n",
+            b"enable_chromium_wasm_m7_profile_indexed_db_test = true || false\n",
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(
+                    M0Error, "selected M7 selector|literal selected M7 opt-in"
+                ):
+                    smoke.validate_m7_output_configuration(invalid, smoke.DEFAULT_OUT_DIR)
 
     def test_three_documents_require_ordered_root_navigation_bootstrap_and_ready(self) -> None:
         escrow = smoke.new_token_escrow()

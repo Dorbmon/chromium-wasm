@@ -43,6 +43,7 @@ from m0_common import M0Error, REPO_ROOT, load_manifest
 from m4_cdp import unused_loopback_port, wait_for_page_client
 from m9_descriptor_snapshot import snapshot_regular_file, snapshot_regular_files
 from run_browser_smoke import browser_command, find_browser, stop_browser
+import run_m7_renderer_indexed_db_source_bound_build as source_bound_build
 
 
 SENTINEL = "CHROMIUM_WASM_M7_RENDERER_INDEXED_DB_OUTER_RELOAD_DOM"
@@ -64,6 +65,9 @@ HOST_JS_NAME = "chrome_wasm_renderer_indexed_db_outer_reload_smoke.js"
 MARKER_PREFIX = "CHROMIUM_WASM_M7_INDEXED_DB:"
 ARTIFACT_DELIVERY = "immutable-in-memory-server-snapshot"
 ARTIFACT_SOURCE_PROVENANCE = "unverified"
+LOCAL_TOP_LEVEL_CLEAN_BUILD_ARTIFACT_SOURCE_PROVENANCE = (
+    source_bound_build.ARTIFACT_SOURCE_PROVENANCE
+)
 BUILD_CONFIG_PROVENANCE = "selected-out-dir-args-gn-immutable-snapshot"
 SOURCE_SNAPSHOT_PROVENANCE = (
     "on-disk-byte-snapshots-at-server-startup-not-commit-provenance"
@@ -86,12 +90,6 @@ CAPABILITY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 MODULE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-M7_GN_ASSIGNMENT_RE = re.compile(
-    r"^[ \t]*(enable_chromium_wasm_m7_[a-z0-9_]+)[ \t]*="
-    r"[ \t]*(true|false)[ \t]*(?:#.*)?$",
-    re.MULTILINE,
-)
-
 _ROOT_QUERY_FIELDS = frozenset(
     (
         "artifact",
@@ -550,16 +548,7 @@ def validate_m7_output_configuration(args_gn: bytes, out_dir: Path) -> None:
 
     if out_dir.name != DEFAULT_OUT_DIR.name:
         raise M0Error("renderer IndexedDB runner requires its isolated output")
-    try:
-        text = args_gn.decode("utf-8").replace("\r\n", "\n")
-    except UnicodeDecodeError as exc:
-        raise M0Error("renderer IndexedDB args.gn is not UTF-8") from exc
-    assignments = M7_GN_ASSIGNMENT_RE.findall(text)
-    own = [value for name, value in assignments if name == PRODUCT_GN_ENABLE_ARGUMENT[:-5]]
-    if not own or any(value != "true" for value in own):
-        raise M0Error("renderer IndexedDB args.gn lacks its dedicated test opt-in")
-    if any(name != PRODUCT_GN_ENABLE_ARGUMENT[:-5] and value == "true" for name, value in assignments):
-        raise M0Error("renderer IndexedDB args.gn enables another M7 artifact")
+    source_bound_build.validate_m7_indexed_db_gn_selection(args_gn)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -994,10 +983,19 @@ def create_server(
     return server
 
 
-def artifact_identity(server: RendererIndexedDBOuterReloadServer) -> dict[str, object]:
+def artifact_identity(
+    server: RendererIndexedDBOuterReloadServer,
+    *,
+    source_provenance: str = ARTIFACT_SOURCE_PROVENANCE,
+) -> dict[str, object]:
+    if source_provenance not in (
+        ARTIFACT_SOURCE_PROVENANCE,
+        LOCAL_TOP_LEVEL_CLEAN_BUILD_ARTIFACT_SOURCE_PROVENANCE,
+    ):
+        raise M0Error("renderer IndexedDB artifact source provenance is invalid")
     return {
         "artifact_delivery": ARTIFACT_DELIVERY,
-        "artifact_source_provenance": ARTIFACT_SOURCE_PROVENANCE,
+        "artifact_source_provenance": source_provenance,
         "build_config": _byte_identity(server.args_gn),
         "build_config_provenance": BUILD_CONFIG_PROVENANCE,
         "loader": _byte_identity(server.artifacts[f"{PRODUCT_MODULE_NAME}.js"]),
@@ -1454,6 +1452,7 @@ def main() -> int:
     parser.add_argument("--browser", type=Path)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--no-sandbox", action="store_true")
+    parser.add_argument("--source-bound-receipt", type=Path)
     parser.add_argument("--timeout", type=parse_timeout, default=DEFAULT_TIMEOUT_SECONDS)
     args = parser.parse_args()
 
@@ -1477,7 +1476,17 @@ def main() -> int:
         out_dir = args.out_dir if args.out_dir.is_absolute() else REPO_ROOT / args.out_dir
         stage = "create-server"
         server = create_server("127.0.0.1", 0, out_dir, result_token, session, escrow)
-        artifact = artifact_identity(server)
+        source_provenance = ARTIFACT_SOURCE_PROVENANCE
+        if args.source_bound_receipt is not None:
+            stage = "verify-source-bound-receipt"
+            source_bound_build.verify_runtime_receipt(
+                args.source_bound_receipt,
+                out_dir=out_dir,
+                served_args_gn=server.args_gn,
+                served_artifacts=server.artifacts,
+            )
+            source_provenance = LOCAL_TOP_LEVEL_CLEAN_BUILD_ARTIFACT_SOURCE_PROVENANCE
+        artifact = artifact_identity(server, source_provenance=source_provenance)
         harness = capture_harness_identity(server)
         server_thread = threading.Thread(
             target=server.serve_forever,
@@ -1612,7 +1621,7 @@ def main() -> int:
         return 1
     print(
         f"{SENTINEL}:PASS modules=3 outer_page_reloads=2 "
-        "m7_gate_complete=false",
+        f"artifact_source_provenance={source_provenance} m7_gate_complete=false",
         flush=True,
     )
     return 0
