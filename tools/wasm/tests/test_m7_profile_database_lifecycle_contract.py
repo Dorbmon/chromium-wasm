@@ -42,14 +42,18 @@ def _bracket_body_after(text: str, marker: str) -> str:
 
 
 def _is_in_database_macro_block(text: str, position: int) -> bool:
-    """Returns whether |position| is nested below the dedicated DB macro.
+    """Returns whether |position| is nested below a DB-capable macro.
 
     The primary sources intentionally contain nested independent feature
     conditionals. A non-greedy regex stops at the first inner #endif and can
     therefore mistake a correctly guarded database call for production code.
     """
 
-    macro = "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST"
+    macros = (
+        "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST",
+        "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_"
+        "DATABASE_LOCAL_STORAGE_TEST",
+    )
     active_stack: list[bool] = []
     offset = 0
     for line in text.splitlines(keepends=True):
@@ -58,10 +62,12 @@ def _is_in_database_macro_block(text: str, position: int) -> bool:
 
         directive = line.lstrip()
         if re.match(r"#\s*(if|ifdef|ifndef)\b", directive):
-            active_stack.append(macro in directive)
+            active_stack.append(any(macro in directive for macro in macros))
         elif re.match(r"#\s*elif\b", directive):
             if active_stack:
-                active_stack[-1] = macro in directive
+                active_stack[-1] = any(
+                    macro in directive for macro in macros
+                )
         elif re.match(r"#\s*else\b", directive):
             if active_stack:
                 active_stack[-1] = False
@@ -179,10 +185,12 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
             'configs += [ ":wasm_profile_m7_database_smoke_config" ]',
             content_client_target,
         )
-        self.assertIn(
-            'if (enable_chromium_wasm_m7_profile_database_test) {\n'
-            '  source_set("wasm_profile_database_smoke")',
+        self.assertRegex(
             self.wasm_build,
+            r"if \(enable_chromium_wasm_m7_profile_database_test\s*\|\|\s*"
+            r"enable_chromium_wasm_m7_profile_bookmark_cookie_history_"
+            r"database_local_storage_test\) \{\s*"
+            r"source_set\(\"wasm_profile_database_smoke\"\)",
         )
         self.assertIn('"//sql",', self.wasm_build)
         self.assertIn('"//third_party/leveldatabase",', self.wasm_build)
@@ -225,10 +233,15 @@ class M7ProfileDatabaseLifecycleContractTest(unittest.TestCase):
             self.database_header,
             self.database_source,
             self.profile,
-            self.main_parts,
             self.chrome_main,
         ):
             self.assertNotIn("StartWasmProfileDatabaseSmoke", text)
+        self.assertIn(
+            "StartWasmProfileDatabaseSmokeOrShutdown", self.main_parts
+        )
+        _assert_only_in_database_blocks(
+            self, self.main_parts, "StartWasmProfileDatabaseSmokeOrShutdown"
+        )
 
         for text, token in (
             (self.chrome_main, "chrome::HasWasmProfileDatabaseSmokeArguments"),

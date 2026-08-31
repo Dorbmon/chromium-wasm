@@ -50,7 +50,17 @@ _M7_PREFERENCES_MACROS = (
     "CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
     "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST",
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST",
 )
+
+
+_NORMAL_CHROME_MAIN_M7_EXCLUSION_GUARD = """#if !defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) && \\
+    !defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) && \\
+    !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \\
+    !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \\
+    !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \\
+    !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \\
+    !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)"""
 
 
 def _is_in_m7_preferences_macro_block(text: str, position: int) -> bool:
@@ -1434,7 +1444,8 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
             "if (enable_chromium_wasm_m7_profile_preferences_test ||\n"
             "    enable_chromium_wasm_m7_profile_cookie_local_storage_test ||\n"
             "    enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||\n"
-            "    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {\n"
+            "    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||\n"
+            "    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {\n"
             '  source_set("wasm_profile_preferences_smoke")'
         )
         helper_start = self.wasm_build.index(helper_gate)
@@ -1470,6 +1481,10 @@ class M7ProfilePreferencesSmokeContractTest(unittest.TestCase):
         self.assertNotIn(
             "WasmProfilePreferencesSmokeFailureStage::kCapability",
             self.chrome_main,
+        )
+        self.assertEqual(
+            self.chrome_main.count(_NORMAL_CHROME_MAIN_M7_EXCLUSION_GUARD),
+            3,
         )
 
 

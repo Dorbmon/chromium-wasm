@@ -14,10 +14,20 @@
 
 namespace chrome {
 
+// Redacted phase identity used only to pair this protocol with other aggregate
+// owners before mounting the profile backend. It exposes no token, digest,
+// database status, or filesystem path.
+enum class WasmProfileDatabaseSmokeMode {
+  kNone,
+  kWriteA,
+  kVerifyAWriteB,
+  kVerifyB,
+};
+
 // Fixed, test-only protocol for source-selected SQLite and LevelDB acceptances.
-// chrome_wasm_m7_profile_database_test enables the three-fresh-module graceful
-// close/reopen capability. Its host supplies exactly one of these complete
-// argument sets:
+// The standalone database artifact and five-store aggregate enable the same
+// three-phase graceful close/reopen capability. Their hosts supply exactly one
+// of these complete argument sets:
 //
 //   --wasm-profile-database-smoke=write-a
 //   --wasm-profile-database-token-a=<64 lowercase hex>
@@ -171,6 +181,10 @@ bool EnableWasmProfileDatabaseSmokeTestMode();
 
 // Whether the dedicated executable enabled a valid database smoke request.
 bool IsWasmProfileDatabaseSmokeEnabled();
+
+// Returns the enabled normal acceptance phase. Diagnostic-only modes map to
+// kNone so an aggregate cannot accidentally admit a diagnostic protocol.
+WasmProfileDatabaseSmokeMode GetWasmProfileDatabaseSmokeMode();
 
 // Owns the source-selected SQLite and LevelDB witness for one WasmProfile.
 // The caller transfers an admitted profile-I/O hold at construction. Start()

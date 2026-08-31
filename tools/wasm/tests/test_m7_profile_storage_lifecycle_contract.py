@@ -238,7 +238,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "    defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
-            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)\n"
+            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
+            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)\n"
             "// Mounts one dedicated Default-profile acceptance's leased V4 OPFS backend",
             self.storage_header,
         )
@@ -250,7 +251,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "#if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \\\n"
             "    defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
-            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)\n"
+            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \\\n"
+            "    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"
             "#elif defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)\n"
             "    } else if (!chrome::InitializeWasmProfilePreferencesStorage()) {\n"

@@ -20,6 +20,9 @@ _HISTORY_AGGREGATE_MACRO = (
 _BOOKMARK_HISTORY_AGGREGATE_MACRO = (
     "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST"
 )
+_BOOKMARK_HISTORY_DATABASE_AGGREGATE_MACRO = (
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST"
+)
 _PREFS_MACRO = "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST"
 _LOCAL_STORAGE_MACRO = "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST"
 
@@ -96,6 +99,7 @@ class M7ProfileCookieLocalStorageContractTest(unittest.TestCase):
         self.assertNotIn(_PREFS_MACRO, selected)
         self.assertNotIn(_LOCAL_STORAGE_MACRO, selected)
         self.assertNotIn(_BOOKMARK_HISTORY_AGGREGATE_MACRO, selected)
+        self.assertNotIn(_BOOKMARK_HISTORY_DATABASE_AGGREGATE_MACRO, selected)
         for helper in (
             "wasm_profile_preferences_smoke",
             "wasm_profile_cookie_smoke",
@@ -166,7 +170,8 @@ class M7ProfileCookieLocalStorageContractTest(unittest.TestCase):
         )
         self.assertLess(browser_result, cookie_start)
         self.assertIn(
-            f"#if defined({_BOOKMARK_HISTORY_AGGREGATE_MACRO})\n"
+            f"#if defined({_BOOKMARK_HISTORY_AGGREGATE_MACRO}) || \\\n"
+            f"    defined({_BOOKMARK_HISTORY_DATABASE_AGGREGATE_MACRO})\n"
             "    StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown();\n"
             f"#elif defined({_MACRO}) || \\\n"
             f"    defined({_HISTORY_AGGREGATE_MACRO})\n"

@@ -44,38 +44,44 @@
     !defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) && \
     !defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
-    !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) && \
+    !defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 // The normal source-selected configuration alone supplies this target. GN's
 // include checker does not evaluate target-specific definitions.
 #include "chrome/browser/wasm/wasm_profile_shutdown_failure_latch.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_bookmark_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_preferences_smoke.h"  // nogncheck
 #endif
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_database_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 // This source-selected test-only WebUI is registered before its transient
 // renderer WebContents exists. GN's include checker does not evaluate this
 // target-specific definition.
@@ -86,7 +92,8 @@
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 // The experimental M7 target alone constructs this base-only admission
 // participant before WasmProfile begins its synchronous Preferences read.
 // GN's include checker does not evaluate target-specific definitions.
@@ -268,7 +275,8 @@ constexpr char kRequiredAssets[][24] = {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 void FailCloseM7ProfileConstruction() {
   if (!chrome::AbortWasmProfileStorageProfileConstructionFailClosed()) {
     LOG(ERROR) << "chrome_wasm could not publish its fail-closed profile "
@@ -411,7 +419,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (!chrome::IsWasmProfileStorageMounted()) {
     LOG(ERROR) << "chrome_wasm experimental profile storage is not mounted";
     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
@@ -423,7 +432,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // The selected V4 mount can be reached while resolving /profile and
   // creating Default. Start the construction lifetime before either path
   // operation, then transfer this same hold into WasmProfile before its
@@ -446,7 +456,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     CompleteM7ProfileConstructionAdmissionAsFailed(
         &preconstruction_profile_io_hold);
     FailCloseM7ProfileConstruction();
@@ -463,7 +474,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     CompleteM7ProfileConstructionAdmissionAsFailed(
         &preconstruction_profile_io_hold);
     FailCloseM7ProfileConstruction();
@@ -488,7 +500,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // The renderer LocalStorage witness is source-selected into the isolated M7
   // LocalStorage artifact. Register its exact test Chrome origin before any
   // WebContents is created; normal chrome_wasm has no such route.
@@ -502,7 +515,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // The construction hold has covered profile-path setup. Its participant now
   // moves into WasmProfile's member initializer, where it remains pending
   // through the synchronous JsonPrefStore/PrefService read and the strict
@@ -521,7 +535,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     // This path does not publish ProfileCreated(). The local constructor
     // participant, if still present, records failure while unwinding after
     // the precreation lifecycle has been closed.
@@ -534,7 +549,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (!chrome::NotifyWasmProfileStorageProfileCreated()) {
     LOG(ERROR) << "chrome_wasm could not admit its profile storage lifecycle";
     // No ProfileCreated event was published. Destroy the constructor-held
@@ -549,7 +565,8 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // The preferences-only M7 acceptance intentionally stops here: its native
   // PrefService action runs after profile admission but before host, Browser,
   // WebContents, or BrowserWindow setup. The aggregate outer-reload witnesses
@@ -703,14 +720,16 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (chrome::IsWasmProfilePreferencesBrowserSmokeEnabled()) {
     if (!chrome::RunWasmBrowserSmoke(profile_.get())) {
       chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(false);
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
     chrome::NotifyWasmProfilePreferencesBrowserSmokeResult(true);
-#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown();
 #elif defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
@@ -1160,6 +1179,18 @@ void WasmBrowserMainParts::RequestShutdown() {
   if (shutdown_requested_) {
     return;
   }
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+  // Database is the final aggregate participant. Any first shutdown request
+  // before it starts is a terminal aggregate failure, while a request after
+  // its result-bearing close is the expected success path. Report this here so
+  // an upstream owner failure cannot be misclassified later as a fence error.
+  if (profile_ && chrome::IsWasmProfileDatabaseSmokeEnabled() &&
+      !profile_->HasActiveDatabaseSmoke() &&
+      !chrome::DidWasmProfileDatabaseSmokeSucceed()) {
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kLifecycle);
+  }
+#endif
   StopM9RepeatingTimerSmoke();
   shutdown_requested_ = true;
   // Creation status uses BrowserProcess shutdown state. Set it as soon as
@@ -1171,7 +1202,43 @@ void WasmBrowserMainParts::RequestShutdown() {
   MaybeStartShutdown();
 }
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+void WasmBrowserMainParts::StartWasmProfileDatabaseSmokeOrShutdown() {
+  CHECK(profile_);
+  if (shutdown_requested_) {
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kLifecycle);
+    MaybeStartShutdown();
+    return;
+  }
+  if (!chrome::IsWasmProfileDatabaseSmokeEnabled()) {
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kCapability);
+    RequestShutdown();
+    return;
+  }
+
+  auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();
+  if (!profile_io_hold) {
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kStorage);
+    RequestShutdown();
+    return;
+  }
+  if (!profile_->StartDatabaseSmoke(
+          std::move(*profile_io_hold),
+          base::BindOnce(
+              &WasmBrowserMainParts::OnWasmProfileDatabaseSmokeComplete,
+              weak_ptr_factory_.GetWeakPtr()))) {
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kLifecycle);
+    RequestShutdown();
+  }
+}
+#endif
+
 void WasmBrowserMainParts::OnWasmProfileDatabaseSmokeComplete(bool success) {
   const bool database_succeeded =
       success && profile_ && profile_->DidDatabaseSmokeSucceed();
@@ -1220,7 +1287,8 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
   }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // BookmarkModel load and ImportantFileWriter work are profile-owned but
   // asynchronous. Cancellation must reach a terminal model-owner result
   // before Profile teardown; its callback resumes this state machine.
@@ -1233,7 +1301,8 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // CookieManager belongs to the profile's default StoragePartition. Its
   // profile-owned participant must receive the SQLite backend-close result
   // before synchronous Profile teardown can destroy that partition.
@@ -1245,7 +1314,8 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // The direct source-selected HistoryService is profile-owned but closes its
   // History/Favicons backends asynchronously. Do not enter synchronous
   // Profile teardown until its backend-destroy receipt has made the admitted
@@ -1257,7 +1327,8 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
   }
 #endif
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // SQLite and LevelDB run on a shutdown-blocking sequence but remain owned
   // by WasmProfile. Cancellation records failure without racing their open
   // handles; the terminal UI callback resumes this shutdown state machine.
@@ -1270,7 +1341,8 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (profile_ && profile_->HasActiveLocalStorageSmoke()) {
     profile_->CancelLocalStorageSmokeForShutdown();
     return;
@@ -1669,12 +1741,14 @@ void WasmBrowserMainParts::OnBrowserWindowLifecycleShutdownComplete() {
 }
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 void WasmBrowserMainParts::
     StartWasmProfileBookmarkSmokeOrCookieOrHistoryOrShutdown() {
   CHECK(profile_);
   if (!chrome::IsWasmProfilePreferencesBookmarkSmokeEnabled()) {
-#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfilePreferencesSmokeFailure(
         chrome::WasmProfilePreferencesSmokeFailureStage::kBookmark);
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
@@ -1693,7 +1767,8 @@ void WasmBrowserMainParts::
       bookmark_input = chrome::TakeWasmProfilePreferencesBookmarkSmokeInput();
   if (!bookmark_input) {
     chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
-#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1706,7 +1781,8 @@ void WasmBrowserMainParts::
     chrome::ReportWasmProfilePreferencesSmokeFailure(
         chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
     chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
-#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kStorage);
 #endif
@@ -1720,7 +1796,8 @@ void WasmBrowserMainParts::
               &WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete,
               weak_ptr_factory_.GetWeakPtr()))) {
     chrome::NotifyWasmProfilePreferencesBookmarkSmokeResult(false);
-#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1737,7 +1814,8 @@ void WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete(bool success) {
   }
 
   if (shutdown_requested_) {
-#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1747,7 +1825,8 @@ void WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete(bool success) {
   if (bookmark_succeeded) {
     StartWasmProfileCookieSmokeOrHistoryOrShutdown();
   } else {
-#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1759,13 +1838,15 @@ void WasmBrowserMainParts::OnWasmProfileBookmarkSmokeComplete(bool success) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown() {
   CHECK(profile_);
   if (!chrome::IsWasmProfilePreferencesCookieSmokeEnabled()) {
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfilePreferencesSmokeFailure(
         chrome::WasmProfilePreferencesSmokeFailureStage::kCookie);
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
@@ -1788,7 +1869,8 @@ void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown() {
     chrome::NotifyWasmProfilePreferencesCookieSmokeResult(false);
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1803,7 +1885,8 @@ void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown() {
     chrome::NotifyWasmProfilePreferencesCookieSmokeResult(false);
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kStorage);
 #endif
@@ -1819,7 +1902,8 @@ void WasmBrowserMainParts::StartWasmProfileCookieSmokeOrHistoryOrShutdown() {
     chrome::NotifyWasmProfilePreferencesCookieSmokeResult(false);
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1841,7 +1925,8 @@ void WasmBrowserMainParts::OnWasmProfileCookieSmokeComplete(bool success) {
   if (shutdown_requested_) {
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1850,7 +1935,8 @@ void WasmBrowserMainParts::OnWasmProfileCookieSmokeComplete(bool success) {
   }
   if (cookie_succeeded) {
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     StartWasmProfileHistorySmokeOrShutdown();
 #elif defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST)
     StartWasmProfileRendererLocalStorageSmokeOrShutdown();
@@ -1860,7 +1946,8 @@ void WasmBrowserMainParts::OnWasmProfileCookieSmokeComplete(bool success) {
   } else {
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1871,7 +1958,8 @@ void WasmBrowserMainParts::OnWasmProfileCookieSmokeComplete(bool success) {
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 void WasmBrowserMainParts::StartWasmProfileHistorySmokeOrShutdown() {
   CHECK(profile_);
   if (!chrome::IsWasmProfilePreferencesHistorySmokeEnabled()) {
@@ -1885,7 +1973,8 @@ void WasmBrowserMainParts::StartWasmProfileHistorySmokeOrShutdown() {
         chrome::WasmProfilePreferencesSmokeFailureStage::kStorage);
     chrome::NotifyWasmProfilePreferencesHistorySmokeResult(false);
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kStorage);
 #endif
@@ -1903,7 +1992,8 @@ void WasmBrowserMainParts::StartWasmProfileHistorySmokeOrShutdown() {
                          weak_ptr_factory_.GetWeakPtr()))) {
     chrome::NotifyWasmProfilePreferencesHistorySmokeResult(false);
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1925,7 +2015,8 @@ void WasmBrowserMainParts::OnWasmProfileHistorySmokeComplete(bool success) {
   // has delivered its terminal close receipt.
   if (shutdown_requested_) {
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::ReportWasmProfileLocalStorageSmokeFailure(
         chrome::WasmProfileLocalStorageSmokeFailureStage::kLifecycle);
 #endif
@@ -1933,7 +2024,8 @@ void WasmBrowserMainParts::OnWasmProfileHistorySmokeComplete(bool success) {
     return;
   }
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (history_succeeded) {
     StartWasmProfileRendererLocalStorageSmokeOrShutdown();
   } else {
@@ -1949,7 +2041,8 @@ void WasmBrowserMainParts::OnWasmProfileHistorySmokeComplete(bool success) {
 
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 void WasmBrowserMainParts::
     StartWasmProfileRendererLocalStorageSmokeOrShutdown() {
   CHECK(profile_);
@@ -2010,10 +2103,24 @@ void WasmBrowserMainParts::
   }
 
   if (shutdown_requested_) {
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kLifecycle);
+#endif
     MaybeStartShutdown();
     return;
   }
+#if defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+  if (local_storage_succeeded) {
+    StartWasmProfileDatabaseSmokeOrShutdown();
+  } else {
+    chrome::ReportWasmProfileDatabaseSmokeFailure(
+        chrome::WasmProfileDatabaseSmokeFailureStage::kLifecycle);
+    RequestShutdown();
+  }
+#else
   RequestShutdown();
+#endif
 }
 #endif
 
@@ -2023,7 +2130,8 @@ void WasmBrowserMainParts::FinishShutdown() {
   CHECK(!browser_window_lifecycle_);
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (profile_ && profile_->HasActiveBookmarkSmoke()) {
     profile_->CancelBookmarkSmokeForShutdown();
     return;
@@ -2032,7 +2140,8 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (profile_ && profile_->HasActiveCookieSmoke()) {
     profile_->CancelCookieSmokeForShutdown();
     return;
@@ -2040,7 +2149,8 @@ void WasmBrowserMainParts::FinishShutdown() {
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // Browser lifecycle completions can enter here directly. Preserve the same
   // no-profile-teardown-before-backend-close rule as MaybeStartShutdown().
   if (profile_ && profile_->HasActiveHistorySmoke()) {
@@ -2049,7 +2159,8 @@ void WasmBrowserMainParts::FinishShutdown() {
   }
 #endif
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // Lifecycle completions may enter FinishShutdown() directly. Keep the same
   // no-profile-teardown-before-database-task rule as MaybeStartShutdown().
   if (profile_ && profile_->HasActiveDatabaseSmoke()) {
@@ -2061,7 +2172,8 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   if (profile_ && profile_->HasActiveLocalStorageSmoke()) {
     profile_->CancelLocalStorageSmokeForShutdown();
     return;
@@ -2082,16 +2194,19 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
                 chrome::NotifyWasmProfilePreferencesSmokeFenceResult(false);
 #endif
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
                 chrome::NotifyWasmProfileDatabaseSmokeFenceResult(false);
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
                 chrome::NotifyWasmProfileLocalStorageSmokeFenceResult(false);
 #endif
                 return;
@@ -2099,16 +2214,19 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
               chrome::NotifyWasmProfilePreferencesSmokeFenceResult(success);
 #endif
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
               chrome::NotifyWasmProfileDatabaseSmokeFenceResult(success);
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
               chrome::NotifyWasmProfileLocalStorageSmokeFenceResult(success);
 #endif
               if (!success) {
@@ -2135,7 +2253,8 @@ void WasmBrowserMainParts::FinishShutdown() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     // Destroy the Profile before closing new profile-I/O admission. In ordinary
     // M7 artifacts every admitted I/O holder is terminal at this point. The
     // dedicated outstanding-I/O refusal artifact instead deliberately keeps
@@ -2161,7 +2280,8 @@ void WasmBrowserMainParts::FinishShutdown() {
       smoke_allows_storage_lifecycle = false;
     }
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (chrome::IsWasmProfilePreferencesBookmarkSmokeEnabled() &&
         !chrome::DidWasmProfilePreferencesBookmarkSmokeSucceed()) {
       // This profile-owned direct BookmarkModel must have received its local
@@ -2173,7 +2293,8 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (chrome::IsWasmProfilePreferencesCookieSmokeEnabled() &&
         !chrome::DidWasmProfilePreferencesCookieSmokeSucceed()) {
       // The CookieManager probe has a real SQLite backend-close fence. Its
@@ -2183,7 +2304,8 @@ void WasmBrowserMainParts::FinishShutdown() {
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (chrome::IsWasmProfilePreferencesHistorySmokeEnabled() &&
         !chrome::DidWasmProfilePreferencesHistorySmokeSucceed()) {
       // This direct, test-only HistoryService is outside WasmProfile's
@@ -2192,7 +2314,8 @@ void WasmBrowserMainParts::FinishShutdown() {
       smoke_allows_storage_lifecycle = false;
     }
 #endif
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (chrome::IsWasmProfileDatabaseSmokeEnabled() &&
         !chrome::DidWasmProfileDatabaseSmokeSucceed()) {
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
@@ -2212,7 +2335,8 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (chrome::IsWasmProfileLocalStorageSmokeEnabled() &&
         !chrome::DidWasmProfileLocalStorageSmokeSucceed()) {
       // A LocalStorage close result failure must select failure retirement;
@@ -2223,18 +2347,21 @@ void WasmBrowserMainParts::FinishShutdown() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::NotifyWasmProfilePreferencesSmokeStorageLifecycle(
         smoke_allows_storage_lifecycle);
 #endif
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::NotifyWasmProfileDatabaseSmokeStorageLifecycle(
         smoke_allows_storage_lifecycle);
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     chrome::NotifyWasmProfileLocalStorageSmokeStorageLifecycle(
         smoke_allows_storage_lifecycle);
 #endif
@@ -2281,7 +2408,8 @@ void WasmBrowserMainParts::ShutdownFoundation() {
   }
   if (profile_) {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     // The normal UI-loop path waits for each profile-owned participant. This
     // fallback has no loop left to service them, so retain any active model or
     // backend close together with its ProfileIOHold. ChromeMain must observe
@@ -2293,19 +2421,22 @@ void WasmBrowserMainParts::ShutdownFoundation() {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (profile_->HasActiveCookieSmoke()) {
       profile_->QuarantineCookieSmokeForFailureShutdown();
     }
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (profile_->HasActiveHistorySmoke()) {
       profile_->QuarantineHistorySmokeForFailureShutdown();
     }
 #endif
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (profile_->HasActiveDatabaseSmoke()) {
       profile_->QuarantineDatabaseSmokeForFailureShutdown();
     }
@@ -2313,7 +2444,8 @@ void WasmBrowserMainParts::ShutdownFoundation() {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     if (profile_->HasActiveLocalStorageSmoke()) {
       profile_->QuarantineLocalStorageSmokeForFailureShutdown();
     }
@@ -2327,7 +2459,8 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
     // The UI loop is already gone, so this fallback cannot await or certify
     // the Preferences/smoke lifecycle.
     // It must never derive a clean handoff from a merely terminal profile epoch.

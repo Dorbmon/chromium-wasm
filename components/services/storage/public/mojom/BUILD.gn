@@ -59,7 +59,8 @@ mojom("test_api") {
 if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
   mojom("wasm_local_storage_test_api") {
     cpp_only = true
 

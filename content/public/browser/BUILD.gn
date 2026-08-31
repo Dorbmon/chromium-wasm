@@ -33,6 +33,12 @@ config("wasm_m7_profile_bookmark_cookie_history_local_storage_test") {
       [ "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST=1" ]
 }
 
+config("wasm_m7_profile_bookmark_cookie_history_database_local_storage_test") {
+  defines = [
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST=1",
+  ]
+}
+
 # See //content/BUILD.gn for how this works.
 group("browser") {
   if (is_component_build) {
@@ -684,7 +690,8 @@ source_set("browser_sources") {
   if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-      enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
     # Export the source-selected public bridge with its generated test API so
     # the dedicated Chrome helper can stay on StoragePartition's public
     # DOMStorageContext boundary.
@@ -701,6 +708,11 @@ source_set("browser_sources") {
     if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
       public_configs =
           [ ":wasm_m7_profile_bookmark_cookie_history_local_storage_test" ]
+    }
+    if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      public_configs = [
+        ":wasm_m7_profile_bookmark_cookie_history_database_local_storage_test",
+      ]
     }
     public_deps += [
       "//components/services/storage/public/mojom:wasm_local_storage_test_api",

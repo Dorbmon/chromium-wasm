@@ -11,6 +11,8 @@
 import("//chrome/common/features.gni")
 import(
     "//chrome/browser/wasm/wasm_profile_bookmark_cookie_history_local_storage_smoke.gni")
+import(
+    "//chrome/browser/wasm/wasm_profile_bookmark_cookie_history_database_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
@@ -1923,6 +1925,15 @@ config("wasm_profile_m7_bookmark_cookie_history_local_storage_smoke_config") {
       [ "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST=1" ]
 }
 
+config("wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config") {
+  # This distinct aggregate owns every source-selected profile participant,
+  # including Database after renderer LocalStorage. Propagate one macro to all
+  # consumers of WasmProfile and WasmBrowserMainParts public class layouts.
+  defines = [
+    "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST=1",
+  ]
+}
+
 source_set("wasm_profile") {
   sources = [
     "wasm_profile.cc",
@@ -1993,6 +2004,19 @@ source_set("wasm_profile") {
     deps += [
       ":wasm_profile_bookmark_smoke",
       ":wasm_profile_cookie_smoke",
+      ":wasm_profile_history_smoke",
+      ":wasm_profile_local_storage_smoke",
+      ":wasm_profile_preferences_smoke",
+    ]
+  }
+  if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+    public_configs = [
+      ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
+    ]
+    deps += [
+      ":wasm_profile_bookmark_smoke",
+      ":wasm_profile_cookie_smoke",
+      ":wasm_profile_database_smoke",
       ":wasm_profile_history_smoke",
       ":wasm_profile_local_storage_smoke",
       ":wasm_profile_preferences_smoke",
@@ -2073,7 +2097,8 @@ test("wasm_storage_partition_config_unittests") {
 if (enable_chromium_wasm_m7_profile_preferences_test ||
     enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
   source_set("wasm_profile_preferences_smoke") {
     public = [ "wasm_profile_preferences_smoke.h" ]
 
@@ -2090,7 +2115,8 @@ if (enable_chromium_wasm_m7_profile_preferences_test ||
 
 if (enable_chromium_wasm_m7_profile_preferences_test ||
     enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
   # The optional HistoryService witness is linked only into the dedicated M7
   # Preferences artifact and the two History-bearing aggregates. It owns one
   # core HistoryService directly rather than admitting the desktop
@@ -2132,7 +2158,8 @@ if (enable_chromium_wasm_m7_profile_preferences_test ||
   }
 
   if (enable_chromium_wasm_m7_profile_preferences_test ||
-      enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
     # The optional BookmarkModel witness is linked only into the dedicated M7
     # Preferences artifact and the Bookmark-bearing aggregate. It owns one core
     # BookmarkModel directly rather than admitting BookmarkModelFactory, sync,
@@ -2183,7 +2210,8 @@ if (enable_chromium_wasm_m7_profile_preferences_test ||
 if (enable_chromium_wasm_m7_profile_preferences_test ||
     enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
   # The CookieManager witness is available to the Preferences artifact and all
   # three Cookie + renderer LocalStorage aggregates. It drives the default
   # in-memory StoragePartition's real CookieManager path while
@@ -2232,15 +2260,23 @@ if (enable_chromium_wasm_m7_profile_preferences_test ||
 }
 
 # The test-only M7 database protocol is linked into the source-selected M7
-# database artifact only. The normal chrome_wasm configuration neither compiles
-# this target nor recognizes its runtime switches.
-if (enable_chromium_wasm_m7_profile_database_test) {
+# database artifact and the five-store aggregate only. The normal chrome_wasm
+# configuration neither compiles this target nor recognizes its runtime
+# switches.
+if (enable_chromium_wasm_m7_profile_database_test ||
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
   source_set("wasm_profile_database_smoke") {
     public = [ "wasm_profile_database_smoke.h" ]
 
     sources = [ "wasm_profile_database_smoke.cc" ]
 
     public_deps = [ ":wasm_profile_ordered_drain_lifecycle" ]
+
+    if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      configs += [
+        ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
+      ]
+    }
 
     if (enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic) {
       # This is confined to the distinct abort-PC diagnostic artifact. The
@@ -2296,7 +2332,8 @@ if (enable_chromium_wasm_m7_profile_database_test) {
 if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
     enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+    enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
   source_set("wasm_profile_local_storage_smoke") {
     public = [
       "wasm_profile_local_storage_smoke.h",
@@ -2327,6 +2364,14 @@ if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
       ]
       public_configs = [
         ":wasm_profile_m7_bookmark_cookie_history_local_storage_smoke_config",
+      ]
+    }
+    if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      configs += [
+        ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
+      ]
+      public_configs = [
+        ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
       ]
     }
 
@@ -2390,6 +2435,11 @@ source_set("wasm_profile_storage") {
   if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
     configs += [
       ":wasm_profile_m7_bookmark_cookie_history_local_storage_smoke_config",
+    ]
+  }
+  if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+    configs += [
+      ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
     ]
   }
   if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
@@ -2664,12 +2714,26 @@ source_set("wasm_browser_main_parts") {
       ":wasm_profile_preferences_smoke",
     ]
   }
+  if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+    configs += [
+      ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
+    ]
+    deps += [
+      ":wasm_profile_bookmark_smoke",
+      ":wasm_profile_cookie_smoke",
+      ":wasm_profile_database_smoke",
+      ":wasm_profile_history_smoke",
+      ":wasm_profile_local_storage_smoke",
+      ":wasm_profile_preferences_smoke",
+    ]
+  }
   if (enable_chromium_wasm_m7_profile_preferences_test ||
       enable_chromium_wasm_m7_profile_database_test ||
       enable_chromium_wasm_m7_default_partition_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
       enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-      enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+      enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
     deps += [
       ":wasm_profile_persistent_prefs_lifetime_participant",
       ":wasm_profile_storage",
@@ -2734,6 +2798,15 @@ source_set("wasm_content_browser_client") {
   if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
     configs += [
       ":wasm_profile_m7_bookmark_cookie_history_local_storage_smoke_config",
+    ]
+    deps += [
+      ":wasm_profile_preferences_smoke",
+      "//services/network/public/mojom",
+    ]
+  }
+  if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+    configs += [
+      ":wasm_profile_m7_bookmark_cookie_history_database_local_storage_smoke_config",
     ]
     deps += [
       ":wasm_profile_preferences_smoke",

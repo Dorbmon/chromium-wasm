@@ -18,6 +18,8 @@ import("//build/toolchain/toolchain.gni")
 import("//chrome/browser/buildflags.gni")
 import(
     "//chrome/browser/wasm/wasm_profile_bookmark_cookie_history_local_storage_smoke.gni")
+import(
+    "//chrome/browser/wasm/wasm_profile_bookmark_cookie_history_database_local_storage_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_preferences_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_database_smoke.gni")
 import("//chrome/browser/wasm/wasm_profile_cookie_local_storage_smoke.gni")
@@ -666,12 +668,23 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST=1",
       ]
     }
+    if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      # This fresh capability-set artifact keeps the published aggregate and
+      # standalone Database startup protocols physically absent. Native
+      # sequencing starts Database only after renderer LocalStorage closes.
+      output_name =
+          "chrome_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test"
+      defines = [
+        "CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST=1",
+      ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test ||
         enable_chromium_wasm_m7_default_partition_local_storage_test ||
         enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
         enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-        enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
       configs += [ ":chrome_wasm_profile_storage" ]
     }
     deps = [
@@ -719,12 +732,23 @@ if (is_wasm && enable_chromium_wasm_chrome) {
         "//chrome/browser/wasm:wasm_profile_preferences_smoke",
       ]
     }
+    if (enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
+      deps += [
+        "//chrome/browser/wasm:wasm_profile_bookmark_smoke",
+        "//chrome/browser/wasm:wasm_profile_cookie_smoke",
+        "//chrome/browser/wasm:wasm_profile_database_smoke",
+        "//chrome/browser/wasm:wasm_profile_history_smoke",
+        "//chrome/browser/wasm:wasm_profile_local_storage_smoke",
+        "//chrome/browser/wasm:wasm_profile_preferences_smoke",
+      ]
+    }
     if (enable_chromium_wasm_m7_profile_preferences_test ||
         enable_chromium_wasm_m7_profile_database_test ||
         enable_chromium_wasm_m7_default_partition_local_storage_test ||
         enable_chromium_wasm_m7_profile_cookie_local_storage_test ||
         enable_chromium_wasm_m7_profile_cookie_history_local_storage_test ||
-        enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test) {
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test ||
+        enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test) {
       deps += [ "//chrome/browser/wasm:wasm_profile_storage" ]
     } else {
       deps += [ "//chrome/browser/wasm:wasm_profile_shutdown_failure_latch" ]

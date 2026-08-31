@@ -128,7 +128,8 @@ class WasmProfile final : public Profile {
   bool DidPrefsShutdownFenceSucceed() const;
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // Starts the direct BookmarkModel witness as a profile-owned lifetime. The
   // transferred I/O hold remains active through the result-bearing local write
   // and model/storage-owner destruction, then through its delayed completion
@@ -143,7 +144,8 @@ class WasmProfile final : public Profile {
   void QuarantineBookmarkSmokeForFailureShutdown();
 #endif
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // Starts the SQLite/LevelDB witness as an explicit profile-owned lifetime.
   // The transferred I/O hold remains owned through destruction of both
   // database engines and delivery of the task's result on the UI sequence.
@@ -159,7 +161,8 @@ class WasmProfile final : public Profile {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // Starts the CookieManager persistence witness as a profile-owned lifetime.
   // The participant owns a cloned Mojo connection and the transferred I/O hold
   // through the real SQLite backend-close receipt.
@@ -175,7 +178,8 @@ class WasmProfile final : public Profile {
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // Starts the source-selected direct HistoryService witness as an explicit
   // profile-owned lifetime. The admitted I/O hold stays pending until the
   // HistoryBackend destruction receipt has closed both History and Favicons.
@@ -192,7 +196,8 @@ class WasmProfile final : public Profile {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   bool StartLocalStorageSmoke(
       chrome::WasmProfileLocalStorageSmokeInput input,
       WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
@@ -350,7 +355,8 @@ class WasmProfile final : public Profile {
       prefs_lifetime_profile_io_participant_;
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // This direct core BookmarkModel is not a keyed service because its load and
   // ImportantFileWriter work are asynchronous. BrowserMainParts defers profile
   // teardown until this participant is terminal.
@@ -361,7 +367,8 @@ class WasmProfile final : public Profile {
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // The default partition owns CookieManager's NetworkContext, but this cloned
   // connection and its admitted profile operation are owned by the Profile.
   // BrowserMainParts cannot tear the partition down before the participant is
@@ -372,7 +379,8 @@ class WasmProfile final : public Profile {
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // This direct core HistoryService is not a keyed service because its
   // History/Favicons close receipt is asynchronous. BrowserMainParts defers
   // profile teardown until this participant is terminal.
@@ -380,7 +388,8 @@ class WasmProfile final : public Profile {
       history_lifetime_participant_;
 #endif
 
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // The source-selected SQLite/LevelDB task is asynchronous and therefore
   // cannot remain a BrowserMainParts-owned callback closure. Profile teardown
   // waits until this owner is terminal or fail-closed quarantine has retained
@@ -392,7 +401,8 @@ class WasmProfile final : public Profile {
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
-    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
+    defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
   // LocalStorage's WebContents, Mojo endpoints, and admitted operation cannot
   // outlive this profile unless first detached into fail-closed quarantine.
   std::unique_ptr<chrome::WasmProfileLocalStorageLifetimeParticipant>

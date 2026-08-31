@@ -76,6 +76,15 @@ constexpr char kDatabaseKey[] = "m7_profile_database_smoke_token";
 
 constexpr char kMarkerPrefix[] = "CHROMIUM_WASM_M7_DATABASE:";
 constexpr char kPhasePrefix[] = "CHROMIUM_WASM_M7_DATABASE_PHASE:";
+#if defined(\
+    CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
+// The five-store aggregate has a closed acceptance receipt. Standalone
+// database artifacts retain this diagnostic phase stream, but emitting it in
+// the aggregate would make otherwise valid runs fail the host grammar.
+constexpr bool kEmitDatabaseTaskPhases = false;
+#else
+constexpr bool kEmitDatabaseTaskPhases = true;
+#endif  // defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
 
 enum class SmokeMode {
   kNone,
@@ -227,6 +236,9 @@ const char* DatabaseTaskPhaseName(DatabaseTaskPhase phase) {
 }
 
 void EmitDatabaseTaskPhase(DatabaseTaskPhase phase) {
+  if (!kEmitDatabaseTaskPhases) {
+    return;
+  }
   std::fprintf(stderr, "%s%s\n", kPhasePrefix, DatabaseTaskPhaseName(phase));
   std::fflush(stderr);
 }
@@ -1566,6 +1578,8 @@ class WasmProfileDatabaseSmokeState {
 
   bool enabled() const { return enabled_; }
 
+  SmokeMode mode() const { return mode_; }
+
   std::optional<DatabaseTaskInput> BeginDatabaseTask(
       base::FilePath profile_path) {
     if (!enabled_ || started_ || failure_reported_ || profile_path.empty()) {
@@ -2077,6 +2091,19 @@ bool EnableWasmProfileDatabaseSmokeTestMode() {
 
 bool IsWasmProfileDatabaseSmokeEnabled() {
   return GetWasmProfileDatabaseSmokeState().enabled();
+}
+
+WasmProfileDatabaseSmokeMode GetWasmProfileDatabaseSmokeMode() {
+  switch (GetWasmProfileDatabaseSmokeState().mode()) {
+    case SmokeMode::kWriteA:
+      return WasmProfileDatabaseSmokeMode::kWriteA;
+    case SmokeMode::kVerifyAWriteB:
+      return WasmProfileDatabaseSmokeMode::kVerifyAWriteB;
+    case SmokeMode::kVerifyB:
+      return WasmProfileDatabaseSmokeMode::kVerifyB;
+    default:
+      return WasmProfileDatabaseSmokeMode::kNone;
+  }
 }
 
 bool DidWasmProfileDatabaseSmokeSucceed() {

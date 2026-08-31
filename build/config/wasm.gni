@@ -37,6 +37,13 @@ declare_args() {
   enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test =
       false
 
+  # Selects the aggregate M7 Bookmark + Cookie + History/Favicons + SQLite +
+  # LevelDB + renderer LocalStorage acceptance. The capability-set name keeps
+  # Database before LocalStorage, while its native lifetime order deliberately
+  # closes renderer LocalStorage before starting the database participant.
+  enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test =
+      false
+
   # Linear-memory bounds shared by the Emscripten link and Chromium's M3
   # in-process memory-budget policy.
   chromium_wasm_initial_memory_bytes = 67108864
@@ -71,4 +78,8 @@ if (current_toolchain == default_toolchain) {
       !enable_chromium_wasm_m7_profile_bookmark_cookie_history_local_storage_test || (is_wasm && enable_chromium_wasm_chrome),
       "M7 Bookmark + Cookie + History + LocalStorage acceptance requires " +
           "Wasm Chrome")
+  assert(
+      !enable_chromium_wasm_m7_profile_bookmark_cookie_history_database_local_storage_test || (is_wasm && enable_chromium_wasm_chrome),
+      "M7 Bookmark + Cookie + History + Database + LocalStorage acceptance " +
+          "requires Wasm Chrome")
 }
