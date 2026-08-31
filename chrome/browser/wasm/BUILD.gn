@@ -1890,6 +1890,13 @@ config("wasm_profile_m7_preferences_smoke_config") {
   defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
 }
 
+# This controls implementation-only code in WasmProfile and the Preferences
+# smoke helper. It must not be public: no class declaration or public ABI is
+# source-selected by the controlled replacement-failure witness.
+config("wasm_profile_m7_preferences_important_file_writer_proxy_completion_config") {
+  defines = [ "CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST=1" ]
+}
+
 config("wasm_profile_m7_local_storage_smoke_config") {
   # WasmProfile owns the source-selected LocalStorage lifetime participant in
   # this artifact. Keep every consumer's public class layout identical.
@@ -1978,6 +1985,9 @@ source_set("wasm_profile") {
       ":wasm_profile_history_smoke",
       ":wasm_profile_preferences_smoke",
     ]
+  }
+  if (enable_chromium_wasm_m7_profile_preferences_important_file_writer_proxy_completion_test) {
+    configs += [ ":wasm_profile_m7_preferences_important_file_writer_proxy_completion_config" ]
   }
   if (enable_chromium_wasm_m7_profile_database_test) {
     public_configs = [ ":wasm_profile_m7_database_smoke_config" ]
@@ -2122,6 +2132,10 @@ if (enable_chromium_wasm_m7_profile_preferences_test ||
       "//components/prefs",
       "//crypto",
     ]
+
+    if (enable_chromium_wasm_m7_profile_preferences_important_file_writer_proxy_completion_test) {
+      configs += [ ":wasm_profile_m7_preferences_important_file_writer_proxy_completion_config" ]
+    }
   }
 }
 

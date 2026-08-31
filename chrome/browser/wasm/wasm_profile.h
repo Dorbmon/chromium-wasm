@@ -27,6 +27,7 @@ class PrefService;
 class ProfileKey;
 class WasmProfilePrefsFenceController;
 class WasmProfilePersistentPrefsLifetimeParticipant;
+class WasmProfileImportantFileWriterProxyCompletionFlow;
 class WasmSessionNavigationJournal;
 
 namespace chrome {
@@ -316,6 +317,12 @@ class WasmProfile final : public Profile {
   bool IsSignedIn() override;
 
  private:
+  // The source-selected proxy-completion failure flow needs the canonical
+  // JsonPrefStore only while it is on this Profile's UI sequence. It retains
+  // a WeakPtr across its file-sequence callbacks and never transfers a
+  // PrefService or JsonPrefStore reference off that sequence.
+  friend class WasmProfileImportantFileWriterProxyCompletionFlow;
+
   enum class PrefsShutdownFenceState {
     kNotStarted,
     kPending,

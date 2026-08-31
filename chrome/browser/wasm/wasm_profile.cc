@@ -10,7 +10,12 @@
 #include <string>
 #include <utility>
 
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+#include <emscripten/wasmfs_opfs_profile_drain.h>
+#endif
+
 #include "base/check.h"
+#include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
@@ -22,6 +27,10 @@
 #include "base/task/thread_pool.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+#include "base/memory/ref_counted.h"
+#include "base/synchronization/lock.h"
+#endif
 #include "chrome/browser/profiles/profile_key.h"
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -165,7 +174,271 @@ void VerifyPersistentPrefsAndReplyOnFileSequence(
   std::move(reply).Run(readback_succeeded);
 }
 
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+// This receipt is the only object shared with JsonPrefStore's file sequence.
+// It deliberately contains no Profile, PrefService, JsonPrefStore, or raw
+// preference data. The final UI-sequence callback accepts the controlled
+// failure only when every field matches this one replacement attempt.
+class WasmProfileImportantFileWriterProxyCompletionReceipt final
+    : public base::RefCountedThreadSafe<
+          WasmProfileImportantFileWriterProxyCompletionReceipt> {
+ public:
+  void RecordReplaceResult(int arm_result,
+                           bool replace_result,
+                           bool had_error,
+                           base::File::Error replace_file_error,
+                           int latch_count,
+                           int proxies_after_latch) {
+    base::AutoLock lock(lock_);
+    ++callback_count_;
+    arm_result_ = arm_result;
+    replace_result_ = replace_result;
+    had_error_ = had_error;
+    replace_file_error_ = replace_file_error;
+    latch_count_ = latch_count;
+    proxies_after_latch_ = proxies_after_latch;
+  }
+
+  bool MatchesExpectedFailure() {
+    base::AutoLock lock(lock_);
+    return callback_count_ == 1 && arm_result_ == 1 && !replace_result_ &&
+           had_error_ && replace_file_error_ == base::File::FILE_ERROR_IO &&
+           latch_count_ == 1 && proxies_after_latch_ == 0;
+  }
+
+ private:
+  friend class base::RefCountedThreadSafe<
+      WasmProfileImportantFileWriterProxyCompletionReceipt>;
+
+  ~WasmProfileImportantFileWriterProxyCompletionReceipt() = default;
+
+  base::Lock lock_;
+  int callback_count_ GUARDED_BY(lock_) = 0;
+  int arm_result_ GUARDED_BY(lock_) = 0;
+  bool replace_result_ GUARDED_BY(lock_) = true;
+  bool had_error_ GUARDED_BY(lock_) = false;
+  base::File::Error replace_file_error_ GUARDED_BY(lock_) =
+      base::File::FILE_ERROR_FAILED;
+  int latch_count_ GUARDED_BY(lock_) = 0;
+  int proxies_after_latch_ GUARDED_BY(lock_) = -1;
+};
+
+bool ReplaceFileWithWasmProfileProxyCompletionFailure(
+    scoped_refptr<WasmProfileImportantFileWriterProxyCompletionReceipt>
+        receipt,
+    const base::FilePath& from_path,
+    const base::FilePath& to_path,
+    base::File::Error* error) {
+  const int arm_result =
+      wasmfs_opfs_profile_log_v4_test_proxy_completion_arm();
+  const bool replace_result = base::ReplaceFile(from_path, to_path, error);
+
+  // The V4 test seam is armed on this file-runner thread only after
+  // ImportantFileWriter has flushed and closed its temporary file. Snapshot
+  // its exact post-replacement state before returning the real result.
+  const bool had_error = error != nullptr;
+  const base::File::Error replace_file_error =
+      had_error ? *error : base::File::FILE_ERROR_FAILED;
+  receipt->RecordReplaceResult(
+      arm_result, replace_result, had_error, replace_file_error,
+      wasmfs_opfs_profile_log_v4_test_proxy_completion_latch_count(),
+      wasmfs_opfs_profile_log_v4_test_proxies_after_latch());
+  return replace_result;
+}
+
+void VerifyWasmProfileProxyCompletionFailureAndReplyOnFileSequence(
+    base::FilePath preferences_path,
+    base::DictValue expected_b_values,
+    scoped_refptr<WasmProfileImportantFileWriterProxyCompletionReceipt>
+        receipt,
+    base::OnceCallback<void(bool success)> reply) {
+  // A poisoned V4 backend may make this bounded read fail as well as leave A
+  // readable. Either way, only a strict mismatch with expected B is relevant;
+  // this does not assert a crash-recovery or directory-durability outcome.
+  const bool b_was_not_published =
+      !VerifyPersistentPrefsOnFileSequence(preferences_path, expected_b_values);
+  std::move(reply).Run(b_was_not_published &&
+                       receipt->MatchesExpectedFailure());
+}
+#endif
+
 }  // namespace
+
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+// Keeps the three serial JsonPrefStore commits on WasmProfile's UI sequence.
+// The file sequence receives only immutable paths/dictionaries, a lock-safe
+// receipt, and a BindPostTask reply. In particular, no PrefService or
+// JsonPrefStore reference can survive off the UI sequence.
+class WasmProfileImportantFileWriterProxyCompletionFlow final
+    : public base::RefCountedThreadSafe<
+          WasmProfileImportantFileWriterProxyCompletionFlow> {
+ public:
+  WasmProfileImportantFileWriterProxyCompletionFlow(
+      base::WeakPtr<WasmProfile> profile,
+      scoped_refptr<base::SequencedTaskRunner> ui_task_runner,
+      base::OnceCallback<void(bool success)> completion)
+      : profile_(std::move(profile)),
+        ui_task_runner_(std::move(ui_task_runner)),
+        completion_(std::move(completion)),
+        receipt_(base::MakeRefCounted<
+                 WasmProfileImportantFileWriterProxyCompletionReceipt>()) {
+    CHECK(ui_task_runner_);
+    CHECK(completion_);
+  }
+
+  bool Start() {
+    if (!profile_ || !profile_->prefs_ || !profile_->json_pref_store_) {
+      return false;
+    }
+    CommitBaselineOne();
+    return true;
+  }
+
+ private:
+  friend class base::RefCountedThreadSafe<
+      WasmProfileImportantFileWriterProxyCompletionFlow>;
+
+  using CompletionHandler =
+      void (WasmProfileImportantFileWriterProxyCompletionFlow::*)(bool);
+
+  ~WasmProfileImportantFileWriterProxyCompletionFlow() = default;
+
+  base::OnceCallback<void(bool)> BindReplyToUi(CompletionHandler handler) {
+    return base::BindPostTask(
+        ui_task_runner_,
+        base::BindOnce(handler, base::WrapRefCounted(this)));
+  }
+
+  void CommitBaselineOne() {
+    WasmProfile* profile = profile_.get();
+    if (!profile || !profile->prefs_ || !profile->json_pref_store_) {
+      Finish(false);
+      return;
+    }
+
+    // Drain the constructor and D2 read of A through the ordinary replacement
+    // path before changing the private fence UUID. This prevents a prior
+    // scheduled write from consuming the source-selected replacement callback.
+    profile->prefs_->CommitPendingWrite(
+        base::OnceClosure(),
+        base::BindOnce(
+            &VerifyPersistentPrefsAndReplyOnFileSequence,
+            profile->profile_path_.Append(chrome::kPreferencesFilename),
+            profile->json_pref_store_->GetValues(),
+            BindReplyToUi(&WasmProfileImportantFileWriterProxyCompletionFlow::
+                              OnBaselineOneComplete)));
+  }
+
+  void OnBaselineOneComplete(bool success) {
+    if (!success) {
+      Finish(false);
+      return;
+    }
+
+    WasmProfile* profile = profile_.get();
+    if (!profile || !profile->prefs_ || !profile->json_pref_store_) {
+      Finish(false);
+      return;
+    }
+
+    // Generate a distinct private value so the second ordinary baseline has a
+    // fresh JsonPrefStore mutation independent of the D2 A read.
+    const std::string prior_uuid =
+        profile->prefs_->GetString(kWasmPersistentPrefsFenceUuid);
+    const std::string fresh_uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
+    if (fresh_uuid.empty() || fresh_uuid == prior_uuid) {
+      Finish(false);
+      return;
+    }
+    profile->prefs_->SetString(kWasmPersistentPrefsFenceUuid, fresh_uuid);
+    CommitBaselineTwo();
+  }
+
+  void CommitBaselineTwo() {
+    WasmProfile* profile = profile_.get();
+    if (!profile || !profile->prefs_ || !profile->json_pref_store_) {
+      Finish(false);
+      return;
+    }
+
+    profile->prefs_->CommitPendingWrite(
+        base::OnceClosure(),
+        base::BindOnce(
+            &VerifyPersistentPrefsAndReplyOnFileSequence,
+            profile->profile_path_.Append(chrome::kPreferencesFilename),
+            profile->json_pref_store_->GetValues(),
+            BindReplyToUi(&WasmProfileImportantFileWriterProxyCompletionFlow::
+                              OnBaselineTwoComplete)));
+  }
+
+  void OnBaselineTwoComplete(bool success) {
+    if (!success) {
+      Finish(false);
+      return;
+    }
+
+    WasmProfile* profile = profile_.get();
+    if (!profile || !profile->prefs_ || !profile->json_pref_store_) {
+      Finish(false);
+      return;
+    }
+
+    // WriteNowWithBackgroundDataProducer copies this callback into its queued
+    // file task synchronously. Restore the default on this UI turn immediately
+    // after CommitPendingWrite so no later Preferences write inherits it.
+    profile->json_pref_store_->SetReplaceFileCallbackForTesting(
+        base::BindRepeating(
+            &ReplaceFileWithWasmProfileProxyCompletionFailure, receipt_));
+    if (!chrome::WriteWasmProfilePreferencesImportantFileWriterProxyCompletionValue(
+            profile->prefs_.get())) {
+      profile->json_pref_store_->SetReplaceFileCallbackForTesting(
+          base::BindRepeating(&base::ReplaceFile));
+      Finish(false);
+      return;
+    }
+
+    base::DictValue expected_b_values =
+        profile->json_pref_store_->GetValues();
+    profile->prefs_->CommitPendingWrite(
+        base::OnceClosure(),
+        base::BindOnce(
+            &VerifyWasmProfileProxyCompletionFailureAndReplyOnFileSequence,
+            profile->profile_path_.Append(chrome::kPreferencesFilename),
+            std::move(expected_b_values), receipt_,
+            BindReplyToUi(&WasmProfileImportantFileWriterProxyCompletionFlow::
+                              OnFinalCommitComplete)));
+    profile->json_pref_store_->SetReplaceFileCallbackForTesting(
+        base::BindRepeating(&base::ReplaceFile));
+  }
+
+  void OnFinalCommitComplete(bool exact_failure_and_unpublished_b) {
+    if (!exact_failure_and_unpublished_b ||
+        !chrome::NotifyWasmProfilePreferencesImportantFileWriterProxyCompletionEvidence()) {
+      Finish(false);
+      return;
+    }
+
+    // The controlled post-flush replacement loss is evidence for fail-closed
+    // retirement only. Complete the existing fence as failed so it cannot
+    // authorize a clean V4 profile handoff.
+    Finish(false);
+  }
+
+  void Finish(bool success) {
+    if (completion_.is_null()) {
+      return;
+    }
+    base::OnceCallback<void(bool success)> completion = std::move(completion_);
+    std::move(completion).Run(success);
+  }
+
+  const base::WeakPtr<WasmProfile> profile_;
+  const scoped_refptr<base::SequencedTaskRunner> ui_task_runner_;
+  base::OnceCallback<void(bool success)> completion_;
+  const scoped_refptr<WasmProfileImportantFileWriterProxyCompletionReceipt>
+      receipt_;
+};
+#endif
 
 WasmProfile::WasmProfile(base::FilePath profile_path)
     : WasmProfile(std::move(profile_path), nullptr) {}
@@ -408,6 +681,16 @@ bool WasmProfile::StartPrefsShutdownFence(
   // bounded write/readback result to the outer storage lifecycle.
   CHECK(prefs_lifetime_profile_io_participant_);
   CHECK(prefs_lifetime_profile_io_participant_->IsPending());
+#endif
+
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+  if (chrome::IsWasmProfilePreferencesImportantFileWriterProxyCompletionFailureEnabled()) {
+    auto flow = base::MakeRefCounted<
+        WasmProfileImportantFileWriterProxyCompletionFlow>(
+        weak_ptr_factory_.GetWeakPtr(),
+        base::SequencedTaskRunner::GetCurrentDefault(), std::move(completion));
+    return flow->Start();
+  }
 #endif
 
   // Bind the result back to the UI sequence before handing it to the

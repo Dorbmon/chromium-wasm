@@ -7,15 +7,33 @@
 # directory, where //chrome:chrome_wasm is renamed to the test artifact.
 declare_args() {
   enable_chromium_wasm_m7_profile_preferences_test = false
+
+  # This source-selected failure witness replaces the canonical Preferences
+  # file only after its real temporary-file flush and close. It has a
+  # dedicated output and link setting so the injected V4 proxy-completion
+  # failure can never enter the ordinary Preferences acceptance artifact.
+  enable_chromium_wasm_m7_profile_preferences_important_file_writer_proxy_completion_test =
+      false
 }
 
+assert(
+    !enable_chromium_wasm_m7_profile_preferences_important_file_writer_proxy_completion_test ||
+        enable_chromium_wasm_m7_profile_preferences_test,
+    "M7 Preferences ImportantFileWriter witness requires the Preferences configuration")
 assert(!enable_chromium_wasm_m7_profile_preferences_test ||
            (is_wasm && enable_chromium_wasm_chrome),
        "M7 Preferences acceptance requires the Wasm Chrome source graph")
 
 if (enable_chromium_wasm_m7_profile_preferences_test) {
-  assert(
-      get_path_info(root_out_dir, "name") ==
-          "wasm-chrome-m7-profile-preferences",
-      "M7 Preferences acceptance must use out/wasm-chrome-m7-profile-preferences")
+  _m7_preferences_output_dir = "wasm-chrome-m7-profile-preferences"
+  _m7_preferences_output_message =
+      "M7 Preferences acceptance must use out/wasm-chrome-m7-profile-preferences"
+  if (enable_chromium_wasm_m7_profile_preferences_important_file_writer_proxy_completion_test) {
+    _m7_preferences_output_dir =
+        "wasm-chrome-m7-profile-preferences-important-file-writer-proxy-completion"
+    _m7_preferences_output_message =
+        "M7 Preferences ImportantFileWriter witness must use out/wasm-chrome-m7-profile-preferences-important-file-writer-proxy-completion"
+  }
+  assert(get_path_info(root_out_dir, "name") == _m7_preferences_output_dir,
+         _m7_preferences_output_message)
 }

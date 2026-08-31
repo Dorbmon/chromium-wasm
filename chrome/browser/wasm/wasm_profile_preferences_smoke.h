@@ -222,6 +222,31 @@ void RegisterWasmProfilePreferencesSmokePref(
 // after emitting a redacted failure marker.
 bool StartWasmProfilePreferencesSmoke(PrefService* prefs);
 
+// The source-selected ImportantFileWriter proxy-completion artifact accepts
+// one additional bare switch only for its second document:
+//
+//   --wasm-profile-preferences-important-file-writer-proxy-completion
+//
+// It is valid only with verify-and-write and without the optional Browser,
+// History, Cookie, or Bookmark probes. That document reads A but defers its B
+// write until WasmProfile has installed its replacement callback immediately
+// before the final canonical JsonPrefStore commit. These helpers expose only
+// that narrow state transition; they do not expose a raw test token or the
+// private preference key.
+//
+// The special artifact emits
+// IMPORTANT_FILE_WRITER_REPLACE_EIO_POST_FLUSH_UNPUBLISHED only after its
+// profile-side receipt established the expected post-flush replacement error
+// and the strict final readback was not B. It deliberately completes the
+// existing fence as failed afterwards. Its next, fresh document emits
+// LEASE_REACQUIRED before the ordinary A-to-C verify-and-write path. This is
+// a document-replacement observation, not a crash, power-loss, or general
+// profile-durability claim.
+bool IsWasmProfilePreferencesImportantFileWriterProxyCompletionFailureEnabled();
+bool WriteWasmProfilePreferencesImportantFileWriterProxyCompletionValue(
+    PrefService* prefs);
+bool NotifyWasmProfilePreferencesImportantFileWriterProxyCompletionEvidence();
+
 // Records the terminal result from the fixed real Browser smoke. A successful
 // result emits the fixed BROWSER_SMOKE_CLOSED marker; an invalid sequence or
 // failed Browser path reports the redacted browser failure stage.

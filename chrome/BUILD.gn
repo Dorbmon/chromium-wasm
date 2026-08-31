@@ -534,6 +534,14 @@ if (is_wasm && enable_chromium_wasm_chrome) {
     ldflags = [ "-sWASMFS=1" ]
   }
 
+  # This is intentionally attached only to the dedicated canonical
+  # Preferences failure witness below. The normal M7 Preferences artifact
+  # links the production V4 backend without its test-only proxy-completion
+  # failure hook.
+  config("chrome_wasm_m7_profile_preferences_important_file_writer_proxy_completion") {
+    ldflags = [ "-sWASMFS_OPFS_PROFILE_LOG_V4_TEST_PROXY_COMPLETION_FAILURE=1" ]
+  }
+
   # The M7 abort-PC probe is strictly a failure diagnostic. It is applied only
   # to the distinct M7 diagnostic artifact below, never to Chrome or the
   # ordinary M7 profile-database smoke artifact.
@@ -582,7 +590,13 @@ if (is_wasm && enable_chromium_wasm_chrome) {
       # This capability exists only in the dedicated fresh M7 output
       # configuration. Its normal target label remains chrome_wasm so the
       # experimental OPFS startup remains isolated from normal Chrome.
-      output_name = "chrome_wasm_m7_profile_preferences_test"
+      if (enable_chromium_wasm_m7_profile_preferences_important_file_writer_proxy_completion_test) {
+        output_name =
+            "chrome_wasm_m7_profile_preferences_important_file_writer_proxy_completion_test"
+        configs += [ ":chrome_wasm_m7_profile_preferences_important_file_writer_proxy_completion" ]
+      } else {
+        output_name = "chrome_wasm_m7_profile_preferences_test"
+      }
       defines = [ "CHROME_WASM_M7_PREFERENCES_SMOKE_TEST=1" ]
     }
     if (enable_chromium_wasm_m7_normal_profile_fence_failure_diagnostic) {

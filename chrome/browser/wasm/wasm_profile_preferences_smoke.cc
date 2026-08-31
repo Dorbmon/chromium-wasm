@@ -35,6 +35,8 @@ constexpr char kCookieSmokeSwitch[] =
     "wasm-profile-preferences-cookie-smoke";
 constexpr char kBookmarkSmokeSwitch[] =
     "wasm-profile-preferences-bookmark-smoke";
+constexpr char kImportantFileWriterProxyCompletionSwitch[] =
+    "wasm-profile-preferences-important-file-writer-proxy-completion";
 constexpr char kWriteMode[] = "write";
 constexpr char kVerifyAndWriteMode[] = "verify-and-write";
 constexpr char kVerifyBMode[] = "verify-b";
@@ -73,10 +75,35 @@ class WasmProfilePreferencesSmokeState {
         command_line->HasSwitch(kCookieSmokeSwitch);
     const bool has_bookmark_smoke =
         command_line->HasSwitch(kBookmarkSmokeSwitch);
+    const bool has_important_file_writer_proxy_completion =
+        command_line->HasSwitch(kImportantFileWriterProxyCompletionSwitch);
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+    const std::string important_file_writer_proxy_completion_value =
+        command_line->GetSwitchValueASCII(
+            kImportantFileWriterProxyCompletionSwitch);
+    const bool important_file_writer_proxy_completion_has_value =
+        has_important_file_writer_proxy_completion &&
+        !important_file_writer_proxy_completion_value.empty();
+#endif
     if (!has_mode) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
       return false;
     }
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+    if (has_important_file_writer_proxy_completion &&
+        (important_file_writer_proxy_completion_has_value || has_browser_smoke ||
+         has_history_smoke || has_cookie_smoke || has_bookmark_smoke)) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+      return false;
+    }
+#else
+    // The special switch must not let an ordinary Preferences artifact accept
+    // an otherwise valid token bundle and then silently fall through.
+    if (has_important_file_writer_proxy_completion) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+      return false;
+    }
+#endif
     if (has_browser_smoke &&
         !command_line->GetSwitchValueASCII(kBrowserSmokeSwitch).empty()) {
       ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
@@ -142,6 +169,16 @@ class WasmProfilePreferencesSmokeState {
       return false;
     }
 
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+    if (has_important_file_writer_proxy_completion &&
+        mode_ != SmokeMode::kVerifyAndWrite) {
+      ReportFailure(WasmProfilePreferencesSmokeFailureStage::kArguments);
+      return false;
+    }
+    important_file_writer_proxy_completion_failure_required_ =
+        has_important_file_writer_proxy_completion;
+#endif
+
     if (!token_a_.empty()) {
       token_a_digest_ = DigestToken(token_a_);
     }
@@ -184,6 +221,18 @@ class WasmProfilePreferencesSmokeState {
     started_ = true;
     EmitMarker("READY");
 
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+    // The third document is an ordinary verify-and-write A-to-C operation.
+    // It is reached only after the host has replaced the top-level document
+    // that retained the failed second document's profile lease. This marker
+    // records that fresh-document boundary; it is not a live-lock contention
+    // or crash-durability assertion.
+    if (!important_file_writer_proxy_completion_failure_required_ &&
+        mode_ == SmokeMode::kVerifyAndWrite) {
+      EmitMarker("LEASE_REACQUIRED");
+    }
+#endif
+
     if (mode_ == SmokeMode::kVerifyAndWrite) {
       // The first module persisted raw token A through JsonPrefStore. Compare
       // only inside the application and emit its SHA-256 digest on success.
@@ -192,6 +241,15 @@ class WasmProfilePreferencesSmokeState {
         return false;
       }
       EmitDigestMarker("READ_A_OK", token_a_digest_);
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+      if (important_file_writer_proxy_completion_failure_required_) {
+        // Retain only B until WasmProfile has installed the replacement
+        // callback immediately before its final JsonPrefStore commit. The
+        // normal profile/fence path must not queue B before that point.
+        token_a_.clear();
+        return true;
+      }
+#endif
       prefs->SetString(kSmokePref, token_b_);
       expected_fence_digest_ = token_b_digest_;
       EmitDigestMarker("WRITE_ACCEPTED", token_b_digest_);
@@ -220,6 +278,52 @@ class WasmProfilePreferencesSmokeState {
       ClearRawTokens();
     }
     return true;
+  }
+
+  bool important_file_writer_proxy_completion_failure_enabled() const {
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+    return enabled_ && started_ && !failure_reported_ &&
+           important_file_writer_proxy_completion_failure_required_ &&
+           !important_file_writer_proxy_completion_write_started_ &&
+           mode_ == SmokeMode::kVerifyAndWrite && !token_b_.empty();
+#else
+    return false;
+#endif
+  }
+
+  bool WriteImportantFileWriterProxyCompletionValue(PrefService* prefs) {
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+    if (!prefs || !important_file_writer_proxy_completion_failure_enabled()) {
+      return false;
+    }
+
+    // This is the only call site that turns the deferred raw B token into a
+    // PrefService update. It intentionally emits no ordinary WRITE_ACCEPTED
+    // marker because the following replacement operation is expected to fail.
+    prefs->SetString(kSmokePref, token_b_);
+    important_file_writer_proxy_completion_write_started_ = true;
+    ClearRawTokens();
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  bool NotifyImportantFileWriterProxyCompletionEvidence() {
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+    if (!enabled_ || !started_ || failure_reported_ ||
+        !important_file_writer_proxy_completion_failure_required_ ||
+        !important_file_writer_proxy_completion_write_started_ ||
+        important_file_writer_proxy_completion_evidence_emitted_) {
+      return false;
+    }
+
+    important_file_writer_proxy_completion_evidence_emitted_ = true;
+    EmitMarker("IMPORTANT_FILE_WRITER_REPLACE_EIO_POST_FLUSH_UNPUBLISHED");
+    return true;
+#else
+    return false;
+#endif
   }
 
   std::optional<WasmProfilePreferencesCookieSmokeInput>
@@ -517,6 +621,11 @@ class WasmProfilePreferencesSmokeState {
   bool storage_lifecycle_succeeded_ = false;
   bool lease_released_ = false;
   bool failure_reported_ = false;
+#if defined(CHROME_WASM_M7_PREFERENCES_IMPORTANT_FILE_WRITER_PROXY_COMPLETION_TEST)
+  bool important_file_writer_proxy_completion_failure_required_ = false;
+  bool important_file_writer_proxy_completion_write_started_ = false;
+  bool important_file_writer_proxy_completion_evidence_emitted_ = false;
+#endif
   SmokeMode mode_ = SmokeMode::kNone;
   std::string token_a_;
   std::string token_b_;
@@ -540,7 +649,8 @@ bool HasWasmProfilePreferencesSmokeArguments() {
          command_line->HasSwitch(kBrowserSmokeSwitch) ||
          command_line->HasSwitch(kHistorySmokeSwitch) ||
          command_line->HasSwitch(kCookieSmokeSwitch) ||
-         command_line->HasSwitch(kBookmarkSmokeSwitch);
+         command_line->HasSwitch(kBookmarkSmokeSwitch) ||
+         command_line->HasSwitch(kImportantFileWriterProxyCompletionSwitch);
 }
 
 bool EnableWasmProfilePreferencesSmokeTestMode() {
@@ -591,6 +701,23 @@ void RegisterWasmProfilePreferencesSmokePref(
 
 bool StartWasmProfilePreferencesSmoke(PrefService* prefs) {
   return GetWasmProfilePreferencesSmokeState().Start(prefs);
+}
+
+bool
+IsWasmProfilePreferencesImportantFileWriterProxyCompletionFailureEnabled() {
+  return GetWasmProfilePreferencesSmokeState()
+      .important_file_writer_proxy_completion_failure_enabled();
+}
+
+bool WriteWasmProfilePreferencesImportantFileWriterProxyCompletionValue(
+    PrefService* prefs) {
+  return GetWasmProfilePreferencesSmokeState()
+      .WriteImportantFileWriterProxyCompletionValue(prefs);
+}
+
+bool NotifyWasmProfilePreferencesImportantFileWriterProxyCompletionEvidence() {
+  return GetWasmProfilePreferencesSmokeState()
+      .NotifyImportantFileWriterProxyCompletionEvidence();
 }
 
 void NotifyWasmProfilePreferencesBrowserSmokeResult(bool success) {
