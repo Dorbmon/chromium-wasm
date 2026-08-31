@@ -1893,6 +1893,13 @@ config("wasm_profile_m7_local_storage_smoke_config") {
   defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
 }
 
+config("wasm_profile_m7_database_smoke_config") {
+  # WasmProfile owns the source-selected database lifetime participant in the
+  # dedicated acceptance artifact. Propagate the define to every consumer of
+  # the public class layout; normal Chrome must not compile this capability.
+  defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
+}
+
 config("wasm_profile_m7_cookie_local_storage_smoke_config") {
   # The aggregate has a distinct public macro because WasmProfile owns both
   # Cookie and LocalStorage lifetime participants in this artifact. Never
@@ -1954,7 +1961,8 @@ source_set("wasm_profile") {
     ]
   }
   if (enable_chromium_wasm_m7_profile_database_test) {
-    defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
+    public_configs = [ ":wasm_profile_m7_database_smoke_config" ]
+    deps += [ ":wasm_profile_database_smoke" ]
   }
   if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
     public_configs = [ ":wasm_profile_m7_local_storage_smoke_config" ]
@@ -2232,6 +2240,8 @@ if (enable_chromium_wasm_m7_profile_database_test) {
 
     sources = [ "wasm_profile_database_smoke.cc" ]
 
+    public_deps = [ ":wasm_profile_ordered_drain_lifecycle" ]
+
     if (enable_chromium_wasm_m7_profile_database_abort_pc_diagnostic) {
       # This is confined to the distinct abort-PC diagnostic artifact. The
       # source observer preserves fatal logging and crash behavior while it
@@ -2260,7 +2270,15 @@ if (enable_chromium_wasm_m7_profile_database_test) {
       defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST=1" ]
     }
 
+    if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
+      # Admission retention moved into the profile-owned database participant.
+      # Select the diagnostic only here and give it the narrow storage-owner
+      # API needed to transfer the already-closed task's outstanding hold.
+      defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST=1" ]
+    }
+
     deps = [
+      ":wasm_profile_storage",
       "//base",
       "//crypto",
       "//sql",
@@ -2606,11 +2624,11 @@ source_set("wasm_browser_main_parts") {
     ]
   }
   if (enable_chromium_wasm_m7_profile_database_test) {
-    defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]
+    configs += [ ":wasm_profile_m7_database_smoke_config" ]
     deps += [ ":wasm_profile_database_smoke" ]
   }
   if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test) {
-    defines += [ "CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST=1" ]
+    defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST=1" ]
   }
   if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
     defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
@@ -2689,6 +2707,13 @@ source_set("wasm_content_browser_client") {
 
   if (enable_chromium_wasm_m7_default_partition_local_storage_test) {
     defines = [ "CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST=1" ]
+  }
+
+  if (enable_chromium_wasm_m7_profile_database_test) {
+    # WasmBrowserMainParts has a database-only member declaration. Every
+    # translation unit that includes its header must see the same class
+    # definition, including the content client that constructs the main parts.
+    configs += [ ":wasm_profile_m7_database_smoke_config" ]
   }
 
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {

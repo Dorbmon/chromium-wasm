@@ -35,6 +35,10 @@
 // GN's include checker does not evaluate this target-specific definition.
 #include "chrome/browser/wasm/wasm_profile_cookie_smoke.h"  // nogncheck
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_database_smoke.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
@@ -254,6 +258,14 @@ WasmProfile::~WasmProfile() {
   // receipt; the outer V4 transaction must then refuse.
   if (cookie_lifetime_participant_) {
     QuarantineCookieSmokeForFailureShutdown();
+  }
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  // The database runner can still own live SQLite or LevelDB handles when a
+  // fallback destroys the profile after the UI loop has stopped. Keep that
+  // task and its admitted profile I/O outstanding so V4 refuses its drain.
+  if (database_lifetime_participant_) {
+    QuarantineDatabaseSmokeForFailureShutdown();
   }
 #endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
@@ -556,6 +568,53 @@ void WasmProfile::QuarantineHistorySmokeForFailureShutdown() {
       !history_lifetime_participant_->QuarantineForFailureShutdown()) {
     LOG(ERROR) << "chrome_wasm could not quarantine an active History/Favicons "
                   "close for fail-closed shutdown";
+  }
+}
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+bool WasmProfile::StartDatabaseSmoke(
+    WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+    base::OnceCallback<void(bool success)> completion) {
+  if (shutdown_ || database_lifetime_participant_ || !completion) {
+    (void)profile_io_hold.Complete(
+        WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::kFailed);
+    return false;
+  }
+
+  database_lifetime_participant_ =
+      std::make_unique<chrome::WasmProfileDatabaseLifetimeParticipant>(
+          profile_path_, std::move(profile_io_hold));
+  if (!database_lifetime_participant_->Start(std::move(completion))) {
+    // Start() has retired an otherwise unstarted admission as failed. Drop
+    // the inert participant so no later shutdown path can reinterpret it.
+    database_lifetime_participant_.reset();
+    return false;
+  }
+  return true;
+}
+
+bool WasmProfile::HasActiveDatabaseSmoke() const {
+  return database_lifetime_participant_ &&
+         database_lifetime_participant_->IsActive();
+}
+
+bool WasmProfile::DidDatabaseSmokeSucceed() const {
+  return database_lifetime_participant_ &&
+         database_lifetime_participant_->DidSucceed();
+}
+
+void WasmProfile::CancelDatabaseSmokeForShutdown() {
+  if (database_lifetime_participant_) {
+    database_lifetime_participant_->Cancel();
+  }
+}
+
+void WasmProfile::QuarantineDatabaseSmokeForFailureShutdown() {
+  if (database_lifetime_participant_ &&
+      !database_lifetime_participant_->QuarantineForFailureShutdown()) {
+    LOG(ERROR) << "chrome_wasm could not quarantine active SQLite/LevelDB "
+                  "work for fail-closed shutdown";
   }
 }
 #endif

@@ -35,6 +35,9 @@ class M7ProfileDatabaseOutstandingIORefusalContractTest(unittest.TestCase):
         self.main_parts = source(
             "chrome/browser/wasm/wasm_browser_main_parts.cc"
         )
+        self.database = source(
+            "chrome/browser/wasm/wasm_profile_database_smoke.cc"
+        )
         self.storage = source("chrome/browser/wasm/wasm_profile_storage.cc")
         self.storage_header = source("chrome/browser/wasm/wasm_profile_storage.h")
         self.result = source(
@@ -67,11 +70,35 @@ class M7ProfileDatabaseOutstandingIORefusalContractTest(unittest.TestCase):
             self.gni,
         )
 
+        smoke_target = _body_after_signature(
+            self.wasm_build, 'source_set("wasm_profile_database_smoke")'
+        )
+        diagnostic_gate = _body_after_signature(
+            smoke_target,
+            "if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test)",
+        )
+        self.assertIn(
+            'defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST=1" ]',
+            diagnostic_gate,
+        )
+        self.assertEqual(
+            1,
+            smoke_target.count(
+                "if (enable_chromium_wasm_m7_profile_database_outstanding_io_refusal_test)"
+            ),
+        )
+        self.assertIn('":wasm_profile_storage",', smoke_target)
+
     def test_probe_retains_only_the_completed_task_admission(self) -> None:
         marker = "CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST"
         self.assertIn(marker, self.main_parts)
         self.assertIn(
-            "RetainWasmProfileStorageOutstandingIOForRefusalTest(", self.main_parts
+            "RetainWasmProfileStorageOutstandingIOForRefusalTest(",
+            self.database,
+        )
+        self.assertNotIn(
+            "RetainWasmProfileStorageOutstandingIOForRefusalTest(",
+            self.main_parts,
         )
         self.assertIn(
             "outstanding_profile_io_hold_for_refusal_test_", self.storage
@@ -87,16 +114,40 @@ class M7ProfileDatabaseOutstandingIORefusalContractTest(unittest.TestCase):
             "ProfileIOCompletion::kFailed", self.storage
         )
 
-        database_branch = self.main_parts[
-            self.main_parts.index("if (chrome::IsWasmProfileDatabaseSmokeEnabled())") :
-        ]
-        retain = database_branch.index(
+        participant_complete = _body_after_signature(
+            self.database, "void CompleteProfileIO(bool operation_succeeded)"
+        )
+        retain = participant_complete.index(
             "RetainWasmProfileStorageOutstandingIOForRefusalTest("
         )
-        request_shutdown = database_branch.index("main_parts->RequestShutdown();")
-        self.assertLess(retain, request_shutdown)
-        self.assertIn("released any storage resources it opened", database_branch)
-        self.assertIn("#else", database_branch[retain:request_shutdown])
+        reset = participant_complete.index("profile_io_hold_.reset();")
+        callback = participant_complete.index(
+            "std::move(completion).Run(succeeded);"
+        )
+        self.assertLess(retain, reset)
+        self.assertLess(reset, callback)
+        diagnostic_start = participant_complete.index(
+            "#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)"
+        )
+        diagnostic_end = participant_complete.index("#else", diagnostic_start)
+        diagnostic_branch = participant_complete[diagnostic_start:diagnostic_end]
+        self.assertIn(
+            "whether its database result succeeded or failed", diagnostic_branch
+        )
+        self.assertNotIn("if (operation_succeeded)", diagnostic_branch)
+        self.assertNotIn("profile_io_hold_->Complete(", diagnostic_branch)
+        self.assertIn("no live database handle", diagnostic_branch)
+        self.assertIn("#else", participant_complete[retain:reset])
+
+        database_branch = self.main_parts[
+            self.main_parts.index(
+                "if (chrome::IsWasmProfileDatabaseSmokeEnabled())"
+            ) :
+        ]
+        self.assertIn("profile_->StartDatabaseSmoke(", database_branch)
+        self.assertIn("std::move(*profile_io_hold)", database_branch)
+        self.assertNotIn("std::optional<", database_branch[:2000])
+        self.assertNotIn("profile_io_hold->Complete(", database_branch[:2000])
 
     def test_waiting_admission_refuses_the_outer_backend_transaction(self) -> None:
         drain = _body_after_signature(

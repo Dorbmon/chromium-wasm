@@ -691,19 +691,39 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             prefs_completion.index("prefs_shutdown_fence_state_ = success"),
         )
 
-        database_admission = self.main_parts.index(
+        database_branch_start = pre_main.index(
+            "if (chrome::IsWasmProfileDatabaseSmokeEnabled())"
+        )
+        database_branch_end = pre_main.index(
+            "#if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST)",
+            database_branch_start,
+        )
+        database_branch = pre_main[database_branch_start:database_branch_end]
+        database_admission = database_branch.index(
             "auto profile_io_hold = chrome::TryAcquireWasmProfileStorageProfileIO();"
         )
-        database_start = self.main_parts.index(
-            "chrome::StartWasmProfileDatabaseSmoke("
+        database_start = database_branch.index("profile_->StartDatabaseSmoke(")
+        database_transfer = database_branch.index("std::move(*profile_io_hold)")
+        database_shutdown = database_branch.index(
+            "RequestShutdown();", database_start
         )
-        database_complete = self.main_parts.index(
-            "profile_io_hold->Complete("
-        )
-        database_shutdown = self.main_parts.index("main_parts->RequestShutdown();")
         self.assertLess(database_admission, database_start)
-        self.assertLess(database_start, database_complete)
-        self.assertLess(database_complete, database_shutdown)
+        self.assertLess(database_start, database_transfer)
+        self.assertLess(database_transfer, database_shutdown)
+        self.assertNotIn("profile_io_hold->Complete(", database_branch)
+        self.assertNotIn("StartWasmProfileDatabaseSmoke", database_branch)
+
+        database_profile_start = _body_after_signature(
+            profile, "bool WasmProfile::StartDatabaseSmoke("
+        )
+        self.assertIn(
+            "std::make_unique<chrome::WasmProfileDatabaseLifetimeParticipant>",
+            database_profile_start,
+        )
+        self.assertIn("std::move(profile_io_hold)", database_profile_start)
+        self.assertIn(
+            "database_lifetime_participant_->Start", database_profile_start
+        )
 
     def test_experimental_chrome_main_orders_mount_before_content_and_drain_after_teardown(
         self,

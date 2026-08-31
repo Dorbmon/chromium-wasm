@@ -86,6 +86,9 @@ class WasmBrowserMainParts final : public content::BrowserMainParts {
   void StartWasmProfileHistorySmokeOrShutdown();
   void OnWasmProfileHistorySmokeComplete(bool success);
 #endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  void OnWasmProfileDatabaseSmokeComplete(bool success);
+#endif
 #if defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)

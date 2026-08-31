@@ -158,11 +158,11 @@ class M7ProfileDatabaseRecoveryContractTest(unittest.TestCase):
         self.assertIn("return DatabaseTaskResult::kRecoveryA;", task)
         self.assertIn("return DatabaseTaskResult::kRecoveryB;", task)
 
-        start = _body_after_signature(
+        begin = _body_after_signature(
             source_text,
-            "bool Start(base::FilePath profile_path, base::OnceClosure completion)",
+            "std::optional<DatabaseTaskInput> BeginDatabaseTask(",
         )
-        self.assertIn('EmitMarker("RECOVERY_LEASE_REACQUIRED");', start)
+        self.assertIn('EmitMarker("RECOVERY_LEASE_REACQUIRED");', begin)
 
     def test_host_requires_only_stable_a_or_b_and_never_sets_m7_complete(self) -> None:
         self.assertIn(

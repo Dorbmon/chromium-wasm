@@ -5,8 +5,12 @@
 #ifndef CHROME_BROWSER_WASM_WASM_PROFILE_DATABASE_SMOKE_H_
 #define CHROME_BROWSER_WASM_WASM_PROFILE_DATABASE_SMOKE_H_
 
+#include <memory>
+
 #include "base/files/file_path.h"
-#include "base/functional/callback.h"
+#include "base/functional/callback_forward.h"
+#include "base/sequence_checker.h"
+#include "chrome/browser/wasm/wasm_profile_ordered_drain_lifecycle.h"
 
 namespace chrome {
 
@@ -168,18 +172,46 @@ bool EnableWasmProfileDatabaseSmokeTestMode();
 // Whether the dedicated executable enabled a valid database smoke request.
 bool IsWasmProfileDatabaseSmokeEnabled();
 
-// Starts the database work only after Chrome admitted the profile storage
-// lifecycle. The one completion callback runs on the initiating application
-// sequence after all SQLite and LevelDB handles have been closed/destroyed on
-// the smoke's one shutdown-blocking sequenced runner. It runs for both success
-// and failure so the caller can request ordinary asynchronous shutdown.
-bool StartWasmProfileDatabaseSmoke(base::FilePath profile_path,
-                                   base::OnceClosure completion);
+// Owns the source-selected SQLite and LevelDB witness for one WasmProfile.
+// The caller transfers an admitted profile-I/O hold at construction. Start()
+// keeps that admission, its shutdown-blocking runner, and the result callback
+// together until RunDatabaseTask has returned after destroying every database
+// handle. Cancellation latches failure but cannot interrupt or falsely close
+// active database work. If its UI reply can no longer run, owner destruction
+// quarantines the active state for process lifetime so the outer V4 drain
+// refuses while the admission remains unresolved.
+class WasmProfileDatabaseLifetimeParticipant {
+ public:
+  WasmProfileDatabaseLifetimeParticipant(
+      base::FilePath profile_path,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold);
+  WasmProfileDatabaseLifetimeParticipant(
+      const WasmProfileDatabaseLifetimeParticipant&) = delete;
+  WasmProfileDatabaseLifetimeParticipant& operator=(
+      const WasmProfileDatabaseLifetimeParticipant&) = delete;
+  ~WasmProfileDatabaseLifetimeParticipant();
 
-// True only after the database task completed successfully and emitted its
-// DATABASES_CLOSED marker. BrowserMainParts uses this to withhold the profile
-// storage lifecycle acknowledgement on database failure, which keeps the
-// scoped backend drain fail-closed and prevents a lease-success marker.
+  // Runs |completion| on the initiating sequence after the database task and
+  // the transferred profile-I/O admission have both reached terminal results.
+  bool Start(base::OnceCallback<void(bool success)> completion);
+  void Cancel();
+  bool QuarantineForFailureShutdown();
+
+  bool IsActive() const;
+  bool HasCompleted() const;
+  bool DidSucceed() const;
+
+ private:
+  class State;
+
+  SEQUENCE_CHECKER(sequence_checker_);
+  std::unique_ptr<State> state_;
+};
+
+// Process-lifetime result latch used after the WasmProfile-owned participant
+// has been destroyed. True only after the database task returned successfully
+// following handle destruction and emitted its DATABASES_CLOSED marker. The
+// latch owns no task runner or completion callback.
 bool DidWasmProfileDatabaseSmokeSucceed();
 
 // Result-bearing lifecycle notifications that complete the fixed marker

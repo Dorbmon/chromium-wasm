@@ -77,8 +77,19 @@ class M7ProfileOrderedDrainLifecycleContractTest(unittest.TestCase):
             '":wasm_profile_persistent_prefs_lifetime_participant",',
             profile_target,
         )
+        database_layout_config = _body_after_signature(
+            self.build, 'config("wasm_profile_m7_database_smoke_config")'
+        )
         self.assertIn(
-            '"CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1"', profile_target
+            'defines = [ "CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST=1" ]',
+            database_layout_config,
+        )
+        self.assertIn(
+            'public_configs = [ ":wasm_profile_m7_database_smoke_config" ]',
+            profile_target,
+        )
+        self.assertIn(
+            'deps += [ ":wasm_profile_database_smoke" ]', profile_target
         )
 
         main_parts_target = _body_after_signature(

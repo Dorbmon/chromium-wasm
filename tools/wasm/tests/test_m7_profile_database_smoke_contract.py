@@ -249,14 +249,21 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
 
         start = _body_after_signature(
             self.smoke,
-            "bool Start(base::FilePath profile_path, base::OnceClosure completion)",
+            "bool Start(base::OnceCallback<void(bool success)> completion)",
         )
         task_post = "EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);"
         self.assertLess(
             start.index("base::ThreadPool::CreateSequencedTaskRunner("),
-            start.index(task_post),
+            start.index("NotifyDatabaseTaskPosted();"),
         )
-        self.assertLess(start.index(task_post), start.index("PostTaskAndReplyWithResult("))
+        self.assertLess(
+            start.index("NotifyDatabaseTaskPosted();"),
+            start.index("PostTaskAndReplyWithResult("),
+        )
+        notify_posted = _body_after_signature(
+            self.smoke, "void NotifyDatabaseTaskPosted()"
+        )
+        self.assertIn(task_post, notify_posted)
 
         task = _body_after_signature(
             self.smoke, "DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input)"
@@ -1011,14 +1018,30 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
             "{base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN}",
             self.smoke,
         )
+        begin = _body_after_signature(
+            self.smoke,
+            "std::optional<DatabaseTaskInput> BeginDatabaseTask(",
+        )
+        self.assertLess(
+            begin.index('EmitMarker("READY")'),
+            begin.index("std::optional<DatabaseTaskInput> input"),
+        )
+        self.assertLess(
+            begin.index("std::optional<DatabaseTaskInput> input"),
+            begin.index("ClearRawTokens();"),
+        )
         start = _body_after_signature(
             self.smoke,
-            "bool Start(base::FilePath profile_path, base::OnceClosure completion)",
+            "bool Start(base::OnceCallback<void(bool success)> completion)",
         )
-        self.assertLess(start.index('EmitMarker("READY")'), start.index("DatabaseTaskInput input"))
-        self.assertLess(start.index("DatabaseTaskInput input"), start.index("ClearRawTokens();"))
-        self.assertIn("base::BindOnce(&RunDatabaseTask, std::move(input))", start)
-        self.assertIn("OnDatabaseTaskComplete(DatabaseTaskResult::kFailure);", start)
+        self.assertIn(
+            "base::BindOnce(&RunDatabaseTask, std::move(*input))", start
+        )
+        self.assertIn(
+            "CompleteDatabaseTask(\n"
+            "          DatabaseTaskResult::kFailure, /*operation_allowed=*/false);",
+            start,
+        )
 
         task = _body_after_signature(
             self.smoke, "DatabaseTaskResult RunDatabaseTask(DatabaseTaskInput input)"
@@ -1032,19 +1055,23 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
         self.assertLess(task.index("input.ClearRawTokens();"), task.index("return success"))
 
     def test_leveldb_options_are_initialized_on_ui_before_worker_reuse(self) -> None:
-        start = _body_after_signature(
+        begin = _body_after_signature(
             self.smoke,
-            "bool Start(base::FilePath profile_path, base::OnceClosure completion)",
+            "std::optional<DatabaseTaskInput> BeginDatabaseTask(",
         )
         options = "leveldb_env::Options leveldb_options = LevelDBOptionsForSmoke();"
-        input_construction = "DatabaseTaskInput input"
+        input_construction = "std::optional<DatabaseTaskInput> input"
         runner = "base::ThreadPool::CreateSequencedTaskRunner("
         post = "PostTaskAndReplyWithResult("
-        self.assertIn("this UI/main sequence", start)
-        self.assertIn(options, start)
-        self.assertIn("std::move(leveldb_options)", start)
-        self.assertLess(start.index(options), start.index(input_construction))
-        self.assertLess(start.index(input_construction), start.index(runner))
+        self.assertIn("this UI/main sequence", begin)
+        self.assertIn(options, begin)
+        self.assertIn("std::move(leveldb_options)", begin)
+        self.assertLess(begin.index(options), begin.index(input_construction))
+        start = _body_after_signature(
+            self.smoke,
+            "bool Start(base::OnceCallback<void(bool success)> completion)",
+        )
+        self.assertLess(start.index("BeginDatabaseTask("), start.index(runner))
         self.assertLess(start.index(runner), start.index(post))
 
         input_constructor_start = self.smoke.index(
@@ -1146,14 +1173,36 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
         self.assertLess(write.index("database->CompactRange(nullptr, nullptr);"), write.index("database.reset();"))
 
     def test_closed_marker_precedes_shutdown_completion_and_lease_requires_all_boundaries(self) -> None:
-        complete = _body_after_signature(
+        latch_complete = _body_after_signature(
+            self.smoke,
+            "bool CompleteDatabaseTask(DatabaseTaskResult result,",
+        )
+        closed = latch_complete.index(
+            'EmitDigestMarker("DATABASES_CLOSED", expected_digest_);'
+        )
+        terminal_result = latch_complete.index("return DidSucceed();")
+        self.assertLess(closed, terminal_result)
+        self.assertIn("databases_closed_ = true;", latch_complete)
+
+        task_complete = _body_after_signature(
             self.smoke,
             "void OnDatabaseTaskComplete(DatabaseTaskResult result)",
         )
-        closed = complete.index('EmitDigestMarker("DATABASES_CLOSED", expected_digest_);')
-        completion = complete.index("std::move(completion_).Run();")
-        self.assertLess(closed, completion)
-        self.assertIn("databases_closed_ = true;", complete)
+        self.assertLess(
+            task_complete.index("CompleteDatabaseTask("),
+            task_complete.index("CompleteProfileIO("),
+        )
+        participant_complete = _body_after_signature(
+            self.smoke, "void CompleteProfileIO(bool operation_succeeded)"
+        )
+        self.assertLess(
+            participant_complete.index("profile_io_hold_->Complete("),
+            participant_complete.index("completed_ = true;"),
+        )
+        self.assertLess(
+            participant_complete.index("completed_ = true;"),
+            participant_complete.index("std::move(completion).Run(succeeded);"),
+        )
 
         fence = _body_after_signature(self.smoke, "void NotifyFenceResult(bool success)")
         lifecycle = _body_after_signature(
@@ -1233,7 +1282,7 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
         )
 
         complete = _body_after_signature(
-            self.smoke, "void OnDatabaseTaskComplete(DatabaseTaskResult result)"
+            self.smoke, "bool CompleteDatabaseTask(DatabaseTaskResult result,"
         )
         write_a = complete[
             complete.index("case SmokeMode::kWriteA:") : complete.index(
@@ -1265,7 +1314,7 @@ class M7ProfileDatabaseSmokeContractTest(unittest.TestCase):
         assert_in_order(verify_b, ("SQLITE_READ_B_OK", "LEVELDB_READ_B_OK"))
         self.assertLess(
             complete.index('EmitDigestMarker("DATABASES_CLOSED", expected_digest_);'),
-            complete.index("std::move(completion_).Run();"),
+            complete.index("return DidSucceed();"),
         )
 
 

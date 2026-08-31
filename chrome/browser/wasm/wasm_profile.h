@@ -32,6 +32,7 @@ class WasmSessionNavigationJournal;
 namespace chrome {
 class WasmProfileBookmarkLifetimeParticipant;
 class WasmProfileCookieLifetimeParticipant;
+class WasmProfileDatabaseLifetimeParticipant;
 class WasmProfileHistoryLifetimeParticipant;
 class WasmProfileLocalStorageLifetimeParticipant;
 struct WasmProfilePreferencesBookmarkSmokeInput;
@@ -140,6 +141,19 @@ class WasmProfile final : public Profile {
   bool DidBookmarkSmokeSucceed() const;
   void CancelBookmarkSmokeForShutdown();
   void QuarantineBookmarkSmokeForFailureShutdown();
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  // Starts the SQLite/LevelDB witness as an explicit profile-owned lifetime.
+  // The transferred I/O hold remains owned through destruction of both
+  // database engines and delivery of the task's result on the UI sequence.
+  bool StartDatabaseSmoke(
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+      base::OnceCallback<void(bool success)> completion);
+  bool HasActiveDatabaseSmoke() const;
+  bool DidDatabaseSmokeSucceed() const;
+  void CancelDatabaseSmokeForShutdown();
+  void QuarantineDatabaseSmokeForFailureShutdown();
 #endif
 
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
@@ -364,6 +378,15 @@ class WasmProfile final : public Profile {
   // profile teardown until this participant is terminal.
   std::unique_ptr<chrome::WasmProfileHistoryLifetimeParticipant>
       history_lifetime_participant_;
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  // The source-selected SQLite/LevelDB task is asynchronous and therefore
+  // cannot remain a BrowserMainParts-owned callback closure. Profile teardown
+  // waits until this owner is terminal or fail-closed quarantine has retained
+  // its active task and admission for process lifetime.
+  std::unique_ptr<chrome::WasmProfileDatabaseLifetimeParticipant>
+      database_lifetime_participant_;
 #endif
 
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \

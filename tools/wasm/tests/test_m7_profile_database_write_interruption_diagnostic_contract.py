@@ -277,7 +277,7 @@ class M7ProfileDatabaseWriteInterruptionDiagnosticContractTest(
         )
 
         complete = _body_after_signature(
-            self.smoke, "void OnDatabaseTaskComplete(DatabaseTaskResult result)"
+            self.smoke, "bool CompleteDatabaseTask(DatabaseTaskResult result,"
         )
         self.assertLess(
             complete.index('EmitMarker("DIAGNOSTIC_DATABASES_CLOSED")'),

@@ -578,46 +578,13 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
       RequestShutdown();
       return content::RESULT_CODE_NORMAL_EXIT;
     }
-    if (!chrome::StartWasmProfileDatabaseSmoke(
-            profile_->GetPath(),
+    // Transfer the database runner and its admission into WasmProfile before
+    // the task begins. Profile teardown is then gated by the participant's
+    // terminal callback instead of a BrowserMainParts-owned closure.
+    if (!profile_->StartDatabaseSmoke(
+            std::move(*profile_io_hold),
             base::BindOnce(
-                [](std::optional<
-                       WasmProfileOrderedDrainLifecycle::ProfileIOHold>
-                       profile_io_hold,
-                   base::WeakPtr<WasmBrowserMainParts> main_parts) {
-                  CHECK(profile_io_hold);
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
-                  // The database callback runs only after its task has
-                  // released any storage resources it opened. Preserve the
-                  // admission, not a live storage operation, so ChromeMain
-                  // first proves it refuses to drain a profile whose I/O
-                  // epoch has not quiesced. Its source-selected storage owner
-                  // later completes this admission as failed for explicit
-                  // fail-closed cleanup.
-                  if (!chrome::RetainWasmProfileStorageOutstandingIOForRefusalTest(
-                          std::move(*profile_io_hold))) {
-                    LOG(ERROR) << "chrome_wasm could not retain its "
-                                  "outstanding profile-I/O admission";
-                  }
-#else
-                  const bool database_succeeded =
-                      chrome::DidWasmProfileDatabaseSmokeSucceed();
-                  const bool profile_io_completed = profile_io_hold->Complete(
-                      database_succeeded
-                          ? WasmProfileOrderedDrainLifecycle::
-                                ProfileIOCompletion::kSucceeded
-                          : WasmProfileOrderedDrainLifecycle::
-                                ProfileIOCompletion::kFailed);
-                  if (!profile_io_completed) {
-                    LOG(ERROR) << "chrome_wasm could not complete its profile "
-                                  "database I/O admission";
-                  }
-#endif
-                  if (main_parts) {
-                    main_parts->RequestShutdown();
-                  }
-                },
-                std::move(profile_io_hold),
+                &WasmBrowserMainParts::OnWasmProfileDatabaseSmokeComplete,
                 weak_ptr_factory_.GetWeakPtr()))) {
       RequestShutdown();
     }
@@ -1204,6 +1171,25 @@ void WasmBrowserMainParts::RequestShutdown() {
   MaybeStartShutdown();
 }
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+void WasmBrowserMainParts::OnWasmProfileDatabaseSmokeComplete(bool success) {
+  const bool database_succeeded =
+      success && profile_ && profile_->DidDatabaseSmokeSucceed();
+  if (!database_succeeded) {
+    LOG(ERROR) << "chrome_wasm SQLite/LevelDB close witness failed";
+  }
+
+  // A shutdown request can race the shutdown-blocking database runner. Its
+  // idempotent RequestShutdown() would not resume the deferred profile-owner
+  // gate, so re-enter it directly after the participant becomes terminal.
+  if (shutdown_requested_) {
+    MaybeStartShutdown();
+    return;
+  }
+  RequestShutdown();
+}
+#endif
+
 void WasmBrowserMainParts::MaybeStartShutdown() {
   // A lifecycle close posts non-nestable UI work. If Ozone requests shutdown
   // before Content has installed the main RunLoop, defer that work until the
@@ -1267,6 +1253,16 @@ void WasmBrowserMainParts::MaybeStartShutdown() {
   // duplicate RequestShutdown(), which is intentionally idempotent.
   if (profile_ && profile_->HasActiveHistorySmoke()) {
     profile_->CancelHistorySmokeForShutdown();
+    return;
+  }
+#endif
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  // SQLite and LevelDB run on a shutdown-blocking sequence but remain owned
+  // by WasmProfile. Cancellation records failure without racing their open
+  // handles; the terminal UI callback resumes this shutdown state machine.
+  if (profile_ && profile_->HasActiveDatabaseSmoke()) {
+    profile_->CancelDatabaseSmokeForShutdown();
     return;
   }
 #endif
@@ -2053,6 +2049,15 @@ void WasmBrowserMainParts::FinishShutdown() {
   }
 #endif
 
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+  // Lifecycle completions may enter FinishShutdown() directly. Keep the same
+  // no-profile-teardown-before-database-task rule as MaybeStartShutdown().
+  if (profile_ && profile_->HasActiveDatabaseSmoke()) {
+    profile_->CancelDatabaseSmokeForShutdown();
+    return;
+  }
+#endif
+
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -2298,6 +2303,11 @@ void WasmBrowserMainParts::ShutdownFoundation() {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_LOCAL_STORAGE_TEST)
     if (profile_->HasActiveHistorySmoke()) {
       profile_->QuarantineHistorySmokeForFailureShutdown();
+    }
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_SMOKE_TEST)
+    if (profile_->HasActiveDatabaseSmoke()) {
+      profile_->QuarantineDatabaseSmokeForFailureShutdown();
     }
 #endif
 #if defined(CHROME_WASM_M7_DEFAULT_PARTITION_LOCAL_STORAGE_TEST) || \

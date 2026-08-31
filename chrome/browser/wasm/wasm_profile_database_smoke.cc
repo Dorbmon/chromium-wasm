@@ -27,6 +27,9 @@
 #include "base/task/thread_pool.h"
 #include "base/threading/platform_thread.h"
 #include "build/build_config.h"
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+#include "chrome/browser/wasm/wasm_profile_storage.h"
+#endif
 #include "crypto/hash.h"
 #include "leveldb/db.h"
 #include "leveldb/env.h"
@@ -1563,13 +1566,13 @@ class WasmProfileDatabaseSmokeState {
 
   bool enabled() const { return enabled_; }
 
-  bool Start(base::FilePath profile_path, base::OnceClosure completion) {
-    if (!enabled_ || started_ || profile_path.empty() || !completion) {
+  std::optional<DatabaseTaskInput> BeginDatabaseTask(
+      base::FilePath profile_path) {
+    if (!enabled_ || started_ || failure_reported_ || profile_path.empty()) {
       ReportFailure(WasmProfileDatabaseSmokeFailureStage::kProfile);
-      return false;
+      return std::nullopt;
     }
     started_ = true;
-    completion_ = std::move(completion);
     EmitMarker("READY");
 #if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
     // Start is reached only after the dedicated Chrome entry point mounted the
@@ -1584,14 +1587,16 @@ class WasmProfileDatabaseSmokeState {
     // Do that on this UI/main sequence before this input is posted to the
     // MayBlock runner, where all database I/O remains serialized.
     leveldb_env::Options leveldb_options = LevelDBOptionsForSmoke();
-    DatabaseTaskInput input(std::move(profile_path), mode_, std::move(token_a_),
-                            std::move(token_b_), std::move(leveldb_options));
+    std::optional<DatabaseTaskInput> input(
+        std::in_place, std::move(profile_path), mode_, std::move(token_a_),
+        std::move(token_b_), std::move(leveldb_options));
     ClearRawTokens();
-    task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
-        {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
-    if (!task_runner_) {
-      OnDatabaseTaskComplete(DatabaseTaskResult::kFailure);
-      return true;
+    return input;
+  }
+
+  void NotifyDatabaseTaskPosted() {
+    if (!enabled_ || !started_ || task_completed_ || failure_reported_) {
+      return;
     }
     // This is immediately before the reply-post API whose sequenced-context
     // contract is the current abort candidate.
@@ -1608,15 +1613,95 @@ class WasmProfileDatabaseSmokeState {
 #else
     EmitDatabaseTaskPhase(DatabaseTaskPhase::kTaskPost);
 #endif  // M7 diagnostic or lock artifact.
-    if (!task_runner_->PostTaskAndReplyWithResult(
-        FROM_HERE, base::BindOnce(&RunDatabaseTask, std::move(input)),
-        base::BindOnce(&WasmProfileDatabaseSmokeState::OnDatabaseTaskComplete,
-                       base::Unretained(this)))) {
-      // The completion still takes the normal BrowserMainParts shutdown path.
-      // It withholds storage lifecycle acknowledgement after this fixed failure.
-      OnDatabaseTaskComplete(DatabaseTaskResult::kFailure);
+  }
+
+  bool CompleteDatabaseTask(DatabaseTaskResult result,
+                            bool operation_allowed) {
+    if (task_completed_) {
+      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+      return false;
     }
-    return true;
+    task_completed_ = true;
+
+    if (!operation_allowed || failure_reported_ ||
+        (result != DatabaseTaskResult::kSuccess &&
+         result != DatabaseTaskResult::kRecoveryA &&
+         result != DatabaseTaskResult::kRecoveryB) ||
+        expected_digest_.empty()) {
+      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+      return false;
+    }
+
+    database_succeeded_ = true;
+    switch (mode_) {
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+      case SmokeMode::kLockContention:
+        EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
+        EmitMarker("LEVELDB_LOCK_CONTENDER_REJECTED");
+        EmitDigestMarker("LEVELDB_LOCK_RELEASE_REOPEN_OK", token_a_digest_);
+        break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
+      case SmokeMode::kWriteA:
+        EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
+        EmitDigestMarker("LEVELDB_WRITE_ACCEPTED", token_a_digest_);
+        break;
+      case SmokeMode::kVerifyAWriteB:
+        EmitDigestMarker("SQLITE_READ_A_OK", token_a_digest_);
+        EmitDigestMarker("LEVELDB_READ_A_OK", token_a_digest_);
+        EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_b_digest_);
+        EmitDigestMarker("LEVELDB_WRITE_ACCEPTED", token_b_digest_);
+        break;
+      case SmokeMode::kVerifyB:
+        EmitDigestMarker("SQLITE_READ_B_OK", token_b_digest_);
+        EmitDigestMarker("LEVELDB_READ_B_OK", token_b_digest_);
+        break;
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
+    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+      case SmokeMode::kInterruptLevelDBWriteB:
+        // The intended native abort prevents this branch. If Put returned
+        // without the fixed phase, do not convert it into a clean result.
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+        break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+      case SmokeMode::kObserveLevelDBWriteB:
+        // RunDatabaseTask() already emitted exactly one fixed observation
+        // after its fresh LevelDB handle was destroyed.
+        break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+      case SmokeMode::kRecoverLevelDBWriteB:
+        if (result == DatabaseTaskResult::kRecoveryA) {
+          EmitDigestMarker("LEVELDB_RECOVERY_A_OK", token_a_digest_);
+        } else if (result == DatabaseTaskResult::kRecoveryB) {
+          EmitDigestMarker("LEVELDB_RECOVERY_B_OK", token_b_digest_);
+        } else {
+          ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+          break;
+        }
+        EmitDigestMarker("SQLITE_RECOVERY_A_INTEGRITY_OK", token_a_digest_);
+        break;
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+      case SmokeMode::kNone:
+        ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
+        break;
+    }
+    if (failure_reported_) {
+      return false;
+    }
+
+    // RunDatabaseTask() has returned only after every SQLite and LevelDB
+    // object was explicitly closed and then destroyed on its one runner.
+    databases_closed_ = true;
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+    EmitMarker("DIAGNOSTIC_DATABASES_CLOSED");
+#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
+    EmitMarker("RECOVERY_DATABASES_CLOSED");
+#else
+    EmitDigestMarker("DATABASES_CLOSED", expected_digest_);
+#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
+    return DidSucceed();
   }
 
   bool DidSucceed() const {
@@ -1715,94 +1800,6 @@ class WasmProfileDatabaseSmokeState {
     return "drain";
   }
 
-  void OnDatabaseTaskComplete(DatabaseTaskResult result) {
-    if (task_completed_) {
-      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
-      return;
-    }
-    task_completed_ = true;
-    task_runner_.reset();
-
-    if ((result != DatabaseTaskResult::kSuccess &&
-         result != DatabaseTaskResult::kRecoveryA &&
-         result != DatabaseTaskResult::kRecoveryB) ||
-        expected_digest_.empty()) {
-      ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
-    } else {
-      database_succeeded_ = true;
-      switch (mode_) {
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
-        case SmokeMode::kLockContention:
-          EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
-          EmitMarker("LEVELDB_LOCK_CONTENDER_REJECTED");
-          EmitDigestMarker("LEVELDB_LOCK_RELEASE_REOPEN_OK", token_a_digest_);
-          break;
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_LOCK_TEST)
-        case SmokeMode::kWriteA:
-          EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_a_digest_);
-          EmitDigestMarker("LEVELDB_WRITE_ACCEPTED", token_a_digest_);
-          break;
-        case SmokeMode::kVerifyAWriteB:
-          EmitDigestMarker("SQLITE_READ_A_OK", token_a_digest_);
-          EmitDigestMarker("LEVELDB_READ_A_OK", token_a_digest_);
-          EmitDigestMarker("SQLITE_WRITE_ACCEPTED", token_b_digest_);
-          EmitDigestMarker("LEVELDB_WRITE_ACCEPTED", token_b_digest_);
-          break;
-        case SmokeMode::kVerifyB:
-          EmitDigestMarker("SQLITE_READ_B_OK", token_b_digest_);
-          EmitDigestMarker("LEVELDB_READ_B_OK", token_b_digest_);
-          break;
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || \
-    defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
-        case SmokeMode::kInterruptLevelDBWriteB:
-          // The intended native abort prevents this branch. If Put returned
-          // without the fixed phase, do not convert it into a clean result.
-          ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
-          break;
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC) || defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
-
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
-        case SmokeMode::kObserveLevelDBWriteB:
-          // RunDatabaseTask() already emitted exactly one fixed observation
-          // after its fresh LevelDB handle was destroyed.
-          break;
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
-        case SmokeMode::kRecoverLevelDBWriteB:
-          if (result == DatabaseTaskResult::kRecoveryA) {
-            EmitDigestMarker("LEVELDB_RECOVERY_A_OK", token_a_digest_);
-          } else if (result == DatabaseTaskResult::kRecoveryB) {
-            EmitDigestMarker("LEVELDB_RECOVERY_B_OK", token_b_digest_);
-          } else {
-            ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
-            break;
-          }
-          EmitDigestMarker("SQLITE_RECOVERY_A_INTEGRITY_OK", token_a_digest_);
-          break;
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
-        case SmokeMode::kNone:
-          ReportFailure(WasmProfileDatabaseSmokeFailureStage::kDatabase);
-          break;
-      }
-      if (!failure_reported_) {
-        // RunDatabaseTask() has returned only after every SQLite and LevelDB
-        // object was explicitly closed and then destroyed on its one runner.
-        databases_closed_ = true;
-#if defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
-        EmitMarker("DIAGNOSTIC_DATABASES_CLOSED");
-#elif defined(CHROME_WASM_M7_PROFILE_DATABASE_RECOVERY_TEST)
-        EmitMarker("RECOVERY_DATABASES_CLOSED");
-#else
-        EmitDigestMarker("DATABASES_CLOSED", expected_digest_);
-#endif  // defined(CHROME_WASM_M7_PROFILE_DATABASE_WRITE_INTERRUPTION_DIAGNOSTIC)
-      }
-    }
-
-    if (completion_) {
-      std::move(completion_).Run();
-    }
-  }
-
   void EmitMarker(const char* marker) {
     std::fprintf(stderr, "%s%s\n", kMarkerPrefix, marker);
     std::fflush(stderr);
@@ -1835,8 +1832,6 @@ class WasmProfileDatabaseSmokeState {
   std::string token_a_digest_;
   std::string token_b_digest_;
   std::string expected_digest_;
-  scoped_refptr<base::SequencedTaskRunner> task_runner_;
-  base::OnceClosure completion_;
 };
 
 WasmProfileDatabaseSmokeState& GetWasmProfileDatabaseSmokeState() {
@@ -1845,6 +1840,228 @@ WasmProfileDatabaseSmokeState& GetWasmProfileDatabaseSmokeState() {
 }
 
 }  // namespace
+
+class WasmProfileDatabaseLifetimeParticipant::State {
+ public:
+  State(base::FilePath profile_path,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold)
+      : profile_path_(std::move(profile_path)),
+        profile_io_hold_(std::move(profile_io_hold)) {}
+  State(const State&) = delete;
+  State& operator=(const State&) = delete;
+  ~State() = default;
+
+  bool Start(base::OnceCallback<void(bool success)> completion) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    // A duplicate start must not replace the callback or the admission that
+    // owns an already-posted database task.
+    if (started_ || completed_) {
+      return false;
+    }
+    if (!profile_io_hold_ || !completion) {
+      GetWasmProfileDatabaseSmokeState().ReportFailure(
+          WasmProfileDatabaseSmokeFailureStage::kProfile);
+      CompleteProfileIO(/*operation_succeeded=*/false);
+      return false;
+    }
+
+    started_ = true;
+    completion_ = std::move(completion);
+    std::optional<DatabaseTaskInput> input =
+        GetWasmProfileDatabaseSmokeState().BeginDatabaseTask(
+            std::move(profile_path_));
+    if (!input) {
+      CompleteProfileIO(/*operation_succeeded=*/false);
+      return true;
+    }
+
+    task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
+        {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
+    if (!task_runner_) {
+      GetWasmProfileDatabaseSmokeState().CompleteDatabaseTask(
+          DatabaseTaskResult::kFailure, /*operation_allowed=*/false);
+      CompleteProfileIO(/*operation_succeeded=*/false);
+      return true;
+    }
+
+    GetWasmProfileDatabaseSmokeState().NotifyDatabaseTaskPosted();
+    task_posted_ = task_runner_->PostTaskAndReplyWithResult(
+        FROM_HERE, base::BindOnce(&RunDatabaseTask, std::move(*input)),
+        base::BindOnce(&State::OnDatabaseTaskComplete,
+                       base::Unretained(this)));
+    if (!task_posted_) {
+      task_runner_.reset();
+      GetWasmProfileDatabaseSmokeState().CompleteDatabaseTask(
+          DatabaseTaskResult::kFailure, /*operation_allowed=*/false);
+      CompleteProfileIO(/*operation_succeeded=*/false);
+    }
+    return true;
+  }
+
+  void Cancel() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_) {
+      return;
+    }
+    cancelled_ = true;
+    // RunDatabaseTask is deliberately uninterruptible. It owns real SQLite
+    // and LevelDB handles on its BLOCK_SHUTDOWN sequence, so only its reply can
+    // release this participant's ProfileIOHold. If that reply never runs, the
+    // quarantine below keeps the admission unresolved and forces drain
+    // refusal rather than inventing a close receipt.
+  }
+
+  bool IsActive() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return started_ && !completed_;
+  }
+
+  bool HasCompleted() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return completed_;
+  }
+
+  bool DidSucceed() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return started_ && completed_ && succeeded_;
+  }
+
+ private:
+  void OnDatabaseTaskComplete(DatabaseTaskResult result) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_ || !task_posted_) {
+      GetWasmProfileDatabaseSmokeState().ReportFailure(
+          WasmProfileDatabaseSmokeFailureStage::kDatabase);
+      return;
+    }
+
+    // PostTaskAndReplyWithResult cannot run this reply until RunDatabaseTask
+    // has returned. Every SQLite and LevelDB owner has therefore been closed
+    // and destroyed before either the marker latch or ProfileIOHold advances.
+    task_runner_.reset();
+    const bool database_succeeded =
+        GetWasmProfileDatabaseSmokeState().CompleteDatabaseTask(
+            result, /*operation_allowed=*/!cancelled_);
+    CompleteProfileIO(database_succeeded && !cancelled_);
+  }
+
+  void CompleteProfileIO(bool operation_succeeded) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (completed_) {
+      return;
+    }
+
+    bool admission_succeeded = false;
+    if (profile_io_hold_) {
+#if defined(CHROME_WASM_M7_PROFILE_DATABASE_OUTSTANDING_IO_REFUSAL_TEST)
+      // This one negative diagnostic intentionally retains the completed
+      // task's admission whether its database result succeeded or failed. Its
+      // verify-b mode uses a never-written value and therefore expects the
+      // database operation to fail; completing that hold here would erase the
+      // outstanding-I/O condition that the outer drain must refuse. The task
+      // carries no live database handle at this point. ChromeMain explicitly
+      // completes the retained hold as failed before fail-closed cleanup.
+      admission_succeeded =
+          RetainWasmProfileStorageOutstandingIOForRefusalTest(
+              std::move(*profile_io_hold_));
+#else
+      admission_succeeded = profile_io_hold_->Complete(
+          operation_succeeded
+              ? WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                    kSucceeded
+              : WasmProfileOrderedDrainLifecycle::ProfileIOCompletion::
+                    kFailed);
+#endif
+      profile_io_hold_.reset();
+    }
+
+    completed_ = true;
+    succeeded_ = operation_succeeded && admission_succeeded;
+    if (operation_succeeded && !admission_succeeded) {
+      GetWasmProfileDatabaseSmokeState().ReportFailure(
+          WasmProfileDatabaseSmokeFailureStage::kLifecycle);
+    }
+    if (completion_) {
+      base::OnceCallback<void(bool success)> completion =
+          std::move(completion_);
+      const bool succeeded = succeeded_;
+      // The callback may synchronously destroy either the profile-owned or a
+      // quarantined State. Do not access members after returning ownership.
+      std::move(completion).Run(succeeded);
+    }
+  }
+
+  bool started_ = false;
+  bool task_posted_ = false;
+  bool cancelled_ = false;
+  bool completed_ = false;
+  bool succeeded_ = false;
+  base::FilePath profile_path_;
+  std::optional<WasmProfileOrderedDrainLifecycle::ProfileIOHold>
+      profile_io_hold_;
+  scoped_refptr<base::SequencedTaskRunner> task_runner_;
+  base::OnceCallback<void(bool success)> completion_;
+  SEQUENCE_CHECKER(sequence_checker_);
+};
+
+WasmProfileDatabaseLifetimeParticipant::
+    WasmProfileDatabaseLifetimeParticipant(
+        base::FilePath profile_path,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold)
+    : state_(std::make_unique<State>(std::move(profile_path),
+                                     std::move(profile_io_hold))) {}
+
+WasmProfileDatabaseLifetimeParticipant::
+    ~WasmProfileDatabaseLifetimeParticipant() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  (void)QuarantineForFailureShutdown();
+}
+
+bool WasmProfileDatabaseLifetimeParticipant::Start(
+    base::OnceCallback<void(bool success)> completion) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->Start(std::move(completion));
+}
+
+void WasmProfileDatabaseLifetimeParticipant::Cancel() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (state_) {
+    state_->Cancel();
+  }
+}
+
+bool WasmProfileDatabaseLifetimeParticipant::
+    QuarantineForFailureShutdown() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!state_ || !state_->IsActive()) {
+    return true;
+  }
+
+  state_->Cancel();
+  if (!state_->IsActive()) {
+    return true;
+  }
+
+  static base::NoDestructor<std::vector<std::unique_ptr<State>>>
+      quarantined_states;
+  quarantined_states->push_back(std::move(state_));
+  return true;
+}
+
+bool WasmProfileDatabaseLifetimeParticipant::IsActive() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->IsActive();
+}
+
+bool WasmProfileDatabaseLifetimeParticipant::HasCompleted() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->HasCompleted();
+}
+
+bool WasmProfileDatabaseLifetimeParticipant::DidSucceed() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return state_ && state_->DidSucceed();
+}
 
 bool HasWasmProfileDatabaseSmokeArguments() {
   const base::CommandLine* command_line =
@@ -1860,12 +2077,6 @@ bool EnableWasmProfileDatabaseSmokeTestMode() {
 
 bool IsWasmProfileDatabaseSmokeEnabled() {
   return GetWasmProfileDatabaseSmokeState().enabled();
-}
-
-bool StartWasmProfileDatabaseSmoke(base::FilePath profile_path,
-                                   base::OnceClosure completion) {
-  return GetWasmProfileDatabaseSmokeState().Start(std::move(profile_path),
-                                                  std::move(completion));
 }
 
 bool DidWasmProfileDatabaseSmokeSucceed() {
