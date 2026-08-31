@@ -98,7 +98,7 @@ EXPECTED_M7_OPFS_SOURCE_FILES = frozenset(
 )
 
 EXPECTED_M7_OPFS_SOURCE_FILE_HASHES_SHA256 = (
-    "ae20c934ec38592385edf686215d765a10979cee6db952ae34c83fa83bd54284"
+    "c78b4a2f1f00b275956380a3ad1da2e6bf1fcb06e0f31f2026d8d86f08c6fd66"
 )
 
 
@@ -427,7 +427,7 @@ class EmscriptenSourcePinManifestTest(unittest.TestCase):
         )
         self.assertEqual(
             source_pin["revision"],
-            "81779b6de67b1284220a61aca15f05c9006e439e",
+            "12d718b08c1f1622ebe74f69cda46ae7023489ba",
         )
         self.assertEqual(source_pin["version"], "5.0.6-git")
         self.assertEqual(
