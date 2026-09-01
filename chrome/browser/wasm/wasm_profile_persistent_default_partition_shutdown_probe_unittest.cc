@@ -99,10 +99,12 @@ TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
 }
 
 TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
-     RequiresBothSelectedOwnerReceipts) {
+     RequiresAllThreeSelectedOwnerReceipts) {
   EXPECT_TRUE(IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
       /*local_storage_receipt_started=*/true,
       /*local_storage_on_disk_commit_and_close_acknowledged=*/true,
+      /*renderer_default_partition_config_reuse_witness=*/true,
+      /*indexed_db_renderer_write_and_close_acknowledged=*/true,
       /*cookie_write_accepted=*/true,
       /*cookie_store_flush_acknowledged=*/true,
       /*cookie_sqlite_row_readback_succeeded=*/true,
@@ -110,6 +112,8 @@ TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
   EXPECT_FALSE(IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
       /*local_storage_receipt_started=*/false,
       /*local_storage_on_disk_commit_and_close_acknowledged=*/true,
+      /*renderer_default_partition_config_reuse_witness=*/true,
+      /*indexed_db_renderer_write_and_close_acknowledged=*/true,
       /*cookie_write_accepted=*/true,
       /*cookie_store_flush_acknowledged=*/true,
       /*cookie_sqlite_row_readback_succeeded=*/true,
@@ -117,6 +121,8 @@ TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
   EXPECT_FALSE(IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
       /*local_storage_receipt_started=*/true,
       /*local_storage_on_disk_commit_and_close_acknowledged=*/false,
+      /*renderer_default_partition_config_reuse_witness=*/true,
+      /*indexed_db_renderer_write_and_close_acknowledged=*/true,
       /*cookie_write_accepted=*/true,
       /*cookie_store_flush_acknowledged=*/true,
       /*cookie_sqlite_row_readback_succeeded=*/true,
@@ -124,6 +130,26 @@ TEST(WasmPersistentDefaultPartitionShutdownProbeTest,
   EXPECT_FALSE(IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
       /*local_storage_receipt_started=*/true,
       /*local_storage_on_disk_commit_and_close_acknowledged=*/true,
+      /*renderer_default_partition_config_reuse_witness=*/false,
+      /*indexed_db_renderer_write_and_close_acknowledged=*/true,
+      /*cookie_write_accepted=*/true,
+      /*cookie_store_flush_acknowledged=*/true,
+      /*cookie_sqlite_row_readback_succeeded=*/true,
+      /*cookie_store_close_acknowledged=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
+      /*local_storage_receipt_started=*/true,
+      /*local_storage_on_disk_commit_and_close_acknowledged=*/true,
+      /*renderer_default_partition_config_reuse_witness=*/true,
+      /*indexed_db_renderer_write_and_close_acknowledged=*/false,
+      /*cookie_write_accepted=*/true,
+      /*cookie_store_flush_acknowledged=*/true,
+      /*cookie_sqlite_row_readback_succeeded=*/true,
+      /*cookie_store_close_acknowledged=*/true));
+  EXPECT_FALSE(IsWasmPersistentDefaultPartitionSelectedOwnerReceiptWitness(
+      /*local_storage_receipt_started=*/true,
+      /*local_storage_on_disk_commit_and_close_acknowledged=*/true,
+      /*renderer_default_partition_config_reuse_witness=*/true,
+      /*indexed_db_renderer_write_and_close_acknowledged=*/true,
       /*cookie_write_accepted=*/false,
       /*cookie_store_flush_acknowledged=*/true,
       /*cookie_sqlite_row_readback_succeeded=*/true,

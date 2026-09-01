@@ -301,8 +301,11 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
         base::FilePath profile_path,
         WasmProfileIndexedDBSmokeInput input,
         WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
-        base::OnceClosure quarantine_callback)
+        base::OnceClosure quarantine_callback,
+        content::StoragePartition* expected_default_storage_partition,
+        scoped_refptr<content::SiteInstance> renderer_site_instance)
       : mode_(input.mode),
+        emit_protocol_markers_(input.emit_protocol_markers),
         browser_context_(browser_context),
         close_receipt_lifetime_(std::move(profile_io_hold),
                                 std::move(quarantine_callback)),
@@ -310,7 +313,9 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
         token_b_(std::move(input.token_b)),
         token_a_digest_(std::move(input.token_a_digest)),
         token_b_digest_(std::move(input.token_b_digest)),
-        profile_path_(std::move(profile_path)) {}
+        profile_path_(std::move(profile_path)),
+        expected_default_storage_partition_(expected_default_storage_partition),
+        renderer_site_instance_(std::move(renderer_site_instance)) {}
 
   ~State() override = default;
 
@@ -320,9 +325,13 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
       return false;
     }
     if (!browser_context_ || profile_path_.empty() || !completion ||
-        !IsValidMode()) {
-      GetWasmProfileIndexedDBProtocolState().ReportFailure(
-          WasmProfileIndexedDBSmokeFailureStage::kProfile);
+        !IsValidMode() ||
+        (!expected_default_storage_partition_ && renderer_site_instance_) ||
+        (expected_default_storage_partition_ && !renderer_site_instance_)) {
+      if (emit_protocol_markers_) {
+        GetWasmProfileIndexedDBProtocolState().ReportFailure(
+            WasmProfileIndexedDBSmokeFailureStage::kProfile);
+      }
       CleanupProfileBoundResources();
       (void)close_receipt_lifetime_.RejectBeforeStart();
       return false;
@@ -336,18 +345,34 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
       return true;
     }
-    const content::StoragePartitionConfig renderer_partition_config =
-        content::StoragePartitionConfig::Create(
-            browser_context_, kIndexedDBPartitionDomain,
-            kIndexedDBPartitionName, /*in_memory=*/false);
-    // Starting from the default initial SiteInstance and then navigating to a
-    // non-default partition violates RenderProcessHost's partition invariant.
-    // The source-selected probe owns this fixed child partition for all of its
-    // transient WebContents lifetime.
-    content::WebContents::CreateParams create_params(
-        browser_context_,
-        content::SiteInstance::CreateForFixedStoragePartition(
-            browser_context_, renderer_page_url_, renderer_partition_config));
+    content::WebContents::CreateParams create_params(browser_context_);
+    if (expected_default_storage_partition_) {
+      const content::StoragePartitionConfig& config =
+          expected_default_storage_partition_->GetConfig();
+      if (!config.is_default() || config.in_memory() ||
+          expected_default_storage_partition_->GetPath() != profile_path_) {
+        ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kProfile);
+        return true;
+      }
+      // The default partition cannot use CreateForFixedStoragePartition():
+      // Chromium deliberately CHECKs that factory's config is non-default.
+      // The caller has instead created one source-selected SiteInstance while
+      // retaining the captured default-partition config, and supplies it here
+      // so this WebContents cannot construct an untracked default SiteInstance.
+      create_params.site_instance = renderer_site_instance_;
+    } else {
+      const content::StoragePartitionConfig renderer_partition_config =
+          content::StoragePartitionConfig::Create(
+              browser_context_, kIndexedDBPartitionDomain,
+              kIndexedDBPartitionName, /*in_memory=*/false);
+      // Starting from the default initial SiteInstance and then navigating to
+      // a non-default partition violates RenderProcessHost's partition
+      // invariant. The standalone source-selected probe owns this fixed child
+      // partition for all of its transient WebContents lifetime.
+      create_params.site_instance =
+          content::SiteInstance::CreateForFixedStoragePartition(
+              browser_context_, renderer_page_url_, renderer_partition_config);
+    }
     renderer_web_contents_ = content::WebContents::Create(create_params);
     if (!renderer_web_contents_) {
       ReportFailure(WasmProfileIndexedDBSmokeFailureStage::kContent);
@@ -460,6 +485,8 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
     renderer_web_contents_.reset();
     renderer_browser_context_ = nullptr;
     renderer_storage_partition_ = nullptr;
+    expected_default_storage_partition_ = nullptr;
+    renderer_site_instance_.reset();
     renderer_page_url_ = GURL();
     browser_context_ = nullptr;
     profile_path_.clear();
@@ -473,17 +500,25 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
       return;
     }
     failure_reported_ = true;
-    GetWasmProfileIndexedDBProtocolState().ReportFailure(stage);
+    if (emit_protocol_markers_) {
+      GetWasmProfileIndexedDBProtocolState().ReportFailure(stage);
+    }
     close_receipt_lifetime_.FailBeforeSelectedBucketCloseReceipt(base::BindOnce(
         &State::CleanupProfileBoundResources, base::Unretained(this)));
   }
 
   void EmitMarker(const char* marker) {
+    if (!emit_protocol_markers_) {
+      return;
+    }
     std::fprintf(stderr, "%s%s\n", kMarkerPrefix, marker);
     std::fflush(stderr);
   }
 
   void EmitDigestMarker(const char* marker, const std::string& digest) {
+    if (!emit_protocol_markers_) {
+      return;
+    }
     std::fprintf(stderr, "%s%s sha256=%s\n", kMarkerPrefix, marker,
                  digest.c_str());
     std::fflush(stderr);
@@ -610,19 +645,32 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
 
     content::StoragePartition* const actual_partition =
         render_frame_host->GetStoragePartition();
-    const content::StoragePartitionConfig expected_config =
-        content::StoragePartitionConfig::Create(
-            renderer_browser_context_, kIndexedDBPartitionDomain,
-            kIndexedDBPartitionName, /*in_memory=*/false);
-    if (!actual_partition || expected_config.in_memory() ||
-        actual_partition ==
-            renderer_browser_context_->GetDefaultStoragePartition() ||
-        renderer_browser_context_->GetStoragePartition(expected_config,
-                                                        /*can_create=*/false) !=
-            actual_partition ||
-        actual_partition->GetPath().empty() ||
-        !profile_path_.IsParent(actual_partition->GetPath())) {
+    if (!actual_partition) {
       return false;
+    }
+    if (expected_default_storage_partition_) {
+      const content::StoragePartitionConfig& expected_config =
+          expected_default_storage_partition_->GetConfig();
+      if (!expected_config.is_default() || expected_config.in_memory() ||
+          actual_partition != expected_default_storage_partition_ ||
+          actual_partition->GetConfig() != expected_config ||
+          actual_partition->GetPath() != profile_path_) {
+        return false;
+      }
+    } else {
+      const content::StoragePartitionConfig expected_config =
+          content::StoragePartitionConfig::Create(
+              renderer_browser_context_, kIndexedDBPartitionDomain,
+              kIndexedDBPartitionName, /*in_memory=*/false);
+      if (expected_config.in_memory() ||
+          actual_partition ==
+              renderer_browser_context_->GetDefaultStoragePartition() ||
+          renderer_browser_context_->GetStoragePartition(
+              expected_config, /*can_create=*/false) != actual_partition ||
+          actual_partition->GetPath().empty() ||
+          !profile_path_.IsParent(actual_partition->GetPath())) {
+        return false;
+      }
     }
 
     renderer_storage_partition_ = actual_partition;
@@ -736,6 +784,7 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   bool renderer_page_completed_ = false;
   bool renderer_completion_check_scheduled_ = false;
   SmokeMode mode_ = SmokeMode::kNone;
+  bool emit_protocol_markers_ = true;
   raw_ptr<content::BrowserContext> browser_context_ = nullptr;
   WasmProfileIndexedDBCloseReceiptLifetime close_receipt_lifetime_;
   std::string token_a_;
@@ -746,6 +795,9 @@ class WasmProfileIndexedDBLifetimeParticipant::State final
   std::optional<blink::StorageKey> storage_key_;
   raw_ptr<content::BrowserContext> renderer_browser_context_ = nullptr;
   raw_ptr<content::StoragePartition> renderer_storage_partition_ = nullptr;
+  raw_ptr<content::StoragePartition> expected_default_storage_partition_ =
+      nullptr;
+  scoped_refptr<content::SiteInstance> renderer_site_instance_;
   std::unique_ptr<content::WebContents> renderer_web_contents_;
   GURL renderer_page_url_;
   base::OneShotTimer renderer_operation_timeout_;
@@ -765,7 +817,27 @@ WasmProfileIndexedDBLifetimeParticipant::
       base::BindOnce(
           &WasmProfileIndexedDBLifetimeParticipant::
               OnOperationRequiresQuarantine,
-          weak_ptr_factory_.GetWeakPtr()));
+          weak_ptr_factory_.GetWeakPtr()),
+      /*expected_default_storage_partition=*/nullptr,
+      /*renderer_site_instance=*/nullptr);
+}
+
+WasmProfileIndexedDBLifetimeParticipant::
+    WasmProfileIndexedDBLifetimeParticipant(
+        content::BrowserContext* browser_context,
+        base::FilePath profile_path,
+        WasmProfileIndexedDBSmokeInput input,
+        WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+        content::StoragePartition* expected_default_storage_partition,
+        scoped_refptr<content::SiteInstance> renderer_site_instance) {
+  state_ = std::make_unique<State>(
+      browser_context, std::move(profile_path), std::move(input),
+      std::move(profile_io_hold),
+      base::BindOnce(
+          &WasmProfileIndexedDBLifetimeParticipant::
+              OnOperationRequiresQuarantine,
+          weak_ptr_factory_.GetWeakPtr()),
+      expected_default_storage_partition, std::move(renderer_site_instance));
 }
 
 WasmProfileIndexedDBLifetimeParticipant::

@@ -85,6 +85,11 @@
 // its exact persistent child StoragePartition. GN's include checker does not
 // evaluate target-specific definitions.
 #include "chrome/browser/wasm/wasm_profile_indexed_db_smoke.h"  // nogncheck
+#endif
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// The shutdown probe uses the same narrow test WebUI but supplies the already
+// created default partition through its captured-config identity witness.
 #include "chrome/browser/wasm/wasm_profile_renderer_indexed_db_ui.h"  // nogncheck
 #endif
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_POLICY_PROBE)
@@ -562,6 +567,13 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 #endif
 #endif  // !policy-probe && !structural-shutdown-probe
 
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  // This test-only registration is intentionally the shutdown artifact's
+  // only WebUI setup. It precedes the one renderer IndexedDB participant and
+  // does not admit Chrome's ordinary browser, WebContents, or service graph.
+  chrome::EnsureWasmProfileRendererIndexedDBWebUIConfigRegistered();
+#endif
+
   // BrowserThread::IO and ThreadPool are live at this stage. The profile's
   // explicit I/O runner may therefore be created without racing startup.
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
@@ -657,11 +669,12 @@ int WasmBrowserMainParts::PreMainMessageLoopRun() {
 
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
   // This artifact admits exactly one real default StoragePartition after the
-  // V4 Default mount and profile construction. It owns no Browser, WebUI, or
-  // WebContents. It starts profile teardown only after one direct
-  // LocalStorage map-update/close receipt and one persistent CookieManager
-  // write, flush, SQLite row readback, and backend-close receipt; it then
-  // always retires the backend fail-closed after the map-drop boundary.
+  // V4 Default mount and profile construction. It owns no ordinary Browser or
+  // service graph, but creates one source-selected renderer WebUI document to
+  // collect a selected IndexedDB close receipt. It starts profile teardown
+  // only after direct LocalStorage, renderer IndexedDB, and persistent
+  // CookieManager selected-owner receipts; it then always retires the backend
+  // fail-closed after the map-drop boundary.
   if (!chrome::IsWasmPersistentDefaultPartitionShutdownProbeEnabled()) {
     chrome::ReportWasmPersistentDefaultPartitionShutdownProbeFailure(
         chrome::WasmPersistentDefaultPartitionShutdownProbeFailureStage::
@@ -1406,10 +1419,10 @@ void WasmBrowserMainParts::
     OnWasmPersistentDefaultPartitionShutdownProbeSelectedOwnerReceiptsClosed(
         bool success) {
   if (!success) {
-    LOG(ERROR) << "chrome_wasm persistent default LocalStorage/Cookie "
-                  "selected-owner receipt failed";
+    LOG(ERROR) << "chrome_wasm persistent default LocalStorage/IndexedDB/"
+                  "Cookie selected-owner receipt failed";
   }
-  // The probe posts this handoff after both selected owner callbacks have
+  // The probe posts this handoff after all selected owner callbacks have
   // returned. From this point ordinary profile teardown can observe the real
   // default partition notification and map-drop boundaries.
   RequestShutdown();
@@ -2420,12 +2433,12 @@ void WasmBrowserMainParts::FinishShutdown() {
     // its file sequence. Do not use a nested RunLoop or block this sequence.
 #if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
     // Seal the real BrowserContext map before any shutdown notification can
-    // run a late partition accessor. The probe has already received one direct
-    // LocalStorage map-update/close receipt and one CookieManager
-    // SQLite-row-readback/close receipt, and retains its explicit admission
-    // from construction through the later synchronous map-drop boundary. A
-    // later re-entry sees the already-pending/completed fence and does not
-    // duplicate either one-shot observation.
+    // run a late partition accessor. The probe has already received direct
+    // LocalStorage map-update/close, renderer IndexedDB selected-bucket-close,
+    // and CookieManager SQLite-row-readback/close receipts, and retains its
+    // explicit admission from construction through the later synchronous
+    // map-drop boundary. A later re-entry sees the already-pending/completed
+    // fence and does not duplicate either one-shot observation.
     if (!profile_->IsPrefsShutdownFencePending() &&
         !profile_->HasPrefsShutdownFenceCompleted()) {
       chrome::NotifyWasmPersistentDefaultPartitionShutdownProbeCreationSealed(

@@ -1951,6 +1951,14 @@ config("wasm_profile_m7_indexed_db_smoke_config") {
   defines = [ "CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST=1" ]
 }
 
+# This is shared by the standalone child-partition witness and the bounded
+# persistent-default-partition shutdown probe. It selects only the renderer
+# IndexedDB close-fence implementation; the two artifacts retain separate
+# lifecycle and marker protocols.
+config("wasm_profile_m7_renderer_indexed_db_close_fence_config") {
+  defines = [ "CHROME_WASM_M7_RENDERER_INDEXED_DB_CLOSE_FENCE_TEST=1" ]
+}
+
 # This probe changes only WasmProfile's default StoragePartition policy method.
 # It has no source-selected public class layout, service, or WebUI API.
 config("wasm_profile_m7_persistent_default_partition_policy_probe_config") {
@@ -1959,12 +1967,14 @@ config("wasm_profile_m7_persistent_default_partition_policy_probe_config") {
 
 # This probe changes only WasmProfile's default StoragePartition policy method,
 # Content's selected Cookies SQLite path, one direct LocalStorage close-fence
-# implementation, and BrowserMainParts' source-selected shutdown path. It has
-# no public class layout or WebUI API.
+# implementation, one renderer IndexedDB selected-owner close fence, and
+# BrowserMainParts' source-selected shutdown path. It has no public class
+# layout API.
 config("wasm_profile_m7_persistent_default_partition_shutdown_probe_config") {
   defines = [
     "CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE=1",
     "CHROME_WASM_M7_LOCAL_STORAGE_CLOSE_FENCE_TEST=1",
+    "CHROME_WASM_M7_RENDERER_INDEXED_DB_CLOSE_FENCE_TEST=1",
   ]
 }
 
@@ -2476,9 +2486,12 @@ if (enable_chromium_wasm_m7_default_partition_local_storage_test ||
 }
 
 # This source-selected renderer witness uses Chromium's own IndexedDB API in
-# one exact WebUI document, validates its non-default on-disk partition, and
-# holds profile I/O until that live bucket's ForceClose callback completes.
-if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+# one exact WebUI document and holds profile I/O until that live bucket's
+# ForceClose callback completes. The standalone artifact validates its
+# non-default child partition; the shutdown probe validates the pre-created
+# persistent default partition through its captured-config identity protocol.
+if (enable_chromium_wasm_m7_profile_indexed_db_test ||
+    enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
   # Keep the profile-I/O controller independently testable. It owns no
   # BrowserContext, WebContents, or IndexedDB remote; the renderer participant
   # supplies those owners and passes only its selected-bucket close receipt.
@@ -2503,8 +2516,19 @@ if (enable_chromium_wasm_m7_profile_indexed_db_test) {
       "wasm_profile_renderer_indexed_db_ui.cc",
     ]
 
-    configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
-    public_configs = [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+    configs += [ ":wasm_profile_m7_renderer_indexed_db_close_fence_config" ]
+    public_configs = [
+      ":wasm_profile_m7_renderer_indexed_db_close_fence_config",
+    ]
+    if (enable_chromium_wasm_m7_profile_indexed_db_test) {
+      configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+      public_configs += [ ":wasm_profile_m7_indexed_db_smoke_config" ]
+    }
+    if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
+      configs += [
+        ":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",
+      ]
+    }
 
     deps = [
       ":wasm_profile_indexed_db_close_receipt_lifetime",
@@ -2593,6 +2617,7 @@ if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
     ]
 
     deps = [
+      ":wasm_profile_indexed_db_smoke",
       ":wasm_profile_local_storage_smoke",
       ":wasm_profile_storage",
       "//base",
@@ -2924,7 +2949,10 @@ source_set("wasm_browser_main_parts") {
   }
   if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
     configs += [ ":wasm_profile_m7_persistent_default_partition_shutdown_probe_config" ]
-    deps += [ ":wasm_profile_persistent_default_partition_shutdown_probe" ]
+    deps += [
+      ":wasm_profile_indexed_db_smoke",
+      ":wasm_profile_persistent_default_partition_shutdown_probe",
+    ]
   }
   if (enable_chromium_wasm_m7_profile_cookie_local_storage_test) {
     configs += [ ":wasm_profile_m7_cookie_local_storage_smoke_config" ]
@@ -3073,7 +3101,10 @@ source_set("wasm_content_browser_client") {
     configs += [
       ":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",
     ]
-    deps += [ "//services/network/public/mojom" ]
+    deps += [
+      ":wasm_profile_persistent_default_partition_shutdown_probe",
+      "//services/network/public/mojom",
+    ]
   }
 }
 

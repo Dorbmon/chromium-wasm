@@ -21,11 +21,11 @@ import(
 
 # This fresh source-selected artifact intentionally constructs the real
 # persistent default StoragePartition, witnesses one direct LocalStorage
-# map-update/close sequence followed by one CookieManager
-# write/flush/SQLite-row-readback/backend-close sequence, then observes map
-# destruction during profile shutdown and requires failure retirement. It is
-# not a clean profile persistence, aggregate flush, recovery, or reload
-# acceptance.
+# map-update/close sequence, captured-config reuse plus a renderer IndexedDB
+# selected-bucket close, then one CookieManager write/flush/SQLite-row-
+# readback/backend-close sequence. It observes map destruction during profile
+# shutdown and requires failure retirement. It is not a clean profile
+# persistence, aggregate flush, recovery, or reload acceptance.
 if (enable_chromium_wasm_m7_persistent_default_partition_shutdown_probe) {
   assert(
       !enable_chromium_wasm_m7_profile_preferences_test &&

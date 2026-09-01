@@ -244,6 +244,15 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         self.local_storage_smoke_header = source(
             "chrome/browser/wasm/wasm_profile_local_storage_smoke.h"
         )
+        self.indexed_db_smoke = source(
+            "chrome/browser/wasm/wasm_profile_indexed_db_smoke.cc"
+        )
+        self.indexed_db_smoke_header = source(
+            "chrome/browser/wasm/wasm_profile_indexed_db_smoke.h"
+        )
+        self.indexed_db_ui = source(
+            "chrome/browser/wasm/wasm_profile_renderer_indexed_db_ui.cc"
+        )
         self.dom_storage_test_support_header = source(
             "content/public/browser/wasm_dom_storage_test_support.h"
         )
@@ -1333,30 +1342,52 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         for token in (
             "profile_io_hold_.emplace(std::move(profile_io_hold));",
             "browser_context->GetLoadedStoragePartitionCount() != 0u",
+            "browser_context_ = browser_context;",
             "browser_context->GetDefaultStoragePartition();",
-            "policy_query_armed_ = true;",
+            "policy_query_phase_ = PolicyQueryPhase::kDefaultPartition;",
+            "policy_query_phase_ = PolicyQueryPhase::kNone;",
             "policy_query_count_ != 1",
             "config->is_default()",
             "config->in_memory()",
             "partition->GetPath() == browser_context->GetPath()",
+            "IsCapturedDefaultPartitionStillSoleLoaded()",
             'EmitMarker("DEFAULT_PARTITION_CREATED");',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, shutdown_run)
         self.assertLess(
-            shutdown_run.index("policy_query_armed_ = true;"),
+            shutdown_run.index(
+                "policy_query_phase_ = PolicyQueryPhase::kDefaultPartition;"
+            ),
             shutdown_run.index("browser_context->GetDefaultStoragePartition();"),
         )
         self.assertLess(
             shutdown_run.index("browser_context->GetDefaultStoragePartition();"),
-            shutdown_run.index("policy_query_armed_ = false;"),
+            shutdown_run.index("policy_query_phase_ = PolicyQueryPhase::kNone;"),
         )
-        self.assertEqual(1, self.shutdown_probe.count("GetStoragePartition("))
+        self.assertGreaterEqual(
+            self.shutdown_probe.count("GetStoragePartition("), 2
+        )
         self.assertNotIn("Flush(", self.shutdown_probe)
 
-        # Run() owns the only default-partition policy query. The embedded
-        # participant receives that already-created partition and validates it
-        # directly rather than issuing a second default-partition lookup.
+        # Run() owns the only fail-closed initial default-partition policy
+        # query. Later SiteInfo/frame-host config derivations are permitted,
+        # while renderer identity is proved by the committed RFH plus no-create
+        # lookup of the captured partition.
+        record_policy_query = _body_after_signature(
+            self.shutdown_probe,
+            "  void RecordPolicyQuery(content::BrowserContext* browser_context)",
+        )
+        for token in (
+            "is_initial_default_partition_query",
+            "browser_context != browser_context_",
+            "(!is_initial_default_partition_query && !partition_created_)",
+        ):
+            with self.subTest(policy_query_token=token):
+                self.assertIn(token, record_policy_query)
+        self.assertNotIn("PolicyQueryPhase::kRenderer", self.shutdown_probe)
+        self.assertNotIn("ObserveIndexedDBWebContentsTeardown", self.shutdown_probe)
+        self.assertNotIn("CHROMIUM_WASM_M7_PERSISTENT_DEFAULT_PARTITION_DEBUG", self.shutdown_probe)
         for token in (
             "content::StoragePartition* storage_partition,",
             "calling BrowserContext::GetDefaultStoragePartition().",
@@ -1426,7 +1457,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "local_storage_on_disk_commit_and_close_acknowledged_ = true;",
             'EmitMarker("PERSISTENT_LOCAL_STORAGE_ON_DISK_'
             'MAP_UPDATE_AND_CLOSE_OK");',
-            "StartCookieReceipt();",
+            "StartIndexedDBReceipt();",
         ):
             with self.subTest(local_storage_closed_token=token):
                 self.assertIn(token, local_storage_closed)
@@ -1435,7 +1466,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
                 'EmitMarker("PERSISTENT_LOCAL_STORAGE_ON_DISK_'
                 'MAP_UPDATE_AND_CLOSE_OK");'
             ),
-            local_storage_closed.index("StartCookieReceipt();"),
+            local_storage_closed.index("StartIndexedDBReceipt();"),
         )
         local_storage_failure = _body_after_signature(
             self.shutdown_probe, "  void FailLocalStorageReceipt("
@@ -1449,6 +1480,33 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             with self.subTest(local_storage_failure_token=token):
                 self.assertIn(token, local_storage_failure)
 
+        for token in (
+            "content::SiteInstance::Create(browser_context_)",
+            "RENDERER_DEFAULT_PARTITION_CONFIG_REUSE_WITNESS_OK",
+            "PERSISTENT_INDEXED_DB_RENDERER_WRITE_AND_CLOSE_OK",
+            "WasmProfileIndexedDBLifetimeParticipant",
+            "kIndexedDBOperationTimeout",
+            "indexed_db_participant_->QuarantineForFailureShutdown()",
+            "TakeRendererConfigForSite(",
+            "renderer_default_partition_config_",
+            "renderer_indexed_db_page_url_",
+            "GetStoragePartition(\n               *renderer_default_partition_config_, /*can_create=*/false)",
+        ):
+            with self.subTest(indexed_db_shutdown_token=token):
+                self.assertIn(token, self.shutdown_probe)
+        self.assertNotIn(
+            "content::SiteInstance::CreateForURL(", self.shutdown_probe
+        )
+        for token in (
+            "content::StoragePartition* expected_default_storage_partition",
+            "scoped_refptr<content::SiteInstance> renderer_site_instance",
+            "create_params.site_instance = renderer_site_instance_",
+            "actual_partition != expected_default_storage_partition_",
+        ):
+            with self.subTest(indexed_db_participant_token=token):
+                self.assertIn(token, self.indexed_db_smoke)
+        self.assertIn("emit_protocol_markers = true", self.indexed_db_smoke_header)
+        self.assertIn("m7-indexed-db", self.indexed_db_ui)
         for token in (
             "partition_->GetCookieManagerForBrowserProcess();",
             "cookie_manager->CloneInterface(",
@@ -1598,7 +1656,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.shutdown_probe_header,
         )
         self.assertIn(
-            "RequiresBothSelectedOwnerReceipts", self.shutdown_probe_unit
+            "RequiresAllThreeSelectedOwnerReceipts", self.shutdown_probe_unit
         )
         selected_owner_predicate = _body_after_signature(
             self.shutdown_probe,
@@ -1607,6 +1665,8 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         for token in (
             "local_storage_receipt_started",
             "local_storage_on_disk_commit_and_close_acknowledged",
+            "renderer_default_partition_config_reuse_witness",
+            "indexed_db_renderer_write_and_close_acknowledged",
             "IsWasmPersistentDefaultPartitionCookieStoreReceiptWitness(",
         ):
             with self.subTest(selected_owner_predicate_token=token):
@@ -1652,7 +1712,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             self.shutdown_probe.index('EmitMarker("PARTITION_MAP_DROPPED");'),
         )
 
-        # The subsequent structural gates require both selected owner
+        # The subsequent structural gates require all three selected owner
         # receipts, not merely the Cookies SQLite receipt.
         for signature in (
             "  void NotifyCreationSealed(content::BrowserContext* browser_context)",
@@ -1766,6 +1826,9 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "local_storage_participant_->Cancel();",
             "local_storage_participant_->QuarantineForFailureShutdown();",
             "local_storage_operation_timeout_.Stop();",
+            "indexed_db_participant_->Cancel();",
+            "indexed_db_participant_->QuarantineForFailureShutdown();",
+            "indexed_db_operation_timeout_.Stop();",
             "ClearProfileBoundPointers();",
         ):
             with self.subTest(report_failure_local_storage_token=token):
@@ -1867,7 +1930,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
             "bool WasmProfile::ShouldUseInMemoryDefaultStoragePartition()",
         )
         self.assertIn(
-            "RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery();",
+            "RecordWasmPersistentDefaultPartitionShutdownProbePolicyQuery(this);",
             profile_policy,
         )
         self.assertIn("return false;", profile_policy)
@@ -1896,7 +1959,7 @@ class M7ProfileStorageLifecycleContractTest(unittest.TestCase):
         )
         for token in (
             '":wasm_profile_m7_persistent_default_partition_shutdown_probe_config",',
-            'deps += [ "//services/network/public/mojom" ]',
+            '"//services/network/public/mojom",',
         ):
             with self.subTest(token=token):
                 self.assertIn(token, content_browser_client_target)

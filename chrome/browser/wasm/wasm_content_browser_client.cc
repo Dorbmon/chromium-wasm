@@ -5,12 +5,17 @@
 #include "chrome/browser/wasm/wasm_content_browser_client.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "base/files/file_path.h"
 #include "build/build_config.h"
 #include "chrome/browser/wasm/wasm_browser_main_parts.h"
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+// GN's include checker does not evaluate this target-specific definition.
+#include "chrome/browser/wasm/wasm_profile_persistent_default_partition_shutdown_probe.h"  // nogncheck
+#endif
 #if defined(CHROME_WASM_M7_PREFERENCES_SMOKE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_LOCAL_STORAGE_TEST) || \
     defined(CHROME_WASM_M7_PROFILE_COOKIE_HISTORY_LOCAL_STORAGE_TEST) || \
@@ -116,10 +121,13 @@ bool IsWasmM7RendererLocalStorageURL(const GURL& url) {
 }
 #endif
 
-#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
 constexpr char kWasmM7RendererIndexedDBHost[] = "m7-indexed-db";
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
 constexpr char kWasmM7RendererIndexedDBPartitionDomain[] = "wasmindexeddb";
 constexpr char kWasmM7RendererIndexedDBPartitionName[] = "indexeddb";
+#endif
 
 bool IsWasmM7RendererIndexedDBToken(std::string_view token) {
   if (token.size() != 64) {
@@ -180,6 +188,7 @@ bool IsWasmM7RendererIndexedDBURL(const GURL& url) {
   return url.path() == "/m7_indexed_db_renderer.js" && !url.has_query();
 }
 
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
 bool IsWasmM7RendererIndexedDBSite(const GURL& site) {
   // StoragePartition selection is site-scoped rather than resource-scoped.
   // The page and its one allowed script must resolve to the same non-default
@@ -190,6 +199,7 @@ bool IsWasmM7RendererIndexedDBSite(const GURL& site) {
          !site.has_username() && !site.has_password() && !site.has_port() &&
          !site.has_query() && !site.has_ref();
 }
+#endif
 #endif
 
 }  // namespace
@@ -319,6 +329,17 @@ content::StoragePartitionConfig
 WasmContentBrowserClient::GetStoragePartitionConfigForSite(
     content::BrowserContext* browser_context,
     const GURL& site) {
+#if defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
+  if (std::optional<content::StoragePartitionConfig> config =
+          chrome::TakeWasmPersistentDefaultPartitionShutdownProbeRendererConfigForSite(
+              browser_context, site)) {
+    // The named renderer SiteInstance must reuse the already-created default
+    // partition. Returning this captured config makes the renderer's SiteInfo
+    // derivations select that exact config; the probe later verifies the live
+    // frame partition and sole-map/no-create state.
+    return *config;
+  }
+#endif
 #if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
   if (IsWasmM7RendererIndexedDBSite(site)) {
     // The isolated M7 IndexedDB probe owns one persistent, non-default
@@ -358,7 +379,8 @@ bool WasmContentBrowserClient::IsHandledURL(const GURL& url) {
     defined(CHROME_WASM_M7_PROFILE_BOOKMARK_COOKIE_HISTORY_DATABASE_LOCAL_STORAGE_TEST)
            || IsWasmM7RendererLocalStorageURL(url)
 #endif
-#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST)
+#if defined(CHROME_WASM_M7_PROFILE_INDEXED_DB_SMOKE_TEST) || \
+    defined(CHROME_WASM_M7_PERSISTENT_DEFAULT_PARTITION_SHUTDOWN_PROBE)
            || IsWasmM7RendererIndexedDBURL(url)
 #endif
            ));

@@ -11,11 +11,14 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/wasm/wasm_profile_ordered_drain_lifecycle.h"
 
 namespace content {
 class BrowserContext;
+class SiteInstance;
+class StoragePartition;
 }
 
 namespace chrome {
@@ -33,6 +36,12 @@ struct WasmProfileIndexedDBSmokeInput {
   std::string token_b;
   std::string token_a_digest;
   std::string token_b_digest;
+
+  // The standalone IndexedDB artifact exposes its fixed redacted protocol on
+  // stderr. The persistent-default-partition shutdown probe instead publishes
+  // only its own aggregate marker grammar after this participant's selected
+  // bucket receipt returns, so it suppresses these per-operation diagnostics.
+  bool emit_protocol_markers = true;
 };
 
 // Owns the one source-selected persistent IndexedDB renderer witness. The
@@ -51,6 +60,18 @@ class WasmProfileIndexedDBLifetimeParticipant {
       base::FilePath profile_path,
       WasmProfileIndexedDBSmokeInput input,
       WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold);
+  // The persistent-default-partition shutdown probe supplies the one already
+  // created persistent default partition plus its SiteInstance. It must not
+  // call GetDefaultStoragePartition() again from the renderer participant:
+  // the probe validates that supplied partition's identity with no-create map
+  // lookups at the renderer handoff boundaries.
+  WasmProfileIndexedDBLifetimeParticipant(
+      content::BrowserContext* browser_context,
+      base::FilePath profile_path,
+      WasmProfileIndexedDBSmokeInput input,
+      WasmProfileOrderedDrainLifecycle::ProfileIOHold profile_io_hold,
+      content::StoragePartition* expected_default_storage_partition,
+      scoped_refptr<content::SiteInstance> renderer_site_instance);
   WasmProfileIndexedDBLifetimeParticipant(
       const WasmProfileIndexedDBLifetimeParticipant&) = delete;
   WasmProfileIndexedDBLifetimeParticipant& operator=(
